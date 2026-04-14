@@ -1,0 +1,15 @@
+{
+  "main": {
+    "dashboard": "Dashboard",
+    "ingredients": "Ingredients",
+    "formulations": "Formulations",
+    "proposals": "Proposals",
+    "clients": "Clients"
+  },
+  "account": {
+    "profile": "Profile",
+    "settings": "Settings",
+    "members": "Members",
+    "sign_out": "Sign out"
+  }
+}

@@ -1,0 +1,80 @@
+@import "@heroui/react/styles";
+
+/*
+ * Design tokens — Tailwind v4 @theme block.
+ *
+ * These values are the authoritative CSS-side copy of the tokens declared
+ * in ``src/config/design/*.ts``. Anything you want available as a Tailwind
+ * utility class (e.g. ``bg-ink-900``, ``text-accent-500``, ``shadow-hard``)
+ * must be listed here. When you add a new token in TypeScript, add the
+ * matching CSS variable here too.
+ */
+@theme {
+  /* Ink palette — primary monochrome surfaces */
+  --color-ink-0: #ffffff;
+  --color-ink-50: #fafafa;
+  --color-ink-100: #f4f4f4;
+  --color-ink-200: #e6e6e6;
+  --color-ink-300: #cccccc;
+  --color-ink-400: #999999;
+  --color-ink-500: #666666;
+  --color-ink-600: #404040;
+  --color-ink-700: #262626;
+  --color-ink-800: #161616;
+  --color-ink-900: #0a0a0a;
+  --color-ink-1000: #000000;
+
+  /* Single accent — reserved for primary CTAs */
+  --color-accent-50: #f5fbe6;
+  --color-accent-100: #e9f7c7;
+  --color-accent-200: #d4ef8e;
+  --color-accent-300: #bce653;
+  --color-accent-400: #a8d65a;
+  --color-accent-500: #8fbf3f;
+  --color-accent-600: #6e9a2d;
+  --color-accent-700: #557524;
+  --color-accent-800: #3f571b;
+  --color-accent-900: #2a3a12;
+
+  /* Semantic tones — muted, industrial */
+  --color-success: #4a7a2f;
+  --color-warning: #b8860b;
+  --color-danger: #b91c1c;
+  --color-info: #1e3a5f;
+
+  /* Typography */
+  --font-sans: var(--font-display-sans), Archivo, Inter, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-display-mono), "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Radius — brutalist means ~zero */
+  --radius-none: 0;
+  --radius-xs: 0.0625rem;
+  --radius-sm: 0.125rem;
+
+  /* Hard offset shadows — no soft blur */
+  --shadow-hard: 2px 2px 0 0 #000000;
+  --shadow-harder: 4px 4px 0 0 #000000;
+  --shadow-inset-hairline: inset 0 0 0 1px #000000;
+
+  /* Motion */
+  --ease-sharp-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-sharp-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-sharp-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/*
+ * Global element defaults — keep this block tiny. Anything bigger than a
+ * one-liner belongs in a component, not a global rule.
+ */
+html,
+body {
+  background-color: var(--color-ink-0);
+  color: var(--color-ink-1000);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background-color: var(--color-ink-1000);
+  color: var(--color-ink-0);
+}

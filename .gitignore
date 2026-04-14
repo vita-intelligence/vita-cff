@@ -1,0 +1,154 @@
+# ---------------------------------------------------------------------------
+# Vita CFF — repository .gitignore
+# Covers: Python / Django backend, Node / Next.js frontend, tooling, IDEs, OS.
+# Keep this file authoritative — do not add per-app .gitignore files unless
+# strictly necessary.
+# ---------------------------------------------------------------------------
+
+# ----- Internal-only files (never commit) ----------------------------------
+CLAUDE.md
+AGENTS.md
+.claude/
+
+# ----- Secrets & environment ------------------------------------------------
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.crt
+secrets/
+credentials/
+
+# ----- Python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+pip-wheel-metadata/
+.installed.cfg
+MANIFEST
+
+# ----- Virtual environments -------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# ----- Django ---------------------------------------------------------------
+*.sqlite3
+*.sqlite3-journal
+db.sqlite3
+db.sqlite3-journal
+local_settings.py
+media/
+staticfiles/
+/static_collected/
+
+# ----- Testing, coverage, type checking -------------------------------------
+.pytest_cache/
+.cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+nosetests.xml
+junit.xml
+.hypothesis/
+.mypy_cache/
+.pytype/
+.pyre/
+.ruff_cache/
+.dmypy.json
+dmypy.json
+
+# ----- Jupyter / IPython ----------------------------------------------------
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ----- Node / Next.js / frontend --------------------------------------------
+node_modules/
+.pnp
+.pnp.*
+.yarn/install-state.gz
+.yarn/cache/
+.yarn/unplugged/
+.yarn/build-state.yml
+.yarn/*.log
+.npm/
+.next/
+out/
+.nuxt/
+.vercel/
+.turbo/
+.svelte-kit/
+.cache/
+*.tsbuildinfo
+next-env.d.ts
+
+# Frontend build output (when not captured by framework-specific paths above)
+frontend/build/
+frontend/dist/
+
+# Package manager logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ----- Logs -----------------------------------------------------------------
+*.log
+logs/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ----- IDE / editors --------------------------------------------------------
+.vscode/
+!.vscode/settings.json.sample
+.idea/
+*.iml
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# ----- OS -------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ----- Docker / infra scratch -----------------------------------------------
+*.pid
+*.seed
+*.pid.lock
+.docker/
+
+# ----- Local scratch / notes ------------------------------------------------
+TODO.local
+scratch/
+tmp/
+*.bak
+*.orig

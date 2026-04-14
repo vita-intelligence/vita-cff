@@ -1,0 +1,27 @@
+{
+  "generic": "Something went wrong. Please try again.",
+  "network": "Network error. Check your connection and retry.",
+  "unauthorized": "You need to sign in to do that.",
+  "forbidden": "You do not have permission to do that.",
+  "not_found": "We could not find what you were looking for.",
+  "server": "Our servers are having a problem. Please try again shortly.",
+  "validation": "Please correct the errors and try again.",
+  "codes": {
+    "required": "This field is required.",
+    "blank": "This field cannot be empty.",
+    "invalid": "This value is not valid.",
+    "max_length": "This value is too long.",
+    "min_length": "This value is too short.",
+    "invalid_credentials": "Invalid email or password.",
+    "account_disabled": "This account has been disabled.",
+    "email_already_exists": "An account with this email already exists.",
+    "passwords_do_not_match": "Passwords do not match.",
+    "password_too_short": "Password is too short.",
+    "password_too_common": "Password is too common.",
+    "password_too_similar": "Password is too similar to your personal information.",
+    "password_entirely_numeric": "Password cannot be entirely numeric.",
+    "invalid_password": "Password does not meet requirements.",
+    "refresh_token_missing": "Your session has expired. Please sign in again.",
+    "refresh_token_invalid": "Your session has expired. Please sign in again."
+  }
+}
