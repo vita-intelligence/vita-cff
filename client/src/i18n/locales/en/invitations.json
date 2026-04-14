@@ -1,0 +1,38 @@
+{
+  "invite_member": {
+    "title": "Invite member",
+    "subtitle": "Generate a link and share it with the person you want to add.",
+    "email_label": "Member email",
+    "email_placeholder": "teammate@example.com",
+    "submit": "Generate invite link",
+    "success_title": "Invite link ready",
+    "success_copy": "Copy link",
+    "success_copied": "Copied",
+    "success_hint": "Share this link privately. Anyone who has it can accept.",
+    "expires_in": "Link expires {date}.",
+    "invite_another": "Invite another"
+  },
+  "accept": {
+    "eyebrow": "You've been invited",
+    "title_template": "{inviter} invited you to {organization}",
+    "invited_email": "Invited as {email}",
+    "expires_in": "This link expires {date}.",
+    "fields": {
+      "first_name": "First name",
+      "last_name": "Last name",
+      "password": "Password",
+      "password_confirm": "Confirm password"
+    },
+    "submit": "Accept and sign in",
+    "errors": {
+      "not_found_title": "Invitation not found",
+      "not_found_body": "This link is invalid. Double-check it or ask the sender for a new one.",
+      "expired_title": "Invitation expired",
+      "expired_body": "Ask the sender to generate a new invite link.",
+      "accepted_title": "Invitation already used",
+      "accepted_body": "This link has already been accepted. Try signing in instead.",
+      "email_taken_title": "Email already registered",
+      "email_taken_body": "An account with this email already exists. Sign in instead."
+    }
+  }
+}

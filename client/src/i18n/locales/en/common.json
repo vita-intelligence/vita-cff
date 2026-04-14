@@ -1,6 +1,11 @@
 {
   "brand": "Vita CFF",
   "tagline": "Formulation builder and proposal platform.",
+  "dashboard": {
+    "eyebrow": "Dashboard",
+    "welcome_back": "Welcome back.",
+    "welcome_new": "Let's get you set up."
+  },
   "actions": {
     "submit": "Submit",
     "cancel": "Cancel",

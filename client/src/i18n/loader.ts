@@ -22,6 +22,8 @@ export const namespaces = [
   "errors",
   "navigation",
   "validation",
+  "organizations",
+  "invitations",
 ] as const;
 
 export type Namespace = (typeof namespaces)[number];

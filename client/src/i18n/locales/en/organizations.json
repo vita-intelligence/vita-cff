@@ -1,0 +1,17 @@
+{
+  "your_organization": "Organization",
+  "profile": "Profile",
+  "role": {
+    "owner": "Owner",
+    "admin": "Admin",
+    "member": "Member"
+  },
+  "empty": {
+    "title": "Create organization",
+    "subtitle": "Set up your workspace. You'll become its owner.",
+    "name_label": "Organization name",
+    "name_placeholder": "e.g. Acme Labs",
+    "submit": "Create organization"
+  },
+  "created": "Organization created."
+}
