@@ -1,0 +1,57 @@
+{
+  "title": "Fields",
+  "subtitle": "Define the dynamic attributes that every item in this organization carries.",
+  "new_field": "New field",
+  "no_fields": "No fields yet.",
+  "no_fields_hint": "Add your first dynamic attribute to start tracking custom data on every item.",
+  "columns": {
+    "label": "Label",
+    "key": "Key",
+    "data_type": "Type",
+    "required": "Required",
+    "status": "Status",
+    "actions": "Actions"
+  },
+  "data_types": {
+    "text": "Text",
+    "number": "Number",
+    "boolean": "Yes / No",
+    "date": "Date",
+    "single_select": "Single select",
+    "multi_select": "Multi select"
+  },
+  "status": {
+    "active": "Active",
+    "archived": "Archived"
+  },
+  "required_badge": {
+    "yes": "Required",
+    "no": "Optional"
+  },
+  "actions": {
+    "edit": "Edit",
+    "archive": "Archive",
+    "unarchive": "Restore"
+  },
+  "form": {
+    "title_create": "New field",
+    "title_edit": "Edit field",
+    "label": "Label",
+    "label_hint": "How the field appears in forms and table headers.",
+    "key": "Key",
+    "key_hint": "Machine identifier. Lowercase, snake_case, immutable once created.",
+    "data_type": "Type",
+    "data_type_hint": "How the field is stored and validated. Cannot be changed later.",
+    "required": "Required",
+    "required_hint": "Items cannot be saved without a value for required fields.",
+    "options": "Options",
+    "options_hint": "One option per line.",
+    "option_value": "Value",
+    "option_label": "Label",
+    "add_option": "Add option",
+    "remove_option": "Remove",
+    "submit_create": "Create field",
+    "submit_save": "Save changes",
+    "cancel": "Cancel"
+  }
+}

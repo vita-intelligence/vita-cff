@@ -1,7 +1,7 @@
 {
   "main": {
     "dashboard": "Dashboard",
-    "ingredients": "Ingredients",
+    "catalogues": "Catalogues",
     "formulations": "Formulations",
     "proposals": "Proposals",
     "clients": "Clients"

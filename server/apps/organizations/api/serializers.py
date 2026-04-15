@@ -22,25 +22,44 @@ def _code(value: str) -> ErrorDetail:
 class OrganizationReadSerializer(serializers.ModelSerializer):
     """Public, read-only representation of an organization.
 
-    ``is_owner`` is the caller's membership flag relative to this row —
-    computed via the serializer context so the frontend can decide
-    whether to show owner-only UI (invite members, rename, etc.).
+    ``is_owner`` and ``permissions`` describe the *caller's* relationship
+    to this row — computed via the serializer context so the frontend can
+    gate owner-only and module-specific UI without an extra request.
+    ``permissions`` is empty for owners (they bypass the map), and for
+    non-owners it is the raw grant dict on their membership.
     """
 
     is_owner = serializers.SerializerMethodField()
+    permissions = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
-        fields = ("id", "name", "is_owner", "created_at", "updated_at")
+        fields = (
+            "id",
+            "name",
+            "is_owner",
+            "permissions",
+            "created_at",
+            "updated_at",
+        )
         read_only_fields = fields
 
-    def get_is_owner(self, obj: Organization) -> bool:
+    def _get_caller_membership(self, obj: Organization) -> Membership | None:
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
         if user is None or not getattr(user, "is_authenticated", False):
-            return False
-        membership = Membership.objects.filter(user=user, organization=obj).first()
+            return None
+        return Membership.objects.filter(user=user, organization=obj).first()
+
+    def get_is_owner(self, obj: Organization) -> bool:
+        membership = self._get_caller_membership(obj)
         return bool(membership and membership.is_owner)
+
+    def get_permissions(self, obj: Organization) -> dict[str, str]:
+        membership = self._get_caller_membership(obj)
+        if membership is None or membership.is_owner:
+            return {}
+        return dict(membership.permissions or {})
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):

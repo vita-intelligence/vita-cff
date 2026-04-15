@@ -1,4 +1,4 @@
-"""Django settings for the Vita CFF platform."""
+"""Django settings for the Vita NPD platform."""
 
 from datetime import timedelta
 from pathlib import Path
@@ -31,6 +31,8 @@ THIRD_PARTY_APPS = [
 LOCAL_APPS = [
     "apps.accounts",
     "apps.organizations",
+    "apps.catalogues",
+    "apps.attributes",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

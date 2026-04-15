@@ -1,0 +1,92 @@
+{
+  "title": "Items",
+  "subtitle": "Your catalogue.",
+  "new_item": "New item",
+  "import": "Import",
+  "show_active": "Show active",
+  "show_archived": "Show archived",
+  "no_items": "No items yet.",
+  "no_items_hint": "Create your first catalogue entry to get started.",
+  "no_archived": "No archived items.",
+  "no_archived_hint": "Items you archive from the detail page will appear here.",
+  "columns": {
+    "name": "Name",
+    "internal_code": "Code",
+    "unit": "Unit",
+    "base_price": "Base price",
+    "updated_at": "Updated",
+    "status": "Status"
+  },
+  "status": {
+    "active": "Active",
+    "archived": "Archived"
+  },
+  "access_denied": {
+    "title": "No access",
+    "body": "You do not have permission to view items in this organization. Ask an admin to grant you items:read or higher."
+  },
+  "create": {
+    "title": "New item",
+    "submit": "Create item",
+    "cancel": "Cancel"
+  },
+  "detail": {
+    "back": "Back to items",
+    "save": "Save changes",
+    "archive": "Archive",
+    "restore": "Restore",
+    "delete_permanently": "Delete permanently",
+    "saved": "Saved"
+  },
+  "bulk": {
+    "selected_count": "{count} selected",
+    "clear": "Clear",
+    "archive": "Archive",
+    "restore": "Restore",
+    "delete_permanently": "Delete permanently",
+    "confirm_title": "Delete {count} items permanently?",
+    "confirm_body": "This action cannot be undone. Archived rows will be removed from the database.",
+    "confirm_cancel": "Cancel",
+    "confirm_confirm": "Delete forever",
+    "partial_failure": "Some items could not be updated. Refresh and try again."
+  },
+  "delete_confirm": {
+    "title": "Delete permanently?",
+    "body": "This will permanently remove \"{name}\" from your catalogue. This action cannot be undone.",
+    "cancel": "Cancel",
+    "confirm": "Delete forever"
+  },
+  "import_modal": {
+    "title": "Import from Excel",
+    "intro": "Upload an .xlsx file. The first row must be a header row. A ''name'' column is required; ''internal_code'', ''unit'', and ''base_price'' are matched automatically. Every other column is matched to an existing field definition by key or label.",
+    "dropzone_label": "Drop an .xlsx file here or click to browse",
+    "selected_file": "Selected: {name}",
+    "submit": "Import",
+    "cancel": "Cancel",
+    "close": "Close",
+    "result_title": "Import complete",
+    "result_created": "{count} items created.",
+    "result_errors_title": "Rows that failed",
+    "result_error_row": "Row {row}",
+    "result_unmapped_title": "Columns ignored (no matching field)",
+    "result_unmapped_hint": "Create these fields on the Fields tab, then re-upload to include their values.",
+    "errors": {
+      "file_empty": "The uploaded file is empty.",
+      "file_invalid": "The uploaded file is not a valid .xlsx workbook.",
+      "missing_name_column": "The file must have a ''name'' column."
+    }
+  },
+  "fields": {
+    "name": "Name",
+    "internal_code": "Internal code",
+    "unit": "Unit",
+    "base_price": "Base price",
+    "is_archived": "Archived"
+  },
+  "placeholders": {
+    "name": "e.g. Vitamin C",
+    "internal_code": "e.g. VC-001",
+    "unit": "e.g. g, mL, capsule",
+    "base_price": "e.g. 0.5000"
+  }
+}

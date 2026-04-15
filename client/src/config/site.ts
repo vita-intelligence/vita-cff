@@ -5,8 +5,8 @@
  */
 
 export const site = {
-  name: "Vita CFF",
-  shortName: "Vita CFF",
+  name: "Vita NPD",
+  shortName: "Vita NPD",
   description: "Formulation builder and proposal platform.",
   locale: {
     default: "en",

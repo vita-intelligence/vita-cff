@@ -19,7 +19,11 @@ from django.db.models import QuerySet
 from django.utils import timezone
 
 from apps.organizations.models import Invitation, Membership, Organization
-from apps.organizations.modules import PermissionLevel, is_valid_module
+from apps.organizations.modules import (
+    PermissionLevel,
+    is_row_scoped,
+    is_valid_module,
+)
 
 UserModel = get_user_model()
 
@@ -64,16 +68,24 @@ def has_permission(
     membership: Membership | None,
     module_key: str,
     required: PermissionLevel,
+    *,
+    scope: str | None = None,
 ) -> bool:
     """Check whether ``membership`` grants at least ``required`` on the module.
 
     * ``None`` membership (user is not a member) always returns ``False``.
     * Owners bypass the permissions map entirely and always return ``True``.
-    * For non-owners we look the module key up in ``membership.permissions``
-      and compare the recorded :class:`PermissionLevel` to ``required``.
     * Unknown or unregistered module keys always return ``False`` —
       permission checks cannot silently succeed for modules the codebase
       does not know about.
+    * For *flat* modules (``members``) the grant is a single string
+      level stored at ``membership.permissions[module_key]``. The
+      ``scope`` argument is ignored.
+    * For *row-scoped* modules (``catalogues``) the grant is a
+      ``{scope: level}`` dict stored at
+      ``membership.permissions[module_key]``. ``scope`` is required —
+      omitting it on a row-scoped check always returns ``False`` —
+      and the level is looked up for that specific row.
     """
 
     if membership is None:
@@ -84,7 +96,19 @@ def has_permission(
         return True
 
     raw = membership.permissions.get(module_key)
-    granted = PermissionLevel.parse(raw if isinstance(raw, str) else None)
+
+    if is_row_scoped(module_key):
+        if scope is None:
+            return False
+        if not isinstance(raw, dict):
+            return False
+        level_str = raw.get(scope)
+        if not isinstance(level_str, str):
+            return False
+    else:
+        level_str = raw if isinstance(raw, str) else None
+
+    granted = PermissionLevel.parse(level_str)
     return granted >= required
 
 

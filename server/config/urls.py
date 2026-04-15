@@ -1,4 +1,4 @@
-"""Root URL configuration for the Vita CFF platform."""
+"""Root URL configuration for the Vita NPD platform."""
 
 from django.contrib import admin
 from django.urls import include, path
@@ -10,4 +10,6 @@ urlpatterns = [
         "api/",
         include("apps.organizations.api.urls", namespace="organizations"),
     ),
+    path("api/", include("apps.catalogues.api.urls", namespace="catalogues")),
+    path("api/", include("apps.attributes.api.urls", namespace="attributes")),
 ]

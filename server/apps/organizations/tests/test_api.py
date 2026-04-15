@@ -111,10 +111,10 @@ class TestCreateOrganization:
     ) -> None:
         client, _ = authed_client
         response = client.post(
-            organizations_url, {"name": "   Vita CFF   "}, format="json"
+            organizations_url, {"name": "   Vita NPD   "}, format="json"
         )
         assert response.status_code == status.HTTP_201_CREATED
-        assert response.json()["name"] == "Vita CFF"
+        assert response.json()["name"] == "Vita NPD"
 
     def test_name_too_long_is_rejected(
         self,

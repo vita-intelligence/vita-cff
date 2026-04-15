@@ -1,4 +1,4 @@
-"""ASGI entrypoint for the Vita CFF platform."""
+"""ASGI entrypoint for the Vita NPD platform."""
 
 import os
 

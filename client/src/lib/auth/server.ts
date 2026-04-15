@@ -5,6 +5,14 @@ import { cookies } from "next/headers";
 import { env } from "@/config/env";
 import { accountsEndpoints } from "@/services/accounts/endpoints";
 import type { UserDto } from "@/services/accounts/types";
+import { attributesEndpoints } from "@/services/attributes/endpoints";
+import type { AttributeDefinitionDto } from "@/services/attributes/types";
+import { cataloguesEndpoints } from "@/services/catalogues/endpoints";
+import type {
+  CatalogueDto,
+  ItemDto,
+  PaginatedItemsDto,
+} from "@/services/catalogues/types";
 import { organizationsEndpoints } from "@/services/organizations/endpoints";
 import type { OrganizationDto } from "@/services/organizations/types";
 
@@ -53,8 +61,7 @@ async function serverFetch<T>(path: string): Promise<T | null> {
  * client-side flicker.
  *
  * Returns ``null`` when the cookie is missing, expired, tampered with,
- * or the backend is unreachable. Callers should treat any non-null
- * result as authoritative for the duration of the current request.
+ * or the backend is unreachable.
  */
 export async function getCurrentUserServer(): Promise<UserDto | null> {
   return serverFetch<UserDto>(accountsEndpoints.me);
@@ -72,4 +79,73 @@ export async function getUserOrganizationsServer(): Promise<
   OrganizationDto[] | null
 > {
   return serverFetch<OrganizationDto[]>(organizationsEndpoints.list);
+}
+
+/**
+ * Fetch every catalogue the current user can see inside an org.
+ *
+ * Non-owners only see the catalogues they carry a permission grant
+ * on — the filtering happens server-side by the same rules the
+ * catalogue list endpoint enforces on the API side.
+ */
+export async function getCataloguesServer(
+  orgId: string,
+): Promise<CatalogueDto[] | null> {
+  return serverFetch<CatalogueDto[]>(
+    cataloguesEndpoints.catalogueList(orgId),
+  );
+}
+
+/**
+ * Fetch the first paginated page of items for a specific catalogue
+ * from a Server Component. Used to hydrate the infinite-scroll query
+ * on the client so the first paint already has data.
+ */
+export async function getCatalogueItemsFirstPageServer(
+  orgId: string,
+  slug: string,
+  options: {
+    includeArchived?: boolean;
+    ordering?: string;
+    pageSize?: number;
+  } = {},
+): Promise<PaginatedItemsDto | null> {
+  const params = new URLSearchParams();
+  if (options.includeArchived) params.set("include_archived", "true");
+  if (options.ordering) params.set("ordering", options.ordering);
+  if (options.pageSize) params.set("page_size", String(options.pageSize));
+  const query = params.toString();
+  const url = `${cataloguesEndpoints.itemList(orgId, slug)}${
+    query ? `?${query}` : ""
+  }`;
+  return serverFetch<PaginatedItemsDto>(url);
+}
+
+export async function getCatalogueItemServer(
+  orgId: string,
+  slug: string,
+  itemId: string,
+): Promise<ItemDto | null> {
+  return serverFetch<ItemDto>(
+    cataloguesEndpoints.itemDetail(orgId, slug, itemId),
+  );
+}
+
+/**
+ * Fetch the typed attribute definitions for an organization's
+ * catalogue. Active-only by default; pass ``includeArchived`` to see
+ * archived definitions too (used on the fields management page).
+ */
+export async function getAttributeDefinitionsServer(
+  orgId: string,
+  slug: string,
+  options: { includeArchived?: boolean } = {},
+): Promise<AttributeDefinitionDto[] | null> {
+  const params = new URLSearchParams();
+  if (options.includeArchived) params.set("include_archived", "true");
+  const query = params.toString();
+  const url = `${attributesEndpoints.list(orgId, slug)}${
+    query ? `?${query}` : ""
+  }`;
+  return serverFetch<AttributeDefinitionDto[]>(url);
 }

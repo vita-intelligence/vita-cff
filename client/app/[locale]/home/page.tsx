@@ -41,6 +41,7 @@ export default async function HomePage({
 
   const tCommon = await getTranslations("common");
   const tOrgs = await getTranslations("organizations");
+  const tNav = await getTranslations("navigation");
 
   const initials =
     (currentUser.first_name[0] ?? "") + (currentUser.last_name[0] ?? "");
@@ -52,6 +53,8 @@ export default async function HomePage({
           brand={tCommon("brand")}
           userFullName={currentUser.full_name}
           userInitials={initials.toUpperCase() || "··"}
+          dashboardLabel={tNav("main.dashboard")}
+          cataloguesLabel={tNav("main.catalogues")}
         />
 
         <section className="mt-12 md:mt-16">

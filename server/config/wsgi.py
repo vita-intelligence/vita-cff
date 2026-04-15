@@ -1,4 +1,4 @@
-"""WSGI entrypoint for the Vita CFF platform."""
+"""WSGI entrypoint for the Vita NPD platform."""
 
 import os
 

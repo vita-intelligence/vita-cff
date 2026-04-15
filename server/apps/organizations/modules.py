@@ -1,14 +1,26 @@
 """Module registry for organization-scoped permissions.
 
-A *module* is a slice of application functionality (members, ingredients,
-formulations, proposals, ...) that can be independently authorised. Every
-feature area is expected to register itself here so the role layer has a
+A *module* is a slice of application functionality (members, catalogues,
+formulations, ...) that can be independently authorised. Every feature
+area is expected to register itself here so the role layer has a
 stable, typed vocabulary of module keys to check permissions against.
 
-The registry is intentionally a plain Python dict rather than a database
-table: modules are code-shaped objects, they change with releases, and
-new ones arrive together with their models, views, and migrations. Putting
-them in the DB would just replicate what source control already tracks.
+Two kinds of modules exist:
+
+* **Flat** modules store their grant as a single ``{module_key: level}``
+  entry on the membership. ``members`` is a flat module.
+* **Row-scoped** modules carry a per-row map instead of a single level,
+  so different rows of the same kind can have different access. The
+  ``catalogues`` module is row-scoped: a non-owner can have
+  ``catalogues.raw_materials = read`` while having no access at all to
+  ``catalogues.packaging``. Storage shape on the membership is
+  ``{"catalogues": {"raw_materials": "read", "packaging": "write"}}``.
+
+The registry is intentionally a plain Python dict rather than a
+database table: modules are code-shaped objects, they change with
+releases, and new ones arrive together with their models, views, and
+migrations. Putting them in the DB would just replicate what source
+control already tracks.
 """
 
 from __future__ import annotations
@@ -44,6 +56,17 @@ class Module:
     key: str
     name: str
     description: str
+    #: When ``True`` the module's permission map holds a ``{row_scope:
+    #: level}`` dict instead of a single level. Permission checks on
+    #: row-scoped modules require a ``scope`` argument.
+    row_scoped: bool = False
+
+
+#: Name of the row-scope key on ``catalogues`` permission checks — the
+#: catalogue slug (``raw_materials``, ``packaging``, ...). Exposed as a
+#: constant so callers do not embed magic strings in permission calls.
+CATALOGUES_MODULE = "catalogues"
+MEMBERS_MODULE = "members"
 
 
 # ----------------------------------------------------------------------------
@@ -54,10 +77,20 @@ class Module:
 # :class:`apps.organizations.models.Membership` row and referenced from
 # permission checks throughout the backend.
 MODULE_REGISTRY: dict[str, Module] = {
-    "members": Module(
-        key="members",
+    MEMBERS_MODULE: Module(
+        key=MEMBERS_MODULE,
         name="Members",
         description="Invite, review, and remove organization members.",
+    ),
+    CATALOGUES_MODULE: Module(
+        key=CATALOGUES_MODULE,
+        name="Catalogues",
+        description=(
+            "Browse and manage catalogue rows (raw materials, packaging, "
+            "and any custom reference tables). Row-scoped: each catalogue "
+            "carries its own permission level."
+        ),
+        row_scoped=True,
     ),
 }
 
@@ -80,3 +113,8 @@ def module_keys() -> list[str]:
 
 def is_valid_module(key: str) -> bool:
     return key in MODULE_REGISTRY
+
+
+def is_row_scoped(key: str) -> bool:
+    module = MODULE_REGISTRY.get(key)
+    return bool(module and module.row_scoped)

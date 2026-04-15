@@ -10,6 +10,12 @@ export interface OrganizationDto {
   readonly name: string;
   /** ``true`` when the currently-authenticated caller is the owner. */
   readonly is_owner: boolean;
+  /**
+   * Caller's grants on this org as ``{ module_key: level }``. Always
+   * empty for owners (they bypass the map); for non-owners this is
+   * the raw map stored on their membership.
+   */
+  readonly permissions: Record<string, string>;
   readonly created_at: string;
   readonly updated_at: string;
 }
