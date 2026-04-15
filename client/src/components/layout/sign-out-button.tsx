@@ -6,7 +6,7 @@ import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { useLogout } from "@/services/accounts";
 
-export function HomeActions() {
+export function SignOutButton() {
   const tNav = useTranslations("navigation");
   const router = useRouter();
   const logout = useLogout();

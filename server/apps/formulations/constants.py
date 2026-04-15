@@ -1,0 +1,112 @@
+"""Hard-coded dosage form reference data, transcribed from the Valley
+Low Fat Burner workbook's ``Lists`` sheet.
+
+These values are load-bearing for the viability math — they match the
+Excel formulas byte-for-byte. If the scientists ever add a new capsule
+size or tablet size, extend the corresponding tuple here and re-run
+the test suite; the unit tests check every entry.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+
+class DosageForm(str, Enum):
+    POWDER = "powder"
+    CAPSULE = "capsule"
+    TABLET = "tablet"
+    GUMMY = "gummy"
+    LIQUID = "liquid"
+    OTHER_SOLID = "other_solid"
+
+
+#: Dosage forms F1 supports with full excipient math + viability. Other
+#: forms store metadata but return ``None`` for the computed totals.
+FULLY_SUPPORTED_FORMS: frozenset[DosageForm] = frozenset(
+    {DosageForm.CAPSULE, DosageForm.TABLET}
+)
+
+
+@dataclass(frozen=True)
+class CapsuleSize:
+    key: str
+    label: str
+    #: Maximum total fill weight in mg.
+    max_weight_mg: float
+    #: Upper bound of total active weight for auto-selecting this size.
+    #: Values copied verbatim from Lists!G6:G8 in the Valley workbook.
+    #: ``None`` means the size is not part of the automatic cascade.
+    auto_pick_threshold_mg: float | None
+
+
+CAPSULE_SIZES: tuple[CapsuleSize, ...] = (
+    CapsuleSize("size_1", "Size 1", 380.0, 300.0),
+    CapsuleSize("single_0", "Single 0", 453.0, 446.658),
+    CapsuleSize("double_00", "Double 00", 730.0, 719.78),
+    CapsuleSize("size_3", "Size 3", 216.0, None),
+)
+
+
+@dataclass(frozen=True)
+class TabletSize:
+    key: str
+    label: str
+    max_weight_mg: float
+
+
+TABLET_SIZES: tuple[TabletSize, ...] = (
+    TabletSize("round_6mm", "6mm Round", 150.0),
+    TabletSize("round_7_5mm", "7.5mm Round", 225.0),
+    TabletSize("round_8mm", "8mm Round", 275.0),
+    TabletSize("round_11mm", "11mm Round", 700.0),
+    TabletSize("round_13mm", "13mm Round", 1000.0),
+    TabletSize("oval_14_5x8_5mm", "14.5mm x 8.5mm", 700.0),
+    TabletSize("oval_15x7mm", "15mm x 7mm", 600.0),
+    TabletSize("oval_19_5x8_2mm", "19.5mm x 8.2mm", 1100.0),
+    TabletSize("oval_22_5x9mm", "22.5mm x 9mm", 1500.0),
+    TabletSize("oval_22_5x10mm", "22.5mm x 10mm", 1750.0),
+)
+
+
+#: Excipient ratios copied straight from the ``Formulation Calculation
+#: Sheet`` cell formulas. Changing these requires a scientist sign-off,
+#: not a code review.
+CAPSULE_MG_STEARATE_PCT = 0.01
+CAPSULE_SILICA_PCT = 0.004
+
+TABLET_MG_STEARATE_PCT = 0.01
+TABLET_SILICA_PCT = 0.004
+TABLET_DCP_PCT = 0.10
+TABLET_MCC_PCT = 0.20
+
+
+def capsule_size_by_key(key: str) -> CapsuleSize | None:
+    for size in CAPSULE_SIZES:
+        if size.key == key:
+            return size
+    return None
+
+
+def tablet_size_by_key(key: str) -> TabletSize | None:
+    for size in TABLET_SIZES:
+        if size.key == key:
+            return size
+    return None
+
+
+def auto_pick_capsule_size(total_active_mg: float) -> CapsuleSize | None:
+    """Walk the size cascade and return the smallest capsule that fits.
+
+    Mirrors the ``D39`` formula's nested ``IF`` ladder from the
+    workbook. Returns ``None`` if the total active weight exceeds the
+    biggest auto-pickable size; the caller surfaces that as an error.
+    """
+
+    for size in CAPSULE_SIZES:
+        if size.auto_pick_threshold_mg is None:
+            continue
+        if total_active_mg < size.auto_pick_threshold_mg:
+            return size
+    return None

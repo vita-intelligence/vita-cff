@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
+import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Link, redirect } from "@/i18n/navigation";
 import {
@@ -11,7 +12,6 @@ import {
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
-import { HomeActions } from "../../../home/home-actions";
 import { EditItemForm } from "./edit-form";
 
 function resolveCataloguePermission(
@@ -80,44 +80,10 @@ export default async function CatalogueItemDetailPage({
   const tCommon = await getTranslations("common");
   const tNav = await getTranslations("navigation");
 
-  const initials =
-    (currentUser.first_name[0] ?? "") + (currentUser.last_name[0] ?? "");
-
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-4xl flex-col px-6 py-8 md:px-10 md:py-12">
-        <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-6">
-          <div className="flex items-center gap-8">
-            <span className="font-mono text-xs tracking-widest uppercase text-ink-700">
-              {tCommon("brand")}
-            </span>
-            <nav className="flex items-center gap-6 font-mono text-[10px] tracking-widest uppercase">
-              <Link
-                href="/home"
-                className="text-ink-500 hover:text-ink-1000"
-              >
-                {tNav("main.dashboard")}
-              </Link>
-              <Link
-                href={`/catalogues/${slug}`}
-                className="border-b-2 border-ink-1000 text-ink-1000"
-              >
-                {catalogue.name}
-              </Link>
-            </nav>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-3">
-              <div className="flex h-9 w-9 items-center justify-center border-2 border-ink-1000 bg-ink-1000 font-mono text-xs font-bold tracking-widest text-ink-0">
-                {initials.toUpperCase() || "··"}
-              </div>
-              <span className="hidden font-mono text-xs tracking-widest uppercase text-ink-700 md:inline">
-                {currentUser.full_name}
-              </span>
-            </div>
-            <HomeActions />
-          </div>
-        </header>
+        <ProtectedHeader user={currentUser} active="catalogues" />
 
         <section className="mt-12 md:mt-16">
           <Breadcrumbs

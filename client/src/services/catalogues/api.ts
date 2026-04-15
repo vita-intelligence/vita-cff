@@ -109,6 +109,7 @@ export async function fetchItemsPage(
   if (args.includeArchived) params.include_archived = "true";
   if (args.ordering) params.ordering = args.ordering;
   if (args.pageSize) params.page_size = String(args.pageSize);
+  if (args.search && args.search.trim()) params.search = args.search.trim();
   const { data } = await apiClient.get<PaginatedItemsDto>(
     cataloguesEndpoints.itemList(orgId, slug),
     { params },

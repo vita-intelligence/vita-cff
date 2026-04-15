@@ -50,6 +50,8 @@ export interface ItemsListQuery {
   readonly includeArchived?: boolean;
   readonly ordering?: string;
   readonly pageSize?: number;
+  /** Case-insensitive contains match against name + internal_code. */
+  readonly search?: string;
 }
 
 export interface ItemDto {

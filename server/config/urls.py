@@ -12,4 +12,8 @@ urlpatterns = [
     ),
     path("api/", include("apps.catalogues.api.urls", namespace="catalogues")),
     path("api/", include("apps.attributes.api.urls", namespace="attributes")),
+    path(
+        "api/",
+        include("apps.formulations.api.urls", namespace="formulations"),
+    ),
 ]

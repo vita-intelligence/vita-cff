@@ -1,0 +1,125 @@
+{
+  "title": "Formulations",
+  "subtitle": "Build production-ready formulations from your raw materials catalogue.",
+  "new_formulation": "New formulation",
+  "no_formulations": "No formulations yet",
+  "no_formulations_hint": "Every product starts here. Click New formulation to create the first one.",
+  "columns": {
+    "name": "Name",
+    "code": "Code",
+    "dosage_form": "Form",
+    "status": "Status",
+    "updated_at": "Updated"
+  },
+  "status": {
+    "draft": "Draft",
+    "in_review": "In review",
+    "approved": "Approved",
+    "archived": "Archived"
+  },
+  "dosage_forms": {
+    "powder": "Powder",
+    "capsule": "Capsule",
+    "tablet": "Tablet",
+    "gummy": "Gummy",
+    "liquid": "Liquid",
+    "other_solid": "Other solid"
+  },
+  "create": {
+    "title": "New formulation",
+    "submit": "Create",
+    "cancel": "Cancel"
+  },
+  "fields": {
+    "name": "Product name",
+    "code": "Internal code",
+    "description": "Description",
+    "dosage_form": "Dosage form",
+    "capsule_size": "Capsule size",
+    "tablet_size": "Tablet size",
+    "serving_size": "Units per serving",
+    "servings_per_pack": "Servings per pack",
+    "directions_of_use": "Directions of use",
+    "suggested_dosage": "Suggested dosage",
+    "appearance": "Appearance",
+    "disintegration_spec": "Disintegration spec",
+    "status": "Status"
+  },
+  "placeholders": {
+    "name": "Valley Low Fat Burner",
+    "code": "MA210367",
+    "appearance": "Yellow capsule",
+    "disintegration_spec": "Disintegrate within 60 minutes",
+    "auto_pick": "Auto-pick based on total active"
+  },
+  "builder": {
+    "metadata": "Product metadata",
+    "ingredients": "Active ingredients",
+    "totals": "Totals + viability",
+    "add_ingredient": "Add ingredient",
+    "picker_title": "Raw materials",
+    "picker_search": "Search raw materials…",
+    "picker_empty": "No matches. Try a different search.",
+    "picker_none_added": "No ingredients yet. Pick one on the left.",
+    "label_claim_column": "Label claim (mg)",
+    "mg_per_serving_column": "mg / serving",
+    "remove_line": "Remove",
+    "save_draft": "Save draft",
+    "save_version": "Save version",
+    "save_metadata": "Save metadata",
+    "unsaved_changes": "Unsaved changes",
+    "no_raw_material_purity": "This raw material is missing purity / extract ratio data — the formulation math cannot compute its mg/serving until you fix the source catalogue row.",
+    "size_auto": "Auto: {name}",
+    "size_manual": "Manual: {name}",
+    "viability": {
+      "title": "Viability",
+      "codes": {
+        "can_make": "Can make",
+        "cannot_make": "Cannot make — over max weight",
+        "less_challenging": "Less challenging",
+        "more_challenging_to_make": "More challenging to make",
+        "proceed_to_quote": "Proceed to quote",
+        "consult_r_and_d": "Consult R&D team before quote",
+        "more_info_required": "More info required",
+        "tablet_size_required": "Select a tablet size",
+        "manual_review_required": "Manual review required",
+        "capsule_too_large": "Too large for any standard capsule"
+      }
+    },
+    "excipients": {
+      "title": "Excipients",
+      "mg_stearate": "Mg Stearate",
+      "silica": "Silica",
+      "dcp": "DCP",
+      "mcc": "MCC",
+      "total_active": "Total active",
+      "total_weight": "Total weight",
+      "max_weight": "Max weight"
+    },
+    "unsupported_form": "Excipient math for this dosage form is not yet supported. You can still track ingredients and metadata.",
+    "failure_reason": {
+      "missing_claim": "Enter a label claim",
+      "missing_purity": "Missing purity in raw material",
+      "missing_extract_ratio": "Missing extract ratio in raw material"
+    }
+  },
+  "versions": {
+    "title": "Version history",
+    "none_yet": "No versions saved yet.",
+    "save": "Save as new version",
+    "label_placeholder": "Short note about this version",
+    "version_prefix": "v",
+    "rollback": "Roll back",
+    "rollback_confirm_title": "Roll back to version {version}?",
+    "rollback_confirm_body": "The current working state will be replaced with the snapshot from v{version}. The rollback itself is saved as a new version so nothing is lost.",
+    "rollback_confirm": "Yes, roll back",
+    "rollback_cancel": "Cancel"
+  },
+  "detail": {
+    "back": "Back to formulations"
+  },
+  "access_denied": {
+    "title": "Access denied",
+    "body": "Your membership does not grant access to formulations. Ask an owner for permission."
+  }
+}

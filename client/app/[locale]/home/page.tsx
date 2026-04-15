@@ -1,5 +1,6 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
+import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
 import {
   getCurrentUserServer,
@@ -7,7 +8,6 @@ import {
 } from "@/lib/auth/server";
 
 import { CreateOrganizationCard } from "./create-organization-card";
-import { HomeHeader } from "./home-header";
 import { InviteMemberCard } from "./invite-member-card";
 import { OrganizationCard } from "./organization-card";
 import { ProfileCard } from "./profile-card";
@@ -30,8 +30,6 @@ export default async function HomePage({
   if (!user) {
     redirect({ href: "/login", locale });
   }
-  // ``redirect`` throws at runtime, but its return type is not ``never``
-  // in the current next-intl typings. Narrow explicitly for TypeScript.
   const currentUser = user!;
 
   const organizations = (await getUserOrganizationsServer()) ?? [];
@@ -41,21 +39,11 @@ export default async function HomePage({
 
   const tCommon = await getTranslations("common");
   const tOrgs = await getTranslations("organizations");
-  const tNav = await getTranslations("navigation");
-
-  const initials =
-    (currentUser.first_name[0] ?? "") + (currentUser.last_name[0] ?? "");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-6 py-8 md:px-10 md:py-12">
-        <HomeHeader
-          brand={tCommon("brand")}
-          userFullName={currentUser.full_name}
-          userInitials={initials.toUpperCase() || "··"}
-          dashboardLabel={tNav("main.dashboard")}
-          cataloguesLabel={tNav("main.catalogues")}
-        />
+        <ProtectedHeader user={currentUser} active="dashboard" />
 
         <section className="mt-12 md:mt-16">
           <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">

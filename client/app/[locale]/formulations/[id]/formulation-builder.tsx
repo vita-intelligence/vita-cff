@@ -1,0 +1,1084 @@
+"use client";
+
+import { Button } from "@heroui/react";
+import { useLocale, useTranslations } from "next-intl";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+
+import { useRouter } from "@/i18n/navigation";
+import { ApiError } from "@/lib/api";
+import { translateCode } from "@/lib/errors/translate";
+import { useInfiniteItems } from "@/services/catalogues";
+import type { ItemDto } from "@/services/catalogues/types";
+import {
+  CAPSULE_SIZES,
+  DOSAGE_FORMS,
+  FULLY_SUPPORTED_DOSAGE_FORMS,
+  TABLET_SIZES,
+  canComputeMaterial,
+  computeTotals,
+  explainLine,
+  useFormulationVersions,
+  useReplaceLines,
+  useRollbackFormulation,
+  useSaveVersion,
+  useUpdateFormulation,
+  type ComputeLineInput,
+  type DosageForm,
+  type FormulationDto,
+  type FormulationTotals,
+  type ItemAttributesForMath,
+  type LineFailureReason,
+  type LineItemAttributes,
+} from "@/services/formulations";
+
+const RAW_MATERIALS_SLUG = "raw_materials";
+
+interface BuilderLine {
+  /** Stable local id for rows we just added in the UI. */
+  readonly key: string;
+  readonly item_id: string;
+  readonly item_name: string;
+  readonly item_internal_code: string;
+  readonly item_attributes: ItemAttributesForMath;
+  label_claim_mg: string;
+  display_order: number;
+}
+
+interface MetadataDraft {
+  name: string;
+  code: string;
+  description: string;
+  dosage_form: DosageForm;
+  capsule_size: string;
+  tablet_size: string;
+  serving_size: number;
+  servings_per_pack: number;
+  directions_of_use: string;
+  suggested_dosage: string;
+  appearance: string;
+  disintegration_spec: string;
+}
+
+function metadataFrom(formulation: FormulationDto): MetadataDraft {
+  return {
+    name: formulation.name,
+    code: formulation.code,
+    description: formulation.description,
+    dosage_form: formulation.dosage_form,
+    capsule_size: formulation.capsule_size,
+    tablet_size: formulation.tablet_size,
+    serving_size: formulation.serving_size,
+    servings_per_pack: formulation.servings_per_pack,
+    directions_of_use: formulation.directions_of_use,
+    suggested_dosage: formulation.suggested_dosage,
+    appearance: formulation.appearance,
+    disintegration_spec: formulation.disintegration_spec,
+  };
+}
+
+function attributesFromLine(
+  line_attributes: LineItemAttributes,
+): ItemAttributesForMath {
+  return {
+    type: line_attributes.type ?? null,
+    purity: line_attributes.purity ?? null,
+    extract_ratio: line_attributes.extract_ratio ?? null,
+    overage: line_attributes.overage ?? null,
+  };
+}
+
+function attributesFromItem(item: ItemDto): ItemAttributesForMath {
+  const attrs = item.attributes || {};
+  return {
+    type: (attrs.type as string | null | undefined) ?? null,
+    purity: (attrs.purity as string | number | null | undefined) ?? null,
+    extract_ratio:
+      (attrs.extract_ratio as string | number | null | undefined) ?? null,
+    overage: (attrs.overage as string | number | null | undefined) ?? null,
+  };
+}
+
+function linesFrom(formulation: FormulationDto): BuilderLine[] {
+  return formulation.lines.map((line, index) => ({
+    key: line.id,
+    item_id: line.item,
+    item_name: line.item_name,
+    item_internal_code: line.item_internal_code,
+    item_attributes: attributesFromLine(line.item_attributes),
+    label_claim_mg: line.label_claim_mg,
+    display_order: line.display_order ?? index,
+  }));
+}
+
+export function FormulationBuilder({
+  orgId,
+  initialFormulation,
+  canWrite,
+}: {
+  orgId: string;
+  initialFormulation: FormulationDto;
+  canWrite: boolean;
+}) {
+  const tFormulations = useTranslations("formulations");
+  const tErrors = useTranslations("errors");
+  const tCommon = useTranslations("common");
+  const locale = useLocale();
+  const router = useRouter();
+
+  const [formulation, setFormulation] = useState(initialFormulation);
+  const [metadata, setMetadata] = useState<MetadataDraft>(
+    metadataFrom(initialFormulation),
+  );
+  const [lines, setLines] = useState<BuilderLine[]>(
+    linesFrom(initialFormulation),
+  );
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  //: Raw text from the picker input — updates on every keystroke.
+  const [searchInput, setSearchInput] = useState("");
+  //: Debounced query that drives the picker cache key. Lags by 200ms.
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  const updateMutation = useUpdateFormulation(orgId, formulation.id);
+  const replaceLinesMutation = useReplaceLines(orgId, formulation.id);
+  const saveVersionMutation = useSaveVersion(orgId, formulation.id);
+  const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
+  const versionsQuery = useFormulationVersions(orgId, formulation.id);
+
+  const numberFormatter = useMemo(
+    () =>
+      new Intl.NumberFormat(locale, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
+      }),
+    [locale],
+  );
+
+  const dateFormatter = useMemo(
+    () =>
+      new Intl.DateTimeFormat(locale, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }),
+    [locale],
+  );
+
+  // ---------------------------------------------------------------------
+  // Live client-side math — runs on every render, re-computes whenever
+  // the metadata or lines state changes. No network calls, no
+  // debounce; the totals block updates synchronously as the scientist
+  // types a label claim or swaps a capsule size.
+  // ---------------------------------------------------------------------
+  const liveTotals: FormulationTotals = useMemo(() => {
+    const computeInputs: ComputeLineInput[] = lines.map((line) => ({
+      externalId: line.key,
+      attributes: line.item_attributes,
+      labelClaimMg: Number.parseFloat(line.label_claim_mg || "0"),
+      servingSizeOverride: null,
+    }));
+    return computeTotals({
+      lines: computeInputs,
+      dosageForm: metadata.dosage_form,
+      capsuleSizeKey: metadata.capsule_size || null,
+      tabletSizeKey: metadata.tablet_size || null,
+      defaultServingSize: metadata.serving_size,
+    });
+  }, [lines, metadata.dosage_form, metadata.capsule_size, metadata.tablet_size, metadata.serving_size]);
+
+  // ---------------------------------------------------------------------
+  // Raw-material picker — server-filtered, infinite-scroll.
+  // ---------------------------------------------------------------------
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchInput.trim());
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  const pickerQuery = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
+    includeArchived: false,
+    ordering: "name",
+    pageSize: 50,
+    search: debouncedSearch || undefined,
+  });
+
+  const pickerItems: readonly ItemDto[] = useMemo(
+    () => pickerQuery.data?.pages.flatMap((page) => [...page.results]) ?? [],
+    [pickerQuery.data],
+  );
+
+  const pickerScrollRef = useRef<HTMLUListElement>(null);
+  const pickerSentinelRef = useRef<HTMLLIElement>(null);
+
+  useEffect(() => {
+    const scrollEl = pickerScrollRef.current;
+    const sentinelEl = pickerSentinelRef.current;
+    if (!scrollEl || !sentinelEl) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (
+          entry?.isIntersecting &&
+          pickerQuery.hasNextPage &&
+          !pickerQuery.isFetchingNextPage
+        ) {
+          void pickerQuery.fetchNextPage();
+        }
+      },
+      { root: scrollEl, rootMargin: "120px" },
+    );
+    observer.observe(sentinelEl);
+    return () => observer.disconnect();
+  }, [pickerQuery, pickerItems.length]);
+
+  // ---------------------------------------------------------------------
+  // Line edits
+  // ---------------------------------------------------------------------
+  const addIngredient = useCallback(
+    (item: ItemDto) => {
+      if (lines.some((line) => line.item_id === item.id)) {
+        return;
+      }
+      const key = `new-${crypto.randomUUID()}`;
+      setLines((prev) => [
+        ...prev,
+        {
+          key,
+          item_id: item.id,
+          item_name: item.name,
+          item_internal_code: item.internal_code,
+          item_attributes: attributesFromItem(item),
+          label_claim_mg: "0",
+          display_order: prev.length,
+        },
+      ]);
+    },
+    [lines],
+  );
+
+  const updateLineClaim = useCallback((key: string, value: string) => {
+    setLines((prev) =>
+      prev.map((line) =>
+        line.key === key ? { ...line, label_claim_mg: value } : line,
+      ),
+    );
+  }, []);
+
+  const removeLine = useCallback((key: string) => {
+    setLines((prev) =>
+      prev
+        .filter((line) => line.key !== key)
+        .map((line, index) => ({ ...line, display_order: index })),
+    );
+  }, []);
+
+  // ---------------------------------------------------------------------
+  // Save metadata + lines to the backend.
+  // ---------------------------------------------------------------------
+  const handleSaveMetadata = useCallback(async () => {
+    setErrorMessage(null);
+    try {
+      const updated = await updateMutation.mutateAsync({
+        name: metadata.name,
+        code: metadata.code,
+        description: metadata.description,
+        dosage_form: metadata.dosage_form,
+        capsule_size: metadata.capsule_size,
+        tablet_size: metadata.tablet_size,
+        serving_size: metadata.serving_size,
+        servings_per_pack: metadata.servings_per_pack,
+        directions_of_use: metadata.directions_of_use,
+        suggested_dosage: metadata.suggested_dosage,
+        appearance: metadata.appearance,
+        disintegration_spec: metadata.disintegration_spec,
+      });
+      setFormulation(updated);
+      setMetadata(metadataFrom(updated));
+      router.refresh();
+    } catch (err) {
+      setErrorMessage(extractErrorMessage(err, tErrors));
+    }
+  }, [metadata, updateMutation, router, tErrors]);
+
+  const handleSaveLines = useCallback(async () => {
+    setErrorMessage(null);
+    try {
+      const updated = await replaceLinesMutation.mutateAsync({
+        lines: lines.map((line, index) => ({
+          item_id: line.item_id,
+          label_claim_mg: line.label_claim_mg || "0",
+          display_order: index,
+        })),
+      });
+      setFormulation(updated);
+      setLines(linesFrom(updated));
+    } catch (err) {
+      setErrorMessage(extractErrorMessage(err, tErrors));
+    }
+  }, [lines, replaceLinesMutation, tErrors]);
+
+  const handleSaveVersion = useCallback(async () => {
+    setErrorMessage(null);
+    try {
+      await handleSaveMetadata();
+      await handleSaveLines();
+      await saveVersionMutation.mutateAsync({ label: "" });
+    } catch (err) {
+      setErrorMessage(extractErrorMessage(err, tErrors));
+    }
+  }, [
+    handleSaveMetadata,
+    handleSaveLines,
+    saveVersionMutation,
+    tErrors,
+  ]);
+
+  const handleRollback = useCallback(
+    async (versionNumber: number) => {
+      if (
+        !confirm(
+          tFormulations("versions.rollback_confirm_body", {
+            version: versionNumber,
+          }),
+        )
+      ) {
+        return;
+      }
+      setErrorMessage(null);
+      try {
+        const updated = await rollbackMutation.mutateAsync({
+          version_number: versionNumber,
+        });
+        setFormulation(updated);
+        setMetadata(metadataFrom(updated));
+        setLines(linesFrom(updated));
+        router.refresh();
+      } catch (err) {
+        setErrorMessage(extractErrorMessage(err, tErrors));
+      }
+    },
+    [rollbackMutation, router, tErrors, tFormulations],
+  );
+
+  // ---------------------------------------------------------------------
+  // Dirty-state flags
+  // ---------------------------------------------------------------------
+  const metadataDirty = useMemo(
+    () => JSON.stringify(metadataFrom(formulation)) !== JSON.stringify(metadata),
+    [formulation, metadata],
+  );
+
+  const linesDirty = useMemo(() => {
+    const stripKey = (line: BuilderLine) => ({
+      item_id: line.item_id,
+      label_claim_mg: line.label_claim_mg,
+      display_order: line.display_order,
+    });
+    const original = linesFrom(formulation).map(stripKey);
+    const current = lines.map(stripKey);
+    return JSON.stringify(original) !== JSON.stringify(current);
+  }, [formulation, lines]);
+
+  const isBusy =
+    updateMutation.isPending ||
+    replaceLinesMutation.isPending ||
+    saveVersionMutation.isPending ||
+    rollbackMutation.isPending;
+
+  const versions = versionsQuery.data ?? [];
+
+  const supported = FULLY_SUPPORTED_DOSAGE_FORMS.includes(metadata.dosage_form);
+
+  return (
+    <div className="mt-10 flex flex-col gap-10">
+      {/* ------------------------------------------------------------ */}
+      {/* Header + primary actions                                     */}
+      {/* ------------------------------------------------------------ */}
+      <section className="flex items-end justify-between gap-6">
+        <div>
+          <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
+            {metadata.code || "—"}
+          </p>
+          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase md:text-6xl">
+            {metadata.name}
+          </h1>
+        </div>
+        {canWrite ? (
+          <div className="flex flex-col items-end gap-2">
+            {metadataDirty || linesDirty ? (
+              <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                {tFormulations("builder.unsaved_changes")}
+              </span>
+            ) : null}
+            <div className="flex gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="md"
+                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                isDisabled={isBusy || (!metadataDirty && !linesDirty)}
+                onClick={async () => {
+                  if (metadataDirty) await handleSaveMetadata();
+                  if (linesDirty) await handleSaveLines();
+                }}
+              >
+                {tFormulations("builder.save_draft")}
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="rounded-none font-bold tracking-wider uppercase"
+                isDisabled={isBusy}
+                onClick={handleSaveVersion}
+              >
+                {tFormulations("builder.save_version")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+
+      {errorMessage ? (
+        <p
+          role="alert"
+          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+        >
+          {errorMessage}
+        </p>
+      ) : null}
+
+      {/* ------------------------------------------------------------ */}
+      {/* Metadata form                                                */}
+      {/* ------------------------------------------------------------ */}
+      <section className="border-2 border-ink-1000 bg-ink-0 p-6">
+        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+          {tFormulations("builder.metadata")}
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+          <TextField
+            label={tFormulations("fields.name")}
+            value={metadata.name}
+            onChange={(v) => setMetadata({ ...metadata, name: v })}
+            disabled={!canWrite}
+          />
+          <TextField
+            label={tFormulations("fields.code")}
+            value={metadata.code}
+            onChange={(v) => setMetadata({ ...metadata, code: v })}
+            disabled={!canWrite}
+          />
+          <SelectField
+            label={tFormulations("fields.dosage_form")}
+            value={metadata.dosage_form}
+            onChange={(v) =>
+              setMetadata({
+                ...metadata,
+                dosage_form: v as DosageForm,
+                capsule_size: v === "capsule" ? metadata.capsule_size : "",
+                tablet_size: v === "tablet" ? metadata.tablet_size : "",
+              })
+            }
+            disabled={!canWrite}
+            options={DOSAGE_FORMS.map((key) => ({
+              value: key,
+              label: tFormulations(`dosage_forms.${key}`),
+            }))}
+          />
+          {metadata.dosage_form === "capsule" ? (
+            <SelectField
+              label={tFormulations("fields.capsule_size")}
+              value={metadata.capsule_size}
+              onChange={(v) => setMetadata({ ...metadata, capsule_size: v })}
+              disabled={!canWrite}
+              options={[
+                { value: "", label: tFormulations("placeholders.auto_pick") },
+                ...CAPSULE_SIZES.map((s) => ({
+                  value: s.key,
+                  label: `${s.label} (${s.max_weight_mg} mg)`,
+                })),
+              ]}
+            />
+          ) : null}
+          {metadata.dosage_form === "tablet" ? (
+            <SelectField
+              label={tFormulations("fields.tablet_size")}
+              value={metadata.tablet_size}
+              onChange={(v) => setMetadata({ ...metadata, tablet_size: v })}
+              disabled={!canWrite}
+              options={[
+                { value: "", label: "—" },
+                ...TABLET_SIZES.map((s) => ({
+                  value: s.key,
+                  label: `${s.label} (${s.max_weight_mg} mg)`,
+                })),
+              ]}
+            />
+          ) : null}
+          <NumberField
+            label={tFormulations("fields.serving_size")}
+            value={metadata.serving_size}
+            onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
+            disabled={!canWrite}
+          />
+          <NumberField
+            label={tFormulations("fields.servings_per_pack")}
+            value={metadata.servings_per_pack}
+            onChange={(v) => setMetadata({ ...metadata, servings_per_pack: v })}
+            disabled={!canWrite}
+          />
+          <TextField
+            label={tFormulations("fields.appearance")}
+            value={metadata.appearance}
+            onChange={(v) => setMetadata({ ...metadata, appearance: v })}
+            disabled={!canWrite}
+          />
+          <TextField
+            label={tFormulations("fields.disintegration_spec")}
+            value={metadata.disintegration_spec}
+            onChange={(v) =>
+              setMetadata({ ...metadata, disintegration_spec: v })
+            }
+            disabled={!canWrite}
+          />
+          <TextAreaField
+            label={tFormulations("fields.directions_of_use")}
+            value={metadata.directions_of_use}
+            onChange={(v) =>
+              setMetadata({ ...metadata, directions_of_use: v })
+            }
+            disabled={!canWrite}
+          />
+          <TextAreaField
+            label={tFormulations("fields.suggested_dosage")}
+            value={metadata.suggested_dosage}
+            onChange={(v) =>
+              setMetadata({ ...metadata, suggested_dosage: v })
+            }
+            disabled={!canWrite}
+          />
+        </div>
+      </section>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Builder: picker + lines + totals                             */}
+      {/* ------------------------------------------------------------ */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
+        {/* Picker */}
+        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+            {tFormulations("builder.picker_title")}
+          </p>
+          <input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={tFormulations("builder.picker_search")}
+            disabled={!canWrite}
+            className="mt-3 w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+          />
+          <ul
+            ref={pickerScrollRef}
+            className="mt-3 flex max-h-[420px] flex-col gap-1 overflow-y-auto"
+          >
+            {pickerQuery.isLoading && pickerItems.length === 0 ? (
+              <li className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                {tCommon("states.loading")}
+              </li>
+            ) : pickerItems.length === 0 ? (
+              <li className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                {tFormulations("builder.picker_empty")}
+              </li>
+            ) : (
+              pickerItems.map((item) => {
+                const already = lines.some((l) => l.item_id === item.id);
+                const failure = canComputeMaterial(attributesFromItem(item));
+                const disabled = !canWrite || already || failure !== null;
+                return (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      disabled={disabled}
+                      onClick={() => addIngredient(item)}
+                      title={
+                        failure
+                          ? tFormulations(
+                              `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                            )
+                          : undefined
+                      }
+                      className={`flex w-full items-start justify-between gap-2 border px-3 py-2 text-left font-mono text-xs text-ink-1000 hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
+                        failure
+                          ? "border-warning"
+                          : "border-ink-200"
+                      }`}
+                    >
+                      <span>
+                        <span className="block font-bold">{item.name}</span>
+                        <span className="text-ink-600">
+                          {item.internal_code || "—"}
+                        </span>
+                        {failure ? (
+                          <span className="mt-1 block text-[10px] tracking-widest uppercase text-warning">
+                            {tFormulations(
+                              `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                            )}
+                          </span>
+                        ) : null}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })
+            )}
+            {pickerItems.length > 0 ? (
+              <li ref={pickerSentinelRef} aria-hidden className="h-px" />
+            ) : null}
+            {pickerQuery.isFetchingNextPage ? (
+              <li className="py-2 text-center font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                {tCommon("states.loading")}
+              </li>
+            ) : null}
+          </ul>
+        </div>
+
+        {/* Lines editor */}
+        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+            {tFormulations("builder.ingredients")}
+          </p>
+          {lines.length === 0 ? (
+            <p className="mt-6 text-sm text-ink-600">
+              {tFormulations("builder.picker_none_added")}
+            </p>
+          ) : (
+            <table className="mt-4 w-full border-collapse">
+              <thead>
+                <tr className="border-b-2 border-ink-1000">
+                  <th className="px-3 py-2 text-left font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                    {tFormulations("columns.name")}
+                  </th>
+                  <th className="px-3 py-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                    {tFormulations("builder.label_claim_column")}
+                  </th>
+                  <th className="px-3 py-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                    {tFormulations("builder.mg_per_serving_column")}
+                  </th>
+                  <th className="px-3 py-2" />
+                </tr>
+              </thead>
+              <tbody>
+                {lines.map((line) => {
+                  const computed = liveTotals.lineValues.get(line.key) ?? null;
+                  const failure: LineFailureReason | null =
+                    liveTotals.lineFailures.get(line.key) ??
+                    canComputeMaterial(line.item_attributes);
+                  const showFailure =
+                    failure !== null && failure !== "missing_claim";
+                  const explanation = explainLine(
+                    line.item_attributes,
+                    Number.parseFloat(line.label_claim_mg || "0"),
+                  );
+                  return (
+                    <tr
+                      key={line.key}
+                      className="border-b border-ink-200 last:border-b-0"
+                    >
+                      <td className="px-3 py-3">
+                        <div className="flex items-start gap-2">
+                          {showFailure ? (
+                            <span
+                              className="mt-1 inline-block h-2 w-2 shrink-0 bg-warning"
+                              aria-hidden
+                            />
+                          ) : null}
+                          <div>
+                            <span className="block font-bold">
+                              {line.item_name}
+                            </span>
+                            <span className="font-mono text-[10px] text-ink-600">
+                              {line.item_internal_code || "—"}
+                            </span>
+                            {showFailure ? (
+                              <span className="mt-1 block font-mono text-[10px] tracking-widest uppercase text-warning">
+                                {tFormulations(
+                                  `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                                )}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 text-right">
+                        <input
+                          type="number"
+                          min={0}
+                          step="0.0001"
+                          value={line.label_claim_mg}
+                          disabled={!canWrite}
+                          onChange={(e) =>
+                            updateLineClaim(line.key, e.target.value)
+                          }
+                          className="w-32 border-2 border-ink-1000 bg-ink-0 px-2 py-1 text-right font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                        />
+                      </td>
+                      <td className="px-3 py-3 text-right font-mono text-xs">
+                        <div>
+                          {computed !== null
+                            ? numberFormatter.format(computed)
+                            : "—"}
+                        </div>
+                        {computed !== null && explanation ? (
+                          <div
+                            className="mt-0.5 font-mono text-[9px] tracking-wide text-ink-500"
+                            title="How this number was computed"
+                          >
+                            {explanation}
+                          </div>
+                        ) : null}
+                      </td>
+                      <td className="px-3 py-3 text-right">
+                        {canWrite ? (
+                          <button
+                            type="button"
+                            onClick={() => removeLine(line.key)}
+                            className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-danger"
+                          >
+                            {tFormulations("builder.remove_line")}
+                          </button>
+                        ) : null}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        {/* Totals + viability */}
+        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+            {tFormulations("builder.totals")}
+          </p>
+
+          {!supported ? (
+            <p className="mt-4 text-sm text-ink-600">
+              {tFormulations("builder.unsupported_form")}
+            </p>
+          ) : null}
+
+          <TotalsBlock
+            totals={liveTotals}
+            numberFormatter={numberFormatter}
+            tFormulations={tFormulations}
+          />
+        </div>
+      </section>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Version history                                              */}
+      {/* ------------------------------------------------------------ */}
+      <section className="border-2 border-ink-1000 bg-ink-0 p-6">
+        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+          {tFormulations("versions.title")}
+        </p>
+        {versionsQuery.isLoading ? (
+          <p className="mt-3 text-sm text-ink-600">
+            {tCommon("states.loading")}
+          </p>
+        ) : versions.length === 0 ? (
+          <p className="mt-3 text-sm text-ink-600">
+            {tFormulations("versions.none_yet")}
+          </p>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-2">
+            {versions.map((v) => (
+              <li
+                key={v.id}
+                className="flex items-center justify-between border border-ink-200 px-3 py-2"
+              >
+                <div>
+                  <span className="font-bold">
+                    {tFormulations("versions.version_prefix")}
+                    {v.version_number}
+                  </span>
+                  {v.label ? (
+                    <span className="ml-3 font-mono text-xs text-ink-600">
+                      {v.label}
+                    </span>
+                  ) : null}
+                  <span className="ml-3 font-mono text-[10px] text-ink-500">
+                    {dateFormatter.format(new Date(v.created_at))}
+                  </span>
+                </div>
+                {canWrite ? (
+                  <button
+                    type="button"
+                    onClick={() => handleRollback(v.version_number)}
+                    className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
+                  >
+                    {tFormulations("versions.rollback")}
+                  </button>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
+
+
+function TotalsBlock({
+  totals,
+  numberFormatter,
+  tFormulations,
+}: {
+  totals: FormulationTotals;
+  numberFormatter: Intl.NumberFormat;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const format = (value: number | null | undefined) =>
+    value === null || value === undefined
+      ? "—"
+      : numberFormatter.format(value);
+
+  const excipients = totals.excipients;
+
+  return (
+    <div className="mt-4 flex flex-col gap-4">
+      <div>
+        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+          {tFormulations("builder.excipients.total_active")}
+        </p>
+        <p className="mt-1 text-2xl font-black tracking-tight">
+          {format(totals.totalActiveMg)}{" "}
+          <span className="text-sm text-ink-600">mg</span>
+        </p>
+      </div>
+
+      {excipients ? (
+        <div className="border-t-2 border-ink-200 pt-4">
+          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+            {tFormulations("builder.excipients.title")}
+          </p>
+          <ul className="mt-2 flex flex-col gap-1 font-mono text-xs text-ink-700">
+            <li className="flex justify-between">
+              <span>{tFormulations("builder.excipients.mg_stearate")}</span>
+              <span>{format(excipients.mgStearateMg)} mg</span>
+            </li>
+            <li className="flex justify-between">
+              <span>{tFormulations("builder.excipients.silica")}</span>
+              <span>{format(excipients.silicaMg)} mg</span>
+            </li>
+            {excipients.dcpMg !== null ? (
+              <li className="flex justify-between">
+                <span>{tFormulations("builder.excipients.dcp")}</span>
+                <span>{format(excipients.dcpMg)} mg</span>
+              </li>
+            ) : null}
+            <li className="flex justify-between">
+              <span>{tFormulations("builder.excipients.mcc")}</span>
+              <span>{format(excipients.mccMg)} mg</span>
+            </li>
+          </ul>
+        </div>
+      ) : null}
+
+      {totals.totalWeightMg !== null ? (
+        <div className="border-t-2 border-ink-200 pt-4 font-mono text-xs text-ink-700">
+          <div className="flex justify-between">
+            <span>{tFormulations("builder.excipients.total_weight")}</span>
+            <span>{format(totals.totalWeightMg)} mg</span>
+          </div>
+          {totals.maxWeightMg !== null ? (
+            <div className="flex justify-between">
+              <span>{tFormulations("builder.excipients.max_weight")}</span>
+              <span>{format(totals.maxWeightMg)} mg</span>
+            </div>
+          ) : null}
+          {totals.sizeLabel ? (
+            <div className="mt-1 font-mono text-[10px] text-ink-500">
+              {totals.sizeLabel}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="border-t-2 border-ink-200 pt-4">
+        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+          {tFormulations("builder.viability.title")}
+        </p>
+        <ul className="mt-2 flex flex-col gap-1">
+          {totals.viability.codes.map((code) => {
+            const isBad =
+              code === "cannot_make" ||
+              code === "more_challenging_to_make" ||
+              code === "consult_r_and_d" ||
+              code === "capsule_too_large";
+            return (
+              <li
+                key={code}
+                className={
+                  isBad
+                    ? "border-2 border-danger bg-danger/10 px-2 py-1 font-mono text-[10px] tracking-widest uppercase text-danger"
+                    : "border-2 border-ink-1000 bg-ink-1000 px-2 py-1 font-mono text-[10px] tracking-widest uppercase text-ink-0"
+                }
+              >
+                {tFormulations(
+                  `builder.viability.codes.${code}` as `builder.viability.codes.can_make`,
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Tiny brutalist field primitives — enough for the builder, not a library
+// ---------------------------------------------------------------------------
+
+
+function TextField({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+        {label}
+      </span>
+      <input
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+      />
+    </label>
+  );
+}
+
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+        {label}
+      </span>
+      <input
+        type="number"
+        min={1}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+      />
+    </label>
+  );
+}
+
+
+function SelectField({
+  label,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: readonly { readonly value: string; readonly label: string }[];
+  disabled?: boolean;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5">
+      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+        {label}
+      </span>
+      <select
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+
+function TextAreaField({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="flex flex-col gap-1.5 md:col-span-2">
+      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+        {label}
+      </span>
+      <textarea
+        rows={2}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+      />
+    </label>
+  );
+}
+
+
+function extractErrorMessage(
+  error: unknown,
+  tErrors: ReturnType<typeof useTranslations<"errors">>,
+): string {
+  if (error instanceof ApiError) {
+    for (const codes of Object.values(error.fieldErrors)) {
+      if (Array.isArray(codes) && codes.length > 0) {
+        return translateCode(tErrors, String(codes[0]));
+      }
+    }
+  }
+  return tErrors("generic");
+}

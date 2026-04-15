@@ -66,6 +66,7 @@ class Module:
 #: catalogue slug (``raw_materials``, ``packaging``, ...). Exposed as a
 #: constant so callers do not embed magic strings in permission calls.
 CATALOGUES_MODULE = "catalogues"
+FORMULATIONS_MODULE = "formulations"
 MEMBERS_MODULE = "members"
 
 
@@ -91,6 +92,16 @@ MODULE_REGISTRY: dict[str, Module] = {
             "carries its own permission level."
         ),
         row_scoped=True,
+    ),
+    FORMULATIONS_MODULE: Module(
+        key=FORMULATIONS_MODULE,
+        name="Formulations",
+        description=(
+            "Build, version, and approve product formulations. Reads "
+            "raw materials from the catalogues module but has its own "
+            "permission scope so scientists can be granted builder "
+            "access without touching the source catalogue."
+        ),
     ),
 }
 

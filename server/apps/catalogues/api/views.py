@@ -178,6 +178,7 @@ class ItemListCreateView(APIView):
         include_archived = (
             request.query_params.get("include_archived", "").lower() == "true"
         )
+        search = request.query_params.get("search", "") or None
 
         raw_order = request.query_params.get("ordering", "name")
         descending = raw_order.startswith("-")
@@ -189,7 +190,9 @@ class ItemListCreateView(APIView):
         ordering = (primary, "-id")
 
         queryset = list_items(
-            catalogue=self.catalogue, include_archived=include_archived
+            catalogue=self.catalogue,
+            include_archived=include_archived,
+            search=search,
         ).order_by(*ordering)
 
         paginator = ItemCursorPagination()

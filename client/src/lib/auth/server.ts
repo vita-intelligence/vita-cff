@@ -13,6 +13,11 @@ import type {
   ItemDto,
   PaginatedItemsDto,
 } from "@/services/catalogues/types";
+import { formulationsEndpoints } from "@/services/formulations/endpoints";
+import type {
+  FormulationDto,
+  PaginatedFormulationsDto,
+} from "@/services/formulations/types";
 import { organizationsEndpoints } from "@/services/organizations/endpoints";
 import type { OrganizationDto } from "@/services/organizations/types";
 
@@ -128,6 +133,39 @@ export async function getCatalogueItemServer(
 ): Promise<ItemDto | null> {
   return serverFetch<ItemDto>(
     cataloguesEndpoints.itemDetail(orgId, slug, itemId),
+  );
+}
+
+/**
+ * Fetch the first paginated page of formulations from a Server
+ * Component. Used to hydrate the infinite-scroll query on the list
+ * page so the first paint already has data. Returns ``null`` only
+ * when the backend round-trip fails (e.g. missing permission → 403
+ * → null).
+ */
+export async function getFormulationsFirstPageServer(
+  orgId: string,
+  options: {
+    ordering?: string;
+    pageSize?: number;
+  } = {},
+): Promise<PaginatedFormulationsDto | null> {
+  const params = new URLSearchParams();
+  if (options.ordering) params.set("ordering", options.ordering);
+  if (options.pageSize) params.set("page_size", String(options.pageSize));
+  const query = params.toString();
+  const url = `${formulationsEndpoints.list(orgId)}${
+    query ? `?${query}` : ""
+  }`;
+  return serverFetch<PaginatedFormulationsDto>(url);
+}
+
+export async function getFormulationServer(
+  orgId: string,
+  formulationId: string,
+): Promise<FormulationDto | null> {
+  return serverFetch<FormulationDto>(
+    formulationsEndpoints.detail(orgId, formulationId),
   );
 }
 

@@ -56,7 +56,11 @@ export const cataloguesQueryKeys = {
   itemInfinite: (
     orgId: string,
     slug: string,
-    opts: { includeArchived: boolean; ordering: string },
+    opts: {
+      includeArchived: boolean;
+      ordering: string;
+      search?: string;
+    },
   ) =>
     [
       ...cataloguesQueryKeys.all,
@@ -66,6 +70,10 @@ export const cataloguesQueryKeys = {
       "infinite",
       opts.includeArchived ? "archived" : "active",
       opts.ordering,
+      // Empty string collapses to the same cache key as undefined so
+      // the picker does not thrash between two keys when the user
+      // clears their search.
+      (opts.search ?? "").trim(),
     ] as const,
   itemDetail: (orgId: string, slug: string, itemId: string) =>
     [
@@ -159,10 +167,23 @@ export function useInfiniteItems(
     includeArchived: boolean;
     ordering: string;
     pageSize?: number;
+    /**
+     * Case-insensitive ``name`` / ``internal_code`` filter. Empty
+     * strings are treated the same as ``undefined`` so the cache
+     * does not thrash as the user clears the input.
+     */
+    search?: string;
     initialFirstPage?: PaginatedItemsDto | null;
   },
 ): UseInfiniteQueryResult<InfiniteData<PaginatedItemsDto, string | null>, ApiError> {
-  const { includeArchived, ordering, pageSize, initialFirstPage } = options;
+  const {
+    includeArchived,
+    ordering,
+    pageSize,
+    search,
+    initialFirstPage,
+  } = options;
+  const normalisedSearch = (search ?? "").trim() || undefined;
   return useInfiniteQuery<
     PaginatedItemsDto,
     ApiError,
@@ -173,23 +194,29 @@ export function useInfiniteItems(
     queryKey: cataloguesQueryKeys.itemInfinite(orgId, slug, {
       includeArchived,
       ordering,
+      search: normalisedSearch,
     }),
     queryFn: ({ pageParam }) =>
       fetchItemsPage(orgId, slug, {
         includeArchived,
         ordering,
         pageSize,
+        search: normalisedSearch,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
-    initialData: initialFirstPage
-      ? {
-          pages: [initialFirstPage],
-          pageParams: [null],
-        }
-      : undefined,
+    // Only hydrate with the SSR page when we are not filtering —
+    // an SSR snapshot from an unfiltered request would be wrong for
+    // an active search.
+    initialData:
+      initialFirstPage && normalisedSearch === undefined
+        ? {
+            pages: [initialFirstPage],
+            pageParams: [null],
+          }
+        : undefined,
   });
 }
 

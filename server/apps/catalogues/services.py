@@ -163,12 +163,27 @@ def list_items(
     *,
     catalogue: Catalogue,
     include_archived: bool = False,
+    search: str | None = None,
 ) -> QuerySet[Item]:
-    """Return items inside ``catalogue``, ordered by name."""
+    """Return items inside ``catalogue``, ordered by name.
+
+    ``search`` does a case-insensitive contains match against ``name``
+    and ``internal_code``. Empty or whitespace-only strings are ignored
+    so the builder's picker can submit whatever the user has typed
+    without first trimming it.
+    """
 
     qs = Item.objects.filter(catalogue=catalogue)
     if not include_archived:
         qs = qs.filter(is_archived=False)
+    if search:
+        trimmed = search.strip()
+        if trimmed:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(name__icontains=trimmed)
+                | Q(internal_code__icontains=trimmed)
+            )
     return qs.order_by("name")
 
 
