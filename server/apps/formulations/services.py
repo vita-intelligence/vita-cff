@@ -15,6 +15,7 @@ formulation workspace, version snapshotting, rollback.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
@@ -24,16 +25,18 @@ from django.db.models import Max, QuerySet
 
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.formulations.constants import (
+    AMINO_ACID_GROUPS,
+    AMINO_ACID_KEYS,
     CAPSULE_MG_STEARATE_PCT,
     CAPSULE_SHELL_LABEL,
     CAPSULE_SILICA_PCT,
     CAPSULE_SIZES,
     COMPLIANCE_FLAGS,
     DosageForm,
+    EXCIPIENT_LABEL_ANTICAKING,
     EXCIPIENT_LABEL_DCP,
     EXCIPIENT_LABEL_MCC,
-    EXCIPIENT_LABEL_MG_STEARATE,
-    EXCIPIENT_LABEL_SILICA,
+    NUTRITION_KEYS,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
     TABLET_MG_STEARATE_PCT,
@@ -245,6 +248,29 @@ class ComplianceFlagResult:
 @dataclass
 class ComplianceResult:
     flags: tuple[ComplianceFlagResult, ...]
+
+
+@dataclass
+class NutrientAggregate:
+    """Per-nutrient aggregation for the spec sheet's nutrition panel.
+
+    ``per_serving`` and ``per_100g`` live alongside the raw sum so the
+    sheet can display both columns. ``contributors`` is the count of
+    ingredients that actually had catalogue data for this nutrient —
+    surfaces to the UI as a small "based on N of M ingredients" hint,
+    so a half-filled catalogue does not look like a confident zero.
+    """
+
+    key: str
+    per_serving: Decimal
+    per_100g: Decimal
+    contributors: int
+
+
+@dataclass
+class AminoAcidGroup:
+    key: str
+    acids: tuple[NutrientAggregate, ...]
 
 
 @dataclass
@@ -707,6 +733,109 @@ def replace_lines(
 
 
 # ---------------------------------------------------------------------------
+# Nutrition + amino acid aggregation — scale per-100g catalogue values
+# by each active's mg/serving contribution.
+# ---------------------------------------------------------------------------
+
+
+def _nutrient_per_100g(attributes: dict[str, Any], key: str) -> float | None:
+    raw = (attributes or {}).get(key)
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw) if raw > 0 else None
+    if isinstance(raw, str):
+        trimmed = raw.strip().replace(",", ".")
+        if not trimmed or trimmed.upper() in {"N/A", "NA", "-"}:
+            return None
+        try:
+            value = float(Decimal(trimmed))
+            return value if value > 0 else None
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _aggregate_nutrient(
+    key: str,
+    items_with_mg: Iterable[tuple[Item, Decimal]],
+    total_weight_mg: Decimal | None,
+) -> NutrientAggregate:
+    per_serving = 0.0
+    contributors = 0
+    for item, mg in items_with_mg:
+        per_100g = _nutrient_per_100g(item.attributes or {}, key)
+        if per_100g is None:
+            continue
+        g_per_serving = float(mg) / 1000.0
+        # Catalogue values are per 100g → scale down by the actual
+        # grams of this ingredient that end up in one serving.
+        per_serving += per_100g * g_per_serving / 100.0
+        contributors += 1
+
+    total_weight_g = (
+        float(total_weight_mg) / 1000.0
+        if total_weight_mg is not None and float(total_weight_mg) > 0
+        else 0.0
+    )
+    per_100g_value = (
+        per_serving / total_weight_g * 100.0 if total_weight_g > 0 else 0.0
+    )
+
+    return NutrientAggregate(
+        key=key,
+        per_serving=Decimal(str(per_serving)).quantize(Decimal("0.0001")),
+        per_100g=Decimal(str(per_100g_value)).quantize(Decimal("0.0001")),
+        contributors=contributors,
+    )
+
+
+def compute_nutrition_panel(
+    *,
+    items_with_mg: Iterable[tuple[Item, Decimal]],
+    total_weight_mg: Decimal | None,
+) -> tuple[NutrientAggregate, ...]:
+    """Sum per-ingredient nutrition contributions into per-serving +
+    per-100g-of-product values for each of the eleven nutrition keys.
+
+    Ingredients with missing catalogue data contribute nothing but
+    also do not block the sum; ``contributors`` on the returned
+    aggregate tracks how many actually had data so the UI can surface
+    "based on N of M ingredients".
+    """
+
+    items_list = list(items_with_mg)
+    return tuple(
+        _aggregate_nutrient(key, items_list, total_weight_mg)
+        for key in NUTRITION_KEYS
+    )
+
+
+def compute_amino_panel(
+    *,
+    items_with_mg: Iterable[tuple[Item, Decimal]],
+    total_weight_mg: Decimal | None,
+) -> tuple[AminoAcidGroup, ...]:
+    """Same scaling as :func:`compute_nutrition_panel` but grouped
+    into essential / conditionally essential / non-essential blocks,
+    matching the ``FINAL - Specification Sheet`` layout."""
+
+    items_list = list(items_with_mg)
+    return tuple(
+        AminoAcidGroup(
+            key=group_key,
+            acids=tuple(
+                _aggregate_nutrient(acid_key, items_list, total_weight_mg)
+                for acid_key in acids
+            ),
+        )
+        for group_key, acids in AMINO_ACID_GROUPS
+    )
+
+
+# ---------------------------------------------------------------------------
 # Compliance aggregation — AND over every active line's flag
 # ---------------------------------------------------------------------------
 
@@ -774,8 +903,119 @@ def _entry_label_for_item(item: Item) -> str:
     attrs = item.attributes or {}
     candidate = attrs.get("ingredient_list_name")
     if isinstance(candidate, str) and candidate.strip():
-        return candidate.strip()
+        return _strip_label_punctuation(candidate)
     return item.name
+
+
+def _strip_label_punctuation(value: str) -> str:
+    """Trim whitespace and the trailing comma R&D leaves on most
+    ``ingredient_list_name`` rows (e.g. ``"Caffeine Anhydrous, "``)."""
+
+    return value.strip().rstrip(",").strip()
+
+
+# Format an mg value for label copy: drop trailing zeros so ``10.0000``
+# renders as ``10`` and ``2.5000`` renders as ``2.5`` — matches the
+# workbook's spec sheet output.
+def _format_label_mg(value: Any) -> str:
+    try:
+        decimal = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return str(value)
+    quantised = decimal.quantize(Decimal("0.0001")).normalize()
+    text = format(quantised, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
+
+
+# Match an "X% Word" marker — captures the percent value, the marker
+# word(s), and any trailing punctuation. Bounded by either a comma, a
+# closing paren, or end-of-string so neighbouring markers do not bleed
+# into each other.
+_MARKER_RE = re.compile(
+    r"(\d+(?:\.\d+)?)%\s+([A-Za-z][A-Za-z0-9 \-]*?)(?=\s*(?:,|\)|$))"
+)
+
+
+def _scale_marker_percentages(template: str, raw_mg: Decimal) -> str:
+    """Inside a templated active label, rewrite ``X% Marker`` segments
+    as ``(X*raw_mg/100)mg Marker``.
+
+    Mirrors the workbook's spec-sheet behaviour: a botanical extract
+    declared as "Containing 95% Polyphenols, 45% EGCG" with 10 mg of
+    raw extract becomes "9.5mg Polyphenols, 4.5mg EGCG". Also drops
+    the leading "Containing " connector when present, so the output
+    reads as a pure ingredient list.
+    """
+
+    raw_float = float(raw_mg)
+
+    def _replace(match: re.Match[str]) -> str:
+        percent = float(match.group(1))
+        marker = match.group(2).strip()
+        scaled = percent * raw_float / 100.0
+        return f"{_format_label_mg(scaled)}mg {marker}"
+
+    rewritten = _MARKER_RE.sub(_replace, template)
+    # The workbook drops the connector word "Containing" when the rest
+    # of the parenthesised clause becomes "<mg> <marker>" rather than
+    # "<percent>% <marker>".
+    rewritten = re.sub(r"\(\s*Containing\s+", "(", rewritten)
+    return rewritten
+
+
+def instantiate_active_label(
+    *,
+    nutrition_information_name: Any,
+    ingredient_list_name: Any,
+    item_name: str,
+    raw_mg: Decimal | None,
+) -> str:
+    """Return the label that appears in the spec sheet's actives table.
+
+    The Valley workbook's convention: when the catalogue provides a
+    ``Nutrition information Name`` template containing the ``??mg``
+    placeholder, the spec sheet renders that template with ``??``
+    replaced by the actual raw extract weight and any ``X% Marker``
+    fragments scaled to ``mg`` (e.g. ``95% Polyphenols`` at 10 mg
+    becomes ``9.5mg Polyphenols``). When the template is absent or
+    contains no placeholder, the simpler ``ingredient_list_name``
+    wins so straightforward purity-based actives like
+    "Caffeine Anhydrous" still render as a single tidy label.
+    """
+
+    template = (
+        nutrition_information_name
+        if isinstance(nutrition_information_name, str)
+        and nutrition_information_name.strip()
+        else None
+    )
+
+    fallback = (
+        _strip_label_punctuation(ingredient_list_name)
+        if isinstance(ingredient_list_name, str)
+        and ingredient_list_name.strip()
+        else item_name
+    )
+
+    if template is None or "??" not in template:
+        return fallback
+
+    if raw_mg is None:
+        return fallback
+
+    raw_decimal = Decimal(str(raw_mg))
+    raw_text = _format_label_mg(raw_decimal)
+    expanded = template.replace("??mg", f"{raw_text}mg").replace(
+        "??", raw_text
+    )
+    expanded = _scale_marker_percentages(expanded, raw_decimal)
+    # Clean up double spaces that sometimes appear when the template
+    # had ``of 10:1 Extract`` and the marker rewrite removed
+    # intermediate words.
+    expanded = re.sub(r" {2,}", " ", expanded).strip()
+    return expanded
 
 
 def build_ingredient_declaration(
@@ -824,19 +1064,19 @@ def build_ingredient_declaration(
                     category="excipient",
                 )
             )
-        if excipients.mg_stearate_mg and excipients.mg_stearate_mg > 0:
+        # Magnesium stearate + silicon dioxide collapse into a single
+        # ``Anticaking Agents`` entry — matches the workbook's label
+        # copy. Combined mg drives the ingredient-list sort order so
+        # the merged entry sits at the right rank rather than each
+        # half landing at the bottom on its own tiny weight.
+        anticaking_mg = (excipients.mg_stearate_mg or Decimal("0")) + (
+            excipients.silica_mg or Decimal("0")
+        )
+        if anticaking_mg > 0:
             entries.append(
                 IngredientDeclarationEntry(
-                    label=EXCIPIENT_LABEL_MG_STEARATE,
-                    mg=excipients.mg_stearate_mg,
-                    category="excipient",
-                )
-            )
-        if excipients.silica_mg and excipients.silica_mg > 0:
-            entries.append(
-                IngredientDeclarationEntry(
-                    label=EXCIPIENT_LABEL_SILICA,
-                    mg=excipients.silica_mg,
+                    label=EXCIPIENT_LABEL_ANTICAKING,
+                    mg=anticaking_mg,
                     category="excipient",
                 )
             )
@@ -902,24 +1142,92 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
     }
 
 
+#: Attribute keys copied from each line's source raw material into the
+#: snapshot. F3a's specification sheet renders from snapshots, and a
+#: snapshot that omits these fields cannot reproduce the label copy,
+#: %NRV column, or nutrition / amino aggregation — so the snapshot
+#: carries them verbatim, frozen against whatever the catalogue said
+#: at save time.
+_SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
+    "type",
+    "purity",
+    "extract_ratio",
+    "overage",
+    "ingredient_list_name",
+    "nutrition_information_name",
+    "vegan",
+    "organic",
+    "halal",
+    "kosher",
+    "nrv_mg",
+    *NUTRITION_KEYS,
+    *AMINO_ACID_KEYS,
+)
+
+
 def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
-    return [
-        {
-            "item_id": str(line.item_id),
-            "item_name": line.item.name,
-            "item_internal_code": line.item.internal_code,
-            "display_order": line.display_order,
-            "label_claim_mg": str(line.label_claim_mg),
-            "serving_size_override": line.serving_size_override,
-            "mg_per_serving": (
-                str(line.mg_per_serving_cached)
-                if line.mg_per_serving_cached is not None
-                else None
-            ),
-            "notes": line.notes,
+    lines: list[dict[str, Any]] = []
+    for line in formulation.lines.select_related("item").all():
+        attributes = line.item.attributes or {}
+        snapshot_attributes = {
+            key: attributes.get(key) for key in _SNAPSHOT_ATTRIBUTE_KEYS
         }
-        for line in formulation.lines.select_related("item").all()
-    ]
+        lines.append(
+            {
+                "item_id": str(line.item_id),
+                "item_name": line.item.name,
+                "item_internal_code": line.item.internal_code,
+                "item_attributes": snapshot_attributes,
+                "display_order": line.display_order,
+                "label_claim_mg": str(line.label_claim_mg),
+                "serving_size_override": line.serving_size_override,
+                "mg_per_serving": (
+                    str(line.mg_per_serving_cached)
+                    if line.mg_per_serving_cached is not None
+                    else None
+                ),
+                "notes": line.notes,
+            }
+        )
+    return lines
+
+
+def _serialize_nutrition(
+    nutrition: tuple[NutrientAggregate, ...],
+) -> dict[str, Any]:
+    return {
+        "rows": [
+            {
+                "key": n.key,
+                "per_serving": str(n.per_serving),
+                "per_100g": str(n.per_100g),
+                "contributors": n.contributors,
+            }
+            for n in nutrition
+        ],
+    }
+
+
+def _serialize_amino(
+    groups: tuple[AminoAcidGroup, ...],
+) -> dict[str, Any]:
+    return {
+        "groups": [
+            {
+                "key": g.key,
+                "acids": [
+                    {
+                        "key": a.key,
+                        "per_serving": str(a.per_serving),
+                        "per_100g": str(a.per_100g),
+                        "contributors": a.contributors,
+                    }
+                    for a in g.acids
+                ],
+            }
+            for g in groups
+        ],
+    }
 
 
 def _serialize_compliance(result: ComplianceResult) -> dict[str, Any]:
@@ -1020,11 +1328,31 @@ def save_version(
         totals=totals,
     )
 
+    # Build (item, mg) pairs for the nutrition / amino aggregation.
+    # Only actives with a computable mg/serving contribute — an
+    # ingredient whose mg is ``None`` (missing purity / extract) is
+    # silently excluded rather than counted as zero.
+    items_with_mg = [
+        (items_by_external_id[external_id], mg)
+        for external_id, mg in totals.line_values.items()
+        if external_id in items_by_external_id and mg is not None
+    ]
+    nutrition = compute_nutrition_panel(
+        items_with_mg=items_with_mg,
+        total_weight_mg=totals.total_weight_mg,
+    )
+    amino = compute_amino_panel(
+        items_with_mg=items_with_mg,
+        total_weight_mg=totals.total_weight_mg,
+    )
+
     serialized_totals = _serialize_totals(totals)
     serialized_totals["compliance"] = _serialize_compliance(compliance)
     serialized_totals["declaration"] = _serialize_declaration(
         declaration_text, declaration_entries
     )
+    serialized_totals["nutrition"] = _serialize_nutrition(nutrition)
+    serialized_totals["amino_acids"] = _serialize_amino(amino)
 
     highest = (
         formulation.versions.aggregate(Max("version_number"))[

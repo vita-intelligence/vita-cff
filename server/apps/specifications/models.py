@@ -1,0 +1,140 @@
+"""Domain models for the specifications app.
+
+A :class:`SpecificationSheet` is a client-facing deliverable wrapping
+an immutable snapshot of a formulation (via ``formulation_version``)
+plus the client-specific context: who it's for, the negotiated price,
+any cover notes, and the approval state.
+
+Freezing against a *version* rather than the mutable formulation is
+deliberate — catalogue edits or line tweaks made after a sheet is
+generated must never silently rewrite what the client has already
+seen. The scientist regenerates the sheet against a newer version
+when they want the latest data.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+
+
+class SpecificationStatus(models.TextChoices):
+    DRAFT = "draft", _("Draft")
+    IN_REVIEW = "in_review", _("In review")
+    APPROVED = "approved", _("Approved")
+    SENT = "sent", _("Sent")
+    ACCEPTED = "accepted", _("Accepted")
+    REJECTED = "rejected", _("Rejected")
+
+
+class SpecificationSheet(models.Model):
+    """A single client-facing specification sheet instance."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="specification_sheets",
+    )
+    formulation_version = models.ForeignKey(
+        "formulations.FormulationVersion",
+        on_delete=models.PROTECT,
+        related_name="specification_sheets",
+        help_text=_(
+            "Immutable snapshot the sheet renders against. Editing the "
+            "underlying formulation never rewrites this sheet."
+        ),
+    )
+
+    code = models.CharField(
+        _("code"),
+        max_length=64,
+        blank=True,
+        help_text=_("Sheet reference code. Optional, unique per org when set."),
+    )
+    client_name = models.CharField(
+        _("client name"), max_length=200, blank=True, default=""
+    )
+    client_email = models.EmailField(
+        _("client email"), blank=True, default=""
+    )
+    client_company = models.CharField(
+        _("client company"), max_length=200, blank=True, default=""
+    )
+
+    margin_percent = models.DecimalField(
+        _("margin %"),
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_("Optional target margin for the quote."),
+    )
+    final_price = models.DecimalField(
+        _("final price"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    cover_notes = models.TextField(
+        _("cover notes"), blank=True, default=""
+    )
+
+    total_weight_label = models.CharField(
+        _("total weight label"),
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_(
+            "Free-text override for the spec sheet's Total Weight (mg) "
+            "row. Blank renders as ``TBC`` to match the workbook's "
+            "convention — the filled-capsule weight depends on the "
+            "physical shell delivered by the manufacturer and is "
+            "set by hand once known."
+        ),
+    )
+
+    status = models.CharField(
+        _("status"),
+        max_length=16,
+        choices=SpecificationStatus.choices,
+        default=SpecificationStatus.DRAFT,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_specification_sheets",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="updated_specification_sheets",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("specification sheet")
+        verbose_name_plural = _("specification sheets")
+        ordering = ("-updated_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("organization", "code"),
+                condition=~models.Q(code=""),
+                name="specifications_unique_code_per_org",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("organization", "status")),
+            models.Index(fields=("organization", "-updated_at")),
+        ]
+
+    def __str__(self) -> str:
+        return self.code or str(self.id)

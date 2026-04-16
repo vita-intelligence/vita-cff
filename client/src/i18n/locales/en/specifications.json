@@ -1,0 +1,132 @@
+{
+  "title": "Specifications",
+  "subtitle": "Client-facing specification sheets generated from saved formulation versions.",
+  "new_sheet": "New specification",
+  "no_sheets": "No specification sheets yet",
+  "no_sheets_hint": "Open a formulation, save a version, then generate a sheet from it.",
+  "columns": {
+    "code": "Code",
+    "client": "Client",
+    "formulation": "Formulation",
+    "version": "Version",
+    "status": "Status",
+    "updated_at": "Updated"
+  },
+  "status": {
+    "draft": "Draft",
+    "in_review": "In review",
+    "approved": "Approved",
+    "sent": "Sent",
+    "accepted": "Accepted",
+    "rejected": "Rejected"
+  },
+  "create": {
+    "title": "New specification sheet",
+    "subtitle": "Pick a saved formulation version and fill in the client context.",
+    "formulation": "Formulation",
+    "version": "Version",
+    "version_none": "No saved versions yet — save one on the formulation first.",
+    "version_picker_hint": "Only saved versions appear here. Catalogue edits after this point never rewrite the sheet.",
+    "code": "Sheet code",
+    "client_name": "Client contact",
+    "client_email": "Client email",
+    "client_company": "Client company",
+    "cover_notes": "Cover notes",
+    "total_weight_label": "Total weight (mg)",
+    "total_weight_label_hint": "Free-text — leave blank to render as TBC. Filled-capsule weight depends on the manufacturer-supplied shell.",
+    "submit": "Create",
+    "cancel": "Cancel"
+  },
+  "detail": {
+    "back": "Back to specifications",
+    "status_label": "Status",
+    "advance_to": "Advance to",
+    "print": "Print sheet",
+    "delete": "Delete sheet",
+    "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected."
+  },
+  "sheet": {
+    "title": "Product Specification Sheet",
+    "sections": {
+      "product": "Product",
+      "specification": "Product Specification",
+      "packaging": "Packaging Specification",
+      "compliance": "Compliance",
+      "limits": "Microbiological, PAH, Pesticides and Heavy Metal",
+      "signatures": "Signatures",
+      "actives": "Active Ingredients",
+      "nutrition": "Nutritional Information",
+      "amino_acids": "Amino Acid Information",
+      "excipients": "Excipient Information",
+      "ingredients": "Ingredients"
+    },
+    "fields": {
+      "product_code": "Product Code",
+      "product_description": "Product Description",
+      "direction_of_use": "Direction of Use",
+      "suggested_dosage": "Suggested Dosage",
+      "dosage_form": "Dosage Form",
+      "appearance": "Appearance",
+      "filling_weight": "Filling Weight/Volume (mg/mL)",
+      "total_weight": "Total Weight (mg)",
+      "weight_uniformity": "Weight Uniformity",
+      "disintegration": "Disintegration",
+      "lid_description": "Lid Description",
+      "bottle_pouch_tub": "Bottle/Pouch/Tub",
+      "label_size": "Label Size",
+      "antitemper": "Antitemper",
+      "unit_quantity": "Unit Quantity"
+    },
+    "columns": {
+      "active_ingredient": "Active Ingredient",
+      "claim_per_serving": "Claim per serving (mg)",
+      "nrv": "%NRV",
+      "per_100g": "Per 100g",
+      "per_serving": "Per Serving",
+      "amino_acid": "Amino Acid",
+      "amino_per_100g": "Per 100g (g)",
+      "amino_per_serving": "Per Serving (g)"
+    },
+    "pending_nutrition": "Nutrition data pending catalogue fill — values shown as zero until every raw material has its nutrition columns populated.",
+    "nutrition_partial_hint": "Based on {count} of {total} ingredients with catalogue data. Missing values contribute zero.",
+    "signature": {
+      "product_manager": "Product Manager / Customer",
+      "director": "Director / Commercial Director",
+      "sign_date": "Date",
+      "draft_watermark": "DRAFT — awaiting signature workflow (F3b)"
+    },
+    "compliance": {
+      "yes": "Yes",
+      "no": "No",
+      "unknown": "—"
+    }
+  },
+  "dosage_forms": {
+    "powder": "Powder",
+    "capsule": "Capsule",
+    "tablet": "Tablet",
+    "gummy": "Gummy",
+    "liquid": "Liquid",
+    "other_solid": "Other solid"
+  },
+  "access_denied": {
+    "title": "Access denied",
+    "body": "Your membership does not grant access to specifications. Ask an owner for permission."
+  },
+  "amino_acids": {
+    "essential": "Essential Amino Acids",
+    "conditionally_essential": "Conditionally Essential Amino Acids",
+    "non_essential": "Non-Essential Amino Acids"
+  },
+  "nutrition_rows": {
+    "energy_kj": "Energy kJ",
+    "energy_kcal": "Energy kcal",
+    "fat": "Fat",
+    "fat_saturated": "of which saturates",
+    "carbohydrate": "Carbohydrate",
+    "sugar": "of which sugar",
+    "fibre": "Fibre",
+    "protein": "Protein",
+    "salt": "Salt"
+  }
+}

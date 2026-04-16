@@ -148,7 +148,8 @@ class TestIngredientDeclaration:
 
         # Total active 500 mg in Double 00 capsule:
         # MCC fills to 730 − 500 − 5 − 2 = 223 mg.
-        # Mg Stearate = 5.0, Silica = 2.0, Capsule shell = 118.0.
+        # Mg Stearate = 5.0, Silica = 2.0 → Anticaking = 7.0.
+        # Capsule shell = 118.0.
         totals = compute_totals(
             lines=[("a", active, Decimal("500"), None)],
             dosage_form="capsule",
@@ -161,15 +162,19 @@ class TestIngredientDeclaration:
 
         labels = [e.label for e in entries]
         # Order: Active (500) > MCC (223) > Capsule Shell (118)
-        # > Magnesium Stearate (5) > Silicon Dioxide (2).
+        # > Anticaking Agents (7). Stearate + Silica collapse into a
+        # single combined entry to match the workbook's label copy.
         assert labels == [
             "Active Compound",
             "Microcrystalline Cellulose (Carrier)",
             "Capsule Shell (Hypromellose)",
-            "Magnesium Stearate",
-            "Silicon Dioxide",
+            "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)",
         ]
         assert "Capsule Shell (Hypromellose)" in declaration
+        assert (
+            "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)"
+            in declaration
+        )
 
     def test_tablet_includes_dcp_and_mcc(self) -> None:
         org = OrganizationFactory()
@@ -190,14 +195,13 @@ class TestIngredientDeclaration:
             totals=totals,
         )
         labels = [e.label for e in entries]
-        # active 100, MCC 20, DCP 10, Mg Stearate 1, Silica 0.4
+        # active 100, MCC 20, DCP 10, Anticaking 1.4 (Stearate 1 + Silica 0.4).
         # No capsule shell on a tablet.
         assert labels == [
             "Active Compound",
             "Microcrystalline Cellulose (Carrier)",
             "Dicalcium Phosphate",
-            "Magnesium Stearate",
-            "Silicon Dioxide",
+            "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)",
         ]
 
     def test_falls_back_to_raw_name_when_list_name_missing(self) -> None:

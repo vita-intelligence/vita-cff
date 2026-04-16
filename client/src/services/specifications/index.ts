@@ -1,0 +1,34 @@
+export { specificationsEndpoints } from "./endpoints";
+export {
+  createSpecification,
+  deleteSpecification,
+  fetchRenderedSpecification,
+  fetchSpecification,
+  fetchSpecificationsPage,
+  transitionSpecificationStatus,
+  updateSpecification,
+} from "./api";
+export {
+  specificationsQueryKeys,
+  useCreateSpecification,
+  useDeleteSpecification,
+  useInfiniteSpecifications,
+  useRenderedSpecification,
+  useSpecification,
+  useTransitionSpecificationStatus,
+  useUpdateSpecification,
+} from "./hooks";
+export {
+  ALLOWED_TRANSITIONS,
+  SPECIFICATION_STATUSES,
+  type CreateSpecificationRequestDto,
+  type PaginatedSpecificationsDto,
+  type RenderedActive,
+  type RenderedCompliance,
+  type RenderedDeclaration,
+  type RenderedSheetContext,
+  type SpecificationSheetDto,
+  type SpecificationStatus,
+  type TransitionStatusRequestDto,
+  type UpdateSpecificationRequestDto,
+} from "./types";

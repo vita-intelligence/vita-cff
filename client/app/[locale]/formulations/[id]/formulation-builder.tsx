@@ -15,6 +15,8 @@ import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
+
+import { NewSpecSheetButton } from "./new-spec-sheet-button";
 import {
   CAPSULE_SIZES,
   DOSAGE_FORMS,
@@ -463,7 +465,7 @@ export function FormulationBuilder({
                 {tFormulations("builder.unsaved_changes")}
               </span>
             ) : null}
-            <div className="flex gap-3">
+            <div className="flex flex-wrap gap-3">
               <Button
                 type="button"
                 variant="outline"
@@ -487,6 +489,7 @@ export function FormulationBuilder({
               >
                 {tFormulations("builder.save_version")}
               </Button>
+              <NewSpecSheetButton orgId={orgId} versions={versions} />
             </div>
           </div>
         ) : null}

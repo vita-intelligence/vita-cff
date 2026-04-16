@@ -7,7 +7,8 @@ import type { UserDto } from "@/services/accounts/types";
 export type ProtectedNavKey =
   | "dashboard"
   | "catalogues"
-  | "formulations";
+  | "formulations"
+  | "specifications";
 
 interface ProtectedHeaderProps {
   user: UserDto;
@@ -40,7 +41,11 @@ export async function ProtectedHeader({
 
   const navItems: readonly {
     readonly key: ProtectedNavKey;
-    readonly href: "/home" | "/catalogues" | "/formulations";
+    readonly href:
+      | "/home"
+      | "/catalogues"
+      | "/formulations"
+      | "/specifications";
     readonly label: string;
   }[] = [
     { key: "dashboard", href: "/home", label: tNav("main.dashboard") },
@@ -49,6 +54,11 @@ export async function ProtectedHeader({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
+    },
+    {
+      key: "specifications",
+      href: "/specifications",
+      label: tNav("main.specifications"),
     },
   ];
 

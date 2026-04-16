@@ -95,6 +95,13 @@ EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate"
 EXCIPIENT_LABEL_SILICA = "Silicon Dioxide"
 EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate"
 CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
+#: Combined label for the magnesium-stearate + silica pair. The Valley
+#: workbook collapses both flow agents into a single ingredient-list
+#: entry; rendering them separately exposes manufacturing detail
+#: customers do not need to see.
+EXCIPIENT_LABEL_ANTICAKING = (
+    "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)"
+)
 
 
 #: Compliance flags tracked by every raw material and aggregated on
@@ -105,6 +112,69 @@ COMPLIANCE_FLAGS: tuple[tuple[str, str], ...] = (
     ("organic", "Organic"),
     ("halal", "Halal"),
     ("kosher", "Kosher"),
+)
+
+
+#: Nutrition keys stored on raw material attributes. Each value in
+#: the catalogue is recorded as "per 100g of ingredient". The
+#: aggregator multiplies by ``mg_per_serving / 100000`` to produce
+#: the per-serving contribution.
+NUTRITION_KEYS: tuple[str, ...] = (
+    "energy_kcal",
+    "energy_kj",
+    "fat",
+    "fat_saturated",
+    "fat_monounsaturated",
+    "fat_polyunsaturated",
+    "carbohydrate",
+    "sugar",
+    "fibre",
+    "protein",
+    "salt",
+)
+
+
+#: Amino acid keys with their grouping for the FINAL Specification
+#: Sheet. ``asparatic_acid`` is spelled to match the workbook header.
+AMINO_ACID_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "essential",
+        (
+            "isoleucine",
+            "leucine",
+            "lysine",
+            "methionine",
+            "phenylalanine",
+            "threonine",
+            "tryptophan",
+            "valine",
+        ),
+    ),
+    (
+        "conditionally_essential",
+        (
+            "arginine",
+            "cystine",
+            "glutamic_acid",
+            "histidine",
+            "proline",
+            "tyrosine",
+        ),
+    ),
+    (
+        "non_essential",
+        (
+            "alanine",
+            "asparatic_acid",
+            "glycine",
+            "serine",
+        ),
+    ),
+)
+
+#: Flat tuple of every amino acid key in fixed display order.
+AMINO_ACID_KEYS: tuple[str, ...] = tuple(
+    key for _, keys in AMINO_ACID_GROUPS for key in keys
 )
 
 

@@ -68,6 +68,7 @@ class Module:
 CATALOGUES_MODULE = "catalogues"
 FORMULATIONS_MODULE = "formulations"
 MEMBERS_MODULE = "members"
+SPECIFICATIONS_MODULE = "specifications"
 
 
 # ----------------------------------------------------------------------------
@@ -101,6 +102,16 @@ MODULE_REGISTRY: dict[str, Module] = {
             "raw materials from the catalogues module but has its own "
             "permission scope so scientists can be granted builder "
             "access without touching the source catalogue."
+        ),
+    ),
+    SPECIFICATIONS_MODULE: Module(
+        key=SPECIFICATIONS_MODULE,
+        name="Specifications",
+        description=(
+            "Generate client-facing specification sheets from saved "
+            "formulation versions. Separate from formulations so "
+            "commercial users can be granted sheet access without "
+            "write rights on the formulation itself."
         ),
     ),
 }

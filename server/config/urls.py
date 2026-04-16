@@ -16,4 +16,8 @@ urlpatterns = [
         "api/",
         include("apps.formulations.api.urls", namespace="formulations"),
     ),
+    path(
+        "api/",
+        include("apps.specifications.api.urls", namespace="specifications"),
+    ),
 ]
