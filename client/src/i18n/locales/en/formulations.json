@@ -103,6 +103,33 @@
       "missing_extract_ratio": "Missing extract ratio in raw material"
     }
   },
+  "compliance": {
+    "title": "Compliance",
+    "empty_hint": "Add ingredients to see compliance flags.",
+    "flag_label": {
+      "vegan": "Vegan",
+      "organic": "Organic",
+      "halal": "Halal",
+      "kosher": "Kosher"
+    },
+    "status": {
+      "yes": "{label}",
+      "no": "Non-{label} ({count})",
+      "unknown": "{label}: unknown"
+    },
+    "unknown_tooltip": "{count} ingredient(s) have no value set. Chip fades when any aggregation answer is held without confidence."
+  },
+  "declaration": {
+    "title": "Ingredient declaration",
+    "empty_hint": "Add ingredients to generate the product's ingredient list.",
+    "sort_hint": "Sorted descending by mg per serving.",
+    "copy": "Copy",
+    "category": {
+      "active": "Active",
+      "excipient": "Excipient",
+      "shell": "Shell"
+    }
+  },
   "versions": {
     "title": "Version history",
     "none_yet": "No versions saved yet.",

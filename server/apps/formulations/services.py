@@ -25,9 +25,15 @@ from django.db.models import Max, QuerySet
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.formulations.constants import (
     CAPSULE_MG_STEARATE_PCT,
+    CAPSULE_SHELL_LABEL,
     CAPSULE_SILICA_PCT,
     CAPSULE_SIZES,
+    COMPLIANCE_FLAGS,
     DosageForm,
+    EXCIPIENT_LABEL_DCP,
+    EXCIPIENT_LABEL_MCC,
+    EXCIPIENT_LABEL_MG_STEARATE,
+    EXCIPIENT_LABEL_SILICA,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
     TABLET_MG_STEARATE_PCT,
@@ -35,6 +41,7 @@ from apps.formulations.constants import (
     TABLET_SIZES,
     auto_pick_capsule_size,
     capsule_size_by_key,
+    normalize_compliance_value,
     tablet_size_by_key,
 )
 from apps.formulations.models import (
@@ -210,6 +217,50 @@ class FormulationTotals:
     #: without relying on ordering.
     line_values: dict[str, Decimal] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
+
+
+@dataclass
+class ComplianceFlagResult:
+    """Aggregate answer for a single compliance flag (vegan, organic,
+    halal, kosher) across every ingredient in the formulation."""
+
+    key: str
+    label: str
+    #: ``True`` when every ingredient is confidently compliant;
+    #: ``False`` when at least one ingredient is confidently
+    #: non-compliant; ``None`` when there are no confident-compliant
+    #: answers to aggregate (entire formulation missing data).
+    status: bool | None
+    #: Number of ingredients the catalogue flags as compliant.
+    compliant_count: int
+    #: Number of ingredients the catalogue flags as non-compliant.
+    non_compliant_count: int
+    #: Number of ingredients where the catalogue did not record a
+    #: value — these do not taint the product but mean the answer is
+    #: held with reduced confidence. Separate count so the UI can
+    #: show a faded/tentative chip instead of a confident one.
+    unknown_count: int
+
+
+@dataclass
+class ComplianceResult:
+    flags: tuple[ComplianceFlagResult, ...]
+
+
+@dataclass
+class IngredientDeclarationEntry:
+    """Per-row detail for the ingredient declaration string.
+
+    Exposed alongside the joined string so the UI can render a table
+    (line + weight + "appears as" label) when the scientist wants to
+    sanity-check the label copy before the spec sheet exports it.
+    """
+
+    label: str
+    mg: Decimal
+    #: ``"active" | "excipient" | "shell"`` — lets the UI badge each
+    #: row differently.
+    category: str
 
 
 def _quantise(value: float) -> Decimal:
@@ -655,6 +706,157 @@ def replace_lines(
     return created
 
 
+# ---------------------------------------------------------------------------
+# Compliance aggregation — AND over every active line's flag
+# ---------------------------------------------------------------------------
+
+
+def compute_compliance(
+    *,
+    items: Iterable[Item],
+) -> ComplianceResult:
+    """Return the AND-aggregated compliance picture for a formulation.
+
+    For each flag the rule is: one non-compliant ingredient taints
+    the whole product. The product can only claim a flag when every
+    *answered* ingredient is compliant AND at least one ingredient
+    answered at all — a formulation built entirely from unanswered
+    ingredients returns ``status=None`` so the UI can fade the chip.
+    """
+
+    items_list = list(items)
+    flag_results: list[ComplianceFlagResult] = []
+    for key, label in COMPLIANCE_FLAGS:
+        compliant = 0
+        non_compliant = 0
+        unknown = 0
+        for item in items_list:
+            value = (item.attributes or {}).get(key)
+            decision = normalize_compliance_value(value)
+            if decision is True:
+                compliant += 1
+            elif decision is False:
+                non_compliant += 1
+            else:
+                unknown += 1
+
+        if non_compliant > 0:
+            status: bool | None = False
+        elif compliant > 0:
+            status = True
+        else:
+            status = None
+
+        flag_results.append(
+            ComplianceFlagResult(
+                key=key,
+                label=label,
+                status=status,
+                compliant_count=compliant,
+                non_compliant_count=non_compliant,
+                unknown_count=unknown,
+            )
+        )
+    return ComplianceResult(flags=tuple(flag_results))
+
+
+# ---------------------------------------------------------------------------
+# Ingredient declaration — label-copy string for the product back panel
+# ---------------------------------------------------------------------------
+
+
+def _entry_label_for_item(item: Item) -> str:
+    """Prefer the catalogue's ``ingredient_list_name`` (label-friendly
+    copy written by R&D); fall back to the raw-material internal name
+    if the label copy row is blank. The audit script reports any row
+    still falling back so R&D can fill the gaps."""
+
+    attrs = item.attributes or {}
+    candidate = attrs.get("ingredient_list_name")
+    if isinstance(candidate, str) and candidate.strip():
+        return candidate.strip()
+    return item.name
+
+
+def build_ingredient_declaration(
+    *,
+    items_by_external_id: dict[str, Item],
+    totals: FormulationTotals,
+) -> tuple[str, tuple[IngredientDeclarationEntry, ...]]:
+    """Produce the product's ingredient declaration string.
+
+    All actives + excipients + (for capsules) the shell are merged
+    into a single list, sorted by ``mg/serving`` descending, and
+    rendered using each row's label-friendly name. Returns the
+    joined string plus the intermediate entry list so the UI can
+    show a table breakdown alongside the raw string.
+    """
+
+    entries: list[IngredientDeclarationEntry] = []
+
+    for external_id, mg in totals.line_values.items():
+        item = items_by_external_id.get(external_id)
+        if item is None:
+            continue
+        entries.append(
+            IngredientDeclarationEntry(
+                label=_entry_label_for_item(item),
+                mg=mg,
+                category="active",
+            )
+        )
+
+    excipients = totals.excipients
+    if excipients is not None:
+        if excipients.mcc_mg and excipients.mcc_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_MCC,
+                    mg=excipients.mcc_mg,
+                    category="excipient",
+                )
+            )
+        if excipients.dcp_mg is not None and excipients.dcp_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_DCP,
+                    mg=excipients.dcp_mg,
+                    category="excipient",
+                )
+            )
+        if excipients.mg_stearate_mg and excipients.mg_stearate_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_MG_STEARATE,
+                    mg=excipients.mg_stearate_mg,
+                    category="excipient",
+                )
+            )
+        if excipients.silica_mg and excipients.silica_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_SILICA,
+                    mg=excipients.silica_mg,
+                    category="excipient",
+                )
+            )
+
+    if totals.dosage_form == DosageForm.CAPSULE.value and totals.size_key:
+        capsule_size = capsule_size_by_key(totals.size_key)
+        if capsule_size is not None and capsule_size.shell_weight_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=CAPSULE_SHELL_LABEL,
+                    mg=Decimal(str(capsule_size.shell_weight_mg)),
+                    category="shell",
+                )
+            )
+
+    entries.sort(key=lambda e: (-float(e.mg), e.label))
+    declaration = ", ".join(entry.label for entry in entries)
+    return declaration, tuple(entries)
+
+
 def compute_formulation_totals(
     *, formulation: Formulation
 ) -> FormulationTotals:
@@ -720,6 +922,39 @@ def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
     ]
 
 
+def _serialize_compliance(result: ComplianceResult) -> dict[str, Any]:
+    return {
+        "flags": [
+            {
+                "key": f.key,
+                "label": f.label,
+                "status": f.status,
+                "compliant_count": f.compliant_count,
+                "non_compliant_count": f.non_compliant_count,
+                "unknown_count": f.unknown_count,
+            }
+            for f in result.flags
+        ],
+    }
+
+
+def _serialize_declaration(
+    declaration: str,
+    entries: tuple[IngredientDeclarationEntry, ...],
+) -> dict[str, Any]:
+    return {
+        "text": declaration,
+        "entries": [
+            {
+                "label": e.label,
+                "mg": str(e.mg),
+                "category": e.category,
+            }
+            for e in entries
+        ],
+    }
+
+
 def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
     return {
         "total_active_mg": str(totals.total_active_mg),
@@ -764,9 +999,32 @@ def save_version(
     actor: Any,
     label: str = "",
 ) -> FormulationVersion:
-    """Freeze the formulation's current state into a new version."""
+    """Freeze the formulation's current state into a new version.
+
+    Along with the mg/excipient totals, the snapshot captures the
+    compliance aggregation and the ingredient declaration string, so
+    historical versions preserve exactly what the label would have
+    said at that moment — later catalogue edits cannot rewrite old
+    snapshots.
+    """
 
     totals = compute_formulation_totals(formulation=formulation)
+
+    items_by_external_id = {
+        str(line.id): line.item
+        for line in formulation.lines.select_related("item").all()
+    }
+    compliance = compute_compliance(items=items_by_external_id.values())
+    declaration_text, declaration_entries = build_ingredient_declaration(
+        items_by_external_id=items_by_external_id,
+        totals=totals,
+    )
+
+    serialized_totals = _serialize_totals(totals)
+    serialized_totals["compliance"] = _serialize_compliance(compliance)
+    serialized_totals["declaration"] = _serialize_declaration(
+        declaration_text, declaration_entries
+    )
 
     highest = (
         formulation.versions.aggregate(Max("version_number"))[
@@ -780,7 +1038,7 @@ def save_version(
         label=label,
         snapshot_metadata=_snapshot_metadata(formulation),
         snapshot_lines=_snapshot_lines(formulation),
-        snapshot_totals=_serialize_totals(totals),
+        snapshot_totals=serialized_totals,
         created_by=actor,
     )
     return version

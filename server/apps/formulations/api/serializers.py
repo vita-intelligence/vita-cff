@@ -44,14 +44,17 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_item_attributes(self, obj: FormulationLine) -> dict[str, object]:
-        """Return the four attributes the formulation math needs.
+        """Return the attributes the formulation math + label copy need.
 
         The full ``item.attributes`` JSON blob can be dozens of fields
-        wide (nutrition, compliance, risk scores). Here we surface
-        only the math-critical subset so the client-side compute
-        function can produce live totals without an extra round-trip
-        to fetch the raw material, and the response payload stays
-        small.
+        wide (nutrition, risk scores, allergens). Here we surface the
+        subset the client uses to run its live cascade — math inputs
+        (``type``, ``purity``, ``extract_ratio``, ``overage``), label
+        copy (``ingredient_list_name``, ``nutrition_information_name``),
+        and the four compliance flags — so the response payload stays
+        small while still letting the builder render totals,
+        compliance chips, and the ingredient declaration without an
+        extra round-trip per line.
         """
 
         attributes = obj.item.attributes or {}
@@ -60,6 +63,14 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "purity": attributes.get("purity"),
             "extract_ratio": attributes.get("extract_ratio"),
             "overage": attributes.get("overage"),
+            "ingredient_list_name": attributes.get("ingredient_list_name"),
+            "nutrition_information_name": attributes.get(
+                "nutrition_information_name"
+            ),
+            "vegan": attributes.get("vegan"),
+            "organic": attributes.get("organic"),
+            "halal": attributes.get("halal"),
+            "kosher": attributes.get("kosher"),
         }
 
 

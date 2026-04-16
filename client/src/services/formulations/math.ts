@@ -12,8 +12,18 @@
  * golden Valley workbook values are the single source of truth.
  */
 
-import { CAPSULE_SIZES, TABLET_SIZES } from "./types";
-import type { CapsuleSizeOption, DosageForm, TabletSizeOption } from "./types";
+import {
+  CAPSULE_SHELL_WEIGHTS,
+  CAPSULE_SIZES,
+  COMPLIANCE_FLAGS,
+  TABLET_SIZES,
+} from "./types";
+import type {
+  CapsuleSizeOption,
+  ComplianceFlagKey,
+  DosageForm,
+  TabletSizeOption,
+} from "./types";
 
 // ---------------------------------------------------------------------------
 // Constants — copied verbatim from apps/formulations/constants.py
@@ -56,6 +66,15 @@ export interface ItemAttributesForMath {
   readonly purity?: string | number | null;
   readonly extract_ratio?: string | number | null;
   readonly overage?: string | number | null;
+  //: Label-copy + compliance fields. Optional so math-only callers
+  //: can hand in a narrow object; the builder always passes the
+  //: full set.
+  readonly ingredient_list_name?: string | null;
+  readonly nutrition_information_name?: string | null;
+  readonly vegan?: string | null;
+  readonly organic?: string | null;
+  readonly halal?: string | null;
+  readonly kosher?: string | null;
 }
 
 export interface ComputeLineInput {
@@ -63,6 +82,9 @@ export interface ComputeLineInput {
   readonly attributes: ItemAttributesForMath;
   readonly labelClaimMg: number;
   readonly servingSizeOverride?: number | null;
+  //: Raw-material display name. Falls back here when
+  //: ``attributes.ingredient_list_name`` is blank.
+  readonly fallbackName?: string;
 }
 
 export type LineFailureReason =
@@ -243,6 +265,180 @@ function formatPercent(fraction: number): string {
   if (Number.isInteger(pct)) return `${pct}%`;
   return `${pct.toFixed(1).replace(/\.?0+$/, "")}%`;
 }
+
+
+// ---------------------------------------------------------------------------
+// F2a — compliance aggregation (mirror of apps.formulations.services.
+// compute_compliance). "Non-X" or "No"/"False" are the only confidently
+// non-compliant values; any other non-empty string is compliant by the
+// catalogue's convention.
+// ---------------------------------------------------------------------------
+
+
+export interface ComplianceFlagResult {
+  readonly key: ComplianceFlagKey;
+  readonly label: string;
+  /** ``true`` = product is compliant, ``false`` = tainted by at least
+   * one ingredient, ``null`` = no confident answer (all unknowns). */
+  readonly status: boolean | null;
+  readonly compliantCount: number;
+  readonly nonCompliantCount: number;
+  readonly unknownCount: number;
+}
+
+
+export interface ComplianceResult {
+  readonly flags: readonly ComplianceFlagResult[];
+}
+
+
+function normalizeComplianceValue(raw: unknown): boolean | null {
+  if (raw === null || raw === undefined) return null;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw !== "string") return null;
+  const lowered = raw.trim().toLowerCase();
+  if (!lowered) return null;
+  if (lowered.startsWith("non-") || lowered === "no" || lowered === "false") {
+    return false;
+  }
+  if (lowered === "yes" || lowered === "true") return true;
+  return true;
+}
+
+
+export function computeCompliance(
+  lines: readonly { readonly attributes: ItemAttributesForMath }[],
+): ComplianceResult {
+  return {
+    flags: COMPLIANCE_FLAGS.map(({ key, label }) => {
+      let compliant = 0;
+      let nonCompliant = 0;
+      let unknown = 0;
+      for (const line of lines) {
+        const decision = normalizeComplianceValue(line.attributes[key]);
+        if (decision === true) compliant += 1;
+        else if (decision === false) nonCompliant += 1;
+        else unknown += 1;
+      }
+      let status: boolean | null;
+      if (nonCompliant > 0) status = false;
+      else if (compliant > 0) status = true;
+      else status = null;
+      return {
+        key,
+        label,
+        status,
+        compliantCount: compliant,
+        nonCompliantCount: nonCompliant,
+        unknownCount: unknown,
+      };
+    }),
+  };
+}
+
+
+// ---------------------------------------------------------------------------
+// F2a — ingredient declaration (mirror of
+// apps.formulations.services.build_ingredient_declaration)
+// ---------------------------------------------------------------------------
+
+
+//: Label strings must stay in sync with ``apps/formulations/constants.py``.
+export const EXCIPIENT_LABEL_MCC = "Microcrystalline Cellulose (Carrier)";
+export const EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate";
+export const EXCIPIENT_LABEL_SILICA = "Silicon Dioxide";
+export const EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate";
+export const CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)";
+
+
+export interface IngredientDeclarationEntry {
+  readonly label: string;
+  readonly mg: number;
+  readonly category: "active" | "excipient" | "shell";
+}
+
+
+export interface IngredientDeclaration {
+  readonly text: string;
+  readonly entries: readonly IngredientDeclarationEntry[];
+}
+
+
+export function buildIngredientDeclaration({
+  lines,
+  totals,
+}: {
+  lines: readonly {
+    readonly externalId: string;
+    readonly attributes: ItemAttributesForMath;
+    readonly fallbackName?: string;
+  }[];
+  totals: FormulationTotals;
+}): IngredientDeclaration {
+  const entries: IngredientDeclarationEntry[] = [];
+
+  for (const line of lines) {
+    const mg = totals.lineValues.get(line.externalId);
+    if (mg === undefined || mg <= 0) continue;
+    const listName = line.attributes.ingredient_list_name;
+    const label =
+      typeof listName === "string" && listName.trim()
+        ? listName.trim()
+        : line.fallbackName ?? "";
+    if (!label) continue;
+    entries.push({ label, mg, category: "active" });
+  }
+
+  const excipients = totals.excipients;
+  if (excipients) {
+    if (excipients.mccMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_MCC,
+        mg: excipients.mccMg,
+        category: "excipient",
+      });
+    }
+    if (excipients.dcpMg !== null && excipients.dcpMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_DCP,
+        mg: excipients.dcpMg,
+        category: "excipient",
+      });
+    }
+    if (excipients.mgStearateMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_MG_STEARATE,
+        mg: excipients.mgStearateMg,
+        category: "excipient",
+      });
+    }
+    if (excipients.silicaMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_SILICA,
+        mg: excipients.silicaMg,
+        category: "excipient",
+      });
+    }
+  }
+
+  if (totals.dosageForm === "capsule" && totals.sizeKey) {
+    const shellWeight = CAPSULE_SHELL_WEIGHTS[totals.sizeKey];
+    if (shellWeight && shellWeight > 0) {
+      entries.push({
+        label: CAPSULE_SHELL_LABEL,
+        mg: shellWeight,
+        category: "shell",
+      });
+    }
+  }
+
+  entries.sort((a, b) => b.mg - a.mg || a.label.localeCompare(b.label));
+  return {
+    text: entries.map((e) => e.label).join(", "),
+    entries,
+  };
+}
+
 
 // ---------------------------------------------------------------------------
 // Size lookups

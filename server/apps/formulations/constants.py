@@ -39,13 +39,17 @@ class CapsuleSize:
     #: Values copied verbatim from Lists!G6:G8 in the Valley workbook.
     #: ``None`` means the size is not part of the automatic cascade.
     auto_pick_threshold_mg: float | None
+    #: Empty shell weight in mg. Used when building the ingredient
+    #: declaration so the capsule shell contributes to the sort order
+    #: alongside actives and excipients. Values from Lists!K20:L23.
+    shell_weight_mg: float
 
 
 CAPSULE_SIZES: tuple[CapsuleSize, ...] = (
-    CapsuleSize("size_1", "Size 1", 380.0, 300.0),
-    CapsuleSize("single_0", "Single 0", 453.0, 446.658),
-    CapsuleSize("double_00", "Double 00", 730.0, 719.78),
-    CapsuleSize("size_3", "Size 3", 216.0, None),
+    CapsuleSize("size_1", "Size 1", 380.0, 300.0, 75.0),
+    CapsuleSize("single_0", "Single 0", 453.0, 446.658, 96.0),
+    CapsuleSize("double_00", "Double 00", 730.0, 719.78, 118.0),
+    CapsuleSize("size_3", "Size 3", 216.0, None, 50.0),
 )
 
 
@@ -82,11 +86,62 @@ TABLET_DCP_PCT = 0.10
 TABLET_MCC_PCT = 0.20
 
 
+#: Label-copy strings used in the ingredient declaration (F2a). Kept
+#: next to the ratios so the whole label-facing surface area lives in
+#: one file. Each entry is the exact string that ends up on the
+#: product's ingredient list.
+EXCIPIENT_LABEL_MCC = "Microcrystalline Cellulose (Carrier)"
+EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate"
+EXCIPIENT_LABEL_SILICA = "Silicon Dioxide"
+EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate"
+CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
+
+
+#: Compliance flags tracked by every raw material and aggregated on
+#: the formulation. The attribute key matches the raw material's
+#: ``attributes`` column; the label is the human-facing word.
+COMPLIANCE_FLAGS: tuple[tuple[str, str], ...] = (
+    ("vegan", "Vegan"),
+    ("organic", "Organic"),
+    ("halal", "Halal"),
+    ("kosher", "Kosher"),
+)
+
+
 def capsule_size_by_key(key: str) -> CapsuleSize | None:
     for size in CAPSULE_SIZES:
         if size.key == key:
             return size
     return None
+
+
+def normalize_compliance_value(raw: object) -> bool | None:
+    """Interpret a raw material's compliance attribute as a tri-state
+    ``True / False / None`` boolean.
+
+    ``None`` encodes "uncertain" — the source catalogue did not record
+    a value, so the aggregation cannot speak for this ingredient.
+    This keeps "missing data" visibly different from a confident
+    "Non-Vegan", which matters when the UI decides whether to show a
+    green, red, or grey compliance chip.
+    """
+
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        return raw
+    if not isinstance(raw, str):
+        return None
+    lowered = raw.strip().lower()
+    if not lowered:
+        return None
+    if lowered.startswith("non-") or lowered in {"no", "false"}:
+        return False
+    if lowered in {"yes", "true"}:
+        return True
+    # Any other non-empty value (e.g. "Vegan", "Organic") is compliant
+    # by convention — the catalogue prefixes negatives with "Non-".
+    return True
 
 
 def tablet_size_by_key(key: str) -> TabletSize | None:

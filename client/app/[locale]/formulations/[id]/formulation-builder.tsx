@@ -20,7 +20,9 @@ import {
   DOSAGE_FORMS,
   FULLY_SUPPORTED_DOSAGE_FORMS,
   TABLET_SIZES,
+  buildIngredientDeclaration,
   canComputeMaterial,
+  computeCompliance,
   computeTotals,
   explainLine,
   useFormulationVersions,
@@ -28,10 +30,13 @@ import {
   useRollbackFormulation,
   useSaveVersion,
   useUpdateFormulation,
+  type ComplianceFlagResult,
+  type ComplianceResult,
   type ComputeLineInput,
   type DosageForm,
   type FormulationDto,
   type FormulationTotals,
+  type IngredientDeclaration,
   type ItemAttributesForMath,
   type LineFailureReason,
   type LineItemAttributes,
@@ -85,22 +90,40 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
 function attributesFromLine(
   line_attributes: LineItemAttributes,
 ): ItemAttributesForMath {
+  const extra = line_attributes as unknown as Record<string, unknown>;
   return {
     type: line_attributes.type ?? null,
     purity: line_attributes.purity ?? null,
     extract_ratio: line_attributes.extract_ratio ?? null,
     overage: line_attributes.overage ?? null,
+    ingredient_list_name:
+      (extra.ingredient_list_name as string | null | undefined) ?? null,
+    nutrition_information_name:
+      (extra.nutrition_information_name as string | null | undefined) ?? null,
+    vegan: (extra.vegan as string | null | undefined) ?? null,
+    organic: (extra.organic as string | null | undefined) ?? null,
+    halal: (extra.halal as string | null | undefined) ?? null,
+    kosher: (extra.kosher as string | null | undefined) ?? null,
   };
 }
 
 function attributesFromItem(item: ItemDto): ItemAttributesForMath {
   const attrs = item.attributes || {};
+  const pickStr = (key: string) =>
+    (attrs[key] as string | null | undefined) ?? null;
+  const pickNum = (key: string) =>
+    (attrs[key] as string | number | null | undefined) ?? null;
   return {
-    type: (attrs.type as string | null | undefined) ?? null,
-    purity: (attrs.purity as string | number | null | undefined) ?? null,
-    extract_ratio:
-      (attrs.extract_ratio as string | number | null | undefined) ?? null,
-    overage: (attrs.overage as string | number | null | undefined) ?? null,
+    type: pickStr("type"),
+    purity: pickNum("purity"),
+    extract_ratio: pickNum("extract_ratio"),
+    overage: pickNum("overage"),
+    ingredient_list_name: pickStr("ingredient_list_name"),
+    nutrition_information_name: pickStr("nutrition_information_name"),
+    vegan: pickStr("vegan"),
+    organic: pickStr("organic"),
+    halal: pickStr("halal"),
+    kosher: pickStr("kosher"),
   };
 }
 
@@ -180,6 +203,7 @@ export function FormulationBuilder({
       attributes: line.item_attributes,
       labelClaimMg: Number.parseFloat(line.label_claim_mg || "0"),
       servingSizeOverride: null,
+      fallbackName: line.item_name,
     }));
     return computeTotals({
       lines: computeInputs,
@@ -189,6 +213,29 @@ export function FormulationBuilder({
       defaultServingSize: metadata.serving_size,
     });
   }, [lines, metadata.dosage_form, metadata.capsule_size, metadata.tablet_size, metadata.serving_size]);
+
+  //: F2a — compliance + ingredient declaration re-compute on every
+  //: render from the same lines array. Both are pure and cheap.
+  const compliance: ComplianceResult = useMemo(
+    () =>
+      computeCompliance(
+        lines.map((line) => ({ attributes: line.item_attributes })),
+      ),
+    [lines],
+  );
+
+  const declaration: IngredientDeclaration = useMemo(
+    () =>
+      buildIngredientDeclaration({
+        lines: lines.map((line) => ({
+          externalId: line.key,
+          attributes: line.item_attributes,
+          fallbackName: line.item_name,
+        })),
+        totals: liveTotals,
+      }),
+    [lines, liveTotals],
+  );
 
   // ---------------------------------------------------------------------
   // Raw-material picker — server-filtered, infinite-scroll.
@@ -782,6 +829,22 @@ export function FormulationBuilder({
       </section>
 
       {/* ------------------------------------------------------------ */}
+      {/* F2a — compliance + ingredient declaration                    */}
+      {/* ------------------------------------------------------------ */}
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <CompliancePanel
+          compliance={compliance}
+          tFormulations={tFormulations}
+          hasLines={lines.length > 0}
+        />
+        <DeclarationPanel
+          declaration={declaration}
+          tFormulations={tFormulations}
+          hasLines={lines.length > 0}
+        />
+      </section>
+
+      {/* ------------------------------------------------------------ */}
       {/* Version history                                              */}
       {/* ------------------------------------------------------------ */}
       <section className="border-2 border-ink-1000 bg-ink-0 p-6">
@@ -832,6 +895,188 @@ export function FormulationBuilder({
         )}
       </section>
     </div>
+  );
+}
+
+
+function CompliancePanel({
+  compliance,
+  hasLines,
+  tFormulations,
+}: {
+  compliance: ComplianceResult;
+  hasLines: boolean;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  return (
+    <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+      <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        {tFormulations("compliance.title")}
+      </p>
+      {!hasLines ? (
+        <p className="mt-4 text-sm text-ink-600">
+          {tFormulations("compliance.empty_hint")}
+        </p>
+      ) : (
+        <ul className="mt-4 flex flex-col gap-2">
+          {compliance.flags.map((flag) => (
+            <li
+              key={flag.key}
+              className="flex items-center justify-between gap-3"
+            >
+              <span className="font-mono text-xs font-bold tracking-widest uppercase text-ink-1000">
+                {tFormulations(
+                  `compliance.flag_label.${flag.key}` as `compliance.flag_label.vegan`,
+                )}
+              </span>
+              <ComplianceChip
+                flag={flag}
+                tFormulations={tFormulations}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+
+function ComplianceChip({
+  flag,
+  tFormulations,
+}: {
+  flag: ComplianceFlagResult;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const base =
+    "border-2 px-2 py-1 font-mono text-[10px] tracking-widest uppercase";
+  let classes: string;
+  let label: string;
+  if (flag.status === true) {
+    classes = `${base} border-ink-1000 bg-ink-1000 text-ink-0`;
+    label = tFormulations("compliance.status.yes", { label: flag.label });
+  } else if (flag.status === false) {
+    classes = `${base} border-danger bg-danger/10 text-danger`;
+    label = tFormulations("compliance.status.no", {
+      label: flag.label,
+      count: flag.nonCompliantCount,
+    });
+  } else {
+    classes = `${base} border-ink-400 bg-ink-100 text-ink-500`;
+    label = tFormulations("compliance.status.unknown", {
+      label: flag.label,
+    });
+  }
+  return (
+    <span
+      className={classes}
+      title={
+        flag.unknownCount > 0
+          ? tFormulations("compliance.unknown_tooltip", {
+              count: flag.unknownCount,
+            })
+          : undefined
+      }
+    >
+      {label}
+    </span>
+  );
+}
+
+
+function DeclarationPanel({
+  declaration,
+  hasLines,
+  tFormulations,
+}: {
+  declaration: IngredientDeclaration;
+  hasLines: boolean;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const copyable = declaration.text;
+  const handleCopy = async () => {
+    if (!copyable) return;
+    try {
+      await navigator.clipboard.writeText(copyable);
+    } catch {
+      /* copy failures are visible in the browser's own UI */
+    }
+  };
+
+  return (
+    <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+      <div className="flex items-center justify-between gap-3">
+        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+          {tFormulations("declaration.title")}
+        </p>
+        {copyable ? (
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
+          >
+            {tFormulations("declaration.copy")}
+          </button>
+        ) : null}
+      </div>
+      {!hasLines || !copyable ? (
+        <p className="mt-4 text-sm text-ink-600">
+          {tFormulations("declaration.empty_hint")}
+        </p>
+      ) : (
+        <>
+          <p className="mt-4 font-serif text-sm leading-relaxed text-ink-1000">
+            {copyable}
+          </p>
+          <p className="mt-3 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+            {tFormulations("declaration.sort_hint")}
+          </p>
+          <ul className="mt-4 flex flex-col gap-1 font-mono text-xs text-ink-700">
+            {declaration.entries.map((entry, idx) => (
+              <li
+                key={`${entry.category}-${entry.label}-${idx}`}
+                className="flex items-center justify-between gap-3 border-b border-ink-200 py-1 last:border-b-0"
+              >
+                <span className="flex items-center gap-2">
+                  <CategoryBadge
+                    category={entry.category}
+                    tFormulations={tFormulations}
+                  />
+                  <span>{entry.label}</span>
+                </span>
+                <span>
+                  {entry.mg.toFixed(2)} <span className="text-ink-500">mg</span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  );
+}
+
+
+function CategoryBadge({
+  category,
+  tFormulations,
+}: {
+  category: "active" | "excipient" | "shell";
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const cls =
+    category === "active"
+      ? "border-ink-1000 bg-ink-1000 text-ink-0"
+      : "border-ink-500 bg-ink-0 text-ink-500";
+  return (
+    <span
+      className={`inline-flex items-center border px-1.5 font-mono text-[9px] tracking-widest uppercase ${cls}`}
+    >
+      {tFormulations(
+        `declaration.category.${category}` as `declaration.category.active`,
+      )}
+    </span>
   );
 }
 

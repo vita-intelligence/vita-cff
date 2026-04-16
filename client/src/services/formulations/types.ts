@@ -38,6 +38,34 @@ export const CAPSULE_SIZES: readonly CapsuleSizeOption[] = [
   { key: "size_3", label: "Size 3", max_weight_mg: 216 },
 ] as const;
 
+
+/**
+ * Empty capsule shell weights in mg. Used by the ingredient
+ * declaration so the shell contributes to the sort order alongside
+ * actives and excipients. Values from ``Lists!K20:L23`` in the
+ * workbook and must match ``CapsuleSize.shell_weight_mg`` on the
+ * Python side.
+ */
+export const CAPSULE_SHELL_WEIGHTS: Readonly<Record<string, number>> = {
+  size_1: 75,
+  single_0: 96,
+  double_00: 118,
+  size_3: 50,
+} as const;
+
+
+export const COMPLIANCE_FLAGS: readonly {
+  readonly key: ComplianceFlagKey;
+  readonly label: string;
+}[] = [
+  { key: "vegan", label: "Vegan" },
+  { key: "organic", label: "Organic" },
+  { key: "halal", label: "Halal" },
+  { key: "kosher", label: "Kosher" },
+] as const;
+
+export type ComplianceFlagKey = "vegan" | "organic" | "halal" | "kosher";
+
 export interface TabletSizeOption {
   readonly key: string;
   readonly label: string;
