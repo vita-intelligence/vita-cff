@@ -33,6 +33,8 @@
     "units": "units",
     "scale_equation": "{packs} packs × {perPack} per pack = {total} individual units",
     "back": "Back to formulation",
+    "export_csv": "Export CSV",
+    "export_json": "Export JSON",
     "bom_title": "Bill of materials",
     "fill_per_unit": "Fill weight per unit",
     "fill_per_pack": "Fill weight per pack",

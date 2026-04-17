@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 from dataclasses import asdict
 
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -193,3 +197,156 @@ def _stringify_decimals(value):
     if isinstance(value, dict):
         return {k: _stringify_decimals(v) for k, v in value.items()}
     return value
+
+
+# ---------------------------------------------------------------------------
+# BOM export (F4.4) — MRPeasy-ready CSV + flat JSON
+# ---------------------------------------------------------------------------
+
+
+#: Columns written to the CSV, in order. Kept as a module constant so
+#: the shape is greppable and so any future consumer (MRPeasy importer,
+#: SAP spreadsheet template, whatever) can be diffed against one list.
+_BOM_CSV_COLUMNS: tuple[str, ...] = (
+    "code",
+    "material",
+    "category",
+    "uom",
+    "quantity",
+    "quantity_unit",
+    "mg_per_unit",
+    "g_per_pack",
+    "notes",
+)
+
+
+def _bom_filename(batch) -> str:
+    """Produce a stable, portable filename for a BOM export.
+
+    Procurement files these by product code, so the filename should
+    sort cleanly in Finder / Explorer without the scientist having to
+    rename anything. ``<code>-v<n>-bom`` matches the PDF naming
+    already used by the spec sheet downloads.
+    """
+
+    code = (batch.formulation_version.formulation.code or "").strip()
+    if not code:
+        code = str(batch.id)[:8]
+    code = code.replace(" ", "-")
+    v = batch.formulation_version.version_number
+    return f"{code}-v{v}-bom"
+
+
+def _bom_line_rows(result) -> list[dict]:
+    """Flatten a :class:`BOMResult` into a list of per-line dicts
+    suitable for CSV / flat JSON export.
+
+    Weight-UOM lines report ``quantity`` in kg; count-UOM lines (the
+    capsule shell) report their piece count and the unit literally
+    says ``each``. A downstream ERP mapping the columns has everything
+    it needs on a single row — no cross-field lookups.
+    """
+
+    rows: list[dict] = []
+    for entry in result.entries:
+        if entry.uom == "count":
+            quantity = str(entry.count_per_batch)
+            quantity_unit = "each"
+        else:
+            quantity = str(entry.kg_per_batch)
+            quantity_unit = "kg"
+        rows.append(
+            {
+                "code": entry.internal_code or "",
+                "material": entry.label,
+                "category": entry.category,
+                "uom": entry.uom,
+                "quantity": quantity,
+                "quantity_unit": quantity_unit,
+                "mg_per_unit": str(entry.mg_per_unit),
+                "g_per_pack": str(entry.g_per_pack),
+                "notes": "",
+            }
+        )
+    return rows
+
+
+class TrialBatchBOMExportView(APIView):
+    """``GET`` ``/.../trial-batches/<id>/bom/``.
+
+    Content-negotiated BOM export. ``?format=csv`` (default) returns a
+    header-plus-rows CSV the ERP importer can chew. ``?format=json``
+    returns a flat JSON document (batch metadata + line array) so
+    integrations that would rather skip the CSV round-trip can pull
+    the same data structurally.
+
+    Response is always served with ``Content-Disposition: attachment``
+    so the browser download UX is consistent. Cookie auth rides
+    same-origin from the anchor click.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_level = PermissionLevel.READ
+
+    def get(self, request: Request, org_id: str, batch_id: str) -> HttpResponse:
+        try:
+            batch = get_batch(
+                organization=self.organization, batch_id=batch_id
+            )
+        except TrialBatchNotFound as exc:
+            raise NotFound() from exc
+
+        result = compute_batch_scaleup(batch)
+        rows = _bom_line_rows(result)
+        filename_stem = _bom_filename(batch)
+
+        fmt = (request.query_params.get("format") or "csv").lower()
+        if fmt == "json":
+            payload = {
+                "batch": {
+                    "id": result.batch_id,
+                    "label": result.label,
+                    "formulation_id": result.formulation_id,
+                    "formulation_name": result.formulation_name,
+                    "version_number": result.version_number,
+                    "version_label": result.version_label,
+                    "dosage_form": result.dosage_form,
+                    "size_label": result.size_label,
+                    "batch_size_packs": result.batch_size_units,
+                    "units_per_pack": result.units_per_pack,
+                    "total_units_in_batch": result.total_units_in_batch,
+                },
+                "totals": {
+                    "fill_mg_per_unit": str(result.total_mg_per_unit),
+                    "fill_g_per_pack": str(result.total_g_per_pack),
+                    "fill_kg_per_batch": str(result.total_kg_per_batch),
+                    "shells_per_batch": result.total_count_per_batch,
+                },
+                "lines": rows,
+            }
+            body = json.dumps(payload, indent=2).encode("utf-8")
+            response = HttpResponse(body, content_type="application/json")
+            response["Content-Disposition"] = (
+                f'attachment; filename="{filename_stem}.json"'
+            )
+            return response
+
+        # Default: CSV. Writes through an in-memory buffer first so
+        # we can hand the full payload to the HttpResponse in one
+        # write — simpler than streaming for ~hundreds of lines.
+        buffer = io.StringIO()
+        writer = csv.DictWriter(
+            buffer,
+            fieldnames=_BOM_CSV_COLUMNS,
+            extrasaction="ignore",
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        response = HttpResponse(
+            buffer.getvalue(), content_type="text/csv; charset=utf-8"
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename_stem}.csv"'
+        )
+        return response

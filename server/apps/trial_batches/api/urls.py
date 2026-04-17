@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.trial_batches.api.views import (
+    TrialBatchBOMExportView,
     TrialBatchDetailView,
     TrialBatchListCreateView,
     TrialBatchRenderView,
@@ -25,5 +26,10 @@ urlpatterns = [
         "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/render/",
         TrialBatchRenderView.as_view(),
         name="trial-batch-render",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/bom/",
+        TrialBatchBOMExportView.as_view(),
+        name="trial-batch-bom",
     ),
 ]

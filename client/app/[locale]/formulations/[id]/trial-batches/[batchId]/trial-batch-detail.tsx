@@ -10,6 +10,7 @@ import type {
   TrialBatchDto,
 } from "@/services/trial_batches";
 import {
+  trialBatchesEndpoints,
   useTrialBatch,
   useTrialBatchRender,
 } from "@/services/trial_batches";
@@ -67,6 +68,20 @@ export function TrialBatchDetail({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <a
+            href={trialBatchesEndpoints.bom(orgId, initialBatch.id, "csv")}
+            download
+            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+          >
+            {tBatches("detail.export_csv")}
+          </a>
+          <a
+            href={trialBatchesEndpoints.bom(orgId, initialBatch.id, "json")}
+            download
+            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+          >
+            {tBatches("detail.export_json")}
+          </a>
           <ValidationLink
             orgId={orgId}
             formulationId={formulationId}
