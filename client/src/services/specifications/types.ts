@@ -152,6 +152,7 @@ export interface RenderedSheetContext {
   readonly totals: {
     readonly total_active_mg: string | null;
     readonly total_weight_mg: string | null;
+    readonly filled_total_mg: string | null;
     readonly max_weight_mg: string | null;
     readonly size_label: string | null;
     readonly excipients: {

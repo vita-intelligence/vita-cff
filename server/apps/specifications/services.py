@@ -22,6 +22,7 @@ from typing import Any
 from django.db import transaction
 from django.db.models import QuerySet
 
+from apps.formulations.constants import DosageForm, capsule_size_by_key
 from apps.formulations.models import FormulationVersion
 from apps.formulations.services import instantiate_active_label
 from apps.organizations.models import Organization
@@ -239,6 +240,33 @@ def _coerce_decimal(value: Any) -> Decimal | None:
         return None
 
 
+def _compute_filled_total_mg(
+    *,
+    dosage_form: str,
+    size_key: Any,
+    fill_weight_mg: Any,
+) -> Decimal | None:
+    """Return the **filled capsule / tablet weight** including the
+    empty capsule shell for capsule products.
+
+    Capsules: ``fill_weight + shell_weight`` where the shell weight is
+    looked up from the snapshot's ``size_key``. Tablets, powders,
+    gummies and liquids have no shell so the filled total equals the
+    fill weight already reported by the formulation engine. Returns
+    ``None`` when the fill weight itself is missing.
+    """
+
+    fill = _coerce_decimal(fill_weight_mg)
+    if fill is None:
+        return None
+    if dosage_form == DosageForm.CAPSULE.value and isinstance(size_key, str):
+        capsule = capsule_size_by_key(size_key)
+        if capsule is not None:
+            shell = Decimal(str(capsule.shell_weight_mg))
+            return (fill + shell).quantize(Decimal("0.0001"))
+    return fill
+
+
 def _nrv_percent(
     claim_mg: Any, item_attributes: dict[str, Any] | None
 ) -> str | None:
@@ -295,6 +323,16 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     nutrition = totals.get("nutrition") or {"rows": []}
     amino_acids = totals.get("amino_acids") or {"groups": []}
 
+    # Filled total weight = powder fill + capsule shell (if any). For
+    # tablets the filled weight is just the fill weight (no shell), and
+    # for powder/gummy/liquid the snapshot's total_weight_mg already
+    # equals the total active — we pass it through unchanged.
+    filled_total_mg = _compute_filled_total_mg(
+        dosage_form=metadata.get("dosage_form", ""),
+        size_key=totals.get("size_key"),
+        fill_weight_mg=totals.get("total_weight_mg"),
+    )
+
     return {
         "sheet": {
             "id": str(sheet.id),
@@ -334,6 +372,9 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "totals": {
             "total_active_mg": totals.get("total_active_mg"),
             "total_weight_mg": totals.get("total_weight_mg"),
+            "filled_total_mg": (
+                str(filled_total_mg) if filled_total_mg is not None else None
+            ),
             "max_weight_mg": totals.get("max_weight_mg"),
             "size_label": totals.get("size_label"),
             "excipients": totals.get("excipients"),

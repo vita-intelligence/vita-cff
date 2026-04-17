@@ -245,11 +245,7 @@ export function SpecificationSheetView({
               />
               <KeyValue
                 label={tSpecs("sheet.fields.total_weight")}
-                value={
-                  sheet.total_weight_label.trim() !== ""
-                    ? sheet.total_weight_label
-                    : "TBC"
-                }
+                value={resolveTotalWeight(rendered, sheet)}
               />
               <KeyValue
                 label={tSpecs("sheet.fields.weight_uniformity")}
@@ -584,6 +580,26 @@ function formatMg(value: string | null | undefined): string {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return "—";
   return `${parsed.toFixed(2)} mg`;
+}
+
+
+/** Resolve the Total Weight (mg) cell.
+ *
+ * Priority: explicit sheet override → computed filled-capsule weight
+ * (fill + shell for capsules, fill only for tablets/powder/gummy/
+ * liquid) → "TBC" when neither is available. Keeping the override as
+ * the highest-priority lane lets a scientist stamp a measured weight
+ * once the manufacturer confirms the exact shell supplied.
+ */
+function resolveTotalWeight(
+  rendered: RenderedSheetContext,
+  sheet: SpecificationSheetDto,
+): string {
+  const override = sheet.total_weight_label.trim();
+  if (override !== "") return override;
+  const computed = formatMg(rendered.totals.filled_total_mg);
+  if (computed !== "—") return computed;
+  return "TBC";
 }
 
 

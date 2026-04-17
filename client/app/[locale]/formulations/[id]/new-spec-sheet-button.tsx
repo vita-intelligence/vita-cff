@@ -119,7 +119,15 @@ export function NewSpecSheetButton({
       <Modal.Backdrop>
         <Modal.Container size="md">
           <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <form onSubmit={handleSubmit}>
+            {/*
+              ``display: contents`` hides the <form> element from CSS
+              layout so Header/Body/Footer stay as direct flex children
+              of the dialog. Without this, HeroUI's "scroll inside"
+              variant can't measure the body's height and the modal
+              stops being scrollable when content overflows the
+              viewport.
+            */}
+            <form onSubmit={handleSubmit} style={{ display: "contents" }}>
               <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
                 <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
                   {tSpecs("create.title")}
