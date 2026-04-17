@@ -24,4 +24,11 @@ urlpatterns = [
         "api/",
         include("apps.trial_batches.api.urls", namespace="trial_batches"),
     ),
+    path(
+        "api/",
+        include(
+            "apps.product_validation.api.urls",
+            namespace="product_validation",
+        ),
+    ),
 ]

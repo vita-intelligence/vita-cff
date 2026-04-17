@@ -14,6 +14,8 @@ import {
   useTrialBatchRender,
 } from "@/services/trial_batches";
 
+import { ValidationLink } from "./validation-link";
+
 
 /**
  * Client-side view for a single trial batch's scaled-up BOM.
@@ -64,12 +66,19 @@ export function TrialBatchDetail({
             })}
           </p>
         </div>
-        <Link
-          href={`/formulations/${formulationId}`}
-          className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
-        >
-          {tBatches("detail.back")}
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <ValidationLink
+            orgId={orgId}
+            formulationId={formulationId}
+            batchId={initialBatch.id}
+          />
+          <Link
+            href={`/formulations/${formulationId}`}
+            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+          >
+            {tBatches("detail.back")}
+          </Link>
+        </div>
       </header>
 
       {batch.notes ? (

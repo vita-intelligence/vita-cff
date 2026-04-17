@@ -1,0 +1,64 @@
+{
+  "breadcrumb": "Validation",
+  "title": "Product validation",
+  "untitled_batch": "Untitled batch",
+  "back": "Back to batch",
+  "save": "Save changes",
+  "pass": "Pass",
+  "fail": "Fail",
+  "pending": "Pending",
+  "notes": "Notes",
+  "overall_notes": "Overall notes",
+  "advance_to": "Advance to",
+  "status": {
+    "draft": "Draft",
+    "in_progress": "In progress",
+    "passed": "Passed",
+    "failed": "Failed"
+  },
+  "link": {
+    "start": "Start validation",
+    "open": "Open validation"
+  },
+  "signature": {
+    "scientist": "Scientist sign-off",
+    "rd_manager": "R&D Manager sign-off",
+    "pending": "Awaiting signature"
+  },
+  "weight": {
+    "title": "Weight test",
+    "target": "Target",
+    "tolerance": "Tolerance",
+    "allowed_range": "Allowed range",
+    "samples": "Samples (mg)",
+    "samples_hint": "Enter each measurement separated by comma or newline.",
+    "n": "N samples",
+    "mean": "Mean",
+    "stdev": "Std dev",
+    "out_of_range": "Out of range"
+  },
+  "disintegration": {
+    "title": "Disintegration test",
+    "limit": "Limit",
+    "temperature": "Temperature",
+    "minutes": "min",
+    "worst": "Worst case",
+    "samples": "Times (minutes)",
+    "samples_hint": "One measurement per capsule/tablet tested — per USP <701>, typically 6 units."
+  },
+  "organoleptic": {
+    "title": "Organoleptic test",
+    "target": "Target",
+    "actual": "Actual",
+    "colour": "Colour",
+    "taste": "Taste",
+    "odour": "Odour",
+    "judgement": "Overall"
+  },
+  "checklist": {
+    "title": "MRPeasy readiness",
+    "raw_materials": "Raw materials created",
+    "finished_product": "Finished product created",
+    "boms_verified": "BOMs verified"
+  }
+}

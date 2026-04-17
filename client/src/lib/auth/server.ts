@@ -26,6 +26,11 @@ import type {
   RenderedSheetContext,
   SpecificationSheetDto,
 } from "@/services/specifications/types";
+import { productValidationEndpoints } from "@/services/product_validation/endpoints";
+import type {
+  ProductValidationDto,
+  ValidationStatsDto,
+} from "@/services/product_validation/types";
 import { trialBatchesEndpoints } from "@/services/trial_batches/endpoints";
 import type {
   BOMResult,
@@ -231,6 +236,33 @@ export async function getTrialBatchRenderServer(
 ): Promise<BOMResult | null> {
   return serverFetch<BOMResult>(
     trialBatchesEndpoints.render(orgId, batchId),
+  );
+}
+
+export async function getValidationServer(
+  orgId: string,
+  validationId: string,
+): Promise<ProductValidationDto | null> {
+  return serverFetch<ProductValidationDto>(
+    productValidationEndpoints.detail(orgId, validationId),
+  );
+}
+
+export async function getValidationStatsServer(
+  orgId: string,
+  validationId: string,
+): Promise<ValidationStatsDto | null> {
+  return serverFetch<ValidationStatsDto>(
+    productValidationEndpoints.stats(orgId, validationId),
+  );
+}
+
+export async function getValidationForBatchServer(
+  orgId: string,
+  batchId: string,
+): Promise<ProductValidationDto | null> {
+  return serverFetch<ProductValidationDto>(
+    productValidationEndpoints.forBatch(orgId, batchId),
   );
 }
 
