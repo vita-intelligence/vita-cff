@@ -181,6 +181,7 @@ class TestRenderContext:
             "actives",
             "compliance",
             "declaration",
+            "allergens",
             "nutrition",
             "amino_acids",
             "history",

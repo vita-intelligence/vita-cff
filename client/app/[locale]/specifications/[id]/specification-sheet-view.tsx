@@ -444,9 +444,13 @@ export function SpecSheetContent({
             </SheetSection>
 
             <SheetSection title={tSpecs("sheet.sections.ingredients")}>
-              <p className="font-serif text-sm leading-relaxed text-ink-1000">
-                {rendered.declaration.text || "—"}
-              </p>
+              {rendered.allergens.sources.length > 0 ? (
+                <p className="mb-2 font-serif text-sm leading-relaxed text-ink-1000">
+                  <strong>{tSpecs("sheet.allergens.prefix")}:</strong>{" "}
+                  {rendered.allergens.sources.join(", ")}
+                </p>
+              ) : null}
+              <IngredientDeclarationBody rendered={rendered} />
             </SheetSection>
           </section>
 
@@ -593,6 +597,44 @@ function KeyValue({ label, value }: { label: string; value: string }) {
       <span className="text-ink-500">{label}</span>
       <span className="text-right font-bold text-ink-1000">{value}</span>
     </div>
+  );
+}
+
+
+/** Render the ingredient declaration paragraph with allergen names
+ * bolded in place. The backend's ``declaration.text`` is a plain
+ * comma-joined string — fine for JSON clients — but EU 1169/2011
+ * art. 21 requires allergenic ingredients in the list to stand out,
+ * so the spec sheet rebuilds the copy from ``entries`` and wraps
+ * ``is_allergen`` rows in ``<strong>``. Falls back to the plain
+ * text when the entries array is empty (e.g. a freshly-created
+ * version with no lines). */
+function IngredientDeclarationBody({
+  rendered,
+}: {
+  rendered: RenderedSheetContext;
+}) {
+  const entries = rendered.declaration.entries;
+  if (entries.length === 0) {
+    return (
+      <p className="font-serif text-sm leading-relaxed text-ink-1000">
+        {rendered.declaration.text || "—"}
+      </p>
+    );
+  }
+  return (
+    <p className="font-serif text-sm leading-relaxed text-ink-1000">
+      {entries.map((entry, idx) => (
+        <Fragment key={`${entry.category}-${entry.label}-${idx}`}>
+          {idx > 0 ? ", " : ""}
+          {entry.is_allergen ? (
+            <strong>{entry.label}</strong>
+          ) : (
+            entry.label
+          )}
+        </Fragment>
+      ))}
+    </p>
   );
 }
 

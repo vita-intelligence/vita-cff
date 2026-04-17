@@ -530,6 +530,7 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
 
     compliance = totals.get("compliance") or {"flags": []}
     declaration = totals.get("declaration") or {"text": "", "entries": []}
+    allergens = totals.get("allergens") or {"sources": [], "allergen_count": 0}
     nutrition = totals.get("nutrition") or {"rows": []}
     amino_acids = totals.get("amino_acids") or {"groups": []}
 
@@ -610,6 +611,7 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "actives": actives,
         "compliance": compliance,
         "declaration": declaration,
+        "allergens": allergens,
         "nutrition": nutrition,
         "amino_acids": amino_acids,
         "history": history,

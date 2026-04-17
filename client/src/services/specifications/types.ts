@@ -155,7 +155,19 @@ export interface RenderedDeclaration {
     readonly label: string;
     readonly mg: string;
     readonly category: "active" | "excipient" | "shell";
+    readonly is_allergen: boolean;
+    readonly allergen_source: string;
   }[];
+}
+
+/** Aggregated allergen classes across the product's actives. Matches
+ * the EU 1169/2011 requirement to list allergens explicitly — the
+ * ``sources`` list is distinct across ingredients so two milk proteins
+ * surface once. Empty list ⇒ suppress the whole Allergens row, per
+ * the workbook's ``IF(T10=0,"","Allergen:")`` convention. */
+export interface RenderedAllergens {
+  readonly sources: readonly string[];
+  readonly allergen_count: number;
 }
 
 /** One row of the nutrition facts panel. ``key`` matches the
@@ -232,6 +244,7 @@ export interface RenderedSheetContext {
   readonly actives: readonly RenderedActive[];
   readonly compliance: RenderedCompliance;
   readonly declaration: RenderedDeclaration;
+  readonly allergens: RenderedAllergens;
   readonly nutrition: RenderedNutrition;
   readonly amino_acids: RenderedAminoAcids;
   readonly history: readonly RenderedTransition[];

@@ -75,6 +75,11 @@ export interface ItemAttributesForMath {
   readonly organic?: string | null;
   readonly halal?: string | null;
   readonly kosher?: string | null;
+  //: Allergen flag + source class (e.g. "Milk", "Soybeans"). ``"None"``
+  //: and ``"#VALUE!"`` sentinel strings are normalised to empty by
+  //: :func:`computeAllergens`.
+  readonly allergen?: string | null;
+  readonly allergen_source?: string | null;
 }
 
 export interface ComputeLineInput {
@@ -338,6 +343,68 @@ export function computeCompliance(
 
 
 // ---------------------------------------------------------------------------
+// Allergen aggregation — mirror of
+// apps.formulations.services.compute_allergens
+// ---------------------------------------------------------------------------
+
+
+export interface AllergensResult {
+  /** Distinct allergen classes across actives, sorted alphabetically.
+   * Empty when the product has no allergenic ingredients — the UI
+   * suppresses the whole Allergens line in that case. */
+  readonly sources: readonly string[];
+  /** Count of actives flagged as allergens. Can exceed
+   * ``sources.length`` when two ingredients share a class. */
+  readonly allergenCount: number;
+}
+
+
+/** Read the ``allergen`` attribute with the same case-insensitive
+ * leniency as the backend. Anything other than "yes"/"true"/"1"
+ * means "not an allergen" — absence of data is never promoted to
+ * a positive flag. */
+export function isAllergenLine(attrs: ItemAttributesForMath): boolean {
+  const raw = attrs.allergen;
+  if (raw === null || raw === undefined) return false;
+  if (typeof raw !== "string") return Boolean(raw);
+  const lowered = raw.trim().toLowerCase();
+  return lowered === "yes" || lowered === "true" || lowered === "1";
+}
+
+
+/** Normalise the ``allergen_source`` field. Catalogue rows use
+ * ``"None"`` as the empty sentinel — we collapse that and
+ * ``"#VALUE!"`` (a spreadsheet error artifact) to empty so the UI
+ * never paints the word ``None`` as if it were an allergen class. */
+export function cleanAllergenSource(attrs: ItemAttributesForMath): string {
+  const raw = attrs.allergen_source;
+  if (typeof raw !== "string") return "";
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.toLowerCase() === "none" || trimmed === "#VALUE!") return "";
+  return trimmed;
+}
+
+
+export function computeAllergens(
+  lines: readonly { readonly attributes: ItemAttributesForMath }[],
+): AllergensResult {
+  const sources = new Set<string>();
+  let count = 0;
+  for (const line of lines) {
+    if (!isAllergenLine(line.attributes)) continue;
+    count += 1;
+    const source = cleanAllergenSource(line.attributes);
+    if (source) sources.add(source);
+  }
+  return {
+    sources: Array.from(sources).sort(),
+    allergenCount: count,
+  };
+}
+
+
+// ---------------------------------------------------------------------------
 // F2a — ingredient declaration (mirror of
 // apps.formulations.services.build_ingredient_declaration)
 // ---------------------------------------------------------------------------
@@ -349,12 +416,25 @@ export const EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate";
 export const EXCIPIENT_LABEL_SILICA = "Silicon Dioxide";
 export const EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate";
 export const CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)";
+//: Mg Stearate + Silica are procured separately (different SKUs,
+//: different suppliers) but collapse into a single ingredient-list
+//: entry on the consumer-facing declaration, matching the workbook's
+//: label copy and avoiding exposing unnecessary manufacturing detail
+//: to clients.
+export const EXCIPIENT_LABEL_ANTICAKING =
+  "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)";
 
 
 export interface IngredientDeclarationEntry {
   readonly label: string;
   readonly mg: number;
   readonly category: "active" | "excipient" | "shell";
+  /** ``true`` when the source catalogue row is flagged as an
+   * allergen. The spec sheet bolds these names per EU 1169/2011
+   * art. 21; the formulation builder's live panel does the same
+   * so scientists see the final rendering before save. */
+  readonly isAllergen: boolean;
+  readonly allergenSource: string;
 }
 
 
@@ -386,7 +466,14 @@ export function buildIngredientDeclaration({
         ? listName.trim()
         : line.fallbackName ?? "";
     if (!label) continue;
-    entries.push({ label, mg, category: "active" });
+    const isAllergen = isAllergenLine(line.attributes);
+    entries.push({
+      label,
+      mg,
+      category: "active",
+      isAllergen,
+      allergenSource: isAllergen ? cleanAllergenSource(line.attributes) : "",
+    });
   }
 
   const excipients = totals.excipients;
@@ -396,6 +483,8 @@ export function buildIngredientDeclaration({
         label: EXCIPIENT_LABEL_MCC,
         mg: excipients.mccMg,
         category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
       });
     }
     if (excipients.dcpMg !== null && excipients.dcpMg > 0) {
@@ -403,20 +492,24 @@ export function buildIngredientDeclaration({
         label: EXCIPIENT_LABEL_DCP,
         mg: excipients.dcpMg,
         category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
       });
     }
-    if (excipients.mgStearateMg > 0) {
+    // Mg Stearate + Silica collapse into a single "Anticaking
+    // Agents" row on the consumer-facing declaration — same merge
+    // the server's ``build_ingredient_declaration`` does. Combined
+    // mg drives the sort order so the merged entry sits at the
+    // right rank rather than each half landing at the bottom on
+    // its own tiny weight.
+    const anticakingMg = excipients.mgStearateMg + excipients.silicaMg;
+    if (anticakingMg > 0) {
       entries.push({
-        label: EXCIPIENT_LABEL_MG_STEARATE,
-        mg: excipients.mgStearateMg,
+        label: EXCIPIENT_LABEL_ANTICAKING,
+        mg: anticakingMg,
         category: "excipient",
-      });
-    }
-    if (excipients.silicaMg > 0) {
-      entries.push({
-        label: EXCIPIENT_LABEL_SILICA,
-        mg: excipients.silicaMg,
-        category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
       });
     }
   }
@@ -428,6 +521,8 @@ export function buildIngredientDeclaration({
         label: CAPSULE_SHELL_LABEL,
         mg: shellWeight,
         category: "shell",
+        isAllergen: false,
+        allergenSource: "",
       });
     }
   }

@@ -338,7 +338,18 @@
 
       <section class="panel">
         <h2>Ingredients</h2>
-        <p class="declaration">{{ declaration.text|default:"—" }}</p>
+        {% if allergens.sources %}
+          <p class="declaration" style="margin: 0 0 2mm;">
+            <strong>Allergens:</strong> {{ allergens.sources|join:", " }}
+          </p>
+        {% endif %}
+        {% if declaration.entries %}
+          <p class="declaration">
+            {% for entry in declaration.entries %}{% if not forloop.first %}, {% endif %}{% if entry.is_allergen %}<strong>{{ entry.label }}</strong>{% else %}{{ entry.label }}{% endif %}{% endfor %}
+          </p>
+        {% else %}
+          <p class="declaration">{{ declaration.text|default:"—" }}</p>
+        {% endif %}
       </section>
 
       <section class="panel">

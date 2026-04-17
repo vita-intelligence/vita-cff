@@ -110,20 +110,26 @@
       "vegan": "Vegan",
       "organic": "Organic",
       "halal": "Halal",
-      "kosher": "Kosher"
+      "kosher": "Kosher",
+      "allergen": "Allergens"
     },
     "status": {
       "yes": "{label}",
       "no": "Non-{label} ({count})",
       "unknown": "{label}: unknown"
     },
-    "unknown_tooltip": "{count} ingredient(s) have no value set. Chip fades when any aggregation answer is held without confidence."
+    "unknown_tooltip": "{count} ingredient(s) have no value set. Chip fades when any aggregation answer is held without confidence.",
+    "allergen": {
+      "none": "None",
+      "count": "{count} ingredient(s) flagged as allergens"
+    }
   },
   "declaration": {
     "title": "Ingredient declaration",
     "empty_hint": "Add ingredients to generate the product's ingredient list.",
-    "sort_hint": "Sorted descending by mg per serving.",
+    "sort_hint": "Sorted descending by mg per serving. Allergens shown in bold.",
     "copy": "Copy",
+    "allergens_prefix": "Allergens",
     "category": {
       "active": "Active",
       "excipient": "Excipient",

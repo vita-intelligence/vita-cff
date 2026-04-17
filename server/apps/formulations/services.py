@@ -287,6 +287,33 @@ class IngredientDeclarationEntry:
     #: ``"active" | "excipient" | "shell"`` — lets the UI badge each
     #: row differently.
     category: str
+    #: ``True`` when this row's source catalogue item is flagged as an
+    #: allergen. The spec sheet uses this to render the ingredient's
+    #: name in bold inside the declaration paragraph, per EU labelling
+    #: requirement 1169/2011 art. 21 (the workbook matches this by
+    #: manually bolding allergens; we do it with ``<strong>`` tags).
+    is_allergen: bool = False
+    #: The allergen class reported by the catalogue (``"Milk"``,
+    #: ``"Soybeans"``, etc.). Blank when ``is_allergen`` is ``False``.
+    allergen_source: str = ""
+
+
+@dataclass
+class FormulationAllergens:
+    """Aggregate allergen picture for one formulation version.
+
+    ``sources`` is the comma-sorted list of distinct allergen classes
+    across every active ingredient (e.g. ``["Milk", "Soy"]``). Empty
+    when the product has no allergenic ingredients — the spec sheet
+    suppresses the Allergens line entirely in that case, matching
+    the workbook's ``IF(T10=0, "", "Allergen:")`` convention.
+    """
+
+    sources: tuple[str, ...]
+    #: Raw count of actives flagged as allergens. Usually equals
+    #: ``len(sources)`` but can exceed it when two ingredients share
+    #: the same source (e.g. two different milk proteins).
+    allergen_count: int
 
 
 def _quantise(value: float) -> Decimal:
@@ -890,6 +917,78 @@ def compute_compliance(
 
 
 # ---------------------------------------------------------------------------
+# Allergen aggregation — distinct allergen classes across every active
+# ---------------------------------------------------------------------------
+
+
+def _is_item_allergen(item: Item) -> bool:
+    """Read the catalogue's ``allergen`` flag with the same
+    case-insensitive leniency as :func:`normalize_compliance_value` —
+    accepts ``"Yes"``, ``True``, ``1`` as positive signals and treats
+    everything else (including the catalogue's ``"#VALUE!"`` error
+    artifacts) as not-an-allergen. Missing data is never promoted to
+    "this is an allergen" — silence is not consent."""
+
+    raw = (item.attributes or {}).get("allergen")
+    if raw is None:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        return lowered in {"yes", "true", "1"}
+    return False
+
+
+def _allergen_source_for_item(item: Item) -> str:
+    """Return the catalogue's ``Allergen Source`` field as a clean
+    string. The catalogue uses ``"None"`` as the empty sentinel — we
+    collapse that and the spreadsheet ``"#VALUE!"`` artifact to ``""``
+    so the frontend does not render ``None`` as if it were a real
+    allergen class."""
+
+    raw = (item.attributes or {}).get("allergen_source")
+    if not isinstance(raw, str):
+        return ""
+    trimmed = raw.strip()
+    if not trimmed or trimmed.lower() in {"none", "#value!"}:
+        return ""
+    return trimmed
+
+
+def compute_allergens(
+    *,
+    items: Iterable[Item],
+) -> FormulationAllergens:
+    """Aggregate the EU-14 allergen classes across the product's
+    actives.
+
+    Mirrors the workbook's ``TEXTJOIN(", ", TRUE,
+    Table13[Allergen Source])`` approach, with one extra guarantee:
+    duplicates are deduped so a formulation with two different milk
+    proteins surfaces ``["Milk"]`` once, not twice. Sorted
+    alphabetically for a stable, copy-paste-friendly output.
+    """
+
+    sources: set[str] = set()
+    allergen_count = 0
+    for item in items:
+        if not _is_item_allergen(item):
+            continue
+        allergen_count += 1
+        source = _allergen_source_for_item(item)
+        if source:
+            sources.add(source)
+
+    return FormulationAllergens(
+        sources=tuple(sorted(sources)),
+        allergen_count=allergen_count,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Ingredient declaration — label-copy string for the product back panel
 # ---------------------------------------------------------------------------
 
@@ -1038,11 +1137,16 @@ def build_ingredient_declaration(
         item = items_by_external_id.get(external_id)
         if item is None:
             continue
+        is_allergen = _is_item_allergen(item)
         entries.append(
             IngredientDeclarationEntry(
                 label=_entry_label_for_item(item),
                 mg=mg,
                 category="active",
+                is_allergen=is_allergen,
+                allergen_source=(
+                    _allergen_source_for_item(item) if is_allergen else ""
+                ),
             )
         )
 
@@ -1160,6 +1264,13 @@ _SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
     "halal",
     "kosher",
     "nrv_mg",
+    # Allergen handling (V2 template): the ``Allergen`` flag drives the
+    # bolded ingredient in the declaration copy and the ``Allergen
+    # Source`` field feeds the aggregated "Allergens:" line. Country of
+    # origin rides along for procurement / regulatory traceability.
+    "allergen",
+    "allergen_source",
+    "typical_country_of_origin",
     *NUTRITION_KEYS,
     *AMINO_ACID_KEYS,
 )
@@ -1257,9 +1368,18 @@ def _serialize_declaration(
                 "label": e.label,
                 "mg": str(e.mg),
                 "category": e.category,
+                "is_allergen": e.is_allergen,
+                "allergen_source": e.allergen_source,
             }
             for e in entries
         ],
+    }
+
+
+def _serialize_allergens(allergens: FormulationAllergens) -> dict[str, Any]:
+    return {
+        "sources": list(allergens.sources),
+        "allergen_count": allergens.allergen_count,
     }
 
 
@@ -1323,6 +1443,7 @@ def save_version(
         for line in formulation.lines.select_related("item").all()
     }
     compliance = compute_compliance(items=items_by_external_id.values())
+    allergens = compute_allergens(items=items_by_external_id.values())
     declaration_text, declaration_entries = build_ingredient_declaration(
         items_by_external_id=items_by_external_id,
         totals=totals,
@@ -1348,6 +1469,7 @@ def save_version(
 
     serialized_totals = _serialize_totals(totals)
     serialized_totals["compliance"] = _serialize_compliance(compliance)
+    serialized_totals["allergens"] = _serialize_allergens(allergens)
     serialized_totals["declaration"] = _serialize_declaration(
         declaration_text, declaration_entries
     )

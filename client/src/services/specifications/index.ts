@@ -39,6 +39,7 @@ export {
   type PackagingSlot,
   type PaginatedSpecificationsDto,
   type RenderedActive,
+  type RenderedAllergens,
   type RenderedCompliance,
   type RenderedDeclaration,
   type RenderedSheetContext,

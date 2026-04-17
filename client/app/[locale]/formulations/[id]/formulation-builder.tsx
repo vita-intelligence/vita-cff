@@ -24,6 +24,7 @@ import {
   TABLET_SIZES,
   buildIngredientDeclaration,
   canComputeMaterial,
+  computeAllergens,
   computeCompliance,
   computeTotals,
   explainLine,
@@ -32,6 +33,7 @@ import {
   useRollbackFormulation,
   useSaveVersion,
   useUpdateFormulation,
+  type AllergensResult,
   type ComplianceFlagResult,
   type ComplianceResult,
   type ComputeLineInput,
@@ -221,6 +223,14 @@ export function FormulationBuilder({
   const compliance: ComplianceResult = useMemo(
     () =>
       computeCompliance(
+        lines.map((line) => ({ attributes: line.item_attributes })),
+      ),
+    [lines],
+  );
+
+  const allergens: AllergensResult = useMemo(
+    () =>
+      computeAllergens(
         lines.map((line) => ({ attributes: line.item_attributes })),
       ),
     [lines],
@@ -837,11 +847,13 @@ export function FormulationBuilder({
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
         <CompliancePanel
           compliance={compliance}
+          allergens={allergens}
           tFormulations={tFormulations}
           hasLines={lines.length > 0}
         />
         <DeclarationPanel
           declaration={declaration}
+          allergens={allergens}
           tFormulations={tFormulations}
           hasLines={lines.length > 0}
         />
@@ -904,10 +916,12 @@ export function FormulationBuilder({
 
 function CompliancePanel({
   compliance,
+  allergens,
   hasLines,
   tFormulations,
 }: {
   compliance: ComplianceResult;
+  allergens: AllergensResult;
   hasLines: boolean;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
@@ -938,9 +952,52 @@ function CompliancePanel({
               />
             </li>
           ))}
+          {/* Allergen row — EU 1169/2011 requires explicit allergen
+              disclosure on the label. Shown after the four compliance
+              flags so the chip layout stays consistent; uses the
+              danger palette when any source is present so it stands
+              out from the neutral "Non-Organic" chip above. */}
+          <li className="flex items-center justify-between gap-3 border-t border-ink-200 pt-3">
+            <span className="font-mono text-xs font-bold tracking-widest uppercase text-ink-1000">
+              {tFormulations("compliance.flag_label.allergen")}
+            </span>
+            <AllergenChip
+              allergens={allergens}
+              tFormulations={tFormulations}
+            />
+          </li>
         </ul>
       )}
     </div>
+  );
+}
+
+
+function AllergenChip({
+  allergens,
+  tFormulations,
+}: {
+  allergens: AllergensResult;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const base =
+    "border-2 px-2 py-1 font-mono text-[10px] tracking-widest uppercase";
+  if (allergens.sources.length === 0) {
+    return (
+      <span className={`${base} border-ink-1000 bg-ink-1000 text-ink-0`}>
+        {tFormulations("compliance.allergen.none")}
+      </span>
+    );
+  }
+  return (
+    <span
+      className={`${base} border-danger bg-danger/10 text-danger`}
+      title={tFormulations("compliance.allergen.count", {
+        count: allergens.allergenCount,
+      })}
+    >
+      {allergens.sources.join(", ")}
+    </span>
   );
 }
 
@@ -990,16 +1047,22 @@ function ComplianceChip({
 
 function DeclarationPanel({
   declaration,
+  allergens,
   hasLines,
   tFormulations,
 }: {
   declaration: IngredientDeclaration;
+  allergens: AllergensResult;
   hasLines: boolean;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   const copyable = declaration.text;
   const handleCopy = async () => {
     if (!copyable) return;
+    // Plain-text copy — when the scientist pastes into an external
+    // system, they usually want the comma-joined string without
+    // HTML markup. Bold-formatting is a visual convenience for the
+    // on-screen preview.
     try {
       await navigator.clipboard.writeText(copyable);
     } catch {
@@ -1029,8 +1092,25 @@ function DeclarationPanel({
         </p>
       ) : (
         <>
-          <p className="mt-4 font-serif text-sm leading-relaxed text-ink-1000">
-            {copyable}
+          {allergens.sources.length > 0 ? (
+            <p className="mt-4 font-serif text-sm leading-relaxed text-ink-1000">
+              <strong>{tFormulations("declaration.allergens_prefix")}:</strong>{" "}
+              {allergens.sources.join(", ")}
+            </p>
+          ) : null}
+          <p className="mt-2 font-serif text-sm leading-relaxed text-ink-1000">
+            {declaration.entries.map((entry, idx) => (
+              <span
+                key={`${entry.category}-${entry.label}-${idx}`}
+              >
+                {idx > 0 ? ", " : ""}
+                {entry.isAllergen ? (
+                  <strong>{entry.label}</strong>
+                ) : (
+                  entry.label
+                )}
+              </span>
+            ))}
           </p>
           <p className="mt-3 font-mono text-[10px] tracking-widest uppercase text-ink-500">
             {tFormulations("declaration.sort_hint")}
@@ -1046,7 +1126,9 @@ function DeclarationPanel({
                     category={entry.category}
                     tFormulations={tFormulations}
                   />
-                  <span>{entry.label}</span>
+                  <span className={entry.isAllergen ? "font-bold" : ""}>
+                    {entry.label}
+                  </span>
                 </span>
                 <span>
                   {entry.mg.toFixed(2)} <span className="text-ink-500">mg</span>

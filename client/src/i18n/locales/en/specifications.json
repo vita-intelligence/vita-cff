@@ -94,6 +94,9 @@
       "excipients": "Excipient Information",
       "ingredients": "Ingredients"
     },
+    "allergens": {
+      "prefix": "Allergens"
+    },
     "fields": {
       "product_code": "Product Code",
       "product_description": "Product Description",

@@ -71,6 +71,12 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "organic": attributes.get("organic"),
             "halal": attributes.get("halal"),
             "kosher": attributes.get("kosher"),
+            # Allergen data — drives the builder's live allergen row
+            # in the Compliance panel + bolded entries in the live
+            # ingredient declaration. Stored as the same ``Yes/No``
+            # + free-text strings the spec sheet snapshot uses.
+            "allergen": attributes.get("allergen"),
+            "allergen_source": attributes.get("allergen_source"),
         }
 
 
