@@ -24,6 +24,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.template.loader import render_to_string
 
+from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.formulations.constants import DosageForm, capsule_size_by_key
 from apps.formulations.models import FormulationVersion
 from apps.formulations.services import instantiate_active_label
@@ -65,6 +66,29 @@ class PublicLinkNotEnabled(Exception):
     code = "public_link_not_enabled"
 
 
+class PackagingItemNotAllowed(Exception):
+    """The caller tried to pin a packaging slot to an item that either
+    does not live in the sheet's org packaging catalogue or has the
+    wrong ``packaging_type`` attribute (e.g. a label selected as the
+    lid)."""
+
+    code = "packaging_item_not_allowed"
+
+
+#: Map each FK slot on :class:`SpecificationSheet` to the
+#: ``packaging_type`` value the selected ``Item`` must carry in its
+#: dynamic attributes. Validated at every ``set_packaging`` call so
+#: the spec sheet can never accidentally render a closure where the
+#: bottle should be, or vice-versa. The four types come from the
+#: packaging catalogue's controlled vocabulary seeded during import.
+PACKAGING_SLOT_TYPES: dict[str, str] = {
+    "packaging_lid": "closure",
+    "packaging_container": "material",
+    "packaging_label": "label",
+    "packaging_antitemper": "tamper_proof",
+}
+
+
 #: Allowed status moves. The spec sheet cannot jump arbitrarily; the
 #: scientist walks it forward through draft → in-review → approved
 #: → sent → accepted / rejected. The UI disables buttons that are
@@ -90,10 +114,22 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 # ---------------------------------------------------------------------------
 
 
+#: Foreign-key paths that every sheet-fetching query needs to pre-fetch
+#: so the render path can dereference the four packaging slots without
+#: an extra round-trip per slot per sheet.
+_SHEET_RELATED: tuple[str, ...] = (
+    "formulation_version__formulation",
+    "packaging_lid",
+    "packaging_container",
+    "packaging_label",
+    "packaging_antitemper",
+)
+
+
 def list_sheets(*, organization: Organization) -> QuerySet[SpecificationSheet]:
     return (
         SpecificationSheet.objects.filter(organization=organization)
-        .select_related("formulation_version__formulation")
+        .select_related(*_SHEET_RELATED)
         .order_by("-updated_at")
     )
 
@@ -102,9 +138,7 @@ def get_sheet(
     *, organization: Organization, sheet_id: Any
 ) -> SpecificationSheet:
     sheet = (
-        SpecificationSheet.objects.select_related(
-            "formulation_version__formulation"
-        )
+        SpecificationSheet.objects.select_related(*_SHEET_RELATED)
         .filter(organization=organization, id=sheet_id)
         .first()
     )
@@ -206,6 +240,63 @@ def update_sheet(
 
 
 @transaction.atomic
+def set_packaging(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+    selections: dict[str, Any],
+) -> SpecificationSheet:
+    """Assign or clear one or more packaging slots on ``sheet``.
+
+    ``selections`` is a dict keyed by the FK slot name
+    (``packaging_lid``, ``packaging_container``, ``packaging_label``,
+    ``packaging_antitemper``). Each value is either a packaging
+    ``Item`` UUID or ``None`` to clear that slot. Slots not present in
+    the dict are untouched — the caller can update a single slot
+    without re-sending the others.
+
+    Every non-null selection is validated twice: the item must live in
+    the sheet's org ``packaging`` catalogue (prevents cross-tenant
+    attach), and its ``packaging_type`` attribute must match the slot
+    (prevents selecting a closure for the bottle row). Both failures
+    surface as :class:`PackagingItemNotAllowed` with a single error
+    code so the API layer can translate them uniformly.
+    """
+
+    catalogue: Catalogue | None = None
+
+    for slot, raw_id in selections.items():
+        if slot not in PACKAGING_SLOT_TYPES:
+            raise PackagingItemNotAllowed()
+
+        if raw_id is None or raw_id == "":
+            setattr(sheet, slot, None)
+            continue
+
+        if catalogue is None:
+            catalogue = Catalogue.objects.filter(
+                organization=sheet.organization, slug=PACKAGING_SLUG
+            ).first()
+            if catalogue is None:
+                raise PackagingItemNotAllowed()
+
+        item = Item.objects.filter(catalogue=catalogue, id=raw_id).first()
+        if item is None:
+            raise PackagingItemNotAllowed()
+
+        expected_type = PACKAGING_SLOT_TYPES[slot]
+        actual_type = (item.attributes or {}).get("packaging_type")
+        if actual_type != expected_type:
+            raise PackagingItemNotAllowed()
+
+        setattr(sheet, slot, item)
+
+    sheet.updated_by = actor
+    sheet.save()
+    return sheet
+
+
+@transaction.atomic
 def transition_status(
     *,
     sheet: SpecificationSheet,
@@ -296,7 +387,7 @@ def get_by_public_token(token: Any) -> SpecificationSheet:
 
     sheet = (
         SpecificationSheet.objects.select_related(
-            "formulation_version__formulation",
+            *_SHEET_RELATED,
             "organization",
         )
         .filter(public_token=token_uuid)
@@ -337,6 +428,26 @@ def _coerce_decimal(value: Any) -> Decimal | None:
         return Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+def _packaging_label(item: Item | None) -> str:
+    """Render a packaging slot for the spec sheet.
+
+    The slot shows the catalogue's internal code followed by the item
+    name (e.g. ``MA203258 · Closure 38mm CT Metal Gold``) when one is
+    picked, and falls back to the TBD placeholder when the slot is
+    still empty. Keeping both the code and the name side by side lets
+    procurement match the row against an SKU without opening the
+    underlying catalogue.
+    """
+
+    if item is None:
+        return PACKAGING_PLACEHOLDER
+    code = (item.internal_code or "").strip()
+    name = (item.name or "").strip()
+    if code and name:
+        return f"{code} · {name}"
+    return name or code or PACKAGING_PLACEHOLDER
 
 
 def _compute_filled_total_mg(
@@ -503,10 +614,10 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "amino_acids": amino_acids,
         "history": history,
         "packaging": {
-            "lid_description": PACKAGING_PLACEHOLDER,
-            "bottle_pouch_tub": PACKAGING_PLACEHOLDER,
-            "label_size": PACKAGING_PLACEHOLDER,
-            "antitemper": PACKAGING_PLACEHOLDER,
+            "lid_description": _packaging_label(sheet.packaging_lid),
+            "bottle_pouch_tub": _packaging_label(sheet.packaging_container),
+            "label_size": _packaging_label(sheet.packaging_label),
+            "antitemper": _packaging_label(sheet.packaging_antitemper),
             "unit_quantity": metadata.get("servings_per_pack"),
         },
         "limits": [

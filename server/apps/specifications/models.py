@@ -100,6 +100,57 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # Packaging selection — each slot points at one row in the org's
+    # ``packaging`` catalogue. Nullable so a sheet can be saved before
+    # packaging is finalised (F4.1 fills the four placeholders that
+    # currently render as ``TBD`` on the spec sheet). PROTECT stops a
+    # packaging row in active use from being silently deleted and
+    # orphaning the sheet's declared spec.
+    packaging_lid = models.ForeignKey(
+        "catalogues.Item",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="specification_sheets_as_lid",
+        help_text=_(
+            "Closure / lid from the org's packaging catalogue. "
+            "Renders on the spec sheet's Lid Description row."
+        ),
+    )
+    packaging_container = models.ForeignKey(
+        "catalogues.Item",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="specification_sheets_as_container",
+        help_text=_(
+            "Primary container (bottle, pouch, tub) from the packaging "
+            "catalogue. Renders on the spec sheet's Bottle/Pouch/Tub row."
+        ),
+    )
+    packaging_label = models.ForeignKey(
+        "catalogues.Item",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="specification_sheets_as_label",
+        help_text=_(
+            "Product label from the packaging catalogue. Renders on "
+            "the spec sheet's Label Size row."
+        ),
+    )
+    packaging_antitemper = models.ForeignKey(
+        "catalogues.Item",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="specification_sheets_as_antitemper",
+        help_text=_(
+            "Tamper-evidence component from the packaging catalogue. "
+            "Renders on the spec sheet's Antitemper row."
+        ),
+    )
+
     public_token = models.UUIDField(
         _("public token"),
         null=True,

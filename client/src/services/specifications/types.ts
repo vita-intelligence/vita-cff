@@ -40,6 +40,11 @@ export interface SpecificationSheetDto {
   readonly cover_notes: string;
   readonly total_weight_label: string;
   readonly public_token: string | null;
+  readonly packaging_lid: string | null;
+  readonly packaging_container: string | null;
+  readonly packaging_label: string | null;
+  readonly packaging_antitemper: string | null;
+  readonly packaging_details: PackagingDetails;
   readonly status: SpecificationStatus;
   readonly formulation_version: string;
   readonly formulation_id: string;
@@ -48,6 +53,50 @@ export interface SpecificationSheetDto {
   readonly created_at: string;
   readonly updated_at: string;
 }
+
+export const PACKAGING_SLOTS = [
+  "packaging_lid",
+  "packaging_container",
+  "packaging_label",
+  "packaging_antitemper",
+] as const;
+export type PackagingSlot = (typeof PACKAGING_SLOTS)[number];
+
+export interface PackagingOption {
+  readonly id: string;
+  readonly name: string;
+  readonly internal_code: string;
+}
+
+/** Response shape for the slot-scoped packaging search endpoint. */
+export interface PackagingOptionsPageDto {
+  readonly slot: PackagingSlot;
+  readonly limit: number;
+  readonly results: readonly PackagingOption[];
+}
+
+export interface PackagingDetails {
+  readonly lid: PackagingOption | null;
+  readonly container: PackagingOption | null;
+  readonly label: PackagingOption | null;
+  readonly antitemper: PackagingOption | null;
+}
+
+/** Shape of ``sheet.packaging_details`` — the four currently-selected
+ * items decorated with code + name so the picker can paint its
+ * preselected label without an extra round-trip. */
+export const PACKAGING_DETAIL_KEYS: Readonly<
+  Record<PackagingSlot, keyof PackagingDetails>
+> = {
+  packaging_lid: "lid",
+  packaging_container: "container",
+  packaging_label: "label",
+  packaging_antitemper: "antitemper",
+} as const;
+
+export type SetPackagingRequestDto = Partial<
+  Record<PackagingSlot, string | null>
+>;
 
 export interface PaginatedSpecificationsDto {
   readonly next: string | null;

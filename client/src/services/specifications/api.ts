@@ -7,8 +7,11 @@ import { apiClient } from "@/lib/api";
 import { specificationsEndpoints } from "./endpoints";
 import type {
   CreateSpecificationRequestDto,
+  PackagingOptionsPageDto,
+  PackagingSlot,
   PaginatedSpecificationsDto,
   RenderedSheetContext,
+  SetPackagingRequestDto,
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
@@ -96,6 +99,34 @@ export async function transitionSpecificationStatus(
 ): Promise<SpecificationSheetDto> {
   const { data } = await apiClient.post<SpecificationSheetDto>(
     specificationsEndpoints.status(orgId, sheetId),
+    payload,
+  );
+  return data;
+}
+
+export interface FetchPackagingOptionsArgs {
+  readonly slot: PackagingSlot;
+  readonly search?: string;
+  readonly limit?: number;
+}
+
+export async function fetchPackagingOptions(
+  orgId: string,
+  args: FetchPackagingOptionsArgs,
+): Promise<PackagingOptionsPageDto> {
+  const { data } = await apiClient.get<PackagingOptionsPageDto>(
+    specificationsEndpoints.packagingOptions(orgId, args),
+  );
+  return data;
+}
+
+export async function setSpecificationPackaging(
+  orgId: string,
+  sheetId: string,
+  payload: SetPackagingRequestDto,
+): Promise<SpecificationSheetDto> {
+  const { data } = await apiClient.post<SpecificationSheetDto>(
+    specificationsEndpoints.packaging(orgId, sheetId),
     payload,
   );
   return data;

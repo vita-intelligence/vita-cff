@@ -12,6 +12,21 @@ def _code(value: str) -> ErrorDetail:
     return ErrorDetail(value, code=value)
 
 
+def _packaging_summary(item) -> dict | None:
+    """Shape a selected packaging ``Item`` into the compact display
+    payload the frontend picker reads — ``None`` when the slot is
+    empty. Keeping this alongside the serializer (rather than on the
+    model) keeps the model free of DRF-shaped render logic."""
+
+    if item is None:
+        return None
+    return {
+        "id": str(item.id),
+        "name": item.name,
+        "internal_code": item.internal_code,
+    }
+
+
 class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     formulation_id = serializers.UUIDField(
         source="formulation_version.formulation_id", read_only=True
@@ -22,6 +37,20 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     formulation_version_number = serializers.IntegerField(
         source="formulation_version.version_number", read_only=True
     )
+    # Nested display metadata for the currently-selected packaging
+    # items. Ships the code + name alongside the raw FK UUID so the
+    # picker can render the preselected label without a second
+    # round-trip, even when the item is outside the search page the
+    # ComboBox most recently loaded.
+    packaging_details = serializers.SerializerMethodField()
+
+    def get_packaging_details(self, obj) -> dict:
+        return {
+            "lid": _packaging_summary(obj.packaging_lid),
+            "container": _packaging_summary(obj.packaging_container),
+            "label": _packaging_summary(obj.packaging_label),
+            "antitemper": _packaging_summary(obj.packaging_antitemper),
+        }
 
     class Meta:
         model = SpecificationSheet
@@ -36,6 +65,11 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "cover_notes",
             "total_weight_label",
             "public_token",
+            "packaging_lid",
+            "packaging_container",
+            "packaging_label",
+            "packaging_antitemper",
+            "packaging_details",
             "status",
             "formulation_version",
             "formulation_id",
@@ -102,4 +136,24 @@ class SpecificationStatusSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=SpecificationStatus.choices)
     notes = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=2000
+    )
+
+
+class SpecificationPackagingSerializer(serializers.Serializer):
+    """Payload for partial updates of the four packaging FK slots.
+
+    Every field is optional — the caller can update one slot and leave
+    the others untouched. Passing ``null`` clears the slot. The UUIDs
+    are validated downstream in the service against the org packaging
+    catalogue + ``packaging_type`` attribute, so this serializer only
+    enforces shape.
+    """
+
+    packaging_lid = serializers.UUIDField(required=False, allow_null=True)
+    packaging_container = serializers.UUIDField(
+        required=False, allow_null=True
+    )
+    packaging_label = serializers.UUIDField(required=False, allow_null=True)
+    packaging_antitemper = serializers.UUIDField(
+        required=False, allow_null=True
     )

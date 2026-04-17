@@ -7,6 +7,8 @@ from apps.specifications.api.views import (
     PublicSpecificationRenderView,
     SpecificationDetailView,
     SpecificationListCreateView,
+    SpecificationPackagingOptionsView,
+    SpecificationPackagingView,
     SpecificationPdfView,
     SpecificationPublicLinkView,
     SpecificationRenderView,
@@ -22,6 +24,11 @@ urlpatterns = [
         name="specification-list",
     ),
     path(
+        "organizations/<uuid:org_id>/specifications/packaging-options/",
+        SpecificationPackagingOptionsView.as_view(),
+        name="specification-packaging-options",
+    ),
+    path(
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/",
         SpecificationDetailView.as_view(),
         name="specification-detail",
@@ -35,6 +42,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/pdf/",
         SpecificationPdfView.as_view(),
         name="specification-pdf",
+    ),
+    path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/packaging/",
+        SpecificationPackagingView.as_view(),
+        name="specification-packaging",
     ),
     path(
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/public-link/",

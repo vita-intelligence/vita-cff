@@ -43,8 +43,23 @@
     "advance_to": "Advance to",
     "download_pdf": "Download PDF",
     "share_link": "Share link",
+    "edit_packaging": "Edit packaging",
     "delete": "Delete sheet",
     "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected."
+  },
+  "packaging": {
+    "title": "Pick packaging components",
+    "subtitle": "Search the packaging catalogue for each slot. Leave a slot blank to keep the TBD placeholder.",
+    "placeholder": "Search by code or name…",
+    "no_results": "No packaging matches this search.",
+    "clear": "Clear",
+    "save": "Save",
+    "slots": {
+      "packaging_lid": "Lid / Closure",
+      "packaging_container": "Bottle / Pouch / Tub",
+      "packaging_label": "Label",
+      "packaging_antitemper": "Antitemper"
+    }
   },
   "share": {
     "title": "Share client preview link",

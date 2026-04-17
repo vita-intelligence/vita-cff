@@ -17,6 +17,7 @@ import {
   type SpecificationSheetDto,
   type SpecificationStatus,
 } from "@/services/specifications";
+import { EditPackagingButton } from "./edit-packaging-button";
 import { SharePublicLinkButton } from "./share-public-link-button";
 
 
@@ -166,6 +167,9 @@ export function SpecificationSheetView({
           >
             {tSpecs("detail.download_pdf")}
           </a>
+          {canWrite ? (
+            <EditPackagingButton orgId={orgId} sheet={sheet} />
+          ) : null}
           {canWrite ? (
             <SharePublicLinkButton orgId={orgId} sheet={sheet} />
           ) : null}

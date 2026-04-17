@@ -19,18 +19,23 @@ import { rootQueryKey } from "@/lib/query";
 import {
   createSpecification,
   deleteSpecification,
+  fetchPackagingOptions,
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
+  setSpecificationPackaging,
   transitionSpecificationStatus,
   updateSpecification,
 } from "./api";
 import type {
   CreateSpecificationRequestDto,
+  PackagingOptionsPageDto,
+  PackagingSlot,
   PaginatedSpecificationsDto,
   RenderedSheetContext,
+  SetPackagingRequestDto,
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
@@ -44,6 +49,14 @@ export const specificationsQueryKeys = {
     [...specificationsQueryKeys.all, orgId, "detail", sheetId] as const,
   render: (orgId: string, sheetId: string) =>
     [...specificationsQueryKeys.all, orgId, "render", sheetId] as const,
+  packagingOptions: (orgId: string, slot: string, search: string) =>
+    [
+      ...specificationsQueryKeys.all,
+      orgId,
+      "packaging-options",
+      slot,
+      search,
+    ] as const,
 } as const;
 
 export function useInfiniteSpecifications(
@@ -160,6 +173,69 @@ export function useDeleteSpecification(
       });
       await queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.infinite(orgId),
+      });
+    },
+  });
+}
+
+export interface UsePackagingOptionsArgs {
+  readonly orgId: string;
+  readonly slot: PackagingSlot;
+  readonly search: string;
+  readonly enabled?: boolean;
+  readonly limit?: number;
+}
+
+/**
+ * Server-side search against the packaging catalogue for a single
+ * slot. Designed for the spec-sheet picker ComboBox: the caller
+ * debounces ``search`` keystrokes and we round-trip for each stable
+ * query. Results are cached per (slot, search) so arrow-key
+ * re-hydration after a close/open feels instant, but the cache
+ * goes stale fast (10s) so a catalogue edit on another tab
+ * surfaces quickly.
+ */
+export function usePackagingOptions({
+  orgId,
+  slot,
+  search,
+  enabled = true,
+  limit,
+}: UsePackagingOptionsArgs): UseQueryResult<
+  PackagingOptionsPageDto,
+  ApiError
+> {
+  return useQuery<PackagingOptionsPageDto, ApiError>({
+    queryKey: specificationsQueryKeys.packagingOptions(orgId, slot, search),
+    queryFn: () => fetchPackagingOptions(orgId, { slot, search, limit }),
+    enabled,
+    staleTime: 10_000,
+    // Keep the previous page's results in view while a new query
+    // resolves so the ComboBox does not flash to "no options"
+    // between keystrokes.
+    placeholderData: (prev) => prev,
+  });
+}
+
+export function useSetSpecificationPackaging(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<
+  SpecificationSheetDto,
+  ApiError,
+  SetPackagingRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<SpecificationSheetDto, ApiError, SetPackagingRequestDto>({
+    mutationFn: (payload) =>
+      setSpecificationPackaging(orgId, sheetId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        specificationsQueryKeys.detail(orgId, sheetId),
+        updated,
+      );
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.render(orgId, sheetId),
       });
     },
   });
