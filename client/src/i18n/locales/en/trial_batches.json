@@ -1,0 +1,55 @@
+{
+  "list": {
+    "title": "Trial batches",
+    "subtitle": "Scale any saved version out to a manufacturing run. Locks against the frozen snapshot so future catalogue edits cannot rewrite the BOM.",
+    "loading": "Loading batches…",
+    "empty": "No trial batches yet — plan one to see the procurement BOM.",
+    "untitled": "Untitled batch",
+    "packs": "packs",
+    "units": "units",
+    "created_by": "by {name}",
+    "view_bom": "View BOM",
+    "delete": "Delete",
+    "delete_confirm": "Delete this trial batch? The underlying formulation version is not affected."
+  },
+  "create": {
+    "trigger": "Plan batch",
+    "title": "Plan batch — {formulation}",
+    "subtitle": "Pick a saved version and enter the number of finished units the batch will produce.",
+    "version": "Version",
+    "batch_size": "Batch size (finished packs)",
+    "batch_size_hint": "Number of bottles / pouches / tubs the batch ships. The BOM math multiplies this by the formulation's units per pack to get total capsules / tablets / gummies.",
+    "label": "Label",
+    "label_placeholder": "Pilot run 2026-04-17",
+    "notes": "Notes",
+    "submit": "Plan batch",
+    "cancel": "Cancel",
+    "invalid_input": "Pick a version and enter a positive batch size."
+  },
+  "detail": {
+    "breadcrumb_untitled": "Trial batch",
+    "untitled": "Untitled batch",
+    "packs": "packs",
+    "units": "units",
+    "scale_equation": "{packs} packs × {perPack} per pack = {total} individual units",
+    "back": "Back to formulation",
+    "bom_title": "Bill of materials",
+    "fill_per_unit": "Fill weight per unit",
+    "fill_per_pack": "Fill weight per pack",
+    "fill_per_batch": "Fill weight per batch",
+    "shells_per_batch": "Empty shells per batch",
+    "each": "each",
+    "column": {
+      "code": "Code",
+      "material": "Raw material",
+      "mg_per_unit": "mg / unit",
+      "g_per_pack": "g / pack",
+      "kg_per_batch": "kg or each / batch"
+    },
+    "section": {
+      "active": "Active Ingredients",
+      "excipient": "Excipients",
+      "shell": "Capsule Shell"
+    }
+  }
+}

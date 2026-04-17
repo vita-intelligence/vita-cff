@@ -7,11 +7,13 @@ import { redirect } from "@/i18n/navigation";
 import {
   getCurrentUserServer,
   getFormulationServer,
+  getTrialBatchRenderServer,
+  getTrialBatchServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
-import { FormulationBuilder } from "./formulation-builder";
-import { TrialBatchesPanelWrapper } from "./trial-batches-panel-wrapper";
+import { TrialBatchDetail } from "./trial-batch-detail";
+
 
 function resolveFormulationsPermission(
   isOwner: boolean,
@@ -25,12 +27,13 @@ function resolveFormulationsPermission(
   return "none";
 }
 
-export default async function FormulationDetailPage({
+
+export default async function TrialBatchDetailPage({
   params,
 }: {
-  params: Promise<{ locale: string; id: string }>;
+  params: Promise<{ locale: string; id: string; batchId: string }>;
 }) {
-  const { locale, id } = await params;
+  const { locale, id, batchId } = await params;
   setRequestLocale(locale);
 
   const user = await getCurrentUserServer();
@@ -53,16 +56,20 @@ export default async function FormulationDetailPage({
     redirect({ href: "/formulations", locale });
   }
 
-  const formulation = await getFormulationServer(primaryOrg.id, id);
-  if (!formulation) {
+  const [formulation, batch, bom] = await Promise.all([
+    getFormulationServer(primaryOrg.id, id),
+    getTrialBatchServer(primaryOrg.id, batchId),
+    getTrialBatchRenderServer(primaryOrg.id, batchId),
+  ]);
+  if (!formulation || !batch || !bom) {
     notFound();
   }
 
   const canWrite = level === "write" || level === "admin";
-  const canAdmin = level === "admin";
 
   const tCommon = await getTranslations("common");
   const tNav = await getTranslations("navigation");
+  const tBatches = await getTranslations("trial_batches");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
@@ -74,23 +81,24 @@ export default async function FormulationDetailPage({
             items={[
               { label: tNav("main.dashboard"), href: "/home" },
               { label: tNav("main.formulations"), href: "/formulations" },
-              { label: formulation.name },
+              {
+                label: formulation.name,
+                href: `/formulations/${formulation.id}`,
+              },
+              {
+                label:
+                  batch.label || tBatches("detail.breadcrumb_untitled"),
+              },
             ]}
           />
         </section>
 
-        <FormulationBuilder
-          orgId={primaryOrg.id}
-          initialFormulation={formulation}
-          canWrite={canWrite}
-        />
-
-        <TrialBatchesPanelWrapper
+        <TrialBatchDetail
           orgId={primaryOrg.id}
           formulationId={formulation.id}
-          formulationName={formulation.name}
+          initialBatch={batch}
+          initialBom={bom}
           canWrite={canWrite}
-          canDelete={canAdmin}
         />
 
         <footer className="mt-10 flex items-center justify-between border-t-2 border-ink-1000 pt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500">

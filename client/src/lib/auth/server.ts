@@ -26,6 +26,11 @@ import type {
   RenderedSheetContext,
   SpecificationSheetDto,
 } from "@/services/specifications/types";
+import { trialBatchesEndpoints } from "@/services/trial_batches/endpoints";
+import type {
+  BOMResult,
+  TrialBatchDto,
+} from "@/services/trial_batches/types";
 
 async function buildCookieHeader(): Promise<string> {
   const cookieStore = await cookies();
@@ -208,6 +213,24 @@ export async function getRenderedSpecificationServer(
 ): Promise<RenderedSheetContext | null> {
   return serverFetch<RenderedSheetContext>(
     specificationsEndpoints.render(orgId, sheetId),
+  );
+}
+
+export async function getTrialBatchServer(
+  orgId: string,
+  batchId: string,
+): Promise<TrialBatchDto | null> {
+  return serverFetch<TrialBatchDto>(
+    trialBatchesEndpoints.detail(orgId, batchId),
+  );
+}
+
+export async function getTrialBatchRenderServer(
+  orgId: string,
+  batchId: string,
+): Promise<BOMResult | null> {
+  return serverFetch<BOMResult>(
+    trialBatchesEndpoints.render(orgId, batchId),
   );
 }
 
