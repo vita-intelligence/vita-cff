@@ -16,11 +16,13 @@ workflow:
 
 from __future__ import annotations
 
+import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.db import transaction
 from django.db.models import QuerySet
+from django.template.loader import render_to_string
 
 from apps.formulations.constants import DosageForm, capsule_size_by_key
 from apps.formulations.models import FormulationVersion
@@ -31,7 +33,11 @@ from apps.specifications.constants import (
     DEFAULT_WEIGHT_UNIFORMITY_PCT,
     PACKAGING_PLACEHOLDER,
 )
-from apps.specifications.models import SpecificationSheet, SpecificationStatus
+from apps.specifications.models import (
+    SpecificationSheet,
+    SpecificationStatus,
+    SpecificationTransition,
+)
 
 
 class SpecificationNotFound(Exception):
@@ -48,6 +54,15 @@ class FormulationVersionNotInOrg(Exception):
 
 class InvalidStatusTransition(Exception):
     code = "invalid_status_transition"
+
+
+class PublicLinkNotEnabled(Exception):
+    """The sheet the caller looked up by token has had its public link
+    revoked or never had one issued. Surfaces as 404 — we deliberately
+    do not distinguish between "never shared" and "link revoked" so a
+    stale link leaks no information about what the sheet became."""
+
+    code = "public_link_not_enabled"
 
 
 #: Allowed status moves. The spec sheet cannot jump arbitrarily; the
@@ -196,15 +211,99 @@ def transition_status(
     sheet: SpecificationSheet,
     actor: Any,
     next_status: str,
+    notes: str = "",
 ) -> SpecificationSheet:
+    """Move the sheet one state forward and stamp an audit row.
+
+    The :class:`SpecificationTransition` insert and the sheet's
+    ``status`` write share a single transaction — if either fails,
+    neither lands, so the audit log cannot drift behind the sheet's
+    headline status. Same-state transitions are a no-op (no row
+    written) to keep the history clean of accidental re-clicks.
+    """
+
     if next_status == sheet.status:
         return sheet
     allowed = ALLOWED_TRANSITIONS.get(sheet.status, frozenset())
     if next_status not in allowed:
         raise InvalidStatusTransition()
+
+    previous_status = sheet.status
     sheet.status = next_status
     sheet.updated_by = actor
     sheet.save(update_fields=["status", "updated_by", "updated_at"])
+
+    SpecificationTransition.objects.create(
+        sheet=sheet,
+        from_status=previous_status,
+        to_status=next_status,
+        actor=actor,
+        notes=(notes or "").strip(),
+    )
+    return sheet
+
+
+# ---------------------------------------------------------------------------
+# Public preview link (F3.2) — token-gated read-only sharing
+# ---------------------------------------------------------------------------
+
+
+@transaction.atomic
+def rotate_public_token(
+    *, sheet: SpecificationSheet, actor: Any
+) -> SpecificationSheet:
+    """Issue a fresh opaque UUID as the sheet's public token.
+
+    Calling this on a sheet that already had a token invalidates the
+    previous one in the same write — useful when a client shares a
+    link more widely than intended and the scientist wants to cut off
+    access without deleting the sheet.
+    """
+
+    sheet.public_token = uuid.uuid4()
+    sheet.updated_by = actor
+    sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
+    return sheet
+
+
+@transaction.atomic
+def revoke_public_token(
+    *, sheet: SpecificationSheet, actor: Any
+) -> SpecificationSheet:
+    """Clear the sheet's public token so no one can hit the preview
+    URL. Idempotent — calling on an already-revoked sheet is a no-op
+    for the token but still bumps ``updated_by``/``updated_at``."""
+
+    sheet.public_token = None
+    sheet.updated_by = actor
+    sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
+    return sheet
+
+
+def get_by_public_token(token: Any) -> SpecificationSheet:
+    """Look up a sheet by its public token.
+
+    Raises :class:`PublicLinkNotEnabled` both when the token is
+    malformed, when no sheet matches, and when a sheet exists but its
+    token has since been revoked. A single error code keeps the public
+    endpoint from leaking "this sheet exists but you can't see it".
+    """
+
+    try:
+        token_uuid = uuid.UUID(str(token))
+    except (ValueError, TypeError) as exc:
+        raise PublicLinkNotEnabled() from exc
+
+    sheet = (
+        SpecificationSheet.objects.select_related(
+            "formulation_version__formulation",
+            "organization",
+        )
+        .filter(public_token=token_uuid)
+        .first()
+    )
+    if sheet is None:
+        raise PublicLinkNotEnabled()
     return sheet
 
 
@@ -333,6 +432,23 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         fill_weight_mg=totals.get("total_weight_mg"),
     )
 
+    # Transition history — newest first. Serialized inline rather
+    # than behind a separate endpoint so the browser view and the PDF
+    # render from the same payload without a second round-trip.
+    history = [
+        {
+            "id": str(t.id),
+            "from_status": t.from_status,
+            "to_status": t.to_status,
+            "actor_id": str(t.actor_id),
+            "actor_name": (t.actor.get_full_name() or t.actor.email).strip(),
+            "actor_email": t.actor.email,
+            "notes": t.notes,
+            "created_at": t.created_at.isoformat(),
+        }
+        for t in sheet.transitions.select_related("actor").all()
+    ]
+
     return {
         "sheet": {
             "id": str(sheet.id),
@@ -385,6 +501,7 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "declaration": declaration,
         "nutrition": nutrition,
         "amino_acids": amino_acids,
+        "history": history,
         "packaging": {
             "lid_description": PACKAGING_PLACEHOLDER,
             "bottle_pouch_tub": PACKAGING_PLACEHOLDER,
@@ -398,3 +515,173 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         ],
         "weight_uniformity": DEFAULT_WEIGHT_UNIFORMITY_PCT,
     }
+
+
+# ---------------------------------------------------------------------------
+# PDF rendering (F3.1) — WeasyPrint + Django template
+# ---------------------------------------------------------------------------
+
+
+#: Display labels for the nutrition rows, indexed by the catalogue key.
+#: Mirrors the ``nutrition_rows.*`` translations the React view uses so
+#: the PDF reads identically to the browser sheet.
+_NUTRITION_ROW_LABELS: dict[str, str] = {
+    "energy_kj": "Energy kJ",
+    "energy_kcal": "Energy kcal",
+    "fat": "Fat",
+    "fat_saturated": "of which saturates",
+    "carbohydrate": "Carbohydrate",
+    "sugar": "of which sugar",
+    "fibre": "Fibre",
+    "protein": "Protein",
+    "salt": "Salt",
+}
+
+#: The nine-row subset the browser view renders. Excludes the
+#: ``fat_monounsaturated`` / ``fat_polyunsaturated`` aggregates which
+#: are captured on the raw material but not surfaced on the client
+#: sheet (they live in the snapshot for completeness, not display).
+_NUTRITION_ROW_ORDER: tuple[str, ...] = (
+    "energy_kj",
+    "energy_kcal",
+    "fat",
+    "fat_saturated",
+    "carbohydrate",
+    "sugar",
+    "fibre",
+    "protein",
+    "salt",
+)
+
+_AMINO_GROUP_LABELS: dict[str, str] = {
+    "essential": "Essential Amino Acids",
+    "conditionally_essential": "Conditionally Essential Amino Acids",
+    "non_essential": "Non-Essential Amino Acids",
+}
+
+_AMINO_ACID_LABELS: dict[str, str] = {
+    "isoleucine": "Isoleucine",
+    "leucine": "Leucine",
+    "lysine": "Lysine",
+    "methionine": "Methionine",
+    "phenylalanine": "Phenylalanine",
+    "threonine": "Threonine",
+    "tryptophan": "Tryptophan",
+    "valine": "Valine",
+    "arginine": "Arginine",
+    "cystine": "Cystine",
+    "glutamic_acid": "Glutamic acid",
+    "histidine": "Histidine",
+    "proline": "Proline",
+    "tyrosine": "Tyrosine",
+    "alanine": "Alanine",
+    "asparatic_acid": "Aspartic acid",
+    "glycine": "Glycine",
+    "serine": "Serine",
+}
+
+
+def _resolve_total_weight_display(context: dict[str, Any]) -> str:
+    """Mirror the React view's Total Weight (mg) resolution: explicit
+    override wins → computed filled weight → ``TBC``."""
+
+    override = (context["sheet"].get("total_weight_label") or "").strip()
+    if override:
+        return override
+    filled = context["totals"].get("filled_total_mg")
+    if filled:
+        try:
+            return f"{Decimal(str(filled)):.2f} mg"
+        except (InvalidOperation, ValueError, TypeError):
+            pass
+    return "TBC"
+
+
+def _prepare_template_context(context: dict[str, Any]) -> dict[str, Any]:
+    """Shape the flat ``render_context`` payload into the extra
+    fields the PDF template relies on (labelled nutrition rows,
+    ordered amino groups, the resolved Total Weight cell)."""
+
+    # Nutrition rows — map backend keys to display labels, preserving
+    # the view order. Missing rows render as zero via the template
+    # filter, matching the React view's behaviour.
+    rows_by_key = {row["key"]: row for row in context["nutrition"].get("rows", [])}
+    nutrition_rows = [
+        {
+            "key": key,
+            "label": _NUTRITION_ROW_LABELS[key],
+            "per_serving": rows_by_key.get(key, {}).get("per_serving"),
+            "per_100g": rows_by_key.get(key, {}).get("per_100g"),
+            "contributors": rows_by_key.get(key, {}).get("contributors", 0),
+        }
+        for key in _NUTRITION_ROW_ORDER
+    ]
+
+    amino_groups = []
+    for group in context["amino_acids"].get("groups", []):
+        amino_groups.append(
+            {
+                "key": group["key"],
+                "label": _AMINO_GROUP_LABELS.get(group["key"], group["key"]),
+                "acids": [
+                    {
+                        "key": acid["key"],
+                        "label": _AMINO_ACID_LABELS.get(
+                            acid["key"], acid["key"].replace("_", " ").title()
+                        ),
+                        "per_serving": acid.get("per_serving"),
+                        "per_100g": acid.get("per_100g"),
+                        "contributors": acid.get("contributors", 0),
+                    }
+                    for acid in group.get("acids", [])
+                ],
+            }
+        )
+
+    nutrition_has_data = any(
+        row.get("contributors", 0) > 0 for row in context["nutrition"].get("rows", [])
+    ) or any(
+        acid.get("contributors", 0) > 0
+        for group in context["amino_acids"].get("groups", [])
+        for acid in group.get("acids", [])
+    )
+    contributor_count = max(
+        (row.get("contributors", 0) for row in context["nutrition"].get("rows", [])),
+        default=0,
+    )
+
+    return {
+        **context,
+        "nutrition_rows": nutrition_rows,
+        "amino_groups": amino_groups,
+        "nutrition_has_data": nutrition_has_data,
+        "nutrition_contributor_count": contributor_count,
+        "total_weight_display": _resolve_total_weight_display(context),
+    }
+
+
+def render_pdf(sheet: SpecificationSheet) -> tuple[bytes, str]:
+    """Render the spec sheet to a PDF byte string.
+
+    Returns ``(pdf_bytes, suggested_filename)``. The filename mirrors
+    the workbook's "``<sheet-code>`` v\\ ``<version>``" convention so a
+    scientist filing the PDF on disk can trace it back to the sheet +
+    version without opening it.
+    """
+
+    # Lazy import so missing system libraries do not break test
+    # collection for unrelated apps — WeasyPrint imports cairo/pango
+    # shared libraries at module load.
+    from weasyprint import HTML  # noqa: WPS433
+
+    context = render_context(sheet)
+    template_context = _prepare_template_context(context)
+    html_string = render_to_string(
+        "specifications/sheet.html", template_context
+    )
+    pdf_bytes = HTML(string=html_string).write_pdf()
+
+    code = (sheet.code or str(sheet.id)[:8]).strip().replace(" ", "-")
+    version_number = sheet.formulation_version.version_number
+    filename = f"{code}-v{version_number}.pdf"
+    return pdf_bytes, filename

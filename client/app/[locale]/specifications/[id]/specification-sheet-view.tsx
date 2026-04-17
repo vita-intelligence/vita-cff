@@ -9,12 +9,15 @@ import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import {
   ALLOWED_TRANSITIONS,
+  specificationsEndpoints,
   useDeleteSpecification,
   useTransitionSpecificationStatus,
   type RenderedSheetContext,
+  type RenderedTransition,
   type SpecificationSheetDto,
   type SpecificationStatus,
 } from "@/services/specifications";
+import { SharePublicLinkButton } from "./share-public-link-button";
 
 
 const NUTRITION_ROW_KEYS: readonly (
@@ -147,15 +150,25 @@ export function SpecificationSheetView({
                 </Button>
               ))
             : null}
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className="rounded-none border-2 font-bold tracking-wider uppercase"
-            onClick={() => window.print()}
+          {/*
+            Renders an anchor styled as a button so the browser handles
+            the binary PDF download natively — cookie auth rides along
+            on same-origin navigation. Falling back to window.print()
+            would give the scientist a screenshot-quality page; the
+            WeasyPrint output is a consistent client deliverable.
+          */}
+          <a
+            href={specificationsEndpoints.pdf(orgId, sheet.id, {
+              download: true,
+            })}
+            download
+            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
           >
-            {tSpecs("detail.print")}
-          </Button>
+            {tSpecs("detail.download_pdf")}
+          </a>
+          {canWrite ? (
+            <SharePublicLinkButton orgId={orgId} sheet={sheet} />
+          ) : null}
           {canAdmin ? (
             <Button
               type="button"
@@ -183,8 +196,28 @@ export function SpecificationSheetView({
       {/* ------------------------------------------------------------ */}
       {/* The spec sheet itself                                         */}
       {/* ------------------------------------------------------------ */}
+      <SpecSheetContent rendered={rendered} />
+    </div>
+  );
+}
+
+
+/**
+ * Pure presentational renderer for the spec sheet body. Takes only
+ * the render-context view-model — no org context, no permissions, no
+ * mutations. Reused by the authenticated detail page and the public
+ * client-preview page so both see pixel-identical output.
+ */
+export function SpecSheetContent({
+  rendered,
+}: {
+  rendered: RenderedSheetContext;
+}) {
+  const tSpecs = useTranslations("specifications");
+
+  return (
       <article className="border-2 border-ink-1000 bg-ink-0 p-6 md:p-10 print:border-0 print:p-0">
-        {sheet.status === "draft" ? (
+        {rendered.sheet.status === "draft" ? (
           <p className="mb-4 border-2 border-ink-500 bg-ink-100 px-3 py-2 text-center font-mono text-[10px] tracking-widest uppercase text-ink-700">
             {tSpecs("sheet.signature.draft_watermark")}
           </p>
@@ -245,7 +278,7 @@ export function SpecificationSheetView({
               />
               <KeyValue
                 label={tSpecs("sheet.fields.total_weight")}
-                value={resolveTotalWeight(rendered, sheet)}
+                value={resolveTotalWeight(rendered)}
               />
               <KeyValue
                 label={tSpecs("sheet.fields.weight_uniformity")}
@@ -324,6 +357,14 @@ export function SpecificationSheetView({
               <SignatureBox
                 label={tSpecs("sheet.signature.director")}
                 dateLabel={tSpecs("sheet.signature.sign_date")}
+              />
+              <HistoryPanel
+                entries={rendered.history}
+                emptyLabel={tSpecs("sheet.history.empty")}
+                title={tSpecs("sheet.history.title")}
+                statusLabel={(key) =>
+                  tSpecs(`status.${key}` as `status.draft`)
+                }
               />
             </SheetSection>
           </section>
@@ -520,7 +561,6 @@ export function SpecificationSheetView({
           </section>
         </div>
       </article>
-    </div>
   );
 }
 
@@ -550,6 +590,89 @@ function KeyValue({ label, value }: { label: string; value: string }) {
       <span className="text-right font-bold text-ink-1000">{value}</span>
     </div>
   );
+}
+
+
+function HistoryPanel({
+  entries,
+  title,
+  emptyLabel,
+  statusLabel,
+}: {
+  entries: readonly RenderedTransition[];
+  title: string;
+  emptyLabel: string;
+  statusLabel: (key: SpecificationStatus) => string;
+}) {
+  if (entries.length === 0) {
+    return (
+      <p className="mt-3 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        {emptyLabel}
+      </p>
+    );
+  }
+  return (
+    <div className="mt-4">
+      <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        {title}
+      </p>
+      <ul className="mt-2 flex flex-col gap-2 border-t border-ink-500 pt-2 font-mono text-[10px] text-ink-700">
+        {entries.map((entry) => (
+          <li key={entry.id} className="flex flex-col gap-0.5">
+            <span className="tracking-widest uppercase">
+              {statusLabel(entry.from_status)} → {statusLabel(entry.to_status)}
+            </span>
+            <span className="text-ink-500">
+              {entry.actor_name} · {formatTimestamp(entry.created_at)}
+            </span>
+            {entry.notes ? (
+              <span className="text-ink-700 italic normal-case tracking-normal">
+                {entry.notes}
+              </span>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+
+/**
+ * Deterministic UTC timestamp formatter.
+ *
+ * We intentionally do *not* use ``toLocaleString`` — its output depends
+ * on the runtime's default locale and timezone, which differs between
+ * the Node SSR process and the user's browser, and produces hydration
+ * mismatches on the public preview page. Rendering in UTC with a
+ * hand-picked format keeps server and client byte-identical and also
+ * matches the PDF output, so a scientist comparing the three surfaces
+ * sees the same stamp in every place.
+ */
+const MONTH_ABBREVIATIONS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const month = MONTH_ABBREVIATIONS[d.getUTCMonth()];
+  const year = d.getUTCFullYear();
+  const hour = String(d.getUTCHours()).padStart(2, "0");
+  const minute = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${day} ${month} ${year}, ${hour}:${minute} UTC`;
 }
 
 
@@ -591,11 +714,8 @@ function formatMg(value: string | null | undefined): string {
  * the highest-priority lane lets a scientist stamp a measured weight
  * once the manufacturer confirms the exact shell supplied.
  */
-function resolveTotalWeight(
-  rendered: RenderedSheetContext,
-  sheet: SpecificationSheetDto,
-): string {
-  const override = sheet.total_weight_label.trim();
+function resolveTotalWeight(rendered: RenderedSheetContext): string {
+  const override = (rendered.sheet.total_weight_label ?? "").trim();
   if (override !== "") return override;
   const computed = formatMg(rendered.totals.filled_total_mg);
   if (computed !== "—") return computed;

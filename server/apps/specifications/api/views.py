@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.exceptions import NotFound
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -20,12 +22,17 @@ from apps.specifications.api.serializers import (
 from apps.specifications.services import (
     FormulationVersionNotInOrg,
     InvalidStatusTransition,
+    PublicLinkNotEnabled,
     SpecificationCodeConflict,
     SpecificationNotFound,
     create_sheet,
+    get_by_public_token,
     get_sheet,
     list_sheets,
     render_context,
+    render_pdf,
+    revoke_public_token,
+    rotate_public_token,
     transition_status,
     update_sheet,
 )
@@ -172,6 +179,7 @@ class SpecificationStatusView(APIView):
                 sheet=sheet,
                 actor=request.user,
                 next_status=serializer.validated_data["status"],
+                notes=serializer.validated_data.get("notes", ""),
             )
         except InvalidStatusTransition:
             return Response(
@@ -204,3 +212,125 @@ class SpecificationRenderView(APIView):
         except SpecificationNotFound as exc:
             raise NotFound() from exc
         return Response(render_context(sheet), status=status.HTTP_200_OK)
+
+
+class SpecificationPdfView(APIView):
+    """``GET`` ``/.../specifications/<id>/pdf/``.
+
+    Streams a WeasyPrint-generated PDF of the spec sheet. Same
+    read-only permission as the JSON render endpoint — anyone who can
+    view the sheet in the browser can download it as PDF.
+    """
+
+    permission_classes = (HasSpecificationsPermission,)
+    required_level = PermissionLevel.READ
+
+    def get(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> HttpResponse:
+        try:
+            sheet = get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+        pdf_bytes, filename = render_pdf(sheet)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        # ``inline`` lets the browser preview in-tab; the frontend
+        # adds ?download=1 when it wants to force a save-as dialog.
+        disposition = (
+            "attachment"
+            if request.query_params.get("download") in {"1", "true"}
+            else "inline"
+        )
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{filename}"'
+        )
+        return response
+
+
+class SpecificationPublicLinkView(APIView):
+    """``POST`` rotates (or issues) the sheet's public preview token;
+    ``DELETE`` revokes it. Writer permission required — only someone
+    who can mutate the sheet should be able to publish it."""
+
+    permission_classes = (HasSpecificationsPermission,)
+    required_level = PermissionLevel.WRITE
+
+    def _load(self, sheet_id: str):
+        try:
+            return get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+    def post(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> Response:
+        sheet = self._load(sheet_id)
+        updated = rotate_public_token(sheet=sheet, actor=request.user)
+        return Response(
+            SpecificationSheetReadSerializer(updated).data,
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> Response:
+        sheet = self._load(sheet_id)
+        revoke_public_token(sheet=sheet, actor=request.user)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Public (token-gated, no authentication) endpoints
+# ---------------------------------------------------------------------------
+
+
+class PublicSpecificationRenderView(APIView):
+    """``GET`` ``/api/public/specifications/<token>/``.
+
+    Unauthenticated read-only render of a shared sheet. Identical
+    payload to :class:`SpecificationRenderView` so the same frontend
+    component can consume it. Returns 404 for any malformed, unknown,
+    or revoked token — the single error code deliberately blurs the
+    distinction so a leaked link cannot be probed.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> Response:
+        try:
+            sheet = get_by_public_token(token)
+        except PublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+        return Response(render_context(sheet), status=status.HTTP_200_OK)
+
+
+class PublicSpecificationPdfView(APIView):
+    """Token-gated PDF download — same body as the authenticated PDF
+    view but reached via the public token."""
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> HttpResponse:
+        try:
+            sheet = get_by_public_token(token)
+        except PublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        pdf_bytes, filename = render_pdf(sheet)
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        disposition = (
+            "attachment"
+            if request.query_params.get("download") in {"1", "true"}
+            else "inline"
+        )
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{filename}"'
+        )
+        return response

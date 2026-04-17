@@ -100,3 +100,37 @@ export async function transitionSpecificationStatus(
   );
   return data;
 }
+
+export async function rotateSpecificationPublicLink(
+  orgId: string,
+  sheetId: string,
+): Promise<SpecificationSheetDto> {
+  const { data } = await apiClient.post<SpecificationSheetDto>(
+    specificationsEndpoints.publicLink(orgId, sheetId),
+  );
+  return data;
+}
+
+export async function revokeSpecificationPublicLink(
+  orgId: string,
+  sheetId: string,
+): Promise<void> {
+  await apiClient.delete(specificationsEndpoints.publicLink(orgId, sheetId));
+}
+
+export async function fetchPublicRenderedSpecification(
+  token: string,
+): Promise<RenderedSheetContext> {
+  // Bypasses the shared Axios client to avoid the auth interceptors —
+  // the public endpoint intentionally rejects credentials so we hit
+  // it with plain ``fetch`` instead.
+  const res = await fetch(specificationsEndpoints.publicRender(token), {
+    method: "GET",
+    credentials: "omit",
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`public_render_failed_${res.status}`);
+  }
+  return (await res.json()) as RenderedSheetContext;
+}

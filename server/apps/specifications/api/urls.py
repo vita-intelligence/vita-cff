@@ -3,8 +3,12 @@
 from django.urls import path
 
 from apps.specifications.api.views import (
+    PublicSpecificationPdfView,
+    PublicSpecificationRenderView,
     SpecificationDetailView,
     SpecificationListCreateView,
+    SpecificationPdfView,
+    SpecificationPublicLinkView,
     SpecificationRenderView,
     SpecificationStatusView,
 )
@@ -28,8 +32,30 @@ urlpatterns = [
         name="specification-render",
     ),
     path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/pdf/",
+        SpecificationPdfView.as_view(),
+        name="specification-pdf",
+    ),
+    path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/public-link/",
+        SpecificationPublicLinkView.as_view(),
+        name="specification-public-link",
+    ),
+    path(
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/status/",
         SpecificationStatusView.as_view(),
         name="specification-status",
+    ),
+    # Unauthenticated preview endpoints — gated by an opaque UUID
+    # token rather than the org/sheet id so neither leaks on the wire.
+    path(
+        "public/specifications/<uuid:token>/",
+        PublicSpecificationRenderView.as_view(),
+        name="public-specification-render",
+    ),
+    path(
+        "public/specifications/<uuid:token>/pdf/",
+        PublicSpecificationPdfView.as_view(),
+        name="public-specification-pdf",
     ),
 ]

@@ -212,6 +212,37 @@ export async function getRenderedSpecificationServer(
 }
 
 /**
+ * Fetch a publicly-shared specification sheet by its token, server-
+ * side and without forwarding any caller cookies.
+ *
+ * The public render endpoint ignores auth — a valid token is both
+ * necessary and sufficient. We bypass :func:`serverFetch` so an
+ * inbound user's session cookie (if any) is not attached; the public
+ * preview page should never differ based on whether the viewer
+ * happens to be logged in elsewhere in the app.
+ */
+export async function getPublicRenderedSpecificationServer(
+  token: string,
+): Promise<RenderedSheetContext | null> {
+  try {
+    const response = await fetch(
+      `${env.NEXT_PUBLIC_API_URL}${specificationsEndpoints.publicRender(token)}`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as RenderedSheetContext;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Fetch the typed attribute definitions for an organization's
  * catalogue. Active-only by default; pass ``includeArchived`` to see
  * archived definitions too (used on the fields management page).

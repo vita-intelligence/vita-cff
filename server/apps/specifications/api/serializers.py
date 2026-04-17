@@ -35,6 +35,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "final_price",
             "cover_notes",
             "total_weight_label",
+            "public_token",
             "status",
             "formulation_version",
             "formulation_id",
@@ -99,3 +100,6 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
 
 class SpecificationStatusSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=SpecificationStatus.choices)
+    notes = serializers.CharField(
+        required=False, allow_blank=True, default="", max_length=2000
+    )

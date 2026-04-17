@@ -39,6 +39,7 @@ export interface SpecificationSheetDto {
   readonly final_price: string | null;
   readonly cover_notes: string;
   readonly total_weight_label: string;
+  readonly public_token: string | null;
   readonly status: SpecificationStatus;
   readonly formulation_version: string;
   readonly formulation_id: string;
@@ -72,6 +73,7 @@ export type UpdateSpecificationRequestDto = Partial<
 
 export interface TransitionStatusRequestDto {
   readonly status: SpecificationStatus;
+  readonly notes?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +132,17 @@ export interface RenderedAminoAcids {
   readonly groups: readonly RenderedAminoGroup[];
 }
 
+export interface RenderedTransition {
+  readonly id: string;
+  readonly from_status: SpecificationStatus;
+  readonly to_status: SpecificationStatus;
+  readonly actor_id: string;
+  readonly actor_name: string;
+  readonly actor_email: string;
+  readonly notes: string;
+  readonly created_at: string;
+}
+
 export interface RenderedSheetContext {
   readonly sheet: SpecificationSheetDto;
   readonly formulation: {
@@ -172,6 +185,7 @@ export interface RenderedSheetContext {
   readonly declaration: RenderedDeclaration;
   readonly nutrition: RenderedNutrition;
   readonly amino_acids: RenderedAminoAcids;
+  readonly history: readonly RenderedTransition[];
   readonly packaging: {
     readonly lid_description: string;
     readonly bottle_pouch_tub: string;

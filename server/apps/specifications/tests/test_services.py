@@ -183,6 +183,7 @@ class TestRenderContext:
             "declaration",
             "nutrition",
             "amino_acids",
+            "history",
             "packaging",
             "limits",
             "weight_uniformity",

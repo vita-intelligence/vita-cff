@@ -1,0 +1,398 @@
+{% load specifications_extras %}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Product Specification Sheet — {{ formulation.name }}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 14mm 12mm 16mm;
+      @bottom-right {
+        content: "Page " counter(page) " / " counter(pages);
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        font-size: 8pt;
+        color: #555;
+      }
+      @bottom-left {
+        content: "Vita NPD · {{ formulation.code|default:formulation.name }}";
+        font-family: "Helvetica Neue", Arial, sans-serif;
+        font-size: 8pt;
+        color: #555;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-size: 9pt;
+      line-height: 1.35;
+      color: #111;
+    }
+    .mono { font-family: "Courier New", Courier, monospace; }
+    .uppercase { text-transform: uppercase; letter-spacing: 0.08em; }
+    .muted { color: #555; }
+    .title {
+      font-size: 18pt;
+      font-weight: 900;
+      letter-spacing: -0.01em;
+      margin: 0 0 2mm;
+    }
+    .subtitle {
+      font-size: 9pt;
+      color: #555;
+      margin: 0 0 6mm;
+      font-family: "Courier New", Courier, monospace;
+    }
+    .watermark {
+      border: 1.5pt solid #bbb;
+      background: #f4f4f2;
+      color: #555;
+      text-align: center;
+      font-size: 8pt;
+      font-family: "Courier New", Courier, monospace;
+      letter-spacing: 0.1em;
+      padding: 2mm;
+      margin-bottom: 4mm;
+      text-transform: uppercase;
+    }
+
+    .row { display: flex; gap: 6mm; }
+    .col { flex: 1; min-width: 0; }
+
+    section.panel {
+      border: 1.2pt solid #111;
+      padding: 3mm 3.5mm;
+      margin-bottom: 4mm;
+      break-inside: avoid;
+    }
+    section.panel h2 {
+      font-size: 8pt;
+      font-family: "Courier New", Courier, monospace;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: #333;
+      margin: 0 0 2.5mm;
+      padding-bottom: 1.5mm;
+      border-bottom: 1.2pt solid #111;
+      font-weight: 700;
+    }
+
+    dl.kv { margin: 0; padding: 0; }
+    dl.kv > div {
+      display: flex;
+      justify-content: space-between;
+      gap: 4mm;
+      padding: 0.4mm 0;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 8.5pt;
+    }
+    dl.kv dt { color: #555; margin: 0; font-weight: 400; }
+    dl.kv dd { margin: 0; font-weight: 700; text-align: right; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8.5pt;
+    }
+    th, td {
+      text-align: left;
+      padding: 1.2mm 1.6mm;
+      vertical-align: top;
+    }
+    thead th {
+      border-bottom: 1.2pt solid #111;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 7pt;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #333;
+      font-weight: 700;
+    }
+    tbody tr { border-bottom: 0.5pt solid #ddd; }
+    tbody tr:last-child { border-bottom: none; }
+    td.num { text-align: right; font-family: "Courier New", Courier, monospace; }
+
+    .group-row td {
+      background: #f4f4f2;
+      font-family: "Courier New", Courier, monospace;
+      text-transform: uppercase;
+      font-size: 7pt;
+      letter-spacing: 0.12em;
+      color: #333;
+      padding-top: 1.6mm;
+      padding-bottom: 1.6mm;
+    }
+
+    .declaration {
+      font-family: "Georgia", "Times New Roman", serif;
+      font-size: 9.5pt;
+      line-height: 1.45;
+      color: #111;
+    }
+
+    .signatures-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4mm;
+    }
+    .signature-box {
+      border-top: 0.8pt solid #111;
+      padding-top: 1.5mm;
+    }
+    .signature-label {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 7pt;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #333;
+    }
+    .signature-line {
+      margin-top: 10mm;
+      border-bottom: 0.6pt solid #111;
+      height: 0;
+    }
+    .signature-date {
+      margin-top: 4mm;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 7pt;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #555;
+    }
+
+    .hint {
+      font-family: "Courier New", Courier, monospace;
+      font-size: 7pt;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      color: #555;
+      margin: 0 0 2mm;
+    }
+
+    ul.excipients {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-family: "Courier New", Courier, monospace;
+      font-size: 8.5pt;
+    }
+    ul.excipients li {
+      display: flex;
+      justify-content: space-between;
+      gap: 3mm;
+      padding: 0.6mm 0;
+    }
+    ul.excipients .mg { color: #555; }
+
+    .page-break { break-after: page; }
+  </style>
+</head>
+<body>
+  {% if sheet.status == "draft" %}
+    <div class="watermark">Draft — awaiting signature workflow</div>
+  {% endif %}
+
+  <h1 class="title">Product Specification Sheet</h1>
+  <p class="subtitle">
+    {{ formulation.name }} · v{{ formulation.version_number }}{% if formulation.version_label %} — {{ formulation.version_label }}{% endif %}
+  </p>
+
+  <div class="row">
+    <div class="col">
+      <section class="panel">
+        <h2>Product</h2>
+        <dl class="kv">
+          <div><dt>Product Code</dt><dd>{{ formulation.code|default:"—" }}</dd></div>
+          <div><dt>Product Description</dt><dd>{{ formulation.name }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Product Specification</h2>
+        <dl class="kv">
+          <div><dt>Direction of Use</dt><dd>{{ formulation.directions_of_use|default:"—" }}</dd></div>
+          <div><dt>Suggested Dosage</dt><dd>{{ formulation.suggested_dosage|default:"—" }}</dd></div>
+          <div><dt>Dosage Form</dt><dd>{{ formulation.dosage_form|title|default:"—" }}</dd></div>
+          <div><dt>Appearance</dt><dd>{{ formulation.appearance|default:"TBC" }}</dd></div>
+          <div><dt>Filling Weight/Volume (mg/mL)</dt><dd>{{ totals.total_weight_mg|format_mg }}</dd></div>
+          <div><dt>Total Weight (mg)</dt><dd>{{ total_weight_display }}</dd></div>
+          <div><dt>Weight Uniformity</dt><dd>{{ weight_uniformity }}</dd></div>
+          <div><dt>Disintegration</dt><dd>{{ formulation.disintegration_spec|default:"—" }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Packaging Specification</h2>
+        <dl class="kv">
+          <div><dt>Lid Description</dt><dd>{{ packaging.lid_description }}</dd></div>
+          <div><dt>Bottle/Pouch/Tub</dt><dd>{{ packaging.bottle_pouch_tub }}</dd></div>
+          <div><dt>Label Size</dt><dd>{{ packaging.label_size }}</dd></div>
+          <div><dt>Antitemper</dt><dd>{{ packaging.antitemper }}</dd></div>
+          <div><dt>Unit Quantity</dt><dd>{{ packaging.unit_quantity|default:"—" }}</dd></div>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Compliance</h2>
+        <dl class="kv">
+          {% for flag in compliance.flags %}
+            <div><dt>{{ flag.label }}:</dt><dd>{{ flag.status|compliance_label }}</dd></div>
+          {% endfor %}
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Microbiological, PAH, Pesticides and Heavy Metal</h2>
+        <dl class="kv">
+          {% for limit in limits %}
+            <div><dt>{{ limit.name }}:</dt><dd>{{ limit.value }}</dd></div>
+          {% endfor %}
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Signatures</h2>
+        <div class="signatures-grid">
+          <div class="signature-box">
+            <div class="signature-label">Product Manager / Customer</div>
+            <div class="signature-line"></div>
+            <div class="signature-date">Date</div>
+            <div class="signature-line" style="margin-top: 3mm;"></div>
+          </div>
+          <div class="signature-box">
+            <div class="signature-label">Director / Commercial Director</div>
+            <div class="signature-line"></div>
+            <div class="signature-date">Date</div>
+            <div class="signature-line" style="margin-top: 3mm;"></div>
+          </div>
+        </div>
+
+        {% if history %}
+          <div style="margin-top: 5mm;">
+            <p class="hint">Workflow History</p>
+            <ul style="margin: 0; padding: 0; list-style: none; border-top: 0.6pt solid #111; padding-top: 1.5mm;">
+              {% for entry in history %}
+                <li style="font-family: 'Courier New', Courier, monospace; font-size: 7.5pt; padding: 0.6mm 0; color: #333;">
+                  <div style="text-transform: uppercase; letter-spacing: 0.1em;">
+                    {{ entry.from_status }} → {{ entry.to_status }}
+                  </div>
+                  <div style="color: #555;">
+                    {{ entry.actor_name }} · {{ entry.created_at|slice:":16"|cut:"T" }}
+                  </div>
+                  {% if entry.notes %}
+                    <div style="font-style: italic; color: #111; margin-top: 0.4mm;">
+                      {{ entry.notes }}
+                    </div>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        {% endif %}
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel">
+        <h2>Active Ingredients</h2>
+        {% if actives %}
+          <table>
+            <thead>
+              <tr>
+                <th>Active Ingredient</th>
+                <th style="text-align:right;">Claim per serving (mg)</th>
+                <th style="text-align:right;">%NRV</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for active in actives %}
+                <tr>
+                  <td>{{ active.ingredient_list_name }}</td>
+                  <td class="num">{{ active.label_claim_mg|strip_trailing_zeros }}</td>
+                  <td class="num">{% if active.nrv_percent %}{{ active.nrv_percent }}%{% else %}N/A{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="muted">—</p>
+        {% endif %}
+      </section>
+
+      <section class="panel">
+        <h2>Excipient Information</h2>
+        {% with entries=declaration.entries|non_active_entries %}
+          {% if entries %}
+            <ul class="excipients">
+              {% for entry in entries %}
+                <li><span>{{ entry.label }}</span><span class="mg">{{ entry.mg|strip_trailing_zeros }} mg</span></li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="muted">—</p>
+          {% endif %}
+        {% endwith %}
+      </section>
+
+      <section class="panel">
+        <h2>Ingredients</h2>
+        <p class="declaration">{{ declaration.text|default:"—" }}</p>
+      </section>
+
+      <section class="panel">
+        <h2>Nutritional Information</h2>
+        {% if nutrition_has_data %}
+          <p class="hint">Based on {{ nutrition_contributor_count }} of {{ actives|length }} ingredients with catalogue data.</p>
+        {% else %}
+          <p class="hint">Nutrition data pending catalogue fill — values shown as zero until every raw material has its nutrition columns populated.</p>
+        {% endif %}
+        <table>
+          <thead>
+            <tr>
+              <th></th>
+              <th style="text-align:right;">Per 100g</th>
+              <th style="text-align:right;">Per Serving</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in nutrition_rows %}
+              <tr>
+                <td>{{ row.label }}</td>
+                <td class="num">{{ row.per_100g|format_nutrient }}</td>
+                <td class="num">{{ row.per_serving|format_nutrient }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+
+      <section class="panel">
+        <h2>Amino Acid Information</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Amino Acid</th>
+              <th style="text-align:right;">Per 100g (g)</th>
+              <th style="text-align:right;">Per Serving (g)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for group in amino_groups %}
+              <tr class="group-row"><td colspan="3">{{ group.label }}</td></tr>
+              {% for acid in group.acids %}
+                <tr>
+                  <td>{{ acid.label }}</td>
+                  <td class="num">{{ acid.per_100g|format_nutrient }}</td>
+                  <td class="num">{{ acid.per_serving|format_nutrient }}</td>
+                </tr>
+              {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+  </div>
+</body>
+</html>

@@ -22,6 +22,8 @@ import {
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
+  revokeSpecificationPublicLink,
+  rotateSpecificationPublicLink,
   transitionSpecificationStatus,
   updateSpecification,
 } from "./api";
@@ -158,6 +160,37 @@ export function useDeleteSpecification(
       });
       await queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.infinite(orgId),
+      });
+    },
+  });
+}
+
+export function useRotateSpecificationPublicLink(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<SpecificationSheetDto, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<SpecificationSheetDto, ApiError, void>({
+    mutationFn: () => rotateSpecificationPublicLink(orgId, sheetId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        specificationsQueryKeys.detail(orgId, sheetId),
+        updated,
+      );
+    },
+  });
+}
+
+export function useRevokeSpecificationPublicLink(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<void, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, void>({
+    mutationFn: () => revokeSpecificationPublicLink(orgId, sheetId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.detail(orgId, sheetId),
       });
     },
   });

@@ -41,9 +41,28 @@
     "back": "Back to specifications",
     "status_label": "Status",
     "advance_to": "Advance to",
-    "print": "Print sheet",
+    "download_pdf": "Download PDF",
+    "share_link": "Share link",
     "delete": "Delete sheet",
     "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected."
+  },
+  "share": {
+    "title": "Share client preview link",
+    "subtitle": "Anyone with this URL can view the spec sheet read-only — no login required. Rotate the link to invalidate the previous one, or revoke to disable sharing.",
+    "url_label": "Public URL",
+    "copy": "Copy",
+    "copied": "Copied",
+    "generate": "Generate link",
+    "rotate": "Rotate",
+    "revoke": "Revoke",
+    "token_hint": "Rotating issues a new URL and invalidates the old one.",
+    "not_shared": "This sheet is private. Generate a link to share it with the client."
+  },
+  "public": {
+    "banner": "You are viewing a shared specification sheet. Access can be revoked at any time by the sheet owner.",
+    "footer": "Viewed via shared link",
+    "not_found_title": "Link unavailable",
+    "not_found_body": "This sharing link is no longer active. Please contact the sheet owner for an updated link."
   },
   "sheet": {
     "title": "Product Specification Sheet",
@@ -93,7 +112,11 @@
       "product_manager": "Product Manager / Customer",
       "director": "Director / Commercial Director",
       "sign_date": "Date",
-      "draft_watermark": "DRAFT — awaiting signature workflow (F3b)"
+      "draft_watermark": "DRAFT — not yet approved"
+    },
+    "history": {
+      "title": "Workflow history",
+      "empty": "No workflow actions yet."
     },
     "compliance": {
       "yes": "Yes",

@@ -100,6 +100,22 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    public_token = models.UUIDField(
+        _("public token"),
+        null=True,
+        blank=True,
+        unique=True,
+        db_index=True,
+        default=None,
+        help_text=_(
+            "Opaque UUID that, when set, grants unauthenticated "
+            "read-only access to this sheet via the public preview URL. "
+            "Null by default — sheets are private unless a link is "
+            "explicitly generated. Rotating the token invalidates every "
+            "previously-shared link in one write."
+        ),
+    )
+
     status = models.CharField(
         _("status"),
         max_length=16,
@@ -138,3 +154,70 @@ class SpecificationSheet(models.Model):
 
     def __str__(self) -> str:
         return self.code or str(self.id)
+
+
+class SpecificationTransition(models.Model):
+    """Append-only audit log of every status change on a spec sheet.
+
+    Each row stamps *who* moved the sheet *from where* to *where*,
+    *when*, and optionally *why*. The rows are the electronic equivalent
+    of the handwritten signature boxes on the printed sheet — together
+    they let the business prove end-to-end who approved what before it
+    went to the client, without tying the sheet's forward progress to
+    a physical signature first.
+
+    Rows are never updated or deleted by application code; if a
+    transition was wrong the remediation is to reverse it with another
+    transition (``rejected → draft``), not to edit history.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    sheet = models.ForeignKey(
+        SpecificationSheet,
+        on_delete=models.CASCADE,
+        related_name="transitions",
+    )
+    from_status = models.CharField(
+        _("from status"),
+        max_length=16,
+        choices=SpecificationStatus.choices,
+        help_text=_(
+            "Status the sheet left. Recorded alongside ``to_status`` "
+            "so the audit trail is readable in isolation, without "
+            "joining against the previous transition row."
+        ),
+    )
+    to_status = models.CharField(
+        _("to status"),
+        max_length=16,
+        choices=SpecificationStatus.choices,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="specification_transitions",
+    )
+    notes = models.TextField(
+        _("notes"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Optional free-text justification the actor left at "
+            "transition time — e.g. ``approved pending pack change``."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("specification transition")
+        verbose_name_plural = _("specification transitions")
+        # Most recent first so history queries land on the right
+        # order without extra sorting in the view layer.
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("sheet", "-created_at")),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.sheet_id}: {self.from_status} → {self.to_status}"
