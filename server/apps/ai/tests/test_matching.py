@@ -13,7 +13,9 @@ from decimal import Decimal
 
 from apps.ai.matching import (
     HIGH_CONFIDENCE_THRESHOLD,
+    SHORTLIST_LIMIT,
     match_ingredients,
+    shortlist_candidates,
 )
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.catalogues.tests.factories import (
@@ -196,6 +198,93 @@ class TestMatchIngredients:
             names_with_claims=[("Caffeine Anhydrous", 100.0)],
         )
         assert results[0].matched_item_id is None
+
+    def test_missing_raw_materials_catalogue_from_shortlister(self) -> None:
+        org = OrganizationFactory()
+        Catalogue.objects.filter(
+            organization=org, slug=RAW_MATERIALS_SLUG
+        ).delete()
+        assert shortlist_candidates(
+            organization=org, brief="anything"
+        ) == []
+
+    def test_shortlist_prefers_keyword_matches(self) -> None:
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {"name": "Caffeine Anhydrous Powder"},
+            {"name": "Green Tea Extract"},
+            {"name": "Completely Unrelated Material"},
+        )
+        candidates = shortlist_candidates(
+            organization=org, brief="caffeine capsule"
+        )
+        # The brief shares the token "caffeine" with one item; that
+        # item must appear first in the shortlist regardless of its
+        # alphabetical position.
+        assert candidates[0].name == "Caffeine Anhydrous Powder"
+
+    def test_shortlist_pads_with_unmatched_items(self) -> None:
+        """A brief with no token matches still gets a menu built from
+        the catalogue's alphabetical order so the LLM has something
+        to pick from."""
+
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {"name": "Alpha Ingredient"},
+            {"name": "Beta Ingredient"},
+            {"name": "Gamma Ingredient"},
+        )
+        candidates = shortlist_candidates(
+            organization=org, brief="zzz nothing here"
+        )
+        names = [c.name for c in candidates]
+        assert "Alpha Ingredient" in names
+        assert "Beta Ingredient" in names
+        assert "Gamma Ingredient" in names
+
+    def test_shortlist_respects_limit(self) -> None:
+        org = OrganizationFactory()
+        _seed(
+            org,
+            *[{"name": f"Ingredient {n:03d}"} for n in range(SHORTLIST_LIMIT + 20)],
+        )
+        candidates = shortlist_candidates(
+            organization=org, brief="anything", limit=25
+        )
+        assert len(candidates) == 25
+
+    def test_shortlist_skips_archived_items(self) -> None:
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {"name": "Caffeine Anhydrous", "is_archived": True},
+            {"name": "Green Tea Extract"},
+        )
+        candidates = shortlist_candidates(
+            organization=org, brief="anything"
+        )
+        names = [c.name for c in candidates]
+        assert "Caffeine Anhydrous" not in names
+        assert "Green Tea Extract" in names
+
+    def test_shortlist_exposes_purity_and_ratio_in_prompt_line(self) -> None:
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {
+                "name": "Caffeine Anhydrous",
+                "attributes": {"purity": "0.99", "extract_ratio": "1"},
+            },
+        )
+        candidates = shortlist_candidates(
+            organization=org, brief="caffeine"
+        )
+        line = candidates[0].prompt_line()
+        assert "purity=0.99" in line
+        assert "extract_ratio=1" in line
+        assert candidates[0].item_id in line
 
     def test_serving_size_scales_mg_per_serving(self) -> None:
         """Label claim is total per serving; when the scientist marks

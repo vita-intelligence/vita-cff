@@ -320,14 +320,17 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
-            <form onSubmit={handleSubmit}>
+          <Modal.Dialog className="flex max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <form
+              onSubmit={handleSubmit}
+              className="flex min-h-0 flex-1 flex-col"
+            >
               <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
                 <Modal.Heading className="text-base font-semibold text-ink-1000">
                   {tFormulations("create.title")}
                 </Modal.Heading>
               </Modal.Header>
-              <Modal.Body className="flex max-h-[75vh] flex-col gap-5 overflow-y-auto px-6 py-6">
+              <Modal.Body className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto px-6 py-6">
                 {/* ------------------------------------------------- */}
                 {/* AI draft panel                                    */}
                 {/* ------------------------------------------------- */}

@@ -17,15 +17,19 @@ from __future__ import annotations
 
 import time
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from typing import Any
 
 from apps.ai.matching import (
     HIGH_CONFIDENCE_THRESHOLD,
+    CandidateItem,
     IngredientAlternative,
     IngredientMatch,
     match_ingredients,
+    shortlist_candidates,
 )
 from apps.ai.models import AIProviderChoices, AIUsage, AIUsagePurpose
+from apps.formulations.services import compute_line
 from apps.ai.providers import (
     AIProvider,
     AIProviderError,
@@ -119,16 +123,26 @@ class FormulationDraft:
     ingredients: list[IngredientSuggestion]
 
 
-_FORMULATION_DRAFT_SYSTEM_PROMPT = """\
+_FORMULATION_DRAFT_PROMPT_TEMPLATE = """\
 You are a senior nutraceutical R&D scientist. You draft product
 formulations from a customer brief. Always respond with valid JSON
 matching EXACTLY the schema described below — no prose, no markdown,
 no commentary. Fill every field; use empty strings or empty arrays
 only when the brief truly provides no information.
 
-Schema (all keys required):
+### Raw material catalogue (the ONLY ingredients you may use)
 
-{
+You MUST pick every ingredient from this list. Copy the ``item_id``
+verbatim — do not invent, shorten, or paraphrase it. If a concept
+from the brief has no good match in this list, either pick the
+closest viable substitute or leave the ingredient out entirely.
+Never fabricate raw materials that are not on this menu.
+
+{catalogue_menu}
+
+### Schema (all keys required)
+
+{{
   "name": string,                    // commercial product name
   "code": string,                    // short internal code, e.g. "FB-001"
   "description": string,             // 1-2 sentences
@@ -141,15 +155,44 @@ Schema (all keys required):
   "suggested_dosage": string,
   "appearance": string,              // colour + form, e.g. "white capsule"
   "disintegration_spec": string,     // e.g. "Disintegrate within 60 minutes"
-  "ingredients": [                   // active ingredients
-    {
-      "name": string,                // generic ingredient name
-      "label_claim_mg": number,      // per-serving label claim in mg
+  "ingredients": [                   // active ingredients only — no excipients
+    {{
+      "item_id": string,             // REQUIRED: copy verbatim from the catalogue above
+      "name": string,                // the raw material name (copy from the catalogue)
+      "label_claim_mg": number,      // per-serving label claim in mg for the active
       "notes": string                // short rationale, can be empty
-    }
+    }}
   ]
-}
+}}
 """
+
+
+def _build_formulation_draft_prompt(
+    candidates: list[CandidateItem],
+) -> str:
+    """Bake the per-request catalogue menu into the prompt template.
+
+    Runs once per request. Kept as a separate function so the
+    prompt stays static and cacheable for the call site while the
+    menu varies with the org's catalogue state.
+    """
+
+    if not candidates:
+        # Rare: org has no raw materials yet. The model gets a clear
+        # instruction that it cannot attach ingredients — the service
+        # will still accept a header-only draft so the scientist can
+        # at least start the workspace.
+        catalogue_menu = (
+            "(The organisation's raw_materials catalogue is empty. "
+            "Return ingredients=[] in the response.)"
+        )
+    else:
+        catalogue_menu = "\n".join(
+            candidate.prompt_line() for candidate in candidates
+        )
+    return _FORMULATION_DRAFT_PROMPT_TEMPLATE.format(
+        catalogue_menu=catalogue_menu
+    )
 
 
 def generate_formulation_draft(
@@ -170,10 +213,22 @@ def generate_formulation_draft(
 
     provider: AIProvider = get_provider(provider_name)
     selected_model_for_error_row = model or ""
+    # AI4 — build the catalogue menu the LLM picks from BEFORE the
+    # provider call so the request carries the constrained prompt.
+    # The shortlister is local (Postgres + token math), so the
+    # latency cost is negligible relative to the LLM round-trip.
+    candidates = shortlist_candidates(
+        organization=organization, brief=brief
+    )
+    candidates_by_id: dict[str, CandidateItem] = {
+        candidate.item_id: candidate for candidate in candidates
+    }
+    system_prompt = _build_formulation_draft_prompt(candidates)
+
     start = time.monotonic()
     try:
         result: AIProviderResult = provider.generate_json(
-            system_prompt=_FORMULATION_DRAFT_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_prompt=brief,
             model=model,
         )
@@ -207,13 +262,15 @@ def generate_formulation_draft(
         )
         raise
 
-    # AI3 — resolve the generic ingredient names the model emits into
-    # real ``Item`` references from the org's raw-materials catalogue
-    # and a purity-adjusted mg/serving number. A matching failure does
-    # not fail the draft: the UI still surfaces the unattached
-    # suggestion and lets the scientist pick manually.
+    # AI4 — trust the catalogue ``item_id`` the constrained prompt
+    # asked the LLM to copy verbatim; fall back to AI3 fuzzy matching
+    # on the name only when the model hallucinates an id that isn't
+    # on the menu. Both paths share the same ``IngredientMatch``
+    # shape so the frontend renders uniformly.
     draft = _enrich_with_matches(
-        draft=draft, organization=organization
+        draft=draft,
+        organization=organization,
+        candidates_by_id=candidates_by_id,
     )
 
     _record_usage(
@@ -234,47 +291,107 @@ def _enrich_with_matches(
     *,
     draft: FormulationDraft,
     organization: Organization,
+    candidates_by_id: dict[str, CandidateItem],
 ) -> FormulationDraft:
     """Attach a catalogue match to each ingredient on the draft.
 
-    Matching runs once against all names so the catalogue query is
-    paid a single time per request. Returning a new draft
-    (``dataclass.replace`` on each ingredient) keeps the original
-    frozen dataclasses immutable, matching the rest of the service
-    layer's style.
+    AI4 asks the LLM to emit an ``item_id`` copied verbatim from the
+    catalogue menu. Each ingredient is resolved in one of two ways:
+
+    1. **Valid id path** — the id is present in ``candidates_by_id``.
+       We take it at face value with ``confidence=1.0`` and compute
+       ``mg_per_serving`` from the real catalogue item's purity.
+    2. **Fallback path** — the model hallucinated an id (empty, mis-
+       typed, or simply invented). We run the AI3 fuzzy matcher on
+       the provided name so the UI still has something to show the
+       scientist, but the confidence carries whatever the matcher
+       decided — often below the auto-attach threshold.
     """
 
     ingredients = list(draft.ingredients)
     if not ingredients:
         return draft
 
-    names_with_claims = [
-        (ingredient.name, ingredient.label_claim_mg)
-        for ingredient in ingredients
-    ]
-    matches: list[IngredientMatch] = match_ingredients(
-        organization=organization,
-        names_with_claims=names_with_claims,
-        serving_size=draft.serving_size or 1,
-    )
-    enriched: list[IngredientSuggestion] = [
-        IngredientSuggestion(
-            name=ingredient.name,
-            label_claim_mg=ingredient.label_claim_mg,
-            notes=ingredient.notes,
-            matched_item_id=match.matched_item_id,
-            matched_item_name=match.matched_item_name,
-            matched_item_internal_code=match.matched_item_internal_code,
-            confidence=match.confidence,
-            mg_per_serving=match.mg_per_serving,
-            alternatives=match.alternatives,
-            auto_attach=(
-                match.matched_item_id is not None
-                and match.confidence >= HIGH_CONFIDENCE_THRESHOLD
-            ),
+    # Separate ingredients by resolution path. Fuzzy matches batch
+    # together so the matcher pays one catalogue scan for all of
+    # them.
+    fallback_indices: list[int] = []
+    fallback_inputs: list[tuple[str, float]] = []
+    for idx, ingredient in enumerate(ingredients):
+        if ingredient.matched_item_id not in candidates_by_id:
+            fallback_indices.append(idx)
+            fallback_inputs.append(
+                (ingredient.name, ingredient.label_claim_mg)
+            )
+
+    fallback_matches: list[IngredientMatch] = (
+        match_ingredients(
+            organization=organization,
+            names_with_claims=fallback_inputs,
+            serving_size=draft.serving_size or 1,
         )
-        for ingredient, match in zip(ingredients, matches)
-    ]
+        if fallback_inputs
+        else []
+    )
+    fallback_by_index = dict(zip(fallback_indices, fallback_matches))
+
+    enriched: list[IngredientSuggestion] = []
+    for idx, ingredient in enumerate(ingredients):
+        candidate = candidates_by_id.get(ingredient.matched_item_id or "")
+        if candidate is not None:
+            mg = compute_line(
+                item=candidate.item,
+                label_claim_mg=Decimal(str(ingredient.label_claim_mg))
+                if ingredient.label_claim_mg > 0
+                else Decimal("0"),
+                serving_size=draft.serving_size or 1,
+            )
+            enriched.append(
+                IngredientSuggestion(
+                    name=candidate.name,
+                    label_claim_mg=ingredient.label_claim_mg,
+                    notes=ingredient.notes,
+                    matched_item_id=candidate.item_id,
+                    matched_item_name=candidate.name,
+                    matched_item_internal_code=candidate.internal_code,
+                    confidence=1.0,
+                    mg_per_serving=str(mg) if mg is not None else None,
+                    alternatives=(),
+                    auto_attach=True,
+                )
+            )
+            continue
+
+        # Fallback: the model returned a name we couldn't resolve
+        # directly. Use whatever AI3 fuzzy match we ran above.
+        match = fallback_by_index.get(idx)
+        if match is None:
+            match = IngredientMatch(
+                matched_item_id=None,
+                matched_item_name="",
+                matched_item_internal_code="",
+                confidence=0.0,
+                mg_per_serving=None,
+                alternatives=(),
+            )
+        enriched.append(
+            IngredientSuggestion(
+                name=ingredient.name,
+                label_claim_mg=ingredient.label_claim_mg,
+                notes=ingredient.notes,
+                matched_item_id=match.matched_item_id,
+                matched_item_name=match.matched_item_name,
+                matched_item_internal_code=match.matched_item_internal_code,
+                confidence=match.confidence,
+                mg_per_serving=match.mg_per_serving,
+                alternatives=match.alternatives,
+                auto_attach=(
+                    match.matched_item_id is not None
+                    and match.confidence >= HIGH_CONFIDENCE_THRESHOLD
+                ),
+            )
+        )
+
     return FormulationDraft(
         name=draft.name,
         code=draft.code,
@@ -314,7 +431,18 @@ def _parse_formulation_draft(data: dict[str, Any]) -> FormulationDraft:
         if not isinstance(row, dict):
             continue
         name = _str(row, "name", required=False).strip()
-        if not name:
+        # AI4 asks the model to copy ``item_id`` verbatim from the
+        # catalogue menu. Capture it here as a best-effort hint; the
+        # enrichment step validates it against the shortlist and
+        # falls back to name-based matching when the id is missing
+        # or not on the menu.
+        raw_item_id = row.get("item_id")
+        item_id = (
+            str(raw_item_id).strip()
+            if isinstance(raw_item_id, str) and raw_item_id.strip()
+            else None
+        )
+        if not name and not item_id:
             continue
         raw_claim = row.get("label_claim_mg")
         try:
@@ -326,6 +454,7 @@ def _parse_formulation_draft(data: dict[str, Any]) -> FormulationDraft:
                 name=name,
                 label_claim_mg=max(0.0, claim),
                 notes=_str(row, "notes", required=False),
+                matched_item_id=item_id,
             )
         )
 

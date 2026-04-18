@@ -418,6 +418,114 @@ class TestFormulationDraftMatching:
             assert ingredient["auto_attach"] is False
 
 
+class TestFormulationDraftConstrainedMenu:
+    """AI4 — the AI picks ingredients by ``item_id`` from a server-
+    side shortlist. Valid ids skip the fuzzy matcher and land with
+    ``confidence=1.0``; hallucinated ids fall back to AI3 name
+    matching so the UX degrades gracefully rather than failing."""
+
+    def test_valid_item_id_lands_confident(self) -> None:
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous Powder",
+            attributes={"purity": "0.89"},
+        )
+        # Model echoes the catalogue id back as AI4 asks it to.
+        payload = _valid_draft_payload()
+        payload["ingredients"] = [
+            {
+                "item_id": str(item.id),
+                "name": "Caffeine Anhydrous Powder",
+                "label_claim_mg": 200,
+                "notes": "Primary active",
+            }
+        ]
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(data=payload),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine capsule"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        ingredient = response.json()["ingredients"][0]
+        assert ingredient["matched_item_id"] == str(item.id)
+        assert ingredient["confidence"] == 1.0
+        assert ingredient["auto_attach"] is True
+        # 200 mg at 89% purity → ~224.72 mg raw powder.
+        assert ingredient["mg_per_serving"] is not None
+        assert 224.0 < float(ingredient["mg_per_serving"]) < 225.0
+
+    def test_hallucinated_item_id_falls_back_to_name_match(self) -> None:
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        real = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={"purity": "0.99"},
+        )
+        payload = _valid_draft_payload()
+        # Fabricate an id that is clearly not in the catalogue. The
+        # service must not explode — it should fuzzy-match the name.
+        payload["ingredients"] = [
+            {
+                "item_id": "00000000-0000-0000-0000-000000000000",
+                "name": "Caffeine Anhydrous",
+                "label_claim_mg": 100,
+                "notes": "",
+            }
+        ]
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(data=payload),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        ingredient = response.json()["ingredients"][0]
+        assert ingredient["matched_item_id"] == str(real.id)
+
+    def test_shortlist_is_baked_into_prompt(self) -> None:
+        """The system prompt handed to the provider includes the
+        real catalogue ids, so a well-behaved model can follow the
+        "copy verbatim" instruction without hallucinating."""
+
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+
+        captured: dict[str, Any] = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return _mock_provider_result()
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            side_effect=_capture,
+        ):
+            client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine capsule"},
+                format="json",
+            )
+
+        system_prompt = captured.get("system_prompt", "")
+        assert str(item.id) in system_prompt
+        assert "Caffeine Anhydrous" in system_prompt
+
+
 class TestOllamaAdapterJSON:
     """Exercises ``OllamaProvider.generate_json`` with a canned HTTP
     response so we cover the parse + envelope-extraction path without

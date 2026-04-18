@@ -38,6 +38,15 @@ from apps.organizations.models import Organization
 HIGH_CONFIDENCE_THRESHOLD = 0.75
 
 
+#: How many raw-material candidates AI4 shortlisting feeds into the
+#: constrained prompt. Large enough that the LLM can actually build a
+#: formulation from the menu (a brief like "fat burner" needs the
+#: obvious stimulants + synergists in the list even if none of those
+#: words appear in the brief). Small enough that the prompt stays well
+#: under the 3B model's context budget — 100 × ~60 chars ≈ 6 KB.
+SHORTLIST_LIMIT = 100
+
+
 #: Words that appear across dozens of raw materials and dilute useful
 #: similarity signal. Stripped from both sides before scoring so
 #: "Caffeine Anhydrous Powder" and "Caffeine" match on the meaningful
@@ -65,6 +74,38 @@ _STOPWORDS: frozenset[str] = frozenset(
 
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+@dataclass(frozen=True)
+class CandidateItem:
+    """Compact summary of a raw material surfaced to the LLM.
+
+    Only the fields the model needs to pick intelligently make the
+    prompt — full catalogue rows would bloat context without helping
+    the selection. Purity / extract ratio stay on the line so the AI
+    can reason about dosage math when it picks actives like extracts
+    ("if I want 200 mg EGCG and this is a 50% extract, set claim to
+    400 mg").
+    """
+
+    item_id: str
+    name: str
+    internal_code: str
+    purity: str
+    extract_ratio: str
+    item: Item
+
+    def prompt_line(self) -> str:
+        """Single-line catalogue entry the prompt shows to the LLM."""
+
+        parts = [f"[{self.item_id}]", self.name]
+        if self.internal_code:
+            parts.append(f"code={self.internal_code}")
+        if self.purity:
+            parts.append(f"purity={self.purity}")
+        if self.extract_ratio:
+            parts.append(f"extract_ratio={self.extract_ratio}")
+        return " | ".join(parts)
 
 
 @dataclass(frozen=True)
@@ -152,6 +193,86 @@ def match_ingredients(
             )
         )
     return results
+
+
+def shortlist_candidates(
+    *,
+    organization: Organization,
+    brief: str,
+    limit: int = SHORTLIST_LIMIT,
+) -> list[CandidateItem]:
+    """Return the top-scored raw-material candidates for a brief.
+
+    Feeds the AI4 constrained-menu prompt. Scoring ranks items whose
+    name tokens overlap the brief's tokens first; once the keyword
+    pool is exhausted we fall back to the remaining catalogue in
+    ``name`` order so the LLM always sees a menu big enough to build
+    from (a brief like *"fat burner"* shares almost no tokens with
+    any specific raw material, but the model still needs "Caffeine
+    Anhydrous Powder" et al. on the menu to do its job).
+
+    The returned tuple carries the live :class:`Item` alongside the
+    display fields so the caller can feed it straight into
+    :func:`apps.formulations.services.compute_line` without re-
+    querying.
+    """
+
+    catalogue = Catalogue.objects.filter(
+        organization=organization, slug=RAW_MATERIALS_SLUG
+    ).first()
+    if catalogue is None:
+        return []
+
+    items = list(
+        Item.objects.filter(catalogue=catalogue, is_archived=False)
+        .order_by("name")
+    )
+    if not items:
+        return []
+
+    brief_tokens = frozenset(_tokenise(brief))
+
+    scored: list[tuple[float, Item]] = []
+    for item in items:
+        cand_tokens = frozenset(_tokenise(item.name))
+        score = _token_set_ratio(brief_tokens, cand_tokens)
+        scored.append((score, item))
+
+    # Primary pool: items the brief shares at least one token with,
+    # ranked by token-set Jaccard descending.
+    keyword_hits = sorted(
+        (pair for pair in scored if pair[0] > 0.0),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+
+    selected: list[Item] = [item for _, item in keyword_hits[:limit]]
+
+    if len(selected) < limit:
+        # Pad with unmatched items in catalogue order so the menu is
+        # long enough to build a formulation from. Order-stable so the
+        # prompt is reproducible for the same catalogue state.
+        selected_ids = {item.id for item in selected}
+        for item in items:
+            if len(selected) >= limit:
+                break
+            if item.id in selected_ids:
+                continue
+            selected.append(item)
+
+    return [
+        CandidateItem(
+            item_id=str(item.id),
+            name=item.name,
+            internal_code=item.internal_code,
+            purity=str((item.attributes or {}).get("purity") or ""),
+            extract_ratio=str(
+                (item.attributes or {}).get("extract_ratio") or ""
+            ),
+            item=item,
+        )
+        for item in selected
+    ]
 
 
 # ---------------------------------------------------------------------------
