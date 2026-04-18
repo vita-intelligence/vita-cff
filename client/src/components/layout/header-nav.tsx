@@ -1,9 +1,10 @@
 "use client";
 
-import { Menu, X } from "lucide-react";
+import { LogOut, Menu, Settings, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { Link, usePathname } from "@/i18n/navigation";
+import { Link, usePathname, useRouter } from "@/i18n/navigation";
+import { useLogout } from "@/services/accounts";
 
 import type { ProtectedNavKey } from "./protected-header";
 
@@ -15,6 +16,18 @@ export interface HeaderNavItem {
 }
 
 
+export interface HeaderNavProps {
+  readonly items: readonly HeaderNavItem[];
+  readonly active?: ProtectedNavKey;
+  readonly menuLabel: string;
+  readonly closeLabel: string;
+  readonly settingsLabel: string;
+  readonly signOutLabel: string;
+  readonly fullName: string;
+  readonly email: string;
+}
+
+
 /**
  * Desktop link bar + mobile hamburger drawer for the authenticated
  * header.
@@ -23,20 +36,26 @@ export interface HeaderNavItem {
  * is a Server Component that pulls translations up-front — we need
  * ``useState`` here for the open/close toggle without forcing the
  * whole header to hydrate on every navigation.
+ *
+ * The mobile drawer mirrors the desktop avatar menu: primary nav
+ * links at the top, the signed-in user block + Settings + Sign out
+ * at the bottom. Phones don't get the floating avatar dropdown —
+ * everything lives in the one drawer.
  */
 export function HeaderNav({
   items,
   active,
   menuLabel,
   closeLabel,
-}: {
-  items: readonly HeaderNavItem[];
-  active?: ProtectedNavKey;
-  menuLabel: string;
-  closeLabel: string;
-}) {
+  settingsLabel,
+  signOutLabel,
+  fullName,
+  email,
+}: HeaderNavProps) {
   const [isOpen, setIsOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+  const logout = useLogout();
 
   // Close the drawer on route change so clicking a nav item always
   // lands the user on a clean page rather than the drawer flashing
@@ -55,6 +74,15 @@ export function HeaderNav({
       document.body.style.overflow = original;
     };
   }, [isOpen]);
+
+  const handleSignOut = async () => {
+    setIsOpen(false);
+    try {
+      await logout.mutateAsync();
+    } finally {
+      router.replace("/login");
+    }
+  };
 
   return (
     <>
@@ -103,7 +131,7 @@ export function HeaderNav({
             onClick={() => setIsOpen(false)}
             className="absolute inset-0 bg-ink-1000/40 backdrop-blur-sm"
           />
-          <div className="absolute inset-x-3 top-3 rounded-2xl bg-ink-0 p-3 shadow-lg ring-1 ring-ink-200">
+          <div className="absolute inset-x-3 top-3 flex max-h-[calc(100dvh-1.5rem)] flex-col rounded-2xl bg-ink-0 p-3 shadow-lg ring-1 ring-ink-200">
             <div className="flex items-center justify-end pb-1">
               <button
                 type="button"
@@ -114,7 +142,7 @@ export function HeaderNav({
                 <X className="h-5 w-5" />
               </button>
             </div>
-            <ul className="flex flex-col gap-1">
+            <ul className="flex flex-col gap-1 overflow-y-auto">
               {items.map((item) => {
                 const isActive = item.key === active;
                 return (
@@ -134,6 +162,37 @@ export function HeaderNav({
                 );
               })}
             </ul>
+
+            <div className="mt-3 border-t border-ink-200 pt-3">
+              <div className="px-4 pb-2">
+                <p className="truncate text-sm font-medium text-ink-1000">
+                  {fullName}
+                </p>
+                <p className="mt-0.5 truncate text-xs text-ink-500">{email}</p>
+              </div>
+              <ul className="flex flex-col gap-1">
+                <li>
+                  <Link
+                    href="/settings"
+                    className="flex items-center gap-2 rounded-xl px-4 py-3 text-base font-medium text-ink-700 hover:bg-ink-50"
+                  >
+                    <Settings className="h-4 w-4" />
+                    {settingsLabel}
+                  </Link>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={handleSignOut}
+                    disabled={logout.isPending}
+                    className="flex w-full items-center gap-2 rounded-xl px-4 py-3 text-left text-base font-medium text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+                  >
+                    <LogOut className="h-4 w-4" />
+                    {signOutLabel}
+                  </button>
+                </li>
+              </ul>
+            </div>
           </div>
         </div>
       ) : null}

@@ -1,7 +1,7 @@
 import { getTranslations } from "next-intl/server";
 
 import { HeaderNav, type HeaderNavItem } from "@/components/layout/header-nav";
-import { SignOutButton } from "@/components/layout/sign-out-button";
+import { UserMenu } from "@/components/layout/user-menu";
 import type { UserDto } from "@/services/accounts/types";
 
 export type ProtectedNavKey =
@@ -17,15 +17,16 @@ interface ProtectedHeaderProps {
 /**
  * Shared top-of-page header for every authenticated route.
  *
- * Renders the brand, the primary nav, and the signed-in user block
- * with the sign-out button. The ``active`` prop highlights the
- * current section so the header is the single source of truth for
- * which nav item is selected — callers don't need to repeat the
- * `<Link>` block and keep it in sync manually.
+ * Renders the brand, the primary nav, and a per-user avatar menu
+ * (Settings / Sign out). The ``active`` prop highlights the current
+ * section so the header is the single source of truth for which nav
+ * item is selected — callers don't need to repeat the ``<Link>``
+ * block and keep it in sync manually.
  *
  * Server component: it pulls its own translations and has no client
  * state of its own. The mobile hamburger lives inside
- * :class:`HeaderNav`, which is the only client island here.
+ * :class:`HeaderNav` (which also hosts the mobile Settings/Sign-out
+ * footer); the desktop avatar dropdown lives inside :class:`UserMenu`.
  */
 export async function ProtectedHeader({
   user,
@@ -66,21 +67,28 @@ export async function ProtectedHeader({
           active={active}
           menuLabel={tNav("menu.open")}
           closeLabel={tNav("menu.close")}
+          settingsLabel={tNav("menu.settings")}
+          signOutLabel={tNav("account.sign_out")}
+          fullName={user.full_name}
+          email={user.email}
         />
       </div>
-      <div className="flex items-center gap-2 md:gap-3">
-        <div className="flex items-center gap-2">
-          <div
-            aria-hidden
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-semibold text-ink-0"
-          >
-            {initials}
-          </div>
-          <span className="hidden text-sm font-medium text-ink-700 md:inline">
-            {user.full_name}
-          </span>
-        </div>
-        <SignOutButton />
+      {/*
+        Desktop gets the avatar dropdown; mobile folds Settings and
+        Sign-out into the hamburger drawer itself, so the avatar is
+        redundant there and would just steal tap targets.
+      */}
+      <div className="hidden md:flex">
+        <UserMenu
+          fullName={user.full_name}
+          email={user.email}
+          initials={initials}
+          labels={{
+            settings: tNav("menu.settings"),
+            signOut: tNav("account.sign_out"),
+            openMenu: tNav("menu.open_user"),
+          }}
+        />
       </div>
     </header>
   );

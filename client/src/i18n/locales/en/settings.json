@@ -1,0 +1,35 @@
+{
+  "title": "Settings",
+  "subtitle": "Manage your profile, organization, and team access.",
+  "back_to_dashboard": "Dashboard",
+  "tabs": {
+    "profile": "Profile",
+    "organization": "Organization",
+    "members": "Members"
+  },
+  "profile": {
+    "section_title": "Your profile",
+    "section_subtitle": "Details visible to the rest of your team.",
+    "full_name": "Full name",
+    "email": "Email address",
+    "first_name": "First name",
+    "last_name": "Last name",
+    "joined": "Joined {date}"
+  },
+  "organization": {
+    "section_title": "Organization",
+    "section_subtitle": "The workspace that owns your projects and catalogues.",
+    "name": "Name",
+    "role": "Your role",
+    "role_owner": "Owner",
+    "role_member": "Member",
+    "no_org_title": "You're not in an organization yet",
+    "no_org_hint": "Create one to start building projects and catalogues."
+  },
+  "members": {
+    "section_title": "Members & permissions",
+    "section_subtitle": "Invite teammates, review their access, and revoke it when needed.",
+    "coming_soon": "Member management coming soon",
+    "coming_soon_hint": "The RBAC backend is ready; the editor UI lands in the next commit. For now, use the dashboard invite form to add teammates."
+  }
+}
