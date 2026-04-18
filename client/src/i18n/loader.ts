@@ -28,6 +28,7 @@ export const namespaces = [
   "attributes",
   "formulations",
   "project_overview",
+  "project_tabs",
   "specifications",
   "trial_batches",
   "product_validation",

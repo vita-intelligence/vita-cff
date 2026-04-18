@@ -195,6 +195,22 @@ export async function getProjectOverviewServer(
   );
 }
 
+export async function getProjectSpecificationSheetsServer(
+  orgId: string,
+  formulationId: string,
+): Promise<PaginatedSpecificationsDto | null> {
+  const url = `${specificationsEndpoints.list(orgId)}?formulation_id=${formulationId}`;
+  return serverFetch<PaginatedSpecificationsDto>(url);
+}
+
+export async function getProjectValidationsServer(
+  orgId: string,
+  formulationId: string,
+): Promise<ProductValidationDto[] | null> {
+  const url = `${productValidationEndpoints.list(orgId)}?formulation_id=${formulationId}`;
+  return serverFetch<ProductValidationDto[]>(url);
+}
+
 /**
  * Fetch the first page of specification sheets for a Server
  * Component. Hydrates the infinite-scroll list so the initial paint

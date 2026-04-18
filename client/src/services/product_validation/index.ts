@@ -5,6 +5,7 @@ export {
   fetchValidation,
   fetchValidationForBatch,
   fetchValidationStats,
+  fetchValidations,
   transitionValidationStatus,
   updateValidation,
 } from "./api";

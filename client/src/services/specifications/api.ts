@@ -20,6 +20,9 @@ import type {
 export interface FetchSpecificationsPageArgs {
   readonly cursorUrl?: string | null;
   readonly pageSize?: number;
+  /** Optional project scope — drives the Spec Sheets tab so it
+   * surfaces only sheets built against this project's versions. */
+  readonly formulationId?: string;
 }
 
 export async function fetchSpecificationsPage(
@@ -35,6 +38,7 @@ export async function fetchSpecificationsPage(
   }
   const params: Record<string, string> = {};
   if (args.pageSize) params.page_size = String(args.pageSize);
+  if (args.formulationId) params.formulation_id = args.formulationId;
   const { data } = await apiClient.get<PaginatedSpecificationsDto>(
     specificationsEndpoints.list(orgId),
     { params },

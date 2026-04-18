@@ -1,0 +1,242 @@
+"use client";
+
+import {
+  AlertTriangle,
+  CheckCircle2,
+  FileText,
+  FlaskConical,
+  LayoutDashboard,
+  PlayCircle,
+  Plus,
+  ShieldCheck,
+  Sparkles,
+} from "lucide-react";
+import { useTranslations } from "next-intl";
+import type { ReactNode } from "react";
+
+import { Link, usePathname } from "@/i18n/navigation";
+import type {
+  ProjectOverviewDto,
+  ProjectStatus,
+} from "@/services/formulations";
+
+
+export type ProjectTabKey =
+  | "overview"
+  | "builder"
+  | "spec-sheets"
+  | "trial-batches"
+  | "qc";
+
+
+/**
+ * Shared chrome for every Project workspace tab.
+ *
+ * Renders a compact project header (code, name, status pill) and a
+ * horizontal tab bar with the five sections. Each tab page calls
+ * ``<ProjectShell overview={...} activeTab="overview">children</ProjectShell>``
+ * and drops its own content into the slot. The active tab is
+ * driven by a prop rather than pathname parsing so tab routes
+ * stay deep-linkable without any client-side route listening.
+ */
+export function ProjectShell({
+  overview,
+  activeTab,
+  children,
+}: {
+  overview: ProjectOverviewDto;
+  activeTab: ProjectTabKey;
+  children: ReactNode;
+}) {
+  const tProject = useTranslations("project_overview");
+  const tTabs = useTranslations("project_tabs");
+
+  const tabs: {
+    key: ProjectTabKey;
+    label: string;
+    href: string;
+    icon: ReactNode;
+    count?: number;
+  }[] = [
+    {
+      key: "overview",
+      label: tTabs("overview"),
+      href: `/formulations/${overview.id}`,
+      icon: <LayoutDashboard className="h-4 w-4" />,
+    },
+    {
+      key: "builder",
+      label: tTabs("builder"),
+      href: `/formulations/${overview.id}/builder`,
+      icon: <Sparkles className="h-4 w-4" />,
+    },
+    {
+      key: "spec-sheets",
+      label: tTabs("spec_sheets"),
+      href: `/formulations/${overview.id}/spec-sheets`,
+      icon: <FileText className="h-4 w-4" />,
+      count: overview.spec_sheets.total,
+    },
+    {
+      key: "trial-batches",
+      label: tTabs("trial_batches"),
+      href: `/formulations/${overview.id}/trial-batches`,
+      icon: <FlaskConical className="h-4 w-4" />,
+      count: overview.trial_batches.total,
+    },
+    {
+      key: "qc",
+      label: tTabs("qc"),
+      href: `/formulations/${overview.id}/qc`,
+      icon: <ShieldCheck className="h-4 w-4" />,
+      count: overview.qc.total,
+    },
+  ];
+
+  return (
+    <div className="mt-8 flex flex-col gap-6">
+      <CompactHeader overview={overview} tProject={tProject} />
+      <TabBar tabs={tabs} activeTab={activeTab} />
+      <div>{children}</div>
+    </div>
+  );
+}
+
+
+function CompactHeader({
+  overview,
+  tProject,
+}: {
+  overview: ProjectOverviewDto;
+  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+}) {
+  return (
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div className="flex flex-col">
+        {overview.code ? (
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {overview.code}
+          </p>
+        ) : null}
+        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
+          {overview.name}
+        </h1>
+        {overview.latest_version !== null ? (
+          <p className="mt-1 text-xs text-ink-500">
+            v{overview.latest_version}
+            {overview.latest_version_label
+              ? ` · ${overview.latest_version_label}`
+              : ""}
+          </p>
+        ) : null}
+      </div>
+      <StatusPill status={overview.project_status} tProject={tProject} />
+    </header>
+  );
+}
+
+
+function StatusPill({
+  status,
+  tProject,
+}: {
+  status: ProjectStatus;
+  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+}) {
+  const styles: Record<
+    ProjectStatus,
+    { classes: string; icon: ReactNode }
+  > = {
+    concept: {
+      classes: "bg-ink-100 text-ink-700 ring-ink-200",
+      icon: <Plus className="h-3.5 w-3.5" />,
+    },
+    in_development: {
+      classes: "bg-info/10 text-info ring-info/20",
+      icon: <FlaskConical className="h-3.5 w-3.5" />,
+    },
+    pilot: {
+      classes: "bg-orange-50 text-orange-700 ring-orange-200",
+      icon: <PlayCircle className="h-3.5 w-3.5" />,
+    },
+    approved: {
+      classes: "bg-success/10 text-success ring-success/20",
+      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+    },
+    discontinued: {
+      classes: "bg-danger/10 text-danger ring-danger/20",
+      icon: <AlertTriangle className="h-3.5 w-3.5" />,
+    },
+  };
+  const s = styles[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${s.classes}`}
+    >
+      {s.icon}
+      {tProject(`status.${status}` as "status.concept")}
+    </span>
+  );
+}
+
+
+function TabBar({
+  tabs,
+  activeTab,
+}: {
+  tabs: {
+    key: ProjectTabKey;
+    label: string;
+    href: string;
+    icon: ReactNode;
+    count?: number;
+  }[];
+  activeTab: ProjectTabKey;
+}) {
+  const pathname = usePathname();
+  return (
+    <nav
+      aria-label="Project workspace tabs"
+      className="border-b border-ink-200"
+    >
+      <ul className="flex flex-wrap gap-1">
+        {tabs.map((tab) => {
+          // Prop is the source of truth but we also underline when
+          // the path matches, so a link the user just clicked feels
+          // instant even before the new page hydrates.
+          const active =
+            tab.key === activeTab ||
+            pathname === tab.href ||
+            (tab.key !== "overview" && pathname.startsWith(`${tab.href}/`));
+          return (
+            <li key={tab.key}>
+              <Link
+                href={tab.href}
+                aria-current={active ? "page" : undefined}
+                className={
+                  active
+                    ? "inline-flex items-center gap-2 border-b-2 border-orange-500 px-3 py-2.5 text-sm font-medium text-ink-1000"
+                    : "inline-flex items-center gap-2 border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-ink-500 hover:border-ink-300 hover:text-ink-700"
+                }
+              >
+                {tab.icon}
+                {tab.label}
+                {typeof tab.count === "number" ? (
+                  <span
+                    className={
+                      active
+                        ? "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-1000 px-1.5 text-[10px] font-semibold text-ink-0"
+                        : "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-semibold text-ink-500"
+                    }
+                  >
+                    {tab.count}
+                  </span>
+                ) : null}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
+  );
+}

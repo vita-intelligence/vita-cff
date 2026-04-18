@@ -496,18 +496,25 @@ def compute_stats(validation: ProductValidation) -> ValidationStats:
 
 
 def list_validations(
-    *, organization: Organization
+    *,
+    organization: Organization,
+    formulation_id: Any | None = None,
 ) -> QuerySet[ProductValidation]:
-    return (
-        ProductValidation.objects.filter(organization=organization)
-        .select_related(
-            "trial_batch__formulation_version__formulation",
-            "created_by",
-            "scientist_signature",
-            "rd_manager_signature",
+    """List validations newest-first, optionally scoped to one
+    formulation. The workspace's QC tab filters by
+    ``formulation_id``; the global list omits it."""
+
+    queryset = ProductValidation.objects.filter(organization=organization)
+    if formulation_id is not None:
+        queryset = queryset.filter(
+            trial_batch__formulation_version__formulation_id=formulation_id
         )
-        .order_by("-updated_at")
-    )
+    return queryset.select_related(
+        "trial_batch__formulation_version__formulation",
+        "created_by",
+        "scientist_signature",
+        "rd_manager_signature",
+    ).order_by("-updated_at")
 
 
 def get_validation(

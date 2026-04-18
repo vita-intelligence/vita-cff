@@ -126,12 +126,22 @@ _SHEET_RELATED: tuple[str, ...] = (
 )
 
 
-def list_sheets(*, organization: Organization) -> QuerySet[SpecificationSheet]:
-    return (
-        SpecificationSheet.objects.filter(organization=organization)
-        .select_related(*_SHEET_RELATED)
-        .order_by("-updated_at")
-    )
+def list_sheets(
+    *,
+    organization: Organization,
+    formulation_id: Any | None = None,
+) -> QuerySet[SpecificationSheet]:
+    """List spec sheets newest-first, optionally scoped to a single
+    formulation. The project workspace's Spec Sheets tab passes
+    ``formulation_id`` so it only surfaces sheets hanging off this
+    project's versions; the global list page omits it."""
+
+    queryset = SpecificationSheet.objects.filter(organization=organization)
+    if formulation_id is not None:
+        queryset = queryset.filter(
+            formulation_version__formulation_id=formulation_id
+        )
+    return queryset.select_related(*_SHEET_RELATED).order_by("-updated_at")
 
 
 def get_sheet(

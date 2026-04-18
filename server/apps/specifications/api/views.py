@@ -57,7 +57,13 @@ class SpecificationListCreateView(APIView):
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
-        queryset = list_sheets(organization=self.organization)
+        # Optional ?formulation_id scopes the list to one project —
+        # drives the Spec Sheets tab on the project workspace.
+        formulation_id = request.query_params.get("formulation_id") or None
+        queryset = list_sheets(
+            organization=self.organization,
+            formulation_id=formulation_id,
+        )
         paginator = SpecificationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         serializer = SpecificationSheetReadSerializer(page, many=True)

@@ -23,7 +23,13 @@
   "signature": {
     "scientist": "Scientist sign-off",
     "rd_manager": "R&D Manager sign-off",
+    "rd_manager_prefix": "R&D Manager",
     "pending": "Awaiting signature"
+  },
+  "tab": {
+    "subtitle": "{count, plural, =0 {No validations recorded yet} one {# QC validation} other {# QC validations}} for this project.",
+    "empty": "No validations recorded yet",
+    "empty_hint": "Open a trial batch and kick off its validation to start running weight, hardness, disintegration and organoleptic tests."
   },
   "weight": {
     "title": "Weight test",

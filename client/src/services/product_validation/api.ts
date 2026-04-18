@@ -24,6 +24,19 @@ export async function fetchValidation(
   return data;
 }
 
+export async function fetchValidations(
+  orgId: string,
+  opts: { readonly formulationId?: string } = {},
+): Promise<readonly ProductValidationDto[]> {
+  const params: Record<string, string> = {};
+  if (opts.formulationId) params.formulation_id = opts.formulationId;
+  const { data } = await apiClient.get<readonly ProductValidationDto[]>(
+    productValidationEndpoints.list(orgId),
+    { params },
+  );
+  return data;
+}
+
 export async function fetchValidationStats(
   orgId: string,
   validationId: string,

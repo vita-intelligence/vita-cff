@@ -4,6 +4,11 @@
   "new_sheet": "New specification",
   "no_sheets": "No specification sheets yet",
   "no_sheets_hint": "Open a formulation, save a version, then generate a sheet from it.",
+  "untitled": "Untitled sheet",
+  "no_client_yet": "No client assigned",
+  "tab": {
+    "subtitle": "{count, plural, =0 {No client-facing sheets yet} one {# specification sheet} other {# specification sheets}} for this project."
+  },
   "columns": {
     "code": "Code",
     "client": "Client",

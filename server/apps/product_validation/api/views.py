@@ -55,7 +55,11 @@ class ValidationListCreateView(APIView):
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
-        queryset = list_validations(organization=self.organization)
+        formulation_id = request.query_params.get("formulation_id") or None
+        queryset = list_validations(
+            organization=self.organization,
+            formulation_id=formulation_id,
+        )
         serializer = ProductValidationReadSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
