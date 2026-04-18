@@ -1,16 +1,21 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
+import { FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState, type FormEvent } from "react";
 
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
-import {
-  useCreateSpecification,
-} from "@/services/specifications";
+import { useCreateSpecification } from "@/services/specifications";
 import type { FormulationVersionDto } from "@/services/formulations";
+
+
+const INPUT_CLASS =
+  "w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400";
+const LABEL_CLASS = "text-xs font-medium text-ink-700";
+const HINT_CLASS = "text-xs text-ink-500";
 
 
 /**
@@ -32,9 +37,7 @@ export function NewSpecSheetButton({
   const router = useRouter();
 
   const [isOpen, setIsOpen] = useState(false);
-  const [versionId, setVersionId] = useState<string>(
-    versions[0]?.id ?? "",
-  );
+  const [versionId, setVersionId] = useState<string>(versions[0]?.id ?? "");
   const [code, setCode] = useState("");
   const [clientName, setClientName] = useState("");
   const [clientEmail, setClientEmail] = useState("");
@@ -84,18 +87,16 @@ export function NewSpecSheetButton({
 
   const isBusy = createMutation.isPending;
 
-  // When there are no saved versions yet, render a disabled trigger
-  // with a hint rather than a broken modal — the scientist needs to
-  // save at least one version before a sheet makes sense.
   if (versions.length === 0) {
     return (
       <Button
         type="button"
         variant="outline"
         size="md"
-        className="rounded-none border-2 font-bold tracking-wider uppercase"
+        className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
         isDisabled
       >
+        <FileText className="h-4 w-4" />
         {tSpecs("new_sheet")}
       </Button>
     );
@@ -109,43 +110,41 @@ export function NewSpecSheetButton({
       <Modal.Trigger>
         <Button
           type="button"
-          variant="outline"
+          variant="primary"
           size="md"
-          className="rounded-none border-2 font-bold tracking-wider uppercase"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
         >
+          <FileText className="h-4 w-4" />
           {tSpecs("new_sheet")}
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             {/*
               ``display: contents`` hides the <form> element from CSS
               layout so Header/Body/Footer stay as direct flex children
-              of the dialog. Without this, HeroUI's "scroll inside"
-              variant can't measure the body's height and the modal
-              stops being scrollable when content overflows the
-              viewport.
+              of the dialog.
             */}
             <form onSubmit={handleSubmit} style={{ display: "contents" }}>
-              <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-                <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                <Modal.Heading className="text-base font-semibold text-ink-1000">
                   {tSpecs("create.title")}
                 </Modal.Heading>
               </Modal.Header>
-              <Modal.Body className="flex flex-col gap-5 px-6 py-6">
-                <p className="text-sm text-ink-600">
+              <Modal.Body className="flex flex-col gap-4 px-6 py-6">
+                <p className="text-sm text-ink-500">
                   {tSpecs("create.subtitle")}
                 </p>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className={LABEL_CLASS}>
                     {tSpecs("create.version")}
                   </span>
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className={`cursor-pointer ${INPUT_CLASS}`}
                   >
                     {versions.map((v) => (
                       <option key={v.id} value={v.id}>
@@ -154,99 +153,97 @@ export function NewSpecSheetButton({
                       </option>
                     ))}
                   </select>
-                  <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                  <p className={HINT_CLASS}>
                     {tSpecs("create.version_picker_hint")}
                   </p>
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
-                    {tSpecs("create.code")}
-                  </span>
+                  <span className={LABEL_CLASS}>{tSpecs("create.code")}</span>
                   <input
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className={INPUT_CLASS}
                   />
                 </label>
 
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                    <span className={LABEL_CLASS}>
                       {tSpecs("create.client_company")}
                     </span>
                     <input
                       value={clientCompany}
                       onChange={(e) => setClientCompany(e.target.value)}
-                      className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                      className={INPUT_CLASS}
                     />
                   </label>
                   <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                    <span className={LABEL_CLASS}>
                       {tSpecs("create.client_name")}
                     </span>
                     <input
                       value={clientName}
                       onChange={(e) => setClientName(e.target.value)}
-                      className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                      className={INPUT_CLASS}
                     />
                   </label>
                 </div>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className={LABEL_CLASS}>
                     {tSpecs("create.client_email")}
                   </span>
                   <input
                     type="email"
                     value={clientEmail}
                     onChange={(e) => setClientEmail(e.target.value)}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className={INPUT_CLASS}
                   />
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className={LABEL_CLASS}>
                     {tSpecs("create.total_weight_label")}
                   </span>
                   <input
                     value={totalWeightLabel}
                     onChange={(e) => setTotalWeightLabel(e.target.value)}
                     placeholder="TBC"
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className={INPUT_CLASS}
                   />
-                  <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                  <p className={HINT_CLASS}>
                     {tSpecs("create.total_weight_label_hint")}
                   </p>
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className={LABEL_CLASS}>
                     {tSpecs("create.cover_notes")}
                   </span>
                   <textarea
                     rows={3}
                     value={coverNotes}
                     onChange={(e) => setCoverNotes(e.target.value)}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className={INPUT_CLASS}
                   />
                 </label>
 
                 {error ? (
                   <p
                     role="alert"
-                    className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                    className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                   >
                     {error}
                   </p>
                 ) : null}
               </Modal.Body>
-              <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+              <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
                 <Button
                   type="button"
                   variant="outline"
                   size="md"
-                  className="rounded-none border-2 font-bold tracking-wider uppercase"
+                  className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                   onClick={close}
                   isDisabled={isBusy}
                 >
@@ -256,7 +253,7 @@ export function NewSpecSheetButton({
                   type="submit"
                   variant="primary"
                   size="md"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
                   isDisabled={isBusy || !versionId}
                 >
                   {tSpecs("create.submit")}

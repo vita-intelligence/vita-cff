@@ -1,6 +1,7 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
+import { ExternalLink, FlaskConical, Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState, type FormEvent } from "react";
 
@@ -58,13 +59,13 @@ export function TrialBatchesPanel({
   const batches = batchesQuery.data ?? [];
 
   return (
-    <section className="mt-10 border-2 border-ink-1000 bg-ink-0 p-6 md:p-8">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b-2 border-ink-1000 pb-3">
-        <div>
-          <h2 className="font-mono text-xs tracking-widest uppercase text-ink-700">
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
+      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-ink-100 pb-4">
+        <div className="flex flex-col">
+          <h2 className="text-base font-semibold text-ink-1000">
             {tBatches("list.title")}
           </h2>
-          <p className="mt-1 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+          <p className="mt-0.5 text-sm text-ink-500">
             {tBatches("list.subtitle")}
           </p>
         </div>
@@ -86,35 +87,38 @@ export function TrialBatchesPanel({
       {deleteError ? (
         <p
           role="alert"
-          className="mt-4 border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="mt-4 rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {deleteError}
         </p>
       ) : null}
 
       {batchesQuery.isLoading ? (
-        <p className="mt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <p className="mt-6 text-sm text-ink-500">
           {tBatches("list.loading")}
         </p>
       ) : batches.length === 0 ? (
-        <p className="mt-6 text-sm text-ink-600">
-          {tBatches("list.empty")}
-        </p>
+        <div className="mt-6 rounded-xl bg-ink-50 px-4 py-8 text-center ring-1 ring-inset ring-ink-200">
+          <FlaskConical className="mx-auto h-6 w-6 text-ink-400" />
+          <p className="mt-2 text-sm text-ink-500">
+            {tBatches("list.empty")}
+          </p>
+        </div>
       ) : (
-        <ul className="mt-4 divide-y divide-ink-200">
+        <ul className="mt-2 divide-y divide-ink-100">
           {batches.map((batch) => (
             <li
               key={batch.id}
               className="flex flex-wrap items-center justify-between gap-3 py-3"
             >
-              <div className="flex flex-col gap-1">
+              <div className="flex flex-col gap-0.5">
                 <Link
                   href={`/formulations/${formulationId}/trial-batches/${batch.id}`}
-                  className="font-bold tracking-tight text-ink-1000 underline-offset-4 hover:underline"
+                  className="text-sm font-medium text-ink-1000 hover:text-orange-700"
                 >
                   {batch.label || tBatches("list.untitled")}
                 </Link>
-                <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                <span className="text-xs text-ink-500">
                   v{batch.formulation_version_number} ·{" "}
                   {formatInteger(batch.batch_size_units)}{" "}
                   {tBatches("list.packs")} ·{" "}
@@ -126,18 +130,20 @@ export function TrialBatchesPanel({
               <div className="flex items-center gap-2">
                 <Link
                   href={`/formulations/${formulationId}/trial-batches/${batch.id}`}
-                  className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-3 py-1 text-xs font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 >
+                  <ExternalLink className="h-3.5 w-3.5" />
                   {tBatches("list.view_bom")}
                 </Link>
                 {canDelete ? (
                   <button
                     type="button"
+                    aria-label={tBatches("list.delete")}
                     onClick={() => handleDelete(batch.id)}
                     disabled={deleteMutation.isPending}
-                    className="font-mono text-[10px] tracking-widest uppercase text-danger hover:underline disabled:opacity-50"
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
                   >
-                    {tBatches("list.delete")}
+                    <Trash2 className="h-4 w-4" />
                   </button>
                 ) : null}
               </div>
@@ -193,10 +199,6 @@ function NewTrialBatchButton({
   const createMutation = useCreateTrialBatch(orgId, formulationId);
 
   const reset = () => {
-    // The sync effect above handles re-seeding ``versionId`` against
-    // the latest ``versions`` prop. Here we only need to clear the
-    // free-text fields so a previously-typed batch size / label does
-    // not leak into the next batch creation.
     setLabel("");
     setBatchSize("");
     setNotes("");
@@ -236,9 +238,10 @@ function NewTrialBatchButton({
         type="button"
         variant="outline"
         size="sm"
-        className="rounded-none border-2 font-bold tracking-wider uppercase"
+        className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
         isDisabled
       >
+        <Plus className="h-4 w-4" />
         {tBatches("create.trigger")}
       </Button>
     );
@@ -252,35 +255,36 @@ function NewTrialBatchButton({
       <Modal.Trigger>
         <Button
           type="button"
-          variant="outline"
+          variant="primary"
           size="sm"
-          className="rounded-none border-2 font-bold tracking-wider uppercase"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
         >
+          <Plus className="h-4 w-4" />
           {tBatches("create.trigger")}
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <form onSubmit={handleSubmit} style={{ display: "contents" }}>
-              <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-                <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                <Modal.Heading className="text-base font-semibold text-ink-1000">
                   {tBatches("create.title", { formulation: formulationName })}
                 </Modal.Heading>
               </Modal.Header>
-              <Modal.Body className="flex flex-col gap-5 px-6 py-6">
-                <p className="text-sm text-ink-600">
+              <Modal.Body className="flex flex-col gap-4 px-6 py-6">
+                <p className="text-sm text-ink-500">
                   {tBatches("create.subtitle")}
                 </p>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tBatches("create.version")}
                   </span>
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   >
                     {versions.map((v) => (
                       <option key={v.id} value={v.id}>
@@ -292,7 +296,7 @@ function NewTrialBatchButton({
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tBatches("create.batch_size")}
                   </span>
                   <input
@@ -302,52 +306,52 @@ function NewTrialBatchButton({
                     value={batchSize}
                     onChange={(e) => setBatchSize(e.target.value)}
                     placeholder="10000"
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
-                  <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                  <span className="text-xs text-ink-500">
                     {tBatches("create.batch_size_hint")}
                   </span>
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tBatches("create.label")}
                   </span>
                   <input
                     value={label}
                     onChange={(e) => setLabel(e.target.value)}
                     placeholder={tBatches("create.label_placeholder")}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tBatches("create.notes")}
                   </span>
                   <textarea
                     rows={3}
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                 </label>
 
                 {error ? (
                   <p
                     role="alert"
-                    className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                    className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                   >
                     {error}
                   </p>
                 ) : null}
               </Modal.Body>
-              <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+              <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
                 <Button
                   type="button"
                   variant="outline"
                   size="md"
-                  className="rounded-none border-2 font-bold tracking-wider uppercase"
+                  className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                   onClick={close}
                   isDisabled={createMutation.isPending}
                 >
@@ -357,7 +361,7 @@ function NewTrialBatchButton({
                   type="submit"
                   variant="primary"
                   size="md"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
                   isDisabled={createMutation.isPending}
                 >
                   {tBatches("create.submit")}

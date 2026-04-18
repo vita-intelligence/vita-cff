@@ -1,3 +1,4 @@
+import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Link } from "@/i18n/navigation";
@@ -8,7 +9,7 @@ export interface BreadcrumbItem {
 }
 
 /**
- * Brutalist breadcrumb trail rendered above a page's main heading.
+ * Breadcrumb trail rendered above a page's main heading.
  *
  * The last item is always treated as the "current" page and rendered
  * without a link regardless of whether ``href`` is provided, so the
@@ -23,19 +24,24 @@ export function Breadcrumbs({
   return (
     <nav
       aria-label="Breadcrumb"
-      className="flex items-center gap-2 font-mono text-[10px] tracking-widest uppercase text-ink-500"
+      className="flex flex-wrap items-center gap-1 text-xs text-ink-500"
     >
       {items.map((item, index) => {
         const isLast = index === items.length - 1;
         return (
-          <span key={`${item.label}-${index}`} className="flex items-center gap-2">
-            {index > 0 ? <span aria-hidden>/</span> : null}
+          <span
+            key={`${item.label}-${index}`}
+            className="inline-flex items-center gap-1"
+          >
+            {index > 0 ? (
+              <ChevronRight className="h-3 w-3 text-ink-300" aria-hidden />
+            ) : null}
             {isLast || !item.href ? (
-              <span className="text-ink-1000">{item.label}</span>
+              <span className="font-medium text-ink-1000">{item.label}</span>
             ) : (
               <Link
                 href={item.href}
-                className="text-ink-500 hover:text-ink-1000"
+                className="text-ink-500 transition-colors hover:text-ink-1000"
               >
                 {item.label}
               </Link>

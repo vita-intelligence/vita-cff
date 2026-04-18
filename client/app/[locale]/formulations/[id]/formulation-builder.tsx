@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
+import { Save, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   useCallback,
@@ -461,17 +462,17 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <section className="flex items-end justify-between gap-6">
         <div>
-          <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {metadata.code || "—"}
           </p>
-          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase md:text-6xl">
+          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
             {metadata.name}
           </h1>
         </div>
         {canWrite ? (
           <div className="flex flex-col items-end gap-2">
             {metadataDirty || linesDirty ? (
-              <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tFormulations("builder.unsaved_changes")}
               </span>
             ) : null}
@@ -480,23 +481,25 @@ export function FormulationBuilder({
                 type="button"
                 variant="outline"
                 size="md"
-                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                className="gap-1.5 rounded-lg bg-ink-0 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 isDisabled={isBusy || (!metadataDirty && !linesDirty)}
                 onClick={async () => {
                   if (metadataDirty) await handleSaveMetadata();
                   if (linesDirty) await handleSaveLines();
                 }}
               >
+                <Save className="h-4 w-4" />
                 {tFormulations("builder.save_draft")}
               </Button>
               <Button
                 type="button"
                 variant="primary"
                 size="md"
-                className="rounded-none font-bold tracking-wider uppercase"
+                className="gap-1.5 rounded-lg bg-orange-500 font-medium text-ink-0 hover:bg-orange-600"
                 isDisabled={isBusy}
                 onClick={handleSaveVersion}
               >
+                <Save className="h-4 w-4" />
                 {tFormulations("builder.save_version")}
               </Button>
               <NewSpecSheetButton orgId={orgId} versions={versions} />
@@ -508,7 +511,7 @@ export function FormulationBuilder({
       {errorMessage ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {errorMessage}
         </p>
@@ -517,8 +520,8 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       {/* Metadata form                                                */}
       {/* ------------------------------------------------------------ */}
-      <section className="border-2 border-ink-1000 bg-ink-0 p-6">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("builder.metadata")}
         </p>
         <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
@@ -631,8 +634,8 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
         {/* Picker */}
-        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.picker_title")}
           </p>
           <input
@@ -640,18 +643,18 @@ export function FormulationBuilder({
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder={tFormulations("builder.picker_search")}
             disabled={!canWrite}
-            className="mt-3 w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+            className="mt-3 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           />
           <ul
             ref={pickerScrollRef}
             className="mt-3 flex max-h-[420px] flex-col gap-1 overflow-y-auto"
           >
             {pickerQuery.isLoading && pickerItems.length === 0 ? (
-              <li className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+              <li className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tCommon("states.loading")}
               </li>
             ) : pickerItems.length === 0 ? (
-              <li className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+              <li className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tFormulations("builder.picker_empty")}
               </li>
             ) : (
@@ -672,19 +675,19 @@ export function FormulationBuilder({
                             )
                           : undefined
                       }
-                      className={`flex w-full items-start justify-between gap-2 border px-3 py-2 text-left font-mono text-xs text-ink-1000 hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
+                      className={`flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs text-ink-1000 ring-1 ring-inset hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
                         failure
-                          ? "border-warning"
-                          : "border-ink-200"
+                          ? "ring-warning/30"
+                          : "ring-ink-200"
                       }`}
                     >
                       <span>
-                        <span className="block font-bold">{item.name}</span>
+                        <span className="block font-semibold">{item.name}</span>
                         <span className="text-ink-600">
                           {item.internal_code || "—"}
                         </span>
                         {failure ? (
-                          <span className="mt-1 block text-[10px] tracking-widest uppercase text-warning">
+                          <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-warning">
                             {tFormulations(
                               `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
                             )}
@@ -700,7 +703,7 @@ export function FormulationBuilder({
               <li ref={pickerSentinelRef} aria-hidden className="h-px" />
             ) : null}
             {pickerQuery.isFetchingNextPage ? (
-              <li className="py-2 text-center font-mono text-[10px] tracking-widest uppercase text-ink-500">
+              <li className="py-2 text-center text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tCommon("states.loading")}
               </li>
             ) : null}
@@ -708,8 +711,8 @@ export function FormulationBuilder({
         </div>
 
         {/* Lines editor */}
-        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.ingredients")}
           </p>
           {lines.length === 0 ? (
@@ -719,14 +722,14 @@ export function FormulationBuilder({
           ) : (
             <table className="mt-4 w-full border-collapse">
               <thead>
-                <tr className="border-b-2 border-ink-1000">
-                  <th className="px-3 py-2 text-left font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                <tr className="border-b border-ink-100">
+                  <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
                     {tFormulations("columns.name")}
                   </th>
-                  <th className="px-3 py-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                  <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
                     {tFormulations("builder.label_claim_column")}
                   </th>
-                  <th className="px-3 py-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                  <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
                     {tFormulations("builder.mg_per_serving_column")}
                   </th>
                   <th className="px-3 py-2" />
@@ -747,25 +750,25 @@ export function FormulationBuilder({
                   return (
                     <tr
                       key={line.key}
-                      className="border-b border-ink-200 last:border-b-0"
+                      className="border-b border-ink-100 last:border-b-0"
                     >
                       <td className="px-3 py-3">
                         <div className="flex items-start gap-2">
                           {showFailure ? (
                             <span
-                              className="mt-1 inline-block h-2 w-2 shrink-0 bg-warning"
+                              className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full bg-warning"
                               aria-hidden
                             />
                           ) : null}
                           <div>
-                            <span className="block font-bold">
+                            <span className="block font-semibold">
                               {line.item_name}
                             </span>
-                            <span className="font-mono text-[10px] text-ink-600">
+                            <span className="text-xs text-ink-600">
                               {line.item_internal_code || "—"}
                             </span>
                             {showFailure ? (
-                              <span className="mt-1 block font-mono text-[10px] tracking-widest uppercase text-warning">
+                              <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-warning">
                                 {tFormulations(
                                   `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
                                 )}
@@ -784,10 +787,10 @@ export function FormulationBuilder({
                           onChange={(e) =>
                             updateLineClaim(line.key, e.target.value)
                           }
-                          className="w-32 border-2 border-ink-1000 bg-ink-0 px-2 py-1 text-right font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                          className="w-32 rounded-xl bg-ink-0 px-2 py-1 text-right text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                         />
                       </td>
-                      <td className="px-3 py-3 text-right font-mono text-xs">
+                      <td className="px-3 py-3 text-right text-xs">
                         <div>
                           {computed !== null
                             ? numberFormatter.format(computed)
@@ -795,7 +798,7 @@ export function FormulationBuilder({
                         </div>
                         {computed !== null && explanation ? (
                           <div
-                            className="mt-0.5 font-mono text-[9px] tracking-wide text-ink-500"
+                            className="mt-0.5 text-[10px] text-ink-500"
                             title="How this number was computed"
                           >
                             {explanation}
@@ -807,8 +810,9 @@ export function FormulationBuilder({
                           <button
                             type="button"
                             onClick={() => removeLine(line.key)}
-                            className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-danger"
+                            className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-danger"
                           >
+                            <Trash2 className="h-4 w-4" />
                             {tFormulations("builder.remove_line")}
                           </button>
                         ) : null}
@@ -822,8 +826,8 @@ export function FormulationBuilder({
         </div>
 
         {/* Totals + viability */}
-        <div className="border-2 border-ink-1000 bg-ink-0 p-6">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.totals")}
           </p>
 
@@ -862,8 +866,8 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       {/* Version history                                              */}
       {/* ------------------------------------------------------------ */}
-      <section className="border-2 border-ink-1000 bg-ink-0 p-6">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("versions.title")}
         </p>
         {versionsQuery.isLoading ? (
@@ -879,19 +883,19 @@ export function FormulationBuilder({
             {versions.map((v) => (
               <li
                 key={v.id}
-                className="flex items-center justify-between border border-ink-200 px-3 py-2"
+                className="flex items-center justify-between rounded-lg px-3 py-2 ring-1 ring-inset ring-ink-200"
               >
                 <div>
-                  <span className="font-bold">
+                  <span className="font-semibold">
                     {tFormulations("versions.version_prefix")}
                     {v.version_number}
                   </span>
                   {v.label ? (
-                    <span className="ml-3 font-mono text-xs text-ink-600">
+                    <span className="ml-3 text-xs text-ink-600">
                       {v.label}
                     </span>
                   ) : null}
-                  <span className="ml-3 font-mono text-[10px] text-ink-500">
+                  <span className="ml-3 text-xs text-ink-500">
                     {dateFormatter.format(new Date(v.created_at))}
                   </span>
                 </div>
@@ -899,7 +903,7 @@ export function FormulationBuilder({
                   <button
                     type="button"
                     onClick={() => handleRollback(v.version_number)}
-                    className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
+                    className="text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-1000"
                   >
                     {tFormulations("versions.rollback")}
                   </button>
@@ -926,8 +930,8 @@ function CompliancePanel({
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   return (
-    <div className="border-2 border-ink-1000 bg-ink-0 p-6">
-      <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+    <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {tFormulations("compliance.title")}
       </p>
       {!hasLines ? (
@@ -941,7 +945,7 @@ function CompliancePanel({
               key={flag.key}
               className="flex items-center justify-between gap-3"
             >
-              <span className="font-mono text-xs font-bold tracking-widest uppercase text-ink-1000">
+              <span className="text-sm font-medium text-ink-700">
                 {tFormulations(
                   `compliance.flag_label.${flag.key}` as `compliance.flag_label.vegan`,
                 )}
@@ -957,8 +961,8 @@ function CompliancePanel({
               flags so the chip layout stays consistent; uses the
               danger palette when any source is present so it stands
               out from the neutral "Non-Organic" chip above. */}
-          <li className="flex items-center justify-between gap-3 border-t border-ink-200 pt-3">
-            <span className="font-mono text-xs font-bold tracking-widest uppercase text-ink-1000">
+          <li className="flex items-center justify-between gap-3 border-t border-ink-100 pt-3">
+            <span className="text-sm font-medium text-ink-700">
               {tFormulations("compliance.flag_label.allergen")}
             </span>
             <AllergenChip
@@ -981,17 +985,17 @@ function AllergenChip({
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   const base =
-    "border-2 px-2 py-1 font-mono text-[10px] tracking-widest uppercase";
+    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset";
   if (allergens.sources.length === 0) {
     return (
-      <span className={`${base} border-ink-1000 bg-ink-1000 text-ink-0`}>
+      <span className={`${base} bg-success/10 text-success ring-success/20`}>
         {tFormulations("compliance.allergen.none")}
       </span>
     );
   }
   return (
     <span
-      className={`${base} border-danger bg-danger/10 text-danger`}
+      className={`${base} bg-danger/10 text-danger ring-danger/20`}
       title={tFormulations("compliance.allergen.count", {
         count: allergens.allergenCount,
       })}
@@ -1010,20 +1014,20 @@ function ComplianceChip({
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   const base =
-    "border-2 px-2 py-1 font-mono text-[10px] tracking-widest uppercase";
+    "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset";
   let classes: string;
   let label: string;
   if (flag.status === true) {
-    classes = `${base} border-ink-1000 bg-ink-1000 text-ink-0`;
+    classes = `${base} bg-success/10 text-success ring-success/20`;
     label = tFormulations("compliance.status.yes", { label: flag.label });
   } else if (flag.status === false) {
-    classes = `${base} border-danger bg-danger/10 text-danger`;
+    classes = `${base} bg-danger/10 text-danger ring-danger/20`;
     label = tFormulations("compliance.status.no", {
       label: flag.label,
       count: flag.nonCompliantCount,
     });
   } else {
-    classes = `${base} border-ink-400 bg-ink-100 text-ink-500`;
+    classes = `${base} bg-ink-100 text-ink-500 ring-ink-200`;
     label = tFormulations("compliance.status.unknown", {
       label: flag.label,
     });
@@ -1071,16 +1075,16 @@ function DeclarationPanel({
   };
 
   return (
-    <div className="border-2 border-ink-1000 bg-ink-0 p-6">
+    <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
       <div className="flex items-center justify-between gap-3">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("declaration.title")}
         </p>
         {copyable ? (
           <button
             type="button"
             onClick={handleCopy}
-            className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
+            className="text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-1000"
           >
             {tFormulations("declaration.copy")}
           </button>
@@ -1112,21 +1116,21 @@ function DeclarationPanel({
               </span>
             ))}
           </p>
-          <p className="mt-3 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+          <p className="mt-3 text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("declaration.sort_hint")}
           </p>
-          <ul className="mt-4 flex flex-col gap-1 font-mono text-xs text-ink-700">
+          <ul className="mt-4 flex flex-col gap-1 text-xs text-ink-700">
             {declaration.entries.map((entry, idx) => (
               <li
                 key={`${entry.category}-${entry.label}-${idx}`}
-                className="flex items-center justify-between gap-3 border-b border-ink-200 py-1 last:border-b-0"
+                className="flex items-center justify-between gap-3 border-b border-ink-100 py-1 last:border-b-0"
               >
                 <span className="flex items-center gap-2">
                   <CategoryBadge
                     category={entry.category}
                     tFormulations={tFormulations}
                   />
-                  <span className={entry.isAllergen ? "font-bold" : ""}>
+                  <span className={entry.isAllergen ? "font-semibold" : ""}>
                     {entry.label}
                   </span>
                 </span>
@@ -1152,11 +1156,11 @@ function CategoryBadge({
 }) {
   const cls =
     category === "active"
-      ? "border-ink-1000 bg-ink-1000 text-ink-0"
-      : "border-ink-500 bg-ink-0 text-ink-500";
+      ? "bg-ink-100 text-ink-700 ring-ink-200"
+      : "bg-ink-0 text-ink-500 ring-ink-200";
   return (
     <span
-      className={`inline-flex items-center border px-1.5 font-mono text-[9px] tracking-widest uppercase ${cls}`}
+      className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium uppercase tracking-wide ring-1 ring-inset ${cls}`}
     >
       {tFormulations(
         `declaration.category.${category}` as `declaration.category.active`,
@@ -1185,21 +1189,21 @@ function TotalsBlock({
   return (
     <div className="mt-4 flex flex-col gap-4">
       <div>
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("builder.excipients.total_active")}
         </p>
-        <p className="mt-1 text-2xl font-black tracking-tight">
+        <p className="mt-1 text-xl font-semibold tracking-tight text-ink-1000">
           {format(totals.totalActiveMg)}{" "}
           <span className="text-sm text-ink-600">mg</span>
         </p>
       </div>
 
       {excipients ? (
-        <div className="border-t-2 border-ink-200 pt-4">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <div className="border-t border-ink-100 pt-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.excipients.title")}
           </p>
-          <ul className="mt-2 flex flex-col gap-1 font-mono text-xs text-ink-700">
+          <ul className="mt-2 flex flex-col gap-1 text-xs text-ink-700">
             <li className="flex justify-between">
               <span>{tFormulations("builder.excipients.mg_stearate")}</span>
               <span>{format(excipients.mgStearateMg)} mg</span>
@@ -1223,7 +1227,7 @@ function TotalsBlock({
       ) : null}
 
       {totals.totalWeightMg !== null ? (
-        <div className="border-t-2 border-ink-200 pt-4 font-mono text-xs text-ink-700">
+        <div className="border-t border-ink-100 pt-4 text-xs text-ink-700">
           <div className="flex justify-between">
             <span>{tFormulations("builder.excipients.total_weight")}</span>
             <span>{format(totals.totalWeightMg)} mg</span>
@@ -1235,15 +1239,15 @@ function TotalsBlock({
             </div>
           ) : null}
           {totals.sizeLabel ? (
-            <div className="mt-1 font-mono text-[10px] text-ink-500">
+            <div className="mt-1 text-xs text-ink-500">
               {totals.sizeLabel}
             </div>
           ) : null}
         </div>
       ) : null}
 
-      <div className="border-t-2 border-ink-200 pt-4">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+      <div className="border-t border-ink-100 pt-4">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("builder.viability.title")}
         </p>
         <ul className="mt-2 flex flex-col gap-1">
@@ -1253,13 +1257,18 @@ function TotalsBlock({
               code === "more_challenging_to_make" ||
               code === "consult_r_and_d" ||
               code === "capsule_too_large";
+            const isWarn = code === "more_challenging_to_make";
+            const chipBase =
+              "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset";
             return (
               <li
                 key={code}
                 className={
                   isBad
-                    ? "border-2 border-danger bg-danger/10 px-2 py-1 font-mono text-[10px] tracking-widest uppercase text-danger"
-                    : "border-2 border-ink-1000 bg-ink-1000 px-2 py-1 font-mono text-[10px] tracking-widest uppercase text-ink-0"
+                    ? isWarn
+                      ? `${chipBase} bg-warning/10 text-warning ring-warning/20`
+                      : `${chipBase} bg-danger/10 text-danger ring-danger/20`
+                    : `${chipBase} bg-success/10 text-success ring-success/20`
                 }
               >
                 {tFormulations(
@@ -1276,7 +1285,7 @@ function TotalsBlock({
 
 
 // ---------------------------------------------------------------------------
-// Tiny brutalist field primitives — enough for the builder, not a library
+// Tiny field primitives — enough for the builder, not a library
 // ---------------------------------------------------------------------------
 
 
@@ -1293,14 +1302,14 @@ function TextField({
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </span>
       <input
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+        className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
     </label>
   );
@@ -1320,7 +1329,7 @@ function NumberField({
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </span>
       <input
@@ -1329,7 +1338,7 @@ function NumberField({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+        className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
     </label>
   );
@@ -1351,14 +1360,14 @@ function SelectField({
 }) {
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </span>
       <select
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+        className="w-full cursor-pointer rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       >
         {options.map((option) => (
           <option key={option.value} value={option.value}>
@@ -1384,7 +1393,7 @@ function TextAreaField({
 }) {
   return (
     <label className="flex flex-col gap-1.5 md:col-span-2">
-      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </span>
       <textarea
@@ -1392,7 +1401,7 @@ function TextAreaField({
         value={value}
         disabled={disabled}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+        className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
     </label>
   );
