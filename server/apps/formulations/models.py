@@ -27,10 +27,34 @@ from apps.formulations.constants import DosageForm
 
 
 class FormulationStatus(models.TextChoices):
+    """Internal formulation-lifecycle workflow — is this R&D
+    document still being edited, reviewed, signed-off, or shelved?
+    Distinct from :class:`ProjectStatus` which tracks the product's
+    strategic roadmap position.
+    """
+
     DRAFT = "draft", _("Draft")
     IN_REVIEW = "in_review", _("In review")
     APPROVED = "approved", _("Approved")
     ARCHIVED = "archived", _("Archived")
+
+
+class ProjectStatus(models.TextChoices):
+    """Product-roadmap status of the project (==formulation).
+
+    Orthogonal to :class:`FormulationStatus`: a formulation can be
+    ``approved`` (technically finished editing) while the project it
+    describes is still in ``pilot`` (running a trial batch before
+    commercial launch). Surfaced prominently at the top of the
+    project workspace so PMs and clients see one glance-level
+    answer to "where are we".
+    """
+
+    CONCEPT = "concept", _("Concept")
+    IN_DEVELOPMENT = "in_development", _("In development")
+    PILOT = "pilot", _("Pilot")
+    APPROVED = "approved", _("Approved")
+    DISCONTINUED = "discontinued", _("Discontinued")
 
 
 class DosageFormChoices(models.TextChoices):
@@ -108,6 +132,17 @@ class Formulation(models.Model):
         max_length=16,
         choices=FormulationStatus.choices,
         default=FormulationStatus.DRAFT,
+    )
+    project_status = models.CharField(
+        _("project status"),
+        max_length=16,
+        choices=ProjectStatus.choices,
+        default=ProjectStatus.CONCEPT,
+        db_index=True,
+        help_text=_(
+            "Product-roadmap position. Drives the chip shown at the "
+            "top of the project workspace and the project list filter."
+        ),
     )
 
     created_by = models.ForeignKey(

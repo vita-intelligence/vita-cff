@@ -13,6 +13,7 @@ from apps.formulations.models import (
     FormulationLine,
     FormulationStatus,
     FormulationVersion,
+    ProjectStatus,
 )
 
 
@@ -100,6 +101,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "appearance",
             "disintegration_spec",
             "status",
+            "project_status",
             "lines",
             "created_at",
             "updated_at",
@@ -148,6 +150,9 @@ class FormulationWriteSerializer(serializers.Serializer):
     )
     status = serializers.ChoiceField(
         choices=FormulationStatus.choices, required=False
+    )
+    project_status = serializers.ChoiceField(
+        choices=ProjectStatus.choices, required=False
     )
 
     def validate_name(self, value: str) -> str:

@@ -22,7 +22,9 @@ export const ink = {
   1000: "#000000",
 } as const;
 
-/** Single accent — reserved for primary CTAs and critical highlights only. */
+/** Primary accent — reserved for CTAs and critical highlights. Olive /
+ * lime; pairs well with monochrome ink surfaces without feeling
+ * sugary. */
 export const accent = {
   50: "#f5fbe6",
   100: "#e9f7c7",
@@ -34,6 +36,24 @@ export const accent = {
   700: "#557524",
   800: "#3f571b",
   900: "#2a3a12",
+} as const;
+
+/** Warm-side companion to :const:`accent`. Orange range — used for
+ * in-progress / pilot / "this is in motion" status signals and
+ * occasional CTA variants where a warmer call-to-action is wanted
+ * over the earthy lime. Not for destructive intent — that's
+ * :const:`semantic.danger`. */
+export const orange = {
+  50: "#fff4ea",
+  100: "#ffe4cd",
+  200: "#ffc796",
+  300: "#ffa65e",
+  400: "#ff8a33",
+  500: "#f36e12",
+  600: "#d4570a",
+  700: "#a84309",
+  800: "#7c330a",
+  900: "#5a240a",
 } as const;
 
 /**
@@ -50,9 +70,11 @@ export const semantic = {
 export const colors = {
   ink,
   accent,
+  orange,
   semantic,
 } as const;
 
 export type InkShade = keyof typeof ink;
 export type AccentShade = keyof typeof accent;
+export type OrangeShade = keyof typeof orange;
 export type SemanticTone = keyof typeof semantic;

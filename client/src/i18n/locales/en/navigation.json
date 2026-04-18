@@ -2,8 +2,8 @@
   "main": {
     "dashboard": "Dashboard",
     "catalogues": "Catalogues",
-    "formulations": "Formulations",
-    "formulations_new": "New formulation",
+    "formulations": "Projects",
+    "formulations_new": "New project",
     "specifications": "Specifications",
     "proposals": "Proposals",
     "clients": "Clients"

@@ -16,7 +16,7 @@ import { typography } from "./typography";
 
 export { animations } from "./animations";
 export { breakpoints, containerMaxWidth } from "./breakpoints";
-export { accent, colors, ink, semantic } from "./colors";
+export { accent, colors, ink, orange, semantic } from "./colors";
 export { radius } from "./radius";
 export { shadow } from "./shadows";
 export { spacing } from "./spacing";
@@ -32,6 +32,7 @@ export {
 export type {
   AccentShade,
   InkShade,
+  OrangeShade,
   SemanticTone,
 } from "./colors";
 export type {

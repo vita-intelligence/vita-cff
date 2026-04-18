@@ -23,6 +23,7 @@ from apps.formulations.api.serializers import (
     RollbackVersionSerializer,
     SaveVersionSerializer,
 )
+from apps.formulations.overview import compute_project_overview
 from apps.formulations.services import (
     FormulationCodeConflict,
     FormulationNotFound,
@@ -368,3 +369,28 @@ class FormulationRollbackView(APIView):
             FormulationReadSerializer(formulation).data,
             status=status.HTTP_200_OK,
         )
+
+
+class FormulationOverviewView(APIView):
+    """``GET`` ``/.../formulations/<id>/overview/``.
+
+    One-shot aggregator for the Project workspace's Overview tab.
+    Computes counts + compliance + allergens + activity feed across
+    every child surface (spec sheets, trial batches, QC validations)
+    so the dashboard paints in a single round-trip.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_level = PermissionLevel.READ
+
+    def get(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)

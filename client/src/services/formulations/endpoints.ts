@@ -14,4 +14,6 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/versions/`,
   rollback: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/rollback/`,
+  overview: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
 } as const;

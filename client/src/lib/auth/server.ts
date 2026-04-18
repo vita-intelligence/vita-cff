@@ -17,6 +17,7 @@ import { formulationsEndpoints } from "@/services/formulations/endpoints";
 import type {
   FormulationDto,
   PaginatedFormulationsDto,
+  ProjectOverviewDto,
 } from "@/services/formulations/types";
 import { organizationsEndpoints } from "@/services/organizations/endpoints";
 import type { OrganizationDto } from "@/services/organizations/types";
@@ -182,6 +183,15 @@ export async function getFormulationServer(
 ): Promise<FormulationDto | null> {
   return serverFetch<FormulationDto>(
     formulationsEndpoints.detail(orgId, formulationId),
+  );
+}
+
+export async function getProjectOverviewServer(
+  orgId: string,
+  formulationId: string,
+): Promise<ProjectOverviewDto | null> {
+  return serverFetch<ProjectOverviewDto>(
+    formulationsEndpoints.overview(orgId, formulationId),
   );
 }
 

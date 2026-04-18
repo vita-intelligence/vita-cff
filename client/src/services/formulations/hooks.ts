@@ -24,6 +24,7 @@ import {
   fetchFormulationVersions,
   fetchFormulations,
   fetchFormulationsPage,
+  fetchProjectOverview,
   replaceFormulationLines,
   rollbackFormulation,
   saveFormulationVersion,
@@ -35,6 +36,7 @@ import type {
   FormulationTotalsDto,
   FormulationVersionDto,
   PaginatedFormulationsDto,
+  ProjectOverviewDto,
   ReplaceLinesRequestDto,
   RollbackRequestDto,
   SaveVersionRequestDto,
@@ -58,6 +60,8 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "totals", formulationId] as const,
   versions: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "versions", formulationId] as const,
+  overview: (orgId: string, formulationId: string) =>
+    [...formulationsQueryKeys.all, orgId, "overview", formulationId] as const,
 } as const;
 
 export function useFormulations(
@@ -145,6 +149,22 @@ export function useFormulationVersions(
   return useQuery<FormulationVersionDto[], ApiError>({
     queryKey: formulationsQueryKeys.versions(orgId, formulationId),
     queryFn: () => fetchFormulationVersions(orgId, formulationId),
+  });
+}
+
+export function useProjectOverview(
+  orgId: string,
+  formulationId: string,
+  options: { initialData?: ProjectOverviewDto } = {},
+): UseQueryResult<ProjectOverviewDto, ApiError> {
+  return useQuery<ProjectOverviewDto, ApiError>({
+    queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+    queryFn: () => fetchProjectOverview(orgId, formulationId),
+    initialData: options.initialData,
+    // Overview aggregates many child tables — refetch on mount so a
+    // freshly-saved batch / version lands immediately on the
+    // dashboard without waiting for a tab switch.
+    refetchOnMount: "always",
   });
 }
 

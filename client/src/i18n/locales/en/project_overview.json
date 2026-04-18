@@ -1,0 +1,46 @@
+{
+  "header": {
+    "no_code": "No code",
+    "owner": "Owner: {name}",
+    "no_versions_yet": "No versions saved yet"
+  },
+  "status": {
+    "concept": "Concept",
+    "in_development": "In development",
+    "pilot": "Pilot",
+    "approved": "Approved",
+    "discontinued": "Discontinued"
+  },
+  "kpi": {
+    "spec_sheets": "Spec sheets",
+    "spec_sheets_sub": "{draft} draft · {approved} approved · {sent} sent",
+    "trial_batches": "Trial batches",
+    "trial_batches_sub": "{count, plural, =0 {All settled} one {# in flight} other {# in flight}}",
+    "qc": "QC validations",
+    "qc_sub": "{passed} passed · {in_progress} in progress",
+    "allergens": "Allergens",
+    "allergens_none": "None",
+    "allergens_clean": "Clean"
+  },
+  "snapshot": {
+    "title": "Latest version snapshot",
+    "empty": "Save a version from the builder to see totals here.",
+    "total_active": "Total active",
+    "fill_weight": "Fill weight",
+    "filled_capsule": "Filled capsule",
+    "viability": "Viability"
+  },
+  "compliance": {
+    "title": "Compliance",
+    "vegan": "Vegan",
+    "organic": "Organic",
+    "halal": "Halal",
+    "kosher": "Kosher",
+    "no_allergens": "No allergens detected in the latest version.",
+    "allergens_present": "Contains {sources}. Bolded on the spec sheet ingredient list."
+  },
+  "activity": {
+    "title": "Recent activity",
+    "empty": "No activity yet."
+  }
+}

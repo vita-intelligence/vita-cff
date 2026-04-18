@@ -12,6 +12,7 @@ import type {
   FormulationVersionDto,
   FormulationsListQuery,
   PaginatedFormulationsDto,
+  ProjectOverviewDto,
   ReplaceLinesRequestDto,
   RollbackRequestDto,
   SaveVersionRequestDto,
@@ -148,6 +149,16 @@ export async function rollbackFormulation(
   const { data } = await apiClient.post<FormulationDto>(
     formulationsEndpoints.rollback(orgId, formulationId),
     payload,
+  );
+  return data;
+}
+
+export async function fetchProjectOverview(
+  orgId: string,
+  formulationId: string,
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.get<ProjectOverviewDto>(
+    formulationsEndpoints.overview(orgId, formulationId),
   );
   return data;
 }

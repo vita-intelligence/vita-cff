@@ -24,7 +24,7 @@
   --color-ink-900: #0a0a0a;
   --color-ink-1000: #000000;
 
-  /* Single accent — reserved for primary CTAs */
+  /* Primary accent — earthy lime, reserved for CTAs + critical highlights */
   --color-accent-50: #f5fbe6;
   --color-accent-100: #e9f7c7;
   --color-accent-200: #d4ef8e;
@@ -35,6 +35,18 @@
   --color-accent-700: #557524;
   --color-accent-800: #3f571b;
   --color-accent-900: #2a3a12;
+
+  /* Warm companion accent — used for in-progress / pilot status signals */
+  --color-orange-50: #fff4ea;
+  --color-orange-100: #ffe4cd;
+  --color-orange-200: #ffc796;
+  --color-orange-300: #ffa65e;
+  --color-orange-400: #ff8a33;
+  --color-orange-500: #f36e12;
+  --color-orange-600: #d4570a;
+  --color-orange-700: #a84309;
+  --color-orange-800: #7c330a;
+  --color-orange-900: #5a240a;
 
   /* Semantic tones — muted, industrial */
   --color-success: #4a7a2f;

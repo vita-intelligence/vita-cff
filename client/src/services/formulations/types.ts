@@ -25,6 +25,17 @@ export const FORMULATION_STATUSES = [
 ] as const;
 export type FormulationStatus = (typeof FORMULATION_STATUSES)[number];
 
+/** Product roadmap status. Orthogonal to ``FormulationStatus`` —
+ * drives the chip shown at the top of the project workspace. */
+export const PROJECT_STATUSES = [
+  "concept",
+  "in_development",
+  "pilot",
+  "approved",
+  "discontinued",
+] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
 export interface CapsuleSizeOption {
   readonly key: string;
   readonly label: string;
@@ -141,6 +152,7 @@ export interface FormulationDto {
   readonly appearance: string;
   readonly disintegration_spec: string;
   readonly status: FormulationStatus;
+  readonly project_status: ProjectStatus;
   readonly lines: readonly FormulationLineDto[];
   readonly created_at: string;
   readonly updated_at: string;
@@ -163,6 +175,7 @@ export interface CreateFormulationRequestDto {
 
 export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> & {
   readonly status?: FormulationStatus;
+  readonly project_status?: ProjectStatus;
 };
 
 export interface FormulationLineInput {
@@ -219,4 +232,85 @@ export interface SaveVersionRequestDto {
 
 export interface RollbackRequestDto {
   readonly version_number: number;
+}
+
+
+// ---------------------------------------------------------------------------
+// Project overview DTO — mirrors apps/formulations/overview.py
+// ---------------------------------------------------------------------------
+
+
+export interface SpecSheetCountsDto {
+  readonly total: number;
+  readonly draft: number;
+  readonly in_review: number;
+  readonly approved: number;
+  readonly sent: number;
+  readonly accepted: number;
+  readonly rejected: number;
+}
+
+export interface TrialBatchCountsDto {
+  readonly total: number;
+  readonly in_flight: number;
+  readonly latest_label: string;
+  readonly latest_packs: number;
+}
+
+export interface QCCountsDto {
+  readonly total: number;
+  readonly passed: number;
+  readonly failed: number;
+  readonly in_progress: number;
+}
+
+export interface AllergenSnapshotDto {
+  readonly sources: readonly string[];
+  readonly count: number;
+}
+
+export interface ComplianceSnapshotDto {
+  readonly vegan: boolean | null;
+  readonly organic: boolean | null;
+  readonly halal: boolean | null;
+  readonly kosher: boolean | null;
+}
+
+export interface OverviewTotalsDto {
+  readonly total_active_mg: string | null;
+  readonly total_weight_mg: string | null;
+  readonly filled_total_mg: string | null;
+  readonly viability: string | null;
+}
+
+export interface ProjectActivityEntryDto {
+  readonly id: string;
+  readonly kind: "version_saved" | "spec_sheet_created" | "spec_sheet_status";
+  readonly text: string;
+  readonly actor_name: string;
+  readonly created_at: string;
+}
+
+export interface ProjectOverviewDto {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+  readonly description: string;
+  readonly project_status: ProjectStatus;
+  readonly formulation_status: FormulationStatus;
+  readonly dosage_form: string;
+  readonly size_label: string;
+  readonly updated_at: string;
+  readonly created_at: string;
+  readonly owner_name: string;
+  readonly latest_version: number | null;
+  readonly latest_version_label: string;
+  readonly latest_version_saved_at: string | null;
+  readonly spec_sheets: SpecSheetCountsDto;
+  readonly trial_batches: TrialBatchCountsDto;
+  readonly qc: QCCountsDto;
+  readonly allergens: AllergenSnapshotDto;
+  readonly compliance: ComplianceSnapshotDto;
+  readonly totals: OverviewTotalsDto;
+  readonly activity: readonly ProjectActivityEntryDto[];
 }

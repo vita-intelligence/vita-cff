@@ -7,10 +7,12 @@ import { redirect } from "@/i18n/navigation";
 import {
   getCurrentUserServer,
   getFormulationServer,
+  getProjectOverviewServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
 import { FormulationBuilder } from "./formulation-builder";
+import { ProjectOverview } from "./project-overview";
 import { TrialBatchesPanelWrapper } from "./trial-batches-panel-wrapper";
 
 function resolveFormulationsPermission(
@@ -53,8 +55,11 @@ export default async function FormulationDetailPage({
     redirect({ href: "/formulations", locale });
   }
 
-  const formulation = await getFormulationServer(primaryOrg.id, id);
-  if (!formulation) {
+  const [formulation, projectOverview] = await Promise.all([
+    getFormulationServer(primaryOrg.id, id),
+    getProjectOverviewServer(primaryOrg.id, id),
+  ]);
+  if (!formulation || !projectOverview) {
     notFound();
   }
 
@@ -76,6 +81,14 @@ export default async function FormulationDetailPage({
               { label: tNav("main.formulations"), href: "/formulations" },
               { label: formulation.name },
             ]}
+          />
+        </section>
+
+        <section className="mt-8">
+          <ProjectOverview
+            orgId={primaryOrg.id}
+            formulationId={formulation.id}
+            initialData={projectOverview}
           />
         </section>
 

@@ -656,6 +656,7 @@ def update_formulation(
         "appearance",
         "disintegration_spec",
         "status",
+        "project_status",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:
         _validate_dosage_form(changes["dosage_form"])
