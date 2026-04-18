@@ -22,6 +22,7 @@ from typing import Any
 
 from apps.ai.matching import (
     HIGH_CONFIDENCE_THRESHOLD,
+    MIN_RELEVANCE_THRESHOLD,
     CandidateItem,
     IngredientAlternative,
     IngredientMatch,
@@ -385,16 +386,19 @@ def _enrich_with_matches(
     """Attach a catalogue match to each ingredient on the draft.
 
     AI4 asks the LLM to emit an ``item_id`` copied verbatim from the
-    catalogue menu. Each ingredient is resolved in one of two ways:
+    catalogue menu. Each ingredient is resolved in one of three ways:
 
     1. **Valid id path** — the id is present in ``candidates_by_id``.
        We take it at face value with ``confidence=1.0`` and compute
        ``mg_per_serving`` from the real catalogue item's purity.
-    2. **Fallback path** — the model hallucinated an id (empty, mis-
-       typed, or simply invented). We run the AI3 fuzzy matcher on
-       the provided name so the UI still has something to show the
-       scientist, but the confidence carries whatever the matcher
-       decided — often below the auto-attach threshold.
+    2. **Fuzzy fallback path** — the model hallucinated an id (empty,
+       mis-typed, or simply invented) but the name it provided fuzzy-
+       matches a catalogue item above the relevance floor. We surface
+       the match so the scientist can accept or swap.
+    3. **Silently dropped** — the name doesn't meaningfully match
+       anything (vague briefs coax small models into inventing
+       "AI-Powder" / "FutureMineralX"). Below the floor we skip the
+       ingredient entirely rather than paint the UI with nonsense.
     """
 
     ingredients = list(draft.ingredients)
@@ -452,17 +456,13 @@ def _enrich_with_matches(
             continue
 
         # Fallback: the model returned a name we couldn't resolve
-        # directly. Use whatever AI3 fuzzy match we ran above.
+        # directly. Use whatever AI3 fuzzy match we ran above, and
+        # drop the ingredient entirely when it falls below the
+        # relevance floor (the AI usually invents something with no
+        # real analogue in this case).
         match = fallback_by_index.get(idx)
-        if match is None:
-            match = IngredientMatch(
-                matched_item_id=None,
-                matched_item_name="",
-                matched_item_internal_code="",
-                confidence=0.0,
-                mg_per_serving=None,
-                alternatives=(),
-            )
+        if match is None or match.confidence < MIN_RELEVANCE_THRESHOLD:
+            continue
         enriched.append(
             IngredientSuggestion(
                 name=ingredient.name,

@@ -117,6 +117,15 @@ def _mock_provider_result(
 class TestFormulationDraftSuccess:
     def test_owner_gets_parsed_draft(self) -> None:
         client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        # Seed plausible catalogue matches for the mock payload's
+        # ingredient names. The relevance floor drops fuzzy fallbacks
+        # that have no catalogue analogue, so without a catalogue
+        # seed an empty-org response (intentionally) strips
+        # ingredients. This test asserts the HAPPY path — header +
+        # ingredients round-trip — so the seed is load-bearing.
+        ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+        ItemFactory(catalogue=catalogue, name="Green Tea Extract")
 
         with patch(
             "apps.ai.providers.ollama.OllamaProvider.generate_json",
@@ -135,6 +144,8 @@ class TestFormulationDraftSuccess:
         assert body["serving_size"] == 1
         assert body["servings_per_pack"] == 60
         assert len(body["ingredients"]) == 2
+        # First ingredient is the mock's "Caffeine" — the fuzzy
+        # fallback surfaces the name the model supplied.
         assert body["ingredients"][0]["name"] == "Caffeine"
         assert body["ingredients"][0]["label_claim_mg"] == 200.0
 
@@ -392,6 +403,52 @@ class TestFormulationDraftMatching:
                 "internal_code",
                 "confidence",
             }
+
+    def test_hallucinated_ingredient_is_dropped_below_floor(self) -> None:
+        """When the model invents a generic-sounding ingredient
+        (e.g. ``AI-Powder``) with no valid ``item_id`` and the fuzzy
+        match can't clear the relevance floor, the ingredient is
+        silently dropped rather than shown as a confusing chip."""
+
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        real = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+        payload = _valid_draft_payload()
+        payload["ingredients"] = [
+            {
+                "item_id": str(real.id),
+                "name": "Caffeine Anhydrous",
+                "label_claim_mg": 200,
+                "notes": "",
+            },
+            {
+                # No matching ``item_id`` and a name that shares no
+                # meaningful tokens (or sequence overlap) with the
+                # seeded "Caffeine Anhydrous" — fuzzy score stays
+                # well below the 0.35 relevance floor.
+                "item_id": "",
+                "name": "Zyxqwb Plkjmv",
+                "label_claim_mg": 100,
+                "notes": "",
+            },
+        ]
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(data=payload),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "anything"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        returned = response.json()["ingredients"]
+        # Only the real pick survives; the hallucinated one is
+        # dropped rather than surfaced as a dead chip.
+        assert len(returned) == 1
+        assert returned[0]["matched_item_id"] == str(real.id)
 
     def test_empty_catalogue_returns_unattached_suggestions(self) -> None:
         """When the org has the catalogue but no items, the endpoint

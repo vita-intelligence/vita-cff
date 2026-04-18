@@ -38,6 +38,15 @@ from apps.organizations.models import Organization
 HIGH_CONFIDENCE_THRESHOLD = 0.75
 
 
+#: Floor below which we treat the match as noise. A vague AI
+#: hallucination ("AI-Powder", "FutureMineralX") usually shares one
+#: short token with something in the catalogue and rides back at
+#: confidence 0.1-0.25. Suppressing those keeps the UI focused on
+#: plausible candidates instead of forcing the scientist to decline
+#: a parade of nonsense chips.
+MIN_RELEVANCE_THRESHOLD = 0.35
+
+
 #: How many raw-material candidates AI4 shortlisting feeds into the
 #: constrained prompt. Large enough that the LLM can actually build a
 #: formulation from the menu (a brief like "fat burner" needs the
@@ -408,5 +417,9 @@ def _tokenise(name: str) -> list[str]:
     if not name:
         return []
     tokens = _TOKEN_RE.findall(name.lower())
-    filtered = [t for t in tokens if t not in _STOPWORDS and len(t) > 1]
+    # Require tokens of at least 3 characters so single- and
+    # two-letter noise (``ai``, ``mg``, ``b1``) can't land a false
+    # positive off a two-character overlap with catalogue words.
+    # Common three-letter actives like ``CoQ`` or ``DHA`` still pass.
+    filtered = [t for t in tokens if t not in _STOPWORDS and len(t) > 2]
     return filtered or tokens
