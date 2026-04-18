@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
   FileText,
   FlaskConical,
@@ -50,6 +51,7 @@ export function ProjectShell({
 }) {
   const tProject = useTranslations("project_overview");
   const tTabs = useTranslations("project_tabs");
+  const tNav = useTranslations("navigation");
 
   const tabs: {
     key: ProjectTabKey;
@@ -94,7 +96,14 @@ export function ProjectShell({
   ];
 
   return (
-    <div className="mt-8 flex flex-col gap-6">
+    <div className="mt-6 flex flex-col gap-5 md:mt-8">
+      <Link
+        href="/formulations"
+        className="inline-flex w-fit items-center gap-1 text-xs font-medium text-ink-500 transition-colors hover:text-ink-1000"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        {tNav("main.formulations")}
+      </Link>
       <CompactHeader overview={overview} tProject={tProject} />
       <TabBar tabs={tabs} activeTab={activeTab} />
       <div>{children}</div>
@@ -111,8 +120,8 @@ function CompactHeader({
   tProject: ReturnType<typeof useTranslations<"project_overview">>;
 }) {
   return (
-    <header className="flex flex-wrap items-start justify-between gap-4">
-      <div className="flex flex-col">
+    <header className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex min-w-0 flex-col">
         {overview.code ? (
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {overview.code}
@@ -197,9 +206,12 @@ function TabBar({
   return (
     <nav
       aria-label="Project workspace tabs"
-      className="border-b border-ink-200"
+      // ``-mx-*`` bleeds the scroll area to the page gutter so the
+      // overflow can swipe under the edge on narrow devices. The inner
+      // ``px-*`` puts the first tab back under the content column.
+      className="-mx-4 overflow-x-auto border-b border-ink-200 sm:-mx-6 md:mx-0"
     >
-      <ul className="flex flex-wrap gap-1">
+      <ul className="flex w-max items-end gap-1 whitespace-nowrap px-4 sm:px-6 md:w-auto md:px-0">
         {tabs.map((tab) => {
           // Prop is the source of truth but we also underline when
           // the path matches, so a link the user just clicked feels
@@ -209,7 +221,7 @@ function TabBar({
             pathname === tab.href ||
             (tab.key !== "overview" && pathname.startsWith(`${tab.href}/`));
           return (
-            <li key={tab.key}>
+            <li key={tab.key} className="shrink-0">
               <Link
                 href={tab.href}
                 aria-current={active ? "page" : undefined}

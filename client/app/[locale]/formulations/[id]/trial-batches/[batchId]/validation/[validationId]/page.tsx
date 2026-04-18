@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { redirect } from "@/i18n/navigation";
 import {
   getCurrentUserServer,
@@ -75,32 +74,11 @@ export default async function ProductValidationPage({
   const canWrite = level === "write" || level === "admin";
 
   const tCommon = await getTranslations("common");
-  const tNav = await getTranslations("navigation");
-  const tV = await getTranslations("product_validation");
-  const tBatches = await getTranslations("trial_batches");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} active="formulations" />
-
-        <section className="mt-10 md:mt-12">
-          <Breadcrumbs
-            items={[
-              { label: tNav("main.dashboard"), href: "/home" },
-              { label: tNav("main.formulations"), href: "/formulations" },
-              {
-                label: formulation.name,
-                href: `/formulations/${formulation.id}`,
-              },
-              {
-                label: batch.label || tBatches("detail.breadcrumb_untitled"),
-                href: `/formulations/${formulation.id}/trial-batches/${batch.id}`,
-              },
-              { label: tV("breadcrumb") },
-            ]}
-          />
-        </section>
 
         <ValidationEditor
           orgId={primaryOrg.id}

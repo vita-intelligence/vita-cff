@@ -1,7 +1,6 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { getProjectValidationsServer } from "@/lib/auth/server";
 
 import { loadProjectForTab } from "../_shared/load-project";
@@ -24,27 +23,11 @@ export default async function ProjectQCPage({
     (await getProjectValidationsServer(organization.id, formulation.id)) ?? [];
 
   const tCommon = await getTranslations("common");
-  const tNav = await getTranslations("navigation");
-  const tTabs = await getTranslations("project_tabs");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user} active="formulations" />
-
-        <section className="mt-10 md:mt-12">
-          <Breadcrumbs
-            items={[
-              { label: tNav("main.dashboard"), href: "/home" },
-              { label: tNav("main.formulations"), href: "/formulations" },
-              {
-                label: formulation.name,
-                href: `/formulations/${formulation.id}`,
-              },
-              { label: tTabs("qc") },
-            ]}
-          />
-        </section>
 
         <ProjectShell overview={overview} activeTab="qc">
           <QCList
