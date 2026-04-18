@@ -1,6 +1,7 @@
 "use client";
 
 import { Button, ComboBox, ListBox, Modal } from "@heroui/react";
+import { Package } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Key } from "react-aria-components";
@@ -97,21 +98,24 @@ export function EditPackagingButton({
           type="button"
           variant="outline"
           size="sm"
-          className="rounded-none border-2 font-bold tracking-wider uppercase"
+          className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          {tSpecs("detail.edit_packaging")}
+          <span className="inline-flex items-center gap-1.5">
+            <Package className="h-4 w-4" />
+            {tSpecs("detail.edit_packaging")}
+          </span>
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-              <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {tSpecs("packaging.title")}
               </Modal.Heading>
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-5 px-6 py-6">
-              <p className="text-sm text-ink-600">
+              <p className="text-sm text-ink-500">
                 {tSpecs("packaging.subtitle")}
               </p>
 
@@ -142,18 +146,18 @@ export function EditPackagingButton({
               {error ? (
                 <p
                   role="alert"
-                  className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                  className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                 >
                   {error}
                 </p>
               ) : null}
             </Modal.Body>
-            <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+            <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
               <Button
                 type="button"
                 variant="outline"
                 size="md"
-                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                className="rounded-lg px-4 py-2 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 onClick={() => setIsOpen(false)}
                 isDisabled={mutation.isPending}
               >
@@ -163,7 +167,7 @@ export function EditPackagingButton({
                 type="button"
                 variant="primary"
                 size="md"
-                className="rounded-none font-bold tracking-wider uppercase"
+                className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
                 onClick={handleSubmit}
                 isDisabled={mutation.isPending}
               >
@@ -308,9 +312,7 @@ function PackagingCombo({
 
   return (
     <label className="flex flex-col gap-1.5">
-      <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
-        {label}
-      </span>
+      <span className="text-xs font-medium text-ink-700">{label}</span>
 
       <ComboBox
         aria-label={label}
@@ -319,17 +321,14 @@ function PackagingCombo({
         inputValue={inputValue}
         onInputChange={handleInputChange}
         onSelectionChange={handleSelectionChange}
-        // We filter on the server — tell react-aria to never apply
-        // its own in-memory filter, otherwise the ``items`` list we
-        // just fetched gets silently culled.
         allowsCustomValue={false}
         menuTrigger="focus"
         className="w-full"
       >
-        <ComboBox.InputGroup className="flex items-center gap-2 border-2 border-ink-1000 bg-ink-0 px-3 py-2">
+        <ComboBox.InputGroup className="flex items-center gap-2 rounded-lg bg-ink-0 px-3 py-2 ring-1 ring-inset ring-ink-200 focus-within:ring-2 focus-within:ring-orange-400">
           <Input
             placeholder={placeholder}
-            className="w-full bg-transparent font-mono text-sm text-ink-1000 outline-none placeholder:text-ink-500"
+            className="w-full bg-transparent text-sm text-ink-1000 outline-none placeholder:text-ink-500"
           />
           {selectedId ? (
             <button
@@ -338,21 +337,21 @@ function PackagingCombo({
                 e.preventDefault();
                 handleClear();
               }}
-              className="font-mono text-[10px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
+              className="text-xs font-medium text-ink-500 hover:text-ink-1000"
               aria-label={clearLabel}
             >
               {clearLabel}
             </button>
           ) : null}
-          <ComboBox.Trigger className="font-mono text-xs text-ink-500">
+          <ComboBox.Trigger className="text-xs text-ink-500">
             ▾
           </ComboBox.Trigger>
         </ComboBox.InputGroup>
-        <ComboBox.Popover className="max-h-64 overflow-auto border-2 border-ink-1000 bg-ink-0 shadow-hard">
+        <ComboBox.Popover className="max-h-64 overflow-auto rounded-xl bg-ink-0 shadow-lg ring-1 ring-ink-200">
           <ListBox
             items={items}
             renderEmptyState={() => (
-              <p className="px-3 py-2 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+              <p className="px-3 py-2 text-xs text-ink-500">
                 {optionsQuery.isFetching ? "…" : noResultsLabel}
               </p>
             )}
@@ -361,9 +360,9 @@ function PackagingCombo({
               <ListBox.Item
                 id={item.id}
                 textValue={formatOptionLabel(item)}
-                className="cursor-pointer px-3 py-2 font-mono text-xs text-ink-1000 outline-none data-[focused=true]:bg-ink-100 data-[selected=true]:bg-ink-1000 data-[selected=true]:text-ink-0"
+                className="cursor-pointer px-3 py-2 text-sm text-ink-1000 outline-none data-[focused=true]:bg-ink-50 data-[selected=true]:bg-orange-50 data-[selected=true]:text-orange-800"
               >
-                <span className="font-bold">{item.internal_code}</span>
+                <span className="font-medium">{item.internal_code}</span>
                 <span className="ml-2 text-ink-500">· {item.name}</span>
               </ListBox.Item>
             )}

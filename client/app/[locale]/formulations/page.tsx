@@ -56,22 +56,24 @@ export default async function FormulationsListPage({
   if (level === "none") {
     return (
       <main className="min-h-dvh bg-ink-0 text-ink-1000">
-        <div className="mx-auto flex min-h-dvh max-w-4xl flex-col items-center justify-center px-6 py-10">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
-            403
-          </p>
-          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase">
-            {tFormulations("access_denied.title")}
-          </h1>
-          <p className="mt-3 text-sm text-ink-600">
-            {tFormulations("access_denied.body")}
-          </p>
-          <Link
-            href="/home"
-            className="mt-6 font-mono text-[10px] tracking-widest uppercase text-ink-700 underline underline-offset-4"
-          >
-            ← {tNav("main.dashboard")}
-          </Link>
+        <div className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center px-6 py-10 text-center">
+          <div className="rounded-2xl bg-ink-0 p-10 shadow-sm ring-1 ring-ink-200">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              403
+            </p>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink-1000">
+              {tFormulations("access_denied.title")}
+            </h1>
+            <p className="mt-2 text-sm text-ink-500">
+              {tFormulations("access_denied.body")}
+            </p>
+            <Link
+              href="/home"
+              className="mt-6 inline-flex items-center gap-1.5 text-sm font-medium text-orange-700 hover:text-orange-800"
+            >
+              ← {tNav("main.dashboard")}
+            </Link>
+          </div>
         </div>
       </main>
     );
@@ -88,21 +90,24 @@ export default async function FormulationsListPage({
       <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-6 py-8 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} active="formulations" />
 
-        <section className="mt-10 flex items-end justify-between gap-6 md:mt-12">
-          <div>
-            <Breadcrumbs
-              items={[
-                { label: tNav("main.dashboard"), href: "/home" },
-                { label: tNav("main.formulations") },
-              ]}
-            />
-            <p className="mt-4 font-mono text-[11px] tracking-widest uppercase text-ink-500">
+        <section className="mt-10 md:mt-12">
+          <Breadcrumbs
+            items={[
+              { label: tNav("main.dashboard"), href: "/home" },
+              { label: tNav("main.formulations") },
+            ]}
+          />
+        </section>
+
+        <section className="mt-6 flex flex-wrap items-end justify-between gap-4">
+          <div className="flex flex-col">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
               {primaryOrg.name}
             </p>
-            <h1 className="mt-3 text-4xl font-black tracking-tight uppercase md:text-6xl">
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
               {tFormulations("title")}
             </h1>
-            <p className="mt-3 text-sm text-ink-600">
+            <p className="mt-1 text-sm text-ink-500">
               {tFormulations("subtitle")}
             </p>
           </div>

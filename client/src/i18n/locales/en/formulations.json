@@ -9,8 +9,11 @@
     "code": "Code",
     "dosage_form": "Form",
     "status": "Status",
+    "project_status": "Stage",
     "updated_at": "Updated"
   },
+  "row_count": "{count, plural, =0 {No projects} one {# project} other {# projects}} loaded",
+  "scroll_hint": "scroll to load more",
   "status": {
     "draft": "Draft",
     "in_review": "In review",

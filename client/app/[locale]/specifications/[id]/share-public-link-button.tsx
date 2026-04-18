@@ -1,6 +1,7 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
+import { Share2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
@@ -113,25 +114,28 @@ export function SharePublicLinkButton({
           type="button"
           variant="outline"
           size="sm"
-          className="rounded-none border-2 font-bold tracking-wider uppercase"
+          className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          {tSpecs("detail.share_link")}
+          <span className="inline-flex items-center gap-1.5">
+            <Share2 className="h-4 w-4" />
+            {tSpecs("detail.share_link")}
+          </span>
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-              <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {tSpecs("share.title")}
               </Modal.Heading>
             </Modal.Header>
             <Modal.Body className="flex flex-col gap-4 px-6 py-6">
-              <p className="text-sm text-ink-600">{tSpecs("share.subtitle")}</p>
+              <p className="text-sm text-ink-500">{tSpecs("share.subtitle")}</p>
 
               {token ? (
                 <div className="flex flex-col gap-2">
-                  <label className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                  <label className="text-xs font-medium text-ink-700">
                     {tSpecs("share.url_label")}
                   </label>
                   <div className="flex items-stretch gap-2">
@@ -139,13 +143,13 @@ export function SharePublicLinkButton({
                       readOnly
                       value={publicUrl}
                       onFocus={(e) => e.currentTarget.select()}
-                      className="flex-1 border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-xs text-ink-1000 outline-none focus:shadow-hard"
+                      className="flex-1 rounded-lg bg-ink-0 px-3 py-2 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                     />
                     <Button
                       type="button"
                       variant="outline"
                       size="sm"
-                      className="rounded-none border-2 font-bold tracking-wider uppercase"
+                      className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                       onClick={handleCopy}
                     >
                       {justCopied
@@ -153,12 +157,12 @@ export function SharePublicLinkButton({
                         : tSpecs("share.copy")}
                     </Button>
                   </div>
-                  <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                  <p className="text-xs text-ink-500">
                     {tSpecs("share.token_hint")}
                   </p>
                 </div>
               ) : (
-                <p className="border-2 border-ink-500 bg-ink-100 px-3 py-2 font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                <p className="rounded-xl bg-ink-50 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-ink-200">
                   {tSpecs("share.not_shared")}
                 </p>
               )}
@@ -166,20 +170,20 @@ export function SharePublicLinkButton({
               {error ? (
                 <p
                   role="alert"
-                  className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                  className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                 >
                   {error}
                 </p>
               ) : null}
             </Modal.Body>
-            <Modal.Footer className="flex flex-wrap items-center justify-end gap-2 border-t-2 border-ink-1000 px-6 py-4">
+            <Modal.Footer className="flex flex-wrap items-center justify-end gap-2 border-t border-ink-200 px-6 py-4">
               {token ? (
                 <>
                   <Button
                     type="button"
                     variant="danger"
                     size="sm"
-                    className="rounded-none font-bold tracking-wider uppercase"
+                    className="rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20 hover:bg-danger/15"
                     isDisabled={isBusy}
                     onClick={handleRevoke}
                   >
@@ -189,7 +193,7 @@ export function SharePublicLinkButton({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="rounded-none border-2 font-bold tracking-wider uppercase"
+                    className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                     isDisabled={isBusy}
                     onClick={handleGenerate}
                   >
@@ -201,7 +205,7 @@ export function SharePublicLinkButton({
                   type="button"
                   variant="primary"
                   size="sm"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="rounded-lg bg-orange-500 px-3 py-2 text-sm font-medium text-ink-0 hover:bg-orange-600"
                   isDisabled={isBusy}
                   onClick={handleGenerate}
                 >

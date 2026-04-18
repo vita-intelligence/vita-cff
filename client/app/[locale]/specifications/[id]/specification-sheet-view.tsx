@@ -1,8 +1,16 @@
 "use client";
 
 import { Button } from "@heroui/react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  Download,
+  Send,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Fragment, useState } from "react";
+import { Fragment, useState, type ReactNode } from "react";
 
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -125,14 +133,12 @@ export function SpecificationSheetView({
       {/* ------------------------------------------------------------ */}
       {/* Top action bar — hidden when printing                         */}
       {/* ------------------------------------------------------------ */}
-      <section className="flex flex-wrap items-center justify-between gap-3 print:hidden">
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-ink-0 px-4 py-3 shadow-sm ring-1 ring-ink-200 print:hidden">
         <div className="flex items-center gap-3">
-          <span className="border-2 border-ink-1000 bg-ink-1000 px-3 py-1 font-mono text-[10px] tracking-widest uppercase text-ink-0">
-            {tSpecs(`status.${sheet.status}` as `status.draft`)}
-          </span>
-          <span className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
+          <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tSpecs("detail.status_label")}
           </span>
+          <SpecStatusChip status={sheet.status} tSpecs={tSpecs} />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite
@@ -142,7 +148,7 @@ export function SpecificationSheetView({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="rounded-none border-2 font-bold tracking-wider uppercase"
+                  className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                   isDisabled={isBusy}
                   onClick={() => handleTransition(next)}
                 >
@@ -154,17 +160,16 @@ export function SpecificationSheetView({
           {/*
             Renders an anchor styled as a button so the browser handles
             the binary PDF download natively — cookie auth rides along
-            on same-origin navigation. Falling back to window.print()
-            would give the scientist a screenshot-quality page; the
-            WeasyPrint output is a consistent client deliverable.
+            on same-origin navigation.
           */}
           <a
             href={specificationsEndpoints.pdf(orgId, sheet.id, {
               download: true,
             })}
             download
-            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
           >
+            <Download className="h-4 w-4" />
             {tSpecs("detail.download_pdf")}
           </a>
           {canWrite ? (
@@ -178,11 +183,14 @@ export function SpecificationSheetView({
               type="button"
               variant="danger"
               size="sm"
-              className="rounded-none font-bold tracking-wider uppercase"
+              className="rounded-lg bg-danger/10 px-3 py-2 font-medium text-danger ring-1 ring-inset ring-danger/20 hover:bg-danger/15"
               isDisabled={isBusy}
               onClick={handleDelete}
             >
-              {tSpecs("detail.delete")}
+              <span className="inline-flex items-center gap-1.5">
+                <Trash2 className="h-4 w-4" />
+                {tSpecs("detail.delete")}
+              </span>
             </Button>
           ) : null}
         </div>
@@ -191,7 +199,7 @@ export function SpecificationSheetView({
       {errorMessage ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger print:hidden"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20 print:hidden"
         >
           {errorMessage}
         </p>
@@ -202,6 +210,54 @@ export function SpecificationSheetView({
       {/* ------------------------------------------------------------ */}
       <SpecSheetContent rendered={rendered} />
     </div>
+  );
+}
+
+
+function SpecStatusChip({
+  status,
+  tSpecs,
+}: {
+  status: SpecificationStatus;
+  tSpecs: ReturnType<typeof useTranslations<"specifications">>;
+}) {
+  const map: Record<
+    SpecificationStatus,
+    { classes: string; icon: ReactNode }
+  > = {
+    draft: {
+      classes: "bg-ink-100 text-ink-700 ring-ink-200",
+      icon: <Sparkles className="h-3.5 w-3.5" />,
+    },
+    in_review: {
+      classes: "bg-info/10 text-info ring-info/20",
+      icon: <Sparkles className="h-3.5 w-3.5" />,
+    },
+    approved: {
+      classes: "bg-success/10 text-success ring-success/20",
+      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+    },
+    sent: {
+      classes: "bg-orange-50 text-orange-700 ring-orange-200",
+      icon: <Send className="h-3.5 w-3.5" />,
+    },
+    accepted: {
+      classes: "bg-success/10 text-success ring-success/20",
+      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
+    },
+    rejected: {
+      classes: "bg-danger/10 text-danger ring-danger/20",
+      icon: <AlertTriangle className="h-3.5 w-3.5" />,
+    },
+  };
+  const s = map[status];
+  return (
+    <span
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset ${s.classes}`}
+    >
+      {s.icon}
+      {tSpecs(`status.${status}` as "status.draft")}
+    </span>
   );
 }
 

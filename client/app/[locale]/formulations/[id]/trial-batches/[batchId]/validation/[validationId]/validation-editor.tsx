@@ -1,8 +1,14 @@
 "use client";
 
 import { Button } from "@heroui/react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  CheckCircle2,
+  PlayCircle,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -184,23 +190,30 @@ export function ValidationEditor({
   return (
     <div className="mt-8 flex flex-col gap-6">
       {/* Header + status transitions */}
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-black tracking-tight uppercase md:text-3xl">
+      <header className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-col">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {validation.formulation_name} · v
+            {validation.formulation_version_number}
+          </p>
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
             {tV("title")}
           </h1>
-          <p className="mt-1 font-mono text-xs text-ink-600">
-            {validation.formulation_name} · v
-            {validation.formulation_version_number} ·{" "}
+          <p className="mt-1 text-sm text-ink-500">
             {validation.batch_label || tV("untitled_batch")}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <StatusChip status={validation.status} overall={stats.overall_passed} />
+          <StatusChip
+            status={validation.status}
+            overall={stats.overall_passed}
+            tV={tV}
+          />
           <Link
             href={`/formulations/${formulationId}/trial-batches/${batchId}`}
-            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-3 py-1 text-xs font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
           >
+            <ArrowLeft className="h-4 w-4" />
             {tV("back")}
           </Link>
         </div>
@@ -214,7 +227,7 @@ export function ValidationEditor({
               type="button"
               variant="outline"
               size="sm"
-              className="rounded-none border-2 font-bold tracking-wider uppercase"
+              className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
               isDisabled={isBusy}
               onClick={() => handleTransition(next)}
             >
@@ -227,7 +240,7 @@ export function ValidationEditor({
       {error ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {error}
         </p>
@@ -365,7 +378,7 @@ export function ValidationEditor({
       >
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-3">
-            <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
               {tV("organoleptic.target")}
             </p>
             <TextField
@@ -388,7 +401,7 @@ export function ValidationEditor({
             />
           </div>
           <div className="flex flex-col gap-3">
-            <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
               {tV("organoleptic.actual")}
             </p>
             <TextField
@@ -412,7 +425,7 @@ export function ValidationEditor({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+          <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tV("organoleptic.judgement")}
           </span>
           <TriStateToggle
@@ -437,7 +450,7 @@ export function ValidationEditor({
         title={tV("checklist.title")}
         passed={stats.checklist.passed}
       >
-        <div className="flex flex-col gap-2 font-mono text-xs text-ink-1000">
+        <div className="flex flex-col gap-2 text-sm text-ink-1000">
           <CheckboxRow
             label={tV("checklist.raw_materials")}
             checked={checklistRaw}
@@ -460,26 +473,26 @@ export function ValidationEditor({
       </TestSection>
 
       {/* Overall notes */}
-      <section className="border-2 border-ink-1000 bg-ink-0 p-6">
-        <p className="border-b-2 border-ink-1000 pb-2 font-mono text-[10px] tracking-widest uppercase text-ink-700">
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <h2 className="text-sm font-medium text-ink-700">
           {tV("overall_notes")}
-        </p>
+        </h2>
         <textarea
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
           readOnly={isReadOnly}
-          className="mt-3 w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+          className="mt-3 w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
         />
       </section>
 
       {canWrite ? (
-        <div className="sticky bottom-4 flex flex-wrap items-center justify-end gap-3 border-2 border-ink-1000 bg-ink-0 px-4 py-3 shadow-hard">
+        <div className="sticky bottom-4 flex flex-wrap items-center justify-end gap-3 rounded-2xl bg-ink-0 px-4 py-3 shadow-md ring-1 ring-ink-200">
           <Button
             type="button"
             variant="primary"
             size="md"
-            className="rounded-none font-bold tracking-wider uppercase"
+            className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
             isDisabled={isBusy}
             onClick={handleSave}
           >
@@ -507,11 +520,9 @@ function TestSection({
   children: React.ReactNode;
 }) {
   return (
-    <section className="border-2 border-ink-1000 bg-ink-0 p-6">
-      <div className="flex items-center justify-between border-b-2 border-ink-1000 pb-2">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-          {title}
-        </p>
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="flex items-center justify-between gap-3 border-b border-ink-100 pb-3">
+        <h2 className="text-base font-semibold text-ink-1000">{title}</h2>
         <PassFailChip passed={passed} />
       </div>
       <div className="mt-4 flex flex-col gap-4">{children}</div>
@@ -521,24 +532,36 @@ function TestSection({
 
 
 function PassFailChip({ passed }: { passed: boolean | null }) {
+  const chip = (
+    classes: string,
+    icon: ReactNode,
+    label: string,
+  ) => (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${classes}`}
+    >
+      {icon}
+      {label}
+    </span>
+  );
   if (passed === true) {
-    return (
-      <span className="border-2 border-ink-1000 bg-ink-1000 px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-0">
-        PASS
-      </span>
+    return chip(
+      "bg-success/10 text-success ring-success/20",
+      <CheckCircle2 className="h-3 w-3" />,
+      "Pass",
     );
   }
   if (passed === false) {
-    return (
-      <span className="border-2 border-danger bg-danger px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-0">
-        FAIL
-      </span>
+    return chip(
+      "bg-danger/10 text-danger ring-danger/20",
+      <AlertTriangle className="h-3 w-3" />,
+      "Fail",
     );
   }
-  return (
-    <span className="border-2 border-ink-500 bg-ink-100 px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-500">
-      PENDING
-    </span>
+  return chip(
+    "bg-ink-100 text-ink-700 ring-ink-200",
+    null,
+    "Pending",
   );
 }
 
@@ -546,21 +569,34 @@ function PassFailChip({ passed }: { passed: boolean | null }) {
 function StatusChip({
   status,
   overall,
+  tV,
 }: {
   status: string;
   overall: boolean | null;
+  tV: ReturnType<typeof useTranslations<"product_validation">>;
 }) {
-  const tone =
-    status === "passed" || overall === true
-      ? "border-ink-1000 bg-ink-1000 text-ink-0"
-      : status === "failed" || overall === false
-        ? "border-danger bg-danger text-ink-0"
-        : "border-ink-500 bg-ink-100 text-ink-700";
+  const isPass = status === "passed" || overall === true;
+  const isFail = status === "failed" || overall === false;
+  const classes = isPass
+    ? "bg-success/10 text-success ring-success/20"
+    : isFail
+      ? "bg-danger/10 text-danger ring-danger/20"
+      : status === "in_progress"
+        ? "bg-orange-50 text-orange-700 ring-orange-200"
+        : "bg-ink-100 text-ink-700 ring-ink-200";
+  const icon = isPass ? (
+    <CheckCircle2 className="h-3.5 w-3.5" />
+  ) : isFail ? (
+    <AlertTriangle className="h-3.5 w-3.5" />
+  ) : status === "in_progress" ? (
+    <PlayCircle className="h-3.5 w-3.5" />
+  ) : null;
   return (
     <span
-      className={`inline-flex items-center border-2 px-3 py-1 font-mono text-[10px] tracking-widest uppercase ${tone}`}
+      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${classes}`}
     >
-      {status}
+      {icon}
+      {tV(`status.${status}` as "status.draft")}
     </span>
   );
 }
@@ -578,21 +614,21 @@ function SignatureCard({
   emptyLabel: string;
 }) {
   return (
-    <div className="border-2 border-ink-500 bg-ink-100 p-4 font-mono text-xs text-ink-700">
-      <p className="tracking-widest uppercase text-ink-500">{role}</p>
+    <div className="rounded-xl bg-ink-0 p-4 shadow-sm ring-1 ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+        {role}
+      </p>
       {actor && signedAt ? (
         <>
-          <p className="mt-2 text-sm font-bold text-ink-1000 normal-case">
+          <p className="mt-2 text-sm font-medium text-ink-1000">
             {actor.name || actor.email}
           </p>
-          <p className="mt-1 text-[10px] tracking-widest uppercase text-ink-500">
+          <p className="mt-0.5 text-xs text-ink-500">
             {formatTimestamp(signedAt)}
           </p>
         </>
       ) : (
-        <p className="mt-2 text-[10px] tracking-widest uppercase text-ink-500">
-          {emptyLabel}
-        </p>
+        <p className="mt-2 text-sm text-ink-500">{emptyLabel}</p>
       )}
     </div>
   );
@@ -616,7 +652,7 @@ function TextField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+      <span className="text-xs font-medium text-ink-700">
         {label}
         {suffix ? ` (${suffix})` : ""}
       </span>
@@ -625,7 +661,7 @@ function TextField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         readOnly={readOnly}
-        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:opacity-60"
+        className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 read-only:bg-ink-50 read-only:text-ink-500"
       />
     </label>
   );
@@ -635,10 +671,8 @@ function TextField({
 function ReadOnlyField({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-        {label}
-      </span>
-      <span className="border-2 border-dashed border-ink-500 bg-ink-100 px-3 py-2 font-mono text-sm text-ink-1000">
+      <span className="text-xs font-medium text-ink-700">{label}</span>
+      <span className="rounded-lg bg-ink-50 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-ink-200">
         {value}
       </span>
     </div>
@@ -663,21 +697,17 @@ function TextAreaField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-        {label}
-      </span>
+      <span className="text-xs font-medium text-ink-700">{label}</span>
       <textarea
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         readOnly={readOnly}
         rows={3}
-        className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+        className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 read-only:bg-ink-50 read-only:text-ink-500"
       />
       {hint ? (
-        <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
-          {hint}
-        </span>
+        <span className="text-xs text-ink-500">{hint}</span>
       ) : null}
     </label>
   );
@@ -686,11 +716,13 @@ function TextAreaField({
 
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="border-2 border-ink-500 bg-ink-100 p-2 font-mono">
-      <p className="text-[10px] tracking-widest uppercase text-ink-500">
+    <div className="rounded-xl bg-ink-50 px-3 py-2 ring-1 ring-inset ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </p>
-      <p className="mt-1 text-sm font-bold text-ink-1000">{value}</p>
+      <p className="mt-0.5 text-base font-semibold text-ink-1000 tabular-nums">
+        {value}
+      </p>
     </div>
   );
 }
@@ -714,7 +746,7 @@ function CheckboxRow({
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 cursor-pointer accent-ink-1000 disabled:opacity-60"
+        className="h-4 w-4 cursor-pointer rounded accent-orange-500 disabled:opacity-60"
       />
       <span>{label}</span>
     </label>
@@ -739,10 +771,12 @@ function TriStateToggle({
 }) {
   const Btn = ({
     active,
+    activeClasses,
     label,
     onClick,
   }: {
     active: boolean;
+    activeClasses: string;
     label: string;
     onClick: () => void;
   }) => (
@@ -750,20 +784,35 @@ function TriStateToggle({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`border-2 px-3 py-1 font-mono text-[10px] tracking-widest uppercase transition-colors ${
+      className={`rounded-full px-3 py-1 text-xs font-medium ring-1 ring-inset transition-colors ${
         active
-          ? "border-ink-1000 bg-ink-1000 text-ink-0"
-          : "border-ink-1000 bg-ink-0 text-ink-1000 hover:bg-ink-100"
+          ? activeClasses
+          : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
       } disabled:opacity-50`}
     >
       {label}
     </button>
   );
   return (
-    <div className="flex items-center gap-1">
-      <Btn active={value === true} label={trueLabel} onClick={() => onChange(true)} />
-      <Btn active={value === false} label={falseLabel} onClick={() => onChange(false)} />
-      <Btn active={value == null} label={nullLabel} onClick={() => onChange(null)} />
+    <div className="flex items-center gap-1.5">
+      <Btn
+        active={value === true}
+        activeClasses="bg-success/10 text-success ring-success/20"
+        label={trueLabel}
+        onClick={() => onChange(true)}
+      />
+      <Btn
+        active={value === false}
+        activeClasses="bg-danger/10 text-danger ring-danger/20"
+        label={falseLabel}
+        onClick={() => onChange(false)}
+      />
+      <Btn
+        active={value == null}
+        activeClasses="bg-ink-100 text-ink-700 ring-ink-200"
+        label={nullLabel}
+        onClick={() => onChange(null)}
+      />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
+import { Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState, type FormEvent } from "react";
 
@@ -76,23 +77,26 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
           type="button"
           variant="primary"
           size="md"
-          className="rounded-none font-bold tracking-wider uppercase"
+          className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
         >
-          {tFormulations("new_formulation")}
+          <span className="inline-flex items-center gap-1.5">
+            <Plus className="h-4 w-4" />
+            {tFormulations("new_formulation")}
+          </span>
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <form onSubmit={handleSubmit}>
-              <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-                <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                <Modal.Heading className="text-base font-semibold text-ink-1000">
                   {tFormulations("create.title")}
                 </Modal.Heading>
               </Modal.Header>
               <Modal.Body className="flex flex-col gap-5 px-6 py-6">
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tFormulations("fields.name")}
                   </span>
                   <input
@@ -100,25 +104,25 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder={tFormulations("placeholders.name")}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                 </label>
 
                 <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                  <span className="text-xs font-medium text-ink-700">
                     {tFormulations("fields.code")}
                   </span>
                   <input
                     value={code}
                     onChange={(e) => setCode(e.target.value)}
                     placeholder={tFormulations("placeholders.code")}
-                    className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                 </label>
 
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                   <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                    <span className="text-xs font-medium text-ink-700">
                       {tFormulations("fields.dosage_form")}
                     </span>
                     <select
@@ -126,7 +130,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                       onChange={(e) =>
                         setDosageForm(e.target.value as DosageForm)
                       }
-                      className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                      className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                     >
                       {(
                         [
@@ -146,7 +150,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                   </label>
 
                   <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
+                    <span className="text-xs font-medium text-ink-700">
                       {tFormulations("fields.servings_per_pack")}
                     </span>
                     <input
@@ -156,7 +160,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                       onChange={(e) =>
                         setServingsPerPack(Number(e.target.value))
                       }
-                      className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                     />
                   </label>
                 </div>
@@ -164,18 +168,18 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                 {error ? (
                   <p
                     role="alert"
-                    className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                    className="rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                   >
                     {error}
                   </p>
                 ) : null}
               </Modal.Body>
-              <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+              <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
                 <Button
                   type="button"
                   variant="outline"
                   size="md"
-                  className="rounded-none border-2 font-bold tracking-wider uppercase"
+                  className="rounded-lg px-4 py-2 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                   onClick={close}
                   isDisabled={isBusy}
                 >
@@ -185,7 +189,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                   type="submit"
                   variant="primary"
                   size="md"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
                   isDisabled={isBusy || !name.trim()}
                 >
                   {tFormulations("create.submit")}

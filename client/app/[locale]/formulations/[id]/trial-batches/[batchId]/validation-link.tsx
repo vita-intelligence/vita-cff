@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
+import { ShieldCheck } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Link, useRouter } from "@/i18n/navigation";
@@ -43,8 +44,9 @@ export function ValidationLink({
     return (
       <Link
         href={`/formulations/${formulationId}/trial-batches/${batchId}/validation/${v.id}`}
-        className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+        className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
       >
+        <ShieldCheck className="h-4 w-4" />
         {tV("link.open")}
       </Link>
     );
@@ -72,13 +74,16 @@ export function ValidationLink({
   return (
     <Button
       type="button"
-      variant="outline"
+      variant="primary"
       size="sm"
-      className="rounded-none border-2 font-bold tracking-wider uppercase"
+      className="rounded-lg bg-orange-500 px-3 py-2 font-medium text-ink-0 hover:bg-orange-600"
       isDisabled={isBusy}
       onClick={handleStart}
     >
-      {tV("link.start")}
+      <span className="inline-flex items-center gap-1.5">
+        <ShieldCheck className="h-4 w-4" />
+        {tV("link.start")}
+      </span>
     </Button>
   );
 }
