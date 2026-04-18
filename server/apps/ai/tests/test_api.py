@@ -525,6 +525,42 @@ class TestFormulationDraftConstrainedMenu:
         assert str(item.id) in system_prompt
         assert "Caffeine Anhydrous" in system_prompt
 
+    def test_prompt_includes_concrete_ingredient_example(self) -> None:
+        """Small models follow examples better than abstract schemas.
+        The prompt must render a concrete ingredient entry (using a
+        real catalogue id) so the ``item_id`` field shape is visible
+        rather than implied by the schema alone."""
+
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+
+        captured: dict[str, Any] = {}
+
+        def _capture(**kwargs):
+            captured.update(kwargs)
+            return _mock_provider_result()
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            side_effect=_capture,
+        ):
+            client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine"},
+                format="json",
+            )
+
+        system_prompt = captured.get("system_prompt", "")
+        # The example block should contain a fully-formed ingredient
+        # literal with ``item_id`` set to one of the catalogue ids.
+        assert f'"item_id": "{item.id}"' in system_prompt
+        # The rules and final reminder both emphasise ``item_id``.
+        # Presence of both anchors protects the prompt from silent
+        # copy-edits that drop the mandatory-field wording.
+        assert "MUST include an ``item_id``" in system_prompt
+        assert "Every ingredient MUST have an ``item_id``" in system_prompt
+
 
 class TestOllamaAdapterJSON:
     """Exercises ``OllamaProvider.generate_json`` with a canned HTTP

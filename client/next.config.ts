@@ -23,12 +23,22 @@ const nextConfig: NextConfig = {
   // to ``/api/...`` and Next app routes get canonicalised consistently.
   trailingSlash: true,
   async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${BACKEND_INTERNAL_URL}/api/:path*/`,
-      },
-    ];
+    // ``fallback`` runs only after both static AND dynamic filesystem
+    // routes have been checked — so the AI route handler at
+    // ``app/api/organizations/[orgId]/ai/formulation-draft/route.ts``
+    // can intercept that single dynamic path (where we need a long
+    // fetch timeout under our own control) while every other
+    // ``/api/*`` call continues to fall through to Django. A bare
+    // array or ``afterFiles`` bucket would shadow the dynamic
+    // handler, because both are checked BEFORE dynamic routes.
+    return {
+      fallback: [
+        {
+          source: "/api/:path*",
+          destination: `${BACKEND_INTERNAL_URL}/api/:path*/`,
+        },
+      ],
+    };
   },
 };
 

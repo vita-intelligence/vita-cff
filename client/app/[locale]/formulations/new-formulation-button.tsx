@@ -23,8 +23,8 @@ import {
   type IngredientSuggestionDto,
 } from "@/services/ai";
 import {
+  replaceFormulationLines,
   useCreateFormulation,
-  useReplaceLines,
   type DosageForm,
   type FormulationLineInput,
 } from "@/services/formulations";
@@ -149,13 +149,13 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
 
   const draftMutation = useGenerateFormulationDraft(orgId);
   const createMutation = useCreateFormulation(orgId);
-  // ``createdId`` is scoped to the single modal session so the
-  // ``useReplaceLines`` hook never outlives the modal.
-  const [createdId, setCreatedId] = useState<string | null>(null);
-  const replaceLinesMutation = useReplaceLines(
-    orgId,
-    createdId ?? "",
-  );
+  // The lines endpoint needs the fresh ``formulation_id`` the
+  // /formulations POST just returned. We call its raw API function
+  // imperatively right after create — wiring a ``useReplaceLines``
+  // hook against a ``useState`` id runs into a stale-closure bug
+  // where the mutation fires before React re-renders with the new
+  // id, emitting a malformed URL without the formulation segment.
+  const [isAttachingLines, setIsAttachingLines] = useState(false);
 
   const reset = () => {
     setBrief("");
@@ -174,7 +174,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     setAppearance("");
     setDisintegrationSpec("");
     setError(null);
-    setCreatedId(null);
+    setIsAttachingLines(false);
   };
 
   const close = () => {
@@ -268,21 +268,22 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
       });
 
       // Attach the matched ingredients as formulation lines in a
-      // second call. A failure here isn't fatal — the header is
-      // already persisted, so we navigate onward and surface a
-      // soft warning so the scientist knows to add the lines
-      // manually from the builder.
+      // second call using the fresh formulation id. A failure here
+      // isn't fatal — the header is already persisted, so we surface
+      // a soft warning and let the scientist add the lines from the
+      // builder if needed.
       if (linesToSave.length > 0) {
-        setCreatedId(created.id);
+        setIsAttachingLines(true);
         try {
-          await replaceLinesMutation.mutateAsync({ lines: linesToSave });
+          await replaceFormulationLines(orgId, created.id, {
+            lines: linesToSave,
+          });
         } catch {
           setError(tAI("create.lines_failed"));
-          // Drop back before navigating so the user can see the
-          // soft warning rather than blow past it.
-          setCreatedId(null);
+          setIsAttachingLines(false);
           return;
         }
+        setIsAttachingLines(false);
       }
 
       close();
@@ -300,7 +301,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     }
   };
 
-  const isBusy = createMutation.isPending || replaceLinesMutation.isPending;
+  const isBusy = createMutation.isPending || isAttachingLines;
   const isGenerating = draftMutation.isPending;
 
   return (

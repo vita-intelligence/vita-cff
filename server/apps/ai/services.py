@@ -124,23 +124,92 @@ class FormulationDraft:
 
 
 _FORMULATION_DRAFT_PROMPT_TEMPLATE = """\
-You are a senior nutraceutical R&D scientist. You draft product
-formulations from a customer brief. Always respond with valid JSON
-matching EXACTLY the schema described below — no prose, no markdown,
-no commentary. Fill every field; use empty strings or empty arrays
-only when the brief truly provides no information.
+You are a senior nutraceutical R&D scientist building product
+formulations from customer briefs.
 
-### Raw material catalogue (the ONLY ingredients you may use)
+## Rules (follow exactly, no exceptions)
 
-You MUST pick every ingredient from this list. Copy the ``item_id``
-verbatim — do not invent, shorten, or paraphrase it. If a concept
-from the brief has no good match in this list, either pick the
-closest viable substitute or leave the ingredient out entirely.
-Never fabricate raw materials that are not on this menu.
+1. Respond with valid JSON ONLY. No prose, no markdown, no commentary,
+   no code fences. Your output is parsed by a machine.
+2. You may use ONLY the raw materials listed in the catalogue below.
+   Never invent, guess, or paraphrase raw material names.
+3. EVERY ingredient object MUST include an ``item_id`` field. The
+   value MUST be copied VERBATIM from a ``[...]`` entry in the
+   catalogue — including all hyphens and characters. An ingredient
+   WITHOUT an ``item_id`` is INVALID and will be rejected.
+4. If the brief mentions an ingredient that is not in the catalogue,
+   either substitute the closest catalogue item (and say so in
+   ``notes``) or omit that ingredient entirely. Never emit a made-up
+   name.
+5. Fill every other top-level field. Use empty strings or empty
+   arrays only when the brief truly provides no information.
+
+## Dosage rules (the formulation must physically fit)
+
+The product is packed into a capsule or tablet. Total raw powder
+weight has a hard cap:
+
+- Capsule Double-00: max 730 mg
+- Capsule 00:        max 680 mg
+- Capsule 0:         max 450 mg
+- Capsule 1:         max 400 mg
+- Capsule 3:         max 180 mg
+- Tablet typical:    800-1500 mg depending on size
+
+For every active: ``raw_powder_mg = label_claim_mg / purity``. The sum
+of raw_powder_mg across ALL ingredients must stay under the max fill
+weight, leaving ~30% headroom for excipients (MCC, magnesium stearate,
+silica). In practice: keep the sum of raw_powder_mg under 500 mg for
+capsules and under 1000 mg for tablets.
+
+## What ``label_claim_mg`` means
+
+``label_claim_mg`` is the PURE ACTIVE weight printed on the product
+label — NOT the raw powder weight. A raw material sold as
+"500,000 IU/g" has very low purity (tiny amount of real active in a
+carrier) so tiny ``label_claim_mg`` values (0.01-0.1 mg) blow up into
+reasonable raw powder weights. Never set a double-digit claim on a
+raw material whose purity is below ~0.05.
+
+Safe label-claim ranges by ingredient class:
+
+- Vitamin A, D, E, K:         0.005 - 0.1 mg  (micrograms)
+- Vitamin B12, B9 (folate):   0.001 - 0.4 mg  (micrograms)
+- Vitamin B1, B2, B3, B5, B6: 1 - 100 mg
+- Vitamin C:                  50 - 1000 mg
+- Minerals (iron, zinc, etc): 5 - 500 mg
+- Botanical extracts:         50 - 500 mg
+- Amino acids:                500 - 3000 mg
+- Fibre / protein / creatine: 500 - 5000 mg (powders/sachets only)
+
+When unsure, err low. The scientist can always raise a claim later;
+if you overshoot the capsule max the whole formulation is wasted.
+
+## Raw material catalogue (the ONLY ingredients you may pick)
+
+Format: ``[item_id] | Name | code=... | purity=... | extract_ratio=...``
+The ``item_id`` is the UUID between the square brackets. Copy it
+verbatim. ``purity`` is the fraction of pure active per gram of raw
+powder (0.89 = 89% pure).
 
 {catalogue_menu}
 
-### Schema (all keys required)
+## Ingredient example (exact shape — copy it every time)
+
+An ingredient object always has these four fields. ``item_id`` is
+ALWAYS present:
+
+{{
+  "item_id": "{example_item_id}",
+  "name": "{example_item_name}",
+  "label_claim_mg": 200,
+  "notes": "example rationale"
+}}
+
+(Note: the line above is only a shape example — your real pick must
+match the brief, not this placeholder.)
+
+## Full JSON schema (all top-level keys required)
 
 {{
   "name": string,                    // commercial product name
@@ -157,13 +226,18 @@ Never fabricate raw materials that are not on this menu.
   "disintegration_spec": string,     // e.g. "Disintegrate within 60 minutes"
   "ingredients": [                   // active ingredients only — no excipients
     {{
-      "item_id": string,             // REQUIRED: copy verbatim from the catalogue above
+      "item_id": string,             // REQUIRED — copy verbatim from the catalogue above
       "name": string,                // the raw material name (copy from the catalogue)
-      "label_claim_mg": number,      // per-serving label claim in mg for the active
+      "label_claim_mg": number,      // per-serving label claim in mg
       "notes": string                // short rationale, can be empty
     }}
   ]
 }}
+
+## Final reminder
+
+Every ingredient MUST have an ``item_id`` from the catalogue. Not
+one without. Check your output before finishing.
 """
 
 
@@ -172,9 +246,15 @@ def _build_formulation_draft_prompt(
 ) -> str:
     """Bake the per-request catalogue menu into the prompt template.
 
-    Runs once per request. Kept as a separate function so the
-    prompt stays static and cacheable for the call site while the
-    menu varies with the org's catalogue state.
+    Runs once per request. Small models (~3B) often drop required
+    fields when the schema is abstract, so the template anchors the
+    expected ingredient shape with a *concrete* example lifted from
+    the first catalogue entry. Empirically this makes llama3.2:3b
+    emit ``item_id`` far more reliably.
+
+    Kept as a separate function so the prompt stays deterministic
+    per catalogue state — same inputs, same prompt string — which is
+    easier to reason about when debugging why the model picked what.
     """
 
     if not candidates:
@@ -182,16 +262,25 @@ def _build_formulation_draft_prompt(
         # instruction that it cannot attach ingredients — the service
         # will still accept a header-only draft so the scientist can
         # at least start the workspace.
-        catalogue_menu = (
-            "(The organisation's raw_materials catalogue is empty. "
-            "Return ingredients=[] in the response.)"
+        return _FORMULATION_DRAFT_PROMPT_TEMPLATE.format(
+            catalogue_menu=(
+                "(The organisation's raw_materials catalogue is empty. "
+                "Return ingredients=[] in the response.)"
+            ),
+            example_item_id="",
+            example_item_name="",
         )
-    else:
-        catalogue_menu = "\n".join(
-            candidate.prompt_line() for candidate in candidates
-        )
+    catalogue_menu = "\n".join(
+        candidate.prompt_line() for candidate in candidates
+    )
+    # Concrete example anchors the shape for small models. We pick
+    # the first candidate to keep the prompt deterministic — any
+    # catalogue entry works equally well as a template.
+    example = candidates[0]
     return _FORMULATION_DRAFT_PROMPT_TEMPLATE.format(
-        catalogue_menu=catalogue_menu
+        catalogue_menu=catalogue_menu,
+        example_item_id=example.item_id,
+        example_item_name=example.name.replace('"', ""),
     )
 
 
