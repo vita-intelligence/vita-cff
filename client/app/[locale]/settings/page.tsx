@@ -2,10 +2,14 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
-import { getCurrentUserServer } from "@/lib/auth/server";
+import {
+  getCurrentUserServer,
+  getUserOrganizationsServer,
+} from "@/lib/auth/server";
 
 import { ProfileTab } from "./profile-tab";
 import { SettingsShell } from "./settings-shell";
+import { computeAllowedSettingsTabs } from "./_shared/allowed-tabs";
 
 
 export default async function SettingsProfilePage({
@@ -22,6 +26,9 @@ export default async function SettingsProfilePage({
   }
   const currentUser = user!;
 
+  const organizations = (await getUserOrganizationsServer()) ?? [];
+  const allowedTabs = computeAllowedSettingsTabs(organizations[0] ?? null);
+
   const tCommon = await getTranslations("common");
 
   return (
@@ -29,7 +36,7 @@ export default async function SettingsProfilePage({
       <div className="mx-auto flex min-h-dvh max-w-5xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} />
 
-        <SettingsShell activeTab="profile">
+        <SettingsShell activeTab="profile" allowedTabs={allowedTabs}>
           <ProfileTab user={currentUser} />
         </SettingsShell>
 

@@ -15,6 +15,13 @@ import { Link, usePathname } from "@/i18n/navigation";
 export type SettingsTabKey = "profile" | "organization" | "members";
 
 
+const ALL_TABS: readonly SettingsTabKey[] = [
+  "profile",
+  "organization",
+  "members",
+] as const;
+
+
 /**
  * Shared chrome for every ``/settings`` tab.
  *
@@ -23,12 +30,19 @@ export type SettingsTabKey = "profile" | "organization" | "members";
  * scrolls on narrow devices. Each tab page calls
  * ``<SettingsShell activeTab="profile">children</SettingsShell>``
  * and drops its own content into the slot.
+ *
+ * ``allowedTabs`` filters which tabs render at all — callers compute
+ * it from the caller's capabilities so a locked-out user never sees
+ * a clickable tab that bounces them to an access-denied screen.
+ * Defaults to every tab so legacy callers don't break.
  */
 export function SettingsShell({
   activeTab,
+  allowedTabs = ALL_TABS,
   children,
 }: {
   activeTab: SettingsTabKey;
+  allowedTabs?: readonly SettingsTabKey[];
   children: ReactNode;
 }) {
   const tSettings = useTranslations("settings");
@@ -38,26 +52,28 @@ export function SettingsShell({
     label: string;
     href: string;
     icon: ReactNode;
-  }[] = [
-    {
-      key: "profile",
-      label: tSettings("tabs.profile"),
-      href: "/settings",
-      icon: <User2 className="h-4 w-4" />,
-    },
-    {
-      key: "organization",
-      label: tSettings("tabs.organization"),
-      href: "/settings/organization",
-      icon: <Building2 className="h-4 w-4" />,
-    },
-    {
-      key: "members",
-      label: tSettings("tabs.members"),
-      href: "/settings/members",
-      icon: <Users className="h-4 w-4" />,
-    },
-  ];
+  }[] = (
+    [
+      {
+        key: "profile" as const,
+        label: tSettings("tabs.profile"),
+        href: "/settings",
+        icon: <User2 className="h-4 w-4" />,
+      },
+      {
+        key: "organization" as const,
+        label: tSettings("tabs.organization"),
+        href: "/settings/organization",
+        icon: <Building2 className="h-4 w-4" />,
+      },
+      {
+        key: "members" as const,
+        label: tSettings("tabs.members"),
+        href: "/settings/members",
+        icon: <Users className="h-4 w-4" />,
+      },
+    ] as const
+  ).filter((tab) => allowedTabs.includes(tab.key));
 
   return (
     <div className="mt-6 flex flex-col gap-5 md:mt-8">

@@ -8,6 +8,7 @@ import {
 } from "@/lib/auth/server";
 
 import { SettingsShell } from "../settings-shell";
+import { computeAllowedSettingsTabs } from "../_shared/allowed-tabs";
 import { OrganizationTab } from "./organization-tab";
 
 
@@ -27,6 +28,7 @@ export default async function SettingsOrganizationPage({
 
   const organizations = (await getUserOrganizationsServer()) ?? [];
   const primaryOrg = organizations[0] ?? null;
+  const allowedTabs = computeAllowedSettingsTabs(primaryOrg);
 
   const tCommon = await getTranslations("common");
 
@@ -35,7 +37,7 @@ export default async function SettingsOrganizationPage({
       <div className="mx-auto flex min-h-dvh max-w-5xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} />
 
-        <SettingsShell activeTab="organization">
+        <SettingsShell activeTab="organization" allowedTabs={allowedTabs}>
           <OrganizationTab organization={primaryOrg} />
         </SettingsShell>
 

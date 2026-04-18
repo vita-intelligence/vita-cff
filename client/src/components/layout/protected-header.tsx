@@ -2,6 +2,11 @@ import { getTranslations } from "next-intl/server";
 
 import { HeaderNav, type HeaderNavItem } from "@/components/layout/header-nav";
 import { UserMenu } from "@/components/layout/user-menu";
+import {
+  hasAnyRowScopedCapability,
+  hasFlatCapability,
+} from "@/lib/auth/capabilities";
+import { getUserOrganizationsServer } from "@/lib/auth/server";
 import type { UserDto } from "@/services/accounts/types";
 
 export type ProtectedNavKey =
@@ -39,22 +44,44 @@ export async function ProtectedHeader({
     ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
     "··";
 
+  // Capability-gated nav — a locked-out user sees only Dashboard so
+  // they never land on an access-denied screen one click away.
+  // ``getUserOrganizationsServer`` is ``react.cache``-wrapped, so
+  // this re-call is free when the outer page already fetched orgs.
+  const organizations = (await getUserOrganizationsServer()) ?? [];
+  const primaryOrg = organizations[0] ?? null;
+
+  const canSeeCatalogues = hasAnyRowScopedCapability(
+    primaryOrg,
+    "catalogues",
+    "view",
+  );
+  const canSeeFormulations = hasFlatCapability(
+    primaryOrg,
+    "formulations",
+    "view",
+  );
+
   // Specifications intentionally omitted — every spec sheet belongs
   // to a project, so it's surfaced inside the project workspace's
   // "Spec sheets" tab rather than as a peer top-level destination.
-  const navItems: readonly HeaderNavItem[] = [
+  const navItems: HeaderNavItem[] = [
     { key: "dashboard", href: "/home", label: tNav("main.dashboard") },
-    {
+  ];
+  if (canSeeCatalogues) {
+    navItems.push({
       key: "catalogues",
       href: "/catalogues",
       label: tNav("main.catalogues"),
-    },
-    {
+    });
+  }
+  if (canSeeFormulations) {
+    navItems.push({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
-    },
-  ];
+    });
+  }
 
   return (
     <header className="flex items-center justify-between gap-3">

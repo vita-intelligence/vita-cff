@@ -12,6 +12,7 @@ import {
 } from "@/lib/auth/server";
 
 import { SettingsShell } from "../settings-shell";
+import { computeAllowedSettingsTabs } from "../_shared/allowed-tabs";
 import { MembersTab } from "./members-tab";
 import { MembersTabAccessDenied } from "./members-tab-access-denied";
 
@@ -57,6 +58,7 @@ export default async function SettingsMembersPage({
   // ``is_owner: true`` and an empty permissions dict, so we synthesise
   // the full capability set here.
   const callerCapabilities = derivedCallerCapabilities(org);
+  const allowedTabs = computeAllowedSettingsTabs(org);
 
   // Fetch the four data surfaces in parallel — nothing here depends
   // on anything else.
@@ -71,7 +73,9 @@ export default async function SettingsMembersPage({
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-5xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} />
-        <SettingsShell activeTab="members">{content}</SettingsShell>
+        <SettingsShell activeTab="members" allowedTabs={allowedTabs}>
+          {content}
+        </SettingsShell>
         <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>
           <span>{tCommon("brand")}</span>

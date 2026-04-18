@@ -1,6 +1,7 @@
 import "server-only";
 
 import { cookies } from "next/headers";
+import { cache } from "react";
 
 import { env } from "@/config/env";
 import { accountsEndpoints } from "@/services/accounts/endpoints";
@@ -92,9 +93,10 @@ async function serverFetch<T>(path: string): Promise<T | null> {
  * Returns ``null`` when the cookie is missing, expired, tampered with,
  * or the backend is unreachable.
  */
-export async function getCurrentUserServer(): Promise<UserDto | null> {
-  return serverFetch<UserDto>(accountsEndpoints.me);
-}
+export const getCurrentUserServer = cache(
+  async (): Promise<UserDto | null> =>
+    serverFetch<UserDto>(accountsEndpoints.me),
+);
 
 /**
  * Read the current user's organizations from an incoming request.
@@ -103,12 +105,14 @@ export async function getCurrentUserServer(): Promise<UserDto | null> {
  * called :func:`getCurrentUserServer`. Returns ``[]`` when the caller
  * has no organizations yet (a normal state immediately after sign-up)
  * and ``null`` only when the backend round-trip fails outright.
+ *
+ * Wrapped in :func:`react.cache` so multiple Server Components in the
+ * same request (e.g. page guard + header) share one backend hit.
  */
-export async function getUserOrganizationsServer(): Promise<
-  OrganizationDto[] | null
-> {
-  return serverFetch<OrganizationDto[]>(organizationsEndpoints.list);
-}
+export const getUserOrganizationsServer = cache(
+  async (): Promise<OrganizationDto[] | null> =>
+    serverFetch<OrganizationDto[]>(organizationsEndpoints.list),
+);
 
 /**
  * Fetch every membership on an org for the Settings > Members tab.
