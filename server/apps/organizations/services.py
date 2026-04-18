@@ -18,8 +18,15 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
-from apps.organizations.models import Invitation, Membership, Organization
+from apps.organizations.models import (
+    Invitation,
+    Membership,
+    Organization,
+    _default_invitation_expiry,
+    _generate_invitation_token,
+)
 from apps.organizations.modules import (
+    MODULE_REGISTRY,
     capabilities_for,
     is_row_scoped,
     is_valid_capability,
@@ -196,14 +203,15 @@ def create_invitation(
     organization: Organization,
     invited_by: Any,
     email: str,
-    permissions: dict[str, str] | None = None,
+    permissions: Any | None = None,
 ) -> Invitation:
     """Create a pending invitation for ``email`` to join ``organization``.
 
     Raises :class:`InvitationEmailAlreadyMember` if the email already
-    belongs to an existing member, and :class:`InvitationAlreadyExists`
+    belongs to an existing member, :class:`InvitationAlreadyExists`
     if a pending invitation already exists for this ``(organization,
-    email)`` pair.
+    email)`` pair, and :class:`PermissionsInvalid` if ``permissions``
+    includes a module key the registry doesn't know about.
     """
 
     normalized = _normalize_email(email)
@@ -223,11 +231,20 @@ def create_invitation(
     if existing_pending:
         raise InvitationAlreadyExists()
 
+    # ``validate_permissions_payload`` lives further down the file; it
+    # was introduced together with the capability refactor. Keep the
+    # call here so the same validator gates both invite creation and
+    # live membership updates — no way to sneak an invalid grant into
+    # the system.
+    clean_permissions: dict = {}
+    if permissions:
+        clean_permissions = validate_permissions_payload(permissions)
+
     return Invitation.objects.create(
         organization=organization,
         invited_by=invited_by,
         email=normalized,
-        permissions=permissions or {},
+        permissions=clean_permissions,
     )
 
 
@@ -303,3 +320,186 @@ def accept_invitation(
     invitation.save(update_fields=["accepted_at", "updated_at"])
 
     return user, invitation
+
+
+# ---------------------------------------------------------------------------
+# Membership administration
+# ---------------------------------------------------------------------------
+
+
+class MembershipCannotTargetOwner(Exception):
+    """Tried to mutate or remove the owner's membership. The owner
+    bypasses ``permissions`` anyway, so any such call is either a
+    confused caller or a malicious one — reject it outright."""
+
+    code = "membership_is_owner"
+
+
+class MembershipCannotTargetSelf(Exception):
+    """Tried to edit or remove the caller's own membership through the
+    admin endpoint. Leaving an org and self-promoting each need a
+    dedicated flow; this endpoint is for managing *other* members."""
+
+    code = "membership_is_self"
+
+
+class PermissionsInvalid(Exception):
+    """Submitted permissions payload fails the module-registry check
+    — a module key or capability string is either unknown or wrong
+    shape. Typoed capabilities never silently persist to the DB."""
+
+    code = "permissions_invalid"
+
+
+def validate_permissions_payload(raw: Any) -> dict[str, Any]:
+    """Clean a permissions dict against the live module registry.
+
+    Accepts the wire shape
+    ``{<module>: [capabilities]}`` for flat modules and
+    ``{<module>: {<slug>: [capabilities]}}`` for row-scoped ones.
+
+    - Unknown module keys raise :class:`PermissionsInvalid`.
+    - Wrong container type (non-list / non-dict) raises.
+    - Unknown capability strings are silently dropped.
+    - Empty capability lists are kept; empty slug dicts are kept.
+      (Storage normalisation is not our concern — the caller can
+      inspect the return value to decide whether to persist.)
+    """
+
+    if not isinstance(raw, dict):
+        raise PermissionsInvalid()
+
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        if key not in MODULE_REGISTRY:
+            raise PermissionsInvalid()
+        declared = set(capabilities_for(key))
+        if is_row_scoped(key):
+            if not isinstance(value, dict):
+                raise PermissionsInvalid()
+            per_slug: dict[str, list[str]] = {}
+            for slug, caps in value.items():
+                if not isinstance(slug, str) or not isinstance(caps, list):
+                    raise PermissionsInvalid()
+                per_slug[slug] = [
+                    c for c in caps if isinstance(c, str) and c in declared
+                ]
+            out[key] = per_slug
+        else:
+            if not isinstance(value, list):
+                raise PermissionsInvalid()
+            out[key] = [
+                c for c in value if isinstance(c, str) and c in declared
+            ]
+    return out
+
+
+def list_memberships(*, organization: Organization) -> QuerySet[Membership]:
+    """Return every membership for ``organization``, owner-first."""
+
+    return (
+        Membership.objects.filter(organization=organization)
+        .select_related("user")
+        .order_by("-is_owner", "user__email")
+    )
+
+
+@transaction.atomic
+def update_membership_permissions(
+    *,
+    membership: Membership,
+    permissions: Any,
+) -> Membership:
+    """Replace ``membership.permissions`` wholesale after validation.
+
+    The caller's guard against self- or owner-targeting lives at the
+    view layer — by the time this runs we assume targeting is legal.
+    """
+
+    if membership.is_owner:
+        raise MembershipCannotTargetOwner()
+    clean = validate_permissions_payload(permissions)
+    membership.permissions = clean
+    membership.save(update_fields=["permissions", "updated_at"])
+    return membership
+
+
+@transaction.atomic
+def remove_membership(*, membership: Membership) -> None:
+    """Hard-delete a non-owner membership. Owners and self are
+    rejected at the view layer."""
+
+    if membership.is_owner:
+        raise MembershipCannotTargetOwner()
+    membership.delete()
+
+
+# ---------------------------------------------------------------------------
+# Invitation administration (list / resend / revoke)
+# ---------------------------------------------------------------------------
+
+
+def list_pending_invitations(
+    *, organization: Organization
+) -> QuerySet[Invitation]:
+    """Pending + expired — anything that hasn't been accepted yet.
+
+    Expired rows stay in the list so admins can see the full backlog
+    and decide to resend or revoke. The client derives the display
+    state from ``accepted_at`` + ``expires_at``.
+    """
+
+    return (
+        Invitation.objects.filter(
+            organization=organization, accepted_at__isnull=True
+        )
+        .select_related("invited_by")
+        .order_by("-created_at")
+    )
+
+
+def get_invitation_for_org(
+    *, organization: Organization, invitation_id: Any
+) -> Invitation | None:
+    """Load an invitation by id, constrained to the given org."""
+
+    return (
+        Invitation.objects.select_related("invited_by", "organization")
+        .filter(id=invitation_id, organization=organization)
+        .first()
+    )
+
+
+@transaction.atomic
+def resend_invitation(*, invitation: Invitation) -> Invitation:
+    """Rotate the token and reset the expiry on a pending invitation.
+
+    Rotating the token invalidates any previously-shared link — the
+    new token is the single credential for accepting. That matches
+    the behaviour of "lost the invite email, send me another" without
+    leaving the old token live alongside the new one.
+    """
+
+    if invitation.accepted_at is not None:
+        raise InvitationAlreadyAccepted()
+    invitation.token = _generate_invitation_token()
+    invitation.expires_at = _default_invitation_expiry()
+    invitation.save(
+        update_fields=["token", "expires_at", "updated_at"]
+    )
+    return invitation
+
+
+@transaction.atomic
+def revoke_invitation(*, invitation: Invitation) -> None:
+    """Hard-delete a pending invitation.
+
+    The token's only existence was this row, so deletion is the
+    cleanest revocation: the accept endpoint now 404s, and we're not
+    carrying dead rows around forever. Accepted invitations are
+    history and must not be revocable.
+    """
+
+    if invitation.accepted_at is not None:
+        raise InvitationAlreadyAccepted()
+    invitation.delete()

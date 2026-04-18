@@ -78,19 +78,68 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
         return trimmed
 
 
+class _UserNestedSerializer(serializers.Serializer):
+    """Minimal user identity block embedded in membership / invitation
+    payloads so the settings UI can render a row without a second
+    round-trip per record."""
+
+    id = serializers.UUIDField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    first_name = serializers.CharField(read_only=True)
+    last_name = serializers.CharField(read_only=True)
+    full_name = serializers.SerializerMethodField()
+
+    def get_full_name(self, obj: Any) -> str:
+        full = f"{obj.first_name} {obj.last_name}".strip()
+        return full or obj.email
+
+
 class MembershipReadSerializer(serializers.ModelSerializer):
-    """Read-only view of a membership row — used by the members module."""
+    """Admin-facing view of a membership row with user info embedded
+    so the members table can render without a second round-trip."""
+
+    user = _UserNestedSerializer(read_only=True)
 
     class Meta:
         model = Membership
-        fields = ("id", "organization", "is_owner", "permissions", "created_at")
+        fields = (
+            "id",
+            "user",
+            "is_owner",
+            "permissions",
+            "created_at",
+            "updated_at",
+        )
         read_only_fields = fields
 
 
+class MembershipPermissionsUpdateSerializer(serializers.Serializer):
+    """Input shape for ``PATCH /api/organizations/<org>/memberships/<id>/``.
+
+    The permissions dict is validated against the module registry by
+    the service layer — this serializer just ensures the payload is a
+    JSON object, not a list / string / missing entirely.
+    """
+
+    permissions = serializers.JSONField(required=True)
+
+    def validate_permissions(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError([_code("permissions_invalid")])
+        return value
+
+
 class InvitationCreateSerializer(serializers.Serializer):
-    """Input shape for ``POST /api/organizations/<id>/invitations/``."""
+    """Input shape for ``POST /api/organizations/<id>/invitations/``.
+
+    ``permissions`` is optional — an invite can be issued without a
+    pre-set grant and the admin can fill in capabilities after the
+    invitee accepts. When provided, the payload is validated against
+    the module registry by the service layer.
+    """
 
     email = serializers.EmailField(required=True)
+    permissions = serializers.JSONField(required=False)
 
     def validate_email(self, value: str) -> str:
         trimmed = value.strip()
@@ -98,14 +147,26 @@ class InvitationCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(_code("blank"))
         return UserModel.objects.normalize_email(trimmed)
 
+    def validate_permissions(self, value: Any) -> Any:
+        if value is None:
+            return {}
+        if not isinstance(value, dict):
+            raise serializers.ValidationError([_code("permissions_invalid")])
+        return value
+
 
 class InvitationReadSerializer(serializers.ModelSerializer):
     """Owner-facing representation of a pending invitation.
 
-    Exposes the raw token so the owner can assemble a shareable link.
-    This serializer is never used on the public endpoint — public
-    invitation details go through :class:`PublicInvitationSerializer`.
+    Exposes the raw token so the owner can assemble a shareable link,
+    and a derived ``status`` (``pending`` / ``expired``) so the
+    settings UI can render a chip without re-computing dates on the
+    client. Never used on the public endpoint — that path goes
+    through :class:`PublicInvitationSerializer`.
     """
+
+    invited_by = _UserNestedSerializer(read_only=True)
+    status = serializers.SerializerMethodField()
 
     class Meta:
         model = Invitation
@@ -114,11 +175,18 @@ class InvitationReadSerializer(serializers.ModelSerializer):
             "email",
             "token",
             "permissions",
+            "invited_by",
+            "status",
             "expires_at",
             "accepted_at",
             "created_at",
         )
         read_only_fields = fields
+
+    def get_status(self, obj: Invitation) -> str:
+        if obj.accepted_at is not None:
+            return "accepted"
+        return "expired" if obj.is_expired else "pending"
 
 
 class PublicInvitationSerializer(serializers.ModelSerializer):

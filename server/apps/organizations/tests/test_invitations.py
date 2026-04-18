@@ -47,7 +47,7 @@ def owner_client(api_client: APIClient, login_url: str) -> tuple[APIClient, Any,
 
 
 def _invitation_create_url(org_id: str) -> str:
-    return reverse("organizations:invitation-create", args=[org_id])
+    return reverse("organizations:invitation-list", args=[org_id])
 
 
 def _invitation_detail_url(token: str) -> str:
