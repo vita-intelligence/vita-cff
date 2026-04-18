@@ -32,7 +32,6 @@ export default async function ProjectQCPage({
         <ProjectShell
           organization={organization}
           overview={overview}
-          rdStatus={formulation.status}
           activeTab="qc"
         >
           <QCList

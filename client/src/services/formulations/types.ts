@@ -17,16 +17,8 @@ export const FULLY_SUPPORTED_DOSAGE_FORMS: readonly DosageForm[] = [
   "tablet",
 ] as const;
 
-export const FORMULATION_STATUSES = [
-  "draft",
-  "in_review",
-  "approved",
-  "archived",
-] as const;
-export type FormulationStatus = (typeof FORMULATION_STATUSES)[number];
-
-/** Product roadmap status. Orthogonal to ``FormulationStatus`` —
- * drives the chip shown at the top of the project workspace. */
+/** Product roadmap status — the single lifecycle chip shown at
+ * the top of the project workspace. */
 export const PROJECT_STATUSES = [
   "concept",
   "in_development",
@@ -151,7 +143,6 @@ export interface FormulationDto {
   readonly suggested_dosage: string;
   readonly appearance: string;
   readonly disintegration_spec: string;
-  readonly status: FormulationStatus;
   readonly project_status: ProjectStatus;
   readonly lines: readonly FormulationLineDto[];
   readonly created_at: string;
@@ -174,7 +165,6 @@ export interface CreateFormulationRequestDto {
 }
 
 export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> & {
-  readonly status?: FormulationStatus;
   readonly project_status?: ProjectStatus;
 };
 
@@ -297,7 +287,6 @@ export interface ProjectOverviewDto {
   readonly name: string;
   readonly description: string;
   readonly project_status: ProjectStatus;
-  readonly formulation_status: FormulationStatus;
   readonly dosage_form: string;
   readonly size_label: string;
   readonly updated_at: string;

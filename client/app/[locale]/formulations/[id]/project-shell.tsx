@@ -12,10 +12,7 @@ import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
 
 import { Link, usePathname } from "@/i18n/navigation";
-import type {
-  FormulationStatus,
-  ProjectOverviewDto,
-} from "@/services/formulations";
+import type { ProjectOverviewDto } from "@/services/formulations";
 import type { OrganizationDto } from "@/services/organizations/types";
 
 import { ProjectHeaderActions } from "./project-header-actions";
@@ -42,16 +39,11 @@ export type ProjectTabKey =
 export function ProjectShell({
   organization,
   overview,
-  rdStatus,
   activeTab,
   children,
 }: {
   organization: OrganizationDto;
   overview: ProjectOverviewDto;
-  /** ``Formulation.status`` — surfaced separately because the
-   *  overview payload focuses on ``project_status``. Used by the
-   *  More-actions menu to show which R&D status is active. */
-  rdStatus: FormulationStatus;
   activeTab: ProjectTabKey;
   children: ReactNode;
 }) {
@@ -109,11 +101,7 @@ export function ProjectShell({
         <ArrowLeft className="h-3.5 w-3.5" />
         {tNav("main.formulations")}
       </Link>
-      <CompactHeader
-        organization={organization}
-        overview={overview}
-        rdStatus={rdStatus}
-      />
+      <CompactHeader organization={organization} overview={overview} />
       <TabBar tabs={tabs} activeTab={activeTab} />
       <div>{children}</div>
     </div>
@@ -124,11 +112,9 @@ export function ProjectShell({
 function CompactHeader({
   organization,
   overview,
-  rdStatus,
 }: {
   organization: OrganizationDto;
   overview: ProjectOverviewDto;
-  rdStatus: FormulationStatus;
 }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
@@ -154,7 +140,6 @@ function CompactHeader({
         organization={organization}
         formulationId={overview.id}
         projectStatus={overview.project_status}
-        rdStatus={rdStatus}
       />
     </header>
   );

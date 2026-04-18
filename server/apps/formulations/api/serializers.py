@@ -11,7 +11,6 @@ from apps.formulations.models import (
     DosageFormChoices,
     Formulation,
     FormulationLine,
-    FormulationStatus,
     FormulationVersion,
     ProjectStatus,
 )
@@ -100,7 +99,6 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "suggested_dosage",
             "appearance",
             "disintegration_spec",
-            "status",
             "project_status",
             "lines",
             "created_at",
@@ -147,9 +145,6 @@ class FormulationWriteSerializer(serializers.Serializer):
     )
     disintegration_spec = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default=""
-    )
-    status = serializers.ChoiceField(
-        choices=FormulationStatus.choices, required=False
     )
     project_status = serializers.ChoiceField(
         choices=ProjectStatus.choices, required=False

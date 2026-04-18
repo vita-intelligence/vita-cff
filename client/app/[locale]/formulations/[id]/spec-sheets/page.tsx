@@ -34,7 +34,6 @@ export default async function ProjectSpecSheetsPage({
         <ProjectShell
           organization={organization}
           overview={overview}
-          rdStatus={formulation.status}
           activeTab="spec-sheets"
         >
           {sheetsPage ? (

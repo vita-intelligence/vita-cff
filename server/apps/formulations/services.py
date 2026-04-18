@@ -708,7 +708,6 @@ def update_formulation(
         "suggested_dosage",
         "appearance",
         "disintegration_spec",
-        "status",
         "project_status",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:

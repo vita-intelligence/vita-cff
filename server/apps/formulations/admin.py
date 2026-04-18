@@ -29,11 +29,11 @@ class FormulationAdmin(admin.ModelAdmin):
         "name",
         "code",
         "dosage_form",
-        "status",
+        "project_status",
         "organization",
         "updated_at",
     )
-    list_filter = ("status", "dosage_form", "organization")
+    list_filter = ("project_status", "dosage_form", "organization")
     search_fields = ("name", "code")
     readonly_fields = ("id", "created_at", "updated_at", "created_by", "updated_by")
     raw_id_fields = ("organization", "created_by", "updated_by")

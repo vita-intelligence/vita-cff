@@ -28,7 +28,6 @@ export default async function ProjectBuilderPage({
         <ProjectShell
           organization={organization}
           overview={overview}
-          rdStatus={formulation.status}
           activeTab="builder"
         >
           <FormulationBuilder

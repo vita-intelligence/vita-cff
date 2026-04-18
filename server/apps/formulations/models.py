@@ -26,28 +26,15 @@ from django.utils.translation import gettext_lazy as _
 from apps.formulations.constants import DosageForm
 
 
-class FormulationStatus(models.TextChoices):
-    """Internal formulation-lifecycle workflow — is this R&D
-    document still being edited, reviewed, signed-off, or shelved?
-    Distinct from :class:`ProjectStatus` which tracks the product's
-    strategic roadmap position.
-    """
-
-    DRAFT = "draft", _("Draft")
-    IN_REVIEW = "in_review", _("In review")
-    APPROVED = "approved", _("Approved")
-    ARCHIVED = "archived", _("Archived")
-
-
 class ProjectStatus(models.TextChoices):
     """Product-roadmap status of the project (==formulation).
 
-    Orthogonal to :class:`FormulationStatus`: a formulation can be
-    ``approved`` (technically finished editing) while the project it
-    describes is still in ``pilot`` (running a trial batch before
-    commercial launch). Surfaced prominently at the top of the
-    project workspace so PMs and clients see one glance-level
-    answer to "where are we".
+    The single lifecycle chip surfaced on the project workspace.
+    R&D sign-off (scientist + manager signatures) lives on version
+    snapshots and validations rather than on the formulation
+    header — separating "is the recipe done" from "where is the
+    product going" had no real-world readers, so we collapsed to
+    this one roadmap field.
     """
 
     CONCEPT = "concept", _("Concept")
@@ -127,12 +114,6 @@ class Formulation(models.Model):
         help_text=_("Target disintegration time (e.g. 'within 60 minutes')."),
     )
 
-    status = models.CharField(
-        _("status"),
-        max_length=16,
-        choices=FormulationStatus.choices,
-        default=FormulationStatus.DRAFT,
-    )
     project_status = models.CharField(
         _("project status"),
         max_length=16,
@@ -170,7 +151,6 @@ class Formulation(models.Model):
             ),
         ]
         indexes = [
-            models.Index(fields=("organization", "status")),
             models.Index(fields=("organization", "-updated_at")),
         ]
 

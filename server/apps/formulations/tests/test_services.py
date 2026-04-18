@@ -43,7 +43,7 @@ class TestCreateFormulation:
             name="Test Capsule",
         )
         assert formulation.name == "Test Capsule"
-        assert formulation.status == "draft"
+        assert formulation.project_status == "concept"
         assert formulation.dosage_form == "capsule"
 
     def test_code_defaults_to_auto_generated_prj_sequence(self) -> None:

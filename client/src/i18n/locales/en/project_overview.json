@@ -43,15 +43,8 @@
     "title": "Recent activity",
     "empty": "No activity yet."
   },
-  "rd_status": {
-    "draft": "Draft",
-    "in_review": "In review",
-    "approved": "Approved",
-    "archived": "Archived"
-  },
   "actions": {
     "more_actions": "More actions",
-    "rd_status": "R&D status",
     "delete_project": "Delete project"
   },
   "delete": {

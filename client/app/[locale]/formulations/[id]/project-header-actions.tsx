@@ -25,7 +25,6 @@ import type { OrganizationDto } from "@/services/organizations/types";
 import {
   useDeleteFormulation,
   useUpdateFormulation,
-  type FormulationStatus,
   type ProjectStatus,
 } from "@/services/formulations";
 
@@ -40,18 +39,11 @@ const PROJECT_STATUSES: readonly ProjectStatus[] = [
   "discontinued",
 ] as const;
 
-const RD_STATUSES: readonly FormulationStatus[] = [
-  "draft",
-  "in_review",
-  "approved",
-  "archived",
-] as const;
-
 
 /**
  * Action cluster rendered on the compact project header: an
  * editable ``project_status`` pill and a More-actions menu that
- * covers the less-touched R&D status + a Delete action.
+ * currently hosts a Delete action.
  *
  * All writes run through existing service hooks. Capability gating
  * mirrors the backend — ``formulations.edit`` gates status edits,
@@ -62,12 +54,10 @@ export function ProjectHeaderActions({
   organization,
   formulationId,
   projectStatus,
-  rdStatus,
 }: {
   organization: OrganizationDto;
   formulationId: string;
   projectStatus: ProjectStatus;
-  rdStatus: FormulationStatus;
 }) {
   const tProject = useTranslations("project_overview");
 
@@ -83,13 +73,10 @@ export function ProjectHeaderActions({
         canEdit={canEdit}
         tProject={tProject}
       />
-      {canEdit || canDelete ? (
+      {canDelete ? (
         <MoreActionsMenu
           orgId={organization.id}
           formulationId={formulationId}
-          rdStatus={rdStatus}
-          canEdit={canEdit}
-          canDelete={canDelete}
           tProject={tProject}
         />
       ) : null}
@@ -216,16 +203,10 @@ function ProjectStatusMenu({
 function MoreActionsMenu({
   orgId,
   formulationId,
-  rdStatus,
-  canEdit,
-  canDelete,
   tProject,
 }: {
   orgId: string;
   formulationId: string;
-  rdStatus: FormulationStatus;
-  canEdit: boolean;
-  canDelete: boolean;
   tProject: ReturnType<typeof useTranslations<"project_overview">>;
 }) {
   const router = useRouter();
@@ -235,7 +216,6 @@ function MoreActionsMenu({
   const containerRef = useRef<HTMLDivElement | null>(null);
   useClickOutside(containerRef, () => setOpen(false));
 
-  const update = useUpdateFormulation(orgId, formulationId);
   const deleteMutation = useDeleteFormulation(orgId);
 
   const handleDelete = async () => {
@@ -268,65 +248,18 @@ function MoreActionsMenu({
             role="menu"
             className="absolute right-0 z-20 mt-2 flex w-64 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
           >
-            {canEdit ? (
-              <>
-                <p className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-ink-400">
-                  {tProject("actions.rd_status")}
-                </p>
-                {RD_STATUSES.map((value) => {
-                  const isActive = value === rdStatus;
-                  return (
-                    <button
-                      key={value}
-                      type="button"
-                      role="menuitemradio"
-                      aria-checked={isActive}
-                      disabled={update.isPending}
-                      onClick={async () => {
-                        setOpen(false);
-                        if (isActive) return;
-                        try {
-                          await update.mutateAsync({ status: value });
-                          router.refresh();
-                        } catch {
-                          // Silent — TanStack Query surfaces the
-                          // error state if needed.
-                        }
-                      }}
-                      className={`flex items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-ink-50 disabled:opacity-60 ${
-                        isActive
-                          ? "font-semibold text-ink-1000"
-                          : "text-ink-700"
-                      }`}
-                    >
-                      <span>
-                        {tProject(`rd_status.${value}` as "rd_status.draft")}
-                      </span>
-                      {isActive ? (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-ink-400" />
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </>
-            ) : null}
-            {canEdit && canDelete ? (
-              <div className="my-1 border-t border-ink-100" />
-            ) : null}
-            {canDelete ? (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setOpen(false);
-                  setIsDeleteOpen(true);
-                }}
-                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger transition-colors hover:bg-danger/10"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-                {tProject("actions.delete_project")}
-              </button>
-            ) : null}
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                setIsDeleteOpen(true);
+              }}
+              className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger transition-colors hover:bg-danger/10"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {tProject("actions.delete_project")}
+            </button>
           </div>
         ) : null}
       </div>

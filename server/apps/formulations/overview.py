@@ -108,7 +108,6 @@ class ProjectOverview:
     name: str
     description: str
     project_status: str
-    formulation_status: str
     dosage_form: str
     size_label: str
     updated_at: str
@@ -389,7 +388,6 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         name=formulation.name,
         description=formulation.description,
         project_status=formulation.project_status,
-        formulation_status=formulation.status,
         dosage_form=formulation.dosage_form,
         size_label=_size_label(formulation),
         updated_at=formulation.updated_at.isoformat(),

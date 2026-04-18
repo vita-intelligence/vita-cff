@@ -30,7 +30,6 @@ export default async function ProjectOverviewPage({
         <ProjectShell
           organization={organization}
           overview={overview}
-          rdStatus={formulation.status}
           activeTab="overview"
         >
           <ProjectOverview

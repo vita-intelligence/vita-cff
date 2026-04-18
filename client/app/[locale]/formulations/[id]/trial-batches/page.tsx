@@ -28,7 +28,6 @@ export default async function ProjectTrialBatchesPage({
         <ProjectShell
           organization={organization}
           overview={overview}
-          rdStatus={formulation.status}
           activeTab="trial-batches"
         >
           <TrialBatchesPanelWrapper
