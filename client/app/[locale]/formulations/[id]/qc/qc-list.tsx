@@ -16,16 +16,22 @@ import type {
   ValidationStatus,
 } from "@/services/product_validation";
 
+import { NewValidationButton } from "./new-validation-button";
+
 
 /**
  * Project-scoped QC validations list. One card per validation —
  * shows the batch it was run against, the current status + stamp
- * of any signers, and links to the full editor.
+ * of any signers, and links to the full editor. The header hosts
+ * the canonical "New validation" trigger so the creation flow
+ * lives on the tab that owns the resource, not buried elsewhere.
  */
 export function QCList({
+  orgId,
   formulationId,
   validations,
 }: {
+  orgId: string;
   formulationId: string;
   validations: readonly ProductValidationDto[];
 }) {
@@ -33,11 +39,18 @@ export function QCList({
   const tTabs = useTranslations("project_tabs");
   return (
     <section className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-lg font-semibold text-ink-1000">{tTabs("qc")}</h2>
-        <p className="mt-1 text-sm text-ink-500">
-          {tV("tab.subtitle", { count: validations.length })}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-ink-1000">{tTabs("qc")}</h2>
+          <p className="mt-1 text-sm text-ink-500">
+            {tV("tab.subtitle", { count: validations.length })}
+          </p>
+        </div>
+        <NewValidationButton
+          orgId={orgId}
+          formulationId={formulationId}
+          validations={validations}
+        />
       </div>
 
       {validations.length === 0 ? (

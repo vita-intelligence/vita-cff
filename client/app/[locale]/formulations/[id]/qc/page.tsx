@@ -31,6 +31,7 @@ export default async function ProjectQCPage({
 
         <ProjectShell overview={overview} activeTab="qc">
           <QCList
+            orgId={organization.id}
             formulationId={formulation.id}
             validations={validations}
           />

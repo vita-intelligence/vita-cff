@@ -31,6 +31,20 @@
     "empty": "No validations recorded yet",
     "empty_hint": "Open a trial batch and kick off its validation to start running weight, hardness, disintegration and organoleptic tests."
   },
+  "create": {
+    "trigger": "New validation",
+    "title": "Start a new validation",
+    "subtitle": "Validations attach to a trial batch — the batch defines what was manufactured and the sample count we test against.",
+    "batch_label": "Trial batch",
+    "batch_placeholder": "Select a batch…",
+    "notes_label": "Notes",
+    "notes_placeholder": "Optional context for this validation run.",
+    "no_batches_cta": "Create a trial batch first",
+    "no_batches_hint": "Every validation runs against a specific trial batch. Head to the Trial Batches tab to manufacture one before starting QC.",
+    "cancel": "Cancel",
+    "submit": "Start validation",
+    "generic_error": "Couldn't start the validation. Please try again."
+  },
   "weight": {
     "title": "Weight test",
     "target": "Target",

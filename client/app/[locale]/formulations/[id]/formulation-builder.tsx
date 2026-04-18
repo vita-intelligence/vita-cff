@@ -17,7 +17,6 @@ import { translateCode } from "@/lib/errors/translate";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
 
-import { NewSpecSheetButton } from "./new-spec-sheet-button";
 import {
   CAPSULE_SIZES,
   DOSAGE_FORMS,
@@ -502,7 +501,6 @@ export function FormulationBuilder({
                 <Save className="h-4 w-4" />
                 {tFormulations("builder.save_version")}
               </Button>
-              <NewSpecSheetButton orgId={orgId} versions={versions} />
             </div>
           </div>
         ) : null}
