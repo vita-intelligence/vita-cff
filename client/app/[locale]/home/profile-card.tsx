@@ -1,4 +1,7 @@
+import { User2 } from "lucide-react";
+
 import type { UserDto } from "@/services/accounts/types";
+
 
 /**
  * Static profile summary shown on the dashboard. Server component — no
@@ -12,17 +15,18 @@ export function ProfileCard({
   label: string;
 }) {
   return (
-    <article className="flex h-full flex-col border-2 border-ink-1000 bg-ink-0 p-6">
-      <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-3">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+    <article className="flex h-full flex-col gap-4 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center gap-2">
+        <User2 className="h-4 w-4 text-ink-500" />
+        <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {label}
         </span>
       </header>
-      <div className="mt-5 flex flex-1 flex-col">
-        <p className="text-2xl font-black tracking-tight uppercase md:text-3xl">
+      <div>
+        <p className="text-xl font-semibold tracking-tight text-ink-1000 sm:text-2xl">
           {user.full_name}
         </p>
-        <p className="mt-2 font-mono text-xs text-ink-600">{user.email}</p>
+        <p className="mt-1 text-sm text-ink-500">{user.email}</p>
       </div>
     </article>
   );

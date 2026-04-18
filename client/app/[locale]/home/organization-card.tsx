@@ -1,4 +1,8 @@
+import { Building2 } from "lucide-react";
+
+import { Chip } from "@/components/ui/chip";
 import type { OrganizationDto } from "@/services/organizations/types";
+
 
 /**
  * Summary of the user's current organization on the dashboard.
@@ -16,17 +20,20 @@ export function OrganizationCard({
   roleLabel: string;
 }) {
   return (
-    <article className="flex h-full flex-col border-2 border-ink-1000 bg-ink-0 p-6">
-      <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-3">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-          {label}
-        </span>
-        <span className="border-2 border-ink-1000 bg-ink-1000 px-2 py-0.5 text-[10px] font-bold tracking-widest uppercase text-ink-0">
+    <article className="flex h-full flex-col gap-4 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Building2 className="h-4 w-4 text-ink-500" />
+          <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {label}
+          </span>
+        </div>
+        <Chip tone={organization.is_owner ? "orange" : "neutral"}>
           {roleLabel}
-        </span>
+        </Chip>
       </header>
-      <div className="mt-5 flex flex-1 flex-col">
-        <p className="text-2xl font-black tracking-tight uppercase md:text-3xl">
+      <div>
+        <p className="text-xl font-semibold tracking-tight text-ink-1000 sm:text-2xl">
           {organization.name}
         </p>
       </div>

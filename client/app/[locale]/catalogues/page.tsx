@@ -1,6 +1,8 @@
+import { ArrowRight, Layers } from "lucide-react";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
+import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
 import {
   getCataloguesServer,
@@ -35,55 +37,52 @@ export default async function CataloguesIndexPage({
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
-      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-6 py-8 md:px-10 md:py-12">
+      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} active="catalogues" />
 
-        <section className="mt-12 md:mt-16">
-          <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
+        <section className="mt-10 md:mt-14">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {primaryOrg.name}
           </p>
-          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase md:text-6xl">
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
             {tNav("main.catalogues")}
           </h1>
         </section>
 
-        <section className="mt-10 grid grid-cols-1 gap-6 md:mt-12 md:grid-cols-2">
+        <section className="mt-8 grid grid-cols-1 gap-4 md:mt-10 md:grid-cols-2 md:gap-6">
           {catalogues.map((catalogue) => (
             <Link
               key={catalogue.id}
               href={`/catalogues/${catalogue.slug}`}
-              className="group flex flex-col justify-between gap-6 border-2 border-ink-1000 bg-ink-0 p-6 transition-colors hover:bg-ink-100"
+              className="group flex flex-col justify-between gap-4 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 transition-shadow hover:shadow-md"
             >
               <div>
-                <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
-                  {catalogue.slug}
-                </p>
-                <h2 className="mt-3 text-2xl font-black tracking-tight uppercase md:text-3xl">
+                <div className="flex items-center gap-2">
+                  <Layers className="h-4 w-4 text-ink-500" />
+                  <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                    {catalogue.slug}
+                  </p>
+                </div>
+                <h2 className="mt-2 text-xl font-semibold tracking-tight text-ink-1000 sm:text-2xl">
                   {catalogue.name}
                 </h2>
                 {catalogue.description ? (
-                  <p className="mt-3 text-sm text-ink-600">
+                  <p className="mt-1 text-sm text-ink-500">
                     {catalogue.description}
                   </p>
                 ) : null}
               </div>
               <div className="flex items-center justify-between">
-                {catalogue.is_system ? (
-                  <span className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
-                    system
-                  </span>
-                ) : (
-                  <span />
-                )}
-                <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700 group-hover:text-ink-1000">
-                  open →
+                {catalogue.is_system ? <Chip tone="neutral">system</Chip> : <span />}
+                <span className="inline-flex items-center gap-1 text-sm font-medium text-orange-700 transition-transform group-hover:translate-x-0.5">
+                  open <ArrowRight className="h-4 w-4" />
                 </span>
               </div>
             </Link>
           ))}
         </section>
 
-        <footer className="mt-auto flex items-center justify-between border-t-2 border-ink-1000 pt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>
           <span>{tCommon("brand")}</span>
         </footer>

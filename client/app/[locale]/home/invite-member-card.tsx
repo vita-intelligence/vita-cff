@@ -2,6 +2,7 @@
 
 import { Button } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { MailPlus } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -85,30 +86,31 @@ export function InviteMemberCard({ orgId }: { orgId: string }) {
   };
 
   return (
-    <article className="flex flex-col border-2 border-ink-1000 bg-ink-0 p-6">
-      <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-3">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+    <article className="flex flex-col gap-4 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center gap-2">
+        <MailPlus className="h-4 w-4 text-ink-500" />
+        <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tInvite("invite_member.title")}
         </span>
       </header>
 
       {result ? (
-        <div className="mt-5 flex flex-col gap-4">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <div className="flex flex-col gap-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tInvite("invite_member.success_title")}
           </p>
           <p className="text-sm text-ink-700">
             {tInvite("invite_member.success_hint")}
           </p>
-          <div className="flex items-start gap-3">
-            <code className="flex-1 overflow-x-auto border-2 border-ink-1000 bg-ink-50 px-3 py-2 font-mono text-xs break-all text-ink-900">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+            <code className="flex-1 overflow-x-auto rounded-lg bg-ink-50 px-3 py-2 text-xs break-all text-ink-900 ring-1 ring-inset ring-ink-200">
               {inviteUrl}
             </code>
             <Button
               type="button"
               variant="primary"
               size="md"
-              className="rounded-none font-bold tracking-wider uppercase"
+              className="h-11 shrink-0 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
               onClick={onCopy}
             >
               {copied
@@ -120,7 +122,7 @@ export function InviteMemberCard({ orgId }: { orgId: string }) {
             type="button"
             variant="outline"
             size="md"
-            className="self-start rounded-none border-2 font-bold tracking-wider uppercase"
+            className="h-10 self-start rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
             onClick={startOver}
           >
             {tInvite("invite_member.invite_another")}
@@ -128,12 +130,12 @@ export function InviteMemberCard({ orgId }: { orgId: string }) {
         </div>
       ) : (
         <>
-          <p className="mt-5 text-sm text-ink-600">
+          <p className="text-sm text-ink-500">
             {tInvite("invite_member.subtitle")}
           </p>
           <form
             onSubmit={onSubmit}
-            className="mt-5 flex flex-col gap-4 md:flex-row md:items-end md:gap-4"
+            className="flex flex-col gap-3 md:flex-row md:items-end md:gap-3"
             noValidate
           >
             <div className="flex-1">
@@ -156,7 +158,7 @@ export function InviteMemberCard({ orgId }: { orgId: string }) {
               type="submit"
               variant="primary"
               size="lg"
-              className="rounded-none font-bold tracking-wider uppercase"
+              className="h-11 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
               isDisabled={isSubmitting || createMutation.isPending}
             >
               {tInvite("invite_member.submit")}
@@ -165,7 +167,7 @@ export function InviteMemberCard({ orgId }: { orgId: string }) {
           {errors.root?.message ? (
             <p
               role="alert"
-              className="mt-3 border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+              className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
             >
               {errors.root.message}
             </p>

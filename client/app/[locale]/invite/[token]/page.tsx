@@ -68,15 +68,15 @@ export default async function InviteAcceptPage({
           ? "accepted"
           : "expired";
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-6">
-        <div className="w-full max-w-md border-2 border-ink-1000 bg-ink-0 p-8">
-          <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+      <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-4 py-10 sm:px-6">
+        <div className="w-full max-w-md rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 sm:p-8">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tCommon("brand")}
           </p>
-          <h1 className="mt-3 text-3xl font-black tracking-tight uppercase">
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink-1000 sm:text-3xl">
             {tAccept(`accept.errors.${errorKey}_title`)}
           </h1>
-          <p className="mt-4 text-sm text-ink-600">
+          <p className="mt-4 text-sm text-ink-500">
             {tAccept(`accept.errors.${errorKey}_body`)}
           </p>
         </div>
@@ -91,27 +91,29 @@ export default async function InviteAcceptPage({
   });
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-6 py-12">
+    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-4 py-10 sm:px-6">
       <div className="w-full max-w-md">
-        <header className="mb-10">
-          <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
+        <header className="mb-8">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tAccept("accept.eyebrow")}
           </p>
-          <h1 className="mt-3 text-3xl font-black leading-[1.05] tracking-tight uppercase md:text-4xl">
+          <h1 className="mt-2 text-2xl font-semibold leading-tight tracking-tight text-ink-1000 sm:text-3xl">
             {tAccept("accept.title_template", {
               inviter: invitation.invited_by_name,
               organization: invitation.organization_name,
             })}
           </h1>
-          <p className="mt-4 font-mono text-xs text-ink-600">
+          <p className="mt-3 text-sm text-ink-500">
             {tAccept("accept.invited_email", { email: invitation.email })}
           </p>
-          <p className="mt-1 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+          <p className="mt-1 text-xs text-ink-500">
             {tAccept("accept.expires_in", { date: expiresAt })}
           </p>
         </header>
 
-        <AcceptInvitationForm token={token} />
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 sm:p-8">
+          <AcceptInvitationForm token={token} />
+        </div>
       </div>
     </main>
   );

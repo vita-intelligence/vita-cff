@@ -19,24 +19,24 @@ export default async function LandingPage({
   const tAuth = await getTranslations("auth");
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-6">
+    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-4 py-10 sm:px-6">
       <div className="w-full max-w-xl text-center">
-        <p className="font-mono text-xs tracking-widest uppercase text-ink-500">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tCommon("brand")}
         </p>
-        <h1 className="mt-4 text-4xl font-black tracking-tight uppercase md:text-5xl">
+        <h1 className="mt-2 text-3xl font-semibold tracking-tight text-ink-1000 sm:text-4xl md:text-5xl">
           {tCommon("tagline")}
         </h1>
-        <div className="mt-10 flex flex-wrap justify-center gap-4">
+        <div className="mt-8 flex flex-col items-stretch justify-center gap-3 sm:flex-row sm:items-center">
           <Link
             href="/login"
-            className="inline-flex items-center justify-center border-2 border-ink-1000 bg-ink-1000 px-6 py-3 text-sm font-bold tracking-wider uppercase text-ink-0 transition-shadow hover:shadow-hard"
+            className="inline-flex h-11 items-center justify-center rounded-lg bg-orange-500 px-6 text-sm font-medium text-ink-0 transition-colors hover:bg-orange-600"
           >
             {tAuth("login.submit")}
           </Link>
           <Link
             href="/register"
-            className="inline-flex items-center justify-center border-2 border-ink-1000 bg-ink-0 px-6 py-3 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-shadow hover:shadow-hard"
+            className="inline-flex h-11 items-center justify-center rounded-lg bg-ink-0 px-6 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
           >
             {tAuth("register.submit")}
           </Link>

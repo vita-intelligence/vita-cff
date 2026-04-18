@@ -2,6 +2,7 @@
 
 import { Button } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Building2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { Controller, useForm } from "react-hook-form";
@@ -57,18 +58,19 @@ export function CreateOrganizationCard() {
     message ? translateCode(tErrors, message) : undefined;
 
   return (
-    <article className="flex h-full flex-col border-2 border-ink-1000 bg-ink-0 p-6">
-      <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-3">
-        <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+    <article className="flex h-full flex-col gap-4 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center gap-2">
+        <Building2 className="h-4 w-4 text-ink-500" />
+        <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tOrgs("empty.title")}
         </span>
       </header>
 
-      <p className="mt-5 text-sm text-ink-600">{tOrgs("empty.subtitle")}</p>
+      <p className="text-sm text-ink-500">{tOrgs("empty.subtitle")}</p>
 
       <form
         onSubmit={onSubmit}
-        className="mt-6 flex flex-1 flex-col gap-5"
+        className="mt-2 flex flex-1 flex-col gap-4"
         noValidate
       >
         <Controller
@@ -88,7 +90,7 @@ export function CreateOrganizationCard() {
         {errors.root?.message ? (
           <p
             role="alert"
-            className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+            className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
           >
             {errors.root.message}
           </p>
@@ -98,7 +100,7 @@ export function CreateOrganizationCard() {
           type="submit"
           variant="primary"
           size="lg"
-          className="mt-auto self-start rounded-none font-bold tracking-wider uppercase"
+          className="mt-auto h-11 self-start rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
           isDisabled={isSubmitting || createOrg.isPending}
         >
           {tOrgs("empty.submit")}
