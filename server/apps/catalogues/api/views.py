@@ -90,6 +90,7 @@ class CatalogueListCreateView(APIView):
         try:
             catalogue = create_catalogue(
                 organization=self.organization,
+                actor=request.user,
                 slug=serializer.validated_data["slug"],
                 name=serializer.validated_data["name"],
                 description=serializer.validated_data.get("description", ""),
@@ -135,6 +136,7 @@ class CatalogueDetailView(APIView):
         serializer.is_valid(raise_exception=True)
         updated = update_catalogue(
             catalogue=self.catalogue,
+            actor=request.user,
             name=serializer.validated_data.get("name"),
             description=serializer.validated_data.get("description"),
         )
@@ -145,7 +147,7 @@ class CatalogueDetailView(APIView):
 
     def delete(self, request: Request, org_id: str, slug: str) -> Response:
         try:
-            delete_catalogue(catalogue=self.catalogue)
+            delete_catalogue(catalogue=self.catalogue, actor=request.user)
         except CatalogueIsSystem:
             return Response(
                 {"detail": "catalogue_is_system"},
@@ -297,7 +299,7 @@ class ItemDetailView(APIView):
         item = self._load_item(item_id)
         hard = request.query_params.get("hard", "").lower() == "true"
         if hard:
-            delete_item(item=item)
+            delete_item(item=item, actor=request.user)
         else:
             archive_item(item=item, actor=request.user)
         return Response(status=status.HTTP_204_NO_CONTENT)

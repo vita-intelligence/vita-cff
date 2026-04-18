@@ -154,8 +154,22 @@ class TrialBatchDetailView(APIView):
     def delete(
         self, request: Request, org_id: str, batch_id: str
     ) -> Response:
+        from apps.audit.services import record as record_audit, snapshot
+
         batch = self._load(batch_id)
+        organization = batch.organization
+        target_id = str(batch.pk)
+        before = snapshot(batch)
         batch.delete()
+        record_audit(
+            organization=organization,
+            actor=request.user,
+            action="trial_batch.delete",
+            target=None,
+            target_type="trialbatch",
+            target_id=target_id,
+            before=before,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

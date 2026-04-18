@@ -16,6 +16,7 @@ from typing import Any
 from django.db import transaction
 from django.db.models import QuerySet
 
+from apps.audit.services import record as record_audit, snapshot
 from apps.formulations.constants import (
     CAPSULE_SHELL_LABEL,
     DosageForm,
@@ -119,7 +120,7 @@ def create_batch(
     if version is None or version.formulation.organization_id != organization.id:
         raise FormulationVersionNotInOrg()
 
-    return TrialBatch.objects.create(
+    batch = TrialBatch.objects.create(
         organization=organization,
         formulation_version=version,
         label=label,
@@ -128,6 +129,14 @@ def create_batch(
         created_by=actor,
         updated_by=actor,
     )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="trial_batch.create",
+        target=batch,
+        after=snapshot(batch),
+    )
+    return batch
 
 
 @transaction.atomic
@@ -141,6 +150,7 @@ def update_batch(
     ``notes`` are mutable — the ``formulation_version`` is immutable
     by design, so a different snapshot means a different batch."""
 
+    before = snapshot(batch)
     if "batch_size_units" in changes and changes["batch_size_units"] is not None:
         size = changes["batch_size_units"]
         if not isinstance(size, int) or size <= 0:
@@ -153,6 +163,14 @@ def update_batch(
 
     batch.updated_by = actor
     batch.save()
+    record_audit(
+        organization=batch.organization,
+        actor=actor,
+        action="trial_batch.update",
+        target=batch,
+        before=before,
+        after=snapshot(batch),
+    )
     return batch
 
 

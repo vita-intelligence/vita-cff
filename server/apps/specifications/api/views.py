@@ -163,8 +163,22 @@ class SpecificationDetailView(APIView):
     def delete(
         self, request: Request, org_id: str, sheet_id: str
     ) -> Response:
+        from apps.audit.services import record as record_audit, snapshot
+
         sheet = self._load(sheet_id)
+        organization = sheet.organization
+        target_id = str(sheet.pk)
+        before = snapshot(sheet)
         sheet.delete()
+        record_audit(
+            organization=organization,
+            actor=request.user,
+            action="spec_sheet.delete",
+            target=None,
+            target_type="specificationsheet",
+            target_id=target_id,
+            before=before,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

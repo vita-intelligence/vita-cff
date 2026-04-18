@@ -21,6 +21,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.utils import timezone
 
+from apps.audit.services import record as record_audit, snapshot
 from apps.organizations.models import Organization
 from apps.product_validation.models import ProductValidation, ValidationStatus
 from apps.trial_batches.models import TrialBatch
@@ -583,7 +584,7 @@ def create_validation(
         raise ValidationAlreadyExists()
 
     blanks = empty_tests()
-    return ProductValidation.objects.create(
+    validation = ProductValidation.objects.create(
         organization=organization,
         trial_batch=batch,
         notes=notes,
@@ -592,6 +593,18 @@ def create_validation(
         updated_by=actor,
         **blanks,
     )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="product_validation.create",
+        target=validation,
+        after={
+            "id": str(validation.pk),
+            "trial_batch_id": str(batch.pk),
+            "status": validation.status,
+        },
+    )
+    return validation
 
 
 #: Top-level fields a PATCH payload may update. The JSON test blobs
@@ -619,12 +632,21 @@ def update_validation(
     actor: Any,
     **changes: Any,
 ) -> ProductValidation:
+    touched: list[str] = []
     for key, value in changes.items():
         if key in _MUTABLE_FIELDS and value is not None:
             setattr(validation, key, value)
+            touched.append(key)
 
     validation.updated_by = actor
     validation.save()
+    record_audit(
+        organization=validation.organization,
+        actor=actor,
+        action="product_validation.update",
+        target=validation,
+        after={"touched_fields": touched, "status": validation.status},
+    )
     return validation
 
 
@@ -651,6 +673,7 @@ def transition_status(
     if next_status not in allowed:
         raise InvalidValidationTransition()
 
+    previous_status = validation.status
     now = timezone.now()
     update_fields = ["status", "updated_by", "updated_at"]
 
@@ -671,4 +694,12 @@ def transition_status(
 
     validation.updated_by = actor
     validation.save(update_fields=update_fields)
+    record_audit(
+        organization=validation.organization,
+        actor=actor,
+        action="product_validation.status_transition",
+        target=validation,
+        before={"status": previous_status},
+        after={"status": next_status},
+    )
     return validation

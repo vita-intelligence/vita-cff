@@ -20,6 +20,7 @@ from django.db.models import QuerySet
 
 from apps.attributes.models import AttributeDefinition, DataType
 from apps.attributes.services import validate_values
+from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import Catalogue, Item
 from apps.organizations.models import Organization
 
@@ -80,6 +81,7 @@ def get_catalogue(
 def create_catalogue(
     *,
     organization: Organization,
+    actor: Any = None,
     slug: str,
     name: str,
     description: str = "",
@@ -90,6 +92,10 @@ def create_catalogue(
     :mod:`apps.catalogues.signals` ``post_save`` handler and must not
     be created by this function — this service only produces
     ``is_system=False`` rows.
+
+    ``actor`` is optional because the seeding signal calls this
+    indirectly during org bootstrap where no user exists; the audit
+    row records ``actor=None`` in that case and attributes to "system".
     """
 
     cleaned_slug = (slug or "").strip().lower()
@@ -102,19 +108,28 @@ def create_catalogue(
     if duplicate:
         raise CatalogueSlugConflict()
 
-    return Catalogue.objects.create(
+    catalogue = Catalogue.objects.create(
         organization=organization,
         slug=cleaned_slug,
         name=name.strip(),
         description=(description or "").strip(),
         is_system=False,
     )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="catalogue.create",
+        target=catalogue,
+        after=snapshot(catalogue),
+    )
+    return catalogue
 
 
 @transaction.atomic
 def update_catalogue(
     *,
     catalogue: Catalogue,
+    actor: Any = None,
     name: str | None = None,
     description: str | None = None,
 ) -> Catalogue:
@@ -125,16 +140,25 @@ def update_catalogue(
     ``is_system`` flag is likewise immutable.
     """
 
+    before = snapshot(catalogue)
     if name is not None:
         catalogue.name = name.strip()
     if description is not None:
         catalogue.description = description.strip()
     catalogue.save(update_fields=["name", "description", "updated_at"])
+    record_audit(
+        organization=catalogue.organization,
+        actor=actor,
+        action="catalogue.update",
+        target=catalogue,
+        before=before,
+        after=snapshot(catalogue),
+    )
     return catalogue
 
 
 @transaction.atomic
-def delete_catalogue(*, catalogue: Catalogue) -> None:
+def delete_catalogue(*, catalogue: Catalogue, actor: Any = None) -> None:
     """Hard-delete a non-system catalogue and every item inside it.
 
     Refuses to touch system catalogues — those are load-bearing for
@@ -143,7 +167,19 @@ def delete_catalogue(*, catalogue: Catalogue) -> None:
 
     if catalogue.is_system:
         raise CatalogueIsSystem()
+    organization = catalogue.organization
+    target_id = str(catalogue.pk)
+    before = snapshot(catalogue)
     catalogue.delete()
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="catalogue.delete",
+        target=None,
+        target_type="catalogue",
+        target_id=target_id,
+        before=before,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +259,7 @@ def create_item(
         if duplicate:
             raise ItemInternalCodeConflict()
 
-    return Item.objects.create(
+    item = Item.objects.create(
         catalogue=catalogue,
         name=name,
         internal_code=internal_code,
@@ -233,6 +269,14 @@ def create_item(
         created_by=actor,
         updated_by=actor,
     )
+    record_audit(
+        organization=catalogue.organization,
+        actor=actor,
+        action="catalogue_item.create",
+        target=item,
+        after=snapshot(item),
+    )
+    return item
 
 
 @transaction.atomic
@@ -249,6 +293,7 @@ def update_item(
 ) -> Item:
     """Apply partial updates to an existing item in place."""
 
+    before = snapshot(item)
     if internal_code is not None and internal_code != item.internal_code:
         if internal_code:
             duplicate = (
@@ -275,6 +320,14 @@ def update_item(
 
     item.updated_by = actor
     item.save()
+    record_audit(
+        organization=item.catalogue.organization,
+        actor=actor,
+        action="catalogue_item.update",
+        target=item,
+        before=before,
+        after=snapshot(item),
+    )
     return item
 
 
@@ -282,17 +335,38 @@ def update_item(
 def archive_item(*, item: Item, actor: Any) -> Item:
     """Soft-delete an item by flipping ``is_archived`` to ``True``."""
 
+    before = snapshot(item)
     item.is_archived = True
     item.updated_by = actor
     item.save(update_fields=["is_archived", "updated_by", "updated_at"])
+    record_audit(
+        organization=item.catalogue.organization,
+        actor=actor,
+        action="catalogue_item.archive",
+        target=item,
+        before=before,
+        after=snapshot(item),
+    )
     return item
 
 
 @transaction.atomic
-def delete_item(*, item: Item) -> None:
+def delete_item(*, item: Item, actor: Any = None) -> None:
     """Hard-delete an item. The row is removed from the database."""
 
+    organization = item.catalogue.organization
+    target_id = str(item.pk)
+    before = snapshot(item)
     item.delete()
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="catalogue_item.delete",
+        target=None,
+        target_type="item",
+        target_id=target_id,
+        before=before,
+    )
 
 
 # ---------------------------------------------------------------------------

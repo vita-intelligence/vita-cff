@@ -24,6 +24,7 @@ from django.db import transaction
 from django.db.models import QuerySet
 from django.template.loader import render_to_string
 
+from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.formulations.constants import DosageForm, capsule_size_by_key
 from apps.formulations.models import FormulationVersion
@@ -194,7 +195,7 @@ def create_sheet(
         if duplicate:
             raise SpecificationCodeConflict()
 
-    return SpecificationSheet.objects.create(
+    sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=version,
         code=code,
@@ -209,6 +210,14 @@ def create_sheet(
         created_by=actor,
         updated_by=actor,
     )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="spec_sheet.create",
+        target=sheet,
+        after=snapshot(sheet),
+    )
+    return sheet
 
 
 @transaction.atomic
@@ -240,12 +249,21 @@ def update_sheet(
         if duplicate:
             raise SpecificationCodeConflict()
 
+    before = snapshot(sheet)
     for key, value in changes.items():
         if key in mutable and value is not None:
             setattr(sheet, key, value)
 
     sheet.updated_by = actor
     sheet.save()
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.update",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
     return sheet
 
 
@@ -273,6 +291,7 @@ def set_packaging(
     code so the API layer can translate them uniformly.
     """
 
+    before = snapshot(sheet)
     catalogue: Catalogue | None = None
 
     for slot, raw_id in selections.items():
@@ -303,6 +322,14 @@ def set_packaging(
 
     sheet.updated_by = actor
     sheet.save()
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.set_packaging",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
     return sheet
 
 
@@ -341,6 +368,14 @@ def transition_status(
         actor=actor,
         notes=(notes or "").strip(),
     )
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.status_transition",
+        target=sheet,
+        before={"status": previous_status},
+        after={"status": next_status, "notes": (notes or "").strip()},
+    )
     return sheet
 
 
@@ -364,6 +399,12 @@ def rotate_public_token(
     sheet.public_token = uuid.uuid4()
     sheet.updated_by = actor
     sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.rotate_public_token",
+        target=sheet,
+    )
     return sheet
 
 
@@ -375,9 +416,17 @@ def revoke_public_token(
     URL. Idempotent — calling on an already-revoked sheet is a no-op
     for the token but still bumps ``updated_by``/``updated_at``."""
 
+    had_token = sheet.public_token is not None
     sheet.public_token = None
     sheet.updated_by = actor
     sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
+    if had_token:
+        record_audit(
+            organization=sheet.organization,
+            actor=actor,
+            action="spec_sheet.revoke_public_token",
+            target=sheet,
+        )
     return sheet
 
 

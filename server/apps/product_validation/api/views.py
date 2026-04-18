@@ -136,8 +136,22 @@ class ValidationDetailView(APIView):
     def delete(
         self, request: Request, org_id: str, validation_id: str
     ) -> Response:
+        from apps.audit.services import record as record_audit, snapshot
+
         validation = self._load(validation_id)
+        organization = validation.organization
+        target_id = str(validation.pk)
+        before = snapshot(validation)
         validation.delete()
+        record_audit(
+            organization=organization,
+            actor=request.user,
+            action="product_validation.delete",
+            target=None,
+            target_type="productvalidation",
+            target_id=target_id,
+            before=before,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
