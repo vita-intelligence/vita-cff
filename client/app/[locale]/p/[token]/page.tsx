@@ -1,3 +1,4 @@
+import { Download, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
@@ -33,23 +34,25 @@ export default async function PublicSpecificationPage({
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
-      <div className="mx-auto flex min-h-dvh max-w-[1400px] flex-col px-6 py-8 md:px-10 md:py-12 print:max-w-none print:p-6">
+      <div className="mx-auto flex min-h-dvh max-w-[1400px] flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12 print:max-w-none print:p-6">
         {/*
           Public-viewer banner — subtle heads-up that the link is
           shareable and revocable, printed and visible to any client
           who opens the URL. Hidden on print so the rendered PDF
           matches the authenticated download byte-for-byte.
         */}
-        <section className="border-2 border-ink-500 bg-ink-100 px-4 py-2 font-mono text-[10px] tracking-widest uppercase text-ink-700 print:hidden">
-          {tSpecs("public.banner")}
+        <section className="flex items-center gap-2 rounded-xl bg-orange-50 px-4 py-2.5 text-sm text-orange-800 ring-1 ring-inset ring-orange-200 print:hidden">
+          <Info className="h-4 w-4 shrink-0" />
+          <span>{tSpecs("public.banner")}</span>
         </section>
 
-        <div className="mt-8 flex items-center justify-end print:hidden">
+        <div className="mt-6 flex items-center justify-end print:hidden">
           <a
             href={specificationsEndpoints.publicPdf(token, { download: true })}
             download
-            className="inline-flex items-center justify-center rounded-none border-2 border-ink-1000 bg-ink-0 px-4 py-1.5 text-sm font-bold tracking-wider uppercase text-ink-1000 transition-colors hover:bg-ink-100"
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 transition-colors hover:bg-orange-600"
           >
+            <Download className="h-4 w-4" />
             {tSpecs("detail.download_pdf")}
           </a>
         </div>
@@ -58,7 +61,7 @@ export default async function PublicSpecificationPage({
           <SpecSheetContent rendered={rendered} />
         </div>
 
-        <footer className="mt-10 flex items-center justify-between border-t-2 border-ink-1000 pt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500 print:hidden">
+        <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500 print:hidden">
           <span>{tSpecs("public.footer")}</span>
           <span>{tCommon("brand")}</span>
         </footer>
