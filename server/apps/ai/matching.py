@@ -25,6 +25,8 @@ from dataclasses import dataclass
 from decimal import Decimal
 from difflib import SequenceMatcher
 
+from decimal import InvalidOperation
+
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.formulations.services import compute_line
 from apps.organizations.models import Organization
@@ -220,6 +222,16 @@ def shortlist_candidates(
     any specific raw material, but the model still needs "Caffeine
     Anhydrous Powder" et al. on the menu to do its job).
 
+    Items whose formulation math would fail — non-botanicals with no
+    ``purity``, botanicals with no ``extract_ratio`` — are excluded
+    from the shortlist entirely. Offering them to the AI produces
+    draft lines whose ``mg_per_serving`` silently resolves to
+    ``None``, leaving the builder with "MISSING PURITY" warnings and
+    viability totals that understate the real active load. Items
+    with incomplete catalogue data are still reachable via the
+    manual raw-materials picker on the builder page; only the
+    AI-driven flow filters them out.
+
     The returned tuple carries the live :class:`Item` alongside the
     display fields so the caller can feed it straight into
     :func:`apps.formulations.services.compute_line` without re-
@@ -232,10 +244,13 @@ def shortlist_candidates(
     if catalogue is None:
         return []
 
-    items = list(
-        Item.objects.filter(catalogue=catalogue, is_archived=False)
-        .order_by("name")
-    )
+    items = [
+        item
+        for item in Item.objects.filter(
+            catalogue=catalogue, is_archived=False
+        ).order_by("name")
+        if _is_computable(item)
+    ]
     if not items:
         return []
 
@@ -411,6 +426,53 @@ def _normalise(name: str) -> str:
     """
 
     return " ".join(_tokenise(name))
+
+
+def _is_computable(item: Item) -> bool:
+    """Return ``True`` when :func:`compute_line` would succeed for
+    this item.
+
+    Mirrors the branch inside ``compute_line``: botanical items need
+    ``extract_ratio``, everything else needs ``purity``. Items without
+    the required attribute are silently dropped from the AI shortlist
+    rather than producing ghost lines with blank ``mg/serving``.
+    """
+
+    attributes = item.attributes or {}
+    type_raw = attributes.get("type")
+    is_botanical = (
+        isinstance(type_raw, str)
+        and type_raw.strip().lower() == "botanical"
+    )
+    key = "extract_ratio" if is_botanical else "purity"
+    value = _coerce_positive_float(attributes.get(key))
+    return value is not None
+
+
+def _coerce_positive_float(raw: object) -> float | None:
+    """Parse a catalogue attribute into a positive float or ``None``.
+
+    Raw materials store numeric attributes as strings (the importer
+    sniffs columns containing ``N/A`` as text), so int/float/string
+    all need the same coercion path. Anything that can't be parsed
+    or lands ≤ 0 is treated as "missing" — unusable for the math.
+    """
+
+    if raw is None or isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return value if value > 0 else None
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if not trimmed:
+            return None
+        try:
+            value = float(Decimal(trimmed))
+        except (InvalidOperation, ValueError):
+            return None
+        return value if value > 0 else None
+    return None
 
 
 def _tokenise(name: str) -> list[str]:

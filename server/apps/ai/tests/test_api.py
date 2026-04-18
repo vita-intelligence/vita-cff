@@ -124,8 +124,16 @@ class TestFormulationDraftSuccess:
         # seed an empty-org response (intentionally) strips
         # ingredients. This test asserts the HAPPY path — header +
         # ingredients round-trip — so the seed is load-bearing.
-        ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
-        ItemFactory(catalogue=catalogue, name="Green Tea Extract")
+        ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={"purity": "1.0"},
+        )
+        ItemFactory(
+            catalogue=catalogue,
+            name="Green Tea Extract",
+            attributes={"purity": "1.0"},
+        )
 
         with patch(
             "apps.ai.providers.ollama.OllamaProvider.generate_json",
@@ -372,9 +380,21 @@ class TestFormulationDraftMatching:
     def test_match_exposes_alternatives(self) -> None:
         client, _, org = _owner_client()
         catalogue = raw_materials_catalogue(org)
-        ItemFactory(catalogue=catalogue, name="Green Tea Extract 50% Polyphenols")
-        ItemFactory(catalogue=catalogue, name="Green Tea Leaf Powder")
-        ItemFactory(catalogue=catalogue, name="Matcha Green Tea Powder")
+        ItemFactory(
+            catalogue=catalogue,
+            name="Green Tea Extract 50% Polyphenols",
+            attributes={"purity": "1.0"},
+        )
+        ItemFactory(
+            catalogue=catalogue,
+            name="Green Tea Leaf Powder",
+            attributes={"purity": "1.0"},
+        )
+        ItemFactory(
+            catalogue=catalogue,
+            name="Matcha Green Tea Powder",
+            attributes={"purity": "1.0"},
+        )
 
         with patch(
             "apps.ai.providers.ollama.OllamaProvider.generate_json",
@@ -412,7 +432,11 @@ class TestFormulationDraftMatching:
 
         client, _, org = _owner_client()
         catalogue = raw_materials_catalogue(org)
-        real = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+        real = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={"purity": "1.0"},
+        )
         payload = _valid_draft_payload()
         payload["ingredients"] = [
             {
@@ -560,7 +584,11 @@ class TestFormulationDraftConstrainedMenu:
 
         client, _, org = _owner_client()
         catalogue = raw_materials_catalogue(org)
-        item = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={"purity": "1.0"},
+        )
 
         captured: dict[str, Any] = {}
 
@@ -590,7 +618,11 @@ class TestFormulationDraftConstrainedMenu:
 
         client, _, org = _owner_client()
         catalogue = raw_materials_catalogue(org)
-        item = ItemFactory(catalogue=catalogue, name="Caffeine Anhydrous")
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={"purity": "1.0"},
+        )
 
         captured: dict[str, Any] = {}
 

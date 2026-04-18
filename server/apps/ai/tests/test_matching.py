@@ -30,12 +30,21 @@ pytestmark = pytest.mark.django_db
 def _seed(
     organization, *specs: dict
 ) -> list[Item]:
-    """Create items in the org's raw_materials catalogue from specs."""
+    """Create items in the org's raw_materials catalogue from specs.
+
+    Seeds ``purity=1.0`` by default so items pass the AI4 shortlist's
+    computable-math filter. Tests that care about the unset case
+    pass an explicit ``attributes={}`` to opt out.
+    """
 
     catalogue = raw_materials_catalogue(organization)
-    return [
-        ItemFactory(catalogue=catalogue, **spec) for spec in specs
-    ]
+    materialised: list[Item] = []
+    for spec in specs:
+        merged = dict(spec)
+        if "attributes" not in merged:
+            merged["attributes"] = {"purity": "1.0"}
+        materialised.append(ItemFactory(catalogue=catalogue, **merged))
+    return materialised
 
 
 class TestMatchIngredients:
@@ -254,6 +263,52 @@ class TestMatchIngredients:
             organization=org, brief="anything", limit=25
         )
         assert len(candidates) == 25
+
+    def test_shortlist_excludes_items_without_purity(self) -> None:
+        """Non-botanical items with missing / blank / zero ``purity``
+        are unusable for the mg_per_serving cascade, so offering them
+        to the AI produces draft lines the builder can't compute. The
+        shortlister must filter them out."""
+
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {"name": "Caffeine Anhydrous", "attributes": {"purity": "0.89"}},
+            {"name": "Mystery Powder", "attributes": {}},
+            {"name": "Blank Purity Powder", "attributes": {"purity": ""}},
+            {"name": "NA Purity Powder", "attributes": {"purity": "N/A"}},
+        )
+        names = [c.name for c in shortlist_candidates(
+            organization=org, brief="anything"
+        )]
+        assert "Caffeine Anhydrous" in names
+        assert "Mystery Powder" not in names
+        assert "Blank Purity Powder" not in names
+        assert "NA Purity Powder" not in names
+
+    def test_shortlist_requires_extract_ratio_for_botanicals(self) -> None:
+        """Botanical items use ``extract_ratio`` instead of ``purity``
+        in the cascade. An item tagged ``type: botanical`` with a
+        present ``purity`` but no ``extract_ratio`` still can't be
+        computed and should be filtered out."""
+
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {
+                "name": "Green Tea Extract 5:1",
+                "attributes": {"type": "botanical", "extract_ratio": "5"},
+            },
+            {
+                "name": "Mystery Herb",
+                "attributes": {"type": "botanical", "purity": "0.5"},
+            },
+        )
+        names = [c.name for c in shortlist_candidates(
+            organization=org, brief="anything"
+        )]
+        assert "Green Tea Extract 5:1" in names
+        assert "Mystery Herb" not in names
 
     def test_shortlist_skips_archived_items(self) -> None:
         org = OrganizationFactory()
