@@ -28,8 +28,68 @@
   },
   "members": {
     "section_title": "Members & permissions",
-    "section_subtitle": "Invite teammates, review their access, and revoke it when needed.",
-    "coming_soon": "Member management coming soon",
-    "coming_soon_hint": "The RBAC backend is ready; the editor UI lands in the next commit. For now, use the dashboard invite form to add teammates."
+    "section_subtitle": "Invite teammates, edit their access, and revoke it when needed.",
+    "list_title": "{count, plural, =0 {No members yet} one {# member} other {# members}}",
+    "col_name": "Member",
+    "col_role": "Role",
+    "col_joined": "Joined",
+    "col_actions": "Actions",
+    "action_edit": "Edit",
+    "action_remove": "Remove",
+    "action_resend": "Resend",
+    "action_revoke": "Revoke",
+    "invitations_title": "Pending invitations",
+    "invitations_hint": "{count, plural, =0 {No invitations out right now} one {# invite awaiting acceptance} other {# invites awaiting acceptance}}.",
+    "invitations_empty": "No pending invitations.",
+    "invite_cta": "Invite member",
+    "invite_title": "Invite a teammate",
+    "invite_email_label": "Email address",
+    "invite_email_placeholder": "teammate@example.com",
+    "invite_permissions_label": "Capabilities to grant on accept (optional)",
+    "invite_submit": "Send invitation",
+    "invited_by": "Invited by {name}",
+    "status_pending": "Pending",
+    "status_expired": "Expired",
+    "status_accepted": "Accepted",
+    "revoke_confirm": "Revoke the invitation for {email}?",
+    "edit_title": "Edit permissions — {name}",
+    "close": "Close",
+    "cancel": "Cancel",
+    "save": "Save changes",
+    "remove_title": "Remove this member?",
+    "remove_body": "{name} will lose access to this organization immediately. Their work stays intact — you can re-invite them later.",
+    "remove_confirm": "Remove member",
+    "access_denied_title": "You can't view members yet",
+    "access_denied_body": "Ask an admin to grant you the members.view capability to see the team roster."
+  },
+  "modules": {
+    "members": "Members",
+    "members_description": "Who else can sign in, invite new people, and change these permissions.",
+    "catalogues": "Catalogues",
+    "catalogues_description": "Raw materials, packaging, and any custom reference tables — scoped per catalogue.",
+    "formulations": "Projects",
+    "formulations_description": "Build projects, save versions, approve spec sheets, run QC validations.",
+    "no_row_scopes": "No catalogues exist yet — create one to scope access."
+  },
+  "capabilities": {
+    "members": {
+      "view": "View members",
+      "invite": "Invite new members",
+      "edit_permissions": "Edit permissions",
+      "remove": "Remove members"
+    },
+    "catalogues": {
+      "view": "View",
+      "edit": "Edit rows",
+      "import": "Bulk import",
+      "manage_fields": "Manage fields",
+      "delete": "Hard delete"
+    },
+    "formulations": {
+      "view": "View",
+      "edit": "Edit",
+      "approve": "Approve & send",
+      "delete": "Delete"
+    }
   }
 }

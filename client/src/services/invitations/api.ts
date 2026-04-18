@@ -13,6 +13,17 @@ import type {
   PublicInvitationDto,
 } from "./types";
 
+
+export async function listInvitations(
+  orgId: string,
+): Promise<readonly InvitationDto[]> {
+  const { data } = await apiClient.get<readonly InvitationDto[]>(
+    invitationsEndpoints.list(orgId),
+  );
+  return data;
+}
+
+
 export async function createInvitation(
   orgId: string,
   payload: CreateInvitationRequestDto,
@@ -24,6 +35,26 @@ export async function createInvitation(
   return data;
 }
 
+
+export async function resendInvitation(
+  orgId: string,
+  invitationId: string,
+): Promise<InvitationDto> {
+  const { data } = await apiClient.post<InvitationDto>(
+    invitationsEndpoints.resend(orgId, invitationId),
+  );
+  return data;
+}
+
+
+export async function revokeInvitation(
+  orgId: string,
+  invitationId: string,
+): Promise<void> {
+  await apiClient.delete(invitationsEndpoints.adminDetail(orgId, invitationId));
+}
+
+
 export async function fetchPublicInvitation(
   token: string,
 ): Promise<PublicInvitationDto> {
@@ -32,6 +63,7 @@ export async function fetchPublicInvitation(
   );
   return data;
 }
+
 
 export async function acceptInvitation(
   token: string,

@@ -19,6 +19,13 @@ import type {
   PaginatedFormulationsDto,
   ProjectOverviewDto,
 } from "@/services/formulations/types";
+import { invitationsEndpoints } from "@/services/invitations/endpoints";
+import type { InvitationDto } from "@/services/invitations/types";
+import { membersEndpoints } from "@/services/members/endpoints";
+import type {
+  MembershipDto,
+  ModuleDefinitionDto,
+} from "@/services/members/types";
 import { organizationsEndpoints } from "@/services/organizations/endpoints";
 import type { OrganizationDto } from "@/services/organizations/types";
 import { specificationsEndpoints } from "@/services/specifications/endpoints";
@@ -101,6 +108,39 @@ export async function getUserOrganizationsServer(): Promise<
   OrganizationDto[] | null
 > {
   return serverFetch<OrganizationDto[]>(organizationsEndpoints.list);
+}
+
+/**
+ * Fetch every membership on an org for the Settings > Members tab.
+ *
+ * Requires ``members.view`` on the caller's own membership; a 403
+ * comes through as ``null`` here so the page can render an access-
+ * denied state instead of crashing.
+ */
+export async function getMembershipsServer(
+  orgId: string,
+): Promise<MembershipDto[] | null> {
+  return serverFetch<MembershipDto[]>(membersEndpoints.list(orgId));
+}
+
+/**
+ * Fetch pending invitations on an org. Same permission posture as
+ * :func:`getMembershipsServer` — ``members.view``.
+ */
+export async function getInvitationsServer(
+  orgId: string,
+): Promise<InvitationDto[] | null> {
+  return serverFetch<InvitationDto[]>(invitationsEndpoints.list(orgId));
+}
+
+/**
+ * Fetch the module + capability registry. Not org-scoped — any
+ * authenticated user can read the catalog.
+ */
+export async function getModulesServer(): Promise<
+  ModuleDefinitionDto[] | null
+> {
+  return serverFetch<ModuleDefinitionDto[]>(membersEndpoints.modules());
 }
 
 /**
