@@ -37,6 +37,7 @@ LOCAL_APPS = [
     "apps.specifications",
     "apps.trial_batches",
     "apps.product_validation",
+    "apps.ai",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -172,3 +173,18 @@ STATIC_URL = "static/"
 
 # Defaults
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# AI providers. The free/default path uses Ollama running locally;
+# paid providers (OpenAI, Anthropic) plug in as new adapters under
+# :mod:`apps.ai.providers` in a future commit.
+import os  # noqa: E402 — grouped here with the AI settings it drives.
+
+AI_OLLAMA_URL = os.environ.get("AI_OLLAMA_URL", "http://127.0.0.1:11434")
+AI_OLLAMA_MODEL = os.environ.get("AI_OLLAMA_MODEL", "llama3.1:8b")
+# Hard ceiling on how long a single provider call can block a
+# request. Ollama on CPU can be slow for the 8B model — 120 s covers
+# the long tail without us keeping a worker thread forever.
+AI_PROVIDER_TIMEOUT_SECONDS = int(
+    os.environ.get("AI_PROVIDER_TIMEOUT_SECONDS", "120")
+)

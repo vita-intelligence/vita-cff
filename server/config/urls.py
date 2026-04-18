@@ -31,4 +31,5 @@ urlpatterns = [
             namespace="product_validation",
         ),
     ),
+    path("api/", include("apps.ai.api.urls", namespace="ai")),
 ]
