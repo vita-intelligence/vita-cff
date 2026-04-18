@@ -8,7 +8,6 @@ import {
 } from "@/lib/auth/server";
 
 import { CreateOrganizationCard } from "./create-organization-card";
-import { InviteMemberCard } from "./invite-member-card";
 import { OrganizationCard } from "./organization-card";
 import { ProfileCard } from "./profile-card";
 
@@ -35,7 +34,6 @@ export default async function HomePage({
   const organizations = (await getUserOrganizationsServer()) ?? [];
   const primaryOrg = organizations[0];
   const hasOrg = Boolean(primaryOrg);
-  const canInvite = Boolean(primaryOrg?.is_owner);
 
   const tCommon = await getTranslations("common");
   const tOrgs = await getTranslations("organizations");
@@ -72,12 +70,6 @@ export default async function HomePage({
             <CreateOrganizationCard />
           )}
         </section>
-
-        {canInvite ? (
-          <section className="mt-4 md:mt-6">
-            <InviteMemberCard orgId={primaryOrg!.id} />
-          </section>
-        ) : null}
 
         <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>
