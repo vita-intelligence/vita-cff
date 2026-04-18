@@ -91,7 +91,7 @@ export function DynamicField({
       const checked = value === true;
       return (
         <div className="flex flex-col gap-1.5">
-          <label className="flex items-center gap-3 text-xs font-bold tracking-widest uppercase text-ink-700">
+          <label className="inline-flex cursor-pointer items-center gap-2 text-sm font-medium text-ink-700">
             <input
               type="checkbox"
               name={fieldName}
@@ -100,7 +100,7 @@ export function DynamicField({
                 onChange(event.target.checked)
               }
               onBlur={onBlur}
-              className="h-5 w-5 cursor-pointer appearance-none border-2 border-ink-1000 bg-ink-0 checked:border-ink-1000 checked:bg-ink-1000 focus:outline-none"
+              className="h-4 w-4 cursor-pointer rounded accent-orange-500"
             />
             {label}
           </label>
@@ -112,13 +112,12 @@ export function DynamicField({
     }
 
     case "single_select": {
-      const currentValue =
-        typeof value === "string" ? value : "";
+      const currentValue = typeof value === "string" ? value : "";
       return (
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor={fieldName}
-            className="text-xs font-bold tracking-widest uppercase text-ink-700"
+            className="text-xs font-medium text-ink-700"
           >
             {label}
           </label>
@@ -130,7 +129,7 @@ export function DynamicField({
               onChange(event.target.value === "" ? null : event.target.value)
             }
             onBlur={onBlur}
-            className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard"
+            className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           >
             <option value="">—</option>
             {definition.options.map((opt) => (
@@ -161,25 +160,30 @@ export function DynamicField({
       };
       return (
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-bold tracking-widest uppercase text-ink-700">
-            {label}
-          </span>
-          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
-            {definition.options.map((opt) => (
-              <label
-                key={opt.value}
-                className="flex cursor-pointer items-center gap-2 border-2 border-ink-1000 bg-ink-0 px-3 py-2 text-sm text-ink-1000 hover:bg-ink-100"
-              >
-                <input
-                  type="checkbox"
-                  checked={selected.has(opt.value)}
-                  onChange={() => toggle(opt.value)}
-                  onBlur={onBlur}
-                  className="h-4 w-4 appearance-none border-2 border-ink-1000 bg-ink-0 checked:bg-ink-1000"
-                />
-                <span className="font-mono text-xs">{opt.label}</span>
-              </label>
-            ))}
+          <span className="text-xs font-medium text-ink-700">{label}</span>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {definition.options.map((opt) => {
+              const isOn = selected.has(opt.value);
+              return (
+                <label
+                  key={opt.value}
+                  className={
+                    isOn
+                      ? "flex cursor-pointer items-center gap-2 rounded-lg bg-orange-50 px-3 py-2 text-sm text-orange-800 ring-1 ring-inset ring-orange-200"
+                      : "flex cursor-pointer items-center gap-2 rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={isOn}
+                    onChange={() => toggle(opt.value)}
+                    onBlur={onBlur}
+                    className="h-4 w-4 rounded accent-orange-500"
+                  />
+                  <span>{opt.label}</span>
+                </label>
+              );
+            })}
           </div>
           {errorMessage ? (
             <p className="text-xs font-medium text-danger">{errorMessage}</p>

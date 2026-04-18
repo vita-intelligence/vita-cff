@@ -3,7 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
-import { Link, redirect } from "@/i18n/navigation";
+import { redirect } from "@/i18n/navigation";
 import {
   getAttributeDefinitionsServer,
   getCataloguesServer,
@@ -76,10 +76,10 @@ export default async function CatalogueFieldsPage({
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
-      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-6 py-8 md:px-10 md:py-12">
+      <div className="mx-auto flex min-h-dvh max-w-6xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} active="catalogues" />
 
-        <div className="mt-10 md:mt-12">
+        <div className="mt-8 md:mt-10">
           <Breadcrumbs
             items={[
               { label: tNav("main.dashboard"), href: "/home" },
@@ -103,7 +103,7 @@ export default async function CatalogueFieldsPage({
           initialDefinitions={definitions}
         />
 
-        <footer className="mt-auto flex items-center justify-between border-t-2 border-ink-1000 pt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>
           <span>{tCommon("brand")}</span>
         </footer>

@@ -2,6 +2,7 @@
 
 import { AlertDialog, Button } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Archive, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -202,112 +203,111 @@ export function EditItemForm({
 
   return (
     <form onSubmit={onSubmit} className="flex flex-col gap-6" noValidate>
-      <Controller
-        control={control}
-        name="name"
-        render={({ field }) => (
-          <FormField
-            {...field}
-            label={tItems("fields.name")}
-            placeholder={tItems("placeholders.name")}
-            errorMessage={fieldError(errors.name?.message)}
+      <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <div className="flex flex-col gap-4">
+          <Controller
+            control={control}
+            name="name"
+            render={({ field }) => (
+              <FormField
+                {...field}
+                label={tItems("fields.name")}
+                placeholder={tItems("placeholders.name")}
+                errorMessage={fieldError(errors.name?.message)}
+              />
+            )}
           />
-        )}
-      />
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-        <Controller
-          control={control}
-          name="internal_code"
-          render={({ field }) => (
-            <FormField
-              {...field}
-              value={field.value ?? ""}
-              label={tItems("fields.internal_code")}
-              placeholder={tItems("placeholders.internal_code")}
-              errorMessage={fieldError(errors.internal_code?.message)}
-            />
-          )}
-        />
-        <Controller
-          control={control}
-          name="unit"
-          render={({ field }) => (
-            <FormField
-              {...field}
-              value={field.value ?? ""}
-              label={tItems("fields.unit")}
-              placeholder={tItems("placeholders.unit")}
-              errorMessage={fieldError(errors.unit?.message)}
-            />
-          )}
-        />
-      </div>
-      <Controller
-        control={control}
-        name="base_price"
-        render={({ field }) => (
-          <FormField
-            name={field.name}
-            value={field.value ?? ""}
-            onChange={(value) => field.onChange(value === "" ? null : value)}
-            onBlur={field.onBlur}
-            label={tItems("fields.base_price")}
-            placeholder={tItems("placeholders.base_price")}
-            errorMessage={fieldError(errors.base_price?.message)}
-          />
-        )}
-      />
-
-      {activeDefinitions.length > 0 ? (
-        <div className="flex flex-col gap-6 border-t-2 border-ink-200 pt-6">
-          {activeDefinitions.map((defn) => (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <Controller
-              key={defn.id}
               control={control}
-              name={`attributes.${defn.key}` as never}
-              render={({ field, fieldState }) => (
-                <DynamicField
-                  definition={defn}
-                  value={field.value as never}
-                  onChange={(v) => field.onChange(v)}
-                  onBlur={field.onBlur}
-                  errorMessage={fieldError(fieldState.error?.message)}
+              name="internal_code"
+              render={({ field }) => (
+                <FormField
+                  {...field}
+                  value={field.value ?? ""}
+                  label={tItems("fields.internal_code")}
+                  placeholder={tItems("placeholders.internal_code")}
+                  errorMessage={fieldError(errors.internal_code?.message)}
                 />
               )}
             />
-          ))}
+            <Controller
+              control={control}
+              name="unit"
+              render={({ field }) => (
+                <FormField
+                  {...field}
+                  value={field.value ?? ""}
+                  label={tItems("fields.unit")}
+                  placeholder={tItems("placeholders.unit")}
+                  errorMessage={fieldError(errors.unit?.message)}
+                />
+              )}
+            />
+          </div>
+          <Controller
+            control={control}
+            name="base_price"
+            render={({ field }) => (
+              <FormField
+                name={field.name}
+                value={field.value ?? ""}
+                onChange={(value) =>
+                  field.onChange(value === "" ? null : value)
+                }
+                onBlur={field.onBlur}
+                label={tItems("fields.base_price")}
+                placeholder={tItems("placeholders.base_price")}
+                errorMessage={fieldError(errors.base_price?.message)}
+              />
+            )}
+          />
+        </div>
+      </div>
+
+      {activeDefinitions.length > 0 ? (
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+          <div className="flex flex-col gap-4">
+            {activeDefinitions.map((defn) => (
+              <Controller
+                key={defn.id}
+                control={control}
+                name={`attributes.${defn.key}` as never}
+                render={({ field, fieldState }) => (
+                  <DynamicField
+                    definition={defn}
+                    value={field.value as never}
+                    onChange={(v) => field.onChange(v)}
+                    onBlur={field.onBlur}
+                    errorMessage={fieldError(fieldState.error?.message)}
+                  />
+                )}
+              />
+            ))}
+          </div>
         </div>
       ) : null}
 
       {errors.root?.message ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {errors.root.message}
         </p>
       ) : null}
 
-      <div className="mt-2 flex flex-wrap items-center gap-3">
-        <Button
-          type="submit"
-          variant="primary"
-          size="lg"
-          className="rounded-none font-bold tracking-wider uppercase"
-          isDisabled={!isDirty || isBusy}
-        >
-          {tItems("detail.save")}
-        </Button>
-
+      <div className="sticky bottom-4 flex flex-wrap items-center justify-end gap-2 rounded-2xl bg-ink-0 px-4 py-3 shadow-md ring-1 ring-ink-200">
         {canAdmin && !item.is_archived ? (
           <Button
             type="button"
             variant="outline"
             size="lg"
-            className="rounded-none border-2 font-bold tracking-wider uppercase"
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
             isDisabled={isBusy}
             onClick={onArchive}
           >
+            <Archive className="h-4 w-4" />
             {tItems("detail.archive")}
           </Button>
         ) : null}
@@ -318,10 +318,11 @@ export function EditItemForm({
               type="button"
               variant="outline"
               size="lg"
-              className="rounded-none border-2 font-bold tracking-wider uppercase"
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
               isDisabled={isBusy}
               onClick={onRestore}
             >
+              <RotateCcw className="h-4 w-4" />
               {tItems("detail.restore")}
             </Button>
 
@@ -334,31 +335,32 @@ export function EditItemForm({
                   type="button"
                   variant="danger"
                   size="lg"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-danger/10 px-3 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20 hover:bg-danger/15"
                   isDisabled={isBusy}
                 >
+                  <Trash2 className="h-4 w-4" />
                   {tItems("detail.delete_permanently")}
                 </Button>
               </AlertDialog.Trigger>
               <AlertDialog.Backdrop>
                 <AlertDialog.Container size="md">
-                  <AlertDialog.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-                    <AlertDialog.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-                      <AlertDialog.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+                  <AlertDialog.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+                    <AlertDialog.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                      <AlertDialog.Heading className="text-base font-semibold text-ink-1000">
                         {tItems("delete_confirm.title")}
                       </AlertDialog.Heading>
                     </AlertDialog.Header>
                     <AlertDialog.Body className="px-6 py-6">
-                      <p className="text-sm text-ink-700">
+                      <p className="text-sm text-ink-500">
                         {tItems("delete_confirm.body", { name: item.name })}
                       </p>
                     </AlertDialog.Body>
-                    <AlertDialog.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+                    <AlertDialog.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
                       <Button
                         type="button"
                         variant="outline"
                         size="md"
-                        className="rounded-none border-2 font-bold tracking-wider uppercase"
+                        className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                         onClick={() => setIsConfirmOpen(false)}
                         isDisabled={hardDeleteMutation.isPending}
                       >
@@ -368,7 +370,7 @@ export function EditItemForm({
                         type="button"
                         variant="danger"
                         size="md"
-                        className="rounded-none font-bold tracking-wider uppercase"
+                        className="h-10 rounded-lg bg-danger px-4 text-sm font-medium text-ink-0 hover:bg-danger/90"
                         onClick={onConfirmDelete}
                         isDisabled={hardDeleteMutation.isPending}
                       >
@@ -381,6 +383,17 @@ export function EditItemForm({
             </AlertDialog>
           </>
         ) : null}
+
+        <Button
+          type="submit"
+          variant="primary"
+          size="lg"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+          isDisabled={!isDirty || isBusy}
+        >
+          <Save className="h-4 w-4" />
+          {tItems("detail.save")}
+        </Button>
       </div>
     </form>
   );

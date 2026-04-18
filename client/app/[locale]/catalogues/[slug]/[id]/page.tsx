@@ -1,8 +1,10 @@
+import { ArrowLeft } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
+import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
 import {
   getAttributeDefinitionsServer,
@@ -82,10 +84,10 @@ export default async function CatalogueItemDetailPage({
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
-      <div className="mx-auto flex min-h-dvh max-w-4xl flex-col px-6 py-8 md:px-10 md:py-12">
+      <div className="mx-auto flex min-h-dvh max-w-4xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={currentUser} active="catalogues" />
 
-        <section className="mt-12 md:mt-16">
+        <section className="mt-8 md:mt-10">
           <Breadcrumbs
             items={[
               { label: tNav("main.dashboard"), href: "/home" },
@@ -94,22 +96,33 @@ export default async function CatalogueItemDetailPage({
               { label: item.name },
             ]}
           />
-          <Link
-            href={`/catalogues/${slug}`}
-            className="mt-4 inline-block font-mono text-[11px] tracking-widest uppercase text-ink-500 hover:text-ink-1000"
-          >
-            ← {tItems("detail.back")}
-          </Link>
-          <h1 className="mt-4 text-4xl font-black tracking-tight uppercase md:text-6xl">
-            {item.name}
-          </h1>
-          <p className="mt-3 font-mono text-xs text-ink-600">
-            {item.internal_code ? `${item.internal_code} · ` : ""}
-            {item.unit || "—"}
-          </p>
         </section>
 
-        <section className="mt-10 md:mt-12">
+        <section className="mt-6 flex flex-wrap items-start justify-between gap-3">
+          <div className="flex flex-col">
+            <Link
+              href={`/catalogues/${slug}`}
+              className="inline-flex items-center gap-1 text-xs font-medium text-ink-500 hover:text-ink-1000"
+            >
+              <ArrowLeft className="h-3.5 w-3.5" />
+              {tItems("detail.back")}
+            </Link>
+            <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
+              {item.name}
+            </h1>
+            <p className="mt-1 text-sm text-ink-500">
+              {item.internal_code ? `${item.internal_code} · ` : ""}
+              {item.unit || "—"}
+            </p>
+          </div>
+          {item.is_archived ? (
+            <Chip tone="neutral">{tItems("status.archived")}</Chip>
+          ) : (
+            <Chip tone="success">{tItems("status.active")}</Chip>
+          )}
+        </section>
+
+        <section className="mt-6 md:mt-8">
           {canWrite ? (
             <EditItemForm
               orgId={primaryOrg.id}
@@ -119,8 +132,8 @@ export default async function CatalogueItemDetailPage({
               definitions={definitions}
             />
           ) : (
-            <div className="border-2 border-ink-1000 bg-ink-0 p-6">
-              <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+            <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+              <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tItems("columns.status")}
               </p>
               <p className="mt-2 text-sm text-ink-700">
@@ -132,7 +145,7 @@ export default async function CatalogueItemDetailPage({
           )}
         </section>
 
-        <footer className="mt-auto flex items-center justify-between border-t-2 border-ink-1000 pt-6 font-mono text-[10px] tracking-widest uppercase text-ink-500">
+        <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>
           <span>{tCommon("brand")}</span>
         </footer>

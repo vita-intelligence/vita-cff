@@ -2,6 +2,7 @@
 
 import { Button, Modal } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Archive, Pencil, Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -12,6 +13,7 @@ import {
   type SubmitHandler,
 } from "react-hook-form";
 
+import { Chip } from "@/components/ui/chip";
 import { FormField } from "@/components/ui/form-field";
 import { translateCode } from "@/lib/errors/translate";
 import {
@@ -71,15 +73,15 @@ export function FieldsManager({
 
   return (
     <div>
-      <div className="mt-10 flex items-start justify-between gap-6 md:mt-12">
-        <div>
-          <p className="font-mono text-[11px] tracking-widest uppercase text-ink-500">
-            {tAttrs("title").toUpperCase()}
+      <div className="mt-6 flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-col">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {tAttrs("title")}
           </p>
-          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase md:text-5xl">
+          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
             {tAttrs("title")}
           </h1>
-          <p className="mt-3 max-w-2xl text-sm text-ink-600">
+          <p className="mt-1 max-w-2xl text-sm text-ink-500">
             {tAttrs("subtitle")}
           </p>
         </div>
@@ -87,114 +89,125 @@ export function FieldsManager({
           type="button"
           variant="primary"
           size="md"
-          className="rounded-none font-bold tracking-wider uppercase"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
           onClick={() => setMode({ kind: "create" })}
         >
+          <Plus className="h-4 w-4" />
           {tAttrs("new_field")}
         </Button>
       </div>
 
-      <div className="mt-10 border-2 border-ink-1000 bg-ink-0">
+      <div className="mt-6 overflow-hidden rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
         {initialDefinitions.length === 0 ? (
-          <div className="flex flex-col items-start gap-2 p-8">
-            <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+          <div className="p-10 text-center">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
               {tAttrs("no_fields")}
             </p>
-            <p className="text-sm text-ink-600">
+            <p className="mt-2 text-sm text-ink-500">
               {tAttrs("no_fields_hint")}
             </p>
           </div>
         ) : (
-          <table className="w-full border-collapse">
-            <thead>
-              <tr className="border-b-2 border-ink-1000">
-                <Th>{tAttrs("columns.label")}</Th>
-                <Th>{tAttrs("columns.key")}</Th>
-                <Th>{tAttrs("columns.data_type")}</Th>
-                <Th>{tAttrs("columns.required")}</Th>
-                <Th>{tAttrs("columns.status")}</Th>
-                <Th align="right">{tAttrs("columns.actions")}</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {initialDefinitions.map((defn) => (
-                <tr
-                  key={defn.id}
-                  className="border-b border-ink-200 last:border-b-0"
-                >
-                  <Td>
-                    <span className="font-bold">{defn.label}</span>
-                  </Td>
-                  <Td>
-                    <code className="font-mono text-xs text-ink-600">
-                      {defn.key}
-                    </code>
-                  </Td>
-                  <Td>
-                    <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {dataTypeLabels[defn.data_type]}
-                    </span>
-                  </Td>
-                  <Td>
-                    {defn.required ? (
-                      <Badge variant="filled">
-                        {tAttrs("required_badge.yes")}
-                      </Badge>
-                    ) : (
-                      <Badge variant="outline">
-                        {tAttrs("required_badge.no")}
-                      </Badge>
-                    )}
-                  </Td>
-                  <Td>
-                    {defn.is_archived ? (
-                      <Badge variant="outline">
-                        {tAttrs("status.archived")}
-                      </Badge>
-                    ) : (
-                      <Badge variant="filled">
-                        {tAttrs("status.active")}
-                      </Badge>
-                    )}
-                  </Td>
-                  <Td align="right">
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="rounded-none border-2 font-bold tracking-wider uppercase"
-                        onClick={() =>
-                          setMode({ kind: "edit", definition: defn })
-                        }
-                      >
-                        {tAttrs("actions.edit")}
-                      </Button>
-                      {!defn.is_archived ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] border-collapse">
+              <thead className="bg-ink-50">
+                <tr>
+                  <Th>{tAttrs("columns.label")}</Th>
+                  <Th>{tAttrs("columns.key")}</Th>
+                  <Th>{tAttrs("columns.data_type")}</Th>
+                  <Th>{tAttrs("columns.required")}</Th>
+                  <Th>{tAttrs("columns.status")}</Th>
+                  <Th align="right">{tAttrs("columns.actions")}</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {initialDefinitions.map((defn, idx) => (
+                  <tr
+                    key={defn.id}
+                    className={
+                      idx < initialDefinitions.length - 1
+                        ? "border-b border-ink-100"
+                        : ""
+                    }
+                  >
+                    <Td>
+                      <span className="text-sm font-medium text-ink-1000">
+                        {defn.label}
+                      </span>
+                    </Td>
+                    <Td>
+                      <code className="font-mono text-xs text-ink-500">
+                        {defn.key}
+                      </code>
+                    </Td>
+                    <Td>
+                      <span className="text-xs text-ink-700">
+                        {dataTypeLabels[defn.data_type]}
+                      </span>
+                    </Td>
+                    <Td>
+                      {defn.required ? (
+                        <Chip tone="orange">
+                          {tAttrs("required_badge.yes")}
+                        </Chip>
+                      ) : (
+                        <Chip tone="neutral">
+                          {tAttrs("required_badge.no")}
+                        </Chip>
+                      )}
+                    </Td>
+                    <Td>
+                      {defn.is_archived ? (
+                        <Chip tone="neutral">
+                          {tAttrs("status.archived")}
+                        </Chip>
+                      ) : (
+                        <Chip tone="success">
+                          {tAttrs("status.active")}
+                        </Chip>
+                      )}
+                    </Td>
+                    <Td align="right">
+                      <div className="flex items-center justify-end gap-1.5">
                         <Button
                           type="button"
                           variant="outline"
                           size="sm"
-                          className="rounded-none border-2 font-bold tracking-wider uppercase"
-                          isDisabled={archiveMutation.isPending}
-                          onClick={async () => {
-                            try {
-                              await archiveMutation.mutateAsync(defn.id);
-                              router.refresh();
-                            } catch {
-                              /* ignored */
-                            }
-                          }}
+                          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                          onClick={() =>
+                            setMode({ kind: "edit", definition: defn })
+                          }
                         >
-                          {tAttrs("actions.archive")}
+                          <Pencil className="h-3.5 w-3.5" />
+                          {tAttrs("actions.edit")}
                         </Button>
-                      ) : null}
-                    </div>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                        {!defn.is_archived ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                            isDisabled={archiveMutation.isPending}
+                            onClick={async () => {
+                              try {
+                                await archiveMutation.mutateAsync(defn.id);
+                                router.refresh();
+                              } catch {
+                                /* ignored */
+                              }
+                            }}
+                          >
+                            <Archive className="h-3.5 w-3.5" />
+                            {tAttrs("actions.archive")}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
 
@@ -227,7 +240,7 @@ function Th({
 }) {
   return (
     <th
-      className={`px-4 py-3 font-mono text-[10px] tracking-widest uppercase text-ink-700 ${
+      className={`px-4 py-3 text-xs font-medium uppercase tracking-wide text-ink-500 ${
         align === "right" ? "text-right" : "text-left"
       }`}
     >
@@ -244,31 +257,11 @@ function Td({
   align?: "left" | "right";
 }) {
   return (
-    <td className={`px-4 py-3 ${align === "right" ? "text-right" : ""}`}>
-      {children}
-    </td>
-  );
-}
-
-function Badge({
-  children,
-  variant,
-}: {
-  children: React.ReactNode;
-  variant: "filled" | "outline";
-}) {
-  const base =
-    "inline-flex items-center border-2 border-ink-1000 px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase";
-  return (
-    <span
-      className={
-        variant === "filled"
-          ? `${base} bg-ink-1000 text-ink-0`
-          : `${base} bg-ink-0 text-ink-700`
-      }
+    <td
+      className={`px-4 py-3 align-middle ${align === "right" ? "text-right" : ""}`}
     >
       {children}
-    </span>
+    </td>
   );
 }
 
@@ -391,9 +384,9 @@ function FieldFormModal({
     <Modal isOpen onOpenChange={(open) => (!open ? onClose() : undefined)}>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-              <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {isEdit
                   ? tAttrs("form.title_edit")
                   : tAttrs("form.title_create")}
@@ -403,7 +396,7 @@ function FieldFormModal({
               <form
                 id="field-form"
                 onSubmit={handleSubmit(onSubmit)}
-                className="flex flex-col gap-5"
+                className="flex flex-col gap-4"
                 noValidate
               >
                 <Controller
@@ -435,7 +428,7 @@ function FieldFormModal({
                 <div className="flex flex-col gap-1.5">
                   <label
                     htmlFor="data_type"
-                    className="text-xs font-bold tracking-widest uppercase text-ink-700"
+                    className="text-xs font-medium text-ink-700"
                   >
                     {tAttrs("form.data_type")}
                   </label>
@@ -455,7 +448,7 @@ function FieldFormModal({
                         }}
                         onBlur={field.onBlur}
                         disabled={isEdit}
-                        className="w-full cursor-pointer border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none focus:shadow-hard disabled:cursor-not-allowed disabled:bg-ink-100"
+                        className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-500"
                       >
                         {DATA_TYPES.map((dt) => (
                           <option key={dt} value={dt}>
@@ -475,13 +468,13 @@ function FieldFormModal({
                     control={control}
                     name="required"
                     render={({ field }) => (
-                      <label className="flex items-center gap-3 text-xs font-bold tracking-widest uppercase text-ink-700">
+                      <label className="inline-flex items-center gap-2 text-sm font-medium text-ink-700">
                         <input
                           type="checkbox"
                           checked={field.value}
                           onChange={(e) => field.onChange(e.target.checked)}
                           onBlur={field.onBlur}
-                          className="h-5 w-5 cursor-pointer appearance-none border-2 border-ink-1000 bg-ink-0 checked:bg-ink-1000"
+                          className="h-4 w-4 cursor-pointer rounded accent-orange-500"
                         />
                         {tAttrs("form.required")}
                       </label>
@@ -493,18 +486,19 @@ function FieldFormModal({
                 </div>
 
                 {selectActive ? (
-                  <div className="flex flex-col gap-3 border-t-2 border-ink-200 pt-5">
+                  <div className="flex flex-col gap-3 border-t border-ink-200 pt-4">
                     <div className="flex items-center justify-between">
-                      <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
                         {tAttrs("form.options")}
                       </span>
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="rounded-none border-2 font-bold tracking-wider uppercase"
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                         onClick={() => append({ value: "", label: "" })}
                       >
+                        <Plus className="h-3.5 w-3.5" />
                         {tAttrs("form.add_option")}
                       </Button>
                     </div>
@@ -516,7 +510,7 @@ function FieldFormModal({
                     {optionFields.map((optField, index) => (
                       <div
                         key={optField.id}
-                        className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_1fr_auto]"
+                        className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end"
                       >
                         <Controller
                           control={control}
@@ -544,15 +538,19 @@ function FieldFormModal({
                             />
                           )}
                         />
-                        <div className="flex items-end">
+                        <div className="flex justify-end sm:justify-start">
                           <Button
                             type="button"
                             variant="outline"
                             size="md"
-                            className="rounded-none border-2 font-bold tracking-wider uppercase"
+                            aria-label={tAttrs("form.remove_option")}
+                            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20 hover:bg-danger/10"
                             onClick={() => remove(index)}
                           >
-                            {tAttrs("form.remove_option")}
+                            <Trash2 className="h-4 w-4" />
+                            <span className="sm:hidden">
+                              {tAttrs("form.remove_option")}
+                            </span>
                           </Button>
                         </div>
                       </div>
@@ -568,19 +566,19 @@ function FieldFormModal({
                 {errors.root?.message ? (
                   <p
                     role="alert"
-                    className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                    className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                   >
                     {errors.root.message}
                   </p>
                 ) : null}
               </form>
             </Modal.Body>
-            <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+            <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
               <Button
                 type="button"
                 variant="outline"
                 size="md"
-                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 onClick={onClose}
               >
                 {tAttrs("form.cancel")}
@@ -590,7 +588,7 @@ function FieldFormModal({
                 form="field-form"
                 variant="primary"
                 size="md"
-                className="rounded-none font-bold tracking-wider uppercase"
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
                 isDisabled={
                   isSubmitting ||
                   createMutation.isPending ||
