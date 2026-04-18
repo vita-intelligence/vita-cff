@@ -3,6 +3,7 @@
 import { Button } from "@heroui/react";
 import {
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
   Download,
   Send,
@@ -12,7 +13,7 @@ import {
 import { useTranslations } from "next-intl";
 import { Fragment, useState, type ReactNode } from "react";
 
-import { useRouter } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import {
@@ -119,7 +120,10 @@ export function SpecificationSheetView({
     setErrorMessage(null);
     try {
       await deleteMutation.mutateAsync(sheet.id);
-      router.push("/specifications");
+      // Specs belong to projects, so bounce back to the parent
+      // project's Spec sheets tab rather than the (now removed)
+      // global list.
+      router.push(`/formulations/${rendered.formulation.id}/spec-sheets`);
     } catch (err) {
       setErrorMessage(extractErrorMessage(err, tErrors));
     }
@@ -129,7 +133,18 @@ export function SpecificationSheetView({
     transitionMutation.isPending || deleteMutation.isPending;
 
   return (
-    <div className="mt-8 flex flex-col gap-6">
+    <div className="mt-6 flex flex-col gap-5 md:mt-8">
+      {/* ------------------------------------------------------------ */}
+      {/* Back-link to the parent project — hidden when printing         */}
+      {/* ------------------------------------------------------------ */}
+      <Link
+        href={`/formulations/${rendered.formulation.id}/spec-sheets`}
+        className="inline-flex w-fit items-center gap-1 text-xs font-medium text-ink-500 transition-colors hover:text-ink-1000 print:hidden"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        {rendered.formulation.name}
+      </Link>
+
       {/* ------------------------------------------------------------ */}
       {/* Top action bar — hidden when printing                         */}
       {/* ------------------------------------------------------------ */}

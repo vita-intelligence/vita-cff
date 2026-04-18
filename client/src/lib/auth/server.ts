@@ -211,24 +211,6 @@ export async function getProjectValidationsServer(
   return serverFetch<ProductValidationDto[]>(url);
 }
 
-/**
- * Fetch the first page of specification sheets for a Server
- * Component. Hydrates the infinite-scroll list so the initial paint
- * already has data.
- */
-export async function getSpecificationsFirstPageServer(
-  orgId: string,
-  options: { pageSize?: number } = {},
-): Promise<PaginatedSpecificationsDto | null> {
-  const params = new URLSearchParams();
-  if (options.pageSize) params.set("page_size", String(options.pageSize));
-  const query = params.toString();
-  const url = `${specificationsEndpoints.list(orgId)}${
-    query ? `?${query}` : ""
-  }`;
-  return serverFetch<PaginatedSpecificationsDto>(url);
-}
-
 export async function getSpecificationServer(
   orgId: string,
   sheetId: string,

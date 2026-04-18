@@ -7,8 +7,7 @@ import type { UserDto } from "@/services/accounts/types";
 export type ProtectedNavKey =
   | "dashboard"
   | "catalogues"
-  | "formulations"
-  | "specifications";
+  | "formulations";
 
 interface ProtectedHeaderProps {
   user: UserDto;
@@ -39,6 +38,9 @@ export async function ProtectedHeader({
     ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
     "··";
 
+  // Specifications intentionally omitted — every spec sheet belongs
+  // to a project, so it's surfaced inside the project workspace's
+  // "Spec sheets" tab rather than as a peer top-level destination.
   const navItems: readonly HeaderNavItem[] = [
     { key: "dashboard", href: "/home", label: tNav("main.dashboard") },
     {
@@ -50,11 +52,6 @@ export async function ProtectedHeader({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
-    },
-    {
-      key: "specifications",
-      href: "/specifications",
-      label: tNav("main.specifications"),
     },
   ];
 

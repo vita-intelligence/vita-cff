@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
-import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { redirect } from "@/i18n/navigation";
 import {
   getCurrentUserServer,
@@ -48,7 +47,7 @@ export default async function SpecificationDetailPage({
     primaryOrg.permissions,
   );
   if (level === "none") {
-    redirect({ href: "/specifications", locale });
+    redirect({ href: "/formulations", locale });
   }
 
   const [sheet, rendered] = await Promise.all([
@@ -63,26 +62,12 @@ export default async function SpecificationDetailPage({
   const canAdmin = level === "admin";
 
   const tCommon = await getTranslations("common");
-  const tNav = await getTranslations("navigation");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-[1400px] flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12 print:max-w-none print:p-6">
         <div className="print:hidden">
-          <ProtectedHeader user={currentUser} active="specifications" />
-
-          <section className="mt-8 md:mt-10">
-            <Breadcrumbs
-              items={[
-                { label: tNav("main.dashboard"), href: "/home" },
-                {
-                  label: tNav("main.specifications"),
-                  href: "/specifications",
-                },
-                { label: sheet.code || rendered.formulation.name },
-              ]}
-            />
-          </section>
+          <ProtectedHeader user={currentUser} active="formulations" />
         </div>
 
         <SpecificationSheetView
