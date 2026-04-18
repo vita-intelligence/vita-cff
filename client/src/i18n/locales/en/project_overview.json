@@ -42,5 +42,24 @@
   "activity": {
     "title": "Recent activity",
     "empty": "No activity yet."
+  },
+  "rd_status": {
+    "draft": "Draft",
+    "in_review": "In review",
+    "approved": "Approved",
+    "archived": "Archived"
+  },
+  "actions": {
+    "more_actions": "More actions",
+    "rd_status": "R&D status",
+    "delete_project": "Delete project"
+  },
+  "delete": {
+    "confirm_title": "Delete this project?",
+    "confirm_body": "This removes the formulation, its versions, lines, trial batches, QC validations, and spec sheets. The action cannot be undone.",
+    "confirm_confirm": "Delete permanently",
+    "cancel": "Cancel",
+    "deleting": "Deleting…",
+    "generic_error": "Couldn't delete the project. Please try again."
   }
 }

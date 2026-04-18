@@ -31,7 +31,12 @@ export default async function ProjectSpecSheetsPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user} active="formulations" />
 
-        <ProjectShell overview={overview} activeTab="spec-sheets">
+        <ProjectShell
+          organization={organization}
+          overview={overview}
+          rdStatus={formulation.status}
+          activeTab="spec-sheets"
+        >
           {sheetsPage ? (
             <SpecSheetsList
               orgId={organization.id}

@@ -1,14 +1,10 @@
 "use client";
 
 import {
-  AlertTriangle,
   ArrowLeft,
-  CheckCircle2,
   FileText,
   FlaskConical,
   LayoutDashboard,
-  PlayCircle,
-  Plus,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -17,9 +13,12 @@ import type { ReactNode } from "react";
 
 import { Link, usePathname } from "@/i18n/navigation";
 import type {
+  FormulationStatus,
   ProjectOverviewDto,
-  ProjectStatus,
 } from "@/services/formulations";
+import type { OrganizationDto } from "@/services/organizations/types";
+
+import { ProjectHeaderActions } from "./project-header-actions";
 
 
 export type ProjectTabKey =
@@ -41,15 +40,21 @@ export type ProjectTabKey =
  * stay deep-linkable without any client-side route listening.
  */
 export function ProjectShell({
+  organization,
   overview,
+  rdStatus,
   activeTab,
   children,
 }: {
+  organization: OrganizationDto;
   overview: ProjectOverviewDto;
+  /** ``Formulation.status`` — surfaced separately because the
+   *  overview payload focuses on ``project_status``. Used by the
+   *  More-actions menu to show which R&D status is active. */
+  rdStatus: FormulationStatus;
   activeTab: ProjectTabKey;
   children: ReactNode;
 }) {
-  const tProject = useTranslations("project_overview");
   const tTabs = useTranslations("project_tabs");
   const tNav = useTranslations("navigation");
 
@@ -104,7 +109,11 @@ export function ProjectShell({
         <ArrowLeft className="h-3.5 w-3.5" />
         {tNav("main.formulations")}
       </Link>
-      <CompactHeader overview={overview} tProject={tProject} />
+      <CompactHeader
+        organization={organization}
+        overview={overview}
+        rdStatus={rdStatus}
+      />
       <TabBar tabs={tabs} activeTab={activeTab} />
       <div>{children}</div>
     </div>
@@ -113,11 +122,13 @@ export function ProjectShell({
 
 
 function CompactHeader({
+  organization,
   overview,
-  tProject,
+  rdStatus,
 }: {
+  organization: OrganizationDto;
   overview: ProjectOverviewDto;
-  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+  rdStatus: FormulationStatus;
 }) {
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
@@ -139,52 +150,13 @@ function CompactHeader({
           </p>
         ) : null}
       </div>
-      <StatusPill status={overview.project_status} tProject={tProject} />
+      <ProjectHeaderActions
+        organization={organization}
+        formulationId={overview.id}
+        projectStatus={overview.project_status}
+        rdStatus={rdStatus}
+      />
     </header>
-  );
-}
-
-
-function StatusPill({
-  status,
-  tProject,
-}: {
-  status: ProjectStatus;
-  tProject: ReturnType<typeof useTranslations<"project_overview">>;
-}) {
-  const styles: Record<
-    ProjectStatus,
-    { classes: string; icon: ReactNode }
-  > = {
-    concept: {
-      classes: "bg-ink-100 text-ink-700 ring-ink-200",
-      icon: <Plus className="h-3.5 w-3.5" />,
-    },
-    in_development: {
-      classes: "bg-info/10 text-info ring-info/20",
-      icon: <FlaskConical className="h-3.5 w-3.5" />,
-    },
-    pilot: {
-      classes: "bg-orange-50 text-orange-700 ring-orange-200",
-      icon: <PlayCircle className="h-3.5 w-3.5" />,
-    },
-    approved: {
-      classes: "bg-success/10 text-success ring-success/20",
-      icon: <CheckCircle2 className="h-3.5 w-3.5" />,
-    },
-    discontinued: {
-      classes: "bg-danger/10 text-danger ring-danger/20",
-      icon: <AlertTriangle className="h-3.5 w-3.5" />,
-    },
-  };
-  const s = styles[status];
-  return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${s.classes}`}
-    >
-      {s.icon}
-      {tProject(`status.${status}` as "status.concept")}
-    </span>
   );
 }
 

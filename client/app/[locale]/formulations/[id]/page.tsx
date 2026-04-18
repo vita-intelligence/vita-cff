@@ -27,7 +27,12 @@ export default async function ProjectOverviewPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user} active="formulations" />
 
-        <ProjectShell overview={overview} activeTab="overview">
+        <ProjectShell
+          organization={organization}
+          overview={overview}
+          rdStatus={formulation.status}
+          activeTab="overview"
+        >
           <ProjectOverview
             orgId={organization.id}
             formulationId={formulation.id}

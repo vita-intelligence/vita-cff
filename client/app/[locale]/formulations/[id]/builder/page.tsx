@@ -25,7 +25,12 @@ export default async function ProjectBuilderPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user} active="formulations" />
 
-        <ProjectShell overview={overview} activeTab="builder">
+        <ProjectShell
+          organization={organization}
+          overview={overview}
+          rdStatus={formulation.status}
+          activeTab="builder"
+        >
           <FormulationBuilder
             orgId={organization.id}
             initialFormulation={formulation}
