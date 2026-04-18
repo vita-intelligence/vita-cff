@@ -128,26 +128,79 @@ class TestMatchIngredients:
         """Below the auto-attach threshold the UI is about to show a
         chooser, so we do not pre-compute a purity-adjusted mg that
         would have to be recalculated as soon as the user picks a
-        different item."""
+        different item. The case we're exercising is a partial token
+        overlap — enough to surface a candidate, not enough to land
+        with full confidence."""
 
         org = OrganizationFactory()
         _seed(
             org,
             {
-                "name": "Spirulina Powder",
+                "name": "Green Tea Leaf Powder",
                 "attributes": {"purity": "1.0"},
             },
         )
         results = match_ingredients(
             organization=org,
-            names_with_claims=[("Ashwagandha Extract", 300.0)],
+            # Shares only the "green" token — partial overlap surfaces
+            # the candidate but stays well below auto-attach.
+            names_with_claims=[("Green Coffee Bean", 300.0)],
         )
-        # Top pick still returns *something* so the UI can show a
-        # chooser — the confidence number is what tells the frontend
-        # not to auto-attach.
         assert results[0].matched_item_id is not None
         assert results[0].confidence < HIGH_CONFIDENCE_THRESHOLD
         assert results[0].mg_per_serving is None
+
+    def test_unrelated_long_names_do_not_fuzzy_match(self) -> None:
+        """SequenceMatcher routinely produces 0.3-0.4 ratios for two
+        unrelated long strings that happen to share common letters.
+        Without a gate, hallucinated sci-fi names ("Advanced NLP
+        Engine", "Cognitive Fusion Crystal") ride past the relevance
+        floor on sequence similarity alone. The scoring must treat
+        zero-token-overlap pairs as unrelated unless the sequence
+        match is near-identical (typo territory)."""
+
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {"name": "Microcrystalline Cellulose"},
+            {"name": "Caffeine Anhydrous"},
+            {"name": "Ascorbic Acid"},
+        )
+        # No meaningful token overlap with any catalogue entry.
+        for hallucination in (
+            "Advanced NLP Engine",
+            "Cognitive Fusion Crystal",
+            "Neural Synchronization Nano-Particles",
+        ):
+            [match] = match_ingredients(
+                organization=org,
+                names_with_claims=[(hallucination, 100.0)],
+            )
+            assert match.confidence == 0.0, (
+                f"hallucination {hallucination!r} scored "
+                f"{match.confidence}, would survive relevance floor"
+            )
+            assert match.matched_item_id is None
+
+    def test_typo_still_matches_via_sequence(self) -> None:
+        """Sequence-only matching is kept alive for typos — a single
+        misspelled token is a canonical fuzzy-match use case and
+        shouldn't be punished just because no token overlaps exactly."""
+
+        org = OrganizationFactory()
+        _seed(
+            org,
+            {
+                "name": "Caffeine Anhydrous",
+                "attributes": {"purity": "0.99"},
+            },
+        )
+        [match] = match_ingredients(
+            organization=org,
+            names_with_claims=[("Caffiene Anhydrous", 100.0)],
+        )
+        assert match.matched_item_id is not None
+        assert match.confidence >= 0.85
 
     def test_alternatives_are_ranked_and_capped(self) -> None:
         org = OrganizationFactory()

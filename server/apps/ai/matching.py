@@ -379,6 +379,16 @@ def _empty_match() -> IngredientMatch:
     )
 
 
+#: Minimum SequenceMatcher ratio at which we trust a sequence-only
+#: match (no shared tokens). Low scores lie: two unrelated 30-char
+#: strings share enough letters that SequenceMatcher happily returns
+#: 0.3+, which is what let "Neural Synchronization Nano-Particles"
+#: land as a Review chip. This gate keeps sequence-only matches
+#: restricted to typos and whitespace drift, where it actually
+#: works.
+_SEQUENCE_ONLY_FLOOR = 0.85
+
+
 def _score(
     *,
     query_norm: str,
@@ -386,13 +396,25 @@ def _score(
     cand_norm: str,
     cand_tokens: frozenset[str],
 ) -> float:
-    """Hybrid similarity: max(token-set Jaccard, sequence ratio).
+    """Hybrid similarity: token-set Jaccard gated by sequence ratio.
 
-    Token-set handles word-order and filler-word noise; sequence ratio
-    catches small typos and prefix/suffix differences. Using ``max``
-    keeps either primitive from dragging the other down — an exact
-    substring match with extra filler words should score highly even
-    when the raw character ratio looks weak.
+    Token-set handles word-order and filler-word noise; sequence
+    ratio catches typos and small spelling drift. Taking a raw
+    ``max`` of the two lets sequence dominate when it shouldn't: two
+    long unrelated strings share enough letters that SequenceMatcher
+    routinely returns 0.3-0.4 even for semantically-unrelated names,
+    which would otherwise float hallucinated ingredients past the
+    relevance floor.
+
+    Rules:
+
+    - If the two strings share any meaningful tokens, take
+      ``max(token, sequence)``. Here sequence can legitimately
+      boost a partial token match.
+    - If there are no shared tokens, only trust sequence when it's
+      high enough to be a clear typo (>= ``_SEQUENCE_ONLY_FLOOR``).
+      Anything below that is treated as zero — no shared tokens
+      AND no near-identical characters means no real relationship.
     """
 
     token_score = _token_set_ratio(query_tokens, cand_tokens)
@@ -401,7 +423,9 @@ def _score(
         if query_norm and cand_norm
         else 0.0
     )
-    return max(token_score, sequence_score)
+    if token_score > 0.0:
+        return max(token_score, sequence_score)
+    return sequence_score if sequence_score >= _SEQUENCE_ONLY_FLOOR else 0.0
 
 
 def _token_set_ratio(
