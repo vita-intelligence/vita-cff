@@ -134,9 +134,11 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     Readonly<Record<number, IngredientChoice>>
   >({});
 
-  // Form state
+  // Form state — ``code`` is deliberately NOT tracked here. The
+  // backend auto-generates ``PRJ-NNNN`` sequences on create so the
+  // AI's suggested code (often collides) and the scientist's blank
+  // input both resolve cleanly. Users rename via the builder.
   const [name, setName] = useState("");
-  const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [dosageForm, setDosageForm] = useState<DosageForm>("capsule");
   const [servingsPerPack, setServingsPerPack] = useState(60);
@@ -164,7 +166,6 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     setChoices({});
     setDraftError(null);
     setName("");
-    setCode("");
     setDescription("");
     setDosageForm("capsule");
     setServingsPerPack(60);
@@ -200,7 +201,10 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
         : "capsule";
 
       setName(draft.name);
-      setCode(draft.code);
+      // ``draft.code`` is intentionally ignored — the backend
+      // auto-generates a unique PRJ-NNNN on create. Preserving the
+      // AI's suggestion here would just cause a 400 on the second
+      // attempt with the same brief.
       setDescription(draft.description);
       setDosageForm(normalisedDosageForm);
       setServingsPerPack(
@@ -256,7 +260,9 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     try {
       const created = await createMutation.mutateAsync({
         name: name.trim(),
-        code: code.trim(),
+        // Omitting ``code`` lets the backend auto-generate a unique
+        // PRJ-NNNN. The builder's metadata panel supports renaming
+        // afterwards for scientists who prefer domain-specific codes.
         description: description.trim(),
         dosage_form: dosageForm,
         servings_per_pack: servingsPerPack,
@@ -407,18 +413,6 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder={tFormulations("placeholders.name")}
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                </label>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tFormulations("fields.code")}
-                  </span>
-                  <input
-                    value={code}
-                    onChange={(e) => setCode(e.target.value)}
-                    placeholder={tFormulations("placeholders.code")}
                     className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                 </label>

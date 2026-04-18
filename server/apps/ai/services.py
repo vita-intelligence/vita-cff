@@ -15,10 +15,14 @@ exceptions and the view layer maps them.
 
 from __future__ import annotations
 
+import json
+import logging
 import time
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from apps.ai.matching import (
     HIGH_CONFIDENCE_THRESHOLD,
@@ -338,6 +342,19 @@ def generate_formulation_draft(
     try:
         draft = _parse_formulation_draft(result.data)
     except AIResponseInvalid as exc:
+        # Ship a snapshot of the bad payload to the server log so we
+        # can see exactly which field the model botched. Truncated
+        # aggressively because some models emit very long responses
+        # when confused. Log level is warning — this is recoverable
+        # on the client (generic error) but actionable for ops.
+        logger.warning(
+            "AI response failed schema validation: %s (model=%s); raw data (truncated): %s",
+            exc,
+            result.model,
+            json.dumps(result.data, default=str)[:2000]
+            if result.data is not None
+            else "<empty>",
+        )
         _record_usage(
             organization=organization,
             actor=actor,

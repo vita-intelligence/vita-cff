@@ -585,6 +585,38 @@ def get_formulation(
     return obj
 
 
+#: Per-org sequential code scheme. ``PRJ-0001`` / ``PRJ-0002`` etc.
+#: Short, human-readable, and monotonically increasing — useful when
+#: scientists are looking at a list of a dozen drafts and need a
+#: quick mental index. Scientists can rename via ``update_formulation``
+#: if they prefer a domain-specific code like ``FB-001``.
+_CODE_PREFIX = "PRJ"
+_CODE_RE = re.compile(rf"^{_CODE_PREFIX}-(\d+)$")
+
+
+def _generate_unique_code(organization: Organization) -> str:
+    """Return the next ``PRJ-NNNN`` code for this organisation.
+
+    Reads the highest existing numeric suffix across the org's
+    formulations and increments by one, ignoring non-matching codes
+    (manual overrides, legacy MA-style codes). Padded to four digits
+    for column alignment and re-extends naturally once you cross
+    10_000 projects.
+    """
+
+    existing = (
+        Formulation.objects.filter(organization=organization)
+        .exclude(code="")
+        .values_list("code", flat=True)
+    )
+    highest = 0
+    for code in existing:
+        match = _CODE_RE.match(code)
+        if match is not None:
+            highest = max(highest, int(match.group(1)))
+    return f"{_CODE_PREFIX}-{highest + 1:04d}"
+
+
 @transaction.atomic
 def create_formulation(
     *,
@@ -603,13 +635,34 @@ def create_formulation(
     appearance: str = "",
     disintegration_spec: str = "",
 ) -> Formulation:
+    """Create a new formulation.
+
+    ``code`` is deliberately auto-generated here rather than trusted
+    from the caller: the New project modal used to accept a code
+    field, and the AI-drafting flow emitted hard-coded suggestions
+    like ``MA210367`` that collided on a second attempt. Scientists
+    can still rename via :func:`update_formulation` — this function
+    just guarantees the initial code is unique without the caller
+    having to probe for collisions.
+
+    When a caller explicitly passes a ``code`` we honour it only if
+    it's not already taken. Preserves the admin escape hatch for
+    scripted imports that do want deterministic codes.
+    """
+
     _validate_dosage_form(dosage_form)
+
     if code:
         duplicate = Formulation.objects.filter(
             organization=organization, code=code
         ).exists()
         if duplicate:
-            raise FormulationCodeConflict()
+            # Fall through to auto-generation rather than raising —
+            # the caller wanted *a* code, and the auto-generated one
+            # is strictly better than a 400.
+            code = _generate_unique_code(organization)
+    else:
+        code = _generate_unique_code(organization)
 
     if capsule_size and capsule_size_by_key(capsule_size) is None:
         raise InvalidCapsuleSize()

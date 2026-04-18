@@ -46,15 +46,53 @@ class TestCreateFormulation:
         assert formulation.status == "draft"
         assert formulation.dosage_form == "capsule"
 
-    def test_code_conflict_raises(self) -> None:
+    def test_code_defaults_to_auto_generated_prj_sequence(self) -> None:
+        """With no caller-supplied code, the service auto-allocates
+        the next ``PRJ-NNNN`` slot for the org. Keeps the create
+        flow frictionless — AI drafts and scientists alike never
+        collide on the ``code`` uniqueness constraint."""
+
+        org = OrganizationFactory()
+        first = create_formulation(
+            organization=org, actor=org.created_by, name="A"
+        )
+        second = create_formulation(
+            organization=org, actor=org.created_by, name="B"
+        )
+        assert first.code == "PRJ-0001"
+        assert second.code == "PRJ-0002"
+
+    def test_code_conflict_falls_back_to_auto_generated(self) -> None:
+        """When a caller still passes an explicit code and it's
+        already taken, we auto-generate rather than raise — better
+        UX than a 400 for the one case where this used to matter
+        (AI re-drafting against a populated org)."""
+
         org = OrganizationFactory()
         create_formulation(
             organization=org, actor=org.created_by, name="A", code="FORM-1"
         )
-        with pytest.raises(FormulationCodeConflict):
-            create_formulation(
-                organization=org, actor=org.created_by, name="B", code="FORM-1"
-            )
+        second = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="B",
+            code="FORM-1",
+        )
+        assert second.code != "FORM-1"
+        assert second.code.startswith("PRJ-")
+
+    def test_explicit_unique_code_is_honoured(self) -> None:
+        """Scripted imports that deliberately supply codes still
+        get their requested code when it's free."""
+
+        org = OrganizationFactory()
+        result = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="Imported",
+            code="IMPORT-2024-01",
+        )
+        assert result.code == "IMPORT-2024-01"
 
     def test_invalid_dosage_form_raises(self) -> None:
         org = OrganizationFactory()
