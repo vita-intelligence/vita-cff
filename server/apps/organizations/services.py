@@ -66,6 +66,31 @@ def list_user_organizations(user: Any) -> QuerySet[Organization]:
     )
 
 
+class OrganizationNameBlank(Exception):
+    """Submitted org name was empty after trimming whitespace."""
+
+    code = "organization_name_blank"
+
+
+@transaction.atomic
+def update_organization(
+    *, organization: Organization, name: str
+) -> Organization:
+    """Rename an organization.
+
+    Permission-gating lives at the view layer — by the time this runs
+    we assume the caller is allowed. Trim-and-validate lives here so
+    the service is the single defensible entry point for persistence.
+    """
+
+    trimmed = name.strip()
+    if not trimmed:
+        raise OrganizationNameBlank()
+    organization.name = trimmed
+    organization.save(update_fields=["name", "updated_at"])
+    return organization
+
+
 def get_membership(user: Any, organization: Organization) -> Membership | None:
     """Return the membership linking ``user`` and ``organization`` or ``None``."""
 

@@ -180,3 +180,92 @@ class TestListOrganizations:
         names = [row["name"] for row in response.json()]
         # Default ordering is by name ascending — see Meta.ordering.
         assert names == ["Alpha", "Beta"]
+
+
+def _org_detail_url(org_id: Any) -> str:
+    return reverse("organizations:organization-detail", args=[str(org_id)])
+
+
+class TestRenameOrganization:
+    def test_owner_can_rename(
+        self,
+        authed_client: tuple[APIClient, Any],
+    ) -> None:
+        client, user = authed_client
+        org = create_organization(user=user, name="Before Inc")
+
+        response = client.patch(
+            _org_detail_url(org.id), {"name": "  After Ltd  "}, format="json"
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["name"] == "After Ltd"
+        org.refresh_from_db()
+        assert org.name == "After Ltd"
+
+    def test_non_owner_member_is_forbidden(
+        self,
+        authed_client: tuple[APIClient, Any],
+    ) -> None:
+        from apps.organizations.tests.factories import (
+            MembershipFactory,
+            OrganizationFactory,
+        )
+
+        client, user = authed_client
+        other_org = OrganizationFactory(name="Other Corp")
+        # User is a member but not the owner — owner-only rename gate.
+        MembershipFactory(
+            user=user,
+            organization=other_org,
+            is_owner=False,
+            permissions={
+                "members": ["view", "invite", "edit_permissions", "remove"]
+            },
+        )
+
+        response = client.patch(
+            _org_detail_url(other_org.id), {"name": "Hijacked"}, format="json"
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        other_org.refresh_from_db()
+        assert other_org.name == "Other Corp"
+
+    def test_non_member_returns_404(
+        self,
+        authed_client: tuple[APIClient, Any],
+    ) -> None:
+        from apps.organizations.tests.factories import OrganizationFactory
+
+        client, _ = authed_client
+        stranger_org = OrganizationFactory(name="Stranger Corp")
+        response = client.patch(
+            _org_detail_url(stranger_org.id), {"name": "X"}, format="json"
+        )
+        # Non-members should never learn the org exists.
+        assert response.status_code == status.HTTP_404_NOT_FOUND
+
+    def test_unauthenticated_is_401(
+        self,
+        api_client: APIClient,
+    ) -> None:
+        from apps.organizations.tests.factories import OrganizationFactory
+
+        org = OrganizationFactory()
+        response = api_client.patch(
+            _org_detail_url(org.id), {"name": "X"}, format="json"
+        )
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_blank_name_is_400(
+        self,
+        authed_client: tuple[APIClient, Any],
+    ) -> None:
+        client, user = authed_client
+        org = create_organization(user=user, name="Before Inc")
+
+        response = client.patch(
+            _org_detail_url(org.id), {"name": "   "}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        org.refresh_from_db()
+        assert org.name == "Before Inc"

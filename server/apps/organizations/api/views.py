@@ -20,6 +20,7 @@ from apps.organizations.api.serializers import (
     MembershipReadSerializer,
     OrganizationCreateSerializer,
     OrganizationReadSerializer,
+    OrganizationUpdateSerializer,
     PublicInvitationSerializer,
 )
 from apps.organizations.models import Membership, Organization
@@ -33,6 +34,7 @@ from apps.organizations.services import (
     InvitationNotFound,
     MembershipCannotTargetOwner,
     MembershipCannotTargetSelf,
+    OrganizationNameBlank,
     PermissionsInvalid,
     accept_invitation,
     create_invitation,
@@ -48,6 +50,7 @@ from apps.organizations.services import (
     resend_invitation,
     revoke_invitation,
     update_membership_permissions,
+    update_organization,
 )
 
 
@@ -77,6 +80,53 @@ class OrganizationListCreateView(APIView):
                 organization, context={"request": request}
             ).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class OrganizationDetailView(APIView):
+    """``PATCH`` ``/api/organizations/<org_id>/``.
+
+    Owner-only for now — renaming the organization is a higher-trust
+    action than any module-scoped capability would capture. Non-owner
+    members (even ``members.edit_permissions`` admins) get 403 so
+    there's no path to impersonate the workspace they belong to.
+
+    Non-members hit 404 to preserve the "strangers never learn an
+    org exists" posture used throughout the org-scoped endpoints.
+    """
+
+    permission_classes = (IsAuthenticated,)
+
+    def patch(self, request: Request, org_id: str) -> Response:
+        organization = Organization.objects.filter(id=org_id).first()
+        if organization is None:
+            raise NotFound()
+        membership = get_membership(request.user, organization)
+        if membership is None:
+            raise NotFound()
+        if not membership.is_owner:
+            raise PermissionDenied()
+
+        serializer = OrganizationUpdateSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        if "name" in serializer.validated_data:
+            try:
+                organization = update_organization(
+                    organization=organization,
+                    name=serializer.validated_data["name"],
+                )
+            except OrganizationNameBlank:
+                return Response(
+                    {"name": ["blank"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        return Response(
+            OrganizationReadSerializer(
+                organization, context={"request": request}
+            ).data,
+            status=status.HTTP_200_OK,
         )
 
 

@@ -14,6 +14,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.accounts.api.serializers import (
     LoginSerializer,
     RegisterSerializer,
+    UpdateMeSerializer,
     UserReadSerializer,
 )
 from apps.accounts.auth.cookies import (
@@ -109,9 +110,27 @@ class RefreshView(APIView):
 
 
 class MeView(APIView):
-    """GET ``/api/auth/me/`` — return the authenticated user's profile."""
+    """GET / PATCH ``/api/auth/me/``.
+
+    * ``GET`` returns the authenticated user's profile.
+    * ``PATCH`` updates first/last name. Email is deliberately
+      immutable here — changing it needs its own re-verification flow.
+    """
 
     permission_classes = (IsAuthenticated,)
 
     def get(self, request: Request) -> Response:
         return Response(UserReadSerializer(request.user).data)
+
+    def patch(self, request: Request) -> Response:
+        serializer = UpdateMeSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        user = request.user
+        update_fields: list[str] = []
+        for field in ("first_name", "last_name"):
+            if field in serializer.validated_data:
+                setattr(user, field, serializer.validated_data[field])
+                update_fields.append(field)
+        if update_fields:
+            user.save(update_fields=update_fields)
+        return Response(UserReadSerializer(user).data)

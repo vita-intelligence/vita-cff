@@ -44,6 +44,34 @@ class UserReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class UpdateMeSerializer(serializers.Serializer):
+    """Input shape for ``PATCH /api/auth/me/``.
+
+    Users can update their own first/last name. Email changes are
+    deliberately out of scope — they would require re-verification +
+    collision handling and belong in their own flow.
+    """
+
+    first_name = serializers.CharField(
+        required=False, allow_blank=False, max_length=150
+    )
+    last_name = serializers.CharField(
+        required=False, allow_blank=False, max_length=150
+    )
+
+    def validate_first_name(self, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise serializers.ValidationError(_code("blank"))
+        return trimmed
+
+    def validate_last_name(self, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise serializers.ValidationError(_code("blank"))
+        return trimmed
+
+
 class RegisterSerializer(serializers.ModelSerializer):
     """Input serializer for the registration endpoint.
 

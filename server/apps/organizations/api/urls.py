@@ -10,6 +10,7 @@ from apps.organizations.api.views import (
     MembershipDetailView,
     MembershipListView,
     ModuleRegistryView,
+    OrganizationDetailView,
     OrganizationListCreateView,
     PublicInvitationDetailView,
 )
@@ -27,6 +28,11 @@ urlpatterns = [
         "organizations/modules/",
         ModuleRegistryView.as_view(),
         name="module-registry",
+    ),
+    path(
+        "organizations/<uuid:org_id>/",
+        OrganizationDetailView.as_view(),
+        name="organization-detail",
     ),
     # ---- Org-scoped: members & invitations -----------------------------
     path(

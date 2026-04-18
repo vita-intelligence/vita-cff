@@ -78,6 +78,23 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
         return trimmed
 
 
+class OrganizationUpdateSerializer(serializers.Serializer):
+    """Input shape for ``PATCH /api/organizations/<org_id>/``.
+
+    Same validation rules as the create serializer — kept as its own
+    class so we can evolve update and create independently later."""
+
+    name = serializers.CharField(required=False, allow_blank=False)
+
+    def validate_name(self, value: str) -> str:
+        trimmed = value.strip()
+        if not trimmed:
+            raise serializers.ValidationError(_code("blank"))
+        if len(trimmed) > 150:
+            raise serializers.ValidationError(_code("max_length"))
+        return trimmed
+
+
 class _UserNestedSerializer(serializers.Serializer):
     """Minimal user identity block embedded in membership / invitation
     payloads so the settings UI can render a row without a second

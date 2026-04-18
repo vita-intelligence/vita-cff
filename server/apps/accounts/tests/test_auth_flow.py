@@ -181,6 +181,72 @@ class TestMe:
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
 
+class TestMePatch:
+    def test_updates_first_and_last_name(
+        self,
+        api_client: APIClient,
+        login_url: str,
+        me_url: str,
+        registered_user: Any,
+    ) -> None:
+        api_client.post(login_url, _login_body(), format="json")
+        response = api_client.patch(
+            me_url,
+            {"first_name": "  Ada  ", "last_name": "Lovelace"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        # Whitespace trimmed by the serializer — verifies validation path
+        # runs, not just the raw assignment.
+        assert body["first_name"] == "Ada"
+        assert body["last_name"] == "Lovelace"
+        registered_user.refresh_from_db()
+        assert registered_user.first_name == "Ada"
+        assert registered_user.last_name == "Lovelace"
+
+    def test_unauthenticated_returns_401(
+        self,
+        api_client: APIClient,
+        me_url: str,
+    ) -> None:
+        response = api_client.patch(me_url, {"first_name": "X"}, format="json")
+        assert response.status_code == status.HTTP_401_UNAUTHORIZED
+
+    def test_blank_name_is_400(
+        self,
+        api_client: APIClient,
+        login_url: str,
+        me_url: str,
+        registered_user: Any,
+    ) -> None:
+        api_client.post(login_url, _login_body(), format="json")
+        response = api_client.patch(
+            me_url, {"first_name": "   "}, format="json"
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json() == {"first_name": ["blank"]}
+
+    def test_email_cannot_be_changed(
+        self,
+        api_client: APIClient,
+        login_url: str,
+        me_url: str,
+        registered_user: Any,
+    ) -> None:
+        api_client.post(login_url, _login_body(), format="json")
+        original = registered_user.email
+        # Unknown field is silently ignored by the partial serializer —
+        # the response body still shows the old email.
+        response = api_client.patch(
+            me_url, {"email": "pwned@evil.test"}, format="json"
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json()["email"] == original
+        registered_user.refresh_from_db()
+        assert registered_user.email == original
+
+
 class TestLogout:
     def test_logout_clears_cookies(
         self,
