@@ -303,67 +303,182 @@ def _allergens_snapshot(latest: FormulationVersion | None) -> AllergenSnapshot:
 
 
 def _activity_feed(
-    formulation: Formulation, *, limit: int = 10
+    formulation: Formulation, *, limit: int = 20
 ) -> list[ActivityEntry]:
-    """Merged event stream. Pulls the formulation version saves and
-    the last handful of spec sheet transitions, interleaves by time,
-    caps at ``limit``. Deliberately small — the workspace's Activity
-    tab will widen the query later."""
+    """Recent audit log entries scoped to this formulation's
+    workspace — the formulation itself, its versions, its lines,
+    every spec sheet wrapping one of its versions, every trial
+    batch under those versions, and every validation under those
+    batches.
 
-    from apps.specifications.models import (
-        SpecificationSheet,
-        SpecificationTransition,
-    )
+    Reads directly from :class:`apps.audit.models.AuditLog`, which
+    is now the canonical event stream (Phase A wired every write
+    path into it). Deletions of cascaded resources don't surface
+    here because the target id is gone — the org-wide audit
+    viewer (Phase C) picks those up through action-prefix filters.
+    """
 
-    entries: list[ActivityEntry] = []
+    from apps.audit.models import AuditLog
+    from apps.product_validation.models import ProductValidation
+    from apps.specifications.models import SpecificationSheet
+    from apps.trial_batches.models import TrialBatch
 
-    version_qs = (
+    target_ids: set[str] = {str(formulation.id)}
+
+    version_ids = list(
         FormulationVersion.objects.filter(formulation=formulation)
-        .select_related("created_by")
+        .values_list("id", flat=True)
+    )
+    target_ids.update(str(v) for v in version_ids)
+
+    sheet_ids = list(
+        SpecificationSheet.objects.filter(
+            formulation_version_id__in=version_ids
+        ).values_list("id", flat=True)
+    )
+    target_ids.update(str(s) for s in sheet_ids)
+
+    batch_ids = list(
+        TrialBatch.objects.filter(
+            formulation_version_id__in=version_ids
+        ).values_list("id", flat=True)
+    )
+    target_ids.update(str(b) for b in batch_ids)
+
+    validation_ids = list(
+        ProductValidation.objects.filter(
+            trial_batch_id__in=batch_ids
+        ).values_list("id", flat=True)
+    )
+    target_ids.update(str(v) for v in validation_ids)
+
+    rows = (
+        AuditLog.objects.filter(
+            organization=formulation.organization,
+            target_id__in=target_ids,
+        )
+        .select_related("actor")
         .order_by("-created_at")[:limit]
     )
-    for v in version_qs:
-        actor = v.created_by
-        name = ""
-        if actor is not None:
-            name = (actor.get_full_name() or actor.email or "").strip()
-        label_suffix = f" — {v.label}" if v.label else ""
-        entries.append(
-            ActivityEntry(
-                id=f"version:{v.id}",
-                kind="version_saved",
-                text=f"Saved version v{v.version_number}{label_suffix}",
-                actor_name=name,
-                created_at=v.created_at.isoformat(),
-            )
-        )
 
-    sheet_ids = SpecificationSheet.objects.filter(
-        formulation_version__formulation=formulation
-    ).values_list("id", flat=True)
-    transition_qs = (
-        SpecificationTransition.objects.filter(sheet_id__in=list(sheet_ids))
-        .select_related("actor", "sheet")
-        .order_by("-created_at")[:limit]
+    return [_render_activity_entry(row) for row in rows]
+
+
+def _render_activity_entry(row: "AuditLog") -> ActivityEntry:  # type: ignore[name-defined]
+    """Turn a raw :class:`AuditLog` row into the feed DTO.
+
+    The frontend renders ``text`` verbatim, so this is the one
+    place that needs to know the vocabulary. Each action slug gets
+    a short English summary — keep them terse, past tense, no
+    timestamps (the UI formats those separately).
+    """
+
+    actor = row.actor
+    actor_name = ""
+    if actor is not None:
+        actor_name = (actor.get_full_name() or actor.email or "").strip()
+
+    text = _describe_audit_row(row)
+
+    return ActivityEntry(
+        id=f"audit:{row.id}",
+        kind=row.action,
+        text=text,
+        actor_name=actor_name,
+        created_at=row.created_at.isoformat(),
     )
-    for t in transition_qs:
-        code = (t.sheet.code or "").strip() or str(t.sheet_id)[:8]
-        actor = t.actor
-        name = ""
-        if actor is not None:
-            name = (actor.get_full_name() or actor.email or "").strip()
-        entries.append(
-            ActivityEntry(
-                id=f"transition:{t.id}",
-                kind="spec_sheet_status",
-                text=f"Advanced spec sheet {code} — {t.from_status} → {t.to_status}",
-                actor_name=name,
-                created_at=t.created_at.isoformat(),
-            )
-        )
 
-    entries.sort(key=lambda e: e.created_at, reverse=True)
-    return entries[:limit]
+
+def _describe_audit_row(row: "AuditLog") -> str:  # type: ignore[name-defined]
+    """One-line English summary for each action slug we record.
+
+    Kept simple: pick the salient detail from ``before`` /
+    ``after`` when it reads naturally (version number, status
+    transition, sheet code) and fall back to a generic verb
+    otherwise. No translation here — the backend only speaks
+    English for now; when we internationalise this feed we'll
+    return a structured ``(kind, params)`` shape and move the
+    formatting client-side.
+    """
+
+    after = row.after or {}
+    before = row.before or {}
+    action = row.action
+
+    if action == "formulation.create":
+        return "Created the project"
+    if action == "formulation.update":
+        return "Updated project metadata"
+    if action == "formulation.delete":
+        return "Deleted the project"
+    if action == "formulation_line.replace":
+        count = len((after.get("lines") or [])) if isinstance(after, dict) else 0
+        return f"Replaced ingredient BOM ({count} lines)"
+    if action == "formulation_version.save":
+        num = after.get("version_number")
+        label = (after.get("label") or "").strip()
+        suffix = f" — {label}" if label else ""
+        return f"Saved version v{num}{suffix}" if num is not None else "Saved a new version"
+    if action == "formulation_version.rollback":
+        num = after.get("rolled_back_to_version_number")
+        return f"Rolled back to v{num}" if num is not None else "Rolled back a version"
+
+    if action == "spec_sheet.create":
+        code = (after.get("code") or "").strip() or _short_id(row.target_id)
+        return f"Created spec sheet {code}"
+    if action == "spec_sheet.update":
+        code = (after.get("code") or before.get("code") or "").strip() or _short_id(row.target_id)
+        return f"Updated spec sheet {code}"
+    if action == "spec_sheet.set_packaging":
+        code = (after.get("code") or before.get("code") or "").strip() or _short_id(row.target_id)
+        return f"Updated packaging on spec sheet {code}"
+    if action == "spec_sheet.status_transition":
+        prev = before.get("status", "?")
+        nxt = after.get("status", "?")
+        return f"Advanced spec sheet: {prev} → {nxt}"
+    if action == "spec_sheet.rotate_public_token":
+        return "Rotated spec sheet public link"
+    if action == "spec_sheet.revoke_public_token":
+        return "Revoked spec sheet public link"
+    if action == "spec_sheet.delete":
+        code = (before.get("code") or "").strip() or _short_id(row.target_id)
+        return f"Deleted spec sheet {code}"
+
+    if action == "trial_batch.create":
+        label = (after.get("label") or "").strip() or _short_id(row.target_id)
+        return f"Created trial batch {label}"
+    if action == "trial_batch.update":
+        label = (after.get("label") or before.get("label") or "").strip() or _short_id(row.target_id)
+        return f"Updated trial batch {label}"
+    if action == "trial_batch.delete":
+        label = (before.get("label") or "").strip() or _short_id(row.target_id)
+        return f"Deleted trial batch {label}"
+
+    if action == "product_validation.create":
+        return "Started a QC validation"
+    if action == "product_validation.update":
+        return "Updated QC validation"
+    if action == "product_validation.status_transition":
+        prev = before.get("status", "?")
+        nxt = after.get("status", "?")
+        return f"QC validation: {prev} → {nxt}"
+    if action == "product_validation.delete":
+        return "Deleted a QC validation"
+
+    # Unknown slug — surface the raw verb so nothing silently
+    # disappears from the feed. Future actions light up as soon as
+    # this mapping catches up.
+    return action
+
+
+def _short_id(raw: str | None) -> str:
+    """Display fallback when we have nothing but an id. Shows the
+    first segment of a UUID so two deleted targets don't both
+    render as ``???``."""
+
+    if not raw:
+        return "?"
+    return str(raw).split("-", 1)[0]
 
 
 # ---------------------------------------------------------------------------

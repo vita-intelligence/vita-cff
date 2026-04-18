@@ -275,7 +275,10 @@ export interface OverviewTotalsDto {
 
 export interface ProjectActivityEntryDto {
   readonly id: string;
-  readonly kind: "version_saved" | "spec_sheet_created" | "spec_sheet_status";
+  /** Action slug in ``{module}.{verb}`` form (e.g. ``formulation.update``,
+   * ``spec_sheet.status_transition``). Kept as a free-form string so
+   * new audit-log events don't require a TS widening. */
+  readonly kind: string;
   readonly text: string;
   readonly actor_name: string;
   readonly created_at: string;
