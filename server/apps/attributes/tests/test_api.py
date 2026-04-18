@@ -52,12 +52,14 @@ def _login(client: APIClient, user: Any) -> APIClient:
     return client
 
 
-def _grant_catalogue(user: Any, org: Any, slug: str, level: str) -> None:
+def _grant_catalogue(
+    user: Any, org: Any, slug: str, capabilities: list[str]
+) -> None:
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"catalogues": {slug: level}},
+        permissions={"catalogues": {slug: capabilities}},
     )
 
 
@@ -142,7 +144,7 @@ class TestListDefinitions:
     def test_member_with_read_can_list(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         response = api_client.get(_list_url(str(org.id)))
@@ -261,7 +263,7 @@ class TestCreateDefinition:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         response = api_client.post(
@@ -276,7 +278,7 @@ class TestCreateDefinition:
 
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "write")
+        _grant_catalogue(user, org, "raw_materials", ["view", "edit", "import"])
         _login(api_client, user)
 
         response = api_client.post(

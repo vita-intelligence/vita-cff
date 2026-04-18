@@ -81,12 +81,12 @@ def _login(client: APIClient, user: Any) -> APIClient:
     return client
 
 
-def _grant(user: Any, org: Any, level: str) -> None:
+def _grant(user: Any, org: Any, capabilities: list[str]) -> None:
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"formulations": level},
+        permissions={"formulations": capabilities},
     )
 
 
@@ -171,7 +171,7 @@ class TestCreate:
         org = OrganizationFactory()
         batch = _batch_in_org(org)
         reader = UserFactory()
-        _grant(reader, org, "read")
+        _grant(reader, org, ["view"])
         client = _login(APIClient(), reader)
         response = client.post(
             _list_url(str(org.id)),
@@ -230,7 +230,7 @@ class TestDetail:
             organization=org, actor=org.created_by, trial_batch_id=batch.id
         )
         writer = UserFactory()
-        _grant(writer, org, "write")
+        _grant(writer, org, ["view", "edit"])
         client = _login(APIClient(), writer)
         response = client.delete(_detail_url(str(org.id), str(v.id)))
         assert response.status_code == status.HTTP_403_FORBIDDEN

@@ -44,9 +44,9 @@ from apps.catalogues.services import (
 )
 from apps.organizations.modules import (
     CATALOGUES_MODULE,
-    PermissionLevel,
+    CataloguesCapability,
 )
-from apps.organizations.services import has_permission
+from apps.organizations.services import has_capability
 
 
 # ---------------------------------------------------------------------------
@@ -70,10 +70,10 @@ class CatalogueListCreateView(APIView):
         if not self.membership.is_owner:
             visible = []
             for catalogue in catalogues:
-                if has_permission(
+                if has_capability(
                     self.membership,
                     CATALOGUES_MODULE,
-                    PermissionLevel.READ,
+                    CataloguesCapability.VIEW,
                     scope=catalogue.slug,
                 ):
                     visible.append(catalogue)
@@ -116,10 +116,12 @@ class CatalogueDetailView(APIView):
     permission_classes = (HasCataloguePermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # PATCH on catalogue metadata + DELETE of the whole catalogue
+        # are structural changes — gate them behind ``manage_fields``.
         if request.method == "GET":
-            self.required_level = PermissionLevel.READ
+            self.required_capability = CataloguesCapability.VIEW
         else:
-            self.required_level = PermissionLevel.ADMIN
+            self.required_capability = CataloguesCapability.MANAGE_FIELDS
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str, slug: str) -> Response:
@@ -167,10 +169,10 @@ class ItemListCreateView(APIView):
     )
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.WRITE
+        self.required_capability = (
+            CataloguesCapability.EDIT
             if request.method == "POST"
-            else PermissionLevel.READ
+            else CataloguesCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -235,11 +237,17 @@ class ItemDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_level = PermissionLevel.READ
+            self.required_capability = CataloguesCapability.VIEW
         elif request.method == "DELETE":
-            self.required_level = PermissionLevel.ADMIN
+            # The DELETE endpoint supports both archive (soft) and hard
+            # delete via ``?hard=true``; pick the gate at dispatch based
+            # on the query string so archive stays an ``edit`` action.
+            hard = request.query_params.get("hard", "").lower() == "true"
+            self.required_capability = (
+                CataloguesCapability.DELETE if hard else CataloguesCapability.EDIT
+            )
         else:
-            self.required_level = PermissionLevel.WRITE
+            self.required_capability = CataloguesCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def _load_item(self, item_id: str):
@@ -302,7 +310,7 @@ class ItemImportView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = PermissionLevel.WRITE
+        self.required_capability = CataloguesCapability.IMPORT
         super().initial(request, *args, **kwargs)
 
     def post(self, request: Request, org_id: str, slug: str) -> Response:

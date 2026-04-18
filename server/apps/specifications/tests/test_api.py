@@ -63,12 +63,12 @@ def _login(client: APIClient, user: Any) -> APIClient:
     return client
 
 
-def _grant(user: Any, org: Any, level: str) -> None:
+def _grant(user: Any, org: Any, capabilities: list[str]) -> None:
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"specifications": level},
+        permissions={"formulations": capabilities},
     )
 
 
@@ -170,7 +170,7 @@ class TestListCreate:
     def test_read_member_can_list(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant(user, org, "read")
+        _grant(user, org, ["view"])
         SpecificationSheetFactory(organization=org)
         _login(api_client, user)
         response = api_client.get(_list_url(str(org.id)))
@@ -180,7 +180,7 @@ class TestListCreate:
     def test_read_member_cannot_create(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant(user, org, "read")
+        _grant(user, org, ["view"])
         _login(api_client, user)
         response = api_client.post(
             _list_url(str(org.id)),
@@ -206,7 +206,7 @@ class TestDetail:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(organization=org)
-        _grant(user, org, "write")
+        _grant(user, org, ["view", "edit"])
         _login(api_client, user)
         response = api_client.delete(
             _detail_url(str(org.id), str(sheet.id))

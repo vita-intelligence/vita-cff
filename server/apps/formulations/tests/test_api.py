@@ -84,12 +84,12 @@ def owner_client(api_client: APIClient) -> tuple[APIClient, Any, Any]:
     return api_client, user, org
 
 
-def _grant_formulations(user: Any, org: Any, level: str) -> None:
+def _grant_formulations(user: Any, org: Any, capabilities: list[str]) -> None:
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"formulations": level},
+        permissions={"formulations": capabilities},
     )
 
 
@@ -173,7 +173,7 @@ class TestFormulationListCreate:
     def test_read_member_can_list(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_formulations(user, org, "read")
+        _grant_formulations(user, org, ["view"])
         FormulationFactory(organization=org)
         _login(api_client, user)
         response = api_client.get(_list_url(str(org.id)))
@@ -183,7 +183,7 @@ class TestFormulationListCreate:
     def test_read_member_cannot_create(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_formulations(user, org, "read")
+        _grant_formulations(user, org, ["view"])
         _login(api_client, user)
         response = api_client.post(
             _list_url(str(org.id)), {"name": "Nope"}, format="json"
@@ -219,7 +219,7 @@ class TestFormulationDetail:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         formulation = FormulationFactory(organization=org)
-        _grant_formulations(user, org, "write")
+        _grant_formulations(user, org, ["view", "edit"])
         _login(api_client, user)
         response = api_client.delete(
             _detail_url(str(org.id), str(formulation.id))

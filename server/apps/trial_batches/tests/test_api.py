@@ -76,15 +76,15 @@ def _login(client: APIClient, user: Any) -> APIClient:
     return client
 
 
-def _grant(user: Any, org: Any, level: str) -> None:
-    """Non-owner membership with a specific ``formulations`` level —
+def _grant(user: Any, org: Any, capabilities: list[str]) -> None:
+    """Non-owner membership with the given ``formulations`` capabilities —
     trial batches piggyback on the formulations permission module."""
 
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"formulations": level},
+        permissions={"formulations": capabilities},
     )
 
 
@@ -181,7 +181,7 @@ class TestListCreate:
         org = OrganizationFactory()
         version = _seed_capsule_version(org)
         reader = UserFactory()
-        _grant(reader, org, "read")
+        _grant(reader, org, ["view"])
         client = _login(APIClient(), reader)
         response = client.post(
             _list_url(str(org.id), str(version.formulation_id)),
@@ -239,7 +239,7 @@ class TestDetail:
             batch_size_units=500,
         )
         writer = UserFactory()
-        _grant(writer, org, "write")
+        _grant(writer, org, ["view", "edit"])
         client = _login(APIClient(), writer)
         response = client.delete(_detail_url(str(org.id), str(batch.id)))
         assert response.status_code == status.HTTP_403_FORBIDDEN

@@ -10,7 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.organizations.modules import PermissionLevel
+from apps.organizations.modules import FormulationsCapability
 from apps.specifications.api.pagination import SpecificationCursorPagination
 from apps.specifications.api.permissions import HasSpecificationsPermission
 from apps.specifications.api.serializers import (
@@ -49,10 +49,10 @@ class SpecificationListCreateView(APIView):
     permission_classes = (HasSpecificationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.WRITE
+        self.required_capability = (
+            FormulationsCapability.EDIT
             if request.method == "POST"
-            else PermissionLevel.READ
+            else FormulationsCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -114,11 +114,11 @@ class SpecificationDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_level = PermissionLevel.READ
+            self.required_capability = FormulationsCapability.VIEW
         elif request.method == "DELETE":
-            self.required_level = PermissionLevel.ADMIN
+            self.required_capability = FormulationsCapability.DELETE
         else:
-            self.required_level = PermissionLevel.WRITE
+            self.required_capability = FormulationsCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def _load(self, sheet_id: str):
@@ -172,7 +172,10 @@ class SpecificationStatusView(APIView):
     """``POST`` ``/.../specifications/<id>/status/``."""
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.WRITE
+    # Status transitions (draft → in_review → sent → approved/accepted)
+    # are approvals, not edits — a scientist with ``edit`` can build a
+    # draft but not send it to a client.
+    required_capability = FormulationsCapability.APPROVE
 
     def post(
         self, request: Request, org_id: str, sheet_id: str
@@ -213,7 +216,7 @@ class SpecificationRenderView(APIView):
     """
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(self, request: Request, org_id: str, sheet_id: str) -> Response:
         try:
@@ -234,7 +237,7 @@ class SpecificationPdfView(APIView):
     """
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, sheet_id: str
@@ -272,7 +275,7 @@ class SpecificationPackagingView(APIView):
     """
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.WRITE
+    required_capability = FormulationsCapability.EDIT
 
     def post(
         self, request: Request, org_id: str, sheet_id: str
@@ -341,7 +344,7 @@ class SpecificationPackagingOptionsView(APIView):
     """
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(self, request: Request, org_id: str) -> Response:
         slot = request.query_params.get("slot")
@@ -396,11 +399,12 @@ class SpecificationPackagingOptionsView(APIView):
 
 class SpecificationPublicLinkView(APIView):
     """``POST`` rotates (or issues) the sheet's public preview token;
-    ``DELETE`` revokes it. Writer permission required — only someone
-    who can mutate the sheet should be able to publish it."""
+    ``DELETE`` revokes it. Gated on ``approve`` because publishing a
+    spec sheet to a client is a commercial decision, not a content
+    edit."""
 
     permission_classes = (HasSpecificationsPermission,)
-    required_level = PermissionLevel.WRITE
+    required_capability = FormulationsCapability.APPROVE
 
     def _load(self, sheet_id: str):
         try:

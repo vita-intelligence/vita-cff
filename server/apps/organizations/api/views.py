@@ -19,7 +19,7 @@ from apps.organizations.api.serializers import (
     PublicInvitationSerializer,
 )
 from apps.organizations.models import Organization
-from apps.organizations.modules import PermissionLevel
+from apps.organizations.modules import MembersCapability
 from apps.organizations.services import (
     InvitationAlreadyAccepted,
     InvitationAlreadyExists,
@@ -32,7 +32,7 @@ from apps.organizations.services import (
     create_organization,
     get_invitation_by_token,
     get_membership,
-    has_permission,
+    has_capability,
     list_user_organizations,
 )
 
@@ -66,8 +66,12 @@ class OrganizationListCreateView(APIView):
         )
 
 
-def _load_org_for_caller(request: Request, org_id: str) -> Organization:
-    """Load an org and verify the caller is an admin on its members module.
+def _load_org_for_caller(
+    request: Request,
+    org_id: str,
+    capability: str,
+) -> Organization:
+    """Load an org and verify the caller holds ``capability`` on ``members``.
 
     Two branches here because we want distinct response codes: unknown
     org ids and non-member callers both return ``404`` (we never leak
@@ -81,7 +85,7 @@ def _load_org_for_caller(request: Request, org_id: str) -> Organization:
     membership = get_membership(request.user, organization)
     if membership is None:
         raise NotFound()
-    if not has_permission(membership, "members", PermissionLevel.ADMIN):
+    if not has_capability(membership, "members", capability):
         raise PermissionDenied()
     return organization
 
@@ -89,14 +93,17 @@ def _load_org_for_caller(request: Request, org_id: str) -> Organization:
 class InvitationCreateView(APIView):
     """``POST`` ``/api/organizations/<org_id>/invitations/``.
 
-    Requires ``members:admin`` on the target organization. Owners always
-    satisfy this thanks to the owner bypass in :func:`has_permission`.
+    Requires ``members.invite`` on the target organization. Owners
+    always satisfy this thanks to the owner bypass in
+    :func:`has_capability`.
     """
 
     permission_classes = (IsAuthenticated,)
 
     def post(self, request: Request, org_id: str) -> Response:
-        organization = _load_org_for_caller(request, org_id)
+        organization = _load_org_for_caller(
+            request, org_id, MembersCapability.INVITE
+        )
 
         serializer = InvitationCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

@@ -74,14 +74,16 @@ def owner_client(api_client: APIClient) -> tuple[APIClient, Any, Any]:
     return api_client, user, org
 
 
-def _grant_catalogue(user: Any, org: Any, slug: str, level: str) -> None:
+def _grant_catalogue(
+    user: Any, org: Any, slug: str, capabilities: list[str]
+) -> None:
     """Attach a non-owner membership with a single row-scoped grant."""
 
     MembershipFactory(
         user=user,
         organization=org,
         is_owner=False,
-        permissions={"catalogues": {slug: level}},
+        permissions={"catalogues": {slug: capabilities}},
     )
 
 
@@ -195,7 +197,7 @@ class TestItemListCreate:
     def test_member_with_read_can_list(self, api_client: APIClient) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         ItemFactory(catalogue=raw_materials_catalogue(org))
         _login(api_client, user)
 
@@ -208,7 +210,7 @@ class TestItemListCreate:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         # Has read on raw_materials, not on packaging. Packaging read
@@ -221,7 +223,7 @@ class TestItemListCreate:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         response = api_client.post(
@@ -236,7 +238,7 @@ class TestItemListCreate:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "write")
+        _grant_catalogue(user, org, "raw_materials", ["view", "edit", "import"])
         _login(api_client, user)
 
         response = api_client.post(
@@ -383,7 +385,7 @@ class TestItemDetail:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         item = ItemFactory(catalogue=raw_materials_catalogue(org))
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         response = api_client.patch(
@@ -393,31 +395,58 @@ class TestItemDetail:
         )
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_write_permission_cannot_archive(
+    def test_edit_permission_can_archive(
         self, api_client: APIClient
     ) -> None:
+        # Archive is the reversible soft-delete (sets ``is_archived``),
+        # so it's gated on ``edit`` — a user with edit rights can put
+        # a row into the archived bin and pull it back out again.
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         item = ItemFactory(catalogue=raw_materials_catalogue(org))
-        _grant_catalogue(user, org, "raw_materials", "write")
+        _grant_catalogue(user, org, "raw_materials", ["view", "edit", "import"])
         _login(api_client, user)
 
         response = api_client.delete(
             _item_detail_url(str(org.id), "raw_materials", str(item.id))
         )
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+
+    def test_edit_permission_cannot_hard_delete(
+        self, api_client: APIClient
+    ) -> None:
+        # Hard delete (``?hard=true``) is the irreversible one — it
+        # requires the dedicated ``delete`` capability, not just
+        # ``edit``.
+        user = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = OrganizationFactory()
+        item = ItemFactory(catalogue=raw_materials_catalogue(org))
+        _grant_catalogue(user, org, "raw_materials", ["view", "edit", "import"])
+        _login(api_client, user)
+
+        response = api_client.delete(
+            _item_detail_url(str(org.id), "raw_materials", str(item.id))
+            + "?hard=true"
+        )
         assert response.status_code == status.HTTP_403_FORBIDDEN
 
-    def test_admin_permission_can_archive(
+    def test_admin_permission_can_hard_delete(
         self, api_client: APIClient
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         item = ItemFactory(catalogue=raw_materials_catalogue(org))
-        _grant_catalogue(user, org, "raw_materials", "admin")
+        _grant_catalogue(
+            user,
+            org,
+            "raw_materials",
+            ["view", "edit", "import", "manage_fields", "delete"],
+        )
         _login(api_client, user)
 
         response = api_client.delete(
             _item_detail_url(str(org.id), "raw_materials", str(item.id))
+            + "?hard=true"
         )
         assert response.status_code == status.HTTP_204_NO_CONTENT
 
@@ -456,7 +485,7 @@ class TestItemHardDelete:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
         item = ItemFactory(catalogue=raw_materials_catalogue(org))
-        _grant_catalogue(user, org, "raw_materials", "write")
+        _grant_catalogue(user, org, "raw_materials", ["view", "edit", "import"])
         _login(api_client, user)
 
         response = api_client.delete(
@@ -692,7 +721,7 @@ class TestCatalogueList:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "read")
+        _grant_catalogue(user, org, "raw_materials", ["view"])
         _login(api_client, user)
 
         slugs = {
@@ -724,7 +753,12 @@ class TestCatalogueList:
     ) -> None:
         user = UserFactory(password=DEFAULT_TEST_PASSWORD)
         org = OrganizationFactory()
-        _grant_catalogue(user, org, "raw_materials", "admin")
+        _grant_catalogue(
+            user,
+            org,
+            "raw_materials",
+            ["view", "edit", "import", "manage_fields", "delete"],
+        )
         _login(api_client, user)
 
         response = api_client.post(

@@ -42,7 +42,7 @@ from apps.formulations.services import (
     save_version,
     update_formulation,
 )
-from apps.organizations.modules import PermissionLevel
+from apps.organizations.modules import FormulationsCapability
 
 
 def _totals_payload(totals) -> dict[str, Any]:
@@ -85,10 +85,10 @@ class FormulationListCreateView(APIView):
     permission_classes = (HasFormulationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.WRITE
+        self.required_capability = (
+            FormulationsCapability.EDIT
             if request.method == "POST"
-            else PermissionLevel.READ
+            else FormulationsCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -153,11 +153,11 @@ class FormulationDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_level = PermissionLevel.READ
+            self.required_capability = FormulationsCapability.VIEW
         elif request.method == "DELETE":
-            self.required_level = PermissionLevel.ADMIN
+            self.required_capability = FormulationsCapability.DELETE
         else:
-            self.required_level = PermissionLevel.WRITE
+            self.required_capability = FormulationsCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def _load(self, formulation_id: str):
@@ -226,7 +226,7 @@ class FormulationLinesView(APIView):
     """``PUT`` ``/.../formulations/<id>/lines/`` — atomic replace."""
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.WRITE
+    required_capability = FormulationsCapability.EDIT
 
     def put(
         self, request: Request, org_id: str, formulation_id: str
@@ -267,7 +267,7 @@ class FormulationComputeView(APIView):
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, formulation_id: str
@@ -288,10 +288,10 @@ class FormulationVersionListView(APIView):
     permission_classes = (HasFormulationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.WRITE
+        self.required_capability = (
+            FormulationsCapability.EDIT
             if request.method == "POST"
-            else PermissionLevel.READ
+            else FormulationsCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -334,7 +334,7 @@ class FormulationRollbackView(APIView):
     """``POST`` ``/.../formulations/<id>/rollback/`` — restore + snapshot."""
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.WRITE
+    required_capability = FormulationsCapability.EDIT
 
     def post(
         self, request: Request, org_id: str, formulation_id: str
@@ -381,7 +381,7 @@ class FormulationOverviewView(APIView):
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, formulation_id: str

@@ -15,7 +15,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.formulations.api.permissions import HasFormulationsPermission
-from apps.organizations.modules import PermissionLevel
+from apps.organizations.modules import FormulationsCapability
 from apps.trial_batches.api.serializers import (
     TrialBatchCreateSerializer,
     TrialBatchReadSerializer,
@@ -46,10 +46,10 @@ class TrialBatchListCreateView(APIView):
     permission_classes = (HasFormulationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.WRITE
+        self.required_capability = (
+            FormulationsCapability.EDIT
             if request.method == "POST"
-            else PermissionLevel.READ
+            else FormulationsCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -111,11 +111,11 @@ class TrialBatchDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_level = PermissionLevel.READ
+            self.required_capability = FormulationsCapability.VIEW
         elif request.method == "DELETE":
-            self.required_level = PermissionLevel.ADMIN
+            self.required_capability = FormulationsCapability.DELETE
         else:
-            self.required_level = PermissionLevel.WRITE
+            self.required_capability = FormulationsCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def _load(self, batch_id: str):
@@ -168,7 +168,7 @@ class TrialBatchRenderView(APIView):
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(self, request: Request, org_id: str, batch_id: str) -> Response:
         try:
@@ -286,7 +286,7 @@ class TrialBatchBOMExportView(APIView):
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_level = PermissionLevel.READ
+    required_capability = FormulationsCapability.VIEW
 
     def get(self, request: Request, org_id: str, batch_id: str) -> HttpResponse:
         try:

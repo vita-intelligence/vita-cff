@@ -129,7 +129,7 @@ class TestCreateInvitation:
             user=member_user,
             organization=org,
             is_owner=False,
-            permissions={"members": "read"},
+            permissions={"members": ["view"]},
         )
         api_client.post(
             login_url,
@@ -157,7 +157,9 @@ class TestCreateInvitation:
             user=admin_user,
             organization=org,
             is_owner=False,
-            permissions={"members": "admin"},
+            permissions={
+                "members": ["view", "invite", "edit_permissions", "remove"]
+            },
         )
         api_client.post(
             login_url,
@@ -319,7 +321,7 @@ class TestAcceptInvitation:
     ) -> None:
         invitation = InvitationFactory(
             email="scientist@vita.test",
-            permissions={"members": "read"},
+            permissions={"members": ["view"]},
         )
         response = api_client.post(
             _invitation_accept_url(invitation.token),
@@ -329,7 +331,7 @@ class TestAcceptInvitation:
         assert response.status_code == status.HTTP_201_CREATED
         user = UserModel.objects.get(email="scientist@vita.test")
         membership = Membership.objects.get(user=user)
-        assert membership.permissions == {"members": "read"}
+        assert membership.permissions == {"members": ["view"]}
 
     def test_unknown_token_is_404(self, api_client: APIClient) -> None:
         response = api_client.post(

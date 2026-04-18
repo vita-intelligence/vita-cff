@@ -20,8 +20,9 @@ from django.utils import timezone
 
 from apps.organizations.models import Invitation, Membership, Organization
 from apps.organizations.modules import (
-    PermissionLevel,
+    capabilities_for,
     is_row_scoped,
+    is_valid_capability,
     is_valid_module,
 )
 
@@ -64,52 +65,85 @@ def get_membership(user: Any, organization: Organization) -> Membership | None:
     return Membership.objects.filter(user=user, organization=organization).first()
 
 
-def has_permission(
+def has_capability(
     membership: Membership | None,
     module_key: str,
-    required: PermissionLevel,
+    capability: str,
     *,
     scope: str | None = None,
 ) -> bool:
-    """Check whether ``membership`` grants at least ``required`` on the module.
+    """Check whether ``membership`` has ``capability`` on the given module.
 
     * ``None`` membership (user is not a member) always returns ``False``.
     * Owners bypass the permissions map entirely and always return ``True``.
-    * Unknown or unregistered module keys always return ``False`` —
-      permission checks cannot silently succeed for modules the codebase
-      does not know about.
-    * For *flat* modules (``members``) the grant is a single string
-      level stored at ``membership.permissions[module_key]``. The
-      ``scope`` argument is ignored.
-    * For *row-scoped* modules (``catalogues``) the grant is a
-      ``{scope: level}`` dict stored at
-      ``membership.permissions[module_key]``. ``scope`` is required —
-      omitting it on a row-scoped check always returns ``False`` —
-      and the level is looked up for that specific row.
+    * Unknown modules or capabilities always return ``False`` — a check
+      for a typoed capability string cannot silently succeed.
+    * For *flat* modules the grant is a list of capability strings
+      stored at ``membership.permissions[module_key]``. ``scope`` is
+      ignored.
+    * For *row-scoped* modules the grant is a ``{scope: [capabilities]}``
+      dict. ``scope`` is required — omitting it on a row-scoped check
+      always returns ``False``.
     """
 
     if membership is None:
         return False
     if not is_valid_module(module_key):
         return False
+    if not is_valid_capability(module_key, capability):
+        return False
     if membership.is_owner:
         return True
+
+    granted = granted_capabilities(membership, module_key, scope=scope)
+    return capability in granted
+
+
+def granted_capabilities(
+    membership: Membership | None,
+    module_key: str,
+    *,
+    scope: str | None = None,
+) -> frozenset[str]:
+    """Return the set of capabilities ``membership`` holds on the module.
+
+    Owner memberships short-circuit to every capability declared on the
+    module — their ``permissions`` JSON is intentionally ignored. For
+    row-scoped modules, ``scope`` selects which row's capability list
+    is returned; omitting ``scope`` on a row-scoped module returns
+    the empty set.
+    """
+
+    if membership is None or not is_valid_module(module_key):
+        return frozenset()
+    if membership.is_owner:
+        return frozenset(capabilities_for(module_key))
 
     raw = membership.permissions.get(module_key)
 
     if is_row_scoped(module_key):
-        if scope is None:
-            return False
-        if not isinstance(raw, dict):
-            return False
-        level_str = raw.get(scope)
-        if not isinstance(level_str, str):
-            return False
-    else:
-        level_str = raw if isinstance(raw, str) else None
+        if scope is None or not isinstance(raw, dict):
+            return frozenset()
+        inner = raw.get(scope)
+        if not isinstance(inner, list):
+            return frozenset()
+        return _clean_capability_list(module_key, inner)
 
-    granted = PermissionLevel.parse(level_str)
-    return granted >= required
+    if not isinstance(raw, list):
+        return frozenset()
+    return _clean_capability_list(module_key, raw)
+
+
+def _clean_capability_list(module_key: str, raw: list) -> frozenset[str]:
+    """Filter ``raw`` down to capabilities actually declared on the module.
+
+    Defensive step: even though :func:`has_capability` already refuses
+    undeclared capability names, a stray entry in the DB (typo, rolled-
+    back migration, etc.) shouldn't leak through as a positive match.
+    """
+
+    declared = set(capabilities_for(module_key))
+    return frozenset(c for c in raw if isinstance(c, str) and c in declared)
 
 
 # ---------------------------------------------------------------------------

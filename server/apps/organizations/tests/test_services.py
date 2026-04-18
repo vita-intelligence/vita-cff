@@ -6,11 +6,11 @@ import pytest
 
 from apps.accounts.tests.factories import UserFactory
 from apps.organizations.models import Membership, Organization
-from apps.organizations.modules import PermissionLevel
 from apps.organizations.services import (
     create_organization,
     get_membership,
-    has_permission,
+    granted_capabilities,
+    has_capability,
     list_user_organizations,
 )
 from apps.organizations.tests.factories import (
@@ -76,52 +76,145 @@ class TestGetMembership:
         assert get_membership(user, org) is None
 
 
-class TestHasPermission:
+class TestHasCapability:
     def test_none_membership_is_always_denied(self) -> None:
-        assert has_permission(None, "members", PermissionLevel.READ) is False
+        assert has_capability(None, "members", "view") is False
 
     def test_owner_is_always_allowed(self) -> None:
         user = UserFactory()
         org = create_organization(user=user, name="Owner Corp")
         membership = get_membership(user, org)
-        assert has_permission(membership, "members", PermissionLevel.ADMIN) is True
+        assert has_capability(membership, "members", "remove") is True
+        assert (
+            has_capability(membership, "catalogues", "delete", scope="anything")
+            is True
+        )
 
     def test_unknown_module_is_always_denied_even_for_owner(self) -> None:
         user = UserFactory()
         org = create_organization(user=user, name="Owner Corp")
         membership = get_membership(user, org)
         assert (
-            has_permission(membership, "nonexistent_module", PermissionLevel.READ)
+            has_capability(membership, "nonexistent_module", "view") is False
+        )
+
+    def test_unknown_capability_is_always_denied_even_for_owner(self) -> None:
+        user = UserFactory()
+        org = create_organization(user=user, name="Owner Corp")
+        membership = get_membership(user, org)
+        assert (
+            has_capability(membership, "members", "not_a_real_capability")
             is False
         )
 
     @pytest.mark.parametrize(
-        ("granted", "required", "expected"),
+        ("granted", "capability", "expected"),
         [
-            ("read", PermissionLevel.READ, True),
-            ("read", PermissionLevel.WRITE, False),
-            ("write", PermissionLevel.READ, True),
-            ("write", PermissionLevel.WRITE, True),
-            ("write", PermissionLevel.ADMIN, False),
-            ("admin", PermissionLevel.ADMIN, True),
+            (["view"], "view", True),
+            (["view"], "invite", False),
+            (["view", "invite"], "view", True),
+            (["view", "invite"], "invite", True),
+            (["view", "invite"], "remove", False),
+            (
+                ["view", "invite", "edit_permissions", "remove"],
+                "remove",
+                True,
+            ),
         ],
     )
-    def test_non_owner_permission_matrix(
-        self, granted: str, required: PermissionLevel, expected: bool
+    def test_non_owner_capability_matrix(
+        self, granted: list[str], capability: str, expected: bool
     ) -> None:
         membership = MembershipFactory(
             permissions={"members": granted},
             is_owner=False,
         )
-        assert has_permission(membership, "members", required) is expected
+        assert (
+            has_capability(membership, "members", capability) is expected
+        )
 
     def test_non_owner_with_no_grant_is_denied(self) -> None:
         membership = MembershipFactory(permissions={}, is_owner=False)
-        assert has_permission(membership, "members", PermissionLevel.READ) is False
+        assert has_capability(membership, "members", "view") is False
 
     def test_non_owner_with_garbage_grant_is_denied(self) -> None:
+        # Someone tampered with the JSON and stuck a string where a
+        # capability list should be. Must not grant any access.
         membership = MembershipFactory(
-            permissions={"members": "not-a-level"},
+            permissions={"members": "admin"},
             is_owner=False,
         )
-        assert has_permission(membership, "members", PermissionLevel.READ) is False
+        assert has_capability(membership, "members", "view") is False
+
+    def test_row_scoped_without_scope_is_denied(self) -> None:
+        membership = MembershipFactory(
+            permissions={"catalogues": {"raw_materials": ["view"]}},
+            is_owner=False,
+        )
+        assert has_capability(membership, "catalogues", "view") is False
+
+    def test_row_scoped_grant_is_per_slug(self) -> None:
+        membership = MembershipFactory(
+            permissions={
+                "catalogues": {
+                    "raw_materials": ["view", "edit"],
+                    "packaging": ["view"],
+                }
+            },
+            is_owner=False,
+        )
+        assert (
+            has_capability(
+                membership, "catalogues", "edit", scope="raw_materials"
+            )
+            is True
+        )
+        assert (
+            has_capability(membership, "catalogues", "edit", scope="packaging")
+            is False
+        )
+
+    def test_undeclared_capability_in_grant_is_ignored(self) -> None:
+        # Someone inserts a typoed capability into the JSON. The check
+        # must refuse it outright — typos cannot silently succeed.
+        membership = MembershipFactory(
+            permissions={"members": ["viewwww"]},
+            is_owner=False,
+        )
+        assert has_capability(membership, "members", "viewwww") is False
+        assert has_capability(membership, "members", "view") is False
+
+
+class TestGrantedCapabilities:
+    def test_owner_sees_every_declared_capability(self) -> None:
+        user = UserFactory()
+        org = create_organization(user=user, name="Owner Corp")
+        membership = get_membership(user, org)
+        caps = granted_capabilities(membership, "members")
+        assert "view" in caps
+        assert "invite" in caps
+        assert "edit_permissions" in caps
+        assert "remove" in caps
+
+    def test_non_owner_returns_only_granted(self) -> None:
+        membership = MembershipFactory(
+            permissions={"members": ["view"]},
+            is_owner=False,
+        )
+        caps = granted_capabilities(membership, "members")
+        assert caps == frozenset({"view"})
+
+    def test_row_scoped_returns_slug_specific_list(self) -> None:
+        membership = MembershipFactory(
+            permissions={
+                "catalogues": {"raw_materials": ["view", "edit"]}
+            },
+            is_owner=False,
+        )
+        assert granted_capabilities(
+            membership, "catalogues", scope="raw_materials"
+        ) == frozenset({"view", "edit"})
+        assert (
+            granted_capabilities(membership, "catalogues", scope="packaging")
+            == frozenset()
+        )

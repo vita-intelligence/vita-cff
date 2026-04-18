@@ -24,7 +24,7 @@ from apps.attributes.services import (
     list_definitions,
     update_definition,
 )
-from apps.organizations.modules import PermissionLevel
+from apps.organizations.modules import CataloguesCapability
 
 
 class AttributeDefinitionListCreateView(APIView):
@@ -33,10 +33,10 @@ class AttributeDefinitionListCreateView(APIView):
     permission_classes = (HasAttributePermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = (
-            PermissionLevel.ADMIN
+        self.required_capability = (
+            CataloguesCapability.MANAGE_FIELDS
             if request.method == "POST"
-            else PermissionLevel.READ
+            else CataloguesCapability.VIEW
         )
         super().initial(request, *args, **kwargs)
 
@@ -94,7 +94,7 @@ class AttributeDefinitionDetailView(APIView):
     permission_classes = (HasAttributePermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_level = PermissionLevel.ADMIN
+        self.required_capability = CataloguesCapability.MANAGE_FIELDS
         super().initial(request, *args, **kwargs)
 
     def _load_definition(self, definition_id: str):

@@ -1,54 +1,66 @@
-"""Module registry for organization-scoped permissions.
+"""Module registry for organization-scoped RBAC.
 
 A *module* is a slice of application functionality (members, catalogues,
-formulations, ...) that can be independently authorised. Every feature
-area is expected to register itself here so the role layer has a
-stable, typed vocabulary of module keys to check permissions against.
+formulations) that can be independently authorised. Each module declares
+a tuple of **capabilities** — named actions a grant can unlock.
 
-Two kinds of modules exist:
+Two storage shapes, both on :attr:`Membership.permissions`:
 
-* **Flat** modules store their grant as a single ``{module_key: level}``
-  entry on the membership. ``members`` is a flat module.
-* **Row-scoped** modules carry a per-row map instead of a single level,
-  so different rows of the same kind can have different access. The
-  ``catalogues`` module is row-scoped: a non-owner can have
-  ``catalogues.raw_materials = read`` while having no access at all to
-  ``catalogues.packaging``. Storage shape on the membership is
-  ``{"catalogues": {"raw_materials": "read", "packaging": "write"}}``.
+* **Flat** modules store a list of capability strings:
+  ``{"members": ["view", "invite"]}``.
+* **Row-scoped** modules store a ``{scope: [capabilities]}`` dict so
+  different rows of the same module can carry independent grants:
+  ``{"catalogues": {"raw_materials": ["view", "edit"], "packaging":
+  ["view"]}}``.
 
-The registry is intentionally a plain Python dict rather than a
-database table: modules are code-shaped objects, they change with
-releases, and new ones arrive together with their models, views, and
-migrations. Putting them in the DB would just replicate what source
-control already tracks.
+Owners' ``permissions`` field is ignored entirely — they bypass every
+capability check. Non-owners must be granted each capability
+explicitly, and the check layer in :func:`has_capability` refuses any
+capability not declared on the module here (typoed capability strings
+silently succeeding would be a nasty security footgun).
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
 
 
-class PermissionLevel(IntEnum):
-    """Monotonic ordering: higher levels subsume lower ones.
+# ---------------------------------------------------------------------------
+# Module keys (constants so call-sites don't embed magic strings)
+# ---------------------------------------------------------------------------
 
-    Use the integer values for comparisons and ``.name.lower()`` (``read``,
-    ``write``, ``admin``) for the wire / storage format.
-    """
+MEMBERS_MODULE = "members"
+CATALOGUES_MODULE = "catalogues"
+FORMULATIONS_MODULE = "formulations"
 
-    NONE = 0
-    READ = 10
-    WRITE = 20
-    ADMIN = 30
 
-    @classmethod
-    def parse(cls, value: str | None) -> "PermissionLevel":
-        if not value:
-            return cls.NONE
-        try:
-            return cls[value.upper()]
-        except KeyError:
-            return cls.NONE
+# ---------------------------------------------------------------------------
+# Capability constants — import these into views, don't hard-code strings.
+# The values are the wire / storage format; the attribute names are
+# what shows up in ``required_capability = FormulationsCapability.EDIT``.
+# ---------------------------------------------------------------------------
+
+
+class MembersCapability:
+    VIEW = "view"
+    INVITE = "invite"
+    EDIT_PERMISSIONS = "edit_permissions"
+    REMOVE = "remove"
+
+
+class CataloguesCapability:
+    VIEW = "view"
+    EDIT = "edit"
+    IMPORT = "import"
+    MANAGE_FIELDS = "manage_fields"
+    DELETE = "delete"
+
+
+class FormulationsCapability:
+    VIEW = "view"
+    EDIT = "edit"
+    APPROVE = "approve"
+    DELETE = "delete"
 
 
 @dataclass(frozen=True)
@@ -56,33 +68,28 @@ class Module:
     key: str
     name: str
     description: str
-    #: When ``True`` the module's permission map holds a ``{row_scope:
-    #: level}`` dict instead of a single level. Permission checks on
-    #: row-scoped modules require a ``scope`` argument.
+    capabilities: tuple[str, ...]
+    #: When ``True`` the module's grant is stored as ``{scope:
+    #: [capabilities]}`` rather than a bare capability list. Permission
+    #: checks on row-scoped modules require a ``scope`` argument.
     row_scoped: bool = False
 
 
-#: Name of the row-scope key on ``catalogues`` permission checks — the
-#: catalogue slug (``raw_materials``, ``packaging``, ...). Exposed as a
-#: constant so callers do not embed magic strings in permission calls.
-CATALOGUES_MODULE = "catalogues"
-FORMULATIONS_MODULE = "formulations"
-MEMBERS_MODULE = "members"
-SPECIFICATIONS_MODULE = "specifications"
-
-
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
 # Registry
-# ----------------------------------------------------------------------------
-# Register new modules here as features land. Keys must be stable machine
-# strings (``snake_case``, no spaces) — they are persisted on every
-# :class:`apps.organizations.models.Membership` row and referenced from
-# permission checks throughout the backend.
+# ---------------------------------------------------------------------------
+
 MODULE_REGISTRY: dict[str, Module] = {
     MEMBERS_MODULE: Module(
         key=MEMBERS_MODULE,
         name="Members",
         description="Invite, review, and remove organization members.",
+        capabilities=(
+            MembersCapability.VIEW,
+            MembersCapability.INVITE,
+            MembersCapability.EDIT_PERMISSIONS,
+            MembersCapability.REMOVE,
+        ),
     ),
     CATALOGUES_MODULE: Module(
         key=CATALOGUES_MODULE,
@@ -90,31 +97,38 @@ MODULE_REGISTRY: dict[str, Module] = {
         description=(
             "Browse and manage catalogue rows (raw materials, packaging, "
             "and any custom reference tables). Row-scoped: each catalogue "
-            "carries its own permission level."
+            "slug carries its own capability list."
         ),
         row_scoped=True,
+        capabilities=(
+            CataloguesCapability.VIEW,
+            CataloguesCapability.EDIT,
+            CataloguesCapability.IMPORT,
+            CataloguesCapability.MANAGE_FIELDS,
+            CataloguesCapability.DELETE,
+        ),
     ),
     FORMULATIONS_MODULE: Module(
         key=FORMULATIONS_MODULE,
-        name="Formulations",
+        name="Projects",
         description=(
-            "Build, version, and approve product formulations. Reads "
-            "raw materials from the catalogues module but has its own "
-            "permission scope so scientists can be granted builder "
-            "access without touching the source catalogue."
+            "Project workspace: formulations, versions, spec sheets, "
+            "trial batches, and QC validations. Reads raw materials from "
+            "the catalogues module but carries its own capability scope."
         ),
-    ),
-    SPECIFICATIONS_MODULE: Module(
-        key=SPECIFICATIONS_MODULE,
-        name="Specifications",
-        description=(
-            "Generate client-facing specification sheets from saved "
-            "formulation versions. Separate from formulations so "
-            "commercial users can be granted sheet access without "
-            "write rights on the formulation itself."
+        capabilities=(
+            FormulationsCapability.VIEW,
+            FormulationsCapability.EDIT,
+            FormulationsCapability.APPROVE,
+            FormulationsCapability.DELETE,
         ),
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Registry helpers
+# ---------------------------------------------------------------------------
 
 
 def get_module(key: str) -> Module:
@@ -140,3 +154,16 @@ def is_valid_module(key: str) -> bool:
 def is_row_scoped(key: str) -> bool:
     module = MODULE_REGISTRY.get(key)
     return bool(module and module.row_scoped)
+
+
+def capabilities_for(key: str) -> tuple[str, ...]:
+    """Return the declared capability tuple for a module key (or ``()``)."""
+
+    module = MODULE_REGISTRY.get(key)
+    return module.capabilities if module else ()
+
+
+def is_valid_capability(module_key: str, capability: str) -> bool:
+    """Return ``True`` iff ``capability`` is declared on ``module_key``."""
+
+    return capability in capabilities_for(module_key)

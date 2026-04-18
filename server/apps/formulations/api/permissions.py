@@ -8,19 +8,23 @@ from rest_framework.request import Request
 from rest_framework.views import APIView
 
 from apps.organizations.models import Organization
-from apps.organizations.modules import FORMULATIONS_MODULE, PermissionLevel
-from apps.organizations.services import get_membership, has_permission
+from apps.organizations.modules import (
+    FORMULATIONS_MODULE,
+    FormulationsCapability,
+)
+from apps.organizations.services import get_membership, has_capability
 
 
 class HasFormulationsPermission(IsAuthenticated):
     """Gate formulation endpoints behind the ``formulations`` module.
 
-    Flat module (not row-scoped), same hiding rules as the catalogues
-    permission class — unknown org id or non-member → ``404``, wrong
-    level → ``403``.
+    Flat module (not row-scoped). Same hiding rules as the catalogues
+    permission class — unknown org id or non-member → ``404``, missing
+    capability → ``403``. Views declare the capability they need via
+    ``required_capability`` (class or instance attribute).
     """
 
-    required_level: PermissionLevel = PermissionLevel.READ
+    required_capability: str = FormulationsCapability.VIEW
 
     def has_permission(self, request: Request, view: APIView) -> bool:  # type: ignore[override]
         if not super().has_permission(request, view):
@@ -36,7 +40,7 @@ class HasFormulationsPermission(IsAuthenticated):
         if membership is None:
             raise NotFound()
 
-        required: PermissionLevel = getattr(
-            view, "required_level", self.required_level
+        capability: str = getattr(
+            view, "required_capability", self.required_capability
         )
-        return has_permission(membership, FORMULATIONS_MODULE, required)
+        return has_capability(membership, FORMULATIONS_MODULE, capability)
