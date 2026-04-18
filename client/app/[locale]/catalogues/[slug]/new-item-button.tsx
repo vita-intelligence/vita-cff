@@ -2,6 +2,7 @@
 
 import { Button, Modal } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
@@ -161,24 +162,25 @@ export function NewItemButton({
           type="button"
           variant="primary"
           size="md"
-          className="rounded-none font-bold tracking-wider uppercase"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
         >
+          <Plus className="h-4 w-4" />
           {tItems("new_item")}
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-              <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {tItems("create.title")}
               </Modal.Heading>
-              <Modal.CloseTrigger className="font-mono text-[10px] tracking-widest uppercase text-ink-600 hover:text-ink-1000" />
+              <Modal.CloseTrigger className="inline-flex h-9 items-center rounded-lg px-2 text-xs font-medium text-ink-500 hover:bg-ink-50 hover:text-ink-1000" />
             </Modal.Header>
             <Modal.Body className="max-h-[70vh] overflow-y-auto px-6 py-6">
               <form
                 onSubmit={onSubmit}
-                className="flex flex-col gap-5"
+                className="flex flex-col gap-4"
                 noValidate
               >
                 <Controller
@@ -193,7 +195,7 @@ export function NewItemButton({
                     />
                   )}
                 />
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <Controller
                     control={control}
                     name="internal_code"
@@ -240,7 +242,7 @@ export function NewItemButton({
                 />
 
                 {activeDefinitions.length > 0 ? (
-                  <div className="flex flex-col gap-5 border-t-2 border-ink-200 pt-5">
+                  <div className="flex flex-col gap-4 border-t border-ink-200 pt-4">
                     {activeDefinitions.map((defn) => (
                       <Controller
                         key={defn.id}
@@ -263,19 +265,19 @@ export function NewItemButton({
                 {errors.root?.message ? (
                   <p
                     role="alert"
-                    className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                    className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                   >
                     {errors.root.message}
                   </p>
                 ) : null}
               </form>
             </Modal.Body>
-            <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+            <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
               <Button
                 type="button"
                 variant="outline"
                 size="md"
-                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 onClick={() => setIsOpen(false)}
               >
                 {tItems("create.cancel")}
@@ -284,7 +286,7 @@ export function NewItemButton({
                 type="button"
                 variant="primary"
                 size="md"
-                className="rounded-none font-bold tracking-wider uppercase"
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
                 onClick={() => {
                   void onSubmit();
                 }}

@@ -11,6 +11,15 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  GripVertical,
+  Minus,
+  X,
+} from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   useCallback,
@@ -22,6 +31,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from "react";
 
+import { Chip } from "@/components/ui/chip";
 import { useRouter } from "@/i18n/navigation";
 import type { AttributeDefinitionDto } from "@/services/attributes/types";
 import {
@@ -48,7 +58,7 @@ function dynamicKey(definitionKey: string): string {
   return `${DYNAMIC_PREFIX}${definitionKey}`;
 }
 
-function BrutalistCheckbox({
+function RowCheckbox({
   checked,
   indeterminate,
   ariaLabel,
@@ -62,8 +72,10 @@ function BrutalistCheckbox({
   const filled = checked || Boolean(indeterminate);
   return (
     <span
-      className={`relative inline-flex h-4 w-4 items-center justify-center border-2 border-ink-1000 ${
-        filled ? "bg-ink-1000" : "bg-ink-0"
+      className={`relative inline-flex h-4 w-4 items-center justify-center rounded transition-colors ${
+        filled
+          ? "bg-orange-500 ring-1 ring-inset ring-orange-600"
+          : "bg-ink-0 ring-1 ring-inset ring-ink-300"
       }`}
     >
       <input
@@ -78,32 +90,20 @@ function BrutalistCheckbox({
           onChange(e);
         }}
         onChange={() => {}}
-        className="absolute inset-0 h-full w-full cursor-pointer appearance-none focus:outline-none"
+        className="absolute inset-0 h-full w-full cursor-pointer appearance-none rounded focus:outline-none"
       />
       {checked ? (
-        <svg
+        <Check
           className="pointer-events-none relative h-3 w-3 text-ink-0"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
           strokeWidth={3}
-          strokeLinecap="square"
           aria-hidden
-        >
-          <path d="M3 8L7 12L13 4" />
-        </svg>
+        />
       ) : indeterminate ? (
-        <svg
+        <Minus
           className="pointer-events-none relative h-3 w-3 text-ink-0"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
           strokeWidth={3}
-          strokeLinecap="square"
           aria-hidden
-        >
-          <path d="M3 8L13 8" />
-        </svg>
+        />
       ) : null}
     </span>
   );
@@ -128,32 +128,30 @@ function useDynamicCellRenderer() {
     (item: ItemDto, definition: AttributeDefinitionDto) => {
       const raw = item.attributes?.[definition.key];
       if (raw === null || raw === undefined || raw === "") {
-        return <span className="font-mono text-xs text-ink-400">—</span>;
+        return <span className="text-sm text-ink-300">—</span>;
       }
       switch (definition.data_type) {
         case "text":
           return (
-            <span className="font-mono text-xs text-ink-700">
-              {String(raw)}
-            </span>
+            <span className="text-sm text-ink-700">{String(raw)}</span>
           );
         case "number":
           return (
-            <span className="font-mono text-xs">
+            <span className="text-sm tabular-nums text-ink-700">
               {typeof raw === "number"
                 ? priceFormatter.format(raw)
                 : String(raw)}
             </span>
           );
         case "boolean":
-          return (
-            <span className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
-              {raw ? "yes" : "no"}
-            </span>
+          return raw ? (
+            <Chip tone="success">Yes</Chip>
+          ) : (
+            <Chip tone="neutral">No</Chip>
           );
         case "date":
           return (
-            <span className="font-mono text-xs text-ink-700">
+            <span className="text-sm text-ink-700">
               {typeof raw === "string"
                 ? dateFormatter.format(new Date(raw))
                 : String(raw)}
@@ -164,7 +162,7 @@ function useDynamicCellRenderer() {
             (o) => o.value === String(raw),
           );
           return (
-            <span className="font-mono text-xs text-ink-700">
+            <span className="text-sm text-ink-700">
               {option?.label ?? String(raw)}
             </span>
           );
@@ -178,12 +176,9 @@ function useDynamicCellRenderer() {
                   (o) => o.value === value,
                 );
                 return (
-                  <span
-                    key={value}
-                    className="border border-ink-1000 px-1.5 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-700"
-                  >
+                  <Chip key={value} tone="neutral">
                     {option?.label ?? value}
-                  </span>
+                  </Chip>
                 );
               })}
             </div>
@@ -270,7 +265,7 @@ export function CatalogueTable({
       enableSorting: false,
       header: ({ table }) => (
         <div className="flex items-center justify-center">
-          <BrutalistCheckbox
+          <RowCheckbox
             ariaLabel="Select all"
             checked={table.getIsAllRowsSelected()}
             indeterminate={table.getIsSomeRowsSelected()}
@@ -280,7 +275,7 @@ export function CatalogueTable({
       ),
       cell: ({ row }) => (
         <div className="flex items-center justify-center">
-          <BrutalistCheckbox
+          <RowCheckbox
             ariaLabel={`Select ${row.original.name}`}
             checked={row.getIsSelected()}
             onChange={(event) => {
@@ -303,7 +298,9 @@ export function CatalogueTable({
         header: tItems("columns.name"),
         enableSorting: true,
         cell: (ctx) => (
-          <span className="font-bold">{ctx.row.original.name}</span>
+          <span className="text-sm font-medium text-ink-1000">
+            {ctx.row.original.name}
+          </span>
         ),
       },
       {
@@ -312,7 +309,7 @@ export function CatalogueTable({
         header: tItems("columns.internal_code"),
         enableSorting: true,
         cell: (ctx) => (
-          <span className="font-mono text-xs text-ink-600">
+          <span className="text-xs text-ink-500">
             {ctx.row.original.internal_code || "—"}
           </span>
         ),
@@ -323,7 +320,7 @@ export function CatalogueTable({
         header: tItems("columns.unit"),
         enableSorting: false,
         cell: (ctx) => (
-          <span className="font-mono text-xs text-ink-600">
+          <span className="text-sm text-ink-700">
             {ctx.row.original.unit || "—"}
           </span>
         ),
@@ -335,7 +332,7 @@ export function CatalogueTable({
         header: tItems("columns.base_price"),
         enableSorting: true,
         cell: (ctx) => (
-          <span className="font-mono text-xs">
+          <span className="text-sm tabular-nums text-ink-1000">
             {ctx.row.original.base_price
               ? priceFormatter.format(
                   Number.parseFloat(ctx.row.original.base_price),
@@ -351,7 +348,7 @@ export function CatalogueTable({
         header: tItems("columns.updated_at"),
         enableSorting: true,
         cell: (ctx) => (
-          <span className="font-mono text-xs text-ink-600">
+          <span className="text-sm text-ink-500">
             {dateFormatter.format(new Date(ctx.row.original.updated_at))}
           </span>
         ),
@@ -362,18 +359,10 @@ export function CatalogueTable({
         enableSorting: false,
         cell: (ctx) => {
           const archived = ctx.row.original.is_archived;
-          return (
-            <span
-              className={
-                archived
-                  ? "border-2 border-ink-1000 bg-ink-200 px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-700"
-                  : "border-2 border-ink-1000 bg-ink-1000 px-2 py-0.5 font-mono text-[10px] tracking-widest uppercase text-ink-0"
-              }
-            >
-              {archived
-                ? tItems("status.archived")
-                : tItems("status.active")}
-            </span>
+          return archived ? (
+            <Chip tone="neutral">{tItems("status.archived")}</Chip>
+          ) : (
+            <Chip tone="success">{tItems("status.active")}</Chip>
           );
         },
       },
@@ -637,14 +626,14 @@ export function CatalogueTable({
 
   if (!isFetching && rows.length === 0) {
     return (
-      <div className="flex flex-col items-start gap-2 border-2 border-ink-1000 bg-ink-0 p-8">
-        <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+      <div className="rounded-2xl bg-ink-0 p-10 text-center shadow-sm ring-1 ring-ink-200">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tCommon("states.empty")}
         </p>
-        <h2 className="text-2xl font-black tracking-tight uppercase">
+        <h2 className="mt-2 text-lg font-semibold text-ink-1000">
           {emptyTitle}
         </h2>
-        <p className="text-sm text-ink-600">{emptyHint}</p>
+        <p className="mt-1 text-sm text-ink-500">{emptyHint}</p>
       </div>
     );
   }
@@ -655,27 +644,28 @@ export function CatalogueTable({
   return (
     <div className="flex flex-col gap-4">
       {selectionCount > 0 ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 border-2 border-ink-1000 bg-ink-1000 px-4 py-3 text-ink-0">
-          <div className="flex items-center gap-4">
-            <span className="font-mono text-xs tracking-widest uppercase">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-ink-1000 px-4 py-3 text-ink-0 shadow-sm">
+          <div className="flex items-center gap-3">
+            <Chip tone="orange">
               {tItems("bulk.selected_count", { count: selectionCount })}
-            </span>
+            </Chip>
             <button
               type="button"
-              className="font-mono text-[10px] tracking-widest uppercase text-ink-0 underline underline-offset-4 hover:text-ink-200 disabled:opacity-50"
+              className="inline-flex h-8 items-center gap-1 rounded-lg px-2 text-xs font-medium text-ink-200 hover:bg-ink-700/60 hover:text-ink-0 disabled:opacity-50"
               onClick={clearSelection}
               disabled={bulkBusy}
             >
+              <X className="h-3.5 w-3.5" />
               {tItems("bulk.clear")}
             </button>
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-wrap items-center gap-2">
             {canAdmin && !viewArchived ? (
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
-                className="rounded-none border-2 border-ink-0 font-bold tracking-wider uppercase text-ink-0 hover:bg-ink-0 hover:text-ink-1000"
+                className="h-9 rounded-lg bg-ink-0/10 px-3 text-sm font-medium text-ink-0 ring-1 ring-inset ring-ink-0/20 hover:bg-ink-0/15"
                 onClick={onBulkArchive}
                 isDisabled={bulkBusy}
               >
@@ -688,7 +678,7 @@ export function CatalogueTable({
                   type="button"
                   variant="outline"
                   size="sm"
-                  className="rounded-none border-2 border-ink-0 font-bold tracking-wider uppercase text-ink-0 hover:bg-ink-0 hover:text-ink-1000"
+                  className="h-9 rounded-lg bg-ink-0/10 px-3 text-sm font-medium text-ink-0 ring-1 ring-inset ring-ink-0/20 hover:bg-ink-0/15"
                   onClick={onBulkRestore}
                   isDisabled={bulkBusy}
                 >
@@ -703,7 +693,7 @@ export function CatalogueTable({
                       type="button"
                       variant="danger"
                       size="sm"
-                      className="rounded-none font-bold tracking-wider uppercase"
+                      className="h-9 rounded-lg bg-danger px-3 text-sm font-medium text-ink-0 hover:bg-danger/90"
                       isDisabled={bulkBusy}
                     >
                       {tItems("bulk.delete_permanently")}
@@ -711,25 +701,25 @@ export function CatalogueTable({
                   </AlertDialog.Trigger>
                   <AlertDialog.Backdrop>
                     <AlertDialog.Container size="md">
-                      <AlertDialog.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0 text-ink-1000">
-                        <AlertDialog.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-                          <AlertDialog.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+                      <AlertDialog.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 text-ink-1000 shadow-lg ring-1 ring-ink-200">
+                        <AlertDialog.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                          <AlertDialog.Heading className="text-base font-semibold text-ink-1000">
                             {tItems("bulk.confirm_title", {
                               count: selectionCount,
                             })}
                           </AlertDialog.Heading>
                         </AlertDialog.Header>
                         <AlertDialog.Body className="px-6 py-6">
-                          <p className="text-sm text-ink-700">
+                          <p className="text-sm text-ink-500">
                             {tItems("bulk.confirm_body")}
                           </p>
                         </AlertDialog.Body>
-                        <AlertDialog.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+                        <AlertDialog.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
                           <Button
                             type="button"
                             variant="outline"
                             size="md"
-                            className="rounded-none border-2 font-bold tracking-wider uppercase"
+                            className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                             onClick={() => setIsBulkDeleteOpen(false)}
                             isDisabled={bulkBusy}
                           >
@@ -739,7 +729,7 @@ export function CatalogueTable({
                             type="button"
                             variant="danger"
                             size="md"
-                            className="rounded-none font-bold tracking-wider uppercase"
+                            className="h-10 rounded-lg bg-danger px-4 text-sm font-medium text-ink-0 hover:bg-danger/90"
                             onClick={onBulkDeletePermanently}
                             isDisabled={bulkBusy}
                           >
@@ -759,156 +749,160 @@ export function CatalogueTable({
       {bulkError ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {bulkError}
         </p>
       ) : null}
 
-      <div
-        ref={scrollRef}
-        className={`overflow-auto border-2 border-ink-1000 bg-ink-0 ${VIEWPORT_HEIGHT_CLASS}`}
-      >
-        <table className="w-full border-collapse">
-          <thead className="sticky top-0 z-10 bg-ink-0">
-            {headerGroups.map((headerGroup) => (
-              <tr key={headerGroup.id} className="border-b-2 border-ink-1000">
-                {headerGroup.headers.map((header) => {
-                  const columnId = header.column.id;
-                  const isSelectCol = columnId === SELECT_COLUMN_ID;
-                  const align =
-                    (header.column.columnDef.meta as
-                      | { align?: "start" | "end" }
-                      | undefined)?.align === "end"
-                      ? "text-right"
-                      : "text-left";
-                  const dropClass =
-                    dragOverKey === columnId
-                      ? "bg-ink-100 border-l-4 border-ink-1000"
-                      : "";
-                  const canSort = header.column.getCanSort();
-                  const sortDir = header.column.getIsSorted();
-                  return (
-                    <th
-                      key={header.id}
-                      scope="col"
-                      style={isSelectCol ? { width: 40 } : undefined}
-                      className={`px-3 py-3 font-mono text-[10px] tracking-widest uppercase text-ink-700 ${align} ${dropClass}`}
-                    >
-                      {isSelectCol ? (
-                        flexRender(
-                          header.column.columnDef.header,
-                          header.getContext(),
-                        )
-                      ) : (
-                        <div
-                          draggable
-                          onDragStart={handleDragStart(columnId)}
-                          onDragOver={handleDragOver(columnId)}
-                          onDragLeave={handleDragLeave}
-                          onDrop={handleDrop(columnId)}
-                          onDragEnd={handleDragEnd}
-                          onClick={
-                            canSort
-                              ? header.column.getToggleSortingHandler()
-                              : undefined
-                          }
-                          className={`flex cursor-grab items-center gap-2 active:cursor-grabbing ${
-                            align === "text-right"
-                              ? "justify-end"
-                              : "justify-start"
-                          } ${canSort ? "hover:text-ink-1000" : ""}`}
-                        >
-                          <span className="text-ink-400" aria-hidden>
-                            ⋮⋮
-                          </span>
-                          <span>
-                            {flexRender(
-                              header.column.columnDef.header,
-                              header.getContext(),
-                            )}
-                          </span>
-                          {canSort ? (
-                            <span className="text-ink-500" aria-hidden>
-                              {sortDir === "asc"
-                                ? "▲"
-                                : sortDir === "desc"
-                                  ? "▼"
-                                  : ""}
-                            </span>
-                          ) : null}
-                        </div>
-                      )}
-                    </th>
-                  );
-                })}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {paddingTop > 0 ? (
-              <tr aria-hidden>
-                <td
-                  colSpan={columnOrder.length}
-                  style={{ height: paddingTop }}
-                />
-              </tr>
-            ) : null}
-            {virtualRows.map((virtualRow) => {
-              const row = rows[virtualRow.index]!;
-              const selected = row.getIsSelected();
-              return (
-                <tr
-                  key={row.id}
-                  onClick={() =>
-                    router.push(`/catalogues/${slug}/${row.original.id}`)
-                  }
-                  className={`cursor-pointer border-b border-ink-200 hover:bg-ink-50 ${
-                    selected ? "bg-ink-100" : ""
-                  }`}
-                >
-                  {row.getVisibleCells().map((cell) => {
+      <div className="overflow-hidden rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+        <div
+          ref={scrollRef}
+          className={`overflow-auto ${VIEWPORT_HEIGHT_CLASS}`}
+        >
+          <table className="w-full border-collapse">
+            <thead className="sticky top-0 z-10 bg-ink-0/95 backdrop-blur">
+              {headerGroups.map((headerGroup) => (
+                <tr key={headerGroup.id} className="border-b border-ink-200">
+                  {headerGroup.headers.map((header) => {
+                    const columnId = header.column.id;
+                    const isSelectCol = columnId === SELECT_COLUMN_ID;
                     const align =
-                      (cell.column.columnDef.meta as
+                      (header.column.columnDef.meta as
                         | { align?: "start" | "end" }
                         | undefined)?.align === "end"
                         ? "text-right"
                         : "text-left";
+                    const dropClass =
+                      dragOverKey === columnId
+                        ? "bg-orange-50 border-l-2 border-orange-500"
+                        : "";
+                    const canSort = header.column.getCanSort();
+                    const sortDir = header.column.getIsSorted();
                     return (
-                      <td
-                        key={cell.id}
-                        className={`px-3 py-3 ${align}`}
-                        onClick={(event) => {
-                          if (cell.column.id === SELECT_COLUMN_ID) {
-                            event.stopPropagation();
-                          }
-                        }}
+                      <th
+                        key={header.id}
+                        scope="col"
+                        style={isSelectCol ? { width: 44 } : undefined}
+                        className={`px-3 py-3 text-xs font-medium uppercase tracking-wide text-ink-500 ${align} ${dropClass}`}
                       >
-                        {flexRender(
-                          cell.column.columnDef.cell,
-                          cell.getContext(),
+                        {isSelectCol ? (
+                          flexRender(
+                            header.column.columnDef.header,
+                            header.getContext(),
+                          )
+                        ) : (
+                          <div
+                            draggable
+                            onDragStart={handleDragStart(columnId)}
+                            onDragOver={handleDragOver(columnId)}
+                            onDragLeave={handleDragLeave}
+                            onDrop={handleDrop(columnId)}
+                            onDragEnd={handleDragEnd}
+                            onClick={
+                              canSort
+                                ? header.column.getToggleSortingHandler()
+                                : undefined
+                            }
+                            className={`group inline-flex cursor-grab items-center gap-1.5 active:cursor-grabbing ${
+                              align === "text-right"
+                                ? "ml-auto justify-end"
+                                : "justify-start"
+                            } ${canSort ? "transition-colors hover:text-ink-1000" : ""}`}
+                          >
+                            <GripVertical
+                              className="h-3 w-3 text-ink-300 opacity-0 transition-opacity group-hover:opacity-100"
+                              aria-hidden
+                            />
+                            <span>
+                              {flexRender(
+                                header.column.columnDef.header,
+                                header.getContext(),
+                              )}
+                            </span>
+                            {canSort ? (
+                              sortDir === "asc" ? (
+                                <ArrowUp className="h-3 w-3 text-ink-700" />
+                              ) : sortDir === "desc" ? (
+                                <ArrowDown className="h-3 w-3 text-ink-700" />
+                              ) : (
+                                <ArrowUpDown className="h-3 w-3 text-ink-300" />
+                              )
+                            ) : null}
+                          </div>
                         )}
-                      </td>
+                      </th>
                     );
                   })}
                 </tr>
-              );
-            })}
-            {paddingBottom > 0 ? (
-              <tr aria-hidden>
-                <td
-                  colSpan={columnOrder.length}
-                  style={{ height: paddingBottom }}
-                />
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
+              ))}
+            </thead>
+            <tbody>
+              {paddingTop > 0 ? (
+                <tr aria-hidden>
+                  <td
+                    colSpan={columnOrder.length}
+                    style={{ height: paddingTop }}
+                  />
+                </tr>
+              ) : null}
+              {virtualRows.map((virtualRow) => {
+                const row = rows[virtualRow.index]!;
+                const selected = row.getIsSelected();
+                return (
+                  <tr
+                    key={row.id}
+                    onClick={() =>
+                      router.push(`/catalogues/${slug}/${row.original.id}`)
+                    }
+                    className={`cursor-pointer border-b border-ink-100 transition-colors hover:bg-ink-50 ${
+                      selected ? "bg-orange-50/60" : ""
+                    }`}
+                  >
+                    {row.getVisibleCells().map((cell) => {
+                      const align =
+                        (cell.column.columnDef.meta as
+                          | { align?: "start" | "end" }
+                          | undefined)?.align === "end"
+                          ? "text-right"
+                          : "text-left";
+                      return (
+                        <td
+                          key={cell.id}
+                          className={`px-3 py-3 ${align}`}
+                          onClick={(event) => {
+                            if (cell.column.id === SELECT_COLUMN_ID) {
+                              event.stopPropagation();
+                            }
+                          }}
+                        >
+                          {flexRender(
+                            cell.column.columnDef.cell,
+                            cell.getContext(),
+                          )}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+              {paddingBottom > 0 ? (
+                <tr aria-hidden>
+                  <td
+                    colSpan={columnOrder.length}
+                    style={{ height: paddingBottom }}
+                  />
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
 
-      <div className="flex items-center justify-between border-t-2 border-ink-1000 bg-ink-0 px-4 py-2 font-mono text-[10px] tracking-widest uppercase text-ink-600">
+      <div className="flex items-center justify-between px-1 text-xs text-ink-500">
         <span>
-          {loadedCount} loaded{hasNextPage ? " · scrolling loads more" : ""}
+          {tItems("row_count", { count: loadedCount })}
+          {hasNextPage ? ` · ${tItems("scroll_hint")}` : ""}
         </span>
         {isFetchingNextPage ? (
           <span>{tCommon("states.loading")}</span>

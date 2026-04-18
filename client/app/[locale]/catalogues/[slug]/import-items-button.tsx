@@ -1,9 +1,12 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
+import { AlertTriangle, CloudUpload, Upload } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
+
+import { Chip } from "@/components/ui/chip";
 
 import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -85,28 +88,29 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
           type="button"
           variant="outline"
           size="md"
-          className="rounded-none border-2 font-bold tracking-wider uppercase"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
+          <Upload className="h-4 w-4" />
           {tItems("import")}
         </Button>
       </Modal.Trigger>
       <Modal.Backdrop>
         <Modal.Container size="md">
-          <Modal.Dialog className="border-2 border-ink-1000 bg-ink-0 p-0">
-            <Modal.Header className="flex items-center justify-between border-b-2 border-ink-1000 px-6 py-4">
-              <Modal.Heading className="font-mono text-xs tracking-widest uppercase text-ink-700">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
                 {tItems("import_modal.title")}
               </Modal.Heading>
-              <Modal.CloseTrigger className="font-mono text-[10px] tracking-widest uppercase text-ink-600 hover:text-ink-1000" />
+              <Modal.CloseTrigger className="inline-flex h-9 items-center rounded-lg px-2 text-xs font-medium text-ink-500 hover:bg-ink-50 hover:text-ink-1000" />
             </Modal.Header>
             <Modal.Body className="max-h-[70vh] overflow-y-auto px-6 py-6">
               {result === null ? (
-                <div className="flex flex-col gap-5">
-                  <p className="text-sm text-ink-700">
+                <div className="flex flex-col gap-4">
+                  <p className="text-sm text-ink-500">
                     {tItems("import_modal.intro")}
                   </p>
 
-                  <label className="flex cursor-pointer flex-col items-center justify-center gap-2 border-2 border-dashed border-ink-1000 bg-ink-0 px-4 py-10 text-center hover:bg-ink-50">
+                  <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl bg-ink-50 px-4 py-10 text-center ring-1 ring-dashed ring-ink-300 transition-colors hover:bg-orange-50/60 hover:ring-orange-300">
                     <input
                       ref={inputRef}
                       type="file"
@@ -114,11 +118,12 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                       onChange={handleFileChange}
                       className="sr-only"
                     />
-                    <span className="font-mono text-[11px] tracking-widest uppercase text-ink-700">
+                    <CloudUpload className="h-8 w-8 text-ink-400" />
+                    <span className="text-sm font-medium text-ink-700">
                       {tItems("import_modal.dropzone_label")}
                     </span>
                     {file ? (
-                      <span className="font-mono text-xs text-ink-1000">
+                      <span className="text-xs text-ink-500">
                         {tItems("import_modal.selected_file", {
                           name: file.name,
                         })}
@@ -129,19 +134,19 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                   {fileError ? (
                     <p
                       role="alert"
-                      className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+                      className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
                     >
                       {fileError}
                     </p>
                   ) : null}
                 </div>
               ) : (
-                <div className="flex flex-col gap-5">
+                <div className="flex flex-col gap-4">
                   <div>
-                    <p className="font-mono text-[10px] tracking-widest uppercase text-ink-500">
+                    <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
                       {tItems("import_modal.result_title")}
                     </p>
-                    <p className="mt-2 text-lg font-black tracking-tight uppercase">
+                    <p className="mt-1 text-xl font-semibold tracking-tight text-ink-1000">
                       {tItems("import_modal.result_created", {
                         count: result.created,
                       })}
@@ -149,17 +154,15 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                   </div>
 
                   {result.errors.length > 0 ? (
-                    <section className="border-2 border-danger bg-danger/10 p-4">
-                      <p className="font-mono text-[10px] tracking-widest uppercase text-danger">
+                    <section className="rounded-2xl bg-danger/10 p-4 ring-1 ring-inset ring-danger/20">
+                      <p className="inline-flex items-center gap-1.5 text-xs font-medium text-danger">
+                        <AlertTriangle className="h-3.5 w-3.5" />
                         {tItems("import_modal.result_errors_title")}
                       </p>
                       <ul className="mt-3 flex flex-col gap-2">
                         {result.errors.map((err) => (
-                          <li
-                            key={err.row}
-                            className="font-mono text-xs text-ink-900"
-                          >
-                            <span className="font-bold">
+                          <li key={err.row} className="text-xs text-ink-900">
+                            <span className="font-semibold">
                               {tItems("import_modal.result_error_row", {
                                 row: err.row,
                               })}
@@ -187,25 +190,22 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                   ) : null}
 
                   {result.unmapped_columns.length > 0 ? (
-                    <section className="border-2 border-ink-1000 bg-ink-50 p-4">
-                      <p className="font-mono text-[10px] tracking-widest uppercase text-ink-700">
+                    <section className="rounded-2xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200">
+                      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
                         {tItems("import_modal.result_unmapped_title")}
                       </p>
-                      <ul className="mt-3 flex flex-wrap gap-2">
+                      <ul className="mt-3 flex flex-wrap gap-1.5">
                         {result.unmapped_columns.map((col) => (
-                          <li
-                            key={col}
-                            className="border-2 border-ink-1000 bg-ink-0 px-2 py-1 font-mono text-[11px] tracking-widest uppercase text-ink-900"
-                          >
-                            {col}
+                          <li key={col}>
+                            <Chip tone="neutral">{col}</Chip>
                           </li>
                         ))}
                       </ul>
-                      <p className="mt-3 text-xs text-ink-700">
+                      <p className="mt-3 text-xs text-ink-500">
                         {tItems("import_modal.result_unmapped_hint")}{" "}
                         <Link
                           href={`/catalogues/${slug}/fields`}
-                          className="font-bold text-ink-1000 underline underline-offset-4"
+                          className="font-medium text-orange-700 hover:text-orange-800 hover:underline"
                           onClick={close}
                         >
                           /catalogues/{slug}/fields
@@ -216,12 +216,12 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                 </div>
               )}
             </Modal.Body>
-            <Modal.Footer className="flex items-center justify-end gap-3 border-t-2 border-ink-1000 px-6 py-4">
+            <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
               <Button
                 type="button"
                 variant="outline"
                 size="md"
-                className="rounded-none border-2 font-bold tracking-wider uppercase"
+                className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 onClick={close}
                 isDisabled={isBusy}
               >
@@ -234,7 +234,7 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                   type="button"
                   variant="primary"
                   size="md"
-                  className="rounded-none font-bold tracking-wider uppercase"
+                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
                   onClick={handleSubmit}
                   isDisabled={!file || isBusy}
                 >
