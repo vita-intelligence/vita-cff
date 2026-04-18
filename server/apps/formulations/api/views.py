@@ -217,8 +217,25 @@ class FormulationDetailView(APIView):
     def delete(
         self, request: Request, org_id: str, formulation_id: str
     ) -> Response:
+        from apps.audit.services import record as record_audit, snapshot
+
         formulation = self._load(formulation_id)
+        # Snapshot + capture the pk BEFORE the cascade wipes them;
+        # we still want a meaningful audit row after the row is
+        # gone.
+        before = snapshot(formulation)
+        organization = formulation.organization
+        target_id = str(formulation.pk)
         formulation.delete()
+        record_audit(
+            organization=organization,
+            actor=request.user,
+            action="formulation.delete",
+            target=None,
+            target_type="formulation",
+            target_id=target_id,
+            before=before,
+        )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

@@ -23,6 +23,7 @@ from typing import Any, Iterable
 from django.db import transaction
 from django.db.models import Max, QuerySet
 
+from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.formulations.constants import (
     AMINO_ACID_GROUPS,
@@ -669,7 +670,7 @@ def create_formulation(
     if tablet_size and tablet_size_by_key(tablet_size) is None:
         raise InvalidTabletSize()
 
-    return Formulation.objects.create(
+    formulation = Formulation.objects.create(
         organization=organization,
         name=name,
         code=code,
@@ -686,6 +687,14 @@ def create_formulation(
         created_by=actor,
         updated_by=actor,
     )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="formulation.create",
+        target=formulation,
+        after=snapshot(formulation),
+    )
+    return formulation
 
 
 @transaction.atomic
@@ -729,12 +738,24 @@ def update_formulation(
         if duplicate:
             raise FormulationCodeConflict()
 
+    # Snapshot before mutating so the audit row can show the
+    # diff. Freezing the dict (not the instance) is enough — the
+    # coerced values are already immutable by construction.
+    before = snapshot(formulation)
     for key, value in changes.items():
         if key in mutable and value is not None:
             setattr(formulation, key, value)
 
     formulation.updated_by = actor
     formulation.save()
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.update",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
     return formulation
 
 
@@ -783,6 +804,10 @@ def replace_lines(
         if str(line["item_id"]) not in items_by_id:
             raise RawMaterialNotInOrg()
 
+    # Snapshot the line set pre-replacement so the audit diff can
+    # show exactly which ingredients came and went.
+    before_lines = _lines_snapshot(formulation)
+
     FormulationLine.objects.filter(formulation=formulation).delete()
 
     created: list[FormulationLine] = []
@@ -809,7 +834,42 @@ def replace_lines(
 
     formulation.updated_by = actor
     formulation.save(update_fields=["updated_by", "updated_at"])
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation_line.replace",
+        target=formulation,
+        target_type="formulation_line",
+        target_id=str(formulation.pk),
+        before={"lines": before_lines},
+        after={"lines": _lines_snapshot(formulation)},
+    )
     return created
+
+
+def _lines_snapshot(formulation: Formulation) -> list[dict[str, Any]]:
+    """Compact snapshot of one formulation's ingredient lines for
+    the audit ``before`` / ``after`` payload. Captures the
+    business-relevant fields (which item, what claim, in what
+    order) without the timestamps and FKs that would pollute the
+    diff."""
+
+    return [
+        {
+            "item_id": str(line.item_id),
+            "item_name": line.item.name,
+            "label_claim_mg": str(line.label_claim_mg),
+            "serving_size_override": line.serving_size_override,
+            "display_order": line.display_order,
+            "mg_per_serving_cached": (
+                str(line.mg_per_serving_cached)
+                if line.mg_per_serving_cached is not None
+                else None
+            ),
+            "notes": line.notes,
+        }
+        for line in formulation.lines.select_related("item").all()
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1544,6 +1604,17 @@ def save_version(
         snapshot_totals=serialized_totals,
         created_by=actor,
     )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation_version.save",
+        target=version,
+        after={
+            "formulation_id": str(formulation.pk),
+            "version_number": version.version_number,
+            "label": version.label,
+        },
+    )
     return version
 
 
@@ -1622,5 +1693,14 @@ def rollback_to_version(
         formulation=formulation,
         actor=actor,
         label=f"rollback to v{version_number}",
+    )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation_version.rollback",
+        target=formulation,
+        after={
+            "rolled_back_to_version_number": version_number,
+        },
     )
     return formulation
