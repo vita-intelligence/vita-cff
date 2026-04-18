@@ -508,7 +508,7 @@ class TestModuleRegistry:
         assert response.status_code == status.HTTP_200_OK
         rows = response.json()
         keys = {r["key"] for r in rows}
-        assert keys == {"members", "catalogues", "formulations"}
+        assert keys == {"members", "catalogues", "formulations", "audit"}
         members = next(r for r in rows if r["key"] == "members")
         assert set(members["capabilities"]) == {
             "view",

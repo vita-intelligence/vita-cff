@@ -34,6 +34,7 @@ export const namespaces = [
   "product_validation",
   "settings",
   "ai",
+  "audit_log",
 ] as const;
 
 export type Namespace = (typeof namespaces)[number];

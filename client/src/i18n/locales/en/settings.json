@@ -5,7 +5,8 @@
   "tabs": {
     "profile": "Profile",
     "organization": "Organization",
-    "members": "Members"
+    "members": "Members",
+    "audit_log": "Audit log"
   },
   "profile": {
     "section_title": "Your profile",
@@ -75,6 +76,8 @@
     "catalogues_description": "Raw materials, packaging, and any custom reference tables — scoped per catalogue.",
     "formulations": "Projects",
     "formulations_description": "Build projects, save versions, approve spec sheets, run QC validations.",
+    "audit": "Audit log",
+    "audit_description": "Read the org-wide trail of every write across catalogues, projects, spec sheets, trial batches, and QC validations.",
     "no_row_scopes": "No catalogues exist yet — create one to scope access."
   },
   "capabilities": {
@@ -96,6 +99,9 @@
       "edit": "Edit",
       "approve": "Approve & send",
       "delete": "Delete"
+    },
+    "audit": {
+      "view": "View audit log"
     }
   }
 }

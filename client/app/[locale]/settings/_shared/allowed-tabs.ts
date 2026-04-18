@@ -26,5 +26,8 @@ export function computeAllowedSettingsTabs(
   if (hasFlatCapability(primaryOrg, "members", "view")) {
     tabs.push("members");
   }
+  if (hasFlatCapability(primaryOrg, "audit", "view")) {
+    tabs.push("audit-log");
+  }
   return tabs;
 }

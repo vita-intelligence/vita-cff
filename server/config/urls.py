@@ -32,4 +32,5 @@ urlpatterns = [
         ),
     ),
     path("api/", include("apps.ai.api.urls", namespace="ai")),
+    path("api/", include("apps.audit.api.urls", namespace="audit")),
 ]

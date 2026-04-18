@@ -32,6 +32,7 @@ from dataclasses import dataclass
 MEMBERS_MODULE = "members"
 CATALOGUES_MODULE = "catalogues"
 FORMULATIONS_MODULE = "formulations"
+AUDIT_MODULE = "audit"
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,14 @@ class FormulationsCapability:
     EDIT = "edit"
     APPROVE = "approve"
     DELETE = "delete"
+
+
+class AuditCapability:
+    #: Read the org-wide audit log. Deliberately the only cap today —
+    #: audit rows are immutable by contract, so there's nothing else
+    #: to grant. If we later add a "sign off on a forensic report"
+    #: workflow it becomes its own capability alongside ``VIEW``.
+    VIEW = "view"
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,16 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.APPROVE,
             FormulationsCapability.DELETE,
         ),
+    ),
+    AUDIT_MODULE: Module(
+        key=AUDIT_MODULE,
+        name="Audit log",
+        description=(
+            "Read the org-wide audit trail of every write across "
+            "catalogues, projects, spec sheets, trial batches, and "
+            "QC validations. Compliance + incident review surface."
+        ),
+        capabilities=(AuditCapability.VIEW,),
     ),
 }
 

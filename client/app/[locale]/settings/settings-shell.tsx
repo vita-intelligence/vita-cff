@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   Building2,
+  ScrollText,
   User2,
   Users,
 } from "lucide-react";
@@ -12,13 +13,18 @@ import type { ReactNode } from "react";
 import { Link, usePathname } from "@/i18n/navigation";
 
 
-export type SettingsTabKey = "profile" | "organization" | "members";
+export type SettingsTabKey =
+  | "profile"
+  | "organization"
+  | "members"
+  | "audit-log";
 
 
 const ALL_TABS: readonly SettingsTabKey[] = [
   "profile",
   "organization",
   "members",
+  "audit-log",
 ] as const;
 
 
@@ -71,6 +77,12 @@ export function SettingsShell({
         label: tSettings("tabs.members"),
         href: "/settings/members",
         icon: <Users className="h-4 w-4" />,
+      },
+      {
+        key: "audit-log" as const,
+        label: tSettings("tabs.audit_log"),
+        href: "/settings/audit-log",
+        icon: <ScrollText className="h-4 w-4" />,
       },
     ] as const
   ).filter((tab) => allowedTabs.includes(tab.key));
