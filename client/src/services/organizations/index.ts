@@ -1,9 +1,15 @@
 export { organizationsEndpoints } from "./endpoints";
-export { createOrganization, fetchOrganizations } from "./api";
+export {
+  createOrganization,
+  fetchOrganizations,
+  updateOrganization,
+  type UpdateOrganizationRequestDto,
+} from "./api";
 export {
   organizationsQueryKeys,
   useCreateOrganization,
   useOrganizations,
+  useUpdateOrganization,
 } from "./hooks";
 export {
   createOrganizationSchema,

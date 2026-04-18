@@ -8,7 +8,5 @@
 
 export const organizationsEndpoints = {
   list: "/api/organizations/",
+  detail: (orgId: string) => `/api/organizations/${orgId}/`,
 } as const;
-
-export type OrganizationsEndpoint =
-  (typeof organizationsEndpoints)[keyof typeof organizationsEndpoints];

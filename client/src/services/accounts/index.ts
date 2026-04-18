@@ -1,11 +1,19 @@
 export { accountsEndpoints } from "./endpoints";
-export { fetchCurrentUser, loginUser, logoutUser, registerUser } from "./api";
+export {
+  fetchCurrentUser,
+  loginUser,
+  logoutUser,
+  registerUser,
+  updateCurrentUser,
+  type UpdateMeRequestDto,
+} from "./api";
 export {
   accountsQueryKeys,
   useCurrentUser,
   useLogin,
   useLogout,
   useRegister,
+  useUpdateCurrentUser,
 } from "./hooks";
 export {
   loginSchema,

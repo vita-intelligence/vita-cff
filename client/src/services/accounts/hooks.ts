@@ -22,6 +22,8 @@ import {
   loginUser,
   logoutUser,
   registerUser,
+  updateCurrentUser,
+  type UpdateMeRequestDto,
 } from "./api";
 import type {
   LoginRequestDto,
@@ -83,5 +85,24 @@ export function useCurrentUser(
     queryKey: accountsQueryKeys.me(),
     queryFn: fetchCurrentUser,
     enabled: options.enabled ?? true,
+  });
+}
+
+
+export function useUpdateCurrentUser(): UseMutationResult<
+  UserDto,
+  ApiError,
+  UpdateMeRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<UserDto, ApiError, UpdateMeRequestDto>({
+    mutationFn: updateCurrentUser,
+    onSuccess: (user) => {
+      // Prime + invalidate — the updated response is cheap to carry
+      // forward as the new ``me`` cache, but Server Components still
+      // re-fetch on the next navigation because they bypass the
+      // React Query cache entirely.
+      queryClient.setQueryData(accountsQueryKeys.me(), user);
+    },
   });
 }

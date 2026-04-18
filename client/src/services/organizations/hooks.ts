@@ -13,7 +13,12 @@ import {
 import type { ApiError } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
 
-import { createOrganization, fetchOrganizations } from "./api";
+import {
+  createOrganization,
+  fetchOrganizations,
+  updateOrganization,
+  type UpdateOrganizationRequestDto,
+} from "./api";
 import type {
   CreateOrganizationRequestDto,
   CreateOrganizationResponseDto,
@@ -58,5 +63,19 @@ export function useCreateOrganization(): UseMutationResult<
         queryKey: organizationsQueryKeys.list(),
       });
     },
+  });
+}
+
+
+export function useUpdateOrganization(
+  orgId: string,
+): UseMutationResult<OrganizationDto, ApiError, UpdateOrganizationRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<OrganizationDto, ApiError, UpdateOrganizationRequestDto>({
+    mutationFn: (payload) => updateOrganization(orgId, payload),
+    onSuccess: () =>
+      queryClient.invalidateQueries({
+        queryKey: organizationsQueryKeys.list(),
+      }),
   });
 }

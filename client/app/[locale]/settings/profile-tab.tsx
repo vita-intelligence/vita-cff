@@ -1,20 +1,32 @@
-import { Mail, User2 } from "lucide-react";
-import { getTranslations } from "next-intl/server";
+"use client";
 
+import { Button } from "@heroui/react";
+import { Check, Mail, Pencil, X } from "lucide-react";
+import { useTranslations } from "next-intl";
+import { useState, type FormEvent } from "react";
+
+import { ApiError } from "@/lib/api";
+import { translateCode } from "@/lib/errors/translate";
+import { useUpdateCurrentUser } from "@/services/accounts";
 import type { UserDto } from "@/services/accounts/types";
 
 
 /**
- * Read-only profile card. Server component — the user payload comes
- * in from the page via :func:`getCurrentUserServer`. Edits (name
- * changes, avatar, etc.) will ship as their own mutation flow later.
+ * Profile tab — summary card plus an inline name editor.
+ *
+ * Email stays read-only for now; changing an email needs a
+ * re-verification flow that's out of scope here. The editor keeps
+ * the rest of the card visible while open so the context (avatar +
+ * email) never leaves the user's eyeline while they're typing.
  */
-export async function ProfileTab({ user }: { user: UserDto }) {
-  const tSettings = await getTranslations("settings");
+export function ProfileTab({ user }: { user: UserDto }) {
+  const tSettings = useTranslations("settings");
 
   const initials =
     ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
     "··";
+
+  const [isEditing, setIsEditing] = useState(false);
 
   return (
     <section className="flex flex-col gap-4">
@@ -35,55 +47,175 @@ export async function ProfileTab({ user }: { user: UserDto }) {
           >
             {initials}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-lg font-semibold text-ink-1000">
               {user.full_name}
             </p>
-            <p className="mt-0.5 truncate text-sm text-ink-500">{user.email}</p>
+            <p className="mt-0.5 inline-flex items-center gap-1.5 truncate text-sm text-ink-500">
+              <Mail className="h-3.5 w-3.5" />
+              {user.email}
+            </p>
           </div>
+          {!isEditing ? (
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              {tSettings("profile.edit")}
+            </button>
+          ) : null}
         </div>
 
-        <dl className="grid grid-cols-1 gap-4 border-t border-ink-100 pt-4 sm:grid-cols-2">
-          <Field
-            icon={<User2 className="h-3.5 w-3.5" />}
-            label={tSettings("profile.first_name")}
-            value={user.first_name || "—"}
-          />
-          <Field
-            icon={<User2 className="h-3.5 w-3.5" />}
-            label={tSettings("profile.last_name")}
-            value={user.last_name || "—"}
-          />
-          <div className="sm:col-span-2">
-            <Field
-              icon={<Mail className="h-3.5 w-3.5" />}
-              label={tSettings("profile.email")}
-              value={user.email}
-            />
-          </div>
-        </dl>
+        {isEditing ? (
+          <EditNameForm user={user} onDone={() => setIsEditing(false)} />
+        ) : null}
       </article>
     </section>
   );
 }
 
 
-function Field({
-  icon,
-  label,
-  value,
+function EditNameForm({
+  user,
+  onDone,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
+  user: UserDto;
+  onDone: () => void;
 }) {
+  const tSettings = useTranslations("settings");
+  const tErrors = useTranslations("errors");
+
+  const [firstName, setFirstName] = useState(user.first_name);
+  const [lastName, setLastName] = useState(user.last_name);
+  const [error, setError] = useState<string | null>(null);
+  const [fieldErrors, setFieldErrors] = useState<{
+    first_name?: string;
+    last_name?: string;
+  }>({});
+
+  const mutation = useUpdateCurrentUser();
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    setFieldErrors({});
+
+    const payload: { first_name?: string; last_name?: string } = {};
+    if (firstName.trim() !== user.first_name) {
+      payload.first_name = firstName.trim();
+    }
+    if (lastName.trim() !== user.last_name) {
+      payload.last_name = lastName.trim();
+    }
+    if (Object.keys(payload).length === 0) {
+      onDone();
+      return;
+    }
+
+    try {
+      await mutation.mutateAsync(payload);
+      onDone();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        const fe: { first_name?: string; last_name?: string } = {};
+        for (const [field, codes] of Object.entries(err.fieldErrors)) {
+          if (Array.isArray(codes) && codes.length > 0) {
+            if (field === "first_name" || field === "last_name") {
+              fe[field] = translateCode(tErrors, String(codes[0]));
+            } else {
+              setError(translateCode(tErrors, String(codes[0])));
+            }
+          }
+        }
+        setFieldErrors(fe);
+        if (!fe.first_name && !fe.last_name && !error) {
+          setError(tErrors("generic"));
+        }
+      } else {
+        setError(tErrors("generic"));
+      }
+    }
+  };
+
   return (
-    <div className="flex flex-col gap-1">
-      <dt className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-ink-500">
-        {icon}
-        {label}
-      </dt>
-      <dd className="text-sm text-ink-1000">{value}</dd>
-    </div>
+    <form
+      onSubmit={handleSubmit}
+      className="flex flex-col gap-4 border-t border-ink-100 pt-4"
+      noValidate
+    >
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-ink-700">
+            {tSettings("profile.first_name")}
+          </span>
+          <input
+            type="text"
+            value={firstName}
+            onChange={(e) => setFirstName(e.target.value)}
+            autoComplete="given-name"
+            required
+            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+          />
+          {fieldErrors.first_name ? (
+            <span className="text-xs font-medium text-danger">
+              {fieldErrors.first_name}
+            </span>
+          ) : null}
+        </label>
+        <label className="flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-ink-700">
+            {tSettings("profile.last_name")}
+          </span>
+          <input
+            type="text"
+            value={lastName}
+            onChange={(e) => setLastName(e.target.value)}
+            autoComplete="family-name"
+            required
+            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+          />
+          {fieldErrors.last_name ? (
+            <span className="text-xs font-medium text-danger">
+              {fieldErrors.last_name}
+            </span>
+          ) : null}
+        </label>
+      </div>
+
+      {error ? (
+        <p
+          role="alert"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
+        >
+          {error}
+        </p>
+      ) : null}
+
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="md"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+          onClick={onDone}
+          isDisabled={mutation.isPending}
+        >
+          <X className="h-4 w-4" />
+          {tSettings("profile.cancel")}
+        </Button>
+        <Button
+          type="submit"
+          variant="primary"
+          size="md"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+          isDisabled={mutation.isPending || !firstName.trim() || !lastName.trim()}
+        >
+          <Check className="h-4 w-4" />
+          {tSettings("profile.save")}
+        </Button>
+      </div>
+    </form>
   );
 }

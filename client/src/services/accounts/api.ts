@@ -46,3 +46,20 @@ export async function fetchCurrentUser(): Promise<UserDto> {
   const { data } = await apiClient.get<UserDto>(accountsEndpoints.me);
   return data;
 }
+
+
+export interface UpdateMeRequestDto {
+  readonly first_name?: string;
+  readonly last_name?: string;
+}
+
+
+export async function updateCurrentUser(
+  payload: UpdateMeRequestDto,
+): Promise<UserDto> {
+  const { data } = await apiClient.patch<UserDto>(
+    accountsEndpoints.me,
+    payload,
+  );
+  return data;
+}

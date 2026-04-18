@@ -31,3 +31,20 @@ export async function createOrganization(
   );
   return data;
 }
+
+
+export interface UpdateOrganizationRequestDto {
+  readonly name?: string;
+}
+
+
+export async function updateOrganization(
+  orgId: string,
+  payload: UpdateOrganizationRequestDto,
+): Promise<OrganizationDto> {
+  const { data } = await apiClient.patch<OrganizationDto>(
+    organizationsEndpoints.detail(orgId),
+    payload,
+  );
+  return data;
+}
