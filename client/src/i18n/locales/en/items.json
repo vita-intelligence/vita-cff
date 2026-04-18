@@ -11,6 +11,13 @@
   "no_archived_hint": "Items you archive from the detail page will appear here.",
   "row_count": "{count, plural, =0 {No items} one {# item} other {# items}} loaded",
   "scroll_hint": "scroll to load more",
+  "search": {
+    "placeholder": "Search by name or code…",
+    "clear": "Clear search",
+    "match_suffix": "matching search",
+    "no_match_title": "No results for \"{query}\"",
+    "no_match_hint": "Try a shorter query, or clear the search to see the full catalogue."
+  },
   "columns": {
     "name": "Name",
     "internal_code": "Code",

@@ -18,6 +18,7 @@ import {
   Check,
   GripVertical,
   Minus,
+  Search,
   X,
 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
@@ -33,6 +34,7 @@ import {
 
 import { Chip } from "@/components/ui/chip";
 import { useRouter } from "@/i18n/navigation";
+import { useDebouncedValue } from "@/lib/utils";
 import type { AttributeDefinitionDto } from "@/services/attributes/types";
 import {
   archiveItem,
@@ -240,6 +242,15 @@ export function CatalogueTable({
     return first.desc ? `-${first.id}` : first.id;
   }, [sorting]);
 
+  // Controlled search state. ``searchInput`` tracks keystrokes so the
+  // field feels responsive; ``debouncedSearch`` is what we forward to
+  // the query hook so we don't fire a fetch per keypress. 300 ms lands
+  // right on the sweet spot between "responsive" and "spammy" — any
+  // faster and a fast typist triggers several overlapping fetches.
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedSearch = useDebouncedValue(searchInput, 300);
+  const normalisedSearch = debouncedSearch.trim();
+
   const {
     data,
     fetchNextPage,
@@ -250,7 +261,11 @@ export function CatalogueTable({
     includeArchived: viewArchived,
     ordering,
     pageSize: 100,
-    initialFirstPage,
+    search: normalisedSearch || undefined,
+    // Only seed the first page when there's no search — otherwise the
+    // SSR snapshot would briefly flash unfiltered results before the
+    // search query refetches.
+    initialFirstPage: normalisedSearch ? null : initialFirstPage,
   });
 
   const flatItems: readonly ItemDto[] = useMemo(
@@ -624,26 +639,56 @@ export function CatalogueTable({
 
   const handleDragEnd = () => setDragOverKey(null);
 
-  if (!isFetching && rows.length === 0) {
-    return (
-      <div className="rounded-2xl bg-ink-0 p-10 text-center shadow-sm ring-1 ring-ink-200">
-        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-          {tCommon("states.empty")}
-        </p>
-        <h2 className="mt-2 text-lg font-semibold text-ink-1000">
-          {emptyTitle}
-        </h2>
-        <p className="mt-1 text-sm text-ink-500">{emptyHint}</p>
-      </div>
-    );
-  }
-
   const headerGroups = table.getHeaderGroups();
   const loadedCount = rows.length;
+  const isEmpty = !isFetching && rows.length === 0;
+  const hasActiveSearch = normalisedSearch.length > 0;
+
+  const searchBar = (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+      <input
+        type="search"
+        value={searchInput}
+        onChange={(e) => setSearchInput(e.target.value)}
+        placeholder={tItems("search.placeholder")}
+        aria-label={tItems("search.placeholder")}
+        className="w-full rounded-lg bg-ink-0 pl-9 pr-9 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none transition-shadow placeholder:text-ink-400 focus:ring-2 focus:ring-orange-400"
+      />
+      {searchInput ? (
+        <button
+          type="button"
+          aria-label={tItems("search.clear")}
+          onClick={() => setSearchInput("")}
+          className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-4">
-      {selectionCount > 0 ? (
+      {searchBar}
+
+      {isEmpty ? (
+        <div className="rounded-2xl bg-ink-0 p-10 text-center shadow-sm ring-1 ring-ink-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {tCommon("states.empty")}
+          </p>
+          <h2 className="mt-2 text-lg font-semibold text-ink-1000">
+            {hasActiveSearch
+              ? tItems("search.no_match_title", { query: normalisedSearch })
+              : emptyTitle}
+          </h2>
+          <p className="mt-1 text-sm text-ink-500">
+            {hasActiveSearch ? tItems("search.no_match_hint") : emptyHint}
+          </p>
+        </div>
+      ) : null}
+
+      {isEmpty ? null : selectionCount > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-ink-1000 px-4 py-3 text-ink-0 shadow-sm">
           <div className="flex items-center gap-3">
             <Chip tone="orange">
@@ -746,7 +791,7 @@ export function CatalogueTable({
         </div>
       ) : null}
 
-      {bulkError ? (
+      {bulkError && !isEmpty ? (
         <p
           role="alert"
           className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
@@ -755,6 +800,8 @@ export function CatalogueTable({
         </p>
       ) : null}
 
+      {isEmpty ? null : (
+      <>
       <div className="overflow-hidden rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
         <div
           ref={scrollRef}
@@ -902,12 +949,15 @@ export function CatalogueTable({
       <div className="flex items-center justify-between px-1 text-xs text-ink-500">
         <span>
           {tItems("row_count", { count: loadedCount })}
+          {hasActiveSearch ? ` · ${tItems("search.match_suffix")}` : ""}
           {hasNextPage ? ` · ${tItems("scroll_hint")}` : ""}
         </span>
         {isFetchingNextPage ? (
           <span>{tCommon("states.loading")}</span>
         ) : null}
       </div>
+      </>
+      )}
     </div>
   );
 }

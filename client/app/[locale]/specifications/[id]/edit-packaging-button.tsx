@@ -10,6 +10,7 @@ import { Input } from "react-aria-components";
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
+import { useDebouncedValue } from "@/lib/utils";
 import {
   PACKAGING_DETAIL_KEYS,
   PACKAGING_SLOTS,
@@ -371,18 +372,6 @@ function PackagingCombo({
       </ComboBox>
     </label>
   );
-}
-
-
-/** Trailing-edge debounce — returns ``value`` updated at most every
- * ``delayMs`` milliseconds. Stable hook, no external deps. */
-function useDebouncedValue<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const handle = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(handle);
-  }, [value, delayMs]);
-  return debounced;
 }
 
 
