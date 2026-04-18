@@ -645,24 +645,28 @@ export function CatalogueTable({
   const hasActiveSearch = normalisedSearch.length > 0;
 
   const searchBar = (
-    <div className="relative">
-      <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400" />
+    <div className="relative flex h-10 items-center">
+      <Search
+        aria-hidden
+        strokeWidth={2.25}
+        className="pointer-events-none absolute left-3 h-4 w-4 text-ink-400"
+      />
       <input
         type="search"
         value={searchInput}
         onChange={(e) => setSearchInput(e.target.value)}
         placeholder={tItems("search.placeholder")}
         aria-label={tItems("search.placeholder")}
-        className="w-full rounded-lg bg-ink-0 pl-9 pr-9 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none transition-shadow placeholder:text-ink-400 focus:ring-2 focus:ring-orange-400"
+        className="h-full w-full rounded-lg bg-ink-0 pl-10 pr-10 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none transition-shadow placeholder:text-ink-400 focus:ring-2 focus:ring-orange-400 [&::-webkit-search-cancel-button]:hidden"
       />
       {searchInput ? (
         <button
           type="button"
           aria-label={tItems("search.clear")}
           onClick={() => setSearchInput("")}
-          className="absolute right-2 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+          className="absolute right-1.5 inline-flex h-7 w-7 items-center justify-center rounded-md text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
         >
-          <X className="h-3.5 w-3.5" />
+          <X className="h-3.5 w-3.5" strokeWidth={2.25} />
         </button>
       ) : null}
     </div>
