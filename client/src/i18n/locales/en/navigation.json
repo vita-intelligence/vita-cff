@@ -13,5 +13,9 @@
     "settings": "Settings",
     "members": "Members",
     "sign_out": "Sign out"
+  },
+  "menu": {
+    "open": "Open menu",
+    "close": "Close menu"
   }
 }

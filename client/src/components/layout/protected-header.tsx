@@ -1,7 +1,7 @@
 import { getTranslations } from "next-intl/server";
 
+import { HeaderNav, type HeaderNavItem } from "@/components/layout/header-nav";
 import { SignOutButton } from "@/components/layout/sign-out-button";
-import { Link } from "@/i18n/navigation";
 import type { UserDto } from "@/services/accounts/types";
 
 export type ProtectedNavKey =
@@ -25,8 +25,8 @@ interface ProtectedHeaderProps {
  * `<Link>` block and keep it in sync manually.
  *
  * Server component: it pulls its own translations and has no client
- * state of its own. The only interactive child is the sign-out
- * button inside :class:`SignOutButton`.
+ * state of its own. The mobile hamburger lives inside
+ * :class:`HeaderNav`, which is the only client island here.
  */
 export async function ProtectedHeader({
   user,
@@ -39,17 +39,13 @@ export async function ProtectedHeader({
     ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
     "··";
 
-  const navItems: readonly {
-    readonly key: ProtectedNavKey;
-    readonly href:
-      | "/home"
-      | "/catalogues"
-      | "/formulations"
-      | "/specifications";
-    readonly label: string;
-  }[] = [
+  const navItems: readonly HeaderNavItem[] = [
     { key: "dashboard", href: "/home", label: tNav("main.dashboard") },
-    { key: "catalogues", href: "/catalogues", label: tNav("main.catalogues") },
+    {
+      key: "catalogues",
+      href: "/catalogues",
+      label: tNav("main.catalogues"),
+    },
     {
       key: "formulations",
       href: "/formulations",
@@ -63,36 +59,27 @@ export async function ProtectedHeader({
   ];
 
   return (
-    <header className="flex items-center justify-between border-b-2 border-ink-1000 pb-6">
-      <div className="flex items-center gap-8">
-        <span className="font-mono text-xs tracking-widest uppercase text-ink-700">
+    <header className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3 md:gap-6">
+        <span className="text-sm font-semibold tracking-tight text-ink-1000">
           {tCommon("brand")}
         </span>
-        <nav className="flex items-center gap-6 font-mono text-[10px] tracking-widest uppercase">
-          {navItems.map((item) => {
-            const isActive = item.key === active;
-            return (
-              <Link
-                key={item.key}
-                href={item.href}
-                className={
-                  isActive
-                    ? "border-b-2 border-ink-1000 text-ink-1000"
-                    : "text-ink-500 hover:text-ink-1000"
-                }
-              >
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
+        <HeaderNav
+          items={navItems}
+          active={active}
+          menuLabel={tNav("menu.open")}
+          closeLabel={tNav("menu.close")}
+        />
       </div>
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center border-2 border-ink-1000 bg-ink-1000 font-mono text-xs font-bold tracking-widest text-ink-0">
+      <div className="flex items-center gap-2 md:gap-3">
+        <div className="flex items-center gap-2">
+          <div
+            aria-hidden
+            className="flex h-9 w-9 items-center justify-center rounded-full bg-orange-500 text-sm font-semibold text-ink-0"
+          >
             {initials}
           </div>
-          <span className="hidden font-mono text-xs tracking-widest uppercase text-ink-700 md:inline">
+          <span className="hidden text-sm font-medium text-ink-700 md:inline">
             {user.full_name}
           </span>
         </div>

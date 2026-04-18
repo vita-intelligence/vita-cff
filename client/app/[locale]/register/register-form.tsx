@@ -161,7 +161,7 @@ export function RegisterForm() {
       {errors.root?.message ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {errors.root.message}
         </p>
@@ -172,7 +172,7 @@ export function RegisterForm() {
         variant="primary"
         size="lg"
         fullWidth
-        className="mt-2 rounded-none font-bold tracking-wider uppercase"
+        className="mt-2 h-11 w-full rounded-lg bg-orange-500 text-sm font-medium text-ink-0 hover:bg-orange-600"
         isDisabled={isSubmitting || register.isPending || login.isPending}
       >
         {tAuth("register.submit")}

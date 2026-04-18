@@ -29,17 +29,19 @@ export default async function LoginPage({
   const tAuth = await getTranslations("auth");
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-6">
+    <main className="flex min-h-dvh items-center justify-center bg-ink-0 px-4 py-10 sm:px-6">
       <div className="w-full max-w-md">
-        <header className="mb-10 text-center">
-          <p className="font-mono text-xs tracking-widest uppercase text-ink-500">
+        <header className="mb-8 text-center">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tAuth("login.subtitle")}
           </p>
-          <h1 className="mt-3 text-4xl font-black tracking-tight uppercase">
+          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-ink-1000 sm:text-3xl">
             {tAuth("login.title")}
           </h1>
         </header>
-        <LoginForm />
+        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 sm:p-8">
+          <LoginForm />
+        </div>
       </div>
     </main>
   );

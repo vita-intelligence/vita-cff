@@ -60,15 +60,13 @@ export const FormField = forwardRef<HTMLInputElement, FormFieldProps>(
         isRequired={isRequired}
         className="flex flex-col gap-1.5"
       >
-        <Label className="text-xs font-bold tracking-widest uppercase text-ink-700">
-          {label}
-        </Label>
+        <Label className="text-xs font-medium text-ink-700">{label}</Label>
         <Input
           ref={ref}
           type={type}
           placeholder={placeholder}
           autoComplete={autoComplete}
-          className="w-full border-2 border-ink-1000 bg-ink-0 px-3 py-2 font-mono text-sm text-ink-1000 outline-none transition-colors placeholder:text-ink-400 focus:border-ink-1000 focus:shadow-hard data-[invalid=true]:border-danger"
+          className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none transition-shadow placeholder:text-ink-400 focus:ring-2 focus:ring-orange-400 data-[invalid=true]:ring-danger/40"
         />
         {description && !invalid ? (
           <p className="text-xs text-ink-500">{description}</p>

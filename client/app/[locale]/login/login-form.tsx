@@ -85,7 +85,7 @@ export function LoginForm() {
       {errors.root?.message ? (
         <p
           role="alert"
-          className="border-2 border-danger bg-danger/10 px-3 py-2 text-sm font-medium text-danger"
+          className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
         >
           {errors.root.message}
         </p>
@@ -96,17 +96,17 @@ export function LoginForm() {
         variant="primary"
         size="lg"
         fullWidth
-        className="mt-2 rounded-none font-bold tracking-wider uppercase"
+        className="mt-2 h-11 w-full rounded-lg bg-orange-500 text-sm font-medium text-ink-0 hover:bg-orange-600"
         isDisabled={isSubmitting || login.isPending}
       >
         {tAuth("login.submit")}
       </Button>
 
-      <p className="text-center text-sm text-ink-600">
+      <p className="text-center text-sm text-ink-500">
         {tAuth("register.already_have_account")}{" "}
         <Link
           href="/register"
-          className="font-bold text-ink-1000 underline underline-offset-4"
+          className="font-medium text-orange-700 underline-offset-4 hover:text-orange-800 hover:underline"
         >
           {tAuth("register.submit")}
         </Link>
