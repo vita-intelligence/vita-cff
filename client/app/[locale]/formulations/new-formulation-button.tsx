@@ -2,13 +2,16 @@
 
 import { Button, Modal } from "@heroui/react";
 import {
+  Check,
+  CircleOff,
   FlaskConical,
   Loader2,
   Plus,
   Sparkles,
+  TriangleAlert,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 
 import { Chip } from "@/components/ui/chip";
 import { useRouter } from "@/i18n/navigation";
@@ -21,7 +24,9 @@ import {
 } from "@/services/ai";
 import {
   useCreateFormulation,
+  useReplaceLines,
   type DosageForm,
+  type FormulationLineInput,
 } from "@/services/formulations";
 
 
@@ -61,6 +66,55 @@ const DOSAGE_FORMS: readonly DosageForm[] = [
 ];
 
 
+/**
+ * How the UI classifies a single AI-suggested ingredient, driven by
+ * the backend ``auto_attach`` flag (which is ``confidence ≥ 0.75``
+ * and has an item id) plus the user's manual override selection.
+ *
+ * ``auto`` — backend flagged high-confidence, ships straight into
+ * the formulation lines unless the user opts out.
+ * ``review`` — a match exists but the backend isn't confident; the
+ * UI requires the scientist to pick one of the alternatives (or the
+ * top match, or skip).
+ * ``unmatched`` — no candidate scored above zero. Rendered for
+ * transparency but never becomes a formulation line.
+ */
+type IngredientStatus = "auto" | "review" | "unmatched";
+
+
+/** Per-ingredient UI state the scientist can override.
+ *
+ * ``selectedItemId`` — ``undefined`` means "use the backend default"
+ * (the backend's top match for ``auto`` rows, or ``null`` for
+ * ``review``/``unmatched`` rows until the user picks one).
+ * ``null`` is an explicit opt-out — skip this ingredient entirely. */
+interface IngredientChoice {
+  readonly selectedItemId: string | null | undefined;
+}
+
+
+function statusForIngredient(
+  ingredient: IngredientSuggestionDto,
+): IngredientStatus {
+  if (ingredient.auto_attach && ingredient.matched_item_id) return "auto";
+  if (ingredient.matched_item_id) return "review";
+  return "unmatched";
+}
+
+
+function resolvedItemId(
+  ingredient: IngredientSuggestionDto,
+  choice: IngredientChoice | undefined,
+): string | null {
+  if (choice && choice.selectedItemId !== undefined) {
+    return choice.selectedItemId;
+  }
+  // Default: auto-attach rides on the top match; review/unmatched
+  // wait for an explicit pick.
+  return ingredient.auto_attach ? ingredient.matched_item_id : null;
+}
+
+
 export function NewFormulationButton({ orgId }: { orgId: string }) {
   const tFormulations = useTranslations("formulations");
   const tAI = useTranslations("ai");
@@ -76,6 +130,9 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
   const [ingredients, setIngredients] = useState<
     readonly IngredientSuggestionDto[]
   >([]);
+  const [choices, setChoices] = useState<
+    Readonly<Record<number, IngredientChoice>>
+  >({});
 
   // Form state
   const [name, setName] = useState("");
@@ -92,11 +149,19 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
 
   const draftMutation = useGenerateFormulationDraft(orgId);
   const createMutation = useCreateFormulation(orgId);
+  // ``createdId`` is scoped to the single modal session so the
+  // ``useReplaceLines`` hook never outlives the modal.
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const replaceLinesMutation = useReplaceLines(
+    orgId,
+    createdId ?? "",
+  );
 
   const reset = () => {
     setBrief("");
     setProvider("ollama");
     setIngredients([]);
+    setChoices({});
     setDraftError(null);
     setName("");
     setCode("");
@@ -109,6 +174,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     setAppearance("");
     setDisintegrationSpec("");
     setError(null);
+    setCreatedId(null);
   };
 
   const close = () => {
@@ -152,10 +218,37 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
       setAppearance(draft.appearance);
       setDisintegrationSpec(draft.disintegration_spec);
       setIngredients(draft.ingredients);
+      setChoices({});
     } catch (err) {
       setDraftError(extractDraftError(err, tAI, tErrors));
     }
   };
+
+  const setChoice = (index: number, choice: IngredientChoice) => {
+    setChoices((prev) => ({ ...prev, [index]: choice }));
+  };
+
+  /**
+   * Fold the raw AI ingredients + user overrides into the line input
+   * shape the formulations API expects. An ingredient contributes a
+   * line only when a concrete ``item_id`` is resolved — opt-outs,
+   * unmatched rows, and unattended ``review`` rows drop silently so
+   * the builder stays clean after creation.
+   */
+  const linesToSave = useMemo<readonly FormulationLineInput[]>(() => {
+    const out: FormulationLineInput[] = [];
+    ingredients.forEach((ingredient, idx) => {
+      const itemId = resolvedItemId(ingredient, choices[idx]);
+      if (!itemId) return;
+      out.push({
+        item_id: itemId,
+        label_claim_mg: String(Math.max(0, ingredient.label_claim_mg)),
+        display_order: out.length,
+        notes: ingredient.notes,
+      });
+    });
+    return out;
+  }, [ingredients, choices]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -173,6 +266,25 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
         appearance: appearance.trim(),
         disintegration_spec: disintegrationSpec.trim(),
       });
+
+      // Attach the matched ingredients as formulation lines in a
+      // second call. A failure here isn't fatal — the header is
+      // already persisted, so we navigate onward and surface a
+      // soft warning so the scientist knows to add the lines
+      // manually from the builder.
+      if (linesToSave.length > 0) {
+        setCreatedId(created.id);
+        try {
+          await replaceLinesMutation.mutateAsync({ lines: linesToSave });
+        } catch {
+          setError(tAI("create.lines_failed"));
+          // Drop back before navigating so the user can see the
+          // soft warning rather than blow past it.
+          setCreatedId(null);
+          return;
+        }
+      }
+
       close();
       router.push(`/formulations/${created.id}`);
     } catch (err) {
@@ -188,7 +300,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     }
   };
 
-  const isBusy = createMutation.isPending;
+  const isBusy = createMutation.isPending || replaceLinesMutation.isPending;
   const isGenerating = draftMutation.isPending;
 
   return (
@@ -420,11 +532,17 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                 ) : null}
 
                 {/* ------------------------------------------------- */}
-                {/* Ingredient suggestions — read-only for V1.        */}
-                {/* AI3 will link these to real catalogue items.      */}
+                {/* Ingredient suggestions                            */}
+                {/*                                                   */}
+                {/* Each row surfaces the AI's proposed ingredient    */}
+                {/* alongside the matcher's catalogue pick. Auto-     */}
+                {/* attach rows land as formulation lines on Create;  */}
+                {/* review rows wait for an explicit pick; unmatched  */}
+                {/* rows never persist but still appear for visibility*/}
+                {/* so the scientist knows what the AI suggested.     */}
                 {/* ------------------------------------------------- */}
                 {ingredients.length > 0 ? (
-                  <section className="flex flex-col gap-2 border-t border-ink-100 pt-4">
+                  <section className="flex flex-col gap-3 border-t border-ink-100 pt-4">
                     <div className="flex items-center gap-1.5 text-xs font-medium text-ink-700">
                       <FlaskConical className="h-3.5 w-3.5 text-ink-500" />
                       {tAI("ingredients.heading", {
@@ -434,18 +552,17 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                     <p className="text-xs text-ink-500">
                       {tAI("ingredients.hint")}
                     </p>
-                    <ul className="flex flex-wrap gap-1.5">
+                    <ul className="flex flex-col gap-2">
                       {ingredients.map((ingredient, idx) => (
-                        <li key={`${ingredient.name}-${idx}`}>
-                          <Chip tone="orange">
-                            {ingredient.name}
-                            {ingredient.label_claim_mg > 0 ? (
-                              <span className="ml-1 font-medium">
-                                · {formatMg(ingredient.label_claim_mg)} mg
-                              </span>
-                            ) : null}
-                          </Chip>
-                        </li>
+                        <IngredientRow
+                          key={`${ingredient.name}-${idx}`}
+                          ingredient={ingredient}
+                          choice={choices[idx]}
+                          onSelect={(selectedItemId) =>
+                            setChoice(idx, { selectedItemId })
+                          }
+                          tAI={tAI}
+                        />
                       ))}
                     </ul>
                   </section>
@@ -533,4 +650,156 @@ function formatMg(value: number): string {
   // Whole numbers render without the trailing .0; fractional values
   // keep one decimal so "12.5 mg" stays readable without being chatty.
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+
+/**
+ * Status-aware chip for a single AI ingredient suggestion.
+ *
+ * ``auto`` rows show a green check + the matched raw material name
+ * pre-filled; the scientist can still open the dropdown to swap in
+ * an alternative or opt out. ``review`` rows show an amber warning
+ * and force a pick — the dropdown defaults to the top match so the
+ * scientist just confirms rather than retypes. ``unmatched`` rows
+ * are grey and informational; no dropdown, because there's nothing
+ * in the catalogue to choose.
+ */
+function IngredientRow({
+  ingredient,
+  choice,
+  onSelect,
+  tAI,
+}: {
+  ingredient: IngredientSuggestionDto;
+  choice: IngredientChoice | undefined;
+  onSelect: (itemId: string | null | undefined) => void;
+  tAI: ReturnType<typeof useTranslations<"ai">>;
+}) {
+  const status = statusForIngredient(ingredient);
+  const resolved = resolvedItemId(ingredient, choice);
+
+  // All valid catalogue picks for this ingredient: top match plus
+  // the backend-returned alternatives, deduped. Sorted by descending
+  // confidence so the dropdown's first entry is always the strongest
+  // candidate the backend found.
+  const options = useMemo(() => {
+    const seen = new Set<string>();
+    const entries: {
+      item_id: string;
+      item_name: string;
+      internal_code: string;
+      confidence: number;
+    }[] = [];
+    if (ingredient.matched_item_id) {
+      entries.push({
+        item_id: ingredient.matched_item_id,
+        item_name: ingredient.matched_item_name,
+        internal_code: ingredient.matched_item_internal_code,
+        confidence: ingredient.confidence,
+      });
+      seen.add(ingredient.matched_item_id);
+    }
+    for (const alt of ingredient.alternatives) {
+      if (seen.has(alt.item_id)) continue;
+      entries.push(alt);
+      seen.add(alt.item_id);
+    }
+    return entries;
+  }, [
+    ingredient.alternatives,
+    ingredient.confidence,
+    ingredient.matched_item_id,
+    ingredient.matched_item_internal_code,
+    ingredient.matched_item_name,
+  ]);
+
+  const toneClass =
+    status === "auto"
+      ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+      : status === "review"
+        ? "border-amber-300 bg-amber-50 text-amber-900"
+        : "border-ink-200 bg-ink-50 text-ink-600";
+
+  const statusLabel =
+    status === "auto"
+      ? tAI("ingredients.matched_label")
+      : status === "review"
+        ? tAI("ingredients.review_needed_label")
+        : tAI("ingredients.unmatched_label");
+
+  const Icon = status === "auto"
+    ? Check
+    : status === "review"
+      ? TriangleAlert
+      : CircleOff;
+
+  // The select's value encodes three distinct states so the
+  // <option> list can describe them unambiguously:
+  //   ""       — default (auto uses top match; review/unmatched = no pick yet)
+  //   "__skip" — explicit opt-out
+  //   "<uuid>" — concrete item pick
+  const SKIP_VALUE = "__skip";
+  const selectValue =
+    choice?.selectedItemId === null
+      ? SKIP_VALUE
+      : choice?.selectedItemId ?? "";
+
+  return (
+    <li
+      className={`flex flex-col gap-2 rounded-lg border p-3 text-sm ${toneClass}`}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1 rounded-md bg-ink-0/60 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide">
+          <Icon className="h-3 w-3" />
+          {statusLabel}
+        </span>
+        <span className="font-medium">{ingredient.name}</span>
+        {ingredient.label_claim_mg > 0 ? (
+          <span className="text-xs font-medium">
+            · {formatMg(ingredient.label_claim_mg)} mg
+          </span>
+        ) : null}
+        {status === "auto" && ingredient.mg_per_serving ? (
+          <span className="ml-auto text-[11px] text-emerald-700">
+            ≈ {formatMg(Number(ingredient.mg_per_serving))} mg raw powder
+          </span>
+        ) : null}
+      </div>
+      {status === "unmatched" ? (
+        <p className="text-xs">{tAI("ingredients.no_match")}</p>
+      ) : (
+        <select
+          value={selectValue}
+          onChange={(event) => {
+            const value = event.target.value;
+            if (value === SKIP_VALUE) return onSelect(null);
+            if (value === "") return onSelect(undefined);
+            onSelect(value);
+          }}
+          className="w-full cursor-pointer rounded-md bg-ink-0 px-2 py-1.5 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+        >
+          {status === "review" ? (
+            <option value="">{tAI("ingredients.pick_placeholder")}</option>
+          ) : null}
+          {options.map((opt) => (
+            <option key={opt.item_id} value={opt.item_id}>
+              {opt.item_name}
+              {opt.internal_code ? ` (${opt.internal_code})` : ""}
+              {" · "}
+              {(opt.confidence * 100).toFixed(0)}%
+            </option>
+          ))}
+          <option value={SKIP_VALUE}>{tAI("ingredients.unlink")}</option>
+        </select>
+      )}
+      {status === "auto" && resolved === ingredient.matched_item_id ? (
+        <p className="text-[11px] text-emerald-700/80">
+          {ingredient.matched_item_name}
+          {ingredient.matched_item_internal_code
+            ? ` (${ingredient.matched_item_internal_code})`
+            : ""}
+        </p>
+      ) : null}
+    </li>
+  );
 }

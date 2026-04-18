@@ -25,6 +25,10 @@ from apps.ai.providers.base import (
     AIProviderTimeout,
     AIProviderUnreachable,
 )
+from apps.catalogues.tests.factories import (
+    ItemFactory,
+    raw_materials_catalogue,
+)
 from apps.organizations.services import create_organization
 from apps.organizations.tests.factories import (
     MembershipFactory,
@@ -316,6 +320,102 @@ class TestProviderFailures:
 # ---------------------------------------------------------------------------
 # Direct unit test of the adapter's JSON parsing path
 # ---------------------------------------------------------------------------
+
+
+class TestFormulationDraftMatching:
+    """AI3 — the draft endpoint resolves each suggested ingredient
+    to a real :class:`Item` in the org's ``raw_materials`` catalogue
+    and exposes the match + alternatives to the frontend."""
+
+    def test_high_confidence_match_is_auto_attached(self) -> None:
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous Powder",
+            attributes={"purity": "0.89"},
+        )
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine capsule"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        caffeine = next(
+            i for i in response.json()["ingredients"] if i["name"] == "Caffeine"
+        )
+        assert caffeine["matched_item_id"] == str(item.id)
+        assert caffeine["matched_item_name"] == "Caffeine Anhydrous Powder"
+        assert caffeine["confidence"] >= 0.75
+        assert caffeine["auto_attach"] is True
+        # 200 mg claim at 89% purity → ~224.72 mg raw powder.
+        assert caffeine["mg_per_serving"] is not None
+        assert 224.0 < float(caffeine["mg_per_serving"]) < 225.0
+
+    def test_match_exposes_alternatives(self) -> None:
+        client, _, org = _owner_client()
+        catalogue = raw_materials_catalogue(org)
+        ItemFactory(catalogue=catalogue, name="Green Tea Extract 50% Polyphenols")
+        ItemFactory(catalogue=catalogue, name="Green Tea Leaf Powder")
+        ItemFactory(catalogue=catalogue, name="Matcha Green Tea Powder")
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "Green tea blend"},
+                format="json",
+            )
+
+        body = response.json()
+        gte = next(
+            i
+            for i in body["ingredients"]
+            if i["name"] == "Green Tea Extract"
+        )
+        assert gte["matched_item_id"] is not None
+        # At least one alternative surfaces so the scientist can
+        # swap the top pick without retyping.
+        assert len(gte["alternatives"]) >= 1
+        for alt in gte["alternatives"]:
+            assert set(alt.keys()) >= {
+                "item_id",
+                "item_name",
+                "internal_code",
+                "confidence",
+            }
+
+    def test_empty_catalogue_returns_unattached_suggestions(self) -> None:
+        """When the org has the catalogue but no items, the endpoint
+        still succeeds — it just emits empty matches so the UI falls
+        back to the plain AI-name chip."""
+
+        client, _, org = _owner_client()
+
+        with patch(
+            "apps.ai.providers.ollama.OllamaProvider.generate_json",
+            return_value=_mock_provider_result(),
+        ):
+            response = client.post(
+                _draft_url(org.id),
+                {"brief": "Caffeine capsule"},
+                format="json",
+            )
+
+        assert response.status_code == status.HTTP_200_OK
+        for ingredient in response.json()["ingredients"]:
+            assert ingredient["matched_item_id"] is None
+            assert ingredient["confidence"] == 0.0
+            assert ingredient["alternatives"] == []
+            assert ingredient["auto_attach"] is False
 
 
 class TestOllamaAdapterJSON:

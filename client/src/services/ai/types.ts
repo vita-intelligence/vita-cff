@@ -23,13 +23,36 @@ export interface FormulationDraftRequestDto {
 }
 
 
-/** One ingredient the AI wants in the formulation. Not yet matched
- *  to a real catalogue row — AI3 adds the server-side matching
- *  layer and this interface will grow ``item_id?: string | null``. */
+/** Second-tier catalogue match the UI offers in the override
+ *  chooser when the top pick is low-confidence. */
+export interface IngredientAlternativeDto {
+  readonly item_id: string;
+  readonly item_name: string;
+  readonly internal_code: string;
+  readonly confidence: number;
+}
+
+
+/** One ingredient the AI wants in the formulation, enriched with the
+ *  server-side catalogue match (AI3). ``matched_item_id`` is ``null``
+ *  when the org's raw-materials catalogue is empty or no candidate
+ *  scored above zero — the UI then shows the raw AI name as an
+ *  unattached chip. ``auto_attach=true`` is the signal that the
+ *  match is strong enough to include in the formulation without the
+ *  scientist's explicit pick. */
 export interface IngredientSuggestionDto {
   readonly name: string;
   readonly label_claim_mg: number;
   readonly notes: string;
+  readonly matched_item_id: string | null;
+  readonly matched_item_name: string;
+  readonly matched_item_internal_code: string;
+  readonly confidence: number;
+  /** Lossless string (``Decimal`` on the wire) — parse with
+   *  ``Number()`` for display, never for arithmetic that flows back. */
+  readonly mg_per_serving: string | null;
+  readonly alternatives: readonly IngredientAlternativeDto[];
+  readonly auto_attach: boolean;
 }
 
 

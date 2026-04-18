@@ -19,6 +19,12 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from apps.ai.matching import (
+    HIGH_CONFIDENCE_THRESHOLD,
+    IngredientAlternative,
+    IngredientMatch,
+    match_ingredients,
+)
 from apps.ai.models import AIProviderChoices, AIUsage, AIUsagePurpose
 from apps.ai.providers import (
     AIProvider,
@@ -68,15 +74,30 @@ _ALLOWED_DOSAGE_FORMS: tuple[str, ...] = (
 class IngredientSuggestion:
     """A single proposed ingredient the AI wants in the formulation.
 
-    Not yet matched to a real :class:`apps.catalogues.models.Item`
-    row — AI2 will add the catalogue-matching layer. For V1 the
-    frontend just renders these as "suggested ingredients" the
-    scientist adds manually.
+    AI3 augments the raw AI output with a catalogue match so the
+    frontend can render a real :class:`apps.catalogues.models.Item`
+    reference (name, internal code, alternatives) rather than an
+    unattached string. ``matched_item_id`` stays ``None`` when the
+    org has no raw-materials catalogue or no candidate scored above
+    zero — the UI then shows the raw AI name as an unattached chip.
     """
 
     name: str
     label_claim_mg: float
     notes: str
+    matched_item_id: str | None = None
+    matched_item_name: str = ""
+    matched_item_internal_code: str = ""
+    confidence: float = 0.0
+    #: Stringified :class:`decimal.Decimal` so the wire representation
+    #: stays lossless (floats drift on JSON roundtrips). Populated
+    #: only when confidence meets the auto-attach threshold.
+    mg_per_serving: str | None = None
+    alternatives: tuple[IngredientAlternative, ...] = ()
+    #: ``True`` when confidence ≥ ``HIGH_CONFIDENCE_THRESHOLD`` — the
+    #: UI auto-ticks these for inclusion in the formulation, leaving
+    #: low-confidence suggestions behind the explicit chooser.
+    auto_attach: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,6 +207,15 @@ def generate_formulation_draft(
         )
         raise
 
+    # AI3 — resolve the generic ingredient names the model emits into
+    # real ``Item`` references from the org's raw-materials catalogue
+    # and a purity-adjusted mg/serving number. A matching failure does
+    # not fail the draft: the UI still surfaces the unattached
+    # suggestion and lets the scientist pick manually.
+    draft = _enrich_with_matches(
+        draft=draft, organization=organization
+    )
+
     _record_usage(
         organization=organization,
         actor=actor,
@@ -198,6 +228,68 @@ def generate_formulation_draft(
         completion_tokens=result.completion_tokens,
     )
     return draft
+
+
+def _enrich_with_matches(
+    *,
+    draft: FormulationDraft,
+    organization: Organization,
+) -> FormulationDraft:
+    """Attach a catalogue match to each ingredient on the draft.
+
+    Matching runs once against all names so the catalogue query is
+    paid a single time per request. Returning a new draft
+    (``dataclass.replace`` on each ingredient) keeps the original
+    frozen dataclasses immutable, matching the rest of the service
+    layer's style.
+    """
+
+    ingredients = list(draft.ingredients)
+    if not ingredients:
+        return draft
+
+    names_with_claims = [
+        (ingredient.name, ingredient.label_claim_mg)
+        for ingredient in ingredients
+    ]
+    matches: list[IngredientMatch] = match_ingredients(
+        organization=organization,
+        names_with_claims=names_with_claims,
+        serving_size=draft.serving_size or 1,
+    )
+    enriched: list[IngredientSuggestion] = [
+        IngredientSuggestion(
+            name=ingredient.name,
+            label_claim_mg=ingredient.label_claim_mg,
+            notes=ingredient.notes,
+            matched_item_id=match.matched_item_id,
+            matched_item_name=match.matched_item_name,
+            matched_item_internal_code=match.matched_item_internal_code,
+            confidence=match.confidence,
+            mg_per_serving=match.mg_per_serving,
+            alternatives=match.alternatives,
+            auto_attach=(
+                match.matched_item_id is not None
+                and match.confidence >= HIGH_CONFIDENCE_THRESHOLD
+            ),
+        )
+        for ingredient, match in zip(ingredients, matches)
+    ]
+    return FormulationDraft(
+        name=draft.name,
+        code=draft.code,
+        description=draft.description,
+        dosage_form=draft.dosage_form,
+        capsule_size=draft.capsule_size,
+        tablet_size=draft.tablet_size,
+        serving_size=draft.serving_size,
+        servings_per_pack=draft.servings_per_pack,
+        directions_of_use=draft.directions_of_use,
+        suggested_dosage=draft.suggested_dosage,
+        appearance=draft.appearance,
+        disintegration_spec=draft.disintegration_spec,
+        ingredients=enriched,
+    )
 
 
 def _parse_formulation_draft(data: dict[str, Any]) -> FormulationDraft:

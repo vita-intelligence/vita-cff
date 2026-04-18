@@ -5,5 +5,6 @@ export type {
   AIProviderSlug,
   FormulationDraftRequestDto,
   FormulationDraftResponseDto,
+  IngredientAlternativeDto,
   IngredientSuggestionDto,
 } from "./types";

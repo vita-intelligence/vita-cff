@@ -12,7 +12,16 @@
   },
   "ingredients": {
     "heading": "{count, plural, one {# suggested ingredient} other {# suggested ingredients}}",
-    "hint": "AI proposals — add them manually in the builder after creating the project."
+    "hint": "Green: auto-linked to your raw materials. Amber: pick the right match. Grey: no match in this catalogue.",
+    "unlink": "Skip — don't add to the formulation",
+    "no_match": "No raw material match",
+    "pick_placeholder": "Pick a raw material…",
+    "matched_label": "Matched",
+    "review_needed_label": "Review",
+    "unmatched_label": "Unmatched"
+  },
+  "create": {
+    "lines_failed": "Formulation created, but ingredient lines could not be attached. You can add them from the builder."
   },
   "errors": {
     "provider_unreachable": "AI provider unreachable. Is the local model running?",

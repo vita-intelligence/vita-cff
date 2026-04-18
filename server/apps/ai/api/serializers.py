@@ -45,10 +45,28 @@ class FormulationDraftRequestSerializer(serializers.Serializer):
         return trimmed
 
 
+class IngredientAlternativeSerializer(serializers.Serializer):
+    """Second-tier catalogue match offered to the UI chooser."""
+
+    item_id = serializers.CharField()
+    item_name = serializers.CharField()
+    internal_code = serializers.CharField(allow_blank=True)
+    confidence = serializers.FloatField()
+
+
 class IngredientSuggestionSerializer(serializers.Serializer):
     name = serializers.CharField()
     label_claim_mg = serializers.FloatField()
     notes = serializers.CharField(allow_blank=True)
+    matched_item_id = serializers.CharField(allow_null=True)
+    matched_item_name = serializers.CharField(allow_blank=True)
+    matched_item_internal_code = serializers.CharField(allow_blank=True)
+    confidence = serializers.FloatField()
+    #: Pre-computed purity-adjusted mg/serving as a lossless string;
+    #: ``null`` when the match falls below the auto-attach threshold.
+    mg_per_serving = serializers.CharField(allow_null=True)
+    alternatives = IngredientAlternativeSerializer(many=True)
+    auto_attach = serializers.BooleanField()
 
 
 class FormulationDraftResponseSerializer(serializers.Serializer):
