@@ -1,0 +1,22 @@
+{
+  "draft": {
+    "heading": "Describe your product",
+    "placeholder": "Vegan fat-burner capsule with 200 mg caffeine, 60 caps, under £0.80 per capsule...",
+    "model_label": "Model",
+    "generate": "Generate",
+    "generating": "Generating...",
+    "free_tag": "Free"
+  },
+  "providers": {
+    "ollama": "Local (Ollama)"
+  },
+  "ingredients": {
+    "heading": "{count, plural, one {# suggested ingredient} other {# suggested ingredients}}",
+    "hint": "AI proposals — add them manually in the builder after creating the project."
+  },
+  "errors": {
+    "provider_unreachable": "AI provider unreachable. Is the local model running?",
+    "provider_timeout": "AI provider timed out. Try again or pick a smaller model.",
+    "provider_bad_response": "AI returned an unexpected response. Try rephrasing your brief."
+  }
+}

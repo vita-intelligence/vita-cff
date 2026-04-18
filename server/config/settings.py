@@ -181,10 +181,11 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 import os  # noqa: E402 — grouped here with the AI settings it drives.
 
 AI_OLLAMA_URL = os.environ.get("AI_OLLAMA_URL", "http://127.0.0.1:11434")
-AI_OLLAMA_MODEL = os.environ.get("AI_OLLAMA_MODEL", "llama3.1:8b")
+AI_OLLAMA_MODEL = os.environ.get("AI_OLLAMA_MODEL", "llama3.2:3b")
 # Hard ceiling on how long a single provider call can block a
-# request. Ollama on CPU can be slow for the 8B model — 120 s covers
-# the long tail without us keeping a worker thread forever.
+# request. The 3B default lands in a few seconds on a warm model;
+# 120 s leaves plenty of headroom for cold-start and larger optional
+# models without us keeping a worker thread forever.
 AI_PROVIDER_TIMEOUT_SECONDS = int(
     os.environ.get("AI_PROVIDER_TIMEOUT_SECONDS", "120")
 )
