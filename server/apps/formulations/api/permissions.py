@@ -7,12 +7,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.views import APIView
 
+from apps.organizations.api.errors import OrganizationInactive
 from apps.organizations.models import Organization
 from apps.organizations.modules import (
     FORMULATIONS_MODULE,
     FormulationsCapability,
 )
-from apps.organizations.services import get_membership, has_capability
+from apps.organizations.services import (
+    get_membership,
+    has_capability,
+    is_organization_accessible,
+)
 
 
 class HasFormulationsPermission(IsAuthenticated):
@@ -39,6 +44,9 @@ class HasFormulationsPermission(IsAuthenticated):
         membership = get_membership(request.user, organization)
         if membership is None:
             raise NotFound()
+
+        if not is_organization_accessible(organization, request.user):
+            raise OrganizationInactive()
 
         capability: str = getattr(
             view, "required_capability", self.required_capability

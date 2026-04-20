@@ -62,6 +62,21 @@ class FormulationsCapability:
     EDIT = "edit"
     APPROVE = "approve"
     DELETE = "delete"
+    #: Assign / clear the commercial owner ("sales person") of a
+    #: project. Deliberately split from ``EDIT`` so the role can be
+    #: delegated to non-technical staff without giving them write
+    #: access to the formulation itself.
+    ASSIGN_SALES_PERSON = "assign_sales_person"
+    #: Toggle individual sections on or off for the customer-facing
+    #: spec sheet. Split from ``EDIT`` so the client-visibility
+    #: decision sits with commercial / QA leads while scientists
+    #: keep free-form edit access to the sheet's content.
+    MANAGE_SPEC_VISIBILITY = "manage_spec_visibility"
+    #: Sign a spec sheet in one of its signature slots. Placeholder
+    #: capability that the Phase-B signatures work will consume.
+    #: Landing the string now lets admins pre-grant the role without
+    #: a second permission-UI migration later.
+    SIGN_SPEC = "sign_spec"
 
 
 class AuditCapability:
@@ -130,6 +145,9 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.EDIT,
             FormulationsCapability.APPROVE,
             FormulationsCapability.DELETE,
+            FormulationsCapability.ASSIGN_SALES_PERSON,
+            FormulationsCapability.MANAGE_SPEC_VISIBILITY,
+            FormulationsCapability.SIGN_SPEC,
         ),
     ),
     AUDIT_MODULE: Module(

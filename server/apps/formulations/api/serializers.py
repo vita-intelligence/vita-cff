@@ -77,11 +77,17 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             # + free-text strings the spec sheet snapshot uses.
             "allergen": attributes.get("allergen"),
             "allergen_source": attributes.get("allergen_source"),
+            # Nutrient Reference Value in mg — the builder divides the
+            # ingredient's label claim by this to surface ``%NRV`` next
+            # to each line. Stored as the same tolerant ``text``/``N/A``
+            # string the Excel workbook emits.
+            "nrv_mg": attributes.get("nrv_mg"),
         }
 
 
 class FormulationReadSerializer(serializers.ModelSerializer):
     lines = FormulationLineReadSerializer(many=True, read_only=True)
+    sales_person = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -100,11 +106,29 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "appearance",
             "disintegration_spec",
             "project_status",
+            "sales_person",
             "lines",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_sales_person(
+        self, obj: Formulation
+    ) -> dict[str, str] | None:
+        user = obj.sales_person
+        if user is None:
+            return None
+        # Flat, predictable shape so the frontend can render a chip
+        # without a second request. ``name`` falls back to email so
+        # accounts without a display name still render something
+        # human-readable.
+        full_name = getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()
+        return {
+            "id": str(user.id),
+            "email": user.email,
+            "name": (full_name or user.email).strip(),
+        }
 
 
 class FormulationWriteSerializer(serializers.Serializer):

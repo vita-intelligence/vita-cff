@@ -37,6 +37,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "is_active",
             "is_owner",
             "permissions",
             "created_at",

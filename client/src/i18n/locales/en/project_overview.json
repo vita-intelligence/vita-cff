@@ -11,6 +11,13 @@
     "approved": "Approved",
     "discontinued": "Discontinued"
   },
+  "sales_person": {
+    "label": "Sales",
+    "unassigned": "No sales lead",
+    "clear": "Clear",
+    "loading": "Loading members…",
+    "empty": "No members to assign."
+  },
   "kpi": {
     "spec_sheets": "Spec sheets",
     "spec_sheets_sub": "{draft} draft · {approved} approved · {sent} sent",

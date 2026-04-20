@@ -100,6 +100,71 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # Packaging-spec rows the workbook's printable sheet exposes
+    # beyond the four hard-linked catalogue slots above. Each is a
+    # free-text string so the scientist can encode ranges, vendor
+    # nuances, or language like "As applicable" without the UI
+    # gaining a separate picker for every value.
+    unit_quantity = models.CharField(
+        _("unit quantity"), max_length=64, blank=True, default=""
+    )
+    food_contact_status = models.CharField(
+        _("food contact status"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+    shelf_life = models.CharField(
+        _("shelf life"), max_length=64, blank=True, default=""
+    )
+    storage_conditions = models.CharField(
+        _("storage conditions"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+
+    limits_override = models.JSONField(
+        _("limits override"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Per-sheet overrides for the Microbiological / PAH / "
+            "Pesticides / Heavy Metal block. Keys match the canonical "
+            "slug list (``total_aerobic``, ``total_yeast``, ``e_coli``, "
+            "``salmonella``, ``pah``, ``heavy_metal``, ``pesticides``, "
+            "``others``); values are free-text limit strings. Empty dict "
+            "means fall back to the organization's ``default_limits``."
+        ),
+    )
+
+    section_visibility = models.JSONField(
+        _("section visibility"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Map of section-slug → bool that decides which blocks the "
+            "customer-facing sheet renders. Absence of a key is "
+            "interpreted as ``True`` so existing sheets keep showing "
+            "everything; toggling a section off writes ``False`` here. "
+            "The ``manage_spec_visibility`` capability gates writes."
+        ),
+    )
+
+    section_order = models.JSONField(
+        _("section order"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "Ordered list of section slugs that overrides the default "
+            "top-down layout of the customer-facing sheet. Missing or "
+            "unknown slugs fall back to the canonical order, so a stale "
+            "override cannot hide a newly-added section. Gated by the "
+            "same ``manage_spec_visibility`` capability as the "
+            "on/off toggles."
+        ),
+    )
+
     # Packaging selection — each slot points at one row in the org's
     # ``packaging`` catalogue. Nullable so a sheet can be saved before
     # packaging is finalised (F4.1 fills the four placeholders that

@@ -102,6 +102,20 @@ class ActivityEntry:
 
 
 @dataclass
+class SalesPersonSnapshot:
+    """Flat projection of the formulation's commercial owner.
+
+    Mirrors ``FormulationReadSerializer.get_sales_person`` so the
+    project shell can render the assigned user from the overview
+    payload alone — no extra round-trip to the detail endpoint.
+    """
+
+    id: str
+    name: str
+    email: str
+
+
+@dataclass
 class ProjectOverview:
     id: str
     code: str
@@ -113,6 +127,7 @@ class ProjectOverview:
     updated_at: str
     created_at: str
     owner_name: str
+    sales_person: SalesPersonSnapshot | None
     latest_version: int | None
     latest_version_label: str
     latest_version_saved_at: str | None
@@ -152,6 +167,20 @@ def _owner_name(formulation: Formulation) -> str:
         return ""
     full = (user.get_full_name() or "").strip()
     return full or (user.email or "").strip()
+
+
+def _sales_person_snapshot(
+    formulation: Formulation,
+) -> SalesPersonSnapshot | None:
+    user = formulation.sales_person
+    if user is None:
+        return None
+    full = (user.get_full_name() or "").strip()
+    return SalesPersonSnapshot(
+        id=str(user.id),
+        name=full or user.email,
+        email=user.email,
+    )
 
 
 def _filled_total_mg(latest: FormulationVersion | None) -> str | None:
@@ -508,6 +537,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         updated_at=formulation.updated_at.isoformat(),
         created_at=formulation.created_at.isoformat(),
         owner_name=_owner_name(formulation),
+        sales_person=_sales_person_snapshot(formulation),
         latest_version=latest.version_number if latest else None,
         latest_version_label=latest.label if latest else "",
         latest_version_saved_at=(

@@ -27,6 +27,34 @@ interface RetryableConfig extends InternalAxiosRequestConfig {
   _retried?: boolean;
 }
 
+/** Path segment used by the locked-workspace landing page. */
+const WORKSPACE_LOCKED_PATH = "/workspace-locked";
+/** Error code the backend returns on an inactive-org 403. */
+const ORGANIZATION_INACTIVE_CODE = "organization_inactive";
+
+/**
+ * Redirect the browser to the ``workspace-locked`` landing page,
+ * preserving the current locale prefix if one is present. Runs as a
+ * hard navigation rather than a router push so any stale client
+ * caches are cleared — an inactive workspace should render nothing
+ * from the authed shell.
+ */
+function redirectToWorkspaceLocked(): void {
+  if (typeof window === "undefined") return;
+  const { pathname, search } = window.location;
+  if (pathname.startsWith(WORKSPACE_LOCKED_PATH)) return;
+  const match = pathname.match(/^\/([a-z]{2})(?:\/|$)/);
+  const localePrefix = match ? `/${match[1]}` : "";
+  if (pathname.startsWith(`${localePrefix}${WORKSPACE_LOCKED_PATH}`)) return;
+  const target = `${localePrefix}${WORKSPACE_LOCKED_PATH}`;
+  // ``assign`` keeps the original entry in the history stack so the
+  // user can hit back after activation and resume what they were
+  // doing (the page gate will re-check at that point).
+  window.location.assign(
+    `${target}?from=${encodeURIComponent(pathname + search)}`,
+  );
+}
+
 /**
  * Requests that must never trigger a refresh. Hitting any of these
  * with a 401 means the refresh attempt itself would be pointless (the
@@ -76,14 +104,26 @@ export function attachResponseInterceptors(instance: AxiosInstance): void {
       const status = axiosError.response?.status;
 
       // Anything that is not a 401, or we cannot retry safely, becomes
-      // a plain :class:`ApiError`.
+      // a plain :class:`ApiError`. Before we reject we inspect the
+      // payload for the inactive-org sentinel — a 403 with that code
+      // means every authed page the user is looking at is about to
+      // render stale data, so we hard-redirect to the locked page
+      // first and let the rejected promise also bubble up for any
+      // caller that needs it.
       if (
         status !== 401 ||
         !originalRequest ||
         originalRequest._retried ||
         shouldSkipRefresh(originalRequest.url)
       ) {
-        return Promise.reject(normalizeApiError(error));
+        const apiErr = normalizeApiError(error);
+        if (
+          apiErr.status === 403 &&
+          apiErr.code === ORGANIZATION_INACTIVE_CODE
+        ) {
+          redirectToWorkspaceLocked();
+        }
+        return Promise.reject(apiErr);
       }
 
       originalRequest._retried = true;

@@ -16,4 +16,6 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/rollback/`,
   overview: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
+  salesPerson: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
 } as const;

@@ -95,6 +95,39 @@ EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate"
 EXCIPIENT_LABEL_SILICA = "Silicon Dioxide"
 EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate"
 CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
+
+
+#: Candidate names we probe in the org's ``raw_materials`` catalogue
+#: when resolving the procurement code for a hard-coded excipient.
+#: Tried in order; the first active (non-archived) item whose name
+#: matches case-insensitively wins. Tuples stay flat rather than
+#: nested regexes so an admin can drop a variant into the catalogue
+#: verbatim and it'll resolve without any code change.
+EXCIPIENT_CATALOGUE_NAME_CANDIDATES: dict[str, tuple[str, ...]] = {
+    "mcc_mg": (
+        "Microcrystalline Cellulose",
+        "MCC",
+    ),
+    "dcp_mg": (
+        "Dicalcium Phosphate",
+        "DCP",
+    ),
+    "mg_stearate_mg": (
+        "Magnesium Stearate",
+        "Mg Stearate",
+    ),
+    "silica_mg": (
+        "Silicon Dioxide",
+        "Silica",
+    ),
+    "capsule_shell": (
+        "Capsule Shell",
+        "Hypromellose Capsule Shell",
+        "HPMC Capsule Shell",
+        "Hypromellose",
+        "HPMC",
+    ),
+}
 #: Combined label for the magnesium-stearate + silica pair. The Valley
 #: workbook collapses both flow agents into a single ingredient-list
 #: entry; rendering them separately exposes manufacturing detail

@@ -1,5 +1,6 @@
 export { formulationsEndpoints } from "./endpoints";
 export {
+  assignFormulationSalesPerson,
   computeFormulationTotals,
   createFormulation,
   deleteFormulation,
@@ -15,6 +16,7 @@ export {
 } from "./api";
 export {
   formulationsQueryKeys,
+  useAssignSalesPerson,
   useCreateFormulation,
   useDeleteFormulation,
   useFormulation,
@@ -41,6 +43,7 @@ export {
   computeAllergens,
   computeCompliance,
   computeLine,
+  computeNrvPercent,
   computeTotals,
   explainLine,
   isAllergenLine,
@@ -84,10 +87,12 @@ export {
   type ProjectStatus,
   type FormulationsListQuery,
   type LineItemAttributes,
+  type AssignSalesPersonRequestDto,
   type PaginatedFormulationsDto,
   type ReplaceLinesRequestDto,
   type RollbackRequestDto,
   type SaveVersionRequestDto,
+  type SalesPersonDto,
   type TabletSizeOption,
   type UpdateFormulationRequestDto,
   type ViabilityDto,

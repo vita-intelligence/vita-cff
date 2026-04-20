@@ -47,6 +47,17 @@ export function TrialBatchDetail({
 
   const grouped = useMemo(() => groupByCategory(bom.entries), [bom.entries]);
 
+  // Fill weight only — matches the Excel workbook's ``BOM Actives
+  // Calculation`` denominator (``SUM(mg/serving)`` across active +
+  // excipient rows, shell excluded). Weight rows divide by this to
+  // produce grams-per-kg-of-fill (so the column sums to 1 000 g),
+  // and the shell count divides the same denominator into 1 kg to
+  // report how many shells that much fill will fit into.
+  const totalFillMg = useMemo(() => {
+    const parsed = Number.parseFloat(bom.total_mg_per_unit);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }, [bom.total_mg_per_unit]);
+
   return (
     <div className="mt-8 flex flex-col gap-6">
       <header className="flex flex-wrap items-start justify-between gap-4">
@@ -109,72 +120,89 @@ export function TrialBatchDetail({
           {tBatches("detail.bom_title")}
         </h2>
 
-        {CATEGORIES.map((category) => {
-          const rows = grouped.get(category) ?? [];
-          if (rows.length === 0) return null;
-          return (
-            <div key={category} className="mt-6">
-              <h3 className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                {tBatches(
-                  `detail.section.${category}` as "detail.section.active",
-                )}
-              </h3>
-              <div className="mt-2 overflow-hidden rounded-xl ring-1 ring-ink-200">
-                <table className="w-full border-collapse">
-                  <thead className="bg-ink-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
-                        {tBatches("detail.column.code")}
-                      </th>
-                      <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
-                        {tBatches("detail.column.material")}
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
-                        {tBatches("detail.column.mg_per_unit")}
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
-                        {tBatches("detail.column.g_per_pack")}
-                      </th>
-                      <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
-                        {tBatches("detail.column.kg_per_batch")}
-                      </th>
+        <div className="mt-6 overflow-hidden rounded-xl ring-1 ring-ink-200">
+          <table className="w-full border-collapse">
+            <colgroup>
+              <col className="w-28" />
+              <col />
+              <col className="w-28" />
+              <col className="w-28" />
+              <col className="w-32" />
+              <col className="w-36" />
+            </colgroup>
+            <thead className="bg-ink-50">
+              <tr>
+                <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
+                  {tBatches("detail.column.code")}
+                </th>
+                <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
+                  {tBatches("detail.column.material")}
+                </th>
+                <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                  {tBatches("detail.column.mg_per_unit")}
+                </th>
+                <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                  {tBatches("detail.column.g_per_pack")}
+                </th>
+                <th className="bg-orange-50 px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-orange-800 ring-1 ring-inset ring-orange-200">
+                  {tBatches("detail.column.bom")}
+                </th>
+                <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                  {tBatches("detail.column.kg_per_batch")}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {CATEGORIES.flatMap((category) => {
+                const rows = grouped.get(category) ?? [];
+                if (rows.length === 0) return [];
+                return [
+                  <tr key={`header-${category}`} className="bg-ink-50/50">
+                    <td
+                      colSpan={6}
+                      className="border-t border-ink-200 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-ink-500"
+                    >
+                      {tBatches(
+                        `detail.section.${category}` as "detail.section.active",
+                      )}
+                    </td>
+                  </tr>,
+                  ...rows.map((entry, idx) => (
+                    <tr
+                      key={`${entry.category}-${entry.label}-${entry.internal_code}`}
+                      className={
+                        idx < rows.length - 1
+                          ? "border-b border-ink-100"
+                          : ""
+                      }
+                    >
+                      <td className="px-3 py-2.5 text-xs text-ink-500">
+                        {entry.internal_code || "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-sm text-ink-1000">
+                        {entry.label}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700">
+                        {formatNumber(entry.mg_per_unit, 4)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700">
+                        {formatNumber(entry.g_per_pack, 4)}
+                      </td>
+                      <td className="bg-orange-50 px-3 py-2.5 text-right text-sm font-medium tabular-nums text-orange-900 ring-1 ring-inset ring-orange-200">
+                        {formatBomPerKg(entry, totalFillMg, tBatches)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right text-sm font-medium tabular-nums text-ink-1000">
+                        {entry.uom === "count"
+                          ? `${formatInteger(entry.count_per_batch)} ${tBatches("detail.each")}`
+                          : `${formatNumber(entry.kg_per_batch, 4)} kg`}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map((entry, idx) => (
-                      <tr
-                        key={`${entry.category}-${entry.label}-${entry.internal_code}`}
-                        className={
-                          idx < rows.length - 1
-                            ? "border-b border-ink-100"
-                            : ""
-                        }
-                      >
-                        <td className="px-3 py-2.5 text-xs text-ink-500">
-                          {entry.internal_code || "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-sm text-ink-1000">
-                          {entry.label}
-                        </td>
-                        <td className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700">
-                          {formatNumber(entry.mg_per_unit, 4)}
-                        </td>
-                        <td className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700">
-                          {formatNumber(entry.g_per_pack, 4)}
-                        </td>
-                        <td className="px-3 py-2.5 text-right text-sm font-medium tabular-nums text-ink-1000">
-                          {entry.uom === "count"
-                            ? `${formatInteger(entry.count_per_batch)} ${tBatches("detail.each")}`
-                            : `${formatNumber(entry.kg_per_batch, 4)} kg`}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          );
-        })}
+                  )),
+                ];
+              })}
+            </tbody>
+          </table>
+        </div>
 
         <div className="mt-8 grid grid-cols-1 gap-3 md:grid-cols-2">
           <TotalTile
@@ -287,4 +315,37 @@ function formatNumber(raw: string, maxDecimals: number): string {
   if (!fraction) return grouped;
   const trimmed = fraction.replace(/0+$/, "");
   return trimmed ? `${grouped}.${trimmed}` : grouped;
+}
+
+
+/** Render the BOM-per-kg cell for a single entry.
+ *
+ * Matches the Valley workbook's ``BOM Actives Calculation`` column
+ * ``BOM``: ``(mg_per_serving × 1000) / SUM(mg_per_serving)`` where
+ * the sum runs over the blended fill (actives + excipients), so the
+ * weight rows sum to exactly 1 000 g by construction. Capsule
+ * shells live outside that fill sum; for them we still scale 1 kg
+ * of fill into a count of units using the same denominator, which
+ * tells procurement how many empty shells to buy alongside each kg
+ * of blended powder.
+ */
+function formatBomPerKg(
+  entry: BOMEntry,
+  totalFillMg: number,
+  tBatches: ReturnType<typeof useTranslations<"trial_batches">>,
+): string {
+  if (!(totalFillMg > 0)) return "—";
+
+  if (entry.uom === "count") {
+    // One shell per capsule, so 1 kg of fill corresponds to
+    // ``1_000_000 / fill_mg_per_unit`` shells. Round to the nearest
+    // whole shell — half a shell is not a procurable thing.
+    const pieces = Math.round(1_000_000 / totalFillMg);
+    return `${pieces.toLocaleString("en-US").replace(/,/g, "\u202F")} ${tBatches("detail.each")}`;
+  }
+
+  const mgPerUnit = Number.parseFloat(entry.mg_per_unit);
+  if (!Number.isFinite(mgPerUnit)) return "—";
+  const grams = (mgPerUnit * 1000) / totalFillMg;
+  return `${formatNumber(grams.toFixed(4), 4)} g`;
 }

@@ -4,6 +4,7 @@ export {
   createCatalogue,
   createItem,
   deleteCatalogue,
+  downloadImportTemplate,
   fetchCatalogue,
   fetchCatalogues,
   fetchItem,

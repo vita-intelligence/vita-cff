@@ -44,9 +44,21 @@ def create_organization(*, user: Any, name: str) -> Organization:
     written together — a row on the first table without the second would
     leave an orgless creator, and the reverse is impossible thanks to the
     FK. The atomic block guarantees all-or-nothing semantics.
+
+    Seeds ``default_spec_limits`` with the canonical microbial / PAH /
+    heavy-metal defaults so the first spec sheet any org produces
+    already lists regulatory-appropriate limits without admin setup.
     """
 
-    organization = Organization.objects.create(name=name, created_by=user)
+    # Import locally so the organizations app keeps its dependency
+    # arrow pointing at the feature apps (not the reverse).
+    from apps.specifications.constants import DEFAULT_SAFETY_LIMITS
+
+    organization = Organization.objects.create(
+        name=name,
+        created_by=user,
+        default_spec_limits=dict(DEFAULT_SAFETY_LIMITS),
+    )
     Membership.objects.create(
         user=user,
         organization=organization,
@@ -95,6 +107,23 @@ def get_membership(user: Any, organization: Organization) -> Membership | None:
     """Return the membership linking ``user`` and ``organization`` or ``None``."""
 
     return Membership.objects.filter(user=user, organization=organization).first()
+
+
+def is_organization_accessible(organization: Organization, user: Any) -> bool:
+    """Return ``True`` when ``user`` is allowed to act in ``organization``.
+
+    Pre-billing gate: workspaces default to ``is_active=False`` and a
+    platform admin flips them on manually. Superusers always bypass
+    so operators can still introspect dead workspaces via the app.
+    This helper is the single source of truth the permission layer
+    consults — the DRF wrapper ``enforce_organization_active`` in
+    ``apps.organizations.api.errors``-land turns a ``False`` here
+    into a 403 with the ``organization_inactive`` code.
+    """
+
+    if organization.is_active:
+        return True
+    return bool(getattr(user, "is_superuser", False))
 
 
 def has_capability(

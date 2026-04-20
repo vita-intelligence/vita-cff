@@ -17,6 +17,7 @@ import type { ApiError } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
 
 import {
+  assignFormulationSalesPerson,
   computeFormulationTotals,
   createFormulation,
   deleteFormulation,
@@ -31,6 +32,7 @@ import {
   updateFormulation,
 } from "./api";
 import type {
+  AssignSalesPersonRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
   FormulationTotalsDto,
@@ -203,6 +205,32 @@ export function useUpdateFormulation(
     },
   });
 }
+
+export function useAssignSalesPerson(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<FormulationDto, ApiError, AssignSalesPersonRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, AssignSalesPersonRequestDto>({
+    mutationFn: (payload) =>
+      assignFormulationSalesPerson(orgId, formulationId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        updated,
+      );
+      // The overview card shows the sales person too, so kick that
+      // cache as well. Totals are unaffected — leave them alone.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.list(orgId),
+      });
+    },
+  });
+}
+
 
 export function useDeleteFormulation(
   orgId: string,

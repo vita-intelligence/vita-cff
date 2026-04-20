@@ -10,6 +10,7 @@ export {
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
   setSpecificationPackaging,
+  setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
 } from "./api";
@@ -23,6 +24,7 @@ export {
   useRevokeSpecificationPublicLink,
   useRotateSpecificationPublicLink,
   useSetSpecificationPackaging,
+  useSetSpecificationVisibility,
   useSpecification,
   useTransitionSpecificationStatus,
   useUpdateSpecification,
@@ -49,4 +51,5 @@ export {
   type SpecificationStatus,
   type TransitionStatusRequestDto,
   type UpdateSpecificationRequestDto,
+  type UpdateVisibilityRequestDto,
 } from "./types";

@@ -3,15 +3,19 @@
 import { Button } from "@heroui/react";
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowLeft,
+  ArrowUp,
   CheckCircle2,
   Download,
+  Eye,
+  EyeOff,
   Send,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { Fragment, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -20,6 +24,8 @@ import {
   ALLOWED_TRANSITIONS,
   specificationsEndpoints,
   useDeleteSpecification,
+  useRenderedSpecification,
+  useSetSpecificationVisibility,
   useTransitionSpecificationStatus,
   type RenderedSheetContext,
   type RenderedTransition,
@@ -84,21 +90,33 @@ const AMINO_GROUPS: readonly {
 export function SpecificationSheetView({
   orgId,
   sheet,
-  rendered,
+  rendered: initialRendered,
   canWrite,
   canAdmin,
+  canManageVisibility,
 }: {
   orgId: string;
   sheet: SpecificationSheetDto;
   rendered: RenderedSheetContext;
   canWrite: boolean;
   canAdmin: boolean;
+  canManageVisibility: boolean;
 }) {
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Hydrate the client-side cache from the SSR-fetched payload so
+  // the first paint is identical to what the server rendered, then
+  // switch to the live cache so mutations — specifically
+  // ``useSetSpecificationVisibility`` — repaint the sheet the moment
+  // the server acknowledges the write, without a route refresh.
+  const renderedQuery = useRenderedSpecification(orgId, sheet.id, {
+    initialData: initialRendered,
+  });
+  const rendered = renderedQuery.data ?? initialRendered;
 
   const transitionMutation = useTransitionSpecificationStatus(orgId, sheet.id);
   const deleteMutation = useDeleteSpecification(orgId);
@@ -189,6 +207,14 @@ export function SpecificationSheetView({
           </a>
           {canWrite ? (
             <EditPackagingButton orgId={orgId} sheet={sheet} />
+          ) : null}
+          {canManageVisibility ? (
+            <VisibilityMenu
+              orgId={orgId}
+              sheetId={sheet.id}
+              visibility={rendered.visibility ?? {}}
+              order={rendered.section_order ?? []}
+            />
           ) : null}
           {canWrite ? (
             <SharePublicLinkButton orgId={orgId} sheet={sheet} />
@@ -290,357 +316,500 @@ export function SpecSheetContent({
 }) {
   const tSpecs = useTranslations("specifications");
 
-  return (
-      <article className="border-2 border-ink-1000 bg-ink-0 p-6 md:p-10 print:border-0 print:p-0">
-        {rendered.sheet.status === "draft" ? (
-          <p className="mb-4 border-2 border-ink-500 bg-ink-100 px-3 py-2 text-center font-mono text-[10px] tracking-widest uppercase text-ink-700">
-            {tSpecs("sheet.signature.draft_watermark")}
-          </p>
-        ) : null}
+  const visibility = rendered.visibility ?? {};
+  const order = rendered.section_order ?? [];
 
-        <h1 className="text-2xl font-black tracking-tight uppercase md:text-3xl">
+  // Each section renders through this dictionary so the top-down
+  // sequence is a pure function of ``section_order`` + visibility —
+  // reordering and hiding both reduce to the same walk.
+  const renderers: Record<string, () => ReactNode> = {
+    product_specification: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.specification")}
+        </SectionTitle>
+        <SpecTable>
+          <SpecRow
+            label={tSpecs("sheet.fields.direction_of_use")}
+            value={rendered.formulation.directions_of_use || "—"}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.suggested_dosage")}
+            value={rendered.formulation.suggested_dosage || "—"}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.dosage_form")}
+            value={
+              rendered.formulation.dosage_form
+                ? tSpecs(
+                    `dosage_forms.${rendered.formulation.dosage_form}` as `dosage_forms.capsule`,
+                  )
+                : "—"
+            }
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.appearance")}
+            value={rendered.formulation.appearance || "TBC"}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.filling_weight")}
+            value={formatMg(rendered.totals.total_weight_mg)}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.total_weight")}
+            value={resolveTotalWeight(rendered)}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.weight_uniformity")}
+            value={rendered.weight_uniformity}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.disintegration")}
+            value={rendered.formulation.disintegration_spec || "—"}
+          />
+        </SpecTable>
+      </>
+    ),
+    packaging_specification: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.packaging")}
+        </SectionTitle>
+        <SpecTable>
+          <SpecRow
+            label={tSpecs("sheet.fields.lid_description")}
+            value={rendered.packaging.lid_description}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.bottle_pouch_tub")}
+            value={rendered.packaging.bottle_pouch_tub}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.label_size")}
+            value={rendered.packaging.label_size}
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.antitemper")}
+            value={rendered.packaging.antitemper}
+          />
+          {rendered.packaging.unit_quantity ? (
+            <SpecRow
+              label={tSpecs("sheet.fields.unit_quantity")}
+              value={String(rendered.packaging.unit_quantity)}
+            />
+          ) : null}
+          {rendered.packaging.food_contact_status ? (
+            <SpecRow
+              label={tSpecs("sheet.fields.food_contact_status")}
+              value={rendered.packaging.food_contact_status}
+            />
+          ) : null}
+          {rendered.packaging.shelf_life ? (
+            <SpecRow
+              label={tSpecs("sheet.fields.shelf_life")}
+              value={rendered.packaging.shelf_life}
+            />
+          ) : null}
+          {rendered.packaging.storage_conditions ? (
+            <SpecRow
+              label={tSpecs("sheet.fields.storage_conditions")}
+              value={rendered.packaging.storage_conditions}
+            />
+          ) : null}
+        </SpecTable>
+      </>
+    ),
+    compliance: () => (
+      <SpecTable className="mt-4">
+        {rendered.compliance.flags.map((flag) => (
+          <SpecRow
+            key={flag.key}
+            label={flag.label}
+            value={
+              flag.status === true
+                ? "Yes"
+                : flag.status === false
+                  ? "No"
+                  : "—"
+            }
+          />
+        ))}
+      </SpecTable>
+    ),
+    safety_limits: () => (
+      <>
+        <SectionTitle>{tSpecs("sheet.sections.limits")}</SectionTitle>
+        <SpecTable>
+          {rendered.limits.map((limit) => (
+            <SpecRow
+              key={limit.slug ?? limit.name}
+              label={limit.name}
+              value={limit.value}
+            />
+          ))}
+        </SpecTable>
+      </>
+    ),
+    signatures: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.signatures")}
+        </SectionTitle>
+        <div className="flex flex-col gap-6">
+          <SignatureLine role={tSpecs("sheet.signature.prepared_by")} />
+          <SignatureLine role={tSpecs("sheet.signature.director")} />
+          <SignatureLine role={tSpecs("sheet.signature.customer")} />
+        </div>
+        <HistoryPanel
+          entries={rendered.history}
+          emptyLabel={tSpecs("sheet.history.empty")}
+          title={tSpecs("sheet.history.title")}
+          statusLabel={(key) =>
+            tSpecs(`status.${key}` as `status.draft`)
+          }
+        />
+      </>
+    ),
+    actives: () =>
+      rendered.actives.length > 0 ? (
+        <>
+          <SectionTitle>
+            {tSpecs("sheet.sections.actives")}
+          </SectionTitle>
+          <table className="w-full border-collapse border border-ink-1000 text-[11px]">
+            <thead>
+              <tr>
+                <DataTh>
+                  {tSpecs("sheet.columns.active_ingredient")}
+                </DataTh>
+                <DataTh center>
+                  {tSpecs("sheet.columns.claim_per_serving")}
+                </DataTh>
+                <DataTh center>{tSpecs("sheet.columns.nrv")}</DataTh>
+              </tr>
+            </thead>
+            <tbody>
+              {rendered.actives.map((active, idx) => (
+                <tr
+                  key={`${active.item_internal_code}-${active.ingredient_list_name}-${idx}`}
+                >
+                  <DataTd>{active.ingredient_list_name}</DataTd>
+                  <DataTd center>
+                    {stripTrailingZeros(active.label_claim_mg)}
+                  </DataTd>
+                  <DataTd center>
+                    {active.nrv_percent
+                      ? `${active.nrv_percent}%`
+                      : "N/A"}
+                  </DataTd>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
+      ) : null,
+    nutrition: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.nutrition")}
+        </SectionTitle>
+        <table className="w-full border-collapse border border-ink-1000 text-[11px]">
+          <thead>
+            <tr>
+              <DataTh>{tSpecs("sheet.columns.active_ingredient")}</DataTh>
+              <DataTh center>{tSpecs("sheet.columns.per_100g")}</DataTh>
+              <DataTh center>
+                {tSpecs("sheet.columns.per_serving")}
+              </DataTh>
+            </tr>
+          </thead>
+          <tbody>
+            {NUTRITION_ROW_KEYS.map((key) => {
+              const row = rendered.nutrition.rows.find(
+                (r) => r.key === key,
+              );
+              return (
+                <tr key={key}>
+                  <DataTd>
+                    {tSpecs(
+                      `nutrition_rows.${key}` as `nutrition_rows.energy_kj`,
+                    )}
+                  </DataTd>
+                  <DataTd center>{formatNutrientValue(row?.per_100g)}</DataTd>
+                  <DataTd center>
+                    {formatNutrientValue(row?.per_serving)}
+                  </DataTd>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </>
+    ),
+    amino_acids: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.amino_acids")}
+        </SectionTitle>
+        <table className="w-full border-collapse border border-ink-1000 text-[11px]">
+          <thead>
+            <tr>
+              <DataTh>{tSpecs("sheet.columns.amino_acid")}</DataTh>
+              <DataTh center>
+                {tSpecs("sheet.columns.amino_per_100g")}
+              </DataTh>
+              <DataTh center>
+                {tSpecs("sheet.columns.amino_per_serving")}
+              </DataTh>
+            </tr>
+          </thead>
+          <tbody>
+            {AMINO_GROUPS.map((group) => {
+              const backendGroup = rendered.amino_acids.groups.find(
+                (g) => g.key === group.key,
+              );
+              return (
+                <Fragment key={group.key}>
+                  <tr>
+                    <td
+                      colSpan={3}
+                      className="border border-ink-1000 bg-[#ffc000] px-2 py-1 text-center font-bold"
+                    >
+                      {tSpecs(
+                        `amino_acids.${group.key}` as `amino_acids.essential`,
+                      )}
+                    </td>
+                  </tr>
+                  {group.acids.map((acid, idx) => {
+                    const row = backendGroup?.acids[idx];
+                    return (
+                      <tr key={`${group.key}-${acid}`}>
+                        <DataTd>{acid}</DataTd>
+                        <DataTd center>
+                          {formatNutrientValue(row?.per_100g)}
+                        </DataTd>
+                        <DataTd center>
+                          {formatNutrientValue(row?.per_serving)}
+                        </DataTd>
+                      </tr>
+                    );
+                  })}
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </>
+    ),
+    excipients: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.excipients")}
+        </SectionTitle>
+        <table className="w-full border-collapse border border-ink-1000 text-[11px]">
+          <thead>
+            <tr>
+              <DataTh>{tSpecs("sheet.columns.ingredients")}</DataTh>
+            </tr>
+          </thead>
+          <tbody>
+            {rendered.declaration.entries
+              .filter((e) => e.category !== "active")
+              .map((entry, idx) => (
+                <tr key={`${entry.category}-${entry.label}-${idx}`}>
+                  <DataTd>{entry.label}</DataTd>
+                </tr>
+              ))}
+          </tbody>
+        </table>
+      </>
+    ),
+    ingredients: () =>
+      rendered.declaration.text ? (
+        <>
+          <SectionTitle>
+            {tSpecs("sheet.sections.ingredients")}
+          </SectionTitle>
+          <div className="border border-ink-1000 p-4 text-center text-[11px] leading-relaxed">
+            <IngredientDeclarationBody rendered={rendered} />
+          </div>
+        </>
+      ) : null,
+  };
+
+  // Safety net: if ``section_order`` arrived empty (very old sheet or
+  // network payload shape drift), fall back to the dictionary's own
+  // key order so nothing ever disappears silently.
+  const effectiveOrder =
+    order.length > 0 ? order : (Object.keys(renderers) as string[]);
+
+  return (
+    <article
+      className="relative mx-auto max-w-[820px] bg-ink-0 px-6 py-8 text-ink-1000 md:px-12 md:py-12 print:px-0 print:py-0"
+      style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
+    >
+      {rendered.watermark ? <DraftWatermark /> : null}
+
+      <div className="relative z-10">
+        <header className="flex items-center justify-between text-[11px]">
+          <span>{rendered.sheet.code || "—"}</span>
+          <span>{formatHeaderDate(rendered.sheet.updated_at)}</span>
+        </header>
+
+        <h1 className="mt-6 text-center text-lg font-bold md:text-xl">
+          {rendered.watermark ? "DRAFT " : ""}
           {tSpecs("sheet.title")}
         </h1>
-        <p className="mt-1 font-mono text-xs text-ink-600">
-          {rendered.formulation.name} · v
-          {rendered.formulation.version_number}
-        </p>
 
-        <div className="mt-6 grid grid-cols-1 gap-8 lg:grid-cols-3">
-          {/* ==================================================== */}
-          {/* LEFT COLUMN — product metadata                        */}
-          {/* ==================================================== */}
-          <section className="flex flex-col gap-6">
-            <SheetSection title={tSpecs("sheet.sections.product")}>
-              <KeyValue
-                label={tSpecs("sheet.fields.product_code")}
-                value={rendered.formulation.code || "—"}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.product_description")}
-                value={rendered.formulation.name}
-              />
-            </SheetSection>
+        <SpecTable className="mt-6">
+          <SpecRow
+            label={tSpecs("sheet.fields.product_code")}
+            value={
+              rendered.sheet.code || rendered.formulation.code || "—"
+            }
+          />
+          <SpecRow
+            label={tSpecs("sheet.fields.product_description")}
+            value={rendered.formulation.name}
+          />
+        </SpecTable>
 
-            <SheetSection
-              title={tSpecs("sheet.sections.specification")}
-            >
-              <KeyValue
-                label={tSpecs("sheet.fields.direction_of_use")}
-                value={rendered.formulation.directions_of_use || "—"}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.suggested_dosage")}
-                value={rendered.formulation.suggested_dosage || "—"}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.dosage_form")}
-                value={
-                  rendered.formulation.dosage_form
-                    ? tSpecs(
-                        `dosage_forms.${rendered.formulation.dosage_form}` as `dosage_forms.capsule`,
-                      )
-                    : "—"
-                }
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.appearance")}
-                value={rendered.formulation.appearance || "TBC"}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.filling_weight")}
-                value={formatMg(rendered.totals.total_weight_mg)}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.total_weight")}
-                value={resolveTotalWeight(rendered)}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.weight_uniformity")}
-                value={rendered.weight_uniformity}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.disintegration")}
-                value={rendered.formulation.disintegration_spec || "—"}
-              />
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.packaging")}>
-              <KeyValue
-                label={tSpecs("sheet.fields.lid_description")}
-                value={rendered.packaging.lid_description}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.bottle_pouch_tub")}
-                value={rendered.packaging.bottle_pouch_tub}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.label_size")}
-                value={rendered.packaging.label_size}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.antitemper")}
-                value={rendered.packaging.antitemper}
-              />
-              <KeyValue
-                label={tSpecs("sheet.fields.unit_quantity")}
-                value={String(rendered.packaging.unit_quantity ?? "—")}
-              />
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.compliance")}>
-              <ul className="flex flex-col gap-1 font-mono text-xs text-ink-700">
-                {rendered.compliance.flags.map((flag) => (
-                  <li
-                    key={flag.key}
-                    className="flex items-center justify-between"
-                  >
-                    <span>{flag.label}:</span>
-                    <span className="font-bold">
-                      {flag.status === true
-                        ? "Yes"
-                        : flag.status === false
-                          ? "No"
-                          : "—"}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.limits")}>
-              <ul className="flex flex-col gap-1 font-mono text-xs text-ink-700">
-                {rendered.limits.map((limit) => (
-                  <li
-                    key={limit.name}
-                    className="flex items-start justify-between gap-3"
-                  >
-                    <span className="flex-1">{limit.name}:</span>
-                    <span className="text-right font-bold">
-                      {limit.value}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.signatures")}>
-              <SignatureBox
-                label={tSpecs("sheet.signature.product_manager")}
-                dateLabel={tSpecs("sheet.signature.sign_date")}
-              />
-              <SignatureBox
-                label={tSpecs("sheet.signature.director")}
-                dateLabel={tSpecs("sheet.signature.sign_date")}
-              />
-              <HistoryPanel
-                entries={rendered.history}
-                emptyLabel={tSpecs("sheet.history.empty")}
-                title={tSpecs("sheet.history.title")}
-                statusLabel={(key) =>
-                  tSpecs(`status.${key}` as `status.draft`)
-                }
-              />
-            </SheetSection>
-          </section>
-
-          {/* ==================================================== */}
-          {/* MIDDLE COLUMN — active ingredients                    */}
-          {/* ==================================================== */}
-          <section className="flex flex-col gap-6">
-            <SheetSection title={tSpecs("sheet.sections.actives")}>
-              {rendered.actives.length === 0 ? (
-                <p className="text-sm text-ink-600">—</p>
-              ) : (
-                <table className="w-full border-collapse">
-                  <thead>
-                    <tr className="border-b-2 border-ink-1000 text-left">
-                      <th className="py-2 pr-2 font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                        {tSpecs("sheet.columns.active_ingredient")}
-                      </th>
-                      <th className="py-2 px-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                        {tSpecs("sheet.columns.claim_per_serving")}
-                      </th>
-                      <th className="py-2 pl-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                        {tSpecs("sheet.columns.nrv")}
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rendered.actives.map((active) => (
-                      <tr
-                        key={`${active.item_internal_code}-${active.ingredient_list_name}`}
-                        className="border-b border-ink-200 last:border-b-0"
-                      >
-                        <td className="py-2 pr-2 align-top text-sm">
-                          {active.ingredient_list_name}
-                        </td>
-                        <td className="py-2 px-2 text-right align-top font-mono text-xs">
-                          {stripTrailingZeros(active.label_claim_mg)}
-                        </td>
-                        <td className="py-2 pl-2 text-right align-top font-mono text-xs">
-                          {active.nrv_percent
-                            ? `${active.nrv_percent}%`
-                            : "N/A"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.excipients")}>
-              {rendered.declaration.entries.filter(
-                (e) => e.category !== "active",
-              ).length === 0 ? (
-                <p className="text-sm text-ink-600">—</p>
-              ) : (
-                <ul className="flex flex-col gap-1 font-mono text-xs text-ink-700">
-                  {rendered.declaration.entries
-                    .filter((e) => e.category !== "active")
-                    .map((entry, idx) => (
-                      <li
-                        key={`${entry.category}-${entry.label}-${idx}`}
-                        className="flex items-center justify-between gap-3"
-                      >
-                        <span>{entry.label}</span>
-                        <span className="text-ink-500">
-                          {stripTrailingZeros(entry.mg)} mg
-                        </span>
-                      </li>
-                    ))}
-                </ul>
-              )}
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.ingredients")}>
-              {rendered.allergens.sources.length > 0 ? (
-                <p className="mb-2 font-serif text-sm leading-relaxed text-ink-1000">
-                  <strong>{tSpecs("sheet.allergens.prefix")}:</strong>{" "}
-                  {rendered.allergens.sources.join(", ")}
-                </p>
-              ) : null}
-              <IngredientDeclarationBody rendered={rendered} />
-            </SheetSection>
-          </section>
-
-          {/* ==================================================== */}
-          {/* RIGHT COLUMN — nutrition + amino acids                */}
-          {/* ==================================================== */}
-          <section className="flex flex-col gap-6">
-            <SheetSection title={tSpecs("sheet.sections.nutrition")}>
-              {nutritionHasAnyContributor(rendered) ? (
-                <p className="mb-3 font-mono text-[10px] tracking-widest uppercase text-ink-500">
-                  {tSpecs("sheet.nutrition_partial_hint", {
-                    count: nutritionContributorCount(rendered),
-                    total: rendered.actives.length,
-                  })}
-                </p>
-              ) : (
-                <p className="mb-3 border border-ink-500 bg-ink-100 px-2 py-1 font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                  {tSpecs("sheet.pending_nutrition")}
-                </p>
-              )}
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b-2 border-ink-1000 text-left">
-                    <th className="py-2 pr-2" />
-                    <th className="py-2 px-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {tSpecs("sheet.columns.per_100g")}
-                    </th>
-                    <th className="py-2 pl-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {tSpecs("sheet.columns.per_serving")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {NUTRITION_ROW_KEYS.map((key) => {
-                    const row = rendered.nutrition.rows.find(
-                      (r) => r.key === key,
-                    );
-                    return (
-                      <tr
-                        key={key}
-                        className="border-b border-ink-200 last:border-b-0"
-                      >
-                        <td className="py-2 pr-2 text-sm">
-                          {tSpecs(
-                            `nutrition_rows.${key}` as `nutrition_rows.energy_kj`,
-                          )}
-                        </td>
-                        <td className="py-2 px-2 text-right font-mono text-xs">
-                          {formatNutrientValue(row?.per_100g)}
-                        </td>
-                        <td className="py-2 pl-2 text-right font-mono text-xs">
-                          {formatNutrientValue(row?.per_serving)}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </SheetSection>
-
-            <SheetSection title={tSpecs("sheet.sections.amino_acids")}>
-              <table className="w-full border-collapse">
-                <thead>
-                  <tr className="border-b-2 border-ink-1000 text-left">
-                    <th className="py-2 pr-2 font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {tSpecs("sheet.columns.amino_acid")}
-                    </th>
-                    <th className="py-2 px-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {tSpecs("sheet.columns.amino_per_100g")}
-                    </th>
-                    <th className="py-2 pl-2 text-right font-mono text-[10px] tracking-widest uppercase text-ink-700">
-                      {tSpecs("sheet.columns.amino_per_serving")}
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {AMINO_GROUPS.map((group) => {
-                    const backendGroup = rendered.amino_acids.groups.find(
-                      (g) => g.key === group.key,
-                    );
-                    return (
-                      <Fragment key={group.key}>
-                        <tr className="bg-ink-100">
-                          <td
-                            colSpan={3}
-                            className="py-1 px-2 font-mono text-[10px] tracking-widest uppercase text-ink-700"
-                          >
-                            {tSpecs(
-                              `amino_acids.${group.key}` as `amino_acids.essential`,
-                            )}
-                          </td>
-                        </tr>
-                        {group.acids.map((acid, idx) => {
-                          const row = backendGroup?.acids[idx];
-                          return (
-                            <tr
-                              key={`${group.key}-${acid}`}
-                              className="border-b border-ink-200 last:border-b-0"
-                            >
-                              <td className="py-2 pr-2 text-sm">{acid}</td>
-                              <td className="py-2 px-2 text-right font-mono text-xs">
-                                {formatNutrientValue(row?.per_100g)}
-                              </td>
-                              <td className="py-2 pl-2 text-right font-mono text-xs">
-                                {formatNutrientValue(row?.per_serving)}
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </SheetSection>
-          </section>
-        </div>
-      </article>
+        {effectiveOrder.map((slug) => {
+          if (visibility[slug] === false) return null;
+          const render = renderers[slug];
+          if (!render) return null;
+          return <Fragment key={slug}>{render()}</Fragment>;
+        })}
+      </div>
+    </article>
   );
+}
+
+/** Label / value row in a reference-look spec table. Left cell is
+ *  the saturated yellow header the Valley workbook uses; right cell
+ *  is plain white and center-aligned. */
+function SpecRow({ label, value }: { label: string; value: string }) {
+  return (
+    <tr>
+      <td className="w-[44%] border border-ink-1000 bg-[#ffc000] px-2 py-1 align-middle font-bold">
+        {label}
+      </td>
+      <td className="border border-ink-1000 px-2 py-1 text-center align-middle">
+        {value || "—"}
+      </td>
+    </tr>
+  );
+}
+
+/** Outer wrapper for a stack of :component:`SpecRow`\ s. Rendered as
+ *  a single ``<table>`` so cell widths stay locked — the yellow
+ *  labels would misalign across adjacent flex rows otherwise. */
+function SpecTable({
+  children,
+  className,
+}: {
+  children: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <table
+      className={`w-full border-collapse text-[11px] ${className ?? ""}`}
+    >
+      <tbody>{children}</tbody>
+    </table>
+  );
+}
+
+/** Section title with the underlined bold look from the reference. */
+function SectionTitle({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="mt-6 mb-2 text-[11px] font-bold underline">
+      {children}
+    </h2>
+  );
+}
+
+/** Header cell for a data table (active ingredients, nutrition,
+ *  amino acids). Yellow background, bold, optional center align. */
+function DataTh({
+  children,
+  center,
+}: {
+  children: React.ReactNode;
+  center?: boolean;
+}) {
+  return (
+    <th
+      className={`border border-ink-1000 bg-[#ffc000] px-2 py-1 font-bold ${
+        center ? "text-center" : "text-left"
+      }`}
+    >
+      {children}
+    </th>
+  );
+}
+
+/** Body cell matching :component:`DataTh`. */
+function DataTd({
+  children,
+  center,
+}: {
+  children: React.ReactNode;
+  center?: boolean;
+}) {
+  return (
+    <td
+      className={`border border-ink-1000 px-2 py-1 align-middle ${
+        center ? "text-center" : "text-left"
+      }`}
+    >
+      {children}
+    </td>
+  );
+}
+
+/** Print-friendly signature line: role label above a thin rule the
+ *  scanned signature image will eventually sit on (Phase B). */
+function SignatureLine({ role }: { role: string }) {
+  return (
+    <div>
+      <p className="text-[11px] font-bold">{role}</p>
+      <div className="mt-5 border-b border-ink-1000" />
+    </div>
+  );
+}
+
+/** Diagonal DRAFT watermark overlay. Positioned absolutely so it
+ *  sits behind the content; reused across any status the backend
+ *  :func:`show_watermark_for` flags as non-final. */
+function DraftWatermark() {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center"
+    >
+      <span
+        className="select-none text-[160px] font-black tracking-[0.4em] text-[rgba(255,0,0,0.08)]"
+        style={{ transform: "rotate(-32deg)" }}
+      >
+        DRAFT
+      </span>
+    </div>
+  );
+}
+
+/** Render the sheet-header date in ``DD/MM/YYYY`` to match the
+ *  reference workbook. Defensive against malformed ISO strings —
+ *  an unparseable value degrades to the empty string so the header
+ *  stays clean. */
+function formatHeaderDate(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const dd = String(date.getUTCDate()).padStart(2, "0");
+  const mm = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const yyyy = date.getUTCFullYear();
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 
@@ -909,4 +1078,174 @@ function extractErrorMessage(
     }
   }
   return tErrors("generic");
+}
+
+
+/** Slug → translation key for every section the customer-facing
+ *  sheet renders. Keys match the backend's :data:`SECTION_SLUGS`
+ *  tuple. The order a menu actually displays comes from the current
+ *  ``rendered.section_order`` — this map just exists to look up the
+ *  translation key for a slug. */
+const SECTION_LABEL_KEYS: Readonly<Record<string, string>> = {
+  product_specification: "specification",
+  packaging_specification: "packaging",
+  compliance: "compliance",
+  safety_limits: "limits",
+  actives: "actives",
+  nutrition: "nutrition",
+  amino_acids: "amino_acids",
+  excipients: "excipients",
+  ingredients: "ingredients",
+  signatures: "signatures",
+};
+
+
+/**
+ * Dropdown that lets a user with ``formulations.manage_spec_visibility``
+ * toggle individual customer-facing sections on or off. The menu
+ * mutates one slug at a time via ``useSetSpecificationVisibility``;
+ * the server returns the fresh render context and the hook swaps
+ * it into the query cache so the sheet repaints immediately.
+ */
+function VisibilityMenu({
+  orgId,
+  sheetId,
+  visibility,
+  order,
+}: {
+  orgId: string;
+  sheetId: string;
+  visibility: Readonly<Record<string, boolean>>;
+  order: readonly string[];
+}) {
+  const tSpecs = useTranslations("specifications");
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mutation = useSetSpecificationVisibility(orgId, sheetId);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (event: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const isHidden = (slug: string) => visibility[slug] === false;
+
+  // Walk the current effective order, dropping slugs we don't know
+  // about (shouldn't happen — server backfills — but cheap defence
+  // against a schema skew).
+  const rows = order.filter((slug) => slug in SECTION_LABEL_KEYS);
+
+  const totalHidden = rows.filter((slug) => isHidden(slug)).length;
+
+  const handleToggle = (slug: string) => {
+    const nextValue = isHidden(slug); // currently hidden -> show it
+    mutation.mutate({ visibility: { [slug]: nextValue } });
+  };
+
+  const handleMove = (slug: string, direction: -1 | 1) => {
+    const index = rows.indexOf(slug);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= rows.length) return;
+    const next = [...rows];
+    const [removed] = next.splice(index, 1);
+    if (!removed) return;
+    next.splice(target, 0, removed);
+    mutation.mutate({ order: next });
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+        onClick={() => setOpen((v) => !v)}
+      >
+        <Eye className="h-4 w-4" />
+        {tSpecs("detail.visibility.button")}
+        {totalHidden > 0 ? (
+          <span className="inline-flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-orange-100 px-1 text-[10px] font-semibold text-orange-800">
+            {totalHidden}
+          </span>
+        ) : null}
+      </Button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-2 flex w-80 flex-col gap-0.5 rounded-xl bg-ink-0 p-2 shadow-lg ring-1 ring-ink-200"
+        >
+          <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+            {tSpecs("detail.visibility.header")}
+          </p>
+          <p className="px-2 pb-2 text-[11px] text-ink-500">
+            {tSpecs("detail.visibility.hint")}
+          </p>
+          {rows.map((slug, index) => {
+            const labelKey = SECTION_LABEL_KEYS[slug]!;
+            const hidden = isHidden(slug);
+            const isFirst = index === 0;
+            const isLast = index === rows.length - 1;
+            return (
+              <div
+                key={slug}
+                className="flex items-center gap-1 rounded-lg px-1 py-1 hover:bg-ink-50"
+              >
+                <button
+                  type="button"
+                  aria-label={tSpecs("detail.visibility.move_up")}
+                  onClick={() => handleMove(slug, -1)}
+                  disabled={mutation.isPending || isFirst}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-500 hover:bg-ink-100 hover:text-ink-1000 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowUp className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={tSpecs("detail.visibility.move_down")}
+                  onClick={() => handleMove(slug, 1)}
+                  disabled={mutation.isPending || isLast}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded text-ink-500 hover:bg-ink-100 hover:text-ink-1000 disabled:cursor-not-allowed disabled:opacity-30"
+                >
+                  <ArrowDown className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={!hidden}
+                  disabled={mutation.isPending}
+                  onClick={() => handleToggle(slug)}
+                  className="flex flex-1 items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm transition-colors disabled:opacity-60"
+                >
+                  <span
+                    className={
+                      hidden ? "text-ink-500 line-through" : "text-ink-1000"
+                    }
+                  >
+                    {tSpecs(
+                      `sheet.sections.${labelKey}` as `sheet.sections.specification`,
+                    )}
+                  </span>
+                  {hidden ? (
+                    <EyeOff className="h-4 w-4 shrink-0 text-ink-400" />
+                  ) : (
+                    <Eye className="h-4 w-4 shrink-0 text-orange-500" />
+                  )}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
 }

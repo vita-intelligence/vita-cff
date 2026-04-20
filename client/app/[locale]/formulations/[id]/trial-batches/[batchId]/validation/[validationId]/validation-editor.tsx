@@ -6,9 +6,17 @@ import {
   ArrowLeft,
   CheckCircle2,
   PlayCircle,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -67,9 +75,12 @@ export function ValidationEditor({
 
   // Draft state — initialised from the server values, reset each
   // time ``validation.updated_at`` changes so a save-then-edit
-  // flow doesn't clobber the freshly-loaded values.
-  const [weightSamples, setWeightSamples] = useState<string>(
-    () => (validation.weight_test.samples ?? []).join(", "),
+  // flow doesn't clobber the freshly-loaded values. Samples are
+  // modelled as ``SampleEntry[]`` (one row per measurement) so the
+  // scientist can add / remove / edit individual samples without
+  // hand-parsing a comma-separated blob.
+  const [weightSamples, setWeightSamples] = useState<SampleEntry[]>(
+    () => samplesToEntries(validation.weight_test.samples),
   );
   const [weightTarget, setWeightTarget] = useState<string>(
     validation.weight_test.target_mg?.toString() ?? "",
@@ -87,9 +98,9 @@ export function ValidationEditor({
   const [disintegrationTemp, setDisintegrationTemp] = useState<string>(
     validation.disintegration_test.temperature_c?.toString() ?? "37",
   );
-  const [disintegrationSamples, setDisintegrationSamples] = useState<string>(
-    (validation.disintegration_test.samples ?? []).join(", "),
-  );
+  const [disintegrationSamples, setDisintegrationSamples] = useState<
+    SampleEntry[]
+  >(() => samplesToEntries(validation.disintegration_test.samples));
   const [disintegrationNotes, setDisintegrationNotes] = useState<string>(
     validation.disintegration_test.notes ?? "",
   );
@@ -139,13 +150,13 @@ export function ValidationEditor({
         weight_test: {
           target_mg: parseNumberOrNull(weightTarget),
           tolerance_pct: parseNumberOrZero(weightTolerance),
-          samples: parseSampleList(weightSamples),
+          samples: entriesToSamples(weightSamples),
           notes: weightNotes,
         },
         disintegration_test: {
           limit_minutes: parseNumberOrNull(disintegrationLimit),
           temperature_c: parseNumberOrNull(disintegrationTemp),
-          samples: parseSampleList(disintegrationSamples),
+          samples: entriesToSamples(disintegrationSamples),
           notes: disintegrationNotes,
         },
         organoleptic_test: {
@@ -291,13 +302,17 @@ export function ValidationEditor({
             }
           />
         </div>
-        <TextAreaField
+        <SampleList
           label={tV("weight.samples")}
-          value={weightSamples}
+          entries={weightSamples}
           onChange={setWeightSamples}
-          placeholder="1255, 1268, 1272, 1280, …"
           readOnly={isReadOnly}
+          unit="mg"
           hint={tV("weight.samples_hint")}
+          addLabel={tV("samples.add")}
+          emptyLabel={tV("samples.empty")}
+          sampleLabel={(n) => tV("samples.nth", { n })}
+          removeLabel={tV("samples.remove")}
         />
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
           <StatCard label={tV("weight.n")} value={String(stats.weight.samples.length)} />
@@ -355,13 +370,17 @@ export function ValidationEditor({
             }
           />
         </div>
-        <TextAreaField
+        <SampleList
           label={tV("disintegration.samples")}
-          value={disintegrationSamples}
+          entries={disintegrationSamples}
           onChange={setDisintegrationSamples}
-          placeholder="45, 52, 48, 55, 49, 51"
           readOnly={isReadOnly}
+          unit={tV("disintegration.minutes")}
           hint={tV("disintegration.samples_hint")}
+          addLabel={tV("samples.add")}
+          emptyLabel={tV("samples.empty")}
+          sampleLabel={(n) => tV("samples.nth", { n })}
+          removeLabel={tV("samples.remove")}
         />
         <TextAreaField
           label={tV("notes")}
@@ -714,6 +733,217 @@ function TextAreaField({
 }
 
 
+function SampleList({
+  label,
+  entries,
+  onChange,
+  readOnly,
+  unit,
+  hint,
+  addLabel,
+  emptyLabel,
+  sampleLabel,
+  removeLabel,
+}: {
+  label: string;
+  entries: readonly SampleEntry[];
+  onChange: (next: SampleEntry[]) => void;
+  readOnly?: boolean;
+  unit?: string;
+  hint?: string;
+  addLabel: string;
+  emptyLabel: string;
+  sampleLabel: (n: number) => string;
+  removeLabel: string;
+}) {
+  // Autofocus the input of a newly-added row so the scientist can
+  // start typing immediately. Pattern: stash the id we want to
+  // focus and each input checks it against its own id on mount.
+  const focusTargetRef = useRef<string | null>(null);
+
+  const addEntry = useCallback(() => {
+    const id =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : String(Math.random());
+    focusTargetRef.current = id;
+    onChange([...entries, { id, raw: "" }]);
+  }, [entries, onChange]);
+
+  const updateEntry = useCallback(
+    (id: string, raw: string) => {
+      onChange(
+        entries.map((entry) =>
+          entry.id === id ? { ...entry, raw } : entry,
+        ),
+      );
+    },
+    [entries, onChange],
+  );
+
+  const removeEntry = useCallback(
+    (id: string) => {
+      onChange(entries.filter((entry) => entry.id !== id));
+    },
+    [entries, onChange],
+  );
+
+  const onEntryKeyDown = (
+    e: KeyboardEvent<HTMLInputElement>,
+    entry: SampleEntry,
+    index: number,
+  ) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (index === entries.length - 1) {
+        addEntry();
+      }
+    } else if (
+      e.key === "Backspace" &&
+      entry.raw === "" &&
+      entries.length > 1
+    ) {
+      e.preventDefault();
+      removeEntry(entry.id);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <span className="flex items-center gap-2 text-xs font-medium text-ink-700">
+          {label}
+          {unit ? (
+            <span className="rounded-md bg-ink-100 px-1.5 py-0.5 font-mono text-[11px] font-semibold uppercase tracking-wide text-ink-700">
+              {unit}
+            </span>
+          ) : null}
+          <span className="text-ink-500">· {entries.length}</span>
+        </span>
+        {!readOnly ? (
+          <button
+            type="button"
+            onClick={addEntry}
+            className="inline-flex items-center gap-1 rounded-lg bg-orange-50 px-2.5 py-1 text-xs font-medium text-orange-800 ring-1 ring-inset ring-orange-200 hover:bg-orange-100"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {addLabel}
+          </button>
+        ) : null}
+      </div>
+      {entries.length === 0 ? (
+        <p className="rounded-lg bg-ink-50 px-3 py-6 text-center text-xs text-ink-500 ring-1 ring-inset ring-ink-200">
+          {emptyLabel}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4 lg:grid-cols-6">
+          {entries.map((entry, index) => (
+            <SampleInput
+              key={entry.id}
+              entry={entry}
+              index={index}
+              unit={unit}
+              readOnly={readOnly}
+              sampleLabel={sampleLabel}
+              removeLabel={removeLabel}
+              shouldFocus={focusTargetRef.current === entry.id}
+              onChange={(raw) => updateEntry(entry.id, raw)}
+              onRemove={() => removeEntry(entry.id)}
+              onKeyDown={(e) => onEntryKeyDown(e, entry, index)}
+              onFocused={() => {
+                if (focusTargetRef.current === entry.id) {
+                  focusTargetRef.current = null;
+                }
+              }}
+            />
+          ))}
+        </div>
+      )}
+      {hint ? <span className="text-xs text-ink-500">{hint}</span> : null}
+    </div>
+  );
+}
+
+
+function SampleInput({
+  entry,
+  index,
+  unit,
+  readOnly,
+  sampleLabel,
+  removeLabel,
+  shouldFocus,
+  onChange,
+  onRemove,
+  onKeyDown,
+  onFocused,
+}: {
+  entry: SampleEntry;
+  index: number;
+  unit?: string;
+  readOnly?: boolean;
+  sampleLabel: (n: number) => string;
+  removeLabel: string;
+  shouldFocus: boolean;
+  onChange: (raw: string) => void;
+  onRemove: () => void;
+  onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
+  onFocused: () => void;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+
+  // ``shouldFocus`` is set by the parent immediately before adding
+  // a row. Focusing here (after the new element is mounted) gives
+  // the user a live cursor without an awkward extra click.
+  const setRef = (el: HTMLInputElement | null) => {
+    ref.current = el;
+    if (el && shouldFocus) {
+      el.focus();
+      onFocused();
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-0.5 rounded-lg bg-ink-0 p-2 ring-1 ring-inset ring-ink-200">
+      <div className="flex items-center justify-between gap-1">
+        <span className="text-[10px] font-medium uppercase tracking-wide text-ink-500">
+          {sampleLabel(index + 1)}
+        </span>
+        {!readOnly ? (
+          <button
+            type="button"
+            onClick={onRemove}
+            aria-label={removeLabel}
+            title={removeLabel}
+            className="rounded p-0.5 text-ink-400 hover:bg-danger/10 hover:text-danger"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <input
+          ref={setRef}
+          type="text"
+          inputMode="decimal"
+          value={entry.raw}
+          readOnly={readOnly}
+          placeholder="0"
+          onChange={(e) => onChange(sanitizeSampleInput(e.target.value))}
+          onKeyDown={onKeyDown}
+          className="w-full rounded bg-transparent px-1 py-0.5 text-right text-base tabular-nums text-ink-1000 outline-none placeholder:text-ink-300 focus:ring-1 focus:ring-orange-400 read-only:text-ink-500"
+        />
+        {unit ? (
+          <span className="shrink-0 text-xs font-semibold text-ink-500">
+            {unit}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+
 function StatCard({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl bg-ink-50 px-3 py-2 ring-1 ring-inset ring-ink-200">
@@ -823,13 +1053,57 @@ function TriStateToggle({
 // ---------------------------------------------------------------------------
 
 
-function parseSampleList(raw: string): number[] {
-  return raw
-    .split(/[,\n\s]+/)
-    .map((chunk) => chunk.trim())
-    .filter((chunk) => chunk.length > 0)
-    .map((chunk) => Number.parseFloat(chunk))
+/**
+ * One editable sample measurement.
+ *
+ * Stored as a stable ``id`` plus the raw string the scientist
+ * typed so React never re-renders the input out from under a
+ * half-finished number (e.g. ``12.`` while they're about to add
+ * more decimals). The id is generated client-side; it never
+ * leaves the browser.
+ */
+interface SampleEntry {
+  readonly id: string;
+  readonly raw: string;
+}
+
+
+function samplesToEntries(samples: readonly number[] | null): SampleEntry[] {
+  if (!samples || samples.length === 0) return [];
+  return samples.map((value) => ({
+    id: crypto.randomUUID(),
+    raw: String(value),
+  }));
+}
+
+
+function entriesToSamples(entries: readonly SampleEntry[]): number[] {
+  return entries
+    .map((entry) => Number.parseFloat(entry.raw))
     .filter((num) => Number.isFinite(num));
+}
+
+
+/**
+ * Normalise a user-typed decimal so European commas degrade to
+ * dots, stray characters are stripped, and at most one decimal
+ * point survives with up to four fractional digits. The extra
+ * precision headroom beyond the label-claim input's two-decimal
+ * cap matches how lab scales report individual weighings.
+ */
+function sanitizeSampleInput(raw: string): string {
+  let value = raw.replace(/,/g, ".").replace(/[^0-9.]/g, "");
+  const firstDot = value.indexOf(".");
+  if (firstDot !== -1) {
+    value =
+      value.slice(0, firstDot + 1) +
+      value.slice(firstDot + 1).replace(/\./g, "");
+  }
+  const dot = value.indexOf(".");
+  if (dot !== -1 && value.length - dot - 1 > 4) {
+    value = value.slice(0, dot + 5);
+  }
+  return value;
 }
 
 

@@ -17,6 +17,8 @@ export const cataloguesEndpoints = {
     `/api/organizations/${orgId}/catalogues/${slug}/items/${itemId}/`,
   itemImport: (orgId: string, slug: string) =>
     `/api/organizations/${orgId}/catalogues/${slug}/items/import/`,
+  itemImportTemplate: (orgId: string, slug: string) =>
+    `/api/organizations/${orgId}/catalogues/${slug}/items/template/`,
   attributeList: (orgId: string, slug: string) =>
     `/api/organizations/${orgId}/catalogues/${slug}/attributes/`,
   attributeDetail: (

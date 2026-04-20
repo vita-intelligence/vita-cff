@@ -86,8 +86,13 @@ def _valid_draft_payload() -> dict[str, Any]:
                 "notes": "Primary active",
             },
             {
+                # Claim chosen so the pair sums to 400 mg raw powder
+                # at the test fixtures' 100% purity — comfortably
+                # under the 500 mg capsule cap the service enforces
+                # post-generation. Raising this without raising the
+                # cap would break the happy-path tests.
                 "name": "Green Tea Extract",
-                "label_claim_mg": 500,
+                "label_claim_mg": 200,
                 "notes": "",
             },
         ],

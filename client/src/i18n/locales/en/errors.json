@@ -26,6 +26,7 @@
     "internal_code_conflict": "Another item already uses this internal code.",
     "attribute_key_invalid": "Key must start with a lowercase letter and use only a-z, 0-9, and underscores.",
     "attribute_key_conflict": "Another field already uses this key.",
-    "attribute_options_invalid": "Options must be non-empty and unique for select fields."
+    "attribute_options_invalid": "Options must be non-empty and unique for select fields.",
+    "ai_draft_oversize": "The AI couldn't fit the formulation in the chosen dosage form. Simplify the brief or pick a larger capsule / tablet size."
   }
 }

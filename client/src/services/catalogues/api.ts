@@ -197,3 +197,21 @@ export async function importItems(
   );
   return data;
 }
+
+/**
+ * Download the import template for ``slug`` as a ``Blob``.
+ *
+ * The server renders the spreadsheet on demand against the live
+ * attribute schema — there is no cached asset to stale out — so
+ * callers just hand the blob to the browser's download pipeline.
+ */
+export async function downloadImportTemplate(
+  orgId: string,
+  slug: string,
+): Promise<Blob> {
+  const { data } = await apiClient.get<Blob>(
+    cataloguesEndpoints.itemImportTemplate(orgId, slug),
+    { responseType: "blob" },
+  );
+  return data;
+}

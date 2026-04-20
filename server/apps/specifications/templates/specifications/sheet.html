@@ -6,18 +6,30 @@
   <style>
     @page {
       size: A4 portrait;
-      margin: 14mm 12mm 16mm;
-      @bottom-right {
-        content: "Page " counter(page) " / " counter(pages);
-        font-family: "Helvetica Neue", Arial, sans-serif;
-        font-size: 8pt;
-        color: #555;
+      margin: 18mm 16mm 22mm;
+      @top-left {
+        content: "{{ sheet.code|default:'—' }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8.5pt;
+        color: #111;
       }
-      @bottom-left {
-        content: "Vita NPD · {{ formulation.code|default:formulation.name }}";
-        font-family: "Helvetica Neue", Arial, sans-serif;
+      @top-right {
+        content: "{{ report_date }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8.5pt;
+        color: #111;
+      }
+      @bottom-center {
+        content: "{{ organization_name }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
         font-size: 8pt;
-        color: #555;
+        color: #111;
+      }
+      @bottom-right {
+        content: "Confidential Document";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8pt;
+        color: #111;
       }
     }
 
@@ -25,368 +37,234 @@
     html, body {
       margin: 0;
       padding: 0;
-      font-family: "Helvetica Neue", Arial, sans-serif;
-      font-size: 9pt;
-      line-height: 1.35;
-      color: #111;
+      font-family: Arial, "Helvetica Neue", sans-serif;
+      font-size: 10pt;
+      line-height: 1.3;
+      color: #000;
     }
-    .mono { font-family: "Courier New", Courier, monospace; }
-    .uppercase { text-transform: uppercase; letter-spacing: 0.08em; }
-    .muted { color: #555; }
-    .title {
-      font-size: 18pt;
-      font-weight: 900;
-      letter-spacing: -0.01em;
-      margin: 0 0 2mm;
-    }
-    .subtitle {
-      font-size: 9pt;
-      color: #555;
-      margin: 0 0 6mm;
-      font-family: "Courier New", Courier, monospace;
-    }
-    .watermark {
-      border: 1.5pt solid #bbb;
-      background: #f4f4f2;
-      color: #555;
+
+    h1.sheet-title {
       text-align: center;
-      font-size: 8pt;
-      font-family: "Courier New", Courier, monospace;
-      letter-spacing: 0.1em;
-      padding: 2mm;
-      margin-bottom: 4mm;
-      text-transform: uppercase;
-    }
-
-    .row { display: flex; gap: 6mm; }
-    .col { flex: 1; min-width: 0; }
-
-    section.panel {
-      border: 1.2pt solid #111;
-      padding: 3mm 3.5mm;
-      margin-bottom: 4mm;
-      break-inside: avoid;
-    }
-    section.panel h2 {
-      font-size: 8pt;
-      font-family: "Courier New", Courier, monospace;
-      text-transform: uppercase;
-      letter-spacing: 0.14em;
-      color: #333;
-      margin: 0 0 2.5mm;
-      padding-bottom: 1.5mm;
-      border-bottom: 1.2pt solid #111;
+      font-size: 14pt;
       font-weight: 700;
+      margin: 0 0 8mm;
+    }
+    h2.section-title {
+      font-size: 10pt;
+      font-weight: 700;
+      text-decoration: underline;
+      margin: 5mm 0 2mm;
     }
 
-    dl.kv { margin: 0; padding: 0; }
-    dl.kv > div {
-      display: flex;
-      justify-content: space-between;
-      gap: 4mm;
-      padding: 0.4mm 0;
-      font-family: "Courier New", Courier, monospace;
-      font-size: 8.5pt;
-    }
-    dl.kv dt { color: #555; margin: 0; font-weight: 400; }
-    dl.kv dd { margin: 0; font-weight: 700; text-align: right; }
-
-    table {
+    table.spec {
       width: 100%;
       border-collapse: collapse;
-      font-size: 8.5pt;
+      margin-bottom: 3mm;
+      table-layout: fixed;
     }
-    th, td {
-      text-align: left;
-      padding: 1.2mm 1.6mm;
-      vertical-align: top;
-    }
-    thead th {
-      border-bottom: 1.2pt solid #111;
-      font-family: "Courier New", Courier, monospace;
-      font-size: 7pt;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #333;
-      font-weight: 700;
-    }
-    tbody tr { border-bottom: 0.5pt solid #ddd; }
-    tbody tr:last-child { border-bottom: none; }
-    td.num { text-align: right; font-family: "Courier New", Courier, monospace; }
-
-    .group-row td {
-      background: #f4f4f2;
-      font-family: "Courier New", Courier, monospace;
-      text-transform: uppercase;
-      font-size: 7pt;
-      letter-spacing: 0.12em;
-      color: #333;
-      padding-top: 1.6mm;
-      padding-bottom: 1.6mm;
-    }
-
-    .declaration {
-      font-family: "Georgia", "Times New Roman", serif;
+    table.spec td, table.spec th {
+      border: 0.7pt solid #000;
+      padding: 1.2mm 2mm;
       font-size: 9.5pt;
-      line-height: 1.45;
-      color: #111;
+      vertical-align: middle;
+    }
+    table.spec td.label,
+    table.spec th.label {
+      background: #ffc000;
+      font-weight: 700;
+      width: 44%;
+      white-space: nowrap;
+    }
+    table.spec td.value {
+      text-align: center;
     }
 
-    .signatures-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4mm;
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 3mm;
     }
-    .signature-box {
-      border-top: 0.8pt solid #111;
-      padding-top: 1.5mm;
+    table.data th, table.data td {
+      border: 0.7pt solid #000;
+      padding: 1.2mm 2mm;
+      font-size: 9.5pt;
+      vertical-align: middle;
     }
-    .signature-label {
-      font-family: "Courier New", Courier, monospace;
-      font-size: 7pt;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #333;
+    table.data thead th {
+      background: #ffc000;
+      font-weight: 700;
+      text-align: left;
     }
-    .signature-line {
-      margin-top: 10mm;
-      border-bottom: 0.6pt solid #111;
-      height: 0;
-    }
-    .signature-date {
-      margin-top: 4mm;
-      font-family: "Courier New", Courier, monospace;
-      font-size: 7pt;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #555;
+    table.data td.center { text-align: center; }
+    table.data td.name { text-align: center; }
+    table.data .group-row td {
+      background: #ffc000;
+      font-weight: 700;
+      text-align: center;
     }
 
-    .hint {
-      font-family: "Courier New", Courier, monospace;
-      font-size: 7pt;
-      text-transform: uppercase;
-      letter-spacing: 0.12em;
-      color: #555;
-      margin: 0 0 2mm;
+    .signatures h2.section-title { margin-bottom: 3mm; }
+    .sign-row { margin-bottom: 8mm; }
+    .sign-row .role { font-weight: 700; }
+    .sign-row .image-slot {
+      height: 12mm;
+      border-bottom: 0.4pt solid #000;
+      margin-top: 2mm;
     }
 
-    ul.excipients {
-      margin: 0;
-      padding: 0;
-      list-style: none;
-      font-family: "Courier New", Courier, monospace;
-      font-size: 8.5pt;
+    {% if watermark %}
+    body::before {
+      content: "DRAFT";
+      position: fixed;
+      top: 45%;
+      left: 0;
+      right: 0;
+      text-align: center;
+      transform: rotate(-32deg);
+      transform-origin: center;
+      font-size: 140pt;
+      font-weight: 700;
+      letter-spacing: 18pt;
+      color: rgba(255, 0, 0, 0.08);
+      pointer-events: none;
+      z-index: 0;
     }
-    ul.excipients li {
-      display: flex;
-      justify-content: space-between;
-      gap: 3mm;
-      padding: 0.6mm 0;
-    }
-    ul.excipients .mg { color: #555; }
+    {% endif %}
+    main { position: relative; z-index: 1; }
 
-    .page-break { break-after: page; }
+    .ingredient-paragraph {
+      border: 0.7pt solid #000;
+      padding: 4mm;
+      text-align: center;
+      margin: 2mm 0 6mm;
+      font-size: 9.5pt;
+      line-height: 1.5;
+    }
+    .ingredient-paragraph b { font-weight: 700; }
   </style>
 </head>
 <body>
-  {% if sheet.status == "draft" %}
-    <div class="watermark">Draft — awaiting signature workflow</div>
-  {% endif %}
+<main>
 
-  <h1 class="title">Product Specification Sheet</h1>
-  <p class="subtitle">
-    {{ formulation.name }} · v{{ formulation.version_number }}{% if formulation.version_label %} — {{ formulation.version_label }}{% endif %}
-  </p>
+  <h1 class="sheet-title">
+    {% if watermark %}DRAFT {% endif %}Product Specification Sheet
+  </h1>
 
-  <div class="row">
-    <div class="col">
-      <section class="panel">
-        <h2>Product</h2>
-        <dl class="kv">
-          <div><dt>Product Code</dt><dd>{{ formulation.code|default:"—" }}</dd></div>
-          <div><dt>Product Description</dt><dd>{{ formulation.name }}</dd></div>
-        </dl>
-      </section>
+  {# Product identity is always the first block and never moves. #}
+  <table class="spec">
+    <tr>
+      <td class="label">Product Code:</td>
+      <td class="value">{{ sheet.code|default:formulation.code|default:"—" }}</td>
+    </tr>
+    <tr>
+      <td class="label">Product Description:</td>
+      <td class="value">{{ formulation.name }}</td>
+    </tr>
+  </table>
 
-      <section class="panel">
-        <h2>Product Specification</h2>
-        <dl class="kv">
-          <div><dt>Direction of Use</dt><dd>{{ formulation.directions_of_use|default:"—" }}</dd></div>
-          <div><dt>Suggested Dosage</dt><dd>{{ formulation.suggested_dosage|default:"—" }}</dd></div>
-          <div><dt>Dosage Form</dt><dd>{{ formulation.dosage_form|title|default:"—" }}</dd></div>
-          <div><dt>Appearance</dt><dd>{{ formulation.appearance|default:"TBC" }}</dd></div>
-          <div><dt>Filling Weight/Volume (mg/mL)</dt><dd>{{ totals.total_weight_mg|format_mg }}</dd></div>
-          <div><dt>Total Weight (mg)</dt><dd>{{ total_weight_display }}</dd></div>
-          <div><dt>Weight Uniformity</dt><dd>{{ weight_uniformity }}</dd></div>
-          <div><dt>Disintegration</dt><dd>{{ formulation.disintegration_spec|default:"—" }}</dd></div>
-        </dl>
-      </section>
+  {% for slug in section_order %}
+    {% if visibility|get_item:slug %}
+      {% if slug == "product_specification" %}
+        <h2 class="section-title">Product Specification</h2>
+        <table class="spec">
+          <tr><td class="label">Direction of Use:</td><td class="value">{{ formulation.directions_of_use|default:"—" }}</td></tr>
+          <tr><td class="label">Suggested Dosage:</td><td class="value">{{ formulation.suggested_dosage|default:"—" }}</td></tr>
+          <tr><td class="label">Dosage Form:</td><td class="value">{{ formulation.dosage_form|title|default:"—" }}</td></tr>
+          <tr><td class="label">Appearance:</td><td class="value">{{ formulation.appearance|default:"TBC" }}</td></tr>
+          <tr><td class="label">Filling Weight/Volume (mg):</td><td class="value">{{ totals.total_weight_mg|default:"—" }}</td></tr>
+          <tr><td class="label">Total Weight (mg):</td><td class="value">{{ total_weight_display }}</td></tr>
+          <tr><td class="label">Weight Uniformity:</td><td class="value">{{ weight_uniformity|default:"Not applicable" }}</td></tr>
+          <tr><td class="label">Disintegration:</td><td class="value">{{ formulation.disintegration_spec|default:"Rapid disintegration (instantised)" }}</td></tr>
+        </table>
 
-      <section class="panel">
-        <h2>Packaging Specification</h2>
-        <dl class="kv">
-          <div><dt>Lid Description</dt><dd>{{ packaging.lid_description }}</dd></div>
-          <div><dt>Bottle/Pouch/Tub</dt><dd>{{ packaging.bottle_pouch_tub }}</dd></div>
-          <div><dt>Label Size</dt><dd>{{ packaging.label_size }}</dd></div>
-          <div><dt>Antitemper</dt><dd>{{ packaging.antitemper }}</dd></div>
-          <div><dt>Unit Quantity</dt><dd>{{ packaging.unit_quantity|default:"—" }}</dd></div>
-        </dl>
-      </section>
+      {% elif slug == "packaging_specification" %}
+        <h2 class="section-title">Packaging Specification</h2>
+        <table class="spec">
+          <tr><td class="label">Lid Description:</td><td class="value">{{ packaging.lid_description|default:"TBD" }}</td></tr>
+          <tr><td class="label">Bottle/Pouch/Tub:</td><td class="value">{{ packaging.bottle_pouch_tub|default:"TBD" }}</td></tr>
+          <tr><td class="label">Label Size:</td><td class="value">{{ packaging.label_size|default:"TBD" }}</td></tr>
+          <tr><td class="label">Antitemper:</td><td class="value">{{ packaging.antitemper|default:"TBD" }}</td></tr>
+          {% if packaging.unit_quantity %}<tr><td class="label">Unit Quantity:</td><td class="value">{{ packaging.unit_quantity }}</td></tr>{% endif %}
+          {% if packaging.food_contact_status %}<tr><td class="label">Food Contact Status:</td><td class="value">{{ packaging.food_contact_status }}</td></tr>{% endif %}
+          {% if packaging.shelf_life %}<tr><td class="label">Shelf Life:</td><td class="value">{{ packaging.shelf_life }}</td></tr>{% endif %}
+          {% if packaging.storage_conditions %}<tr><td class="label">Storage Condition on Pack:</td><td class="value">{{ packaging.storage_conditions }}</td></tr>{% endif %}
+        </table>
 
-      <section class="panel">
-        <h2>Compliance</h2>
-        <dl class="kv">
+      {% elif slug == "compliance" %}
+        <table class="spec">
           {% for flag in compliance.flags %}
-            <div><dt>{{ flag.label }}:</dt><dd>{{ flag.status|compliance_label }}</dd></div>
+            <tr><td class="label">{{ flag.label }}:</td><td class="value">{{ flag.value|default:"—" }}</td></tr>
           {% endfor %}
-        </dl>
-      </section>
+        </table>
 
-      <section class="panel">
-        <h2>Microbiological, PAH, Pesticides and Heavy Metal</h2>
-        <dl class="kv">
-          {% for limit in limits %}
-            <div><dt>{{ limit.name }}:</dt><dd>{{ limit.value }}</dd></div>
+      {% elif slug == "safety_limits" %}
+        <h2 class="section-title">Microbiological, PAH, Pesticides and Heavy Metal</h2>
+        <table class="spec">
+          {% for row in limits %}
+            <tr><td class="label">{{ row.name }}:</td><td class="value">{{ row.value }}</td></tr>
           {% endfor %}
-        </dl>
-      </section>
+        </table>
 
-      <section class="panel">
-        <h2>Signatures</h2>
-        <div class="signatures-grid">
-          <div class="signature-box">
-            <div class="signature-label">Product Manager / Customer</div>
-            <div class="signature-line"></div>
-            <div class="signature-date">Date</div>
-            <div class="signature-line" style="margin-top: 3mm;"></div>
-          </div>
-          <div class="signature-box">
-            <div class="signature-label">Director / Commercial Director</div>
-            <div class="signature-line"></div>
-            <div class="signature-date">Date</div>
-            <div class="signature-line" style="margin-top: 3mm;"></div>
-          </div>
+      {% elif slug == "signatures" %}
+        <div class="signatures">
+          <h2 class="section-title">Signatures</h2>
+          <div class="sign-row"><span class="role">Prepared By:</span><div class="image-slot"></div></div>
+          <div class="sign-row"><span class="role">Director/Commercial Director:</span><div class="image-slot"></div></div>
+          <div class="sign-row"><span class="role">Customer:</span><div class="image-slot"></div></div>
         </div>
 
-        {% if history %}
-          <div style="margin-top: 5mm;">
-            <p class="hint">Workflow History</p>
-            <ul style="margin: 0; padding: 0; list-style: none; border-top: 0.6pt solid #111; padding-top: 1.5mm;">
-              {% for entry in history %}
-                <li style="font-family: 'Courier New', Courier, monospace; font-size: 7.5pt; padding: 0.6mm 0; color: #333;">
-                  <div style="text-transform: uppercase; letter-spacing: 0.1em;">
-                    {{ entry.from_status }} → {{ entry.to_status }}
-                  </div>
-                  <div style="color: #555;">
-                    {{ entry.actor_name }} · {{ entry.created_at|slice:":16"|cut:"T" }}
-                  </div>
-                  {% if entry.notes %}
-                    <div style="font-style: italic; color: #111; margin-top: 0.4mm;">
-                      {{ entry.notes }}
-                    </div>
-                  {% endif %}
-                </li>
-              {% endfor %}
-            </ul>
-          </div>
-        {% endif %}
-      </section>
-    </div>
-
-    <div class="col">
-      <section class="panel">
-        <h2>Active Ingredients</h2>
+      {% elif slug == "actives" %}
         {% if actives %}
-          <table>
+          <h2 class="section-title">Active Ingredients</h2>
+          <table class="data">
             <thead>
               <tr>
-                <th>Active Ingredient</th>
-                <th style="text-align:right;">Claim per serving (mg)</th>
-                <th style="text-align:right;">%NRV</th>
+                <th>Active Ingredients</th>
+                <th class="center">Claim per Serving (mg)</th>
+                <th class="center">%NRV</th>
               </tr>
             </thead>
             <tbody>
               {% for active in actives %}
                 <tr>
-                  <td>{{ active.ingredient_list_name }}</td>
-                  <td class="num">{{ active.label_claim_mg|strip_trailing_zeros }}</td>
-                  <td class="num">{% if active.nrv_percent %}{{ active.nrv_percent }}%{% else %}N/A{% endif %}</td>
+                  <td class="name">{{ active.ingredient_list_name|default:active.item_name }}</td>
+                  <td class="center">{{ active.label_claim_mg|default:"—" }}</td>
+                  <td class="center">{{ active.nrv_percent|default:"N/A" }}</td>
                 </tr>
               {% endfor %}
             </tbody>
           </table>
-        {% else %}
-          <p class="muted">—</p>
         {% endif %}
-      </section>
 
-      <section class="panel">
-        <h2>Excipient Information</h2>
-        {% with entries=declaration.entries|non_active_entries %}
-          {% if entries %}
-            <ul class="excipients">
-              {% for entry in entries %}
-                <li><span>{{ entry.label }}</span><span class="mg">{{ entry.mg|strip_trailing_zeros }} mg</span></li>
-              {% endfor %}
-            </ul>
-          {% else %}
-            <p class="muted">—</p>
-          {% endif %}
-        {% endwith %}
-      </section>
-
-      <section class="panel">
-        <h2>Ingredients</h2>
-        {% if allergens.sources %}
-          <p class="declaration" style="margin: 0 0 2mm;">
-            <strong>Allergens:</strong> {{ allergens.sources|join:", " }}
-          </p>
-        {% endif %}
-        {% if declaration.entries %}
-          <p class="declaration">
-            {% for entry in declaration.entries %}{% if not forloop.first %}, {% endif %}{% if entry.is_allergen %}<strong>{{ entry.label }}</strong>{% else %}{{ entry.label }}{% endif %}{% endfor %}
-          </p>
-        {% else %}
-          <p class="declaration">{{ declaration.text|default:"—" }}</p>
-        {% endif %}
-      </section>
-
-      <section class="panel">
-        <h2>Nutritional Information</h2>
-        {% if nutrition_has_data %}
-          <p class="hint">Based on {{ nutrition_contributor_count }} of {{ actives|length }} ingredients with catalogue data.</p>
-        {% else %}
-          <p class="hint">Nutrition data pending catalogue fill — values shown as zero until every raw material has its nutrition columns populated.</p>
-        {% endif %}
-        <table>
+      {% elif slug == "nutrition" %}
+        <h2 class="section-title">Nutritional Information</h2>
+        <table class="data">
           <thead>
             <tr>
-              <th></th>
-              <th style="text-align:right;">Per 100g</th>
-              <th style="text-align:right;">Per Serving</th>
+              <th>Active Ingredients</th>
+              <th class="center">Per 100g (g)</th>
+              <th class="center">Per Serving</th>
             </tr>
           </thead>
           <tbody>
             {% for row in nutrition_rows %}
               <tr>
                 <td>{{ row.label }}</td>
-                <td class="num">{{ row.per_100g|format_nutrient }}</td>
-                <td class="num">{{ row.per_serving|format_nutrient }}</td>
+                <td class="center">{{ row.per_100g|default:"0.00" }}</td>
+                <td class="center">{{ row.per_serving|default:"0" }}</td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
-      </section>
 
-      <section class="panel">
-        <h2>Amino Acid Information</h2>
-        <table>
+      {% elif slug == "amino_acids" %}
+        <h2 class="section-title">Amino Acid Information</h2>
+        <table class="data">
           <thead>
             <tr>
               <th>Amino Acid</th>
-              <th style="text-align:right;">Per 100g (g)</th>
-              <th style="text-align:right;">Per Serving (g)</th>
+              <th class="center">Per 100g (g)</th>
+              <th class="center">Per Serving (g)</th>
             </tr>
           </thead>
           <tbody>
@@ -395,15 +273,37 @@
               {% for acid in group.acids %}
                 <tr>
                   <td>{{ acid.label }}</td>
-                  <td class="num">{{ acid.per_100g|format_nutrient }}</td>
-                  <td class="num">{{ acid.per_serving|format_nutrient }}</td>
+                  <td class="center">{{ acid.per_100g|default:"0.00" }}</td>
+                  <td class="center">{{ acid.per_serving|default:"0.00" }}</td>
                 </tr>
               {% endfor %}
             {% endfor %}
           </tbody>
         </table>
-      </section>
-    </div>
-  </div>
+
+      {% elif slug == "excipients" %}
+        <h2 class="section-title">Excipient Information</h2>
+        <table class="data">
+          <thead><tr><th>Ingredients</th></tr></thead>
+          <tbody>
+            {% for entry in declaration.entries %}
+              {% if entry.category != "active" %}
+                <tr><td class="name">{{ entry.label }}</td></tr>
+              {% endif %}
+            {% endfor %}
+          </tbody>
+        </table>
+
+      {% elif slug == "ingredients" %}
+        {% if declaration.text %}
+          <h2 class="section-title">Ingredients</h2>
+          <div class="ingredient-paragraph">{{ declaration.text|safe }}</div>
+        {% endif %}
+
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+</main>
 </body>
 </html>

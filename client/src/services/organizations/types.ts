@@ -8,6 +8,13 @@
 export interface OrganizationDto {
   readonly id: string;
   readonly name: string;
+  /**
+   * Pre-billing access gate. New workspaces default to ``false`` and
+   * a platform admin flips them on before members can use the app.
+   * The frontend routes unauthorized members to a "pending activation"
+   * screen when this is ``false`` for a workspace they own or belong to.
+   */
+  readonly is_active: boolean;
   /** ``true`` when the currently-authenticated caller is the owner. */
   readonly is_owner: boolean;
   /**

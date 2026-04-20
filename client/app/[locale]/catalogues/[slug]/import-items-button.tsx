@@ -1,7 +1,7 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
-import { AlertTriangle, CloudUpload, Upload } from "lucide-react";
+import { AlertTriangle, CloudUpload, Download, Upload } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useRef, useState, type ChangeEvent } from "react";
@@ -12,6 +12,7 @@ import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import {
+  downloadImportTemplate,
   useImportItems,
   type ImportItemsResultDto,
 } from "@/services/catalogues";
@@ -30,9 +31,33 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
   const [file, setFile] = useState<File | null>(null);
   const [result, setResult] = useState<ImportItemsResultDto | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [isTemplateBusy, setIsTemplateBusy] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const importMutation = useImportItems(orgId, slug);
+
+  const handleTemplateDownload = async () => {
+    setFileError(null);
+    setIsTemplateBusy(true);
+    try {
+      const blob = await downloadImportTemplate(orgId, slug);
+      // Build an object URL, nudge it through a synthetic anchor,
+      // and release the URL afterwards so we don't leak blob refs
+      // on repeated downloads.
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${slug}_import_template.xlsx`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      window.URL.revokeObjectURL(url);
+    } catch {
+      setFileError(tErrors("generic"));
+    } finally {
+      setIsTemplateBusy(false);
+    }
+  };
 
   const reset = () => {
     setFile(null);
@@ -109,6 +134,30 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
                   <p className="text-sm text-ink-500">
                     {tItems("import_modal.intro")}
                   </p>
+
+                  <div className="flex items-start justify-between gap-3 rounded-xl bg-orange-50/70 p-3 ring-1 ring-inset ring-orange-200">
+                    <div className="flex flex-col">
+                      <p className="text-xs font-medium text-orange-900">
+                        {tItems("import_modal.template_title")}
+                      </p>
+                      <p className="mt-0.5 text-xs text-orange-800/80">
+                        {tItems("import_modal.template_hint")}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-1.5 text-xs font-medium text-orange-900 ring-1 ring-inset ring-orange-300 hover:bg-orange-100"
+                      onClick={handleTemplateDownload}
+                      isDisabled={isTemplateBusy}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      {isTemplateBusy
+                        ? tItems("import_modal.template_downloading")
+                        : tItems("import_modal.template_download")}
+                    </Button>
+                  </div>
 
                   <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl bg-ink-50 px-4 py-10 text-center ring-1 ring-dashed ring-ink-300 transition-colors hover:bg-orange-50/60 hover:ring-orange-300">
                     <input

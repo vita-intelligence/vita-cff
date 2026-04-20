@@ -12,6 +12,7 @@ from apps.catalogues.api.views import (
     CatalogueDetailView,
     CatalogueListCreateView,
     ItemDetailView,
+    ItemImportTemplateView,
     ItemImportView,
     ItemListCreateView,
 )
@@ -40,6 +41,11 @@ urlpatterns = [
         rf"^organizations/(?P<org_id>[0-9a-f-]{{36}})/catalogues/{SLUG}/items/import/$",
         ItemImportView.as_view(),
         name="item-import",
+    ),
+    re_path(
+        rf"^organizations/(?P<org_id>[0-9a-f-]{{36}})/catalogues/{SLUG}/items/template/$",
+        ItemImportTemplateView.as_view(),
+        name="item-import-template",
     ),
     re_path(
         rf"^organizations/(?P<org_id>[0-9a-f-]{{36}})/catalogues/{SLUG}/items/(?P<item_id>[0-9a-f-]{{36}})/$",

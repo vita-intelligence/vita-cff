@@ -9,6 +9,7 @@ from apps.formulations.api.views import (
     FormulationListCreateView,
     FormulationOverviewView,
     FormulationRollbackView,
+    FormulationSalesPersonView,
     FormulationVersionListView,
 )
 
@@ -49,5 +50,10 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/rollback/",
         FormulationRollbackView.as_view(),
         name="formulation-rollback",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",
+        FormulationSalesPersonView.as_view(),
+        name="formulation-sales-person",
     ),
 ]

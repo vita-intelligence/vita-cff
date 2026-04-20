@@ -34,12 +34,19 @@ export const membersQueryKeys = {
 
 export function useMemberships(
   orgId: string,
-  options: { readonly initialData?: readonly MembershipDto[] } = {},
+  options: {
+    readonly initialData?: readonly MembershipDto[];
+    /** Defaults to ``true``. Set to ``false`` to suppress the fetch
+     *  until the caller actually needs the roster (e.g. a dropdown
+     *  that only queries once opened). */
+    readonly enabled?: boolean;
+  } = {},
 ): UseQueryResult<readonly MembershipDto[], ApiError> {
   return useQuery<readonly MembershipDto[], ApiError>({
     queryKey: membersQueryKeys.list(orgId),
     queryFn: () => listMemberships(orgId),
     initialData: options.initialData,
+    enabled: options.enabled ?? true,
     staleTime: 10_000,
   });
 }

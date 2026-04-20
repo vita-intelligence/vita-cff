@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -30,6 +31,7 @@ from apps.catalogues.services import (
     ItemInternalCodeConflict,
     ItemNotFound,
     archive_item,
+    build_import_template,
     create_catalogue,
     create_item,
     delete_catalogue,
@@ -346,3 +348,35 @@ class ItemImportView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class ItemImportTemplateView(APIView):
+    """``GET`` ``/api/.../catalogues/<slug>/items/template/``.
+
+    Returns an ``.xlsx`` file whose header row matches what
+    :class:`ItemImportView` will accept on the way back. The template
+    is generated on demand against the live attribute schema so a
+    freshly-added attribute shows up without a code deploy.
+    """
+
+    permission_classes = (HasCataloguePermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        self.required_capability = CataloguesCapability.IMPORT
+        super().initial(request, *args, **kwargs)
+
+    def get(self, request: Request, org_id: str, slug: str) -> HttpResponse:
+        payload = build_import_template(catalogue=self.catalogue)
+        filename = f"{self.catalogue.slug}_import_template.xlsx"
+        response = HttpResponse(
+            payload,
+            content_type=(
+                "application/vnd.openxmlformats-officedocument."
+                "spreadsheetml.sheet"
+            ),
+        )
+        response["Content-Disposition"] = (
+            f'attachment; filename="{filename}"'
+        )
+        response["Content-Length"] = str(len(payload))
+        return response

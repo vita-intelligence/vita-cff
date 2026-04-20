@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertDialog, Button } from "@heroui/react";
+import { AlertDialog, Button, toast } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Archive, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
@@ -90,7 +90,7 @@ export function EditItemForm({
     control,
     handleSubmit,
     setError,
-    formState: { errors, isDirty, isSubmitting },
+    formState: { errors, isSubmitting },
   } = useForm<ExtendedUpdateInput>({
     resolver: zodResolver(extendedUpdateSchema),
     defaultValues: {
@@ -114,6 +114,7 @@ export function EditItemForm({
         attributes: values.attributes as unknown as Record<string, unknown>,
       } as never);
       router.refresh();
+      toast.success(tItems("detail.saved"));
     } catch (error) {
       const fieldErrors = (error as ApiFieldErrors).fieldErrors ?? {};
       const known: readonly (keyof ExtendedUpdateInput)[] = [
@@ -159,6 +160,7 @@ export function EditItemForm({
           ),
         });
       }
+      toast.danger(tErrors("generic"));
     }
   });
 
@@ -385,11 +387,12 @@ export function EditItemForm({
         ) : null}
 
         <Button
-          type="submit"
+          type="button"
           variant="primary"
           size="lg"
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-          isDisabled={!isDirty || isBusy}
+          isDisabled={isBusy}
+          onPress={() => onSubmit()}
         >
           <Save className="h-4 w-4" />
           {tItems("detail.save")}

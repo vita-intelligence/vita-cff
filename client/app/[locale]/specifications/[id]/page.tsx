@@ -3,6 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getRenderedSpecificationServer,
@@ -60,6 +61,14 @@ export default async function SpecificationDetailPage({
 
   const canWrite = level === "write" || level === "admin";
   const canAdmin = level === "admin";
+  // The visibility toggle sits on its own capability so commercial
+  // leads can hide client-facing sections without needing edit or
+  // admin rights on the sheet itself.
+  const canManageVisibility = hasFlatCapability(
+    primaryOrg,
+    "formulations",
+    "manage_spec_visibility",
+  );
 
   const tCommon = await getTranslations("common");
 
@@ -76,6 +85,7 @@ export default async function SpecificationDetailPage({
           rendered={rendered}
           canWrite={canWrite}
           canAdmin={canAdmin}
+          canManageVisibility={canManageVisibility}
         />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500 print:hidden">

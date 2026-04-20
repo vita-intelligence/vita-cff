@@ -61,6 +61,17 @@ class AIResponseInvalid(AIServiceError):
     code = "ai_response_invalid"
 
 
+class AIDraftOversize(AIServiceError):
+    """Draft's total raw-powder weight overflows the selected dosage form.
+
+    Raised after the retry budget is exhausted. The UI surfaces a
+    recoverable error — the scientist can either pick a larger capsule
+    size, drop ingredients, or lower label claims in the brief.
+    """
+
+    code = "ai_draft_oversize"
+
+
 # ---------------------------------------------------------------------------
 # Formulation draft
 # ---------------------------------------------------------------------------
@@ -149,23 +160,28 @@ formulations from customer briefs.
 5. Fill every other top-level field. Use empty strings or empty
    arrays only when the brief truly provides no information.
 
-## Dosage rules (the formulation must physically fit)
+## Dosage rules (NON-NEGOTIABLE — the formulation is rejected if you violate these)
 
-The product is packed into a capsule or tablet. Total raw powder
-weight has a hard cap:
+HARD CAPS on the sum of raw_powder_mg across ALL ingredients:
 
-- Capsule Double-00: max 730 mg
-- Capsule 00:        max 680 mg
-- Capsule 0:         max 450 mg
-- Capsule 1:         max 400 mg
-- Capsule 3:         max 180 mg
-- Tablet typical:    800-1500 mg depending on size
+- capsule: sum MUST be < 500 mg
+- tablet:  sum MUST be < 1000 mg
+- powder / gummy / liquid / other_solid: no fixed cap, stay reasonable
 
-For every active: ``raw_powder_mg = label_claim_mg / purity``. The sum
-of raw_powder_mg across ALL ingredients must stay under the max fill
-weight, leaving ~30% headroom for excipients (MCC, magnesium stearate,
-silica). In practice: keep the sum of raw_powder_mg under 500 mg for
-capsules and under 1000 mg for tablets.
+For every active: ``raw_powder_mg = label_claim_mg / purity``.
+Example arithmetic you MUST perform in your head before emitting:
+
+  Ingredient A: label_claim_mg=200, purity=0.89 -> raw=224.7 mg
+  Ingredient B: label_claim_mg=100, purity=0.50 -> raw=200.0 mg
+  Ingredient C: label_claim_mg= 50, purity=0.98 -> raw= 51.0 mg
+  SUM = 475.7 mg -> OK for a capsule (under 500)
+
+If your SUM would exceed the cap, you MUST:
+  (a) drop the lowest-priority ingredient, OR
+  (b) reduce label_claim_mg on the bulkiest ingredient, OR
+  (c) pick a different raw material with higher purity.
+Never emit an oversized formulation and rely on the scientist to fix
+it. Self-correct before you output.
 
 ## What ``label_claim_mg`` means
 
@@ -239,10 +255,19 @@ match the brief, not this placeholder.)
   ]
 }}
 
-## Final reminder
+## Final self-check (run through this silently before emitting JSON)
 
-Every ingredient MUST have an ``item_id`` from the catalogue. Not
-one without. Check your output before finishing.
+Every ingredient MUST have an ``item_id`` copied from the catalogue
+above — not one without. Then verify:
+
+1. For the chosen dosage_form, does the sum of raw_powder_mg
+   (``label_claim_mg / purity`` per ingredient) stay UNDER the hard cap?
+   - capsule: sum < 500 mg
+   - tablet:  sum < 1000 mg
+   If not, go back and reduce claims or drop ingredients BEFORE output.
+2. Are label_claim_mg values in the safe ranges for the ingredient class?
+
+Only emit JSON once every check passes.
 """
 
 
@@ -289,6 +314,63 @@ def _build_formulation_draft_prompt(
     )
 
 
+#: Practical fill caps enforced post-generation. Values match the
+#: numbers baked into the system prompt so the AI's self-check and
+#: our server-side check speak the same language. The caps leave
+#: headroom for auto-added excipients (MCC/stearate/silica) rather
+#: than the hard capsule maximum (730 mg for Double-00).
+_PRACTICAL_FILL_CAPS_MG: dict[str, Decimal] = {
+    "capsule": Decimal("500"),
+    "tablet": Decimal("1000"),
+}
+
+#: How many total attempts we grant the provider per request.
+#: Attempt 1 = original brief. Attempt 2 = brief + correction note
+#: naming the overshoot. Capped at 2 so worst-case latency stays
+#: within the dedicated AI route handler's timeout budget.
+_MAX_FORMULATION_DRAFT_ATTEMPTS = 2
+
+
+def _total_raw_powder_mg(draft: FormulationDraft) -> Decimal:
+    """Sum ``mg_per_serving`` across every attached ingredient.
+
+    Unattached / below-floor ingredients carry ``None`` (no purity
+    known) and are skipped — the viability check is conservative by
+    construction. Returns ``Decimal("0")`` for a draft with no
+    attached ingredients (trivially under any cap).
+    """
+
+    total = Decimal("0")
+    for ingredient in draft.ingredients:
+        raw = ingredient.mg_per_serving
+        if not raw:
+            continue
+        try:
+            total += Decimal(raw)
+        except Exception:  # pragma: no cover — Decimal() robust on str input
+            continue
+    return total
+
+
+def _weight_cap_exceeded(
+    draft: FormulationDraft,
+) -> tuple[Decimal, Decimal] | None:
+    """Return ``(total_mg, cap_mg)`` when the draft overflows its cap.
+
+    Returns ``None`` when the dosage form has no enforced cap, or
+    when the total sits at or under the cap. The caller uses the
+    tuple to build a correction prompt and retry.
+    """
+
+    cap = _PRACTICAL_FILL_CAPS_MG.get(draft.dosage_form)
+    if cap is None:
+        return None
+    total = _total_raw_powder_mg(draft)
+    if total > cap:
+        return total, cap
+    return None
+
+
 def generate_formulation_draft(
     *,
     organization: Organization,
@@ -299,14 +381,20 @@ def generate_formulation_draft(
 ) -> FormulationDraft:
     """Turn a natural-language brief into a :class:`FormulationDraft`.
 
-    Writes one :class:`AIUsage` row whether the call succeeds or not.
-    Raises :class:`AIResponseInvalid` if the provider returns JSON that
-    doesn't match the expected shape; bubbles :class:`AIProviderError`
-    subclasses for transport / timeout / malformed-JSON failures.
+    Runs up to :data:`_MAX_FORMULATION_DRAFT_ATTEMPTS` provider calls,
+    feeding the overshoot arithmetic back as a correction prompt if
+    the first draft overflows the dosage-form cap. Writes one
+    :class:`AIUsage` row per attempt (success or failure) so the
+    owner dashboard reflects the real billable work.
+
+    Raises :class:`AIResponseInvalid` on schema breakage (not
+    retriable — a weak model that returns ``{}`` will keep doing
+    so), :class:`AIDraftOversize` when the cap is still violated
+    after every attempt, and bubbles :class:`AIProviderError`
+    subclasses for transport / timeout failures.
     """
 
     provider: AIProvider = get_provider(provider_name)
-    selected_model_for_error_row = model or ""
     # AI4 — build the catalogue menu the LLM picks from BEFORE the
     # provider call so the request carries the constrained prompt.
     # The shortlister is local (Postgres + token math), so the
@@ -319,11 +407,82 @@ def generate_formulation_draft(
     }
     system_prompt = _build_formulation_draft_prompt(candidates)
 
+    user_prompt = brief
+    last_overshoot: tuple[Decimal, Decimal] | None = None
+    for attempt in range(1, _MAX_FORMULATION_DRAFT_ATTEMPTS + 1):
+        draft = _attempt_formulation_draft(
+            organization=organization,
+            actor=actor,
+            provider=provider,
+            provider_name=provider_name,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            candidates_by_id=candidates_by_id,
+        )
+        overshoot = _weight_cap_exceeded(draft)
+        if overshoot is None:
+            return draft
+        last_overshoot = overshoot
+        if attempt >= _MAX_FORMULATION_DRAFT_ATTEMPTS:
+            break
+        total, cap = overshoot
+        # Retry with the overshoot arithmetic spelled out so the
+        # model can self-correct instead of repeating the same mistake.
+        user_prompt = (
+            f"{brief}\n\n"
+            f"CORRECTION: your previous attempt summed to {total:.1f} mg of "
+            f"raw powder, which exceeds the {cap:.0f} mg cap for "
+            f"{draft.dosage_form}. Reduce label_claim_mg values or drop the "
+            f"bulkiest ingredient so the new sum stays strictly under "
+            f"{cap:.0f} mg. Do not emit an oversized draft again."
+        )
+        logger.info(
+            "AI draft oversize on attempt %d (total=%s mg, cap=%s mg, form=%s); retrying",
+            attempt,
+            total,
+            cap,
+            draft.dosage_form,
+        )
+
+    # Retry budget exhausted with an oversized draft every time.
+    # Surface a codified error so the UI can prompt the user to
+    # pick a larger capsule size or simplify the brief.
+    assert last_overshoot is not None  # loop invariant: we only break here on overshoot
+    total, cap = last_overshoot
+    logger.warning(
+        "AI draft oversize after %d attempts (final total=%s mg, cap=%s mg)",
+        _MAX_FORMULATION_DRAFT_ATTEMPTS,
+        total,
+        cap,
+    )
+    raise AIDraftOversize()
+
+
+def _attempt_formulation_draft(
+    *,
+    organization: Organization,
+    actor: Any,
+    provider: AIProvider,
+    provider_name: str,
+    model: str | None,
+    system_prompt: str,
+    user_prompt: str,
+    candidates_by_id: dict[str, CandidateItem],
+) -> FormulationDraft:
+    """Run a single provider attempt and record the usage row.
+
+    Extracted so the retry loop in :func:`generate_formulation_draft`
+    can invoke it repeatedly without duplicating the logging,
+    error-handling, and audit-row plumbing.
+    """
+
+    selected_model_for_error_row = model or ""
     start = time.monotonic()
     try:
         result: AIProviderResult = provider.generate_json(
             system_prompt=system_prompt,
-            user_prompt=brief,
+            user_prompt=user_prompt,
             model=model,
         )
     except AIProviderError as exc:
@@ -342,11 +501,6 @@ def generate_formulation_draft(
     try:
         draft = _parse_formulation_draft(result.data)
     except AIResponseInvalid as exc:
-        # Ship a snapshot of the bad payload to the server log so we
-        # can see exactly which field the model botched. Truncated
-        # aggressively because some models emit very long responses
-        # when confused. Log level is warning — this is recoverable
-        # on the client (generic error) but actionable for ops.
         logger.warning(
             "AI response failed schema validation: %s (model=%s); raw data (truncated): %s",
             exc,

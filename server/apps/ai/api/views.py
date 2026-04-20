@@ -17,7 +17,11 @@ from apps.ai.providers.base import (
     AIProviderTimeout,
     AIProviderUnreachable,
 )
-from apps.ai.services import AIResponseInvalid, generate_formulation_draft
+from apps.ai.services import (
+    AIDraftOversize,
+    AIResponseInvalid,
+    generate_formulation_draft,
+)
 from apps.formulations.api.permissions import HasFormulationsPermission
 from apps.organizations.modules import FormulationsCapability
 from rest_framework.views import APIView
@@ -78,6 +82,15 @@ class FormulationDraftView(APIView):
             return Response(
                 {"detail": [exc.code]},
                 status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except AIDraftOversize as exc:
+            # Every retry still overflowed the fill cap. Surface a
+            # 422 so the UI can distinguish "AI misbehaved" from
+            # "AI did its job but physics won" — the scientist can
+            # relax the brief or pick a larger capsule size.
+            return Response(
+                {"detail": [exc.code]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
         except AIProviderError as exc:
             return Response(

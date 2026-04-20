@@ -11,6 +11,10 @@
   "no_archived_hint": "Items you archive from the detail page will appear here.",
   "row_count": "{count, plural, =0 {No items} one {# item} other {# items}} loaded",
   "scroll_hint": "scroll to load more",
+  "scroll": {
+    "previous": "Scroll columns left",
+    "next": "Scroll columns right"
+  },
   "search": {
     "placeholder": "Search by name or code…",
     "clear": "Clear search",
@@ -68,6 +72,10 @@
   "import_modal": {
     "title": "Import from Excel",
     "intro": "Upload an .xlsx file. The first row must be a header row. A ''name'' column is required; ''internal_code'', ''unit'', and ''base_price'' are matched automatically. Every other column is matched to an existing field definition by key or label.",
+    "template_title": "Need a starting point?",
+    "template_hint": "Download a blank .xlsx with every column pre-filled and ready for data.",
+    "template_download": "Download template",
+    "template_downloading": "Preparing…",
     "dropzone_label": "Drop an .xlsx file here or click to browse",
     "selected_file": "Selected: {name}",
     "submit": "Import",

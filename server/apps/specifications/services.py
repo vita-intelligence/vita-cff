@@ -34,6 +34,8 @@ from apps.specifications.constants import (
     DEFAULT_SAFETY_LIMITS,
     DEFAULT_WEIGHT_UNIFORMITY_PCT,
     PACKAGING_PLACEHOLDER,
+    SAFETY_LIMIT_ROWS,
+    SECTION_SLUGS,
 )
 from apps.specifications.models import (
     SpecificationSheet,
@@ -236,6 +238,16 @@ def update_sheet(
         "final_price",
         "cover_notes",
         "total_weight_label",
+        # Extra packaging-spec strings from the reference workbook —
+        # renderable on the customer PDF, editable through the same
+        # PATCH the existing UI uses, so no new endpoint required.
+        "unit_quantity",
+        "food_contact_status",
+        "shelf_life",
+        "storage_conditions",
+        # ``limits_override`` is a JSON object; the serializer clamps
+        # the shape before we see it here, so assignment is safe.
+        "limits_override",
     }
     new_code = changes.get("code")
     if new_code and new_code != sheet.code:
@@ -326,6 +338,88 @@ def set_packaging(
         organization=sheet.organization,
         actor=actor,
         action="spec_sheet.set_packaging",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
+    return sheet
+
+
+@transaction.atomic
+def set_section_order(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+    order: list[str],
+) -> SpecificationSheet:
+    """Persist the preferred render order for the customer-facing sheet.
+
+    ``order`` is the full desired top-down sequence of section slugs.
+    Unknown slugs are dropped rather than raising so the write
+    tolerates a stale client that was loaded before a schema migration
+    added or removed a section. Duplicates are deduped. The result is
+    persisted verbatim — ``resolve_section_order`` does the canonical
+    backfill at render time so newly-added sections still appear.
+    """
+
+    before = snapshot(sheet)
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for slug in order:
+        if not isinstance(slug, str) or slug in seen:
+            continue
+        if slug not in SECTION_SLUGS:
+            continue
+        cleaned.append(slug)
+        seen.add(slug)
+    sheet.section_order = cleaned
+    sheet.updated_by = actor
+    sheet.save(update_fields=["section_order", "updated_by", "updated_at"])
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.set_section_order",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
+    return sheet
+
+
+@transaction.atomic
+def set_section_visibility(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+    visibility: dict[str, bool],
+) -> SpecificationSheet:
+    """Persist ``section_visibility`` overrides on the sheet.
+
+    ``visibility`` is a partial ``{section_slug: bool}`` map — any
+    key the caller omits is left untouched on the stored dict, so a
+    single toggle does not unintentionally re-expose other sections
+    the customer had flagged off. Unknown slugs are silently
+    dropped: the canonical list lives in
+    :data:`SECTION_SLUGS` and drives both the frontend UI and the
+    renderer, so tolerating stale payloads is safer than 400-ing a
+    request that is otherwise valid.
+    """
+
+    before = snapshot(sheet)
+    stored = dict(sheet.section_visibility or {})
+    for slug, value in visibility.items():
+        if slug not in SECTION_SLUGS:
+            continue
+        stored[slug] = bool(value)
+    sheet.section_visibility = stored
+    sheet.updated_by = actor
+    sheet.save(
+        update_fields=["section_visibility", "updated_by", "updated_at"]
+    )
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.set_visibility",
         target=sheet,
         before=before,
         after=snapshot(sheet),
@@ -554,6 +648,96 @@ def _nrv_percent(
     return f"{(claim / nrv_mg) * 100:.1f}"
 
 
+def resolve_limits(sheet: SpecificationSheet) -> list[dict[str, str]]:
+    """Compute the Microbiological / PAH / Pesticides / Heavy Metal block.
+
+    Precedence order (highest first):
+
+    1. :attr:`SpecificationSheet.limits_override` — a per-sheet
+       ``{slug: value}`` dict the scientist edited on this specific
+       deliverable.
+    2. :attr:`Organization.default_spec_limits` — the tenant-level
+       defaults seeded on org creation and editable by an admin.
+    3. :data:`DEFAULT_SAFETY_LIMITS` — canonical values from the
+       Valley workbook, so a brand-new org with an empty dict still
+       renders sane limits.
+
+    Return order matches :data:`SAFETY_LIMIT_ROWS` so every spec
+    sheet produced by the org lists the rows in the same top-down
+    order the printed workbook uses.
+    """
+
+    organization = sheet.organization
+    org_defaults = organization.default_spec_limits or {}
+    overrides = sheet.limits_override or {}
+
+    rows: list[dict[str, str]] = []
+    for slug, label in SAFETY_LIMIT_ROWS:
+        value = (
+            overrides.get(slug)
+            or org_defaults.get(slug)
+            or DEFAULT_SAFETY_LIMITS.get(slug, "")
+        )
+        rows.append({"slug": slug, "name": label, "value": value})
+    return rows
+
+
+def resolve_visibility(sheet: SpecificationSheet) -> dict[str, bool]:
+    """Return the fully-populated ``{section_slug: visible}`` map.
+
+    Keys that the sheet's ``section_visibility`` JSON omits default
+    to ``True`` so pre-feature sheets and freshly-created sheets both
+    render in full — the only way to hide a section is to explicitly
+    write ``False`` through the manage-visibility endpoint. The
+    renderer consults this map; the frontend also receives it so the
+    admin view can show a "hidden by you" badge next to each section.
+    """
+
+    stored = sheet.section_visibility or {}
+    return {slug: bool(stored.get(slug, True)) for slug in SECTION_SLUGS}
+
+
+def resolve_section_order(sheet: SpecificationSheet) -> list[str]:
+    """Return the effective render order of section slugs.
+
+    Honour ``sheet.section_order`` when present, dedupe against the
+    canonical :data:`SECTION_SLUGS` tuple, and append any known
+    sections the stored override forgot so a stale map cannot hide a
+    newly-introduced section. Unknown slugs are silently dropped —
+    the admin may have renamed a feature away.
+    """
+
+    stored = sheet.section_order or []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for slug in stored:
+        if not isinstance(slug, str):
+            continue
+        if slug not in SECTION_SLUGS or slug in seen:
+            continue
+        ordered.append(slug)
+        seen.add(slug)
+    for slug in SECTION_SLUGS:
+        if slug in seen:
+            continue
+        ordered.append(slug)
+    return ordered
+
+
+def show_watermark_for(status: str) -> bool:
+    """Decide whether the sheet should render its diagonal ``DRAFT``
+    watermark. The rule: anything that is not yet customer-locked
+    still looks like a working document. Final states
+    (``approved``, ``sent``, ``accepted``) print clean."""
+
+    final_states = {
+        SpecificationStatus.APPROVED,
+        SpecificationStatus.SENT,
+        SpecificationStatus.ACCEPTED,
+    }
+    return status not in final_states
+
+
 def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     """Turn a sheet + its snapshot into the flat dict the frontend
     renders. Pure function — no DB writes, no side effects."""
@@ -635,6 +819,10 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             ),
             "cover_notes": sheet.cover_notes,
             "total_weight_label": sheet.total_weight_label,
+            "unit_quantity": sheet.unit_quantity,
+            "food_contact_status": sheet.food_contact_status,
+            "shelf_life": sheet.shelf_life,
+            "storage_conditions": sheet.storage_conditions,
             "status": sheet.status,
             "created_at": sheet.created_at.isoformat(),
             "updated_at": sheet.updated_at.isoformat(),
@@ -679,13 +867,23 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "bottle_pouch_tub": _packaging_label(sheet.packaging_container),
             "label_size": _packaging_label(sheet.packaging_label),
             "antitemper": _packaging_label(sheet.packaging_antitemper),
-            "unit_quantity": metadata.get("servings_per_pack"),
+            # Unit Quantity is a sheet-level override (e.g. "28
+            # sachets") that falls back to the formulation's
+            # ``servings_per_pack`` snapshot when left blank. Keeps
+            # the workbook's semantics where the spec sheet cell is
+            # editable but usually mirrors the project setup.
+            "unit_quantity": (
+                sheet.unit_quantity or metadata.get("servings_per_pack") or ""
+            ),
+            "food_contact_status": sheet.food_contact_status,
+            "shelf_life": sheet.shelf_life,
+            "storage_conditions": sheet.storage_conditions,
         },
-        "limits": [
-            {"name": name, "value": value}
-            for name, value in DEFAULT_SAFETY_LIMITS
-        ],
+        "limits": resolve_limits(sheet),
         "weight_uniformity": DEFAULT_WEIGHT_UNIFORMITY_PCT,
+        "visibility": resolve_visibility(sheet),
+        "section_order": resolve_section_order(sheet),
+        "watermark": show_watermark_for(sheet.status),
     }
 
 
@@ -769,10 +967,14 @@ def _resolve_total_weight_display(context: dict[str, Any]) -> str:
     return "TBC"
 
 
-def _prepare_template_context(context: dict[str, Any]) -> dict[str, Any]:
+def _prepare_template_context(
+    context: dict[str, Any],
+    sheet: SpecificationSheet | None = None,
+) -> dict[str, Any]:
     """Shape the flat ``render_context`` payload into the extra
     fields the PDF template relies on (labelled nutrition rows,
-    ordered amino groups, the resolved Total Weight cell)."""
+    ordered amino groups, the resolved Total Weight cell,
+    organization-level header + footer metadata)."""
 
     # Nutrition rows — map backend keys to display labels, preserving
     # the view order. Missing rows render as zero via the template
@@ -822,6 +1024,16 @@ def _prepare_template_context(context: dict[str, Any]) -> dict[str, Any]:
         default=0,
     )
 
+    # Header / footer metadata. The printable sheet carries the doc
+    # code top-left, the update date top-right, and the organization
+    # name + generic address across the bottom. Address line is left
+    # as a single string so whoever curates the template can drop in
+    # a real registered address without model work — the user will
+    # supply this later; today the tenant name suffices to anchor the
+    # footer and avoid looking unbranded.
+    organization_name = sheet.organization.name if sheet is not None else ""
+    report_date = _format_report_date(context.get("sheet", {}).get("updated_at"))
+
     return {
         **context,
         "nutrition_rows": nutrition_rows,
@@ -829,7 +1041,30 @@ def _prepare_template_context(context: dict[str, Any]) -> dict[str, Any]:
         "nutrition_has_data": nutrition_has_data,
         "nutrition_contributor_count": contributor_count,
         "total_weight_display": _resolve_total_weight_display(context),
+        "organization_name": organization_name,
+        "organization_address": "",
+        "report_date": report_date,
     }
+
+
+def _format_report_date(iso: Any) -> str:
+    """Render the top-right date as ``DD/MM/YYYY`` — the format the
+    reference spec sheet uses. Accepts the ISO string the sheet's
+    ``updated_at`` carries; invalid input yields the empty string so
+    the header gracefully shows nothing rather than an error token.
+    """
+
+    if not isinstance(iso, str) or not iso:
+        return ""
+    try:
+        # ``datetime.fromisoformat`` in 3.11+ parses the trailing ``+00:00``
+        # that Django emits without needing a dedicated tz-aware parser.
+        from datetime import datetime
+
+        parsed = datetime.fromisoformat(iso)
+    except ValueError:
+        return ""
+    return parsed.strftime("%d/%m/%Y")
 
 
 def render_pdf(sheet: SpecificationSheet) -> tuple[bytes, str]:
@@ -847,7 +1082,7 @@ def render_pdf(sheet: SpecificationSheet) -> tuple[bytes, str]:
     from weasyprint import HTML  # noqa: WPS433
 
     context = render_context(sheet)
-    template_context = _prepare_template_context(context)
+    template_context = _prepare_template_context(context, sheet=sheet)
     html_string = render_to_string(
         "specifications/sheet.html", template_context
     )

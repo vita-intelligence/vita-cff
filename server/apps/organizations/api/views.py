@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.auth.cookies import set_auth_cookies, tokens_for_user
+from apps.organizations.api.errors import OrganizationInactive
 from apps.organizations.api.serializers import (
     AcceptInvitationSerializer,
     InvitationCreateSerializer,
@@ -43,6 +44,7 @@ from apps.organizations.services import (
     get_invitation_for_org,
     get_membership,
     has_capability,
+    is_organization_accessible,
     list_memberships,
     list_pending_invitations,
     list_user_organizations,
@@ -149,6 +151,12 @@ def _load_org_for_caller(
     membership = get_membership(request.user, organization)
     if membership is None:
         raise NotFound()
+    # Inactive workspaces can't send invites, revoke invites, or tune
+    # member permissions — the whole members surface is frozen until
+    # a platform admin activates the org. Superusers bypass so they
+    # can still clean up state on a deactivated workspace.
+    if not is_organization_accessible(organization, request.user):
+        raise OrganizationInactive()
     if not has_capability(membership, "members", capability):
         raise PermissionDenied()
     return organization

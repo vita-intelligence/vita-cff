@@ -17,9 +17,11 @@ from django.db import transaction
 from django.db.models import QuerySet
 
 from apps.audit.services import record as record_audit, snapshot
+from apps.catalogues.models import Item
 from apps.formulations.constants import (
     CAPSULE_SHELL_LABEL,
     DosageForm,
+    EXCIPIENT_CATALOGUE_NAME_CANDIDATES,
     EXCIPIENT_LABEL_DCP,
     EXCIPIENT_LABEL_MCC,
     EXCIPIENT_LABEL_MG_STEARATE,
@@ -276,6 +278,45 @@ def _coerce_decimal(raw: Any) -> Decimal | None:
         return None
 
 
+def _lookup_excipient_codes(
+    organization: Organization,
+) -> dict[str, str]:
+    """Resolve procurement codes for the hard-coded excipient slots.
+
+    Each slot (MCC, DCP, stearate, silica, capsule shell) ships as a
+    label-string on the formulation output — the catalogue row that
+    actually supplies it is stored in the org's ``raw_materials``
+    catalogue by name. Real catalogues append grade / purity qualifiers
+    to the canonical name (``Magnesium Stearate 4% Magnesium``, not
+    ``Magnesium Stearate``), so we prefix-match and walk the candidate
+    list from most- to least-specific. Empty string is returned when
+    no match is found so the UI falls back to ``—``.
+    """
+
+    active_items = Item.objects.filter(
+        catalogue__organization=organization,
+        catalogue__slug="raw_materials",
+        is_archived=False,
+    )
+
+    resolved: dict[str, str] = {}
+    for slot, candidates in EXCIPIENT_CATALOGUE_NAME_CANDIDATES.items():
+        code = ""
+        for candidate in candidates:
+            match = (
+                active_items.filter(name__istartswith=candidate)
+                .exclude(internal_code="")
+                .order_by("name")
+                .values_list("internal_code", flat=True)
+                .first()
+            )
+            if match:
+                code = match
+                break
+        resolved[slot] = code
+    return resolved
+
+
 #: Map each line category to its procurement unit of measure. Keeps
 #: the weight↔count switch-over in one place — the rest of the
 #: pipeline just reads ``entry.uom`` and does not branch on category.
@@ -403,7 +444,10 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
 
     # Excipients — each slot as its own row when present. DCP only
     # applies on tablets; MCC / stearate / silica appear on both
-    # capsules and tablets.
+    # capsules and tablets. Procurement codes are resolved against
+    # the org's ``raw_materials`` catalogue once per BOM render so
+    # the BOM references the same item rows the buyer sources from.
+    excipient_codes = _lookup_excipient_codes(batch.organization)
     excipients = totals.get("excipients") or {}
     for key, label in (
         ("mcc_mg", EXCIPIENT_LABEL_MCC),
@@ -418,7 +462,7 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
             _build_bom_entry(
                 category="excipient",
                 label=label,
-                internal_code="",
+                internal_code=excipient_codes.get(key, ""),
                 mg_per_unit=mg_per_unit,
                 units_per_pack=units_per_pack,
                 total_units_in_batch=total_units_in_batch,
@@ -436,7 +480,7 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
                 _build_bom_entry(
                     category="shell",
                     label=CAPSULE_SHELL_LABEL,
-                    internal_code="",
+                    internal_code=excipient_codes.get("capsule_shell", ""),
                     mg_per_unit=Decimal(str(capsule.shell_weight_mg)),
                     units_per_pack=units_per_pack,
                     total_units_in_batch=total_units_in_batch,

@@ -13,6 +13,7 @@ from apps.specifications.api.views import (
     SpecificationPublicLinkView,
     SpecificationRenderView,
     SpecificationStatusView,
+    SpecificationVisibilityView,
 )
 
 app_name = "specifications"
@@ -57,6 +58,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/status/",
         SpecificationStatusView.as_view(),
         name="specification-status",
+    ),
+    path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/visibility/",
+        SpecificationVisibilityView.as_view(),
+        name="specification-visibility",
     ),
     # Unauthenticated preview endpoints — gated by an opaque UUID
     # token rather than the org/sheet id so neither leaks on the wire.

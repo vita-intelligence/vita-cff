@@ -136,6 +136,20 @@ class Formulation(models.Model):
         on_delete=models.PROTECT,
         related_name="updated_formulations",
     )
+    # Commercial owner of the project. Pointer-only: being the sales
+    # person does not unlock any capabilities on its own. Assignment
+    # is gated on the dedicated ``formulations.assign_sales_person``
+    # capability and the candidate must be a member of the same
+    # organization. ``SET_NULL`` keeps the project alive if the person
+    # later leaves — the field clears, history of who held it lives in
+    # the audit log.
+    sales_person = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="sales_formulations",
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

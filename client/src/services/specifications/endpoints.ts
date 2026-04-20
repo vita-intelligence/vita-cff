@@ -32,6 +32,8 @@ export const specificationsEndpoints = {
     `/api/organizations/${orgId}/specifications/${sheetId}/public-link/`,
   status: (orgId: string, sheetId: string) =>
     `/api/organizations/${orgId}/specifications/${sheetId}/status/`,
+  visibility: (orgId: string, sheetId: string) =>
+    `/api/organizations/${orgId}/specifications/${sheetId}/visibility/`,
   publicRender: (token: string) => `/api/public/specifications/${token}/`,
   publicPdf: (token: string, opts?: { readonly download?: boolean }) =>
     `/api/public/specifications/${token}/pdf/${opts?.download ? "?download=1" : ""}`,

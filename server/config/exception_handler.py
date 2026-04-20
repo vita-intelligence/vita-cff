@@ -35,4 +35,12 @@ def codified_exception_handler(exc: Exception, context: dict[str, Any]) -> Respo
     if response is None:
         return None
     response.data = _codify(response.data)
+
+    # Exceptions can advertise a dedicated machine-readable code via
+    # ``api_code``. Surfacing it at the top level lets the frontend
+    # ``ApiError.code`` path branch cleanly without having to parse
+    # the ``detail`` string or inspect nested ``fieldErrors``.
+    api_code = getattr(exc, "api_code", None)
+    if api_code and isinstance(response.data, dict):
+        response.data.setdefault("code", api_code)
     return response

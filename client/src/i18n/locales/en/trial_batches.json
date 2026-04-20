@@ -46,6 +46,7 @@
       "material": "Raw material",
       "mg_per_unit": "mg / unit",
       "g_per_pack": "g / pack",
+      "bom": "BOM (per kg)",
       "kg_per_batch": "kg or each / batch"
     },
     "section": {

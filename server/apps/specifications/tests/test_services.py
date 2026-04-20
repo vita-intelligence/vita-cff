@@ -20,6 +20,9 @@ from apps.specifications.services import (
     get_sheet,
     list_sheets,
     render_context,
+    resolve_limits,
+    set_section_visibility,
+    show_watermark_for,
     transition_status,
     update_sheet,
 )
@@ -188,6 +191,9 @@ class TestRenderContext:
             "packaging",
             "limits",
             "weight_uniformity",
+            "visibility",
+            "section_order",
+            "watermark",
         }
 
     def test_actives_include_ingredient_list_name_and_nrv(self) -> None:
@@ -244,7 +250,9 @@ class TestRenderContext:
         assert ctx["compliance"]["flags"]
         assert ctx["declaration"]["text"]
 
-    def test_limits_include_all_seven_rows(self) -> None:
+    def test_limits_include_all_eight_rows(self) -> None:
+        # Eight rows now: the "Others" line for Non-GMO / Non-Irradiated
+        # / BSE/TSE joined the block when we matched the reference PDF.
         org = OrganizationFactory()
         version = _seeded_version(org)
         sheet = create_sheet(
@@ -253,8 +261,9 @@ class TestRenderContext:
             formulation_version_id=version.id,
         )
         ctx = render_context(sheet)
-        assert len(ctx["limits"]) == 7
+        assert len(ctx["limits"]) == 8
         assert ctx["limits"][0]["name"] == "Total Aerobic Microbial Count"
+        assert ctx["limits"][-1]["name"] == "Others"
 
     def test_packaging_placeholders_until_f3b(self) -> None:
         org = OrganizationFactory()
@@ -276,3 +285,104 @@ class TestGetSheetIsolation:
         foreign = SpecificationSheetFactory(organization=b)
         with pytest.raises(SpecificationNotFound):
             get_sheet(organization=a, sheet_id=foreign.id)
+
+
+class TestResolveLimits:
+    def test_sheet_override_beats_org_default(self) -> None:
+        org = OrganizationFactory(
+            default_spec_limits={"total_aerobic": "≤1,000"}
+        )
+        sheet = SpecificationSheetFactory(
+            organization=org, limits_override={"total_aerobic": "≤100"}
+        )
+        rows = resolve_limits(sheet)
+        # Override wins; every other row falls back to canonical defaults.
+        total_aerobic = next(r for r in rows if r["slug"] == "total_aerobic")
+        assert total_aerobic["value"] == "≤100"
+
+    def test_org_default_beats_canonical_when_override_blank(self) -> None:
+        org = OrganizationFactory(
+            default_spec_limits={"total_aerobic": "≤1,000"}
+        )
+        sheet = SpecificationSheetFactory(organization=org)
+        rows = resolve_limits(sheet)
+        total_aerobic = next(r for r in rows if r["slug"] == "total_aerobic")
+        assert total_aerobic["value"] == "≤1,000"
+
+    def test_canonical_fallback_for_empty_org(self) -> None:
+        org = OrganizationFactory(default_spec_limits={})
+        sheet = SpecificationSheetFactory(organization=org)
+        rows = resolve_limits(sheet)
+        # PAH is sourced from canonical defaults when both overrides
+        # and org-level map are empty.
+        pah = next(r for r in rows if r["slug"] == "pah")
+        assert pah["value"] == "≤50μg/kg"
+
+
+class TestSectionVisibility:
+    def test_default_visibility_is_all_true(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        ctx = render_context(sheet)
+        assert ctx["visibility"]["actives"] is True
+        assert ctx["visibility"]["packaging_specification"] is True
+
+    def test_toggle_writes_and_survives_round_trip(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        set_section_visibility(
+            sheet=sheet,
+            actor=org.created_by,
+            visibility={"amino_acids": False, "ingredients": False},
+        )
+        sheet.refresh_from_db()
+        assert sheet.section_visibility == {
+            "amino_acids": False,
+            "ingredients": False,
+        }
+        ctx = render_context(sheet)
+        assert ctx["visibility"]["amino_acids"] is False
+        # Untouched sections still render as visible.
+        assert ctx["visibility"]["nutrition"] is True
+
+    def test_partial_toggle_does_not_reset_other_sections(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            section_visibility={"amino_acids": False},
+        )
+        set_section_visibility(
+            sheet=sheet,
+            actor=org.created_by,
+            visibility={"ingredients": False},
+        )
+        sheet.refresh_from_db()
+        assert sheet.section_visibility == {
+            "amino_acids": False,
+            "ingredients": False,
+        }
+
+    def test_unknown_slug_silently_dropped(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        set_section_visibility(
+            sheet=sheet,
+            actor=org.created_by,
+            visibility={"bogus_section": False},
+        )
+        sheet.refresh_from_db()
+        assert sheet.section_visibility == {}
+
+
+class TestWatermarkDecision:
+    @pytest.mark.parametrize(
+        "state", ["draft", "in_review", "rejected"]
+    )
+    def test_non_final_states_watermark(self, state: str) -> None:
+        assert show_watermark_for(state) is True
+
+    @pytest.mark.parametrize(
+        "state", ["approved", "sent", "accepted"]
+    )
+    def test_final_states_do_not_watermark(self, state: str) -> None:
+        assert show_watermark_for(state) is False

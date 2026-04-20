@@ -32,6 +32,8 @@ from apps.formulations.services import (
     InvalidDosageForm,
     InvalidTabletSize,
     RawMaterialNotInOrg,
+    SalesPersonNotMember,
+    assign_sales_person,
     compute_formulation_totals,
     create_formulation,
     get_formulation,
@@ -237,6 +239,70 @@ class FormulationDetailView(APIView):
             before=before,
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FormulationSalesPersonView(APIView):
+    """``PUT`` ``/.../formulations/<id>/sales-person/``.
+
+    Dedicated endpoint so the capability check is unambiguous: only
+    callers with ``formulations.assign_sales_person`` can hit this
+    URL, regardless of whether they also hold the project ``edit``
+    grant. The body accepts ``{"user_id": "<uuid>" | null}``; a
+    ``null`` clears the current assignment.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.ASSIGN_SALES_PERSON
+
+    def put(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        raw_user_id = payload.get("user_id", object())
+        if raw_user_id is object():
+            return Response(
+                {"user_id": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        sales_person = None
+        if raw_user_id is not None:
+            from django.contrib.auth import get_user_model
+
+            User = get_user_model()
+            sales_person = User.objects.filter(id=raw_user_id).first()
+            if sales_person is None:
+                # Treat an unresolved user UUID identically to a
+                # cross-tenant user — don't leak existence through
+                # a distinct error code.
+                return Response(
+                    {"user_id": ["sales_person_not_member"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            assign_sales_person(
+                formulation=formulation,
+                sales_person=sales_person,
+                actor=request.user,
+            )
+        except SalesPersonNotMember:
+            return Response(
+                {"user_id": ["sales_person_not_member"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            FormulationReadSerializer(formulation).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class FormulationLinesView(APIView):

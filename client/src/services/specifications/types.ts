@@ -118,7 +118,25 @@ export interface CreateSpecificationRequestDto {
 
 export type UpdateSpecificationRequestDto = Partial<
   Omit<CreateSpecificationRequestDto, "formulation_version_id">
->;
+> & {
+  readonly unit_quantity?: string;
+  readonly food_contact_status?: string;
+  readonly shelf_life?: string;
+  readonly storage_conditions?: string;
+  /** Per-sheet override ``{slug: value}`` for the microbial / PAH /
+   *  heavy-metal block. Empty or unset falls back to the org default. */
+  readonly limits_override?: Readonly<Record<string, string>>;
+};
+
+/** Visibility / ordering write. Either field is optional:
+ *  - ``visibility`` is a partial ``{slug: bool}`` — omitted keys are
+ *    left untouched on the stored map.
+ *  - ``order`` is a full top-down list of slugs. Unknown slugs are
+ *    dropped; missing slugs are backfilled at render time. */
+export interface UpdateVisibilityRequestDto {
+  readonly visibility?: Readonly<Record<string, boolean>>;
+  readonly order?: readonly string[];
+}
 
 export interface TransitionStatusRequestDto {
   readonly status: SpecificationStatus;
@@ -253,11 +271,26 @@ export interface RenderedSheetContext {
     readonly bottle_pouch_tub: string;
     readonly label_size: string;
     readonly antitemper: string;
-    readonly unit_quantity: number | null;
+    readonly unit_quantity: number | string | null;
+    readonly food_contact_status: string;
+    readonly shelf_life: string;
+    readonly storage_conditions: string;
   };
   readonly limits: readonly {
+    readonly slug: string;
     readonly name: string;
     readonly value: string;
   }[];
   readonly weight_uniformity: string;
+  /** Per-section on/off map. Keys match the backend's ``SECTION_SLUGS``
+   *  tuple; missing keys are treated as visible so pre-feature sheets
+   *  keep rendering in full. */
+  readonly visibility: Readonly<Record<string, boolean>>;
+  /** Effective render order of section slugs, top-down. Always
+   *  includes every known section — the server backfills any slugs
+   *  missing from the sheet's stored override before sending. */
+  readonly section_order: readonly string[];
+  /** ``true`` when the sheet is in a non-final status — the renderer
+   *  overlays a diagonal ``DRAFT`` stamp across every page. */
+  readonly watermark: boolean;
 }

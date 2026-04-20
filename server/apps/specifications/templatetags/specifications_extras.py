@@ -79,6 +79,55 @@ def compliance_label(status: Any) -> str:
 
 
 @register.filter
+def get_item(mapping: Any, key: Any) -> Any:
+    """Dict-style lookup usable from a Django template.
+
+    Django's template language has no literal subscript syntax, so the
+    ``visibility|get_item:slug`` idiom bridges that gap for the
+    customer-facing sheet renderer that walks an ordered list of
+    section slugs and consults a ``{slug: bool}`` visibility dict.
+    Falls back to ``None`` on anything that is not a mapping or lacks
+    the key. The visibility dict is always backfilled server-side so
+    every known slug has a bool, making ``None`` mean "unknown slug"
+    — the template's truthy check then correctly skips rendering
+    that section.
+    """
+
+    if mapping is None:
+        return None
+    try:
+        return mapping.get(key)
+    except AttributeError:
+        try:
+            return mapping[key]
+        except (KeyError, TypeError):
+            return None
+
+
+@register.filter
+def pad_to_rows(current: Any, total: int) -> range:
+    """Emit a ``range`` of the blank rows required to reach ``total``.
+
+    The reference spec sheet reserves a fixed-height actives table
+    that always fills the page — when the formulation has fewer rows
+    than the target, we pad with dash-filled placeholder rows so the
+    page layout stays stable across deliverables. Templates iterate
+    the returned range to render the placeholders.
+    """
+
+    try:
+        length = len(current or [])
+    except TypeError:
+        length = 0
+    try:
+        target = int(total)
+    except (TypeError, ValueError):
+        return range(0)
+    gap = target - length
+    return range(gap) if gap > 0 else range(0)
+
+
+@register.filter
 def non_active_entries(entries: Iterable[dict]) -> list[dict]:
     """Return only excipient / shell entries from the declaration list.
 

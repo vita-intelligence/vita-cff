@@ -15,6 +15,7 @@ import type {
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
+  UpdateVisibilityRequestDto,
 } from "./types";
 
 export interface FetchSpecificationsPageArgs {
@@ -131,6 +132,23 @@ export async function setSpecificationPackaging(
 ): Promise<SpecificationSheetDto> {
   const { data } = await apiClient.post<SpecificationSheetDto>(
     specificationsEndpoints.packaging(orgId, sheetId),
+    payload,
+  );
+  return data;
+}
+
+/**
+ * Write per-section visibility flags. Returns the full render-context
+ * so the UI can repaint in place; the response mirrors what
+ * ``GET /render/`` would produce after the write.
+ */
+export async function setSpecificationVisibility(
+  orgId: string,
+  sheetId: string,
+  payload: UpdateVisibilityRequestDto,
+): Promise<RenderedSheetContext> {
+  const { data } = await apiClient.put<RenderedSheetContext>(
+    specificationsEndpoints.visibility(orgId, sheetId),
     payload,
   );
   return data;

@@ -26,6 +26,7 @@ import {
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
   setSpecificationPackaging,
+  setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
 } from "./api";
@@ -39,6 +40,7 @@ import type {
   SpecificationSheetDto,
   TransitionStatusRequestDto,
   UpdateSpecificationRequestDto,
+  UpdateVisibilityRequestDto,
 } from "./types";
 
 export const specificationsQueryKeys = {
@@ -105,10 +107,12 @@ export function useSpecification(
 export function useRenderedSpecification(
   orgId: string,
   sheetId: string,
+  options: { readonly initialData?: RenderedSheetContext } = {},
 ): UseQueryResult<RenderedSheetContext, ApiError> {
   return useQuery<RenderedSheetContext, ApiError>({
     queryKey: specificationsQueryKeys.render(orgId, sheetId),
     queryFn: () => fetchRenderedSpecification(orgId, sheetId),
+    initialData: options.initialData,
   });
 }
 
@@ -271,6 +275,32 @@ export function useRevokeSpecificationPublicLink(
     },
   });
 }
+
+export function useSetSpecificationVisibility(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<
+  RenderedSheetContext,
+  ApiError,
+  UpdateVisibilityRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    RenderedSheetContext,
+    ApiError,
+    UpdateVisibilityRequestDto
+  >({
+    mutationFn: (payload) =>
+      setSpecificationVisibility(orgId, sheetId, payload),
+    onSuccess: (rendered) => {
+      queryClient.setQueryData(
+        specificationsQueryKeys.render(orgId, sheetId),
+        rendered,
+      );
+    },
+  });
+}
+
 
 export function useTransitionSpecificationStatus(
   orgId: string,

@@ -26,6 +26,7 @@ import {
   canComputeMaterial,
   computeAllergens,
   computeCompliance,
+  computeNrvPercent,
   computeTotals,
   explainLine,
   useFormulationVersions,
@@ -108,6 +109,8 @@ function attributesFromLine(
     organic: (extra.organic as string | null | undefined) ?? null,
     halal: (extra.halal as string | null | undefined) ?? null,
     kosher: (extra.kosher as string | null | undefined) ?? null,
+    nrv_mg:
+      (extra.nrv_mg as string | number | null | undefined) ?? null,
   };
 }
 
@@ -128,6 +131,7 @@ function attributesFromItem(item: ItemDto): ItemAttributesForMath {
     organic: pickStr("organic"),
     halal: pickStr("halal"),
     kosher: pickStr("kosher"),
+    nrv_mg: pickNum("nrv_mg"),
   };
 }
 
@@ -322,9 +326,10 @@ export function FormulationBuilder({
   );
 
   const updateLineClaim = useCallback((key: string, value: string) => {
+    const sanitized = sanitizeDecimalInput(value);
     setLines((prev) =>
       prev.map((line) =>
-        line.key === key ? { ...line, label_claim_mg: value } : line,
+        line.key === key ? { ...line, label_claim_mg: sanitized } : line,
       ),
     );
   }, []);
@@ -718,21 +723,25 @@ export function FormulationBuilder({
               {tFormulations("builder.picker_none_added")}
             </p>
           ) : (
-            <table className="mt-4 w-full border-collapse">
-              <thead>
-                <tr className="border-b border-ink-100">
-                  <th className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
-                    {tFormulations("columns.name")}
-                  </th>
-                  <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
-                    {tFormulations("builder.label_claim_column")}
-                  </th>
-                  <th className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
-                    {tFormulations("builder.mg_per_serving_column")}
-                  </th>
-                  <th className="px-3 py-2" />
-                </tr>
-              </thead>
+            <div className="mt-4 overflow-x-auto">
+              <table className="w-full border-collapse">
+                <thead>
+                  <tr className="border-b border-ink-100">
+                    <th className="px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
+                      {tFormulations("columns.name")}
+                    </th>
+                    <th className="px-2 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                      {tFormulations("builder.label_claim_column")}
+                    </th>
+                    <th className="px-2 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                      {tFormulations("builder.mg_per_serving_column")}
+                    </th>
+                    <th className="px-2 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
+                      {tFormulations("builder.nrv_column")}
+                    </th>
+                    <th className="px-2 py-2" />
+                  </tr>
+                </thead>
               <tbody>
                 {lines.map((line) => {
                   const computed = liveTotals.lineValues.get(line.key) ?? null;
@@ -775,20 +784,19 @@ export function FormulationBuilder({
                           </div>
                         </div>
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="px-2 py-3 text-right">
                         <input
-                          type="number"
-                          min={0}
-                          step="0.0001"
+                          type="text"
+                          inputMode="decimal"
                           value={line.label_claim_mg}
                           disabled={!canWrite}
                           onChange={(e) =>
                             updateLineClaim(line.key, e.target.value)
                           }
-                          className="w-32 rounded-xl bg-ink-0 px-2 py-1 text-right text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                          className="w-20 rounded-xl bg-ink-0 px-2 py-1 text-right text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                         />
                       </td>
-                      <td className="px-3 py-3 text-right text-xs">
+                      <td className="px-2 py-3 text-right text-xs">
                         <div>
                           {computed !== null
                             ? numberFormatter.format(computed)
@@ -803,15 +811,36 @@ export function FormulationBuilder({
                           </div>
                         ) : null}
                       </td>
-                      <td className="px-3 py-3 text-right">
+                      <td className="px-2 py-3 text-right text-xs tabular-nums text-ink-700">
+                        {(() => {
+                          const nrv = computeNrvPercent(
+                            line.item_attributes,
+                            Number.parseFloat(line.label_claim_mg || "0"),
+                          );
+                          if (nrv === null) return "—";
+                          // Integer display with a space thousands
+                          // separator so the number is unambiguous
+                          // against our ``.``-as-decimal convention.
+                          // ``90 909%`` reads as "ninety thousand",
+                          // never as "ninety point nine zero nine".
+                          const rounded = Math.round(nrv);
+                          const grouped = String(rounded).replace(
+                            /\B(?=(\d{3})+(?!\d))/g,
+                            "\u202F",
+                          );
+                          return `${grouped}%`;
+                        })()}
+                      </td>
+                      <td className="px-2 py-3 text-right">
                         {canWrite ? (
                           <button
                             type="button"
                             onClick={() => removeLine(line.key)}
-                            className="inline-flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-danger"
+                            aria-label={tFormulations("builder.remove_line")}
+                            title={tFormulations("builder.remove_line")}
+                            className="inline-flex items-center justify-center rounded-md p-1.5 text-ink-500 hover:bg-ink-50 hover:text-danger"
                           >
                             <Trash2 className="h-4 w-4" />
-                            {tFormulations("builder.remove_line")}
                           </button>
                         ) : null}
                       </td>
@@ -820,6 +849,7 @@ export function FormulationBuilder({
                 })}
               </tbody>
             </table>
+            </div>
           )}
         </div>
 
@@ -1418,4 +1448,20 @@ function extractErrorMessage(
     }
   }
   return tErrors("generic");
+}
+
+
+function sanitizeDecimalInput(raw: string): string {
+  let value = raw.replace(/,/g, ".").replace(/[^0-9.]/g, "");
+  const firstDot = value.indexOf(".");
+  if (firstDot !== -1) {
+    value =
+      value.slice(0, firstDot + 1) +
+      value.slice(firstDot + 1).replace(/\./g, "");
+  }
+  const dot = value.indexOf(".");
+  if (dot !== -1 && value.length - dot - 1 > 2) {
+    value = value.slice(0, dot + 3);
+  }
+  return value;
 }

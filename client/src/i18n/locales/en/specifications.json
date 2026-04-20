@@ -52,7 +52,14 @@
     "share_link": "Share link",
     "edit_packaging": "Edit packaging",
     "delete": "Delete sheet",
-    "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected."
+    "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected.",
+    "visibility": {
+      "button": "Customer view",
+      "header": "Customer-visible sections",
+      "hint": "Show, hide, or reorder any printable block. Use the arrows to change the order the customer sees.",
+      "move_up": "Move section up",
+      "move_down": "Move section down"
+    }
   },
   "packaging": {
     "title": "Pick packaging components",
@@ -119,23 +126,29 @@
       "bottle_pouch_tub": "Bottle/Pouch/Tub",
       "label_size": "Label Size",
       "antitemper": "Antitemper",
-      "unit_quantity": "Unit Quantity"
+      "unit_quantity": "Unit Quantity",
+      "food_contact_status": "Food Contact Status",
+      "shelf_life": "Shelf Life",
+      "storage_conditions": "Storage Condition on Pack"
     },
     "columns": {
-      "active_ingredient": "Active Ingredient",
-      "claim_per_serving": "Claim per serving (mg)",
+      "active_ingredient": "Active Ingredients",
+      "claim_per_serving": "Claim per Serving (mg)",
       "nrv": "%NRV",
-      "per_100g": "Per 100g",
+      "per_100g": "Per 100g (g)",
       "per_serving": "Per Serving",
       "amino_acid": "Amino Acid",
       "amino_per_100g": "Per 100g (g)",
-      "amino_per_serving": "Per Serving (g)"
+      "amino_per_serving": "Per Serving (g)",
+      "ingredients": "Ingredients"
     },
     "pending_nutrition": "Nutrition data pending catalogue fill — values shown as zero until every raw material has its nutrition columns populated.",
     "nutrition_partial_hint": "Based on {count} of {total} ingredients with catalogue data. Missing values contribute zero.",
     "signature": {
       "product_manager": "Product Manager / Customer",
+      "prepared_by": "Prepared By",
       "director": "Director / Commercial Director",
+      "customer": "Customer",
       "sign_date": "Date",
       "draft_watermark": "DRAFT — not yet approved"
     },

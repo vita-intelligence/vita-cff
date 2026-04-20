@@ -140,6 +140,7 @@ function CompactHeader({
         organization={organization}
         formulationId={overview.id}
         projectStatus={overview.project_status}
+        salesPerson={overview.sales_person}
       />
     </header>
   );

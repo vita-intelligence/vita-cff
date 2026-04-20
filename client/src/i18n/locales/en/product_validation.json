@@ -51,7 +51,7 @@
     "tolerance": "Tolerance",
     "allowed_range": "Allowed range",
     "samples": "Samples (mg)",
-    "samples_hint": "Enter each measurement separated by comma or newline.",
+    "samples_hint": "One row per capsule/tablet weighed. Press Enter to add the next sample.",
     "n": "N samples",
     "mean": "Mean",
     "stdev": "Std dev",
@@ -64,7 +64,13 @@
     "minutes": "min",
     "worst": "Worst case",
     "samples": "Times (minutes)",
-    "samples_hint": "One measurement per capsule/tablet tested — per USP <701>, typically 6 units."
+    "samples_hint": "One row per capsule/tablet tested — per USP <701>, typically 6 units."
+  },
+  "samples": {
+    "add": "Add sample",
+    "empty": "No samples recorded yet — click \"Add sample\" to start.",
+    "nth": "Sample {n}",
+    "remove": "Remove sample"
   },
   "organoleptic": {
     "title": "Organoleptic test",

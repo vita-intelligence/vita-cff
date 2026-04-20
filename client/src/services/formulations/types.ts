@@ -129,6 +129,12 @@ export interface FormulationLineDto {
   readonly notes: string;
 }
 
+export interface SalesPersonDto {
+  readonly id: string;
+  readonly name: string;
+  readonly email: string;
+}
+
 export interface FormulationDto {
   readonly id: string;
   readonly code: string;
@@ -144,9 +150,14 @@ export interface FormulationDto {
   readonly appearance: string;
   readonly disintegration_spec: string;
   readonly project_status: ProjectStatus;
+  readonly sales_person: SalesPersonDto | null;
   readonly lines: readonly FormulationLineDto[];
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+export interface AssignSalesPersonRequestDto {
+  readonly user_id: string | null;
 }
 
 export interface CreateFormulationRequestDto {
@@ -295,6 +306,7 @@ export interface ProjectOverviewDto {
   readonly updated_at: string;
   readonly created_at: string;
   readonly owner_name: string;
+  readonly sales_person: SalesPersonDto | null;
   readonly latest_version: number | null;
   readonly latest_version_label: string;
   readonly latest_version_saved_at: string | null;

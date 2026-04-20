@@ -10,10 +10,13 @@ import {
   PlayCircle,
   Plus,
   Trash2,
+  UserRound,
+  X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import {
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -21,11 +24,14 @@ import {
 
 import { useRouter } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
+import { useMemberships } from "@/services/members";
 import type { OrganizationDto } from "@/services/organizations/types";
 import {
+  useAssignSalesPerson,
   useDeleteFormulation,
   useUpdateFormulation,
   type ProjectStatus,
+  type SalesPersonDto,
 } from "@/services/formulations";
 
 
@@ -54,18 +60,32 @@ export function ProjectHeaderActions({
   organization,
   formulationId,
   projectStatus,
+  salesPerson,
 }: {
   organization: OrganizationDto;
   formulationId: string;
   projectStatus: ProjectStatus;
+  salesPerson: SalesPersonDto | null;
 }) {
   const tProject = useTranslations("project_overview");
 
   const canEdit = hasFlatCapability(organization, "formulations", "edit");
   const canDelete = hasFlatCapability(organization, "formulations", "delete");
+  const canAssignSales = hasFlatCapability(
+    organization,
+    "formulations",
+    "assign_sales_person",
+  );
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
+      <SalesPersonMenu
+        orgId={organization.id}
+        formulationId={formulationId}
+        salesPerson={salesPerson}
+        canAssign={canAssignSales}
+        tProject={tProject}
+      />
       <ProjectStatusMenu
         orgId={organization.id}
         formulationId={formulationId}
@@ -188,6 +208,182 @@ function ProjectStatusMenu({
               </button>
             );
           })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Sales person (commercial owner of the project)
+// ---------------------------------------------------------------------------
+
+
+function SalesPersonMenu({
+  orgId,
+  formulationId,
+  salesPerson,
+  canAssign,
+  tProject,
+}: {
+  orgId: string;
+  formulationId: string;
+  salesPerson: SalesPersonDto | null;
+  canAssign: boolean;
+  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useClickOutside(containerRef, () => setOpen(false));
+
+  // Fetch members on demand — there is no point holding the full
+  // roster in cache for readers who cannot assign. The hook gates
+  // itself on ``canAssign`` via the ``enabled`` field inside
+  // ``useMemberships``; we mirror that here for safety.
+  const membershipsQuery = useMemberships(orgId, { enabled: open && canAssign });
+
+  const assign = useAssignSalesPerson(orgId, formulationId);
+
+  // Sort members alphabetically by display name so the same person
+  // is always in the same slot — users build muscle memory against
+  // a stable list. Duplicate emails are not possible (the backend
+  // enforces unique membership per user), but we still dedupe by
+  // user id to harden against transient duplicates from concurrent
+  // query refetches.
+  const members = useMemo(() => {
+    const rows = membershipsQuery.data ?? [];
+    const seen = new Set<string>();
+    const out: { id: string; name: string; email: string }[] = [];
+    for (const row of rows) {
+      if (seen.has(row.user.id)) continue;
+      seen.add(row.user.id);
+      const name =
+        (row.user.full_name && row.user.full_name.trim()) || row.user.email;
+      out.push({ id: row.user.id, name, email: row.user.email });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }, [membershipsQuery.data]);
+
+  const pillLabel = salesPerson
+    ? salesPerson.name
+    : tProject("sales_person.unassigned");
+
+  const pillClasses = salesPerson
+    ? "bg-orange-50 text-orange-800 ring-orange-200"
+    : "bg-ink-50 text-ink-600 ring-ink-200";
+
+  // Read-only pill — no dropdown for users who lack the capability.
+  if (!canAssign) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${pillClasses}`}
+        title={
+          salesPerson
+            ? `${tProject("sales_person.label")}: ${salesPerson.name}`
+            : tProject("sales_person.unassigned")
+        }
+      >
+        <UserRound className="h-3.5 w-3.5" />
+        {pillLabel}
+      </span>
+    );
+  }
+
+  const handleAssign = async (userId: string | null) => {
+    setOpen(false);
+    if (userId === (salesPerson?.id ?? null)) return;
+    try {
+      await assign.mutateAsync({ user_id: userId });
+      router.refresh();
+    } catch {
+      // Error surfaces via the mutation; menu is already closed.
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={assign.isPending}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-opacity hover:opacity-90 disabled:opacity-60 ${pillClasses}`}
+      >
+        <UserRound className="h-3.5 w-3.5" />
+        {pillLabel}
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-2 flex w-72 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
+        >
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              {tProject("sales_person.label")}
+            </span>
+            {salesPerson ? (
+              <button
+                type="button"
+                onClick={() => handleAssign(null)}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-ink-500 hover:bg-ink-50 hover:text-danger"
+              >
+                <X className="h-3 w-3" />
+                {tProject("sales_person.clear")}
+              </button>
+            ) : null}
+          </div>
+          {membershipsQuery.isLoading ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProject("sales_person.loading")}
+            </p>
+          ) : members.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProject("sales_person.empty")}
+            </p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {members.map((member) => {
+                const isActive = member.id === salesPerson?.id;
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    disabled={assign.isPending}
+                    onClick={() => handleAssign(member.id)}
+                    className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-ink-50 disabled:opacity-60 ${
+                      isActive ? "bg-orange-50/60" : ""
+                    }`}
+                  >
+                    <UserRound className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" />
+                    <span className="flex min-w-0 flex-col">
+                      <span
+                        className={`truncate text-sm ${
+                          isActive
+                            ? "font-semibold text-ink-1000"
+                            : "text-ink-800"
+                        }`}
+                      >
+                        {member.name}
+                      </span>
+                      <span className="truncate text-[11px] text-ink-500">
+                        {member.email}
+                      </span>
+                    </span>
+                    {isActive ? (
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       ) : null}
     </div>

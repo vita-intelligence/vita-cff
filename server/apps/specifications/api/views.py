@@ -38,6 +38,8 @@ from apps.specifications.services import (
     revoke_public_token,
     rotate_public_token,
     set_packaging,
+    set_section_order,
+    set_section_visibility,
     transition_status,
     update_sheet,
 )
@@ -276,6 +278,73 @@ class SpecificationPdfView(APIView):
             f'{disposition}; filename="{filename}"'
         )
         return response
+
+
+class SpecificationVisibilityView(APIView):
+    """``PUT`` ``/.../specifications/<id>/visibility/``.
+
+    Write partial visibility toggles for the customer-facing sheet.
+    Deliberately gated on ``formulations.manage_spec_visibility``
+    (separate from ``edit``) so commercial/QA leads can hide sensitive
+    sections without needing write access to the sheet's content.
+    """
+
+    permission_classes = (HasSpecificationsPermission,)
+    required_capability = FormulationsCapability.MANAGE_SPEC_VISIBILITY
+
+    def put(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> Response:
+        try:
+            sheet = get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        raw_visibility = payload.get("visibility")
+        raw_order = payload.get("order")
+        if raw_visibility is None and raw_order is None:
+            return Response(
+                {"visibility": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updated = sheet
+        if raw_visibility is not None:
+            if not isinstance(raw_visibility, dict):
+                return Response(
+                    {"visibility": ["invalid"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Coerce defensively: JSON booleans only. Strings like
+            # ``"false"`` would silently coerce to ``True`` otherwise.
+            visibility: dict[str, bool] = {}
+            for slug, value in raw_visibility.items():
+                if isinstance(value, bool):
+                    visibility[slug] = value
+                elif isinstance(value, (int, float)):
+                    visibility[slug] = bool(value)
+            updated = set_section_visibility(
+                sheet=updated,
+                actor=request.user,
+                visibility=visibility,
+            )
+
+        if raw_order is not None:
+            if not isinstance(raw_order, list):
+                return Response(
+                    {"order": ["invalid"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            updated = set_section_order(
+                sheet=updated,
+                actor=request.user,
+                order=raw_order,
+            )
+
+        return Response(render_context(updated), status=status.HTTP_200_OK)
 
 
 class SpecificationPackagingView(APIView):

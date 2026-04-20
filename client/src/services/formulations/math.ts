@@ -80,6 +80,10 @@ export interface ItemAttributesForMath {
   //: :func:`computeAllergens`.
   readonly allergen?: string | null;
   readonly allergen_source?: string | null;
+  //: Nutrient Reference Value in mg (EU). Stored loosely because the
+  //: source spreadsheet mixes numerics with "N/A" cells — unparseable
+  //: values surface as ``null`` via :func:`computeNrvPercent`.
+  readonly nrv_mg?: string | number | null;
 }
 
 export interface ComputeLineInput {
@@ -156,6 +160,26 @@ function isBotanical(attrs: ItemAttributesForMath): boolean {
   const type = attrs.type;
   if (typeof type !== "string") return false;
   return type.trim().toLowerCase() === "botanical";
+}
+
+
+/**
+ * Nutrient Reference Value percentage for a single line.
+ *
+ * Returns ``(label_claim_mg / nrv_mg) * 100`` when the raw material
+ * carries a parseable ``nrv_mg`` attribute. Surfaces ``null`` for
+ * every edge case — missing attribute, ``"N/A"`` sentinel, zero /
+ * negative NRV — so the caller can render a ``—`` instead of a
+ * misleading ``Infinity`` or ``0``.
+ */
+export function computeNrvPercent(
+  attributes: ItemAttributesForMath,
+  labelClaimMg: number,
+): number | null {
+  if (!Number.isFinite(labelClaimMg) || labelClaimMg <= 0) return null;
+  const nrv = coerceFloat(attributes.nrv_mg);
+  if (nrv === null || nrv <= 0) return null;
+  return (labelClaimMg / nrv) * 100;
 }
 
 // ---------------------------------------------------------------------------

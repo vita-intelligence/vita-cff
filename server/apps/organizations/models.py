@@ -43,6 +43,34 @@ class Organization(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(_("name"), max_length=150)
+    # Pre-billing access gate. New workspaces default to inactive and
+    # must be flipped on by a platform admin (Django admin or the
+    # ``activate_organization`` management command) before members can
+    # use the app. When the real billing integration lands, the field
+    # will be driven by subscription state instead of a manual toggle —
+    # the capability checks stay identical so downstream code does not
+    # change.
+    is_active = models.BooleanField(
+        _("is active"),
+        default=False,
+        help_text=_(
+            "Members can only use the workspace when this is enabled. "
+            "Superusers always bypass the check."
+        ),
+    )
+    default_spec_limits = models.JSONField(
+        _("default spec limits"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Organization-level defaults for the spec sheet's "
+            "``Microbiological, PAH, Pesticides and Heavy Metal`` "
+            "block. Keys: ``total_aerobic``, ``total_yeast``, "
+            "``e_coli``, ``salmonella``, ``pah``, ``heavy_metal``, "
+            "``pesticides``, ``others``. Individual sheets can "
+            "override via :attr:`SpecificationSheet.limits_override`."
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

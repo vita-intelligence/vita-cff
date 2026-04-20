@@ -592,3 +592,80 @@ def import_items_from_xlsx(
             )
 
     return result
+
+
+def build_import_template(*, catalogue: Catalogue) -> bytes:
+    """Generate a pre-headed ``.xlsx`` template for this catalogue's import.
+
+    The template is a live reflection of the current schema: builtin
+    fields in a fixed order, followed by every active attribute
+    definition in its configured ``display_order``. Header names match
+    the strings :func:`import_items_from_xlsx` accepts verbatim — the
+    importer does case-insensitive / space-to-underscore
+    normalisation, so both labels ("Base price") and keys
+    ("base_price") round-trip cleanly.
+
+    A secondary "Allowed values" sheet is appended when the catalogue
+    exposes any select-type attributes, listing each option so the
+    operator knows exactly which strings the validator will accept.
+    """
+
+    import openpyxl  # local import — dep is only needed on this path
+    from io import BytesIO
+
+    from openpyxl.styles import Font, PatternFill
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Items"
+
+    definitions = list(
+        AttributeDefinition.objects.filter(
+            catalogue=catalogue,
+            is_archived=False,
+        ).order_by("display_order", "label")
+    )
+
+    headers: list[str] = list(BUILTIN_IMPORT_KEYS) + [d.label for d in definitions]
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="1F2937")
+    for idx, header in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=idx, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        sheet.column_dimensions[cell.column_letter].width = min(
+            max(len(header) + 4, 14), 36
+        )
+    sheet.freeze_panes = "A2"
+
+    select_types = {DataType.SINGLE_SELECT, DataType.MULTI_SELECT}
+    select_definitions = [d for d in definitions if d.data_type in select_types]
+    if select_definitions:
+        hints = workbook.create_sheet("Allowed values")
+        hints.append(["Column", "Type", "Allowed values"])
+        for cell in hints[1]:
+            cell.font = Font(bold=True)
+        for definition in select_definitions:
+            options = definition.options or []
+            labels: list[str] = []
+            for option in options:
+                if isinstance(option, dict):
+                    label = option.get("label") or option.get("value") or ""
+                    if label:
+                        labels.append(str(label))
+                else:
+                    labels.append(str(option))
+            kind = (
+                "multi-select"
+                if definition.data_type == DataType.MULTI_SELECT
+                else "single-select"
+            )
+            hints.append([definition.label, kind, ", ".join(labels)])
+        hints.column_dimensions["A"].width = 30
+        hints.column_dimensions["B"].width = 18
+        hints.column_dimensions["C"].width = 60
+
+    buffer = BytesIO()
+    workbook.save(buffer)
+    return buffer.getvalue()

@@ -24,12 +24,17 @@ from rest_framework.request import Request
 from rest_framework.views import APIView
 
 from apps.catalogues.models import Catalogue
+from apps.organizations.api.errors import OrganizationInactive
 from apps.organizations.models import Organization
 from apps.organizations.modules import (
     CATALOGUES_MODULE,
     CataloguesCapability,
 )
-from apps.organizations.services import get_membership, has_capability
+from apps.organizations.services import (
+    get_membership,
+    has_capability,
+    is_organization_accessible,
+)
 
 
 class HasCataloguePermission(IsAuthenticated):
@@ -58,6 +63,13 @@ class HasCataloguePermission(IsAuthenticated):
         membership = get_membership(request.user, organization)
         if membership is None:
             raise NotFound()
+
+        # Gate the workspace on the pre-billing activation flag. This
+        # runs *after* the membership check so non-members still get
+        # a ``404`` (they cannot distinguish "org inactive" from
+        # "org not yours") while members get a specific 403.
+        if not is_organization_accessible(organization, request.user):
+            raise OrganizationInactive()
 
         slug = view.kwargs.get("slug")
         catalogue = Catalogue.objects.filter(
@@ -100,6 +112,9 @@ class HasCatalogueListPermission(IsAuthenticated):
         if membership is None:
             raise NotFound()
         view.membership = membership
+
+        if not is_organization_accessible(organization, request.user):
+            raise OrganizationInactive()
 
         if request.method == "POST":
             # Only owners can create new catalogues. Once custom

@@ -6,6 +6,7 @@ import { apiClient } from "@/lib/api";
 
 import { formulationsEndpoints } from "./endpoints";
 import type {
+  AssignSalesPersonRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
   FormulationTotalsDto,
@@ -159,6 +160,25 @@ export async function fetchProjectOverview(
 ): Promise<ProjectOverviewDto> {
   const { data } = await apiClient.get<ProjectOverviewDto>(
     formulationsEndpoints.overview(orgId, formulationId),
+  );
+  return data;
+}
+
+/**
+ * Set or clear the project's commercial owner.
+ *
+ * ``user_id: null`` clears the assignment. The backend validates
+ * that the target user is a member of the same organization and
+ * returns a 400 with ``sales_person_not_member`` otherwise.
+ */
+export async function assignFormulationSalesPerson(
+  orgId: string,
+  formulationId: string,
+  payload: AssignSalesPersonRequestDto,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.put<FormulationDto>(
+    formulationsEndpoints.salesPerson(orgId, formulationId),
+    payload,
   );
   return data;
 }

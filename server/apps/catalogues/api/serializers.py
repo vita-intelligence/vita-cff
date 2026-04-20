@@ -99,7 +99,7 @@ class ItemWriteSerializer(serializers.ModelSerializer):
     """
 
     attributes = serializers.DictField(
-        child=serializers.JSONField(),
+        child=serializers.JSONField(allow_null=True),
         required=False,
     )
 

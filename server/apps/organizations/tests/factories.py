@@ -18,6 +18,10 @@ class OrganizationFactory(factory.django.DjangoModelFactory):
         skip_postgeneration_save = True
 
     name = factory.Sequence(lambda n: f"Org {n}")
+    # Factories default to active so the pre-billing gate stays invisible
+    # to the rest of the suite — tests that exercise the gate explicitly
+    # override to ``is_active=False``.
+    is_active = True
     created_by = factory.SubFactory(UserFactory)
 
     @factory.post_generation

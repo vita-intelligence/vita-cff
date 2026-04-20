@@ -66,6 +66,7 @@
     "picker_none_added": "No ingredients yet. Pick one on the left.",
     "label_claim_column": "Label claim (mg)",
     "mg_per_serving_column": "mg / serving",
+    "nrv_column": "% NRV",
     "remove_line": "Remove",
     "save_draft": "Save draft",
     "save_version": "Save version",

@@ -53,7 +53,7 @@ from apps.formulations.models import (
     FormulationLine,
     FormulationVersion,
 )
-from apps.organizations.models import Organization
+from apps.organizations.models import Membership, Organization
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +90,17 @@ class RawMaterialNotInOrg(Exception):
     organization's ``raw_materials`` catalogue."""
 
     code = "raw_material_not_in_org"
+
+
+class SalesPersonNotMember(Exception):
+    """Candidate user is not a member of the formulation's organization.
+
+    Guards against cross-tenant user references: an attacker who
+    guessed a valid user UUID from another tenant must not be able
+    to attach them to a project they do not belong to.
+    """
+
+    code = "sales_person_not_member"
 
 
 # ---------------------------------------------------------------------------
@@ -763,6 +774,52 @@ def _validate_dosage_form(value: str) -> None:
     valid = {form.value for form in DosageForm}
     if value not in valid:
         raise InvalidDosageForm()
+
+
+@transaction.atomic
+def assign_sales_person(
+    *,
+    formulation: Formulation,
+    sales_person: Any | None,
+    actor: Any,
+) -> Formulation:
+    """Set or clear the project's commercial owner.
+
+    * ``sales_person=None`` clears the assignment.
+    * A candidate must hold a :class:`Membership` on the same
+      organization as ``formulation``; otherwise
+      :class:`SalesPersonNotMember` fires so the view returns a 400.
+    * No-ops (assigning the same user already on the project) still
+      pass through the audit trail so duplicated writes remain
+      traceable — we intentionally keep the contract "every call
+      recorded" rather than introducing a silent short-circuit.
+
+    Authorization lives one layer up (the view asserts
+    ``formulations.assign_sales_person``). This function is purely
+    data integrity + auditing.
+    """
+
+    if sales_person is not None:
+        is_member = Membership.objects.filter(
+            user=sales_person,
+            organization=formulation.organization,
+        ).exists()
+        if not is_member:
+            raise SalesPersonNotMember()
+
+    before = snapshot(formulation)
+    formulation.sales_person = sales_person
+    formulation.updated_by = actor
+    formulation.save(update_fields=["sales_person", "updated_by", "updated_at"])
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.assign_sales_person",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
 
 
 # ---------------------------------------------------------------------------

@@ -130,6 +130,28 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
     total_weight_label = serializers.CharField(
         max_length=64, required=False, allow_blank=True
     )
+    unit_quantity = serializers.CharField(
+        max_length=64, required=False, allow_blank=True
+    )
+    food_contact_status = serializers.CharField(
+        max_length=200, required=False, allow_blank=True
+    )
+    shelf_life = serializers.CharField(
+        max_length=64, required=False, allow_blank=True
+    )
+    storage_conditions = serializers.CharField(
+        max_length=200, required=False, allow_blank=True
+    )
+    # Per-sheet ``{slug: value}`` override for the microbial / heavy
+    # metal block. Free-form strings — the UI surfaces a form so the
+    # admin does not have to memorise slug names; this field just
+    # enforces shape.
+    limits_override = serializers.DictField(
+        child=serializers.CharField(
+            max_length=120, allow_blank=True, trim_whitespace=False
+        ),
+        required=False,
+    )
 
 
 class SpecificationStatusSerializer(serializers.Serializer):
