@@ -17,9 +17,12 @@ import {
 import { useTranslations } from "next-intl";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
+import { CommentsPanel } from "@/components/comments";
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { translateCode } from "@/lib/errors/translate";
+import type { OrganizationDto } from "@/services/organizations/types";
 import {
   ALLOWED_TRANSITIONS,
   specificationsEndpoints,
@@ -94,6 +97,8 @@ export function SpecificationSheetView({
   canWrite,
   canAdmin,
   canManageVisibility,
+  organization,
+  currentUserId,
 }: {
   orgId: string;
   sheet: SpecificationSheetDto;
@@ -101,6 +106,8 @@ export function SpecificationSheetView({
   canWrite: boolean;
   canAdmin: boolean;
   canManageVisibility: boolean;
+  organization: OrganizationDto;
+  currentUserId: string;
 }) {
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
@@ -250,6 +257,33 @@ export function SpecificationSheetView({
       {/* The spec sheet itself                                         */}
       {/* ------------------------------------------------------------ */}
       <SpecSheetContent rendered={rendered} />
+
+      {/* ------------------------------------------------------------ */}
+      {/* Comments panel — org-only, hidden when printing               */}
+      {/* ------------------------------------------------------------ */}
+      <div className="print:hidden">
+        <CommentsPanel
+          orgId={orgId}
+          entityKind="specification"
+          entityId={sheet.id}
+          canRead={hasFlatCapability(
+            organization,
+            "formulations",
+            "comments_view",
+          )}
+          canWrite={hasFlatCapability(
+            organization,
+            "formulations",
+            "comments_write",
+          )}
+          canModerate={hasFlatCapability(
+            organization,
+            "formulations",
+            "comments_moderate",
+          )}
+          currentUserId={currentUserId}
+        />
+      </div>
     </div>
   );
 }
@@ -609,7 +643,7 @@ export function SpecSheetContent({
         <table className="w-full border-collapse border border-ink-1000 text-[11px]">
           <thead>
             <tr>
-              <DataTh>{tSpecs("sheet.columns.ingredients")}</DataTh>
+              <DataTh>{tSpecs("sheet.columns.excipients")}</DataTh>
             </tr>
           </thead>
           <tbody>

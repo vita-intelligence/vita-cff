@@ -3,8 +3,11 @@
 import { Button, Modal } from "@heroui/react";
 import {
   AlertTriangle,
+  Check,
   CheckCircle2,
   Clock,
+  Copy,
+  Link2,
   MailPlus,
   Pencil,
   RefreshCcw,
@@ -85,6 +88,12 @@ export function MembersTab({
   const [confirmRemove, setConfirmRemove] =
     useState<MembershipDto | null>(null);
   const [isInviting, setIsInviting] = useState(false);
+  // Owners keep losing pending-invite links — the dialog used to
+  // surface them only at creation time. Holding a selected invite
+  // here lets ``PendingInvitationsCard`` pop the same copy-link view
+  // on demand for any still-pending row.
+  const [showingLinkFor, setShowingLinkFor] =
+    useState<InvitationDto | null>(null);
 
   return (
     <section className="flex flex-col gap-6">
@@ -103,6 +112,7 @@ export function MembersTab({
         canInvite={canInvite}
         canRevoke={canRemove}
         onOpenInvite={() => setIsInviting(true)}
+        onCopyLink={(invite) => setShowingLinkFor(invite)}
       />
 
       <MembersListCard
@@ -138,6 +148,13 @@ export function MembersTab({
           modules={modules}
           catalogueSlugs={catalogueSlugs}
           onClose={() => setIsInviting(false)}
+        />
+      ) : null}
+
+      {showingLinkFor ? (
+        <InviteLinkDialog
+          invitation={showingLinkFor}
+          onClose={() => setShowingLinkFor(null)}
         />
       ) : null}
     </section>
@@ -297,12 +314,14 @@ function PendingInvitationsCard({
   canInvite,
   canRevoke,
   onOpenInvite,
+  onCopyLink,
 }: {
   invitations: readonly InvitationDto[];
   orgId: string;
   canInvite: boolean;
   canRevoke: boolean;
   onOpenInvite: () => void;
+  onCopyLink: (invite: InvitationDto) => void;
 }) {
   const tSettings = useTranslations("settings");
 
@@ -348,6 +367,7 @@ function PendingInvitationsCard({
               orgId={orgId}
               canInvite={canInvite}
               canRevoke={canRevoke}
+              onCopyLink={() => onCopyLink(invite)}
             />
           ))}
         </ul>
@@ -362,11 +382,13 @@ function InvitationRow({
   orgId,
   canInvite,
   canRevoke,
+  onCopyLink,
 }: {
   invite: InvitationDto;
   orgId: string;
   canInvite: boolean;
   canRevoke: boolean;
+  onCopyLink: () => void;
 }) {
   const tSettings = useTranslations("settings");
   const tErrors = useTranslations("errors");
@@ -415,6 +437,20 @@ function InvitationRow({
       </div>
       <div className="flex items-center gap-2">
         <StatusChip status={invite.status} />
+        {canInvite && invite.status === "pending" ? (
+          <button
+            type="button"
+            onClick={onCopyLink}
+            aria-label={tSettings("members.action_copy_link")}
+            title={tSettings("members.action_copy_link")}
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+          >
+            <Link2 className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">
+              {tSettings("members.action_copy_link")}
+            </span>
+          </button>
+        ) : null}
         {canInvite ? (
           <button
             type="button"
@@ -691,25 +727,38 @@ function InviteMemberDialog({
   onClose: () => void;
 }) {
   const tSettings = useTranslations("settings");
+  const tInvites = useTranslations("invitations");
   const tErrors = useTranslations("errors");
 
   const [email, setEmail] = useState("");
   const [permissions, setPermissions] = useState<PermissionsDict>({});
   const [error, setError] = useState<string | null>(null);
+  // Hold the freshly-created invitation so the dialog can switch from
+  // the form view to the "copy this link" confirmation view. Clearing
+  // it (via ``Invite another``) brings the form back so an owner can
+  // add several teammates in a single sitting.
+  const [created, setCreated] = useState<InvitationDto | null>(null);
 
   const mutation = useCreateInvitation(orgId);
 
   const handleSubmit = async () => {
     setError(null);
     try {
-      await mutation.mutateAsync({
+      const invitation = await mutation.mutateAsync({
         email: email.trim(),
         permissions,
       });
-      onClose();
+      setCreated(invitation);
     } catch (err) {
       setError(extractApiMessage(err, tErrors));
     }
+  };
+
+  const handleInviteAnother = () => {
+    setCreated(null);
+    setEmail("");
+    setPermissions({});
+    setError(null);
   };
 
   return (
@@ -719,7 +768,9 @@ function InviteMemberDialog({
           <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
               <Modal.Heading className="text-base font-semibold text-ink-1000">
-                {tSettings("members.invite_title")}
+                {created
+                  ? tInvites("invite_member.success_title")
+                  : tSettings("members.invite_title")}
               </Modal.Heading>
               <button
                 type="button"
@@ -731,63 +782,95 @@ function InviteMemberDialog({
               </button>
             </Modal.Header>
             <Modal.Body className="max-h-[70vh] overflow-y-auto px-6 py-6">
-              <div className="flex flex-col gap-5">
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tSettings("members.invite_email_label")}
-                  </span>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    placeholder={tSettings("members.invite_email_placeholder")}
-                    autoComplete="off"
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                </label>
-                <div className="flex flex-col gap-2">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tSettings("members.invite_permissions_label")}
-                  </span>
-                  <CapabilityGrid
-                    modules={modules}
-                    catalogueSlugs={catalogueSlugs}
-                    value={permissions}
-                    onChange={setPermissions}
-                    disabled={mutation.isPending}
-                  />
+              {created ? (
+                <InviteSuccessView
+                  invitation={created}
+                  tInvites={tInvites}
+                />
+              ) : (
+                <div className="flex flex-col gap-5">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tSettings("members.invite_email_label")}
+                    </span>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      placeholder={tSettings("members.invite_email_placeholder")}
+                      autoComplete="off"
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  </label>
+                  <div className="flex flex-col gap-2">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tSettings("members.invite_permissions_label")}
+                    </span>
+                    <CapabilityGrid
+                      modules={modules}
+                      catalogueSlugs={catalogueSlugs}
+                      value={permissions}
+                      onChange={setPermissions}
+                      disabled={mutation.isPending}
+                    />
+                  </div>
+                  {error ? (
+                    <p
+                      role="alert"
+                      className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
+                    >
+                      {error}
+                    </p>
+                  ) : null}
                 </div>
-                {error ? (
-                  <p
-                    role="alert"
-                    className="rounded-xl bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
-                  >
-                    {error}
-                  </p>
-                ) : null}
-              </div>
+              )}
             </Modal.Body>
             <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
-              <Button
-                type="button"
-                variant="outline"
-                size="md"
-                className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                onClick={onClose}
-                isDisabled={mutation.isPending}
-              >
-                {tSettings("members.cancel")}
-              </Button>
-              <Button
-                type="button"
-                variant="primary"
-                size="md"
-                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-                onClick={handleSubmit}
-                isDisabled={mutation.isPending || !email.trim()}
-              >
-                {tSettings("members.invite_submit")}
-              </Button>
+              {created ? (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="md"
+                    className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                    onClick={handleInviteAnother}
+                  >
+                    {tInvites("invite_member.invite_another")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="md"
+                    className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                    onClick={onClose}
+                  >
+                    {tSettings("members.close")}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="md"
+                    className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                    onClick={onClose}
+                    isDisabled={mutation.isPending}
+                  >
+                    {tSettings("members.cancel")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="primary"
+                    size="md"
+                    className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                    onClick={handleSubmit}
+                    isDisabled={mutation.isPending || !email.trim()}
+                  >
+                    {tSettings("members.invite_submit")}
+                  </Button>
+                </>
+              )}
             </Modal.Footer>
           </Modal.Dialog>
         </Modal.Container>
@@ -814,6 +897,158 @@ function extractApiMessage(
     }
   }
   return tErrors("generic");
+}
+
+
+/**
+ * Stand-alone dialog surfaced from the pending-invitations list so an
+ * owner can re-copy the link for an already-created invite without
+ * issuing a new token. Shares the same body renderer as the
+ * post-create success state so both flows stay visually identical.
+ */
+function InviteLinkDialog({
+  invitation,
+  onClose,
+}: {
+  invitation: InvitationDto;
+  onClose: () => void;
+}) {
+  const tSettings = useTranslations("settings");
+  const tInvites = useTranslations("invitations");
+  return (
+    <Modal isOpen onOpenChange={(open) => (!open ? onClose() : undefined)}>
+      <Modal.Backdrop>
+        <Modal.Container size="md">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
+                {tInvites("invite_member.success_title")}
+              </Modal.Heading>
+              <button
+                type="button"
+                aria-label={tSettings("members.close")}
+                onClick={onClose}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 hover:bg-ink-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </Modal.Header>
+            <Modal.Body className="px-6 py-6">
+              <InviteSuccessView
+                invitation={invitation}
+                tInvites={tInvites}
+              />
+            </Modal.Body>
+            <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
+              <Button
+                type="button"
+                variant="primary"
+                size="md"
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                onClick={onClose}
+              >
+                {tSettings("members.close")}
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
+  );
+}
+
+
+/**
+ * Success view for a freshly-created invitation.
+ *
+ * Shows the tokenised accept URL with a single copy button — owners
+ * typically share the link via Slack / email on their own because
+ * outbound email isn't configured for every tenant yet.
+ */
+function InviteSuccessView({
+  invitation,
+  tInvites,
+}: {
+  invitation: InvitationDto;
+  tInvites: ReturnType<typeof useTranslations<"invitations">>;
+}) {
+  const [copied, setCopied] = useState(false);
+  // ``window.location.origin`` is only safe in the browser; in the
+  // Next server phase the success view is never rendered so guarding
+  // with a ``typeof window`` check keeps the SSR pass from crashing
+  // while still producing a usable link once the modal mounts.
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const inviteUrl = `${origin}/invite/${invitation.token}`;
+  const expires = new Date(invitation.expires_at).toLocaleDateString(
+    undefined,
+    { dateStyle: "medium" },
+  );
+
+  const handleCopy = async () => {
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(inviteUrl);
+      } else {
+        // Older browsers or insecure origins (our LAN dev host runs
+        // over plain HTTP) don't expose ``navigator.clipboard``. Fall
+        // back to the legacy ``execCommand`` path so the Copy button
+        // keeps working from teammates' laptops on the office network.
+        const textarea = document.createElement("textarea");
+        textarea.value = inviteUrl;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+      }
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Silent failure: the field remains selectable so the owner can
+      // still copy by hand. A toast system would live here later.
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-ink-700">
+        {tInvites("invite_member.success_hint")}
+      </p>
+      <div className="flex items-stretch gap-2">
+        <input
+          readOnly
+          value={inviteUrl}
+          onFocus={(e) => e.currentTarget.select()}
+          className="flex-1 rounded-lg bg-ink-50 px-3 py-2 font-mono text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+        />
+        <Button
+          type="button"
+          variant="primary"
+          size="md"
+          className="h-10 shrink-0 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
+          onClick={handleCopy}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            {copied ? (
+              <>
+                <Check className="h-4 w-4" />
+                {tInvites("invite_member.success_copied")}
+              </>
+            ) : (
+              <>
+                <Copy className="h-4 w-4" />
+                {tInvites("invite_member.success_copy")}
+              </>
+            )}
+          </span>
+        </Button>
+      </div>
+      <p className="text-xs text-ink-500">
+        {tInvites("invite_member.expires_in", { date: expires })}
+      </p>
+    </div>
+  );
 }
 
 

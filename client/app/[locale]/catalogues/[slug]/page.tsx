@@ -4,6 +4,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Link, redirect } from "@/i18n/navigation";
+import { resolveLegacyRowScopedLevel } from "@/lib/auth/capabilities";
 import {
   getAttributeDefinitionsServer,
   getCatalogueItemsFirstPageServer,
@@ -16,22 +17,6 @@ import { CatalogueTable } from "./catalogue-table";
 import { CatalogueTabs } from "./catalogue-tabs";
 import { ImportItemsButton } from "./import-items-button";
 import { NewItemButton } from "./new-item-button";
-
-function resolveCataloguePermission(
-  isOwner: boolean,
-  permissions: Record<string, unknown>,
-  slug: string,
-): "admin" | "write" | "read" | "none" {
-  if (isOwner) return "admin";
-  const scoped = permissions.catalogues;
-  if (scoped && typeof scoped === "object" && !Array.isArray(scoped)) {
-    const level = (scoped as Record<string, unknown>)[slug];
-    if (level === "admin" || level === "write" || level === "read") {
-      return level;
-    }
-  }
-  return "none";
-}
 
 export default async function CatalogueDetailPage({
   params,
@@ -68,9 +53,9 @@ export default async function CatalogueDetailPage({
   const tNav = await getTranslations("navigation");
   const tAttrs = await getTranslations("attributes");
 
-  const level = resolveCataloguePermission(
-    primaryOrg.is_owner,
-    primaryOrg.permissions,
+  const level = resolveLegacyRowScopedLevel(
+    primaryOrg,
+    "catalogues",
     slug,
   );
   if (level === "none") {

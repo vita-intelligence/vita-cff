@@ -14,6 +14,7 @@ import {
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
+import { clientUuid } from "@/lib/utils";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
 
@@ -29,6 +30,7 @@ import {
   computeNrvPercent,
   computeTotals,
   explainLine,
+  getNrvTargetMg,
   useFormulationVersions,
   useReplaceLines,
   useRollbackFormulation,
@@ -109,6 +111,14 @@ function attributesFromLine(
     organic: (extra.organic as string | null | undefined) ?? null,
     halal: (extra.halal as string | null | undefined) ?? null,
     kosher: (extra.kosher as string | null | undefined) ?? null,
+    // Allergen fields MUST flow through — the builder's live
+    // Compliance panel and ingredient-declaration bolding both
+    // run ``isAllergenLine`` against these keys, and a missing
+    // flag silently degrades to "no allergens" regardless of
+    // catalogue data.
+    allergen: (extra.allergen as string | null | undefined) ?? null,
+    allergen_source:
+      (extra.allergen_source as string | null | undefined) ?? null,
     nrv_mg:
       (extra.nrv_mg as string | number | null | undefined) ?? null,
   };
@@ -131,6 +141,8 @@ function attributesFromItem(item: ItemDto): ItemAttributesForMath {
     organic: pickStr("organic"),
     halal: pickStr("halal"),
     kosher: pickStr("kosher"),
+    allergen: pickStr("allergen"),
+    allergen_source: pickStr("allergen_source"),
     nrv_mg: pickNum("nrv_mg"),
   };
 }
@@ -308,7 +320,7 @@ export function FormulationBuilder({
       if (lines.some((line) => line.item_id === item.id)) {
         return;
       }
-      const key = `new-${crypto.randomUUID()}`;
+      const key = `new-${clientUuid()}`;
       setLines((prev) => [
         ...prev,
         {
@@ -817,18 +829,39 @@ export function FormulationBuilder({
                             line.item_attributes,
                             Number.parseFloat(line.label_claim_mg || "0"),
                           );
-                          if (nrv === null) return "—";
-                          // Integer display with a space thousands
-                          // separator so the number is unambiguous
-                          // against our ``.``-as-decimal convention.
-                          // ``90 909%`` reads as "ninety thousand",
-                          // never as "ninety point nine zero nine".
-                          const rounded = Math.round(nrv);
-                          const grouped = String(rounded).replace(
-                            /\B(?=(\d{3})+(?!\d))/g,
-                            "\u202F",
+                          const target = getNrvTargetMg(line.item_attributes);
+                          const hint =
+                            target !== null
+                              ? tFormulations("builder.nrv_hint_100", {
+                                  mg: numberFormatter.format(target),
+                                })
+                              : null;
+                          let display: string;
+                          if (nrv === null) {
+                            display = "—";
+                          } else {
+                            // Integer display with a space thousands
+                            // separator so the number is unambiguous
+                            // against our ``.``-as-decimal convention.
+                            // ``90 909%`` reads as "ninety thousand",
+                            // never as "ninety point nine zero nine".
+                            const rounded = Math.round(nrv);
+                            const grouped = String(rounded).replace(
+                              /\B(?=(\d{3})+(?!\d))/g,
+                              "\u202F",
+                            );
+                            display = `${grouped}%`;
+                          }
+                          return (
+                            <>
+                              <div>{display}</div>
+                              {hint ? (
+                                <div className="mt-0.5 text-[10px] text-ink-500">
+                                  {hint}
+                                </div>
+                              ) : null}
+                            </>
                           );
-                          return `${grouped}%`;
                         })()}
                       </td>
                       <td className="px-2 py-3 text-right">

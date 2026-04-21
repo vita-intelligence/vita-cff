@@ -77,6 +77,22 @@ class FormulationsCapability:
     #: Landing the string now lets admins pre-grant the role without
     #: a second permission-UI migration later.
     SIGN_SPEC = "sign_spec"
+    #: Read the comment thread on any entity in this workspace
+    #: (formulations, spec sheets, later trial batches / QC). Split
+    #: from ``VIEW`` so a read-only reviewer can still see discussion
+    #: history without gaining broader project-view rights.
+    COMMENTS_VIEW = "comments_view"
+    #: Post, edit own, delete own, and resolve own comment threads.
+    #: Authors always retain edit / delete / resolve on their own
+    #: comments regardless of whether this capability is granted —
+    #: the capability gates the *initial* post and operations on
+    #: threads the caller does not own.
+    COMMENTS_WRITE = "comments_write"
+    #: Edit, delete, or resolve *other* users' comments. The
+    #: "moderator" grant — typically held by team leads and owners
+    #: only. Required to close out a thread a teammate forgot to
+    #: resolve, or to take down an accidental client-facing comment.
+    COMMENTS_MODERATE = "comments_moderate"
 
 
 class AuditCapability:
@@ -148,6 +164,9 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.ASSIGN_SALES_PERSON,
             FormulationsCapability.MANAGE_SPEC_VISIBILITY,
             FormulationsCapability.SIGN_SPEC,
+            FormulationsCapability.COMMENTS_VIEW,
+            FormulationsCapability.COMMENTS_WRITE,
+            FormulationsCapability.COMMENTS_MODERATE,
         ),
     ),
     AUDIT_MODULE: Module(

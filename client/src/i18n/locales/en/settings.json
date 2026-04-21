@@ -45,6 +45,7 @@
     "action_remove": "Remove",
     "action_resend": "Resend",
     "action_revoke": "Revoke",
+    "action_copy_link": "Copy link",
     "invitations_title": "Pending invitations",
     "invitations_hint": "{count, plural, =0 {No invitations out right now} one {# invite awaiting acceptance} other {# invites awaiting acceptance}}.",
     "invitations_empty": "No pending invitations.",
@@ -98,7 +99,13 @@
       "view": "View",
       "edit": "Edit",
       "approve": "Approve & send",
-      "delete": "Delete"
+      "delete": "Delete",
+      "assign_sales_person": "Assign sales person",
+      "manage_spec_visibility": "Manage spec visibility",
+      "sign_spec": "Sign spec sheet",
+      "comments_view": "View comments",
+      "comments_write": "Post & reply to comments",
+      "comments_moderate": "Moderate others' comments"
     },
     "audit": {
       "view": "View audit log"

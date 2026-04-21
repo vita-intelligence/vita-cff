@@ -52,7 +52,12 @@ export function LoginForm() {
     message ? translateCode(tErrors, message) : undefined;
 
   return (
-    <form onSubmit={onSubmit} className="flex w-full flex-col gap-5" noValidate>
+    <form
+      method="post"
+      onSubmit={onSubmit}
+      className="flex w-full flex-col gap-5"
+      noValidate
+    >
       <Controller
         control={control}
         name="email"

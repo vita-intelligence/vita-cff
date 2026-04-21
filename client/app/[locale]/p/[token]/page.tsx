@@ -2,6 +2,7 @@ import { Download, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
+import { KioskCommentsPanel } from "@/components/comments/kiosk/kiosk-comments-panel";
 import { getPublicRenderedSpecificationServer } from "@/lib/auth/server";
 import { specificationsEndpoints } from "@/services/specifications";
 
@@ -59,6 +60,10 @@ export default async function PublicSpecificationPage({
 
         <div className="mt-6">
           <SpecSheetContent rendered={rendered} />
+        </div>
+
+        <div className="mt-8 print:hidden">
+          <KioskCommentsPanel token={token} />
         </div>
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500 print:hidden">

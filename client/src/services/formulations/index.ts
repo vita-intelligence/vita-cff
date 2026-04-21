@@ -46,6 +46,7 @@ export {
   computeNrvPercent,
   computeTotals,
   explainLine,
+  getNrvTargetMg,
   isAllergenLine,
   type AllergensResult,
   type ComplianceFlagResult,

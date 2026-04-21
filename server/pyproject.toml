@@ -14,6 +14,10 @@ python_files = ["test_*.py", "*_test.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 testpaths = ["apps"]
+# ``strict`` mode forces every async test to carry an explicit
+# ``@pytest.mark.asyncio`` marker so a sync test accidentally using
+# ``async def`` surfaces as a failure instead of silently skipping.
+asyncio_mode = "strict"
 addopts = [
     "-ra",
     "--strict-markers",

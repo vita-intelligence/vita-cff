@@ -3,6 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Link, redirect } from "@/i18n/navigation";
+import { resolveLegacyFlatLevel } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getFormulationsFirstPageServer,
@@ -11,18 +12,6 @@ import {
 
 import { FormulationsTable } from "./formulations-table";
 import { NewFormulationButton } from "./new-formulation-button";
-
-function resolveFormulationsPermission(
-  isOwner: boolean,
-  permissions: Record<string, unknown>,
-): "admin" | "write" | "read" | "none" {
-  if (isOwner) return "admin";
-  const level = permissions.formulations;
-  if (level === "admin" || level === "write" || level === "read") {
-    return level;
-  }
-  return "none";
-}
 
 export default async function FormulationsListPage({
   params,
@@ -44,10 +33,7 @@ export default async function FormulationsListPage({
   }
   const primaryOrg = organizations[0]!;
 
-  const level = resolveFormulationsPermission(
-    primaryOrg.is_owner,
-    primaryOrg.permissions,
-  );
+  const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
 
   const tFormulations = await getTranslations("formulations");
   const tCommon = await getTranslations("common");

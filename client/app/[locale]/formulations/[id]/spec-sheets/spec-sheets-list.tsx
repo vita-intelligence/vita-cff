@@ -1,28 +1,35 @@
 "use client";
 
-import { Button } from "@heroui/react";
-import { CheckCircle2, ExternalLink, FileText, Plus } from "lucide-react";
+import { CheckCircle2, ExternalLink, FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
 
-import { Link, useRouter } from "@/i18n/navigation";
+import { Link } from "@/i18n/navigation";
+import {
+  useFormulationVersions,
+  type FormulationVersionDto,
+} from "@/services/formulations";
 import type {
   PaginatedSpecificationsDto,
   SpecificationSheetDto,
   SpecificationStatus,
 } from "@/services/specifications";
 
+import { NewSpecSheetButton } from "../new-spec-sheet-button";
+
 
 /**
  * Project-scoped spec sheet list. SSR hydrated; one card per sheet
- * with status chip + version link. "+ New spec sheet" routes back
- * to the builder's existing create modal by way of the ``?create=1``
- * query param the modal trigger listens for.
+ * with status chip + version link. "+ New spec" opens the same
+ * creation modal the builder page uses — we render the button
+ * inline with the versions fetched on mount so the modal can lock
+ * against a real :class:`FormulationVersion` without the page
+ * redirecting somewhere else.
  */
 export function SpecSheetsList({
   orgId,
   formulationId,
   initialPage,
-  canWrite: _canWrite,
+  canWrite,
 }: {
   orgId: string;
   formulationId: string;
@@ -31,11 +38,10 @@ export function SpecSheetsList({
 }) {
   const tSpec = useTranslations("specifications");
   const tTabs = useTranslations("project_tabs");
-  const router = useRouter();
-  // Referenced to keep the prop in the signature typed — suppressed
-  // while deeper-linking actions live on the builder page.
-  void _canWrite;
-  void orgId;
+
+  const versionsQuery = useFormulationVersions(orgId, formulationId);
+  const versions: readonly FormulationVersionDto[] =
+    versionsQuery.data ?? [];
 
   const sheets = initialPage.results;
 
@@ -50,19 +56,9 @@ export function SpecSheetsList({
             {tSpec("tab.subtitle", { count: sheets.length })}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="primary"
-          size="sm"
-          className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
-          onClick={() =>
-            router.push(`/formulations/${formulationId}/builder`)
-          }
-        >
-          <span className="inline-flex items-center gap-1.5">
-            <Plus className="h-4 w-4" /> {tSpec("new_sheet")}
-          </span>
-        </Button>
+        {canWrite ? (
+          <NewSpecSheetButton orgId={orgId} versions={versions} />
+        ) : null}
       </div>
 
       {sheets.length === 0 ? (

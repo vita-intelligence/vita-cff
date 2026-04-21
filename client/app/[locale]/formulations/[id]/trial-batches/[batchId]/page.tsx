@@ -3,6 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
+import { resolveLegacyFlatLevel } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getFormulationServer,
@@ -12,19 +13,6 @@ import {
 } from "@/lib/auth/server";
 
 import { TrialBatchDetail } from "./trial-batch-detail";
-
-
-function resolveFormulationsPermission(
-  isOwner: boolean,
-  permissions: Record<string, unknown>,
-): "admin" | "write" | "read" | "none" {
-  if (isOwner) return "admin";
-  const level = permissions.formulations;
-  if (level === "admin" || level === "write" || level === "read") {
-    return level;
-  }
-  return "none";
-}
 
 
 export default async function TrialBatchDetailPage({
@@ -47,10 +35,7 @@ export default async function TrialBatchDetailPage({
   }
   const primaryOrg = organizations[0]!;
 
-  const level = resolveFormulationsPermission(
-    primaryOrg.is_owner,
-    primaryOrg.permissions,
-  );
+  const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
   if (level === "none") {
     redirect({ href: "/formulations", locale });
   }

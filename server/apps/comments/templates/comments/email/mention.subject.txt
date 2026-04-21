@@ -1,0 +1,1 @@
+{{ author_label }} mentioned you in {{ target_label }}

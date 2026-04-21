@@ -1,0 +1,10 @@
+{% autoescape on %}<!DOCTYPE html>
+<html>
+  <body style="font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color: #111; line-height: 1.5;">
+    <p>Hi {{ recipient_name }},</p>
+    <p><strong>{{ author_label }}</strong> mentioned you in a comment on <strong>{{ target_label }}</strong>:</p>
+    <blockquote style="border-left: 3px solid #ffc000; margin: 0 0 16px; padding: 4px 12px; color: #333; white-space: pre-wrap;">{{ body_excerpt }}</blockquote>
+    <p><a href="{{ target_url }}" style="color: #b06800; font-weight: 600;">Open the thread →</a></p>
+    <p style="color: #555; font-size: 12px; margin-top: 24px;">— {{ organization.name }}</p>
+  </body>
+</html>{% endautoescape %}

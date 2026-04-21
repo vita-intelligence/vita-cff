@@ -182,6 +182,19 @@ export function computeNrvPercent(
   return (labelClaimMg / nrv) * 100;
 }
 
+/**
+ * Return the raw NRV target in milligrams for a material — i.e. the
+ * label claim that would land exactly at 100% NRV. ``null`` for
+ * ingredients without a declared NRV (herbs, extracts, excipients).
+ */
+export function getNrvTargetMg(
+  attributes: ItemAttributesForMath,
+): number | null {
+  const nrv = coerceFloat(attributes.nrv_mg);
+  if (nrv === null || nrv <= 0) return null;
+  return nrv;
+}
+
 // ---------------------------------------------------------------------------
 // Line math — Table3 ``mg/serving`` formula
 // ---------------------------------------------------------------------------
@@ -383,16 +396,30 @@ export interface AllergensResult {
 }
 
 
-/** Read the ``allergen`` attribute with the same case-insensitive
- * leniency as the backend. Anything other than "yes"/"true"/"1"
- * means "not an allergen" — absence of data is never promoted to
- * a positive flag. */
+/** Mirror of the backend's ``_is_item_allergen``. Reads the
+ * ``allergen`` flag first; if the flag is blank but a populated
+ * ``allergen_source`` names a real EU-14 class (wheat, milk, soy,
+ * …) we treat the ingredient as allergenic. Catalogue rows in the
+ * wild very often carry the source but leave the flag blank, so
+ * leaning only on the flag would under-report on real products
+ * (e.g. a wheat-extract Testosterone booster showing "no allergens").
+ */
 export function isAllergenLine(attrs: ItemAttributesForMath): boolean {
   const raw = attrs.allergen;
-  if (raw === null || raw === undefined) return false;
-  if (typeof raw !== "string") return Boolean(raw);
-  const lowered = raw.trim().toLowerCase();
-  return lowered === "yes" || lowered === "true" || lowered === "1";
+  if (raw !== null && raw !== undefined) {
+    if (typeof raw === "string") {
+      const lowered = raw.trim().toLowerCase();
+      if (lowered === "yes" || lowered === "true" || lowered === "1") {
+        return true;
+      }
+    } else if (Boolean(raw)) {
+      return true;
+    }
+  }
+  // Source-driven fallback — any non-sentinel class is treated as a
+  // positive signal. An explicit ``allergen = "No"`` still wins via
+  // the early exit above when the scientist deliberately overrode.
+  return cleanAllergenSource(attrs).length > 0;
 }
 
 

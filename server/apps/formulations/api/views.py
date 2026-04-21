@@ -6,6 +6,7 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Any
 
+from django.db.models import ProtectedError
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -228,7 +229,23 @@ class FormulationDetailView(APIView):
         before = snapshot(formulation)
         organization = formulation.organization
         target_id = str(formulation.pk)
-        formulation.delete()
+        try:
+            formulation.delete()
+        except ProtectedError:
+            # A downstream ``PROTECT`` FK is blocking the cascade —
+            # most commonly a :class:`TrialBatch` still pointing at
+            # one of this project's :class:`FormulationVersion`s,
+            # since batches are production records we refuse to lose
+            # silently. Surface a translatable code so the frontend
+            # can explain *why* rather than hiding behind a generic
+            # "couldn't delete" toast.
+            return Response(
+                {
+                    "detail": ["formulation_has_dependencies"],
+                    "code": "formulation_has_dependencies",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         record_audit(
             organization=organization,
             actor=request.user,

@@ -22,6 +22,18 @@ const nextConfig: NextConfig = {
   // backend convention site-wide so rewrites pass trailing slashes through
   // to ``/api/...`` and Next app routes get canonicalised consistently.
   trailingSlash: true,
+  // Next 16 blocks cross-origin access to dev resources (HMR, static
+  // chunks) by default. When a teammate browses to this machine via
+  // its LAN IP, their browser origin is not ``localhost`` so the HMR
+  // websocket gets refused and hot reload stops working. Listing the
+  // LAN hosts here opts them back in — still dev-only, and has no
+  // effect on production builds.
+  allowedDevOrigins: [
+    "192.168.1.170",
+    "192.168.1.0/24",
+    "10.0.0.0/8",
+    "localhost",
+  ],
   async rewrites() {
     // ``fallback`` runs only after both static AND dynamic filesystem
     // routes have been checked — so the AI route handler at
@@ -31,7 +43,20 @@ const nextConfig: NextConfig = {
     // ``/api/*`` call continues to fall through to Django. A bare
     // array or ``afterFiles`` bucket would shadow the dynamic
     // handler, because both are checked BEFORE dynamic routes.
+    //
+    // ``/ws/*`` lives at ``beforeFiles`` so Next never tries to
+    // match the path against an app route first — WebSocket upgrade
+    // handshakes come in as HTTP GETs with ``Connection: Upgrade``,
+    // and the rewrite forwards them to Daphne verbatim. Daphne's
+    // ProtocolTypeRouter then routes them into the Channels
+    // consumer stack.
     return {
+      beforeFiles: [
+        {
+          source: "/ws/:path*",
+          destination: `${BACKEND_INTERNAL_URL}/ws/:path*/`,
+        },
+      ],
       fallback: [
         {
           source: "/api/:path*",

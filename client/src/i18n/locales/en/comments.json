@@ -1,0 +1,55 @@
+{
+  "title": "Comments",
+  "no_access": "You do not have permission to view comments on this project.",
+  "filter": {
+    "show_resolved": "Show resolved"
+  },
+  "states": {
+    "loading": "Loading…",
+    "empty": "No comments yet. Start the conversation.",
+    "deleted": "This comment was deleted.",
+    "edited": "edited",
+    "resolved": "resolved",
+    "pinned": "pinned",
+    "pinned_hint": "This thread is flagged as needing resolution. It will stay pinned to the top until someone resolves it."
+  },
+  "actions": {
+    "send": "Send",
+    "cancel": "Cancel",
+    "reply": "Reply",
+    "resolve": "Resolve",
+    "reopen": "Reopen",
+    "flag": "Flag to resolve",
+    "flag_hint": "Pin this thread to the top and unlock the Resolve button.",
+    "unflag": "Unflag",
+    "unflag_hint": "Remove the pin without resolving the thread.",
+    "edit": "Edit",
+    "delete": "Delete",
+    "load_more": "Load older comments"
+  },
+  "confirm": {
+    "delete": "Delete this comment? This cannot be undone."
+  },
+  "composer": {
+    "placeholder": "Write a comment… Type @ then Tab or Enter to mention a teammate.",
+    "reply_placeholder": "Write a reply… (@ to mention)"
+  },
+  "typing": {
+    "template": "{count, plural, one {{first} is typing…} =2 {{first} and {second} are typing…} other {{first}, {second}, and {rest, plural, one {# other} other {# others}} are typing…}}"
+  },
+  "kiosk": {
+    "title": "Introduce yourself",
+    "subtitle": "Share your name so the project team knows who left the comment.",
+    "name_label": "Your name",
+    "email_label": "Your email",
+    "company_label": "Company",
+    "optional": "(optional)",
+    "submit": "Continue",
+    "open_modal": "Leave a comment",
+    "signed_in_as": "Signed in as {name}",
+    "sign_out": "Sign out",
+    "privacy_note": "We store your name and email with each comment so the project team can follow up. No account is created.",
+    "error_generic": "Something went wrong. Please try again.",
+    "error_session_expired": "Your session has expired. Please sign in again to continue."
+  }
+}

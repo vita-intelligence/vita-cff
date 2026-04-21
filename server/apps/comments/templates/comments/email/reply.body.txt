@@ -1,0 +1,9 @@
+Hi {{ recipient_name }},
+
+{{ author_label }} replied to your thread on {{ target_label }}:
+
+{{ body_excerpt }}
+
+Open the thread: {{ target_url }}
+
+— {{ organization.name }}

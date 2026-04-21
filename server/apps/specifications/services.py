@@ -488,11 +488,21 @@ def rotate_public_token(
     previous one in the same write — useful when a client shares a
     link more widely than intended and the scientist wants to cut off
     access without deleting the sheet.
+
+    Also revokes every :class:`apps.comments.models.KioskSession`
+    that was issued against the old token so any still-open
+    public-comment browser immediately gets bounced on its next
+    request.
     """
 
+    previous_token = sheet.public_token
     sheet.public_token = uuid.uuid4()
     sheet.updated_by = actor
     sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
+    if previous_token is not None:
+        from apps.comments.kiosk import revoke_sessions_for_token
+
+        revoke_sessions_for_token(previous_token)
     record_audit(
         organization=sheet.organization,
         actor=actor,
@@ -508,13 +518,21 @@ def revoke_public_token(
 ) -> SpecificationSheet:
     """Clear the sheet's public token so no one can hit the preview
     URL. Idempotent — calling on an already-revoked sheet is a no-op
-    for the token but still bumps ``updated_by``/``updated_at``."""
+    for the token but still bumps ``updated_by``/``updated_at``.
+
+    Also revokes every kiosk session that was bound to that token.
+    """
 
     had_token = sheet.public_token is not None
+    previous_token = sheet.public_token
     sheet.public_token = None
     sheet.updated_by = actor
     sheet.save(update_fields=["public_token", "updated_by", "updated_at"])
     if had_token:
+        from apps.comments.kiosk import revoke_sessions_for_token
+
+        if previous_token is not None:
+            revoke_sessions_for_token(previous_token)
         record_audit(
             organization=sheet.organization,
             actor=actor,

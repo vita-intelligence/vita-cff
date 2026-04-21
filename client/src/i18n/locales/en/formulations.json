@@ -67,6 +67,7 @@
     "label_claim_column": "Label claim (mg)",
     "mg_per_serving_column": "mg / serving",
     "nrv_column": "% NRV",
+    "nrv_hint_100": "100% = {mg} mg",
     "remove_line": "Remove",
     "save_draft": "Save draft",
     "save_version": "Save version",

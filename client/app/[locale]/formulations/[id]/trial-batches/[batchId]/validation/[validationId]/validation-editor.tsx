@@ -21,6 +21,7 @@ import {
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
+import { clientUuid } from "@/lib/utils";
 import {
   ALLOWED_VALIDATION_TRANSITIONS,
   useTransitionValidationStatus,
@@ -762,10 +763,7 @@ function SampleList({
   const focusTargetRef = useRef<string | null>(null);
 
   const addEntry = useCallback(() => {
-    const id =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : String(Math.random());
+    const id = clientUuid();
     focusTargetRef.current = id;
     onChange([...entries, { id, raw: "" }]);
   }, [entries, onChange]);
@@ -1071,7 +1069,7 @@ interface SampleEntry {
 function samplesToEntries(samples: readonly number[] | null): SampleEntry[] {
   if (!samples || samples.length === 0) return [];
   return samples.map((value) => ({
-    id: crypto.randomUUID(),
+    id: clientUuid(),
     raw: String(value),
   }));
 }

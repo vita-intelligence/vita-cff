@@ -1,5 +1,6 @@
 """Django settings for the Vita NPD platform."""
 
+import os
 from datetime import timedelta
 from pathlib import Path
 
@@ -14,6 +15,12 @@ ALLOWED_HOSTS: list[str] = []
 
 # Applications
 DJANGO_APPS = [
+    # ``daphne`` takes the slot before ``django.contrib.staticfiles`` per
+    # the Channels docs so ``runserver`` uses Daphne's ASGI server, which
+    # is what lets WebSocket routes work in dev. The HTTP layer still
+    # goes through Django's normal middleware stack — only the
+    # ``websocket`` protocol branches into the Channels consumer layer.
+    "daphne",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -23,6 +30,7 @@ DJANGO_APPS = [
 ]
 
 THIRD_PARTY_APPS = [
+    "channels",
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
@@ -39,6 +47,7 @@ LOCAL_APPS = [
     "apps.product_validation",
     "apps.ai",
     "apps.audit",
+    "apps.comments",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -124,6 +133,35 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
+#: Channels discovers the ASGI app via ``ASGI_APPLICATION``. Our
+#: ``config.asgi.application`` is a ``ProtocolTypeRouter`` that branches
+#: ``http`` → Django's :class:`ASGIStaticFilesHandler` and ``websocket``
+#: → the comments consumer with JWT-cookie auth middleware.
+ASGI_APPLICATION = "config.asgi.application"
+
+
+# Channels — WebSocket transport + inter-consumer message bus.
+#
+# Dev default: ``channels.layers.InMemoryChannelLayer``. Fine for
+# single-process ``runserver`` and the test suite. Production
+# overrides ``CHANNEL_LAYER_URL`` to a Redis DSN so consumers across
+# multiple worker processes can broadcast to each other via
+# ``channels_redis`` — the same Redis we will also use for Celery
+# when commit 3's payload lands in production.
+CHANNEL_LAYER_URL = os.environ.get("CHANNEL_LAYER_URL")
+if CHANNEL_LAYER_URL:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels_redis.core.RedisChannelLayer",
+            "CONFIG": {"hosts": [CHANNEL_LAYER_URL]},
+        }
+    }
+else:
+    CHANNEL_LAYERS = {
+        "default": {
+            "BACKEND": "channels.layers.InMemoryChannelLayer",
+        }
+    }
 
 
 # Templates
@@ -179,8 +217,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # AI providers. The free/default path uses Ollama running locally;
 # paid providers (OpenAI, Anthropic) plug in as new adapters under
 # :mod:`apps.ai.providers` in a future commit.
-import os  # noqa: E402 — grouped here with the AI settings it drives.
-
 AI_OLLAMA_URL = os.environ.get("AI_OLLAMA_URL", "http://127.0.0.1:11434")
 AI_OLLAMA_MODEL = os.environ.get("AI_OLLAMA_MODEL", "llama3.2:3b")
 # Hard ceiling on how long a single provider call can block a
@@ -190,3 +226,24 @@ AI_OLLAMA_MODEL = os.environ.get("AI_OLLAMA_MODEL", "llama3.2:3b")
 AI_PROVIDER_TIMEOUT_SECONDS = int(
     os.environ.get("AI_PROVIDER_TIMEOUT_SECONDS", "120")
 )
+
+
+# Email. Dev uses the console backend so ``send_mail`` writes to stdout
+# — no SMTP credentials required to exercise the comments-notification
+# flow locally. Production points at a real SMTP relay via environment
+# variables; Django auto-picks up ``EMAIL_HOST`` / ``EMAIL_PORT`` /
+# ``EMAIL_HOST_USER`` / ``EMAIL_HOST_PASSWORD`` / ``EMAIL_USE_TLS``.
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend"
+    if DEBUG
+    else "django.core.mail.backends.smtp.EmailBackend",
+)
+DEFAULT_FROM_EMAIL = os.environ.get(
+    "DEFAULT_FROM_EMAIL", "Vita NPD <no-reply@vita.npd>"
+)
+# Base URL the notification templates embed in deep links back to the
+# app. Defaults to the dev frontend origin so the console email still
+# carries a clickable URL; override in production to the real host.
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:3000")
+

@@ -10,6 +10,7 @@
 import { notFound } from "next/navigation";
 
 import { redirect } from "@/i18n/navigation";
+import { resolveLegacyFlatLevel } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getFormulationServer,
@@ -27,16 +28,17 @@ import type {
 export type FormulationsPermission = "admin" | "write" | "read" | "none";
 
 
+/**
+ * Bridge the legacy 4-state permission contract this file's callers
+ * still consume with the capability-list storage the backend now
+ * uses. Centralised in :func:`resolveLegacyFlatLevel` so the mapping
+ * (``delete → admin``, ``edit → write``, ``view → read``) lives in
+ * exactly one place.
+ */
 export function resolveFormulationsPermission(
-  isOwner: boolean,
-  permissions: Record<string, unknown>,
+  organization: OrganizationDto,
 ): FormulationsPermission {
-  if (isOwner) return "admin";
-  const level = permissions.formulations;
-  if (level === "admin" || level === "write" || level === "read") {
-    return level;
-  }
-  return "none";
+  return resolveLegacyFlatLevel(organization, "formulations");
 }
 
 
@@ -73,10 +75,7 @@ export async function loadProjectForTab(
   }
   const primaryOrg = organizations[0]!;
 
-  const level = resolveFormulationsPermission(
-    primaryOrg.is_owner,
-    primaryOrg.permissions,
-  );
+  const level = resolveFormulationsPermission(primaryOrg);
   if (level === "none") {
     redirect({ href: "/formulations", locale });
   }

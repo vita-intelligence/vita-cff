@@ -86,7 +86,12 @@ export function RegisterForm() {
     message ? translateCode(tErrors, message) : undefined;
 
   return (
-    <form onSubmit={onSubmit} className="flex w-full flex-col gap-5" noValidate>
+    <form
+      method="post"
+      onSubmit={onSubmit}
+      className="flex w-full flex-col gap-5"
+      noValidate
+    >
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
         <Controller
           control={control}

@@ -3,7 +3,10 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
-import { hasFlatCapability } from "@/lib/auth/capabilities";
+import {
+  hasFlatCapability,
+  resolveLegacyFlatLevel,
+} from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getRenderedSpecificationServer,
@@ -12,16 +15,6 @@ import {
 } from "@/lib/auth/server";
 
 import { SpecificationSheetView } from "./specification-sheet-view";
-
-function resolveSpecificationsPermission(
-  isOwner: boolean,
-  permissions: Record<string, unknown>,
-): "admin" | "write" | "read" | "none" {
-  if (isOwner) return "admin";
-  const level = permissions.specifications;
-  if (level === "admin" || level === "write" || level === "read") return level;
-  return "none";
-}
 
 export default async function SpecificationDetailPage({
   params,
@@ -43,10 +36,11 @@ export default async function SpecificationDetailPage({
   }
   const primaryOrg = organizations[0]!;
 
-  const level = resolveSpecificationsPermission(
-    primaryOrg.is_owner,
-    primaryOrg.permissions,
-  );
+  // Spec sheets piggy-back on the ``formulations`` module — there is
+  // no standalone ``specifications`` entry in the capability registry.
+  // Pulling the level from the right module keeps non-owner members
+  // out of the "access denied → /formulations" redirect loop.
+  const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
   if (level === "none") {
     redirect({ href: "/formulations", locale });
   }
@@ -86,6 +80,8 @@ export default async function SpecificationDetailPage({
           canWrite={canWrite}
           canAdmin={canAdmin}
           canManageVisibility={canManageVisibility}
+          organization={primaryOrg}
+          currentUserId={currentUser.id}
         />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500 print:hidden">

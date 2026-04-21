@@ -1100,15 +1100,25 @@ def _is_item_allergen(item: Item) -> bool:
     "this is an allergen" — silence is not consent."""
 
     raw = (item.attributes or {}).get("allergen")
-    if raw is None:
-        return False
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, (int, float)):
-        return bool(raw)
+    if isinstance(raw, bool) and raw:
+        return True
+    if isinstance(raw, (int, float)) and bool(raw):
+        return True
     if isinstance(raw, str):
         lowered = raw.strip().lower()
-        return lowered in {"yes", "true", "1"}
+        if lowered in {"yes", "true", "1"}:
+            return True
+    # The catalogue ships many rows (wheat, barley, oat-derivatives,
+    # milk fractions) where a scientist filled in
+    # ``allergen_source = "Cereals containing gluten"`` but left the
+    # tri-state ``allergen`` flag blank / "No". A populated source is
+    # the more reliable positive signal — an ingredient with a real
+    # EU-14 class is an allergen by construction. We keep the flag
+    # as an explicit override (if someone sets it to "No" on a
+    # borderline extract the source is ignored), so an empty / sentinel
+    # source with no flag returns False.
+    if _allergen_source_for_item(item):
+        return True
     return False
 
 
