@@ -37,10 +37,36 @@ const TABLET_SILICA_PCT = 0.004;
 const TABLET_DCP_PCT = 0.10;
 const TABLET_MCC_PCT = 0.20;
 
-// Powder + gummy do NOT auto-compute excipient rows. The reference
-// workbooks treat the carrier / bulking agent / gummy base as a
-// real catalogue ingredient the scientist explicitly adds. See
-// ``apps/formulations/constants.py`` for the detailed rationale.
+/** Flavour-system rows every powder workbook hand-types on its
+ * ``BOM Actives Calculation`` sheet. Values default to the Rave
+ * Lytes / Moonlytes standard — scientists tune mg per product in
+ * a later phase. Mirrors ``POWDER_FLAVOUR_SYSTEM`` on the Python
+ * side; the two must stay in sync. */
+const POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
+  readonly slug: string;
+  readonly label: string;
+  readonly mg: number;
+}> = [
+  { slug: "trisodium_citrate", label: "Trisodium Citrate", mg: 50 },
+  { slug: "citric_acid", label: "Citric Acid", mg: 150 },
+  { slug: "flavouring", label: "Flavouring", mg: 125 },
+  { slug: "sweetener", label: "Sweetener", mg: 30 },
+  { slug: "colourant", label: "Colourant", mg: 20 },
+];
+
+const GUMMY_FLAVOUR_SYSTEM: ReadonlyArray<{
+  readonly slug: string;
+  readonly label: string;
+  readonly mg: number;
+}> = [
+  { slug: "water", label: "Water", mg: 275 },
+  { slug: "acidity_regulator", label: "Acidity Regulator", mg: 75 },
+  {
+    slug: "flavouring_colourant",
+    label: "Flavouring & Colourant",
+    mg: 100,
+  },
+];
 
 /**
  * Thresholds for the capsule auto-picker, transcribed from the
@@ -813,13 +839,30 @@ function computeFillTarget(
   viability: Viability;
   warnings: readonly string[];
 } {
+  const preset =
+    dosageForm === "powder" ? POWDER_FLAVOUR_SYSTEM : GUMMY_FLAVOUR_SYSTEM;
+  const flavourRows: ExcipientRow[] = preset.map((row) => ({
+    slug: row.slug,
+    label: row.label,
+    mg: row.mg,
+    isRemainder: false,
+  }));
+  const flavourTotal = flavourRows.reduce((acc, r) => acc + r.mg, 0);
+  const excipients: ExcipientBreakdown = {
+    mgStearateMg: 0,
+    silicaMg: 0,
+    mccMg: 0,
+    dcpMg: null,
+    rows: flavourRows,
+  };
+
   if (!targetFillWeightMg || targetFillWeightMg <= 0) {
     return {
       sizeKey: null,
       sizeLabel: null,
       maxWeight: null,
-      totalWeight: totalActive,
-      excipients: null,
+      totalWeight: totalActive + flavourTotal,
+      excipients,
       viability: {
         fits: false,
         comfortOk: false,
@@ -829,9 +872,10 @@ function computeFillTarget(
     };
   }
 
+  const recipeTotal = totalActive + flavourTotal;
   const tolerance = Math.max(targetFillWeightMg * 0.005, 0.1);
-  const fits = totalActive <= targetFillWeightMg + tolerance;
-  const matches = Math.abs(totalActive - targetFillWeightMg) <= tolerance;
+  const fits = recipeTotal <= targetFillWeightMg + tolerance;
+  const matches = Math.abs(recipeTotal - targetFillWeightMg) <= tolerance;
   const codes: string[] = [];
   const warnings: string[] = [];
   if (!fits) {
@@ -851,8 +895,8 @@ function computeFillTarget(
         ? `Sachet (${formatFillWeight(targetFillWeightMg)})`
         : `Gummy (${formatFillWeight(targetFillWeightMg)})`,
     maxWeight: targetFillWeightMg,
-    totalWeight: totalActive,
-    excipients: null,
+    totalWeight: recipeTotal,
+    excipients,
     viability: { fits, comfortOk: matches, codes },
     warnings,
   };

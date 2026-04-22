@@ -91,28 +91,38 @@ TABLET_DCP_PCT = 0.10
 TABLET_MCC_PCT = 0.20
 
 
-#: Powder + gummy use an **explicit-ingredient** model: the scientist
-#: picks the carrier / bulking agent (e.g. ``MA200161 Maltodextrin``,
-#: ingredient-list name ``Bulking Agent``) and adds it as a regular
-#: formulation line from the raw materials catalogue. There is no
-#: auto-computed "carrier (remainder)" or "gummy base" row. The
-#: ``target_fill_weight_mg`` field on ``Formulation`` is used only
-#: for a soft reconciliation check — a ``fill_shortfall`` warning when
-#: the sum of lines lands below the sachet target, or
-#: ``fill_overshoot`` when it exceeds it.
+#: Powder flavour system — reference rows that the scientist sees in
+#: their ``BOM Actives Calculation`` scratchpad in every workbook.
+#: Excel hand-types these with product-specific mg values (Rave Lytes
+#: has TSC at 50mg, Soza at 25mg) but every powder gets the same five
+#: categories. We surface them as editable excipient rows so the
+#: scientist can tune each mg per product while still seeing the full
+#: recipe at a glance. Values default to the Rave Lytes / Moonlytes
+#: standard — the most common numbers across the reference set.
 #:
-#: Proof in the reference workbooks:
-#: * Moonlytes Formula sheet ships ``MA200161 Maltodextrin`` as a
-#:   line item alongside every active, ingredient-list name
-#:   ``Bulking Agent``.
-#: * Soza does the same; its FINAL declaration reads
-#:   ``... Carrier (Maltodextrin) ...``.
-#: * Rave Lytes has no bulking agent at all — the sachet declared as
-#:   actives only. Fabricating a carrier row would have been wrong
-#:   for this product.
-#:
-#: Excel has no single universal "carrier %". Anything we fabricated
-#: would be wrong for some subset of real products.
+#: Carrier / bulking agent (maltodextrin, etc.) is **not** in this
+#: list. Excel treats it as a real catalogue line (``MA200161
+#: Maltodextrin``) that the scientist adds explicitly — same way they
+#: add actives. We keep it out of the auto-computed list so we don't
+#: fabricate a phantom row without a procurement code.
+POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
+    ("trisodium_citrate", "Trisodium Citrate", 50.0),
+    ("citric_acid", "Citric Acid", 150.0),
+    ("flavouring", "Flavouring", 125.0),
+    ("sweetener", "Sweetener", 30.0),
+    ("colourant", "Colourant", 20.0),
+)
+
+
+#: Gummy base / flavour system. Same convention as the powder preset
+#: — reference rows the scientist tunes per product. ``Gummy Base``
+#: (usually sugar + glucose syrup) is picked from the catalogue as a
+#: real line like Maltodextrin, not auto-filled.
+GUMMY_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
+    ("water", "Water", 275.0),
+    ("acidity_regulator", "Acidity Regulator", 75.0),
+    ("flavouring_colourant", "Flavouring & Colourant", 100.0),
+)
 
 
 #: Label-copy strings used in the ingredient declaration (F2a). Kept

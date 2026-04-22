@@ -377,7 +377,7 @@ class TestComputeBatchScaleupTablet:
 
 
 class TestComputeBatchScaleupPowder:
-    def test_powder_has_no_excipients_and_no_shell(self) -> None:
+    def test_powder_has_flavour_system_and_no_shell(self) -> None:
         org = OrganizationFactory()
         version = _seeded_powder_version(org)
         batch = create_batch(
@@ -388,8 +388,23 @@ class TestComputeBatchScaleupPowder:
         )
         result = compute_batch_scaleup(batch)
         categories = {entry.category for entry in result.entries}
-        # Only the active line lands — no MCC, no shell.
-        assert categories == {"active"}
+        # Actives + the preset flavour system (Trisodium Citrate,
+        # Citric Acid, Flavouring, Sweetener, Colourant) that every
+        # powder workbook hand-types on its BOM sheet. Still no
+        # capsule shell.
+        assert categories == {"active", "excipient"}
+        flavour_labels = {
+            entry.label
+            for entry in result.entries
+            if entry.category == "excipient"
+        }
+        assert flavour_labels == {
+            "Trisodium Citrate",
+            "Citric Acid",
+            "Flavouring",
+            "Sweetener",
+            "Colourant",
+        }
 
     def test_units_per_pack_defaults_to_servings_per_pack(self) -> None:
         """The formulation's ``servings_per_pack`` flows into the BOM

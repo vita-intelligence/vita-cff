@@ -37,7 +37,9 @@ from apps.formulations.constants import (
     EXCIPIENT_LABEL_ANTICAKING,
     EXCIPIENT_LABEL_DCP,
     EXCIPIENT_LABEL_MCC,
+    GUMMY_FLAVOUR_SYSTEM,
     NUTRITION_KEYS,
+    POWDER_FLAVOUR_SYSTEM,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
     TABLET_MG_STEARATE_PCT,
@@ -523,13 +525,36 @@ def _compute_fill_target(
       the sachet / gummy mass means the product can't be pressed.
     """
 
+    # Flavour system rows — reference values every powder / gummy
+    # workbook hand-types. The scientist tunes mg per product later
+    # (row-level editing lives on the formulation, Phase F-next); for
+    # now we ship the Rave Lytes / Moonlytes defaults so every new
+    # sachet has the same five-row shape as Excel's BOM scratchpad.
+    preset = (
+        POWDER_FLAVOUR_SYSTEM
+        if dosage_form == DosageForm.POWDER.value
+        else GUMMY_FLAVOUR_SYSTEM
+    )
+    flavour_rows: tuple[ExcipientRow, ...] = tuple(
+        ExcipientRow(slug=slug, label=label, mg=_quantise(mg))
+        for slug, label, mg in preset
+    )
+    flavour_total = sum((float(r.mg) for r in flavour_rows), 0.0)
+
+    breakdown = ExcipientBreakdown(
+        mg_stearate_mg=Decimal("0"),
+        silica_mg=Decimal("0"),
+        mcc_mg=Decimal("0"),
+        rows=flavour_rows,
+    )
+
     if target_fill_weight_mg is None or target_fill_weight_mg <= 0:
         return (
             None,
             None,
             None,
-            _quantise(float(total_active)),
-            None,
+            _quantise(float(total_active) + flavour_total),
+            breakdown,
             ViabilityResult(
                 fits=False,
                 comfort_ok=False,
@@ -540,12 +565,13 @@ def _compute_fill_target(
 
     target = float(target_fill_weight_mg)
     active = float(total_active)
+    recipe_total = active + flavour_total
     # Tolerance band: within 0.5% of target counts as "matches". This
     # accounts for rounding in the per-line mg math without declaring
     # a 9999mg sachet "short" against a 10000mg target.
     tolerance = max(target * 0.005, 0.1)
-    fits = active <= target + tolerance
-    matches = abs(active - target) <= tolerance
+    fits = recipe_total <= target + tolerance
+    matches = abs(recipe_total - target) <= tolerance
     codes: list[str] = []
     warnings: list[str] = []
     if not fits:
@@ -570,8 +596,8 @@ def _compute_fill_target(
         size_key,
         size_label,
         _quantise(target),
-        _quantise(active),
-        None,
+        _quantise(recipe_total),
+        breakdown,
         ViabilityResult(
             fits=fits,
             comfort_ok=matches,

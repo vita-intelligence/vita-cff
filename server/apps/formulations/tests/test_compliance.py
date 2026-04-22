@@ -119,12 +119,17 @@ class TestIngredientDeclaration:
             ingredient_list_name="Big Item",
         )
 
+        # Use ``other_solid`` here so the test stays focused on the
+        # active sort order. Powder + gummy now ship a preset flavour
+        # system (Trisodium Citrate, Citric Acid, Flavouring, …) that
+        # would interleave with the two fake actives and defeat the
+        # sort-order check this test is actually about.
         totals = compute_totals(
             lines=[
                 ("small_key", small, Decimal("10"), None),
                 ("big_key", big, Decimal("100"), None),
             ],
-            dosage_form="powder",
+            dosage_form="other_solid",
         )
         items_map = {"small_key": small, "big_key": big}
         declaration, entries = build_ingredient_declaration(
@@ -132,7 +137,7 @@ class TestIngredientDeclaration:
             totals=totals,
         )
 
-        # Actives only (no excipients on powder) — biggest first.
+        # Actives only (no excipients on ``other_solid``) — biggest first.
         assert declaration == "Big Item, Small Item"
         assert [e.category for e in entries] == ["active", "active"]
 
@@ -208,9 +213,11 @@ class TestIngredientDeclaration:
         org = OrganizationFactory()
         # No ``ingredient_list_name`` set.
         item = _item(org, name="Obscure Raw Material", purity=1.0, type="Others")
+        # ``other_solid`` keeps the declaration free of the flavour
+        # system preset powder + gummy ship.
         totals = compute_totals(
             lines=[("a", item, Decimal("100"), None)],
-            dosage_form="powder",
+            dosage_form="other_solid",
         )
         declaration, _ = build_ingredient_declaration(
             items_by_external_id={"a": item},
