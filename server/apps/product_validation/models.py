@@ -153,6 +153,15 @@ class ProductValidation(models.Model):
     scientist_signed_at = models.DateTimeField(
         _("scientist signed at"), null=True, blank=True
     )
+    scientist_signature_image = models.TextField(
+        _("scientist signature image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64 PNG data URL captured on the signature pad at "
+            "transition time. Required to move ``draft → in_progress``."
+        ),
+    )
     rd_manager_signature = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -167,6 +176,15 @@ class ProductValidation(models.Model):
     )
     rd_manager_signed_at = models.DateTimeField(
         _("R&D manager signed at"), null=True, blank=True
+    )
+    rd_manager_signature_image = models.TextField(
+        _("R&D manager signature image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64 PNG data URL captured on the signature pad at "
+            "transition time. Required to reach ``passed`` / ``failed``."
+        ),
     )
 
     # ------------------------------------------------------------------

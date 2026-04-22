@@ -132,21 +132,44 @@ class TestUpdateSheet:
             update_sheet(sheet=other, actor=org.created_by, code="LOCKED")
 
 
+_SIG_FIXTURE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+
+
 class TestStatusTransitions:
     def test_draft_to_in_review(self) -> None:
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(organization=org, status="draft")
         updated = transition_status(
-            sheet=sheet, actor=org.created_by, next_status="in_review"
+            sheet=sheet,
+            actor=org.created_by,
+            next_status="in_review",
+            signature_image=_SIG_FIXTURE,
         )
         assert updated.status == "in_review"
+        assert updated.prepared_by_user_id == org.created_by.id
+        assert updated.prepared_by_signature_image == _SIG_FIXTURE
+
+    def test_draft_to_in_review_without_signature_raises(self) -> None:
+        from apps.specifications.services import SignatureRequired
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org, status="draft")
+        with pytest.raises(SignatureRequired):
+            transition_status(
+                sheet=sheet,
+                actor=org.created_by,
+                next_status="in_review",
+            )
 
     def test_cannot_jump_draft_to_approved(self) -> None:
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(organization=org, status="draft")
         with pytest.raises(InvalidStatusTransition):
             transition_status(
-                sheet=sheet, actor=org.created_by, next_status="approved"
+                sheet=sheet,
+                actor=org.created_by,
+                next_status="approved",
+                signature_image=_SIG_FIXTURE,
             )
 
     def test_terminal_accepted_cannot_transition(self) -> None:
@@ -155,6 +178,22 @@ class TestStatusTransitions:
         with pytest.raises(InvalidStatusTransition):
             transition_status(
                 sheet=sheet, actor=org.created_by, next_status="draft"
+            )
+
+    def test_internal_cannot_move_sent_to_accepted(self) -> None:
+        """The ``sent → accepted`` transition is reserved for the
+        kiosk endpoint that binds a customer signature + identity.
+        An internal actor cannot reach ``accepted`` through this
+        path, even with a valid signature image."""
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org, status="sent")
+        with pytest.raises(InvalidStatusTransition):
+            transition_status(
+                sheet=sheet,
+                actor=org.created_by,
+                next_status="accepted",
+                signature_image=_SIG_FIXTURE,
             )
 
     def test_same_status_is_noop(self) -> None:
@@ -179,6 +218,7 @@ class TestRenderContext:
         ctx = render_context(sheet)
         assert set(ctx.keys()) == {
             "sheet",
+            "signatures",
             "formulation",
             "totals",
             "actives",

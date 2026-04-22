@@ -79,6 +79,18 @@
     "food_contact_status": "Food contact status",
     "storage_conditions": "Storage conditions"
   },
+  "signature": {
+    "prepared_by_title": "Prepared-by signature required",
+    "director_title": "Director signature required",
+    "internal_subtitle": "Draw your signature to advance the spec sheet. The image is stored on the audit trail and appears on the printed sheet and PDF.",
+    "customer_title": "Sign to accept this specification",
+    "customer_subtitle": "By signing you confirm acceptance of the specification as presented. Your name, email, and company were captured when you entered this preview.",
+    "confirm": "Sign and advance",
+    "cancel": "Cancel",
+    "accept_button": "Sign and accept",
+    "accepted_banner": "You accepted this specification as {name} on {when}.",
+    "not_sent_yet": "This specification hasn't been sent for acceptance yet. Ask the sender to move it to the Sent state."
+  },
   "packaging": {
     "title": "Pick packaging components",
     "subtitle": "Search the packaging catalogue for each slot. Leave a slot blank to keep the TBD placeholder.",

@@ -216,9 +216,35 @@
       {% elif slug == "signatures" %}
         <div class="signatures">
           <h2 class="section-title">Signatures</h2>
-          <div class="sign-row"><span class="role">Prepared By:</span><div class="image-slot"></div></div>
-          <div class="sign-row"><span class="role">Director/Commercial Director:</span><div class="image-slot"></div></div>
-          <div class="sign-row"><span class="role">Customer:</span><div class="image-slot"></div></div>
+          <div class="sign-row">
+            <span class="role">Prepared By:</span>
+            {% if signatures.prepared_by %}
+              <img src="{{ signatures.prepared_by.image }}" alt="Prepared-by signature" style="max-height: 20mm;">
+              <div style="font-size: 9pt;">{{ signatures.prepared_by.name|default:"" }} · {{ signatures.prepared_by.signed_at|slice:":10" }}</div>
+            {% else %}
+              <div class="image-slot"></div>
+            {% endif %}
+          </div>
+          <div class="sign-row">
+            <span class="role">Director/Commercial Director:</span>
+            {% if signatures.director %}
+              <img src="{{ signatures.director.image }}" alt="Director signature" style="max-height: 20mm;">
+              <div style="font-size: 9pt;">{{ signatures.director.name|default:"" }} · {{ signatures.director.signed_at|slice:":10" }}</div>
+            {% else %}
+              <div class="image-slot"></div>
+            {% endif %}
+          </div>
+          <div class="sign-row">
+            <span class="role">Customer:</span>
+            {% if signatures.customer.signed_at %}
+              {% if signatures.customer.image %}
+                <img src="{{ signatures.customer.image }}" alt="Customer signature" style="max-height: 20mm;">
+              {% endif %}
+              <div style="font-size: 9pt;">{{ signatures.customer.name|default:"" }}{% if signatures.customer.company %} ({{ signatures.customer.company }}){% endif %} · {{ signatures.customer.signed_at|slice:":10" }}</div>
+            {% else %}
+              <div class="image-slot"></div>
+            {% endif %}
+          </div>
         </div>
 
       {% elif slug == "actives" %}

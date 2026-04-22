@@ -18,6 +18,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
@@ -32,6 +33,18 @@ import {
   type ValidationStatsDto,
   type ValidationStatus,
 } from "@/services/product_validation";
+
+
+/** Transitions that demand a captured signature before the backend
+ * will accept them — mirrors ``_SIGNATURE_TRANSITIONS`` in
+ * ``apps/product_validation/services.py``. Each entry is
+ * ``"<fromStatus>:<toStatus>"``. Other transitions (rewinds) skip
+ * the signature dialog entirely. */
+const SIGNATURE_TRANSITIONS: ReadonlySet<string> = new Set([
+  "draft:in_progress",
+  "in_progress:passed",
+  "in_progress:failed",
+]);
 
 
 /**
@@ -187,8 +200,22 @@ export function ValidationEditor({
     }
   };
 
+  const [pendingTransition, setPendingTransition] =
+    useState<ValidationStatus | null>(null);
+  const [sigError, setSigError] = useState<string | null>(null);
+
   const handleTransition = async (next: ValidationStatus) => {
     setError(null);
+    const key = `${validation.status}:${next}`;
+    if (SIGNATURE_TRANSITIONS.has(key)) {
+      // Sign-off move — open the signature dialog and wait for the
+      // canvas capture before hitting the API.
+      setSigError(null);
+      setPendingTransition(next);
+      return;
+    }
+    // Rewind-style transition (back to draft, etc.) — no signature
+    // needed; straight through to the server.
     try {
       await transitionMutation.mutateAsync({ status: next });
       router.refresh();
@@ -197,10 +224,56 @@ export function ValidationEditor({
     }
   };
 
+  const handleSignatureConfirm = async (dataUrl: string) => {
+    if (!pendingTransition) return;
+    setSigError(null);
+    try {
+      await transitionMutation.mutateAsync({
+        status: pendingTransition,
+        signature_image: dataUrl,
+      });
+      setPendingTransition(null);
+      router.refresh();
+    } catch (err) {
+      setSigError(extractErrorMessage(err, tErrors));
+    }
+  };
+
   const allowedNext = ALLOWED_VALIDATION_TRANSITIONS[validation.status] ?? [];
 
   return (
     <div className="mt-8 flex flex-col gap-6">
+      <SignatureDialog
+        isOpen={pendingTransition !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setPendingTransition(null);
+            setSigError(null);
+          }
+        }}
+        title={
+          pendingTransition
+            ? tV("signature.title", {
+                role:
+                  pendingTransition === "in_progress"
+                    ? tV("signature.role_scientist")
+                    : tV("signature.role_rd_manager"),
+              })
+            : ""
+        }
+        subtitle={tV("signature.subtitle")}
+        confirmLabel={tV("signature.confirm")}
+        cancelLabel={tV("signature.cancel")}
+        padLabel={
+          pendingTransition === "in_progress"
+            ? tV("signature.role_scientist")
+            : tV("signature.role_rd_manager")
+        }
+        busy={transitionMutation.isPending}
+        errorMessage={sigError}
+        onConfirm={handleSignatureConfirm}
+      />
+
       {/* Header + status transitions */}
       <header className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-col">
@@ -264,12 +337,14 @@ export function ValidationEditor({
           role={tV("signature.scientist")}
           actor={validation.scientist}
           signedAt={validation.scientist_signed_at}
+          imageDataUrl={validation.scientist_signature_image}
           emptyLabel={tV("signature.pending")}
         />
         <SignatureCard
           role={tV("signature.rd_manager")}
           actor={validation.rd_manager}
           signedAt={validation.rd_manager_signed_at}
+          imageDataUrl={validation.rd_manager_signature_image}
           emptyLabel={tV("signature.pending")}
         />
       </section>
@@ -626,20 +701,32 @@ function SignatureCard({
   role,
   actor,
   signedAt,
+  imageDataUrl,
   emptyLabel,
 }: {
   role: string;
   actor: { readonly name: string; readonly email: string } | null;
   signedAt: string | null;
+  imageDataUrl: string;
   emptyLabel: string;
 }) {
+  const signed = actor && signedAt;
   return (
     <div className="rounded-xl bg-ink-0 p-4 shadow-sm ring-1 ring-ink-200">
       <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {role}
       </p>
-      {actor && signedAt ? (
+      {signed ? (
         <>
+          {imageDataUrl ? (
+            <div className="mt-2 rounded-lg bg-ink-50 p-2">
+              <img
+                src={imageDataUrl}
+                alt={`${role} signature`}
+                className="max-h-20 w-full object-contain"
+              />
+            </div>
+          ) : null}
           <p className="mt-2 text-sm font-medium text-ink-1000">
             {actor.name || actor.email}
           </p>

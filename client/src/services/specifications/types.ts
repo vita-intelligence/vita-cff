@@ -147,6 +147,20 @@ export interface UpdateVisibilityRequestDto {
 export interface TransitionStatusRequestDto {
   readonly status: SpecificationStatus;
   readonly notes?: string;
+  /** Base64 PNG data URL captured on the signature pad. Required
+   *  for ``draft → in_review`` (prepared-by signature) and
+   *  ``in_review → approved`` (director signature). Customer
+   *  sign-off (``sent → accepted``) goes through the kiosk endpoint
+   *  instead. */
+  readonly signature_image?: string;
+}
+
+
+export interface PublicAcceptRequestDto {
+  readonly name: string;
+  readonly email?: string;
+  readonly company?: string;
+  readonly signature_image: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,8 +242,31 @@ export interface RenderedTransition {
   readonly created_at: string;
 }
 
+export interface RenderedInternalSignature {
+  readonly user_id: string;
+  readonly name: string;
+  readonly email: string;
+  readonly signed_at: string;
+  readonly image: string;
+}
+
+export interface RenderedCustomerSignature {
+  readonly name: string;
+  readonly email: string;
+  readonly company: string;
+  readonly signed_at: string | null;
+  readonly image: string;
+}
+
+export interface RenderedSignatures {
+  readonly prepared_by: RenderedInternalSignature | null;
+  readonly director: RenderedInternalSignature | null;
+  readonly customer: RenderedCustomerSignature;
+}
+
 export interface RenderedSheetContext {
   readonly sheet: SpecificationSheetDto;
+  readonly signatures: RenderedSignatures;
   readonly formulation: {
     readonly id: string;
     readonly version_number: number;

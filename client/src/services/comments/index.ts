@@ -34,6 +34,11 @@ export {
   type CommentsSocketHandle,
   type CommentsSocketHandlers,
 } from "./ws-client";
+export {
+  acceptKioskSpecification,
+  type KioskAcceptInput,
+  type KioskAcceptEcho,
+} from "./kiosk-api";
 export type {
   CommentAuthorDto,
   CommentAuthorKind,

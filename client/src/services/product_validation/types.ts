@@ -102,8 +102,10 @@ export interface ProductValidationDto {
   readonly status: ValidationStatus;
   readonly scientist: ActorSummary | null;
   readonly scientist_signed_at: string | null;
+  readonly scientist_signature_image: string;
   readonly rd_manager: ActorSummary | null;
   readonly rd_manager_signed_at: string | null;
+  readonly rd_manager_signature_image: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -205,4 +207,9 @@ export type UpdateValidationRequestDto = Partial<{
 
 export interface TransitionValidationRequestDto {
   readonly status: ValidationStatus;
+  /** Base64 PNG data URL captured on the signature pad. Required
+   *  for sign-off transitions (``draft → in_progress``, and
+   *  ``in_progress → passed|failed``); optional for rewind
+   *  transitions back to ``draft`` or ``in_progress``. */
+  readonly signature_image?: string;
 }

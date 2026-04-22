@@ -32,6 +32,7 @@ from apps.product_validation.services import (
     create_validation,
     get_validation,
     get_validation_for_batch,
+    SignatureRequired,
     transition_status,
     update_validation,
 )
@@ -387,6 +388,13 @@ class TestOverallStats:
 # ---------------------------------------------------------------------------
 
 
+# A minimum-viable signature payload — the real client sends the
+# canvas's ``toDataURL('image/png')`` output, which is always prefixed
+# ``data:image/png;base64,`` followed by the base-64 blob. For tests
+# we only need the shape to pass validation, not a real image.
+_SIG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+
+
 class TestTransitionStatus:
     def test_draft_to_in_progress_stamps_scientist(self) -> None:
         org = OrganizationFactory()
@@ -395,11 +403,27 @@ class TestTransitionStatus:
             validation=v,
             actor=org.created_by,
             next_status=ValidationStatus.IN_PROGRESS,
+            signature_image=_SIG,
         )
         assert updated.status == ValidationStatus.IN_PROGRESS
         assert updated.scientist_signature_id == org.created_by.id
         assert updated.scientist_signed_at is not None
+        assert updated.scientist_signature_image == _SIG
         assert updated.rd_manager_signature_id is None
+
+    def test_draft_to_in_progress_without_signature_raises(self) -> None:
+        org = OrganizationFactory()
+        v = _validation_with_data(org)
+        with pytest.raises(SignatureRequired):
+            transition_status(
+                validation=v,
+                actor=org.created_by,
+                next_status=ValidationStatus.IN_PROGRESS,
+            )
+        # State must not change when the signature check fails.
+        v.refresh_from_db()
+        assert v.status == ValidationStatus.DRAFT
+        assert v.scientist_signature_id is None
 
     def test_in_progress_to_passed_stamps_rd_manager(self) -> None:
         org = OrganizationFactory()
@@ -408,15 +432,34 @@ class TestTransitionStatus:
             validation=v,
             actor=org.created_by,
             next_status=ValidationStatus.IN_PROGRESS,
+            signature_image=_SIG,
         )
         updated = transition_status(
             validation=v,
             actor=org.created_by,
             next_status=ValidationStatus.PASSED,
+            signature_image=_SIG,
         )
         assert updated.status == ValidationStatus.PASSED
         assert updated.rd_manager_signature_id == org.created_by.id
         assert updated.rd_manager_signed_at is not None
+        assert updated.rd_manager_signature_image == _SIG
+
+    def test_passed_without_manager_signature_raises(self) -> None:
+        org = OrganizationFactory()
+        v = _validation_with_data(org)
+        transition_status(
+            validation=v,
+            actor=org.created_by,
+            next_status=ValidationStatus.IN_PROGRESS,
+            signature_image=_SIG,
+        )
+        with pytest.raises(SignatureRequired):
+            transition_status(
+                validation=v,
+                actor=org.created_by,
+                next_status=ValidationStatus.PASSED,
+            )
 
     def test_illegal_transition_raises(self) -> None:
         org = OrganizationFactory()
@@ -428,6 +471,7 @@ class TestTransitionStatus:
                 validation=v,
                 actor=org.created_by,
                 next_status=ValidationStatus.PASSED,
+                signature_image=_SIG,
             )
 
     def test_same_state_is_noop(self) -> None:
@@ -453,6 +497,7 @@ class TestTransitionStatus:
             validation=v,
             actor=org.created_by,
             next_status=ValidationStatus.IN_PROGRESS,
+            signature_image=_SIG,
         )
         original_sig = v.scientist_signature_id
         # Advance to passed, then roll back; sig must stay.
@@ -460,6 +505,7 @@ class TestTransitionStatus:
             validation=v,
             actor=org.created_by,
             next_status=ValidationStatus.PASSED,
+            signature_image=_SIG,
         )
         transition_status(
             validation=v,

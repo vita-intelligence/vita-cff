@@ -7,6 +7,7 @@ import { getPublicRenderedSpecificationServer } from "@/lib/auth/server";
 import { specificationsEndpoints } from "@/services/specifications";
 
 import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
+import { KioskAcceptButton } from "./kiosk-accept-button";
 
 
 /**
@@ -60,6 +61,16 @@ export default async function PublicSpecificationPage({
 
         <div className="mt-6">
           <SpecSheetContent rendered={rendered} />
+        </div>
+
+        <div className="mt-8 print:hidden">
+          <KioskAcceptButton
+            token={token}
+            sheetStatus={rendered.sheet.status}
+            customerName={rendered.signatures.customer.name}
+            customerSignedAt={rendered.signatures.customer.signed_at}
+            customerSignatureImage={rendered.signatures.customer.image}
+          />
         </div>
 
         <div className="mt-8 print:hidden">

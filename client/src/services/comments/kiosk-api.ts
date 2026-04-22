@@ -82,6 +82,47 @@ export async function signOutKioskVisitor(token: string): Promise<void> {
 }
 
 
+export interface KioskAcceptInput {
+  readonly name: string;
+  readonly email?: string;
+  readonly company?: string;
+  readonly signature_image: string;
+}
+
+
+export interface KioskAcceptEcho {
+  readonly status: "accepted";
+  readonly customer_name: string;
+  readonly customer_signed_at: string;
+}
+
+
+/** Sign and accept a ``sent`` spec sheet from the kiosk page. The
+ * server cross-checks the supplied ``name`` against the active
+ * kiosk session cookie so a leaked cookie alone cannot forge a
+ * signature under someone else's name. */
+export async function acceptKioskSpecification(
+  token: string,
+  input: KioskAcceptInput,
+): Promise<KioskAcceptEcho> {
+  const res = await fetch(`${kioskBaseUrl(token)}/accept/`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    credentials: "include",
+    body: JSON.stringify({
+      name: input.name,
+      email: input.email ?? "",
+      company: input.company ?? "",
+      signature_image: input.signature_image,
+    }),
+  });
+  return handleJson<KioskAcceptEcho>(res);
+}
+
+
 export interface FetchKioskCommentsArgs {
   readonly cursorUrl?: string | null;
   readonly includeResolved?: boolean;

@@ -272,8 +272,31 @@ class TestStats:
 # ---------------------------------------------------------------------------
 
 
+_SIG_FIXTURE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+
+
 class TestStatus:
     def test_owner_can_advance_to_in_progress(self) -> None:
+        org = OrganizationFactory()
+        batch = _batch_in_org(org)
+        v = create_validation(
+            organization=org, actor=org.created_by, trial_batch_id=batch.id
+        )
+        client = _login(APIClient(), org.created_by)
+        response = client.post(
+            _status_url(str(org.id), str(v.id)),
+            {
+                "status": ValidationStatus.IN_PROGRESS,
+                "signature_image": _SIG_FIXTURE,
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert response.data["status"] == ValidationStatus.IN_PROGRESS
+        assert response.data["scientist"] is not None
+        assert response.data["scientist_signature_image"] == _SIG_FIXTURE
+
+    def test_missing_signature_is_400(self) -> None:
         org = OrganizationFactory()
         batch = _batch_in_org(org)
         v = create_validation(
@@ -285,9 +308,8 @@ class TestStatus:
             {"status": ValidationStatus.IN_PROGRESS},
             format="json",
         )
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data["status"] == ValidationStatus.IN_PROGRESS
-        assert response.data["scientist"] is not None
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.data["signature_image"] == ["signature_required"]
 
     def test_illegal_transition_is_400(self) -> None:
         org = OrganizationFactory()
@@ -299,7 +321,10 @@ class TestStatus:
         # draft → passed is not allowed; must pass through in_progress.
         response = client.post(
             _status_url(str(org.id), str(v.id)),
-            {"status": ValidationStatus.PASSED},
+            {
+                "status": ValidationStatus.PASSED,
+                "signature_image": _SIG_FIXTURE,
+            },
             format="json",
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST

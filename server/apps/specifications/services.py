@@ -23,8 +23,13 @@ from typing import Any
 from django.db import transaction
 from django.db.models import QuerySet
 from django.template.loader import render_to_string
+from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
+from config.signatures import (
+    SignatureImageInvalid,
+    validate_signature_image,
+)
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.formulations.constants import DosageForm, capsule_size_by_key
 from apps.formulations.models import FormulationVersion
@@ -54,6 +59,13 @@ class SpecificationCodeConflict(Exception):
 
 class FormulationVersionNotInOrg(Exception):
     code = "formulation_version_not_in_org"
+
+
+class SignatureRequired(Exception):
+    """A transition that demands a drawn signature was attempted
+    without one (or with a malformed image payload)."""
+
+    code = "signature_required"
 
 
 class InvalidStatusTransition(Exception):
@@ -428,6 +440,19 @@ def set_section_visibility(
     return sheet
 
 
+#: Transitions that require a captured signature before the sheet
+#: can move forward. Maps ``(from_status, to_status)`` to the slot
+#: the drawn image lands in. Customer sign-off (``sent → accepted``)
+#: happens on the kiosk path and is handled by a dedicated endpoint
+#: that binds the signature to the visitor's kiosk session — it is
+#: intentionally absent from this map so the internal transition
+#: view cannot be used to fake a customer signature.
+_INTERNAL_SIGNATURE_SLOT: dict[tuple[str, str], str] = {
+    (SpecificationStatus.DRAFT, SpecificationStatus.IN_REVIEW): "prepared_by",
+    (SpecificationStatus.IN_REVIEW, SpecificationStatus.APPROVED): "director",
+}
+
+
 @transaction.atomic
 def transition_status(
     *,
@@ -435,8 +460,20 @@ def transition_status(
     actor: Any,
     next_status: str,
     notes: str = "",
+    signature_image: str | None = None,
 ) -> SpecificationSheet:
     """Move the sheet one state forward and stamp an audit row.
+
+    Certain transitions require a drawn signature captured on the
+    signature pad:
+
+    * ``draft → in_review`` — **prepared-by** (scientist who
+      drafted the sheet).
+    * ``in_review → approved`` — **director** / commercial owner.
+
+    Customer sign-off (``sent → accepted``) lives on a separate
+    kiosk endpoint and is rejected here — an internal actor cannot
+    sign on the customer's behalf.
 
     The :class:`SpecificationTransition` insert and the sheet's
     ``status`` write share a single transaction — if either fails,
@@ -450,11 +487,45 @@ def transition_status(
     allowed = ALLOWED_TRANSITIONS.get(sheet.status, frozenset())
     if next_status not in allowed:
         raise InvalidStatusTransition()
+    if next_status == SpecificationStatus.ACCEPTED:
+        # Block the internal path to ``accepted`` entirely — that
+        # state is reserved for the kiosk sign-off flow.
+        raise InvalidStatusTransition()
 
     previous_status = sheet.status
+    slot = _INTERNAL_SIGNATURE_SLOT.get((previous_status, next_status))
+    normalised_image: str | None = None
+    if slot is not None:
+        try:
+            normalised_image = validate_signature_image(signature_image)
+        except SignatureImageInvalid as exc:
+            raise SignatureRequired() from exc
+
     sheet.status = next_status
     sheet.updated_by = actor
-    sheet.save(update_fields=["status", "updated_by", "updated_at"])
+    update_fields = ["status", "updated_by", "updated_at"]
+    now = timezone.now()
+
+    if slot == "prepared_by":
+        sheet.prepared_by_user = actor
+        sheet.prepared_by_signed_at = now
+        sheet.prepared_by_signature_image = normalised_image or ""
+        update_fields += [
+            "prepared_by_user",
+            "prepared_by_signed_at",
+            "prepared_by_signature_image",
+        ]
+    elif slot == "director":
+        sheet.director_user = actor
+        sheet.director_signed_at = now
+        sheet.director_signature_image = normalised_image or ""
+        update_fields += [
+            "director_user",
+            "director_signed_at",
+            "director_signature_image",
+        ]
+
+    sheet.save(update_fields=update_fields)
 
     SpecificationTransition.objects.create(
         sheet=sheet,
@@ -543,6 +614,84 @@ def revoke_public_token(
     return sheet
 
 
+@transaction.atomic
+def accept_as_customer(
+    *,
+    sheet: SpecificationSheet,
+    signer_name: str,
+    signer_email: str,
+    signer_company: str,
+    signature_image: str,
+) -> SpecificationSheet:
+    """Move a ``sent`` sheet to ``accepted`` with a customer signature.
+
+    This is the kiosk path — the signer is not a platform user, so
+    the API layer pulls identity off the active kiosk session
+    (established when the visitor first opened the public link) and
+    hands the name / email / company strings to this service. Those
+    strings stamp onto the sheet alongside the drawn signature.
+
+    Rejects:
+    * Sheets whose status is not ``sent`` (any other state already
+      landed somewhere the customer should not be able to push).
+    * A missing / malformed signature image.
+    * A blank signer name — we refuse to record an anonymous
+      signature.
+    """
+
+    if sheet.status != SpecificationStatus.SENT:
+        raise InvalidStatusTransition()
+
+    normalised_image = validate_signature_image(signature_image)
+    name = (signer_name or "").strip()
+    if not name:
+        raise SignatureRequired()
+
+    previous_status = sheet.status
+    sheet.status = SpecificationStatus.ACCEPTED
+    sheet.customer_name = name
+    sheet.customer_email = (signer_email or "").strip()
+    sheet.customer_company = (signer_company or "").strip()
+    sheet.customer_signature_image = normalised_image
+    sheet.customer_signed_at = timezone.now()
+    sheet.save(
+        update_fields=[
+            "status",
+            "customer_name",
+            "customer_email",
+            "customer_company",
+            "customer_signature_image",
+            "customer_signed_at",
+            "updated_at",
+        ]
+    )
+    SpecificationTransition.objects.create(
+        sheet=sheet,
+        from_status=previous_status,
+        to_status=SpecificationStatus.ACCEPTED,
+        # Kiosk signers are not platform users; the audit row keeps
+        # ``actor`` pointing at the sheet's last internal editor so
+        # the foreign key stays satisfied, and the captured signer
+        # identity lives on the sheet's ``customer_*`` columns.
+        actor=sheet.updated_by,
+        notes=f"Accepted by {name}".strip(),
+    )
+    record_audit(
+        organization=sheet.organization,
+        actor=sheet.updated_by,
+        action="spec_sheet.customer_accept",
+        target=sheet,
+        before={"status": previous_status},
+        after={
+            "status": SpecificationStatus.ACCEPTED,
+            "signer_name": name,
+            "signer_email": sheet.customer_email,
+            "signer_company": sheet.customer_company,
+        },
+    )
+    return sheet
+
+
 def get_by_public_token(token: Any) -> SpecificationSheet:
     """Look up a sheet by its public token.
 
@@ -573,6 +722,25 @@ def get_by_public_token(token: Any) -> SpecificationSheet:
 # ---------------------------------------------------------------------------
 # Render context — the flat view-model the frontend renders
 # ---------------------------------------------------------------------------
+
+
+def _signature_payload(
+    *, user, signed_at, image: str
+) -> dict[str, Any] | None:
+    """Shape an internal-role signature (prepared-by / director) for
+    the render payload. ``None`` when no signature has landed yet so
+    the UI can render the empty state instead of a name with no
+    signed-at timestamp."""
+
+    if user is None or signed_at is None:
+        return None
+    return {
+        "user_id": str(user.id),
+        "name": (user.get_full_name() or user.email or "").strip(),
+        "email": user.email,
+        "signed_at": signed_at.isoformat(),
+        "image": image or "",
+    }
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -845,6 +1013,29 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "status": sheet.status,
             "created_at": sheet.created_at.isoformat(),
             "updated_at": sheet.updated_at.isoformat(),
+        },
+        "signatures": {
+            "prepared_by": _signature_payload(
+                user=sheet.prepared_by_user,
+                signed_at=sheet.prepared_by_signed_at,
+                image=sheet.prepared_by_signature_image,
+            ),
+            "director": _signature_payload(
+                user=sheet.director_user,
+                signed_at=sheet.director_signed_at,
+                image=sheet.director_signature_image,
+            ),
+            "customer": {
+                "name": sheet.customer_name,
+                "email": sheet.customer_email,
+                "company": sheet.customer_company,
+                "signed_at": (
+                    sheet.customer_signed_at.isoformat()
+                    if sheet.customer_signed_at is not None
+                    else None
+                ),
+                "image": sheet.customer_signature_image,
+            },
         },
         "formulation": {
             "id": str(version.formulation_id),

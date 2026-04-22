@@ -28,6 +28,7 @@ from apps.product_validation.services import (
     get_validation,
     get_validation_for_batch,
     list_validations,
+    SignatureRequired,
     transition_status,
     update_validation,
 )
@@ -202,10 +203,18 @@ class ValidationStatusView(APIView):
                 validation=validation,
                 actor=request.user,
                 next_status=serializer.validated_data["status"],
+                signature_image=serializer.validated_data.get(
+                    "signature_image"
+                ) or None,
             )
         except InvalidValidationTransition:
             return Response(
                 {"status": ["invalid_validation_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SignatureRequired:
+            return Response(
+                {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(ProductValidationReadSerializer(updated).data)

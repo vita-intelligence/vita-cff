@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.specifications.api.views import (
+    PublicSpecificationAcceptView,
     PublicSpecificationPdfView,
     PublicSpecificationRenderView,
     SpecificationDetailView,
@@ -75,5 +76,10 @@ urlpatterns = [
         "public/specifications/<uuid:token>/pdf/",
         PublicSpecificationPdfView.as_view(),
         name="public-specification-pdf",
+    ),
+    path(
+        "public/specifications/<uuid:token>/accept/",
+        PublicSpecificationAcceptView.as_view(),
+        name="public-specification-accept",
     ),
 ]

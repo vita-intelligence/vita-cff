@@ -24,7 +24,15 @@
     "scientist": "Scientist sign-off",
     "rd_manager": "R&D Manager sign-off",
     "rd_manager_prefix": "R&D Manager",
-    "pending": "Awaiting signature"
+    "pending": "Awaiting signature",
+    "role_scientist": "Scientist",
+    "role_rd_manager": "R&D Manager",
+    "title": "{role} signature required",
+    "subtitle": "Draw your signature below to advance this validation. The image is stored with the audit log and cannot be modified afterwards.",
+    "confirm": "Sign and advance",
+    "cancel": "Cancel",
+    "stored_label": "Signed by {name} on {when}",
+    "view_signature": "View signature"
   },
   "tab": {
     "subtitle": "{count, plural, =0 {No validations recorded yet} one {# QC validation} other {# QC validations}} for this project.",

@@ -74,8 +74,10 @@ class ProductValidationReadSerializer(serializers.ModelSerializer):
             "status",
             "scientist",
             "scientist_signed_at",
+            "scientist_signature_image",
             "rd_manager",
             "rd_manager_signed_at",
+            "rd_manager_signature_image",
             "created_at",
             "updated_at",
         )
@@ -109,3 +111,12 @@ class ProductValidationUpdateSerializer(serializers.Serializer):
 
 class ProductValidationStatusSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=ValidationStatus.choices)
+    # The drawn signature data URL. Optional at the serializer layer
+    # because the service decides per-transition whether it is
+    # required — rewinding ``in_progress → draft`` and re-signing an
+    # existing sign-off do not need a fresh image.
+    signature_image = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )

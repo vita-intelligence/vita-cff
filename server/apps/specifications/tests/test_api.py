@@ -47,6 +47,10 @@ def _render_url(org_id: str, sheet_id: str) -> str:
     )
 
 
+# Minimal valid PNG data URL for signature-gated transitions in tests.
+_SIG_FIXTURE_API = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+
+
 def _status_url(org_id: str, sheet_id: str) -> str:
     return reverse(
         "specifications:specification-status",
@@ -243,12 +247,30 @@ class TestStatusEndpoint:
         sheet = SpecificationSheetFactory(organization=org, status="draft")
         response = client.post(
             _status_url(str(org.id), str(sheet.id)),
-            {"status": "in_review"},
+            {
+                "status": "in_review",
+                "signature_image": _SIG_FIXTURE_API,
+            },
             format="json",
         )
         assert response.status_code == status.HTTP_200_OK
         sheet.refresh_from_db()
         assert sheet.status == "in_review"
+        assert sheet.prepared_by_user_id is not None
+        assert sheet.prepared_by_signature_image == _SIG_FIXTURE_API
+
+    def test_missing_signature_rejected(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        client, _, org = owner_client
+        sheet = SpecificationSheetFactory(organization=org, status="draft")
+        response = client.post(
+            _status_url(str(org.id), str(sheet.id)),
+            {"status": "in_review"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_400_BAD_REQUEST
+        assert response.json()["signature_image"] == ["signature_required"]
 
     def test_invalid_transition(
         self, owner_client: tuple[APIClient, Any, Any]
@@ -257,7 +279,7 @@ class TestStatusEndpoint:
         sheet = SpecificationSheetFactory(organization=org, status="draft")
         response = client.post(
             _status_url(str(org.id), str(sheet.id)),
-            {"status": "approved"},
+            {"status": "approved", "signature_image": _SIG_FIXTURE_API},
             format="json",
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST

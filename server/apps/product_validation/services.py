@@ -25,6 +25,10 @@ from apps.audit.services import record as record_audit, snapshot
 from apps.organizations.models import Organization
 from apps.product_validation.models import ProductValidation, ValidationStatus
 from apps.trial_batches.models import TrialBatch
+from config.signatures import (
+    SignatureImageInvalid,
+    validate_signature_image,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,13 @@ class ValidationAlreadyExists(Exception):
 
 class InvalidValidationTransition(Exception):
     code = "invalid_validation_transition"
+
+
+class SignatureRequired(Exception):
+    """Raised when a transition that demands a captured signature is
+    attempted without one."""
+
+    code = "signature_required"
 
 
 #: Permissible moves through the validation lifecycle. Kept explicit
@@ -656,14 +667,27 @@ def transition_status(
     validation: ProductValidation,
     actor: Any,
     next_status: str,
+    signature_image: str | None = None,
 ) -> ProductValidation:
     """Move the validation between lifecycle states.
 
-    Stamps ``scientist_signature`` the first time the validation
-    leaves ``draft`` and ``rd_manager_signature`` once it settles on
-    a terminal ``passed`` / ``failed`` state. Same-state transitions
-    are no-ops so a misclick on the advance button does not re-stamp
-    a different actor over an earlier sign-off.
+    Transitions that produce a sign-off require a drawn signature to
+    be submitted alongside the status change:
+
+    * ``draft → in_progress`` demands the scientist's signature.
+    * ``in_progress → passed`` and ``in_progress → failed`` both
+      demand the R&D manager's signature.
+
+    The signature image is a base64 PNG the client captures on the
+    signature pad; it is validated by :func:`validate_signature_image`
+    before being stored. Rewinding transitions (anything back to
+    ``draft`` or back to ``in_progress``) keep the historical
+    signatures intact — the audit log cares about who signed and
+    when, not who un-signed.
+
+    Same-state transitions are no-ops so a misclick on the advance
+    button does not re-stamp a different actor over an earlier
+    sign-off.
     """
 
     if next_status == validation.status:
@@ -673,24 +697,47 @@ def transition_status(
     if next_status not in allowed:
         raise InvalidValidationTransition()
 
+    scientist_sign = (
+        next_status == ValidationStatus.IN_PROGRESS
+        and validation.status == ValidationStatus.DRAFT
+    )
+    manager_sign = next_status in (
+        ValidationStatus.PASSED,
+        ValidationStatus.FAILED,
+    )
+
+    normalised_image: str | None = None
+    if scientist_sign or manager_sign:
+        try:
+            normalised_image = validate_signature_image(signature_image)
+        except SignatureImageInvalid as exc:
+            raise SignatureRequired() from exc
+
     previous_status = validation.status
     now = timezone.now()
     update_fields = ["status", "updated_by", "updated_at"]
 
     validation.status = next_status
 
-    if (
-        next_status == ValidationStatus.IN_PROGRESS
-        and validation.scientist_signature_id is None
-    ):
+    if scientist_sign:
         validation.scientist_signature = actor
         validation.scientist_signed_at = now
-        update_fields += ["scientist_signature", "scientist_signed_at"]
+        validation.scientist_signature_image = normalised_image or ""
+        update_fields += [
+            "scientist_signature",
+            "scientist_signed_at",
+            "scientist_signature_image",
+        ]
 
-    if next_status in (ValidationStatus.PASSED, ValidationStatus.FAILED):
+    if manager_sign:
         validation.rd_manager_signature = actor
         validation.rd_manager_signed_at = now
-        update_fields += ["rd_manager_signature", "rd_manager_signed_at"]
+        validation.rd_manager_signature_image = normalised_image or ""
+        update_fields += [
+            "rd_manager_signature",
+            "rd_manager_signed_at",
+            "rd_manager_signature_image",
+        ]
 
     validation.updated_by = actor
     validation.save(update_fields=update_fields)

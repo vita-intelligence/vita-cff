@@ -70,6 +70,15 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "storage_conditions",
             "weight_uniformity",
             "public_token",
+            "prepared_by_signed_at",
+            "prepared_by_signature_image",
+            "director_signed_at",
+            "director_signature_image",
+            "customer_name",
+            "customer_email",
+            "customer_company",
+            "customer_signed_at",
+            "customer_signature_image",
             "packaging_lid",
             "packaging_container",
             "packaging_label",
@@ -167,6 +176,32 @@ class SpecificationStatusSerializer(serializers.Serializer):
     notes = serializers.CharField(
         required=False, allow_blank=True, default="", max_length=2000
     )
+    # Required on transitions that produce a sign-off
+    # (``draft → in_review`` captures the prepared-by signature,
+    # ``in_review → approved`` captures the director's). The service
+    # decides per-transition whether it's mandatory, so we accept it
+    # as optional at the serializer layer and let the service raise
+    # ``SignatureRequired`` when missing.
+    signature_image = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        trim_whitespace=False,
+    )
+
+
+class SpecificationCustomerAcceptSerializer(serializers.Serializer):
+    """Payload the public / kiosk endpoint accepts when a visitor
+    signs off on a ``sent`` sheet. Identity fields mirror the kiosk
+    session shape (name + email + company label) — the backend
+    cross-checks them against the active session cookie, so clients
+    cannot forge an acceptance from someone else's name."""
+
+    name = serializers.CharField(max_length=200)
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    company = serializers.CharField(
+        max_length=200, required=False, allow_blank=True, default=""
+    )
+    signature_image = serializers.CharField(trim_whitespace=False)
 
 
 class SpecificationPackagingSerializer(serializers.Serializer):

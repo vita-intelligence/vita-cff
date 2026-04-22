@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { CommentsPanel } from "@/components/comments";
+import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
@@ -131,13 +132,47 @@ export function SpecificationSheetView({
 
   const allowedNext = ALLOWED_TRANSITIONS[sheet.status] ?? [];
 
+  const [signaturePending, setSignaturePending] =
+    useState<SpecificationStatus | null>(null);
+  const [signatureError, setSignatureError] = useState<string | null>(null);
+
+  // Sign-off transitions require a drawn signature; everything else
+  // (rewinds, sent → rejected, rejected → draft) goes straight to
+  // the server. Customer sign-off (``sent → accepted``) is blocked
+  // on the internal path — the kiosk page handles it.
+  const signatureTransitions = new Set<string>([
+    `${sheet.status}:in_review`,
+    `${sheet.status}:approved`,
+  ]);
+
   const handleTransition = async (next: SpecificationStatus) => {
     setErrorMessage(null);
+    const key = `${sheet.status}:${next}`;
+    if (signatureTransitions.has(key) && (next === "in_review" || next === "approved")) {
+      setSignatureError(null);
+      setSignaturePending(next);
+      return;
+    }
     try {
       await transitionMutation.mutateAsync({ status: next });
       router.refresh();
     } catch (err) {
       setErrorMessage(extractErrorMessage(err, tErrors));
+    }
+  };
+
+  const handleSignatureConfirm = async (dataUrl: string) => {
+    if (!signaturePending) return;
+    setSignatureError(null);
+    try {
+      await transitionMutation.mutateAsync({
+        status: signaturePending,
+        signature_image: dataUrl,
+      });
+      setSignaturePending(null);
+      router.refresh();
+    } catch (err) {
+      setSignatureError(extractErrorMessage(err, tErrors));
     }
   };
 
@@ -160,6 +195,27 @@ export function SpecificationSheetView({
 
   return (
     <div className="mt-6 flex flex-col gap-5 md:mt-8">
+      <SignatureDialog
+        isOpen={signaturePending !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setSignaturePending(null);
+            setSignatureError(null);
+          }
+        }}
+        title={
+          signaturePending === "in_review"
+            ? tSpecs("signature.prepared_by_title")
+            : tSpecs("signature.director_title")
+        }
+        subtitle={tSpecs("signature.internal_subtitle")}
+        confirmLabel={tSpecs("signature.confirm")}
+        cancelLabel={tSpecs("signature.cancel")}
+        busy={transitionMutation.isPending}
+        errorMessage={signatureError}
+        onConfirm={handleSignatureConfirm}
+      />
+
       {/* ------------------------------------------------------------ */}
       {/* Back-link to the parent project — hidden when printing         */}
       {/* ------------------------------------------------------------ */}
@@ -518,9 +574,28 @@ export function SpecSheetContent({
           {tSpecs("sheet.sections.signatures")}
         </SectionTitle>
         <div className="flex flex-col gap-6">
-          <SignatureLine role={tSpecs("sheet.signature.prepared_by")} />
-          <SignatureLine role={tSpecs("sheet.signature.director")} />
-          <SignatureLine role={tSpecs("sheet.signature.customer")} />
+          <SignatureLine
+            role={tSpecs("sheet.signature.prepared_by")}
+            name={rendered.signatures.prepared_by?.name}
+            signedAt={rendered.signatures.prepared_by?.signed_at}
+            image={rendered.signatures.prepared_by?.image}
+          />
+          <SignatureLine
+            role={tSpecs("sheet.signature.director")}
+            name={rendered.signatures.director?.name}
+            signedAt={rendered.signatures.director?.signed_at}
+            image={rendered.signatures.director?.image}
+          />
+          <SignatureLine
+            role={tSpecs("sheet.signature.customer")}
+            name={
+              rendered.signatures.customer.name ||
+              rendered.signatures.customer.company ||
+              undefined
+            }
+            signedAt={rendered.signatures.customer.signed_at ?? undefined}
+            image={rendered.signatures.customer.image}
+          />
         </div>
         <HistoryPanel
           entries={rendered.history}
@@ -840,13 +915,48 @@ function DataTd({
   );
 }
 
-/** Print-friendly signature line: role label above a thin rule the
- *  scanned signature image will eventually sit on (Phase B). */
-function SignatureLine({ role }: { role: string }) {
+/** Print-friendly signature line: role label above either the
+ *  captured signature image + signer name, or an empty rule when no
+ *  signature has been posted yet. Same component on screen + print + PDF. */
+function SignatureLine({
+  role,
+  name,
+  signedAt,
+  image,
+}: {
+  role: string;
+  name?: string | null;
+  signedAt?: string | null;
+  image?: string | null;
+}) {
+  const signed = Boolean(signedAt);
   return (
     <div>
       <p className="text-[11px] font-bold">{role}</p>
-      <div className="mt-5 border-b border-ink-1000" />
+      {signed && image ? (
+        <div className="mt-2">
+          <img
+            src={image}
+            alt={`${role} signature`}
+            className="max-h-16 object-contain"
+          />
+          <div className="mt-1 border-b border-ink-1000" />
+          <p className="mt-1 text-[10px] text-ink-700">
+            {name ?? "—"}
+            {signedAt ? ` · ${formatTimestamp(signedAt)}` : ""}
+          </p>
+        </div>
+      ) : signed ? (
+        <div className="mt-5">
+          <div className="border-b border-ink-1000" />
+          <p className="mt-1 text-[10px] text-ink-700">
+            {name ?? "—"}
+            {signedAt ? ` · ${formatTimestamp(signedAt)}` : ""}
+          </p>
+        </div>
+      ) : (
+        <div className="mt-5 border-b border-ink-1000" />
+      )}
     </div>
   );
 }

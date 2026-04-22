@@ -135,6 +135,63 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # ------------------------------------------------------------------
+    # Signatures. Three distinct role-scoped slots — the sheet cannot
+    # advance through its status machine without the corresponding
+    # signature image captured.
+    #
+    # * ``prepared_by`` — scientist who drafted the sheet. Signs on
+    #   ``draft → in_review``.
+    # * ``director`` — internal commercial owner. Signs on
+    #   ``in_review → approved``.
+    # * ``customer`` — end-client. Signs from the public / kiosk page
+    #   on ``sent → accepted``. The actor FK is nullable because the
+    #   signer is not a platform user — their identity comes from the
+    #   kiosk session (name + email + company label) captured on the
+    #   sheet at sign time.
+    # ------------------------------------------------------------------
+    prepared_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="prepared_spec_sheets",
+    )
+    prepared_by_signed_at = models.DateTimeField(
+        _("prepared-by signed at"), null=True, blank=True
+    )
+    prepared_by_signature_image = models.TextField(
+        _("prepared-by signature image"), blank=True, default=""
+    )
+    director_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="approved_spec_sheets",
+    )
+    director_signed_at = models.DateTimeField(
+        _("director signed at"), null=True, blank=True
+    )
+    director_signature_image = models.TextField(
+        _("director signature image"), blank=True, default=""
+    )
+    customer_name = models.CharField(
+        _("customer signer name"), max_length=200, blank=True, default=""
+    )
+    customer_email = models.EmailField(
+        _("customer signer email"), blank=True, default=""
+    )
+    customer_company = models.CharField(
+        _("customer signer company"), max_length=200, blank=True, default=""
+    )
+    customer_signed_at = models.DateTimeField(
+        _("customer signed at"), null=True, blank=True
+    )
+    customer_signature_image = models.TextField(
+        _("customer signature image"), blank=True, default=""
+    )
+
     limits_override = models.JSONField(
         _("limits override"),
         default=dict,

@@ -19,6 +19,7 @@ from apps.specifications.api.serializers import (
     SpecificationSheetReadSerializer,
     SpecificationSheetUpdateSerializer,
     SpecificationStatusSerializer,
+    SpecificationCustomerAcceptSerializer,
 )
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.services import (
@@ -40,6 +41,8 @@ from apps.specifications.services import (
     set_packaging,
     set_section_order,
     set_section_visibility,
+    accept_as_customer,
+    SignatureRequired,
     transition_status,
     update_sheet,
 )
@@ -210,10 +213,18 @@ class SpecificationStatusView(APIView):
                 actor=request.user,
                 next_status=serializer.validated_data["status"],
                 notes=serializer.validated_data.get("notes", ""),
+                signature_image=serializer.validated_data.get(
+                    "signature_image"
+                ) or None,
             )
         except InvalidStatusTransition:
             return Response(
                 {"status": ["invalid_status_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SignatureRequired:
+            return Response(
+                {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -565,3 +576,90 @@ class PublicSpecificationPdfView(APIView):
             f'{disposition}; filename="{filename}"'
         )
         return response
+
+
+class PublicSpecificationAcceptView(APIView):
+    """``POST`` ``/api/public/specifications/<token>/accept/``.
+
+    Kiosk sign-off endpoint. Takes the drawn signature + signer
+    identity, cross-checks identity against the active kiosk
+    session cookie (issued when the visitor entered their details
+    on the public page), and flips the sheet from ``sent`` to
+    ``accepted``. Unauthenticated but not anonymous — the signer
+    has proven who they are by establishing a kiosk session first.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str) -> Response:
+        from apps.comments.kiosk import (
+            KioskSessionInvalid,
+            KioskSessionRevoked,
+            KioskTokenInvalid,
+            resolve_from_request,
+        )
+        from config.signatures import SignatureImageInvalid
+
+        try:
+            sheet = get_by_public_token(token)
+        except PublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        try:
+            identity = resolve_from_request(request, str(token))
+        except (
+            KioskSessionInvalid,
+            KioskSessionRevoked,
+            KioskTokenInvalid,
+        ):
+            return Response(
+                {"detail": ["kiosk_session_required"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = SpecificationCustomerAcceptSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        session = identity.session
+        posted_name = (data.get("name") or "").strip().lower()
+        session_name = (session.guest_name or "").strip().lower()
+        if posted_name and session_name and posted_name != session_name:
+            return Response(
+                {"name": ["identity_mismatch"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            updated = accept_as_customer(
+                sheet=sheet,
+                signer_name=data.get("name") or session.guest_name,
+                signer_email=data.get("email") or session.guest_email,
+                signer_company=(
+                    data.get("company") or session.guest_org_label
+                ),
+                signature_image=data["signature_image"],
+            )
+        except InvalidStatusTransition:
+            return Response(
+                {"status": ["invalid_status_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (SignatureRequired, SignatureImageInvalid):
+            return Response(
+                {"signature_image": ["signature_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "status": updated.status,
+                "customer_name": updated.customer_name,
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
