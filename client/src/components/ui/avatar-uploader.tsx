@@ -3,22 +3,20 @@
 /**
  * Avatar upload widget.
  *
- * Drives the full capture flow:
- *   1. User clicks "Upload photo" (file picker opens).
- *   2. We draw the picked file onto a hidden canvas, centre-crop to
- *      a square, and scale down to ``MAX_DIMENSION`` px.
- *   3. The canvas is serialised to a JPEG data URL (quality 0.85)
- *      which typically lands at 15–40 KB — comfortably under the
- *      backend's 500 KB cap without pixelating the photo.
- *   4. POST to ``/auth/me/avatar/``; on success the parent's
- *      ``onUploaded`` callback fires with the new data URL so the
- *      UI re-paints without a round-trip back to ``/me``.
+ * The flow is two modals deep:
  *
- * The widget deliberately does NOT crop interactively — scientists
- * should be able to swap their profile photo in one click, not
- * fight a crop rectangle. Centre-crop covers the common headshot
- * case; any face that needs tighter framing can be re-uploaded
- * from an already-cropped source.
+ *   1. File picker opens when the user clicks "Upload / Change photo".
+ *   2. Picked file hands off to :component:`AvatarCropModal`, which
+ *      validates size + type, shows an interactive round-crop with
+ *      pan + zoom, and returns a 256×256 JPEG data URL.
+ *   3. The data URL goes to ``POST /api/auth/me/avatar/``; the
+ *      response echoes the stored value and we mirror it into
+ *      parent state so the page repaints without a round-trip to
+ *      ``/me``.
+ *
+ * Validation errors surface inline — the crop modal rejects bad
+ * inputs before the user fights with a cropper that's about to
+ * produce a useless result.
  */
 
 import { Button } from "@heroui/react";
@@ -26,48 +24,9 @@ import { Camera, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
 
 import { apiClient } from "@/lib/api";
+
+import { AvatarCropModal, type CroppedAvatar } from "./avatar-crop-modal";
 import { UserAvatar } from "./user-avatar";
-
-
-const MAX_DIMENSION = 256;
-const JPEG_QUALITY = 0.85;
-
-
-async function fileToDataUrl(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(reader.error);
-    reader.onload = () => resolve(reader.result as string);
-    reader.readAsDataURL(file);
-  });
-}
-
-
-async function imageFromDataUrl(url: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("avatar_image_decode_failed"));
-    img.src = url;
-  });
-}
-
-
-function cropAndCompress(img: HTMLImageElement): string {
-  const side = Math.min(img.width, img.height);
-  const sx = Math.floor((img.width - side) / 2);
-  const sy = Math.floor((img.height - side) / 2);
-  const target = Math.min(side, MAX_DIMENSION);
-  const canvas = document.createElement("canvas");
-  canvas.width = target;
-  canvas.height = target;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("avatar_canvas_unavailable");
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, target, target);
-  ctx.drawImage(img, sx, sy, side, side, 0, 0, target, target);
-  return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
-}
 
 
 interface Props {
@@ -87,28 +46,28 @@ export function AvatarUploader({
   onCleared,
 }: Props) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [pickedFile, setPickedFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleFile = async (file: File) => {
+  const handleCropped = async ({ dataUrl }: CroppedAvatar) => {
     setError(null);
     setBusy(true);
     try {
-      const dataUrl = await fileToDataUrl(file);
-      const img = await imageFromDataUrl(dataUrl);
-      const compressed = cropAndCompress(img);
       const { data } = await apiClient.post<{ avatar_image: string }>(
-        "/auth/me/avatar/",
-        { avatar_image: compressed },
+        "/api/auth/me/avatar/",
+        { avatar_image: dataUrl },
       );
-      onUploaded(data.avatar_image || compressed);
+      onUploaded(data.avatar_image || dataUrl);
+      setPickedFile(null);
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "avatar_upload_failed",
+        err instanceof Error && "message" in err
+          ? err.message
+          : "Upload failed. Try again.",
       );
     } finally {
       setBusy(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   };
 
@@ -116,11 +75,11 @@ export function AvatarUploader({
     setError(null);
     setBusy(true);
     try {
-      await apiClient.delete("/auth/me/avatar/");
+      await apiClient.delete("/api/auth/me/avatar/");
       onCleared();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "avatar_clear_failed",
+        err instanceof Error ? err.message : "Could not remove photo.",
       );
     } finally {
       setBusy(false);
@@ -163,8 +122,8 @@ export function AvatarUploader({
           ) : null}
         </div>
         <p className="text-xs text-ink-500">
-          JPEG or PNG. Centre-cropped and compressed to a 256×256
-          thumbnail before upload.
+          PNG, JPEG, or WebP · at least 96×96 · max 6 MB. You'll crop
+          it into a circle before upload.
         </p>
         {error ? (
           <p className="text-xs font-medium text-danger">{error}</p>
@@ -172,14 +131,23 @@ export function AvatarUploader({
         <input
           ref={fileInputRef}
           type="file"
-          accept="image/png,image/jpeg"
+          accept="image/png,image/jpeg,image/webp"
           hidden
           onChange={(e) => {
             const file = e.target.files?.[0];
-            if (file) void handleFile(file);
+            if (file) setPickedFile(file);
+            // Reset so picking the same file a second time still
+            // fires ``change`` (the browser otherwise de-dupes).
+            if (fileInputRef.current) fileInputRef.current.value = "";
           }}
         />
       </div>
+
+      <AvatarCropModal
+        file={pickedFile}
+        onClose={() => setPickedFile(null)}
+        onCropped={handleCropped}
+      />
     </div>
   );
 }
