@@ -40,9 +40,6 @@ export async function ProtectedHeader({
   const tCommon = await getTranslations("common");
   const tNav = await getTranslations("navigation");
 
-  const initials =
-    ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
-    "··";
 
   // Capability-gated nav — a locked-out user sees only Dashboard so
   // they never land on an access-denied screen one click away.
@@ -109,7 +106,7 @@ export async function ProtectedHeader({
         <UserMenu
           fullName={user.full_name}
           email={user.email}
-          initials={initials}
+          avatarUrl={user.avatar_image || ""}
           labels={{
             settings: tNav("menu.settings"),
             signOut: tNav("account.sign_out"),

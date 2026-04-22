@@ -3,6 +3,7 @@
 import { LogOut, Settings } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { Link, useRouter } from "@/i18n/navigation";
 import { useLogout } from "@/services/accounts";
 
@@ -10,7 +11,9 @@ import { useLogout } from "@/services/accounts";
 export interface UserMenuProps {
   readonly fullName: string;
   readonly email: string;
-  readonly initials: string;
+  /** Opaque avatar URL — base64 data URL today, blob-storage URL
+   *  tomorrow. Empty string falls back to initials. */
+  readonly avatarUrl?: string;
   readonly labels: {
     readonly settings: string;
     readonly signOut: string;
@@ -31,7 +34,7 @@ export interface UserMenuProps {
 export function UserMenu({
   fullName,
   email,
-  initials,
+  avatarUrl,
   labels,
 }: UserMenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -76,9 +79,14 @@ export function UserMenu({
         aria-expanded={isOpen}
         aria-haspopup="menu"
         onClick={() => setIsOpen((v) => !v)}
-        className="flex h-10 w-10 items-center justify-center rounded-full bg-orange-500 text-sm font-semibold text-ink-0 outline-none transition-shadow hover:bg-orange-600 focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 focus:ring-offset-ink-0"
+        className="flex h-10 w-10 items-center justify-center rounded-full outline-none transition-shadow focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 focus:ring-offset-ink-0"
       >
-        {initials}
+        <UserAvatar
+          name={fullName}
+          email={email}
+          imageUrl={avatarUrl || null}
+          size={40}
+        />
       </button>
 
       {isOpen ? (
