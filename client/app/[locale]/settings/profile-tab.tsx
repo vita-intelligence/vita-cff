@@ -5,6 +5,8 @@ import { Check, Mail, Pencil, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState, type FormEvent } from "react";
 
+import { AvatarUploader } from "@/components/ui/avatar-uploader";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import { useUpdateCurrentUser } from "@/services/accounts";
@@ -22,11 +24,11 @@ import type { UserDto } from "@/services/accounts/types";
 export function ProfileTab({ user }: { user: UserDto }) {
   const tSettings = useTranslations("settings");
 
-  const initials =
-    ((user.first_name[0] ?? "") + (user.last_name[0] ?? "")).toUpperCase() ||
-    "··";
-
   const [isEditing, setIsEditing] = useState(false);
+  // Local mirror of the avatar so the upload widget repaints before
+  // the router-level ``/me`` query next refetches. Starting from the
+  // server-provided value keeps SSR hydration consistent.
+  const [avatar, setAvatar] = useState<string>(user.avatar_image || "");
 
   return (
     <section className="flex flex-col gap-4">
@@ -41,12 +43,12 @@ export function ProfileTab({ user }: { user: UserDto }) {
 
       <article className="flex flex-col gap-5 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
         <div className="flex items-center gap-4">
-          <div
-            aria-hidden
-            className="flex h-14 w-14 items-center justify-center rounded-full bg-orange-500 text-base font-semibold text-ink-0"
-          >
-            {initials}
-          </div>
+          <UserAvatar
+            name={user.full_name}
+            email={user.email}
+            imageUrl={avatar || null}
+            size={56}
+          />
           <div className="min-w-0 flex-1">
             <p className="truncate text-lg font-semibold text-ink-1000">
               {user.full_name}
@@ -66,6 +68,16 @@ export function ProfileTab({ user }: { user: UserDto }) {
               {tSettings("profile.edit")}
             </button>
           ) : null}
+        </div>
+
+        <div className="border-t border-ink-100 pt-5">
+          <AvatarUploader
+            name={user.full_name}
+            email={user.email}
+            currentImage={avatar}
+            onUploaded={setAvatar}
+            onCleared={() => setAvatar("")}
+          />
         </div>
 
         {isEditing ? (

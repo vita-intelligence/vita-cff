@@ -9,6 +9,11 @@ export interface UserDto {
   readonly first_name: string;
   readonly last_name: string;
   readonly full_name: string;
+  /** Opaque profile-photo URL. Empty string renders as initials.
+   *  Today a base64 data URL on the backend; a future migration to
+   *  blob storage replaces it with a CDN URL — every consumer
+   *  already treats this as an opaque string. */
+  readonly avatar_image: string;
   readonly date_joined: string;
 }
 

@@ -462,6 +462,7 @@ class MentionableMembersView(APIView):
                 "id": str(m.user_id),
                 "name": (m.user.get_full_name() or m.user.email).strip(),
                 "email": m.user.email,
+                "avatar_url": m.user.avatar_image or "",
             }
             for m in memberships
         ]

@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { UserAvatar } from "@/components/ui/user-avatar";
 import {
   useMentionableMembers,
   type MentionableMemberDto,
@@ -124,15 +125,25 @@ export function MentionAutocomplete({
                   onSelect(member);
                 }}
                 onMouseEnter={() => setActiveIndex(index)}
-                className={`flex w-full flex-col items-start gap-0.5 px-3 py-2 text-left ${
+                className={`flex w-full items-center gap-2 px-3 py-2 text-left ${
                   index === activeIndex
                     ? "bg-orange-50 text-ink-1000"
                     : "text-ink-700 hover:bg-ink-50"
                 }`}
               >
-                <span className="font-medium">{member.name}</span>
-                <span className="text-[11px] text-ink-500">
-                  {member.email}
+                <UserAvatar
+                  name={member.name}
+                  email={member.email}
+                  imageUrl={member.avatar_url || null}
+                  size={28}
+                />
+                <span className="flex min-w-0 flex-col items-start gap-0.5">
+                  <span className="truncate font-medium">
+                    {member.name}
+                  </span>
+                  <span className="truncate text-[11px] text-ink-500">
+                    {member.email}
+                  </span>
                 </span>
               </button>
             </li>

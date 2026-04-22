@@ -32,7 +32,9 @@ import type { CommentDto } from "@/services/comments";
 
 import { CommentComposer } from "./comment-composer";
 import { renderCommentBody } from "./render-body";
-import { authorInitials, formatTimestamp } from "./utils";
+import { UserAvatar } from "@/components/ui/user-avatar";
+
+import { formatTimestamp } from "./utils";
 
 interface Props {
   readonly comment: CommentDto;
@@ -130,10 +132,6 @@ export function CommentCard({
 
   const displayName =
     comment.author.name || comment.author.email || "—";
-  const authorInitial = authorInitials(
-    comment.author.name,
-    comment.author.email,
-  );
 
   return (
     <div
@@ -141,13 +139,17 @@ export function CommentCard({
         isSelf ? "justify-end" : "justify-start"
       } ${comment.is_resolved ? "opacity-70" : ""}`}
     >
-      {/* Avatar — only on the "other" side, matches WA/TG layout. */}
+      {/* Avatar — only on the "other" side, matches WA/TG layout.
+          Shows the author's uploaded photo when available, else
+          falls back to the coloured initials pill. */}
       {!isSelf ? (
-        <div
-          aria-hidden
-          className="mt-5 grid h-7 w-7 shrink-0 place-items-center rounded-full bg-orange-100 text-[10px] font-semibold text-orange-700"
-        >
-          {authorInitial}
+        <div className="mt-5">
+          <UserAvatar
+            name={comment.author.name}
+            email={comment.author.email}
+            imageUrl={comment.author.avatar_url || null}
+            size={28}
+          />
         </div>
       ) : null}
 

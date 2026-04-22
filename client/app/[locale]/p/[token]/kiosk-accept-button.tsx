@@ -31,8 +31,10 @@ import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
+import { KioskIdentityModal } from "@/components/comments/kiosk/kiosk-identity-modal";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { acceptKioskSpecification } from "@/services/comments";
+import type { KioskIdentityEcho } from "@/services/comments/kiosk-api";
 
 
 interface Props {
@@ -86,14 +88,16 @@ export function KioskAcceptButton({
   const tSpecs = useTranslations("specifications");
   const router = useRouter();
   const [identity, setIdentity] = useState<KioskMarker | null>(null);
+  const [identityOpen, setIdentityOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   // Identity marker lands in localStorage after the visitor posts
   // their name/email through the kiosk identity modal. We poll on
-  // mount + focus so the button flips to "Sign and accept" once the
-  // user has identified without requiring a manual page reload.
+  // mount + focus so the button reflects the latest state once the
+  // user has identified through the comments panel without
+  // requiring a manual page reload.
   useEffect(() => {
     const refresh = () => setIdentity(readIdentityMarker(token));
     refresh();
@@ -104,6 +108,25 @@ export function KioskAcceptButton({
       window.removeEventListener("storage", refresh);
     };
   }, [token]);
+
+  const handleIdentified = (echo: KioskIdentityEcho) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        `vita_kiosk_${token}_identified`,
+        JSON.stringify(echo),
+      );
+    }
+    setIdentity({
+      name: echo.name,
+      email: echo.email,
+      company: echo.company,
+    });
+    setIdentityOpen(false);
+    // Flow straight into the signature dialog — the user just
+    // introduced themselves specifically to sign, making them
+    // click again would be friction.
+    setDialogOpen(true);
+  };
 
   // Already accepted — show a read-only confirmation card instead
   // of the sign-off button.
@@ -176,13 +199,29 @@ export function KioskAcceptButton({
         type="button"
         variant="primary"
         size="md"
-        className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:opacity-40"
-        onClick={() => setDialogOpen(true)}
-        isDisabled={!identity}
+        className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+        onClick={() => {
+          // No identity yet → capture it first, then the modal's
+          // ``onIdentified`` callback chains into the signature
+          // dialog. One click for the visitor, two modals behind
+          // the scenes.
+          if (!identity) {
+            setIdentityOpen(true);
+          } else {
+            setDialogOpen(true);
+          }
+        }}
       >
         <PenLine className="h-4 w-4" />
         {tSpecs("signature.accept_button")}
       </Button>
+      {identityOpen ? (
+        <KioskIdentityModal
+          token={token}
+          onIdentified={handleIdentified}
+          onDismiss={() => setIdentityOpen(false)}
+        />
+      ) : null}
       <SignatureDialog
         isOpen={dialogOpen}
         onOpenChange={(open) => {

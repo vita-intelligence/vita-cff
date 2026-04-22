@@ -161,6 +161,7 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
             "name": "",
             "email": "",
             "org_label": "",
+            "avatar_url": "",
         }
     elif comment.author_id and comment.author is not None:
         user = comment.author
@@ -170,6 +171,7 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
             "name": (user.get_full_name() or user.email).strip(),
             "email": user.email,
             "org_label": "",
+            "avatar_url": user.avatar_image or "",
         }
     else:
         author = {
@@ -178,6 +180,7 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
             "name": comment.guest_name,
             "email": comment.guest_email,
             "org_label": comment.guest_org_label,
+            "avatar_url": "",
         }
 
     mentions: list[dict[str, Any]] = []

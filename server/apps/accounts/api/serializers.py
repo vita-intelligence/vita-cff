@@ -39,6 +39,7 @@ class UserReadSerializer(serializers.ModelSerializer):
             "first_name",
             "last_name",
             "full_name",
+            "avatar_image",
             "date_joined",
         )
         read_only_fields = fields

@@ -329,6 +329,11 @@ def _viewer_snapshot(user) -> dict[str, Any]:
     return {
         "id": str(getattr(user, "id", "") or ""),
         "name": full_name or getattr(user, "email", "") or "Someone",
+        # Opt-in profile photo. Empty string keeps the peer-rendered
+        # avatar surface in "initials only" mode. Sent with every
+        # presence.joined broadcast so late-arriving viewers see the
+        # full roster with photos immediately.
+        "avatar_url": getattr(user, "avatar_image", "") or "",
     }
 
 

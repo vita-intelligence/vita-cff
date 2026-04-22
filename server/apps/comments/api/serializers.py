@@ -103,6 +103,7 @@ class CommentReadSerializer(serializers.ModelSerializer):
                 "name": "",
                 "email": "",
                 "org_label": "",
+                "avatar_url": "",
             }
         if obj.author_id and obj.author is not None:
             user = obj.author
@@ -112,6 +113,11 @@ class CommentReadSerializer(serializers.ModelSerializer):
                 "name": (user.get_full_name() or user.email).strip(),
                 "email": user.email,
                 "org_label": "",
+                # Treated as an opaque URL by the client — today this
+                # is a base64 data URL stored on ``User.avatar_image``;
+                # a future migration to blob storage replaces it with
+                # a real URL without touching any consumer.
+                "avatar_url": user.avatar_image or "",
             }
         return {
             "id": None,
@@ -119,6 +125,7 @@ class CommentReadSerializer(serializers.ModelSerializer):
             "name": obj.guest_name,
             "email": obj.guest_email,
             "org_label": obj.guest_org_label,
+            "avatar_url": "",
         }
 
     def get_mentions(self, obj: Comment) -> list[dict]:
@@ -171,3 +178,4 @@ class MentionableMemberSerializer(serializers.Serializer):
     id = serializers.CharField()
     name = serializers.CharField()
     email = serializers.CharField()
+    avatar_url = serializers.CharField(required=False, allow_blank=True, default="")

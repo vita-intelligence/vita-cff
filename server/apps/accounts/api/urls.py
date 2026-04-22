@@ -5,6 +5,7 @@ from django.urls import path
 from apps.accounts.api.views import (
     LoginView,
     LogoutView,
+    MeAvatarView,
     MeView,
     RefreshView,
     RegisterView,
@@ -18,4 +19,5 @@ urlpatterns = [
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("auth/refresh/", RefreshView.as_view(), name="refresh"),
     path("auth/me/", MeView.as_view(), name="me"),
+    path("auth/me/avatar/", MeAvatarView.as_view(), name="me-avatar"),
 ]

@@ -55,6 +55,19 @@ class User(AbstractBaseUser, PermissionsMixin):
         default=timezone.now,
     )
 
+    avatar_image = models.TextField(
+        _("avatar image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64 data URL the user uploaded as their profile photo. "
+            "Rendered alongside the name in the comments feed, presence "
+            "roster, and mentions. Empty renders as initials. When we "
+            "migrate to blob storage, this column gets swapped for a "
+            "URL — every consumer already treats the value as opaque."
+        ),
+    )
+
     objects = UserManager()
 
     USERNAME_FIELD = "email"

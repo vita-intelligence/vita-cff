@@ -134,3 +134,39 @@ class MeView(APIView):
         if update_fields:
             user.save(update_fields=update_fields)
         return Response(UserReadSerializer(user).data)
+
+
+class MeAvatarView(APIView):
+    """``POST`` / ``DELETE`` ``/api/auth/me/avatar/``.
+
+    Dedicated endpoint for profile-photo uploads so the main
+    ``PATCH /me/`` handler does not have to grow a ``signature_image``
+    style branch. ``POST`` accepts a base64 data URL (PNG or JPEG,
+    ≤500 KB); ``DELETE`` clears the stored image so the user falls
+    back to the initials avatar.
+    """
+
+    permission_classes = (IsAuthenticated,)
+
+    def post(self, request: Request) -> Response:
+        from config.avatars import AvatarImageInvalid, validate_avatar_image
+
+        raw = request.data.get("avatar_image")
+        try:
+            normalised = validate_avatar_image(raw)
+        except AvatarImageInvalid:
+            return Response(
+                {"avatar_image": ["invalid_avatar_image"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = request.user
+        user.avatar_image = normalised
+        user.save(update_fields=["avatar_image"])
+        return Response(UserReadSerializer(user).data)
+
+    def delete(self, request: Request) -> Response:
+        user = request.user
+        if user.avatar_image:
+            user.avatar_image = ""
+            user.save(update_fields=["avatar_image"])
+        return Response(UserReadSerializer(user).data)

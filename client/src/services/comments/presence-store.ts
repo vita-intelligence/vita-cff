@@ -17,6 +17,10 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 export interface Viewer {
   readonly id: string;
   readonly name: string;
+  /** Opaque avatar URL — base64 today, blob-storage URL tomorrow.
+   *  Optional so old-shape events from a pre-avatar server still
+   *  typecheck and fall back to initials. */
+  readonly avatar_url?: string;
 }
 
 

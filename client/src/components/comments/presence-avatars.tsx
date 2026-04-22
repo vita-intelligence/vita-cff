@@ -85,6 +85,26 @@ export function PresenceAvatars({
 
 
 function PresenceAvatar({ viewer }: { viewer: Viewer }) {
+  // When the viewer uploaded a profile photo we render that
+  // instead of the hashed-colour initials pill — identical size so
+  // the existing stacked layout keeps working.
+  if (viewer.avatar_url) {
+    return (
+      <span
+        className="grid h-7 w-7 overflow-hidden rounded-full ring-2 ring-ink-0"
+        title={viewer.name}
+        aria-label={viewer.name}
+      >
+        <img
+          src={viewer.avatar_url}
+          alt=""
+          aria-hidden
+          className="h-7 w-7 object-cover"
+        />
+      </span>
+    );
+  }
+
   const accent = useMemo(() => {
     // Stable-per-viewer tint: hash the id so the same user keeps the
     // same colour across re-renders / reconnects.

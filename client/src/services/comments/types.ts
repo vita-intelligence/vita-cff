@@ -20,6 +20,9 @@ export interface CommentAuthorDto {
   readonly name: string;
   readonly email: string;
   readonly org_label: string;
+  /** Opaque profile-photo URL. Base64 data URL today, blob-storage
+   *  URL tomorrow — treated as a string by every consumer. */
+  readonly avatar_url: string;
 }
 
 export interface CommentMentionRefDto {
@@ -69,6 +72,7 @@ export interface MentionableMemberDto {
   readonly id: string;
   readonly name: string;
   readonly email: string;
+  readonly avatar_url?: string;
 }
 
 export interface MentionableMembersPageDto {
