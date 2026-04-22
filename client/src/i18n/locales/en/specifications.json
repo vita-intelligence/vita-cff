@@ -162,7 +162,8 @@
       "amino_per_100g": "Per 100g (g)",
       "amino_per_serving": "Per Serving (g)",
       "ingredients": "Ingredients",
-      "excipients": "Excipients"
+      "excipients": "Excipients",
+      "mg_per_unit": "mg / unit"
     },
     "pending_nutrition": "Nutrition data pending catalogue fill — values shown as zero until every raw material has its nutrition columns populated.",
     "nutrition_partial_hint": "Based on {count} of {total} ingredients with catalogue data. Missing values contribute zero.",

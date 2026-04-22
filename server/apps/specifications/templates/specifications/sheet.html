@@ -290,17 +290,24 @@
         </table>
 
       {% elif slug == "excipients" %}
-        <h2 class="section-title">Excipient Information</h2>
-        <table class="data">
-          <thead><tr><th>Excipients</th></tr></thead>
-          <tbody>
-            {% for entry in declaration.entries %}
-              {% if entry.category != "active" %}
-                <tr><td class="name">{{ entry.label }}</td></tr>
-              {% endif %}
-            {% endfor %}
-          </tbody>
-        </table>
+        {% with excipient_rows=declaration.entries|non_active_entries %}
+          {% if excipient_rows %}
+            <h2 class="section-title">Excipient Information</h2>
+            <table class="data">
+              <thead>
+                <tr><th>Excipients</th><th class="center">mg / unit</th></tr>
+              </thead>
+              <tbody>
+                {% for entry in excipient_rows %}
+                  <tr>
+                    <td class="name">{{ entry.label }}</td>
+                    <td class="center">{{ entry.mg|default:"—" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+        {% endwith %}
 
       {% elif slug == "ingredients" %}
         {% if declaration.text %}

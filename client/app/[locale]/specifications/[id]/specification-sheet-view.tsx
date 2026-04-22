@@ -663,29 +663,39 @@ export function SpecSheetContent({
         </table>
       </>
     ),
-    excipients: () => (
-      <>
-        <SectionTitle>
-          {tSpecs("sheet.sections.excipients")}
-        </SectionTitle>
-        <table className="w-full border-collapse border border-ink-1000 text-[11px]">
-          <thead>
-            <tr>
-              <DataTh>{tSpecs("sheet.columns.excipients")}</DataTh>
-            </tr>
-          </thead>
-          <tbody>
-            {rendered.declaration.entries
-              .filter((e) => e.category !== "active")
-              .map((entry, idx) => (
+    excipients: () => {
+      const excipientEntries = rendered.declaration.entries.filter(
+        (e) => e.category !== "active",
+      );
+      // Suppress the section entirely when the snapshot has no
+      // excipient rows — prevents a naked "Excipient Information"
+      // header with an empty table on old snapshots saved before
+      // the powder / gummy flavour system landed.
+      if (excipientEntries.length === 0) return null;
+      return (
+        <>
+          <SectionTitle>
+            {tSpecs("sheet.sections.excipients")}
+          </SectionTitle>
+          <table className="w-full border-collapse border border-ink-1000 text-[11px]">
+            <thead>
+              <tr>
+                <DataTh>{tSpecs("sheet.columns.excipients")}</DataTh>
+                <DataTh center>{tSpecs("sheet.columns.mg_per_unit")}</DataTh>
+              </tr>
+            </thead>
+            <tbody>
+              {excipientEntries.map((entry, idx) => (
                 <tr key={`${entry.category}-${entry.label}-${idx}`}>
                   <DataTd>{entry.label}</DataTd>
+                  <DataTd center>{stripTrailingZeros(entry.mg)}</DataTd>
                 </tr>
               ))}
-          </tbody>
-        </table>
-      </>
-    ),
+            </tbody>
+          </table>
+        </>
+      );
+    },
     ingredients: () =>
       rendered.declaration.text ? (
         <>
