@@ -245,6 +245,7 @@ def update_sheet(
         "food_contact_status",
         "shelf_life",
         "storage_conditions",
+        "weight_uniformity",
         # ``limits_override`` is a JSON object; the serializer clamps
         # the shape before we see it here, so assignment is safe.
         "limits_override",
@@ -898,7 +899,9 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "storage_conditions": sheet.storage_conditions,
         },
         "limits": resolve_limits(sheet),
-        "weight_uniformity": DEFAULT_WEIGHT_UNIFORMITY_PCT,
+        "weight_uniformity": (
+            sheet.weight_uniformity or DEFAULT_WEIGHT_UNIFORMITY_PCT
+        ),
         "visibility": resolve_visibility(sheet),
         "section_order": resolve_section_order(sheet),
         "watermark": show_watermark_for(sheet.status),

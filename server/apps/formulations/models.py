@@ -113,6 +113,20 @@ class Formulation(models.Model):
         default="",
         help_text=_("Target disintegration time (e.g. 'within 60 minutes')."),
     )
+    target_fill_weight_mg = models.DecimalField(
+        _("target fill weight (mg)"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Target fill weight per serving unit — sachet mass for "
+            "powders, single-gummy weight for gummies. Drives the "
+            "fill-weight check (total ingredients should equal "
+            "this target). Leave blank for capsule/tablet where "
+            "the math uses the selected size instead."
+        ),
+    )
 
     project_status = models.CharField(
         _("project status"),

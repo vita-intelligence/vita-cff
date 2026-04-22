@@ -64,6 +64,11 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "final_price",
             "cover_notes",
             "total_weight_label",
+            "unit_quantity",
+            "food_contact_status",
+            "shelf_life",
+            "storage_conditions",
+            "weight_uniformity",
             "public_token",
             "packaging_lid",
             "packaging_container",
@@ -141,6 +146,9 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
     )
     storage_conditions = serializers.CharField(
         max_length=200, required=False, allow_blank=True
+    )
+    weight_uniformity = serializers.CharField(
+        max_length=64, required=False, allow_blank=True
     )
     # Per-sheet ``{slug: value}`` override for the microbial / heavy
     # metal block. Free-form strings — the UI surfaces a form so the

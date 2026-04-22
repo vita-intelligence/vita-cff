@@ -71,13 +71,27 @@ interface MetadataDraft {
   tablet_size: string;
   serving_size: number;
   servings_per_pack: number;
+  target_fill_weight_mg: string;
   directions_of_use: string;
   suggested_dosage: string;
   appearance: string;
   disintegration_spec: string;
 }
 
+// Excel's unspoken convention: every powder sachet in the reference
+// workbooks (Soza / Moonlytes / Rave Lytes / FreeProtein) is a 10g
+// sachet. Scientists never type the number — the template assumes
+// it. We mirror that here so a fresh powder formulation shows the
+// flavour system + carrier math immediately instead of sitting empty
+// until the user happens to notice the fill-weight input.
+const POWDER_DEFAULT_FILL_MG = "10000";
+
+function defaultFillWeightFor(dosageForm: string): string {
+  return dosageForm === "powder" ? POWDER_DEFAULT_FILL_MG : "";
+}
+
 function metadataFrom(formulation: FormulationDto): MetadataDraft {
+  const storedFill = formulation.target_fill_weight_mg ?? "";
   return {
     name: formulation.name,
     code: formulation.code,
@@ -87,6 +101,8 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     tablet_size: formulation.tablet_size,
     serving_size: formulation.serving_size,
     servings_per_pack: formulation.servings_per_pack,
+    target_fill_weight_mg:
+      storedFill || defaultFillWeightFor(formulation.dosage_form),
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
     appearance: formulation.appearance,
@@ -225,14 +241,25 @@ export function FormulationBuilder({
       servingSizeOverride: null,
       fallbackName: line.item_name,
     }));
+    const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
     return computeTotals({
       lines: computeInputs,
       dosageForm: metadata.dosage_form,
       capsuleSizeKey: metadata.capsule_size || null,
       tabletSizeKey: metadata.tablet_size || null,
       defaultServingSize: metadata.serving_size,
+      targetFillWeightMg: Number.isFinite(parsedFill) && parsedFill > 0
+        ? parsedFill
+        : null,
     });
-  }, [lines, metadata.dosage_form, metadata.capsule_size, metadata.tablet_size, metadata.serving_size]);
+  }, [
+    lines,
+    metadata.dosage_form,
+    metadata.capsule_size,
+    metadata.tablet_size,
+    metadata.serving_size,
+    metadata.target_fill_weight_mg,
+  ]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
   //: render from the same lines array. Both are pure and cheap.
@@ -360,6 +387,7 @@ export function FormulationBuilder({
   const handleSaveMetadata = useCallback(async () => {
     setErrorMessage(null);
     try {
+      const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
       const updated = await updateMutation.mutateAsync({
         name: metadata.name,
         code: metadata.code,
@@ -369,6 +397,10 @@ export function FormulationBuilder({
         tablet_size: metadata.tablet_size,
         serving_size: metadata.serving_size,
         servings_per_pack: metadata.servings_per_pack,
+        target_fill_weight_mg:
+          Number.isFinite(parsedFill) && parsedFill > 0
+            ? String(parsedFill)
+            : null,
         directions_of_use: metadata.directions_of_use,
         suggested_dosage: metadata.suggested_dosage,
         appearance: metadata.appearance,
@@ -561,6 +593,20 @@ export function FormulationBuilder({
                 dosage_form: v as DosageForm,
                 capsule_size: v === "capsule" ? metadata.capsule_size : "",
                 tablet_size: v === "tablet" ? metadata.tablet_size : "",
+                // Powder is one-sachet-per-serving by convention. If
+                // the user had ``serving_size=2`` from a previous
+                // capsule/tablet state, carrying it over would halve
+                // every label claim in the line math. Snap to 1.
+                serving_size:
+                  v === "powder" ? 1 : metadata.serving_size,
+                // Seed the sachet mass the reference workbooks use
+                // (10g = 10000mg) when the user lands on powder with
+                // an empty field — matches Excel's silent default so
+                // the excipient table populates without extra input.
+                target_fill_weight_mg:
+                  v === "powder" && !metadata.target_fill_weight_mg
+                    ? POWDER_DEFAULT_FILL_MG
+                    : metadata.target_fill_weight_mg,
               })
             }
             disabled={!canWrite}
@@ -599,12 +645,49 @@ export function FormulationBuilder({
               ]}
             />
           ) : null}
-          <NumberField
-            label={tFormulations("fields.serving_size")}
-            value={metadata.serving_size}
-            onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
-            disabled={!canWrite}
-          />
+          {metadata.dosage_form === "powder" ||
+          metadata.dosage_form === "gummy" ? (
+            <TextField
+              label={tFormulations(
+                metadata.dosage_form === "powder"
+                  ? "fields.powder_fill_weight"
+                  : "fields.gummy_fill_weight",
+              )}
+              value={metadata.target_fill_weight_mg}
+              onChange={(v) =>
+                setMetadata({ ...metadata, target_fill_weight_mg: v })
+              }
+              disabled={!canWrite}
+              hint={tFormulations(
+                metadata.dosage_form === "powder"
+                  ? "fields.powder_fill_weight_hint"
+                  : "fields.gummy_fill_weight_hint",
+              )}
+            />
+          ) : null}
+          {/* "Units per serving" is meaningless for powder sachets —
+              every sachet is one serving by convention. Hiding the
+              input avoids inviting errors (scientists typing 1 when
+              they mean "1 sachet + 250ml water"). The backend still
+              defaults to ``1`` when the form is powder. Per-form
+              labels stay honest: "Capsules per serving" instead of
+              a generic "Units". */}
+          {metadata.dosage_form !== "powder" ? (
+            <NumberField
+              label={tFormulations(
+                metadata.dosage_form === "capsule"
+                  ? "fields.serving_size_capsule"
+                  : metadata.dosage_form === "tablet"
+                    ? "fields.serving_size_tablet"
+                    : metadata.dosage_form === "gummy"
+                      ? "fields.serving_size_gummy"
+                      : "fields.serving_size",
+              )}
+              value={metadata.serving_size}
+              onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
+              disabled={!canWrite}
+            />
+          ) : null}
           <NumberField
             label={tFormulations("fields.servings_per_pack")}
             value={metadata.servings_per_pack}
@@ -730,6 +813,13 @@ export function FormulationBuilder({
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.ingredients")}
           </p>
+          {metadata.serving_size > 1 ? (
+            <p className="mt-2 rounded-lg bg-orange-50 px-3 py-2 text-xs text-orange-800 ring-1 ring-inset ring-orange-200">
+              {tFormulations("builder.serving_size_banner", {
+                units: metadata.serving_size,
+              })}
+            </p>
+          ) : null}
           {lines.length === 0 ? (
             <p className="mt-6 text-sm text-ink-600">
               {tFormulations("builder.picker_none_added")}
@@ -814,6 +904,15 @@ export function FormulationBuilder({
                             ? numberFormatter.format(computed)
                             : "—"}
                         </div>
+                        {computed !== null && metadata.serving_size > 1 ? (
+                          <div className="mt-0.5 text-[10px] font-medium text-orange-700">
+                            {tFormulations("builder.per_serving_total_hint", {
+                              total: numberFormatter.format(
+                                computed * metadata.serving_size,
+                              ),
+                            })}
+                          </div>
+                        ) : null}
                         {computed !== null && explanation ? (
                           <div
                             className="mt-0.5 text-[10px] text-ink-500"
@@ -1265,24 +1364,46 @@ function TotalsBlock({
             {tFormulations("builder.excipients.title")}
           </p>
           <ul className="mt-2 flex flex-col gap-1 text-xs text-ink-700">
-            <li className="flex justify-between">
-              <span>{tFormulations("builder.excipients.mg_stearate")}</span>
-              <span>{format(excipients.mgStearateMg)} mg</span>
-            </li>
-            <li className="flex justify-between">
-              <span>{tFormulations("builder.excipients.silica")}</span>
-              <span>{format(excipients.silicaMg)} mg</span>
-            </li>
-            {excipients.dcpMg !== null ? (
-              <li className="flex justify-between">
-                <span>{tFormulations("builder.excipients.dcp")}</span>
-                <span>{format(excipients.dcpMg)} mg</span>
-              </li>
-            ) : null}
-            <li className="flex justify-between">
-              <span>{tFormulations("builder.excipients.mcc")}</span>
-              <span>{format(excipients.mccMg)} mg</span>
-            </li>
+            {excipients.rows.length > 0 ? (
+              // Flexible list used by powder + gummy. ``is_remainder``
+              // rows (carrier / gummy base) get a subtle orange accent
+              // so scientists can see which value is "whatever's left"
+              // at a glance.
+              excipients.rows.map((row) => (
+                <li
+                  key={row.slug}
+                  className={`flex justify-between ${
+                    row.isRemainder ? "font-medium text-orange-700" : ""
+                  }`}
+                >
+                  <span>{row.label}</span>
+                  <span>{format(row.mg)} mg</span>
+                </li>
+              ))
+            ) : (
+              <>
+                <li className="flex justify-between">
+                  <span>
+                    {tFormulations("builder.excipients.mg_stearate")}
+                  </span>
+                  <span>{format(excipients.mgStearateMg)} mg</span>
+                </li>
+                <li className="flex justify-between">
+                  <span>{tFormulations("builder.excipients.silica")}</span>
+                  <span>{format(excipients.silicaMg)} mg</span>
+                </li>
+                {excipients.dcpMg !== null ? (
+                  <li className="flex justify-between">
+                    <span>{tFormulations("builder.excipients.dcp")}</span>
+                    <span>{format(excipients.dcpMg)} mg</span>
+                  </li>
+                ) : null}
+                <li className="flex justify-between">
+                  <span>{tFormulations("builder.excipients.mcc")}</span>
+                  <span>{format(excipients.mccMg)} mg</span>
+                </li>
+              </>
+            )}
           </ul>
         </div>
       ) : null}
@@ -1355,11 +1476,13 @@ function TextField({
   value,
   onChange,
   disabled,
+  hint,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  hint?: string;
 }) {
   return (
     <label className="flex flex-col gap-1.5">
@@ -1372,6 +1495,9 @@ function TextField({
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
+      {hint ? (
+        <span className="text-[10px] text-ink-500">{hint}</span>
+      ) : null}
     </label>
   );
 }

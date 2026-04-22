@@ -197,6 +197,14 @@
           {% endfor %}
         </table>
 
+      {% elif slug == "allergens" %}
+        <h2 class="section-title">Allergens</h2>
+        {% if allergens.sources %}
+          <p><strong>Allergens:</strong> {{ allergens.sources|join:", " }}</p>
+        {% else %}
+          <p>No allergenic ingredients declared.</p>
+        {% endif %}
+
       {% elif slug == "safety_limits" %}
         <h2 class="section-title">Microbiological, PAH, Pesticides and Heavy Metal</h2>
         <table class="spec">

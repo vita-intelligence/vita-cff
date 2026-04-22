@@ -25,7 +25,12 @@ class DosageForm(str, Enum):
 #: Dosage forms F1 supports with full excipient math + viability. Other
 #: forms store metadata but return ``None`` for the computed totals.
 FULLY_SUPPORTED_FORMS: frozenset[DosageForm] = frozenset(
-    {DosageForm.CAPSULE, DosageForm.TABLET}
+    {
+        DosageForm.CAPSULE,
+        DosageForm.TABLET,
+        DosageForm.POWDER,
+        DosageForm.GUMMY,
+    }
 )
 
 
@@ -84,6 +89,30 @@ TABLET_MG_STEARATE_PCT = 0.01
 TABLET_SILICA_PCT = 0.004
 TABLET_DCP_PCT = 0.10
 TABLET_MCC_PCT = 0.20
+
+
+#: Powder + gummy use an **explicit-ingredient** model: the scientist
+#: picks the carrier / bulking agent (e.g. ``MA200161 Maltodextrin``,
+#: ingredient-list name ``Bulking Agent``) and adds it as a regular
+#: formulation line from the raw materials catalogue. There is no
+#: auto-computed "carrier (remainder)" or "gummy base" row. The
+#: ``target_fill_weight_mg`` field on ``Formulation`` is used only
+#: for a soft reconciliation check — a ``fill_shortfall`` warning when
+#: the sum of lines lands below the sachet target, or
+#: ``fill_overshoot`` when it exceeds it.
+#:
+#: Proof in the reference workbooks:
+#: * Moonlytes Formula sheet ships ``MA200161 Maltodextrin`` as a
+#:   line item alongside every active, ingredient-list name
+#:   ``Bulking Agent``.
+#: * Soza does the same; its FINAL declaration reads
+#:   ``... Carrier (Maltodextrin) ...``.
+#: * Rave Lytes has no bulking agent at all — the sachet declared as
+#:   actives only. Fabricating a carrier row would have been wrong
+#:   for this product.
+#:
+#: Excel has no single universal "carrier %". Anything we fabricated
+#: would be wrong for some subset of real products.
 
 
 #: Label-copy strings used in the ingredient declaration (F2a). Kept

@@ -469,6 +469,34 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
             )
         )
 
+    # Flexible excipient rows (powder / gummy). Capsule + tablet leave
+    # this list empty — the typed slots above cover them. Powders
+    # contribute the carrier / bulk powder row here; gummies the
+    # gummy base + any fixed flavour rows. Skipping it silently
+    # (as the previous code did) left the sachet's bulk powder off
+    # the BOM entirely, so a 10g sachet would scale up as if it only
+    # contained its actives.
+    for row in excipients.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        mg_per_unit = _coerce_decimal(row.get("mg"))
+        if mg_per_unit is None or mg_per_unit <= 0:
+            continue
+        result.entries.append(
+            _build_bom_entry(
+                category="excipient",
+                label=row.get("label") or row.get("slug") or "",
+                # Flexible rows don't resolve to a catalogue code yet
+                # — scientists pick the specific supplier at the BOM
+                # stage. Leaving the code blank matches the workbook's
+                # BOM which has manually-typed names and no codes.
+                internal_code="",
+                mg_per_unit=mg_per_unit,
+                units_per_pack=units_per_pack,
+                total_units_in_batch=total_units_in_batch,
+            )
+        )
+
     # Capsule shell — one per unit, weight keyed off the selected
     # capsule size. Tablets/powders/gummies/liquids have no shell.
     dosage_form = result.dosage_form

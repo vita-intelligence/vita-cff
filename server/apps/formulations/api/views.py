@@ -118,6 +118,7 @@ class FormulationListCreateView(APIView):
                 tablet_size=data.get("tablet_size", ""),
                 serving_size=data.get("serving_size", 1),
                 servings_per_pack=data.get("servings_per_pack", 60),
+                target_fill_weight_mg=data.get("target_fill_weight_mg"),
                 directions_of_use=data.get("directions_of_use", ""),
                 suggested_dosage=data.get("suggested_dosage", ""),
                 appearance=data.get("appearance", ""),

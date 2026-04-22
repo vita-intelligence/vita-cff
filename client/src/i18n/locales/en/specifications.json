@@ -39,8 +39,6 @@
     "client_email": "Client email",
     "client_company": "Client company",
     "cover_notes": "Cover notes",
-    "total_weight_label": "Total weight (mg)",
-    "total_weight_label_hint": "Free-text — leave blank to render as TBC. Filled-capsule weight depends on the manufacturer-supplied shell.",
     "submit": "Create",
     "cancel": "Cancel"
   },
@@ -50,6 +48,7 @@
     "advance_to": "Advance to",
     "download_pdf": "Download PDF",
     "share_link": "Share link",
+    "edit_details": "Edit details",
     "edit_packaging": "Edit packaging",
     "delete": "Delete sheet",
     "delete_confirm": "Delete this specification sheet? The underlying formulation version is not affected.",
@@ -60,6 +59,25 @@
       "move_up": "Move section up",
       "move_down": "Move section down"
     }
+  },
+  "edit_details": {
+    "title": "Edit specification details",
+    "subtitle": "Update the free-text rows that render on the customer-facing sheet and PDF. Leave a field blank to fall back to the default value.",
+    "save": "Save",
+    "group": {
+      "client": "Client context",
+      "product_spec": "Product specification",
+      "packaging_spec": "Packaging specification"
+    },
+    "total_weight_label": "Total weight (mg)",
+    "total_weight_label_hint": "Override the computed filled weight. Leave blank to render the calculated value or TBC.",
+    "weight_uniformity": "Weight uniformity",
+    "weight_uniformity_hint": "Tolerance band for the weight test (e.g. 10%). Leave blank for the default.",
+    "unit_quantity": "Unit quantity",
+    "unit_quantity_hint": "Free-text (e.g. 28 sachets, 60 capsules). Leave blank to fall back to servings per pack.",
+    "shelf_life": "Shelf life",
+    "food_contact_status": "Food contact status",
+    "storage_conditions": "Storage conditions"
   },
   "packaging": {
     "title": "Pick packaging components",
@@ -100,6 +118,7 @@
       "specification": "Product Specification",
       "packaging": "Packaging Specification",
       "compliance": "Compliance",
+      "allergens": "Allergens",
       "limits": "Microbiological, PAH, Pesticides and Heavy Metal",
       "signatures": "Signatures",
       "actives": "Active Ingredients",
@@ -109,7 +128,9 @@
       "ingredients": "Ingredients"
     },
     "allergens": {
-      "prefix": "Allergens"
+      "prefix": "Allergens",
+      "none": "No allergenic ingredients declared.",
+      "count": "{count, plural, one {# allergenic ingredient} other {# allergenic ingredients}}"
     },
     "fields": {
       "product_code": "Product Code",

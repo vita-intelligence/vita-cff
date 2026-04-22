@@ -196,11 +196,30 @@ def compute_line(
 
 
 @dataclass
+class ExcipientRow:
+    """One excipient line for dosage forms that use an open-ended list
+    (powder, gummy) rather than the fixed capsule/tablet trio. ``slug``
+    is machine-stable for i18n lookups; ``label`` is the fallback
+    display copy; ``mg`` is the absolute per-unit weight; ``is_remainder``
+    flags the row computed as ``target - active - sum(other rows)`` so
+    the UI can badge it distinctly from the fixed-% rows."""
+
+    slug: str
+    label: str
+    mg: Decimal
+    is_remainder: bool = False
+
+
+@dataclass
 class ExcipientBreakdown:
     mg_stearate_mg: Decimal
     silica_mg: Decimal
     mcc_mg: Decimal
     dcp_mg: Decimal | None = None  # tablet-only
+    #: Optional flexible list used for dosage forms that do not fit
+    #: the capsule/tablet four-field shape. Powder + gummy populate
+    #: this; capsule + tablet leave it empty.
+    rows: tuple[ExcipientRow, ...] = ()
 
 
 @dataclass
@@ -475,6 +494,103 @@ def _compute_tablet(
     )
 
 
+def _compute_fill_target(
+    dosage_form: str,
+    total_active: Decimal,
+    target_fill_weight_mg: Decimal | None,
+) -> tuple[
+    str | None, str | None, Decimal | None, Decimal | None,
+    ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
+]:
+    """Fill-weight reconciliation for powder + gummy.
+
+    The reference workbooks (Moonlytes, Soza, Rave Lytes, Cotswold
+    Probiotics Gummies) all treat the carrier / gummy base as a
+    real catalogue ingredient the scientist explicitly adds — e.g.
+    Moonlytes picks ``MA200161 Maltodextrin`` with a ``Bulking Agent``
+    label-copy name. We therefore **do not** fabricate a virtual
+    "remainder" row — that would invent an ingredient with no
+    procurement code and no supplier. Instead the scientist adds the
+    carrier themselves as a normal formulation line, and this
+    function just reconciles the sum against the target.
+
+    * ``target`` blank → report the total, flag ``fill_weight_required``.
+    * ``total_active`` < ``target`` → ``fill_shortfall`` warning and
+      ``more_challenging_to_make`` viability so the scientist knows
+      to add a carrier line.
+    * ``total_active`` ≈ ``target`` (within 0.5%) → ``can_make``.
+    * ``total_active`` > ``target`` → ``cannot_make`` — overshooting
+      the sachet / gummy mass means the product can't be pressed.
+    """
+
+    if target_fill_weight_mg is None or target_fill_weight_mg <= 0:
+        return (
+            None,
+            None,
+            None,
+            _quantise(float(total_active)),
+            None,
+            ViabilityResult(
+                fits=False,
+                comfort_ok=False,
+                codes=("fill_weight_required",),
+            ),
+            (),
+        )
+
+    target = float(target_fill_weight_mg)
+    active = float(total_active)
+    # Tolerance band: within 0.5% of target counts as "matches". This
+    # accounts for rounding in the per-line mg math without declaring
+    # a 9999mg sachet "short" against a 10000mg target.
+    tolerance = max(target * 0.005, 0.1)
+    fits = active <= target + tolerance
+    matches = abs(active - target) <= tolerance
+    codes: list[str] = []
+    warnings: list[str] = []
+    if not fits:
+        codes.append("cannot_make")
+        warnings.append("fill_overshoot")
+    elif matches:
+        codes.extend(("can_make", "less_challenging", "proceed_to_quote"))
+    else:
+        # Under target — scientist still needs to add a carrier /
+        # bulking agent / gummy base line to reach the sachet mass.
+        codes.extend(("can_make", "more_challenging_to_make", "fill_shortfall"))
+        warnings.append("fill_shortfall")
+
+    size_label = (
+        f"Sachet ({_format_fill_weight(target)})"
+        if dosage_form == DosageForm.POWDER.value
+        else f"Gummy ({_format_fill_weight(target)})"
+    )
+    size_key = "sachet" if dosage_form == DosageForm.POWDER.value else "gummy"
+
+    return (
+        size_key,
+        size_label,
+        _quantise(target),
+        _quantise(active),
+        None,
+        ViabilityResult(
+            fits=fits,
+            comfort_ok=matches,
+            codes=tuple(codes),
+        ),
+        tuple(warnings),
+    )
+
+
+def _format_fill_weight(mg: float) -> str:
+    """Render a fill weight as grams with 2 decimals where it's in
+    the "usual sachet / gummy" range, keeping mg for small values so a
+    5mg micro-sachet reads as ``5mg`` rather than ``0.01g``."""
+
+    if mg >= 1000:
+        return f"{mg / 1000:.2f}g"
+    return f"{mg:.0f}mg"
+
+
 def compute_totals(
     *,
     lines: Iterable[tuple[str, Item, Decimal | float, int | None]],
@@ -482,6 +598,7 @@ def compute_totals(
     capsule_size_key: str | None = None,
     tablet_size_key: str | None = None,
     default_serving_size: int = 1,
+    target_fill_weight_mg: Decimal | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
 
@@ -539,9 +656,22 @@ def compute_totals(
             viability,
             warnings,
         ) = _compute_tablet(total_active, tablet_size_key or None)
+    elif dosage_form in (DosageForm.POWDER.value, DosageForm.GUMMY.value):
+        (
+            size_key,
+            size_label,
+            max_weight,
+            total_weight,
+            excipients,
+            viability,
+            warnings,
+        ) = _compute_fill_target(
+            dosage_form, total_active, target_fill_weight_mg
+        )
     else:
-        # Non-math dosage forms (powder, gummy, liquid, other_solid)
-        # still report the total but skip the excipient block.
+        # Non-math dosage forms (liquid, other_solid) still report
+        # the total but skip the excipient block — these need their
+        # own volume-based treatment which isn't in scope yet.
         return FormulationTotals(
             total_active_mg=total_active,
             dosage_form=dosage_form,
@@ -646,6 +776,7 @@ def create_formulation(
     suggested_dosage: str = "",
     appearance: str = "",
     disintegration_spec: str = "",
+    target_fill_weight_mg: Decimal | None = None,
 ) -> Formulation:
     """Create a new formulation.
 
@@ -695,6 +826,7 @@ def create_formulation(
         suggested_dosage=suggested_dosage,
         appearance=appearance,
         disintegration_spec=disintegration_spec,
+        target_fill_weight_mg=target_fill_weight_mg,
         created_by=actor,
         updated_by=actor,
     )
@@ -728,6 +860,7 @@ def update_formulation(
         "suggested_dosage",
         "appearance",
         "disintegration_spec",
+        "target_fill_weight_mg",
         "project_status",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:
@@ -1364,6 +1497,21 @@ def build_ingredient_declaration(
                     category="excipient",
                 )
             )
+        # Powder / gummy flexible rows — capsule/tablet leave this
+        # list empty and consume the typed fields above. Each row
+        # becomes its own excipient entry on the declaration; the
+        # remainder row (carrier / gummy base) sits alongside the
+        # rest and gets sorted by weight like every other entry.
+        for row in excipients.rows:
+            if row.mg is None or row.mg <= 0:
+                continue
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=row.label,
+                    mg=row.mg,
+                    category="excipient",
+                )
+            )
 
     if totals.dosage_form == DosageForm.CAPSULE.value and totals.size_key:
         capsule_size = capsule_size_by_key(totals.size_key)
@@ -1401,6 +1549,7 @@ def compute_formulation_totals(
         capsule_size_key=formulation.capsule_size or None,
         tablet_size_key=formulation.tablet_size or None,
         default_serving_size=formulation.serving_size,
+        target_fill_weight_mg=formulation.target_fill_weight_mg,
     )
 
 
@@ -1423,6 +1572,11 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
         "suggested_dosage": formulation.suggested_dosage,
         "appearance": formulation.appearance,
         "disintegration_spec": formulation.disintegration_spec,
+        "target_fill_weight_mg": (
+            str(formulation.target_fill_weight_mg)
+            if formulation.target_fill_weight_mg is not None
+            else None
+        ),
     }
 
 
@@ -1587,6 +1741,15 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                     if totals.excipients.dcp_mg is not None
                     else None
                 ),
+                "rows": [
+                    {
+                        "slug": row.slug,
+                        "label": row.label,
+                        "mg": str(row.mg),
+                        "is_remainder": row.is_remainder,
+                    }
+                    for row in totals.excipients.rows
+                ],
             }
             if totals.excipients is not None
             else None

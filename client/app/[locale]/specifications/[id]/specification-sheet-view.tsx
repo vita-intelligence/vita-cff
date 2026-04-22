@@ -35,6 +35,7 @@ import {
   type SpecificationSheetDto,
   type SpecificationStatus,
 } from "@/services/specifications";
+import { EditDetailsButton } from "./edit-details-button";
 import { EditPackagingButton } from "./edit-packaging-button";
 import { SharePublicLinkButton } from "./share-public-link-button";
 
@@ -212,6 +213,9 @@ export function SpecificationSheetView({
             <Download className="h-4 w-4" />
             {tSpecs("detail.download_pdf")}
           </a>
+          {canWrite ? (
+            <EditDetailsButton orgId={orgId} sheet={sheet} />
+          ) : null}
           {canWrite ? (
             <EditPackagingButton orgId={orgId} sheet={sheet} />
           ) : null}
@@ -469,6 +473,30 @@ export function SpecSheetContent({
           />
         ))}
       </SpecTable>
+    ),
+    allergens: () => (
+      <>
+        <SectionTitle>
+          {tSpecs("sheet.sections.allergens")}
+        </SectionTitle>
+        {rendered.allergens.sources.length > 0 ? (
+          <div className="border border-ink-1000 p-3 font-serif text-[11px] leading-relaxed text-ink-1000">
+            <p>
+              <strong>{tSpecs("sheet.allergens.prefix")}: </strong>
+              {rendered.allergens.sources.join(", ")}
+            </p>
+            <p className="mt-1 font-mono text-[10px] uppercase tracking-widest text-ink-500">
+              {tSpecs("sheet.allergens.count", {
+                count: rendered.allergens.allergen_count,
+              })}
+            </p>
+          </div>
+        ) : (
+          <div className="border border-ink-1000 p-3 text-center font-serif text-[11px] text-ink-700">
+            {tSpecs("sheet.allergens.none")}
+          </div>
+        )}
+      </>
     ),
     safety_limits: () => (
       <>
@@ -1124,6 +1152,7 @@ const SECTION_LABEL_KEYS: Readonly<Record<string, string>> = {
   product_specification: "specification",
   packaging_specification: "packaging",
   compliance: "compliance",
+  allergens: "allergens",
   safety_limits: "limits",
   actives: "actives",
   nutrition: "nutrition",

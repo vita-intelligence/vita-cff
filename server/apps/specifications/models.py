@@ -123,6 +123,17 @@ class SpecificationSheet(models.Model):
         blank=True,
         default="",
     )
+    weight_uniformity = models.CharField(
+        _("weight uniformity"),
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_(
+            "Per-sheet override for the Weight Uniformity row. Blank "
+            "falls back to the organization default (10% for "
+            "capsule/tablet, ``Not applicable`` for powder/liquid)."
+        ),
+    )
 
     limits_override = models.JSONField(
         _("limits override"),

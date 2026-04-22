@@ -3,7 +3,7 @@
 import { Button, Modal } from "@heroui/react";
 import { FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
@@ -43,10 +43,21 @@ export function NewSpecSheetButton({
   const [clientEmail, setClientEmail] = useState("");
   const [clientCompany, setClientCompany] = useState("");
   const [coverNotes, setCoverNotes] = useState("");
-  const [totalWeightLabel, setTotalWeightLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useCreateSpecification(orgId);
+
+  // ``versions`` arrives async from TanStack Query, so the initial
+  // state above captures ``""`` on first render and the submit button
+  // stays disabled until the user re-picks a version. Sync whenever
+  // the selected id is not in the current list (empty or stale).
+  useEffect(() => {
+    if (versions.length === 0) return;
+    const stillValid = versions.some((v) => v.id === versionId);
+    if (!stillValid) {
+      setVersionId(versions[0]!.id);
+    }
+  }, [versions, versionId]);
 
   const reset = () => {
     setVersionId(versions[0]?.id ?? "");
@@ -55,7 +66,6 @@ export function NewSpecSheetButton({
     setClientEmail("");
     setClientCompany("");
     setCoverNotes("");
-    setTotalWeightLabel("");
     setError(null);
   };
 
@@ -76,7 +86,6 @@ export function NewSpecSheetButton({
         client_email: clientEmail.trim(),
         client_company: clientCompany.trim(),
         cover_notes: coverNotes.trim(),
-        total_weight_label: totalWeightLabel.trim(),
       });
       close();
       router.push(`/specifications/${created.id}`);
@@ -200,21 +209,6 @@ export function NewSpecSheetButton({
                     onChange={(e) => setClientEmail(e.target.value)}
                     className={INPUT_CLASS}
                   />
-                </label>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className={LABEL_CLASS}>
-                    {tSpecs("create.total_weight_label")}
-                  </span>
-                  <input
-                    value={totalWeightLabel}
-                    onChange={(e) => setTotalWeightLabel(e.target.value)}
-                    placeholder="TBC"
-                    className={INPUT_CLASS}
-                  />
-                  <p className={HINT_CLASS}>
-                    {tSpecs("create.total_weight_label_hint")}
-                  </p>
                 </label>
 
                 <label className="flex flex-col gap-1.5">

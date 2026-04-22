@@ -37,6 +37,11 @@ const TABLET_SILICA_PCT = 0.004;
 const TABLET_DCP_PCT = 0.10;
 const TABLET_MCC_PCT = 0.20;
 
+// Powder + gummy do NOT auto-compute excipient rows. The reference
+// workbooks treat the carrier / bulking agent / gummy base as a
+// real catalogue ingredient the scientist explicitly adds. See
+// ``apps/formulations/constants.py`` for the detailed rationale.
+
 /**
  * Thresholds for the capsule auto-picker, transcribed from the
  * workbook's ``Lists!G6:G8`` cascade. ``undefined`` skips a size
@@ -106,11 +111,20 @@ export interface LineComputation {
   readonly failureReason: LineFailureReason | null;
 }
 
+export interface ExcipientRow {
+  readonly slug: string;
+  readonly label: string;
+  readonly mg: number;
+  readonly isRemainder: boolean;
+}
+
 export interface ExcipientBreakdown {
   readonly mgStearateMg: number;
   readonly silicaMg: number;
   readonly mccMg: number;
   readonly dcpMg: number | null;
+  /** Powder / gummy flexible list. Empty for capsule + tablet. */
+  readonly rows: readonly ExcipientRow[];
 }
 
 export interface Viability {
@@ -685,6 +699,7 @@ function computeCapsule(
       silicaMg: silica,
       mccMg: mcc,
       dcpMg: null,
+      rows: [],
     },
     viability: { fits, comfortOk, codes },
     warnings,
@@ -714,6 +729,7 @@ function computeTablet(
     silicaMg: silica,
     mccMg: mcc,
     dcpMg: dcp,
+    rows: [],
   };
 
   if (!requestedSizeKey) {
@@ -774,18 +790,88 @@ function computeTablet(
   };
 }
 
+function formatFillWeight(mg: number): string {
+  if (mg >= 1000) return `${(mg / 1000).toFixed(2)}g`;
+  return `${Math.round(mg)}mg`;
+}
+
+/** Fill-weight reconciliation for powder + gummy. Mirrors
+ * ``_compute_fill_target`` on the Python side. The scientist adds
+ * the carrier / bulking agent / gummy base as a real catalogue line;
+ * this function only checks whether the line sum matches the sachet
+ * / gummy target and surfaces a shortfall or overshoot warning. */
+function computeFillTarget(
+  dosageForm: "powder" | "gummy",
+  totalActive: number,
+  targetFillWeightMg: number | null,
+): {
+  sizeKey: string | null;
+  sizeLabel: string | null;
+  maxWeight: number | null;
+  totalWeight: number | null;
+  excipients: ExcipientBreakdown | null;
+  viability: Viability;
+  warnings: readonly string[];
+} {
+  if (!targetFillWeightMg || targetFillWeightMg <= 0) {
+    return {
+      sizeKey: null,
+      sizeLabel: null,
+      maxWeight: null,
+      totalWeight: totalActive,
+      excipients: null,
+      viability: {
+        fits: false,
+        comfortOk: false,
+        codes: ["fill_weight_required"],
+      },
+      warnings: [],
+    };
+  }
+
+  const tolerance = Math.max(targetFillWeightMg * 0.005, 0.1);
+  const fits = totalActive <= targetFillWeightMg + tolerance;
+  const matches = Math.abs(totalActive - targetFillWeightMg) <= tolerance;
+  const codes: string[] = [];
+  const warnings: string[] = [];
+  if (!fits) {
+    codes.push("cannot_make");
+    warnings.push("fill_overshoot");
+  } else if (matches) {
+    codes.push("can_make", "less_challenging", "proceed_to_quote");
+  } else {
+    codes.push("can_make", "more_challenging_to_make", "fill_shortfall");
+    warnings.push("fill_shortfall");
+  }
+
+  return {
+    sizeKey: dosageForm === "powder" ? "sachet" : "gummy",
+    sizeLabel:
+      dosageForm === "powder"
+        ? `Sachet (${formatFillWeight(targetFillWeightMg)})`
+        : `Gummy (${formatFillWeight(targetFillWeightMg)})`,
+    maxWeight: targetFillWeightMg,
+    totalWeight: totalActive,
+    excipients: null,
+    viability: { fits, comfortOk: matches, codes },
+    warnings,
+  };
+}
+
 export function computeTotals({
   lines,
   dosageForm,
   capsuleSizeKey,
   tabletSizeKey,
   defaultServingSize,
+  targetFillWeightMg,
 }: {
   lines: readonly ComputeLineInput[];
   dosageForm: DosageForm;
   capsuleSizeKey: string | null;
   tabletSizeKey: string | null;
   defaultServingSize: number;
+  targetFillWeightMg?: number | null;
 }): FormulationTotals {
   let totalActive = 0;
   const lineValues = new Map<string, number>();
@@ -859,8 +945,29 @@ export function computeTotals({
     };
   }
 
-  // Powder / gummy / liquid / other — track the total but no excipient
-  // block and a clear "manual review" viability code.
+  if (dosageForm === "powder" || dosageForm === "gummy") {
+    const r = computeFillTarget(
+      dosageForm,
+      totalActive,
+      targetFillWeightMg ?? null,
+    );
+    return {
+      totalActiveMg: totalActive,
+      dosageForm,
+      sizeKey: r.sizeKey,
+      sizeLabel: r.sizeLabel,
+      maxWeightMg: r.maxWeight,
+      totalWeightMg: r.totalWeight,
+      excipients: r.excipients,
+      viability: r.viability,
+      warnings: r.warnings,
+      lineValues,
+      lineFailures,
+    };
+  }
+
+  // Liquid / other_solid — track the total but no excipient block and
+  // a clear "manual review" viability code.
   return {
     totalActiveMg: totalActive,
     dosageForm,

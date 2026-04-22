@@ -49,6 +49,7 @@ SECTION_SLUGS: tuple[str, ...] = (
     "product_specification",
     "packaging_specification",
     "compliance",
+    "allergens",
     "safety_limits",
     "actives",
     "nutrition",

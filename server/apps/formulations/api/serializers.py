@@ -101,6 +101,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "tablet_size",
             "serving_size",
             "servings_per_pack",
+            "target_fill_weight_mg",
             "directions_of_use",
             "suggested_dosage",
             "appearance",
@@ -158,6 +159,12 @@ class FormulationWriteSerializer(serializers.Serializer):
     )
     serving_size = serializers.IntegerField(min_value=1, required=False)
     servings_per_pack = serializers.IntegerField(min_value=1, required=False)
+    target_fill_weight_mg = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+    )
     directions_of_use = serializers.CharField(
         required=False, allow_blank=True, default=""
     )

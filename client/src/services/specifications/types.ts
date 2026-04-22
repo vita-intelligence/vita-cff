@@ -39,6 +39,11 @@ export interface SpecificationSheetDto {
   readonly final_price: string | null;
   readonly cover_notes: string;
   readonly total_weight_label: string;
+  readonly unit_quantity: string;
+  readonly food_contact_status: string;
+  readonly shelf_life: string;
+  readonly storage_conditions: string;
+  readonly weight_uniformity: string;
   readonly public_token: string | null;
   readonly packaging_lid: string | null;
   readonly packaging_container: string | null;
@@ -123,6 +128,7 @@ export type UpdateSpecificationRequestDto = Partial<
   readonly food_contact_status?: string;
   readonly shelf_life?: string;
   readonly storage_conditions?: string;
+  readonly weight_uniformity?: string;
   /** Per-sheet override ``{slug: value}`` for the microbial / PAH /
    *  heavy-metal block. Empty or unset falls back to the org default. */
   readonly limits_override?: Readonly<Record<string, string>>;

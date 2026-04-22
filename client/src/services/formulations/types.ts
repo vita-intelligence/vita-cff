@@ -15,6 +15,16 @@ export type DosageForm = (typeof DOSAGE_FORMS)[number];
 export const FULLY_SUPPORTED_DOSAGE_FORMS: readonly DosageForm[] = [
   "capsule",
   "tablet",
+  "powder",
+  "gummy",
+] as const;
+
+/** Dosage forms whose excipient math depends on a per-unit target
+ * fill weight (sachet mass for powders, single-gummy weight for
+ * gummies). Builder surfaces an extra input for these. */
+export const TARGET_FILL_WEIGHT_FORMS: readonly DosageForm[] = [
+  "powder",
+  "gummy",
 ] as const;
 
 /** Product roadmap status — the single lifecycle chip shown at
@@ -145,6 +155,7 @@ export interface FormulationDto {
   readonly tablet_size: string;
   readonly serving_size: number;
   readonly servings_per_pack: number;
+  readonly target_fill_weight_mg: string | null;
   readonly directions_of_use: string;
   readonly suggested_dosage: string;
   readonly appearance: string;
@@ -169,6 +180,7 @@ export interface CreateFormulationRequestDto {
   readonly tablet_size?: string;
   readonly serving_size?: number;
   readonly servings_per_pack?: number;
+  readonly target_fill_weight_mg?: string | null;
   readonly directions_of_use?: string;
   readonly suggested_dosage?: string;
   readonly appearance?: string;
@@ -191,11 +203,21 @@ export interface ReplaceLinesRequestDto {
   readonly lines: readonly FormulationLineInput[];
 }
 
+export interface ExcipientRowDto {
+  readonly slug: string;
+  readonly label: string;
+  readonly mg: string;
+  readonly is_remainder: boolean;
+}
+
 export interface ExcipientBreakdownDto {
   readonly mg_stearate_mg: string | null;
   readonly silica_mg: string | null;
   readonly mcc_mg: string | null;
   readonly dcp_mg: string | null;
+  /** Flexible per-form list populated for powder + gummy. Empty for
+   * capsule + tablet — those consume the typed fields above. */
+  readonly rows: readonly ExcipientRowDto[];
 }
 
 export interface ViabilityDto {
