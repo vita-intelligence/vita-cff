@@ -106,6 +106,7 @@ class _UserNestedSerializer(serializers.Serializer):
     first_name = serializers.CharField(read_only=True)
     last_name = serializers.CharField(read_only=True)
     full_name = serializers.SerializerMethodField()
+    avatar_image = serializers.CharField(read_only=True, default="")
 
     def get_full_name(self, obj: Any) -> str:
         full = f"{obj.first_name} {obj.last_name}".strip()

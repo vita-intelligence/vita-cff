@@ -24,6 +24,10 @@ export interface NestedUserDto {
   readonly first_name: string;
   readonly last_name: string;
   readonly full_name: string;
+  /** Opaque avatar URL — base64 data URL today, blob-storage URL
+   *  tomorrow. Optional for back-compat; empty / missing renders
+   *  as the initials pill. */
+  readonly avatar_image?: string;
 }
 
 

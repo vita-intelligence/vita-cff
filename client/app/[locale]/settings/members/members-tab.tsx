@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
 import { Chip } from "@/components/ui/chip";
+import { UserAvatar } from "@/components/ui/user-avatar";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import {
@@ -256,11 +257,21 @@ function MemberRow({
   return (
     <tr className={isLast ? "" : "border-b border-ink-100"}>
       <td className="px-5 py-4">
-        <div className="flex flex-col">
-          <span className="text-sm font-medium text-ink-1000">
-            {membership.user.full_name}
-          </span>
-          <span className="text-xs text-ink-500">{membership.user.email}</span>
+        <div className="flex items-center gap-3">
+          <UserAvatar
+            name={membership.user.full_name}
+            email={membership.user.email}
+            imageUrl={membership.user.avatar_image || null}
+            size={36}
+          />
+          <div className="flex min-w-0 flex-col">
+            <span className="truncate text-sm font-medium text-ink-1000">
+              {membership.user.full_name}
+            </span>
+            <span className="truncate text-xs text-ink-500">
+              {membership.user.email}
+            </span>
+          </div>
         </div>
       </td>
       <td className="px-5 py-4">
@@ -560,15 +571,23 @@ function EditPermissionsDrawer({
         <Modal.Container size="md">
           <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
-              <div className="flex min-w-0 flex-col">
-                <Modal.Heading className="truncate text-base font-semibold text-ink-1000">
-                  {tSettings("members.edit_title", {
-                    name: membership.user.full_name,
-                  })}
-                </Modal.Heading>
-                <p className="mt-0.5 truncate text-xs text-ink-500">
-                  {membership.user.email}
-                </p>
+              <div className="flex min-w-0 items-center gap-3">
+                <UserAvatar
+                  name={membership.user.full_name}
+                  email={membership.user.email}
+                  imageUrl={membership.user.avatar_image || null}
+                  size={40}
+                />
+                <div className="flex min-w-0 flex-col">
+                  <Modal.Heading className="truncate text-base font-semibold text-ink-1000">
+                    {tSettings("members.edit_title", {
+                      name: membership.user.full_name,
+                    })}
+                  </Modal.Heading>
+                  <p className="mt-0.5 truncate text-xs text-ink-500">
+                    {membership.user.email}
+                  </p>
+                </div>
               </div>
               <button
                 type="button"
