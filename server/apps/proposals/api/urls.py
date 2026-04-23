@@ -12,6 +12,10 @@ from apps.proposals.api.views import (
     ProposalRenderView,
     ProposalStatusView,
     ProposalTransitionsView,
+    PublicProposalFinalizeView,
+    PublicProposalKioskView,
+    PublicProposalSignProposalView,
+    PublicProposalSignSpecView,
 )
 
 app_name = "proposals"
@@ -61,5 +65,26 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulation-versions/<uuid:version_id>/cost-preview/",
         ProposalCostPreviewView.as_view(),
         name="proposal-cost-preview",
+    ),
+    # ----- Proposal-centric kiosk (token-gated, no org auth) ---------
+    path(
+        "public/proposals/<uuid:token>/",
+        PublicProposalKioskView.as_view(),
+        name="proposal-public-kiosk",
+    ),
+    path(
+        "public/proposals/<uuid:token>/sign/",
+        PublicProposalSignProposalView.as_view(),
+        name="proposal-public-sign",
+    ),
+    path(
+        "public/proposals/<uuid:token>/specs/<uuid:sheet_id>/sign/",
+        PublicProposalSignSpecView.as_view(),
+        name="proposal-public-sign-spec",
+    ),
+    path(
+        "public/proposals/<uuid:token>/finalize/",
+        PublicProposalFinalizeView.as_view(),
+        name="proposal-public-finalize",
     ),
 ]

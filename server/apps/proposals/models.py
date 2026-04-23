@@ -316,9 +316,13 @@ class Proposal(models.Model):
         default=None,
         help_text=_(
             "Opaque UUID that grants unauthenticated read-only access "
-            "to this proposal via the public preview URL. When a "
-            "specification_sheet is attached, the sheet's token is the "
-            "primary entry point and this one can stay null."
+            "to this proposal via the public kiosk URL. When set, the "
+            "proposal-centric kiosk at ``/p/proposal/<token>`` renders "
+            "the proposal alongside every attached specification "
+            "sheet (via ``ProposalLine.specification_sheet``) with a "
+            "dedicated signature pad per document. The legacy spec-"
+            "only kiosk at ``/p/<spec_token>`` stays live for sheets "
+            "shared on their own."
         ),
     )
 

@@ -31,4 +31,15 @@ export const proposalsEndpoints = {
     const qs = new URLSearchParams({ margin: marginPercent });
     return `${base}?${qs.toString()}`;
   },
+  //: Public kiosk — token-gated, no org in the path. Returns the
+  //: proposal payload + every attached spec sheet, each with its
+  //: own signature-state metadata. The sibling sign/finalize URLs
+  //: post into this same tree.
+  publicKiosk: (token: string) => `/api/public/proposals/${token}/`,
+  publicSign: (token: string) =>
+    `/api/public/proposals/${token}/sign/`,
+  publicSignSpec: (token: string, sheetId: string) =>
+    `/api/public/proposals/${token}/specs/${sheetId}/sign/`,
+  publicFinalize: (token: string) =>
+    `/api/public/proposals/${token}/finalize/`,
 } as const;

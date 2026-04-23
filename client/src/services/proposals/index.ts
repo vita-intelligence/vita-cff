@@ -35,6 +35,8 @@ export {
   type CreateProposalLineRequestDto,
   type CreateProposalRequestDto,
   type ProposalDto,
+  type ProposalKioskDto,
+  type ProposalKioskSpecDto,
   type ProposalLineDto,
   type ProposalStatus,
   type ProposalStatusRequestDto,

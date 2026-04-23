@@ -967,3 +967,304 @@ def transition_status(
         after=snapshot(proposal),
     )
     return proposal
+
+
+# ---------------------------------------------------------------------------
+# Proposal-centric kiosk
+#
+# A proposal shared via ``public_token`` renders on its own kiosk page
+# alongside every specification sheet attached through ``ProposalLine``.
+# The client signs each document separately (proposal + one signature
+# per spec) but the deal only advances once all signatures are in —
+# half-signed proposals are a legal concern ("I never saw that spec")
+# so the finalize step is gated on every document carrying a captured
+# signature. Signing individually writes the signature but leaves
+# status at ``sent``; ``finalize_proposal_kiosk`` flips everything to
+# ``accepted`` atomically.
+# ---------------------------------------------------------------------------
+
+
+class ProposalPublicLinkNotEnabled(Exception):
+    """The requested ``public_token`` does not resolve to a proposal —
+    either the token is wrong or the link was revoked. Maps to 404 so a
+    stale token leaks no information about what the proposal became."""
+
+    code = "public_link_not_enabled"
+
+
+class KioskSpecNotOnProposal(Exception):
+    """A kiosk request tried to sign a spec sheet that isn't attached
+    to the proposal behind the public token. Defends against a client
+    crafting a ``/specs/<uuid>/sign`` URL with an unrelated spec id."""
+
+    code = "kiosk_spec_not_on_proposal"
+
+
+class KioskSignaturesPending(Exception):
+    """Finalize was called before every document had a captured
+    customer signature. The kiosk lists which docs are still pending
+    so the client can scroll back and sign them."""
+
+    code = "kiosk_signatures_pending"
+
+
+def _attached_spec_sheets(proposal: Proposal) -> list[SpecificationSheet]:
+    """All specification sheets bundled with this proposal.
+
+    Draws from two sources and dedupes by sheet id:
+
+    * Every ``ProposalLine.specification_sheet`` that the scientist
+      attached through the lines panel — the canonical path.
+    * The legacy ``Proposal.specification_sheet`` OneToOne, kept on
+      the schema for proposals created before per-line attachment
+      existed. Including it here means a single migration hasn't
+      yet been needed to deprecate the field.
+
+    Returns sheets in ``created_at`` order so the kiosk paints them
+    in a stable sequence regardless of insertion.
+    """
+
+    sheet_ids: list[Any] = []
+    seen: set[Any] = set()
+    for line in proposal.lines.all().order_by("display_order", "created_at"):
+        sid = line.specification_sheet_id
+        if sid is not None and sid not in seen:
+            seen.add(sid)
+            sheet_ids.append(sid)
+    legacy = proposal.specification_sheet_id
+    if legacy is not None and legacy not in seen:
+        seen.add(legacy)
+        sheet_ids.append(legacy)
+
+    if not sheet_ids:
+        return []
+
+    by_id = {
+        sheet.id: sheet
+        for sheet in SpecificationSheet.objects.filter(id__in=sheet_ids)
+    }
+    return [by_id[sid] for sid in sheet_ids if sid in by_id]
+
+
+def get_proposal_by_public_token(token: Any) -> Proposal:
+    """Resolve a proposal by its public kiosk token.
+
+    Raises :class:`ProposalPublicLinkNotEnabled` (mapped to 404) when
+    the token is unknown or the proposal has had its link revoked —
+    we deliberately conflate "never shared" and "revoked" so a stale
+    link leaks no signal about the proposal's current state.
+    """
+
+    if token in (None, ""):
+        raise ProposalPublicLinkNotEnabled()
+    proposal = Proposal.objects.filter(public_token=token).first()
+    if proposal is None:
+        raise ProposalPublicLinkNotEnabled()
+    return proposal
+
+
+@transaction.atomic
+def capture_customer_signature_on_proposal(
+    *,
+    proposal: Proposal,
+    signer_name: str,
+    signer_email: str,
+    signer_company: str,
+    signature_image: str,
+) -> Proposal:
+    """Record a customer signature on the proposal without moving it
+    to ``accepted``. Used by the proposal-centric kiosk where many
+    documents are signed before any advances — a partial sign must
+    not push the proposal to terminal state.
+
+    Idempotent: resigning overwrites the stored image and timestamp so
+    a client who scribbled the first time can redraw without us
+    needing a separate "reset signature" endpoint.
+    """
+
+    if proposal.status != ProposalStatus.SENT.value:
+        raise InvalidProposalTransition()
+
+    normalised_image = validate_signature_image(signature_image)
+    name = (signer_name or "").strip()
+    if not name:
+        raise SignatureRequired()
+
+    proposal.customer_signer_name = name
+    proposal.customer_signer_email = (signer_email or "").strip()
+    proposal.customer_signer_company = (signer_company or "").strip()
+    proposal.customer_signature_image = normalised_image
+    proposal.customer_signed_at = timezone.now()
+    proposal.save(
+        update_fields=[
+            "customer_signer_name",
+            "customer_signer_email",
+            "customer_signer_company",
+            "customer_signature_image",
+            "customer_signed_at",
+            "updated_at",
+        ]
+    )
+    record_audit(
+        organization=proposal.organization,
+        actor=proposal.updated_by,
+        action="proposal.kiosk_sign",
+        target=proposal,
+        after={"signer_name": name},
+    )
+    return proposal
+
+
+@transaction.atomic
+def capture_customer_signature_on_attached_spec(
+    *,
+    proposal: Proposal,
+    sheet_id: Any,
+    signer_name: str,
+    signer_email: str,
+    signer_company: str,
+    signature_image: str,
+) -> SpecificationSheet:
+    """Record a customer signature on one spec sheet attached to this
+    proposal. Same semantics as
+    :func:`capture_customer_signature_on_proposal` — signature lands,
+    status stays ``sent`` until the finalize call runs.
+
+    Validates that ``sheet_id`` is actually attached to ``proposal``
+    so a crafted URL can't stamp a signature onto an unrelated sheet
+    the signer never saw.
+    """
+
+    attached = _attached_spec_sheets(proposal)
+    sheet = next((s for s in attached if str(s.id) == str(sheet_id)), None)
+    if sheet is None:
+        raise KioskSpecNotOnProposal()
+
+    # Reuse the spec-app's validator + domain errors so the kiosk
+    # error codes match the existing spec-kiosk path.
+    from apps.specifications.services import (
+        SpecificationStatus,
+        InvalidStatusTransition as SpecInvalidStatusTransition,
+    )
+
+    if sheet.status != SpecificationStatus.SENT:
+        raise SpecInvalidStatusTransition()
+
+    normalised_image = validate_signature_image(signature_image)
+    name = (signer_name or "").strip()
+    if not name:
+        raise SignatureRequired()
+
+    sheet.customer_name = name
+    sheet.customer_email = (signer_email or "").strip()
+    sheet.customer_company = (signer_company or "").strip()
+    sheet.customer_signature_image = normalised_image
+    sheet.customer_signed_at = timezone.now()
+    sheet.save(
+        update_fields=[
+            "customer_name",
+            "customer_email",
+            "customer_company",
+            "customer_signature_image",
+            "customer_signed_at",
+            "updated_at",
+        ]
+    )
+    record_audit(
+        organization=sheet.organization,
+        actor=sheet.updated_by,
+        action="spec_sheet.kiosk_sign",
+        target=sheet,
+        after={"signer_name": name, "proposal_id": str(proposal.id)},
+    )
+    return sheet
+
+
+@transaction.atomic
+def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
+    """Advance the proposal + every attached spec from ``sent`` to
+    ``accepted`` once every document has a captured signature.
+
+    Raises :class:`KioskSignaturesPending` with the list of pending
+    document ids so the kiosk can scroll the client back to the
+    missing ones. The "all-or-nothing" rule is a legal requirement —
+    a half-signed deal where the proposal is accepted but a spec
+    isn't gives the client grounds to dispute the product terms
+    ("I signed the price but never saw the final spec").
+
+    Idempotent on a proposal that's already ``accepted`` — the call
+    becomes a no-op instead of blowing up, so a double-click on the
+    finalize button doesn't surface an error.
+    """
+
+    if proposal.status == ProposalStatus.ACCEPTED.value:
+        return {"status": proposal.status, "already_finalized": True}
+
+    if proposal.status != ProposalStatus.SENT.value:
+        raise InvalidProposalTransition()
+
+    attached_specs = _attached_spec_sheets(proposal)
+
+    pending: list[str] = []
+    if proposal.customer_signed_at is None:
+        pending.append(f"proposal:{proposal.id}")
+    for sheet in attached_specs:
+        if sheet.customer_signed_at is None:
+            pending.append(f"spec:{sheet.id}")
+
+    if pending:
+        raise KioskSignaturesPending(pending)
+
+    from apps.specifications.models import (
+        SpecificationStatus,
+        SpecificationTransition,
+    )
+
+    previous_proposal_status = proposal.status
+    proposal.status = ProposalStatus.ACCEPTED.value
+    proposal.save(update_fields=["status", "updated_at"])
+    ProposalStatusTransition.objects.create(
+        proposal=proposal,
+        from_status=previous_proposal_status,
+        to_status=ProposalStatus.ACCEPTED.value,
+        actor=proposal.updated_by,
+        notes="Kiosk finalize",
+    )
+    record_audit(
+        organization=proposal.organization,
+        actor=proposal.updated_by,
+        action="proposal.kiosk_finalize",
+        target=proposal,
+        before={"status": previous_proposal_status},
+        after={"status": proposal.status},
+    )
+
+    for sheet in attached_specs:
+        if sheet.status == SpecificationStatus.ACCEPTED:
+            continue
+        previous_sheet_status = sheet.status
+        sheet.status = SpecificationStatus.ACCEPTED
+        sheet.save(update_fields=["status", "updated_at"])
+        SpecificationTransition.objects.create(
+            sheet=sheet,
+            from_status=previous_sheet_status,
+            to_status=SpecificationStatus.ACCEPTED,
+            actor=sheet.updated_by,
+            notes="Kiosk finalize (via proposal)",
+        )
+        record_audit(
+            organization=sheet.organization,
+            actor=sheet.updated_by,
+            action="spec_sheet.kiosk_finalize",
+            target=sheet,
+            before={"status": previous_sheet_status},
+            after={"status": sheet.status, "proposal_id": str(proposal.id)},
+        )
+
+    return {
+        "status": proposal.status,
+        "attached_specs": [
+            {"id": str(s.id), "status": s.status} for s in attached_specs
+        ],
+        "already_finalized": False,
+    }

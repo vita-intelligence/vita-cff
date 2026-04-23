@@ -35,6 +35,7 @@ import type {
   RenderedSheetContext,
   SpecificationSheetDto,
 } from "@/services/specifications/types";
+import type { ProposalKioskDto } from "@/services/proposals/types";
 import { productValidationEndpoints } from "@/services/product_validation/endpoints";
 import type {
   ProductValidationDto,
@@ -344,6 +345,38 @@ export async function getPublicRenderedSpecificationServer(
       return null;
     }
     return (await response.json()) as RenderedSheetContext;
+  } catch {
+    return null;
+  }
+}
+
+
+/**
+ * Fetch the public proposal kiosk payload for a given token.
+ *
+ * Mirrors :func:`getPublicRenderedSpecificationServer` — cookie-free
+ * fetch so a logged-in viewer sees exactly what a cold client would.
+ * Returns ``null`` on any non-2xx so the page can 404 cleanly
+ * without leaking whether the token is simply wrong vs the
+ * proposal's public link has been revoked.
+ */
+export async function getPublicProposalKioskServer(
+  token: string,
+): Promise<ProposalKioskDto | null> {
+  try {
+    const { proposalsEndpoints } = await import("@/services/proposals");
+    const response = await fetch(
+      `${env.NEXT_PUBLIC_API_URL}${proposalsEndpoints.publicKiosk(token)}`,
+      {
+        method: "GET",
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as ProposalKioskDto;
   } catch {
     return null;
   }

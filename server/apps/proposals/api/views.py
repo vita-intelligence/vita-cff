@@ -35,19 +35,26 @@ from apps.proposals.services import (
     CustomerNotInOrg,
     FormulationVersionNotInOrg,
     InvalidProposalTransition,
+    KioskSignaturesPending,
+    KioskSpecNotOnProposal,
     MissingRequiredFields,
     ProposalCodeConflict,
     ProposalLineNotFound,
     ProposalNotFound,
+    ProposalPublicLinkNotEnabled,
     ProposalSalesPersonNotMember,
     SignatureRequired,
     SpecificationSheetNotInOrg,
     add_proposal_line,
+    capture_customer_signature_on_attached_spec,
+    capture_customer_signature_on_proposal,
     compute_material_cost_per_pack,
     create_proposal,
     delete_proposal,
     delete_proposal_line,
+    finalize_proposal_kiosk,
     get_proposal,
+    get_proposal_by_public_token,
     list_proposals,
     suggest_unit_price,
     transition_status,
@@ -564,3 +571,309 @@ class ProposalCostPreviewView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+# ---------------------------------------------------------------------------
+# Proposal-centric kiosk (public, token-gated, no org auth)
+#
+# The client shares a proposal via its ``public_token`` — the URL is
+# ``/p/proposal/<token>``. Each document on the proposal (the
+# proposal itself + every attached specification sheet) is signed
+# independently. Signatures are captured as they're drawn but nothing
+# advances to ``accepted`` until the finalize call runs, which checks
+# every document has been signed before flipping the lot atomically.
+#
+# These endpoints deliberately sit outside the org-scoped routes —
+# the signer is not a member, only the token proves access. We still
+# require a kiosk session cookie so the signer establishes identity
+# (name / email / company) before their signature gets written, which
+# also matches the existing ``/api/public/specifications/<token>/``
+# contract.
+# ---------------------------------------------------------------------------
+
+
+from rest_framework.permissions import AllowAny
+
+
+def _public_kiosk_identity(request: Request, token: str):
+    """Resolve the kiosk-session identity for a public request or
+    raise the matching 403 so views stay uniform."""
+
+    from apps.comments.kiosk import (
+        KioskSessionInvalid,
+        KioskSessionRevoked,
+        KioskTokenInvalid,
+        resolve_from_request,
+    )
+
+    try:
+        return resolve_from_request(request, token)
+    except (
+        KioskSessionInvalid,
+        KioskSessionRevoked,
+        KioskTokenInvalid,
+    ):
+        return None
+
+
+def _render_public_proposal_payload(proposal) -> dict:
+    """Shape the proposal kiosk JSON for the ``/p/proposal/<token>``
+    page. Returns the proposal's top-level fields needed to paint
+    the cover letter + price lines, plus a list of attached spec
+    sheets with their public-facing identity and per-document sign
+    status. The client uses this to know which signature pads to
+    render and which ones are already complete."""
+
+    # Local import avoids pulling proposals.services at module load —
+    # keeps Django's app-ready order simple.
+    from apps.proposals.services import _attached_spec_sheets
+
+    attached = _attached_spec_sheets(proposal)
+    specs_payload = [
+        {
+            "id": str(sheet.id),
+            "code": sheet.code or "",
+            "document_kind": sheet.document_kind,
+            "formulation_name": (
+                sheet.formulation_version.formulation.name
+                if sheet.formulation_version_id
+                else ""
+            ),
+            "formulation_version_number": (
+                sheet.formulation_version.version_number
+                if sheet.formulation_version_id
+                else None
+            ),
+            "public_token": (
+                str(sheet.public_token) if sheet.public_token else None
+            ),
+            "status": sheet.status,
+            "customer_signed_at": (
+                sheet.customer_signed_at.isoformat()
+                if sheet.customer_signed_at is not None
+                else None
+            ),
+            "has_signature": bool(sheet.customer_signature_image),
+        }
+        for sheet in attached
+    ]
+
+    return {
+        "id": str(proposal.id),
+        "code": proposal.code,
+        "status": proposal.status,
+        "customer_company": proposal.customer_company,
+        "customer_name": proposal.customer_name,
+        "reference": proposal.reference,
+        "dear_name": proposal.dear_name,
+        "currency": proposal.currency,
+        "total_excl_vat": (
+            str(proposal.total_excl_vat)
+            if proposal.total_excl_vat is not None
+            else None
+        ),
+        "customer_signed_at": (
+            proposal.customer_signed_at.isoformat()
+            if proposal.customer_signed_at is not None
+            else None
+        ),
+        "has_signature": bool(proposal.customer_signature_image),
+        "attached_specs": specs_payload,
+    }
+
+
+class PublicProposalKioskView(APIView):
+    """``GET`` ``/api/public/proposals/<token>/``.
+
+    Returns the JSON payload used by the kiosk page to render the
+    proposal alongside every attached spec sheet. No kiosk session
+    required on the GET — establishing identity is deferred until
+    the client actually tries to sign something, so shareable links
+    can be previewed before committing.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> Response:
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+        return Response(
+            _render_public_proposal_payload(proposal),
+            status=status.HTTP_200_OK,
+        )
+
+
+class PublicProposalSignProposalView(APIView):
+    """``POST`` ``/api/public/proposals/<token>/sign/``.
+
+    Captures the customer's signature on the proposal itself.
+    Signature image + signer identity lands in the DB; proposal stays
+    at ``sent`` until the finalize call fires. Identity is pulled off
+    the kiosk session cookie — the signer must have completed the
+    session-entry flow first so their name / email / company are
+    bound to the token.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str) -> Response:
+        from config.signatures import SignatureImageInvalid
+
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        identity = _public_kiosk_identity(request, str(token))
+        if identity is None:
+            return Response(
+                {"detail": ["kiosk_session_required"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        session = identity.session
+
+        signature_image = (request.data or {}).get("signature_image") or ""
+        try:
+            updated = capture_customer_signature_on_proposal(
+                proposal=proposal,
+                signer_name=session.guest_name,
+                signer_email=session.guest_email or "",
+                signer_company=session.guest_org_label or "",
+                signature_image=signature_image,
+            )
+        except InvalidProposalTransition:
+            return Response(
+                {"status": ["invalid_proposal_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (SignatureRequired, SignatureImageInvalid):
+            return Response(
+                {"signature_image": ["signature_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PublicProposalSignSpecView(APIView):
+    """``POST`` ``/api/public/proposals/<token>/specs/<sheet_id>/sign/``.
+
+    Captures the customer's signature on a specification sheet
+    attached to this proposal. Rejects sheets that aren't on this
+    proposal so a crafted URL can't stamp a signature onto an
+    unrelated document.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str, sheet_id: str) -> Response:
+        from config.signatures import SignatureImageInvalid
+        from apps.specifications.services import (
+            InvalidStatusTransition as SpecInvalidStatusTransition,
+        )
+
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        identity = _public_kiosk_identity(request, str(token))
+        if identity is None:
+            return Response(
+                {"detail": ["kiosk_session_required"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        session = identity.session
+
+        signature_image = (request.data or {}).get("signature_image") or ""
+        try:
+            updated = capture_customer_signature_on_attached_spec(
+                proposal=proposal,
+                sheet_id=sheet_id,
+                signer_name=session.guest_name,
+                signer_email=session.guest_email or "",
+                signer_company=session.guest_org_label or "",
+                signature_image=signature_image,
+            )
+        except KioskSpecNotOnProposal:
+            # Same 404 shape as an unknown token — don't leak which
+            # sheet ids do exist in the org.
+            raise NotFound()
+        except SpecInvalidStatusTransition:
+            return Response(
+                {"status": ["invalid_status_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except (SignatureRequired, SignatureImageInvalid):
+            return Response(
+                {"signature_image": ["signature_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "id": str(updated.id),
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class PublicProposalFinalizeView(APIView):
+    """``POST`` ``/api/public/proposals/<token>/finalize/``.
+
+    Flips the proposal and every attached spec from ``sent`` to
+    ``accepted`` — only succeeds when every document has a captured
+    signature. Returns a ``kiosk_signatures_pending`` error carrying
+    the list of still-pending document ids otherwise so the client
+    can scroll back and collect the missing ones.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str) -> Response:
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        identity = _public_kiosk_identity(request, str(token))
+        if identity is None:
+            return Response(
+                {"detail": ["kiosk_session_required"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            result = finalize_proposal_kiosk(proposal=proposal)
+        except InvalidProposalTransition:
+            return Response(
+                {"status": ["invalid_proposal_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except KioskSignaturesPending as exc:
+            return Response(
+                {
+                    "detail": ["kiosk_signatures_pending"],
+                    "pending": list(exc.args[0]) if exc.args else [],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result, status=status.HTTP_200_OK)

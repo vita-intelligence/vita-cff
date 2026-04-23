@@ -160,3 +160,47 @@ export interface CostPreviewDto {
   readonly suggested_unit_price: string;
   readonly currency: string;
 }
+
+
+// ---------------------------------------------------------------------------
+// Proposal-centric kiosk (``/p/proposal/<token>``)
+// ---------------------------------------------------------------------------
+
+
+/** One specification sheet attached to a proposal, as exposed on
+ *  the public kiosk payload. ``customer_signed_at`` goes non-null
+ *  once the client has captured their signature for this doc but
+ *  the status stays ``sent`` until the finalize call advances the
+ *  whole bundle. */
+export interface ProposalKioskSpecDto {
+  readonly id: string;
+  readonly code: string;
+  readonly document_kind: "draft" | "final";
+  readonly formulation_name: string;
+  readonly formulation_version_number: number | null;
+  readonly public_token: string | null;
+  readonly status: string;
+  readonly customer_signed_at: string | null;
+  readonly has_signature: boolean;
+}
+
+
+/** Full kiosk payload for one proposal — the proposal's own
+ *  cover-letter fields plus every attached spec sheet's per-doc
+ *  signature state. The client renders one signature pad per
+ *  document and the finalize button flips the whole set atomically
+ *  once every ``has_signature`` is true. */
+export interface ProposalKioskDto {
+  readonly id: string;
+  readonly code: string;
+  readonly status: string;
+  readonly customer_company: string;
+  readonly customer_name: string;
+  readonly reference: string;
+  readonly dear_name: string;
+  readonly currency: string;
+  readonly total_excl_vat: string | null;
+  readonly customer_signed_at: string | null;
+  readonly has_signature: boolean;
+  readonly attached_specs: readonly ProposalKioskSpecDto[];
+}

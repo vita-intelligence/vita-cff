@@ -52,6 +52,9 @@
     "no_customer": "No customer yet",
     "preview_loading": "Rendering proposal…",
     "edit": "Edit details",
+    "share_kiosk": "Copy kiosk link",
+    "share_kiosk_copied": "Copied",
+    "share_kiosk_copy_prompt": "Copy this kiosk link and share it with the client",
     "edit_heading": "Edit proposal",
     "edit_subtitle": "Fill the customer details and commercial terms the template needs. The preview above re-renders after you save.",
     "download_pdf": "Download PDF",
@@ -143,6 +146,35 @@
       "reference": "Reference",
       "sales_person": "Assigned sales person on the project",
       "lines": "At least one priced product"
+    }
+  },
+  "public": {
+    "banner": "This is a shareable preview link. You're identified by the name you entered on arrival; every signature is audit-logged.",
+    "footer": "Powered by Vita NPD",
+    "header_fallback": "Commercial proposal",
+    "total_hint": "Total (ex. VAT): {total} {currency}",
+    "status_accepted": "Accepted",
+    "finalize_hint": "Sign every document below to finish. Nothing advances until all signatures are in.",
+    "finalize_ready": "Every document is signed. Click Finish to complete the deal.",
+    "finalize_cta": "Finish & accept",
+    "doc": {
+      "proposal_title": "Commercial proposal",
+      "proposal_subtitle": "Price, quantity, and commercial terms.",
+      "spec_title": "Specification sheet — {name}",
+      "spec_title_untitled": "Specification sheet",
+      "spec_final": "Final",
+      "spec_draft": "Draft",
+      "sign_cta": "Sign this",
+      "resign": "Resign",
+      "signed_badge": "Signed",
+      "signed_on": "Signed on {date}"
+    },
+    "sign_dialog": {
+      "proposal_title": "Sign the commercial proposal",
+      "spec_title": "Sign the specification sheet",
+      "subtitle": "Draw your signature to confirm you've reviewed this document. You'll sign each document separately.",
+      "confirm": "Sign this document",
+      "cancel": "Cancel"
     }
   }
 }

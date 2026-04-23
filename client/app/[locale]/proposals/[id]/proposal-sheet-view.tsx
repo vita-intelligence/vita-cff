@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Download,
+  Link2,
   Pencil,
   Plus,
   Save,
@@ -262,6 +263,12 @@ export function ProposalSheetView({
           tProposals={tProposals}
           tErrors={tErrors}
         />
+        {proposal.public_token ? (
+          <ShareKioskLinkButton
+            token={proposal.public_token}
+            tProposals={tProposals}
+          />
+        ) : null}
         <Button
           type="button"
           variant="outline"
@@ -1385,6 +1392,60 @@ function extractErrorMessage(
     }
   }
   return tErrors("generic");
+}
+
+
+/**
+ * One-click copier for the proposal's public kiosk link. We write
+ * the absolute URL into the clipboard rather than surface it as a
+ * long anchor in the toolbar because (a) the token is opaque so
+ * it renders badly, and (b) scientists routinely paste the link
+ * into email or Slack — copying is the dominant action.
+ *
+ * Falls back to a selected-text prompt when ``navigator.clipboard``
+ * is unavailable (Safari on older macOS, non-HTTPS dev environments)
+ * so the button never leaves the scientist stranded.
+ */
+function ShareKioskLinkButton({
+  token,
+  tProposals,
+}: {
+  token: string;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const url = useMemo(() => {
+    if (typeof window === "undefined") return "";
+    return `${window.location.origin}/p/proposal/${token}`;
+  }, [token]);
+
+  const handleCopy = async () => {
+    if (!url) return;
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard blocked — show the URL as a prompt so the
+      // scientist can still ⌘-C it out of the dialog.
+      window.prompt(tProposals("detail.share_kiosk_copy_prompt"), url);
+    }
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      onClick={handleCopy}
+      className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+    >
+      <Link2 className="h-4 w-4" />
+      {copied
+        ? tProposals("detail.share_kiosk_copied")
+        : tProposals("detail.share_kiosk")}
+    </Button>
+  );
 }
 
 
