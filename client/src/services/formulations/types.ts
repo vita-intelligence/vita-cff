@@ -27,6 +27,13 @@ export const TARGET_FILL_WEIGHT_FORMS: readonly DosageForm[] = [
   "gummy",
 ] as const;
 
+/** Sub-variants of the powder dosage form. ``protein`` drops the
+ * Trisodium Citrate + Citric Acid rows from the flavour system (the
+ * protein matrix already buffers itself). Surfaced in the builder
+ * only when ``dosage_form === "powder"``. */
+export const POWDER_TYPES = ["standard", "protein"] as const;
+export type PowderType = (typeof POWDER_TYPES)[number];
+
 /** Product roadmap status — the single lifecycle chip shown at
  * the top of the project workspace. */
 export const PROJECT_STATUSES = [
@@ -37,6 +44,13 @@ export const PROJECT_STATUSES = [
   "discontinued",
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+/** Commercial engagement model. Drives which proposal template
+ *  renders on the client kiosk — Custom includes the laboratory
+ *  development phase + 30% deposit; Ready to Go is straight-to-
+ *  production from an existing recipe. */
+export const PROJECT_TYPES = ["custom", "ready_to_go"] as const;
+export type ProjectType = (typeof PROJECT_TYPES)[number];
 
 export interface CapsuleSizeOption {
   readonly key: string;
@@ -156,11 +170,15 @@ export interface FormulationDto {
   readonly serving_size: number;
   readonly servings_per_pack: number;
   readonly target_fill_weight_mg: string | null;
+  readonly powder_type: PowderType;
+  readonly water_volume_ml: string | null;
   readonly directions_of_use: string;
   readonly suggested_dosage: string;
   readonly appearance: string;
   readonly disintegration_spec: string;
   readonly project_status: ProjectStatus;
+  readonly project_type: ProjectType;
+  readonly approved_version_number: number | null;
   readonly sales_person: SalesPersonDto | null;
   readonly lines: readonly FormulationLineDto[];
   readonly created_at: string;
@@ -173,7 +191,7 @@ export interface AssignSalesPersonRequestDto {
 
 export interface CreateFormulationRequestDto {
   readonly name: string;
-  readonly code?: string;
+  readonly code: string;
   readonly description?: string;
   readonly dosage_form?: DosageForm;
   readonly capsule_size?: string;
@@ -181,6 +199,8 @@ export interface CreateFormulationRequestDto {
   readonly serving_size?: number;
   readonly servings_per_pack?: number;
   readonly target_fill_weight_mg?: string | null;
+  readonly powder_type?: PowderType;
+  readonly water_volume_ml?: string | null;
   readonly directions_of_use?: string;
   readonly suggested_dosage?: string;
   readonly appearance?: string;
@@ -189,6 +209,7 @@ export interface CreateFormulationRequestDto {
 
 export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> & {
   readonly project_status?: ProjectStatus;
+  readonly project_type?: ProjectType;
 };
 
 export interface FormulationLineInput {
@@ -208,6 +229,7 @@ export interface ExcipientRowDto {
   readonly label: string;
   readonly mg: string;
   readonly is_remainder: boolean;
+  readonly concentration_mg_per_ml?: string | null;
 }
 
 export interface ExcipientBreakdownDto {

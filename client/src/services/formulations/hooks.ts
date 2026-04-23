@@ -29,6 +29,7 @@ import {
   replaceFormulationLines,
   rollbackFormulation,
   saveFormulationVersion,
+  setApprovedVersion,
   updateFormulation,
 } from "./api";
 import type {
@@ -202,6 +203,13 @@ export function useUpdateFormulation(
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.totals(orgId, formulationId),
       });
+      // The project-overview card reads ``code`` / ``name`` /
+      // ``description`` off a separate query, so an edit through
+      // this mutation must kick it too — otherwise the header
+      // keeps printing the stale code until a full refetch.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+      });
     },
   });
 }
@@ -307,6 +315,30 @@ export function useRollbackFormulation(
       });
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.versions(orgId, formulationId),
+      });
+    },
+  });
+}
+
+/** Mark a specific version as the current approved recipe, or
+ *  clear the pointer by passing ``null``. The backend requires the
+ *  ``formulations.approve`` capability — the button surfaces a
+ *  friendly ``forbidden`` message when that's missing. */
+export function useSetApprovedVersion(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<FormulationDto, ApiError, number | null> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, number | null>({
+    mutationFn: (versionNumber) =>
+      setApprovedVersion(orgId, formulationId, versionNumber),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        updated,
+      );
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulationId),
       });
     },
   });

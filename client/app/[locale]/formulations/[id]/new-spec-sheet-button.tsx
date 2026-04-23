@@ -5,11 +5,15 @@ import { FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState, type FormEvent } from "react";
 
+import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import { useCreateSpecification } from "@/services/specifications";
+import type { CustomerDto } from "@/services/customers";
 import type { FormulationVersionDto } from "@/services/formulations";
+
+import { CustomerFormModal } from "../../customers/customers-list";
 
 
 const INPUT_CLASS =
@@ -27,9 +31,15 @@ const HINT_CLASS = "text-xs text-ink-500";
  */
 export function NewSpecSheetButton({
   orgId,
+  projectCode,
   versions,
 }: {
   orgId: string;
+  //: The project's own ``code`` — auto-seeded into the spec's code
+  //: field on open so scientists aren't forced to re-type the same
+  //: reference. They can still override before submitting; only the
+  //: initial value is borrowed.
+  projectCode: string;
   versions: readonly FormulationVersionDto[];
 }) {
   const tSpecs = useTranslations("specifications");
@@ -38,10 +48,15 @@ export function NewSpecSheetButton({
 
   const [isOpen, setIsOpen] = useState(false);
   const [versionId, setVersionId] = useState<string>(versions[0]?.id ?? "");
-  const [code, setCode] = useState("");
-  const [clientName, setClientName] = useState("");
-  const [clientEmail, setClientEmail] = useState("");
-  const [clientCompany, setClientCompany] = useState("");
+  const [code, setCode] = useState(projectCode ?? "");
+  //: When a customer is picked from the address book, ``customer``
+  //: holds the full record and its ``name`` / ``email`` / ``company``
+  //: flow straight into the POST payload. When no picker match
+  //: exists (truly-new client), ``customerCreating`` opens the
+  //: customer create modal so they become addressable for future
+  //: proposals / sheets too.
+  const [customer, setCustomer] = useState<CustomerDto | null>(null);
+  const [customerCreating, setCustomerCreating] = useState(false);
   const [coverNotes, setCoverNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -61,10 +76,8 @@ export function NewSpecSheetButton({
 
   const reset = () => {
     setVersionId(versions[0]?.id ?? "");
-    setCode("");
-    setClientName("");
-    setClientEmail("");
-    setClientCompany("");
+    setCode(projectCode ?? "");
+    setCustomer(null);
     setCoverNotes("");
     setError(null);
   };
@@ -82,9 +95,13 @@ export function NewSpecSheetButton({
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         code: code.trim(),
-        client_name: clientName.trim(),
-        client_email: clientEmail.trim(),
-        client_company: clientCompany.trim(),
+        // Seeded from the picked customer; empty strings when no
+        // customer is selected yet (the scientist can still fill
+        // them in via Edit details after the sheet exists, matching
+        // how the proposal create flow treats a nameless draft).
+        client_name: customer?.name ?? "",
+        client_email: customer?.email ?? "",
+        client_company: customer?.company ?? "",
         cover_notes: coverNotes.trim(),
       });
       close();
@@ -176,40 +193,14 @@ export function NewSpecSheetButton({
                   />
                 </label>
 
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <label className="flex flex-col gap-1.5">
-                    <span className={LABEL_CLASS}>
-                      {tSpecs("create.client_company")}
-                    </span>
-                    <input
-                      value={clientCompany}
-                      onChange={(e) => setClientCompany(e.target.value)}
-                      className={INPUT_CLASS}
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className={LABEL_CLASS}>
-                      {tSpecs("create.client_name")}
-                    </span>
-                    <input
-                      value={clientName}
-                      onChange={(e) => setClientName(e.target.value)}
-                      className={INPUT_CLASS}
-                    />
-                  </label>
-                </div>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className={LABEL_CLASS}>
-                    {tSpecs("create.client_email")}
-                  </span>
-                  <input
-                    type="email"
-                    value={clientEmail}
-                    onChange={(e) => setClientEmail(e.target.value)}
-                    className={INPUT_CLASS}
-                  />
-                </label>
+                <CustomerPicker
+                  orgId={orgId}
+                  value={customer}
+                  onChange={setCustomer}
+                  onCreateNew={() => setCustomerCreating(true)}
+                  label={tSpecs("create.client")}
+                  hint={tSpecs("create.client_picker_hint")}
+                />
 
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>
@@ -257,6 +248,20 @@ export function NewSpecSheetButton({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
+
+      {/* Mount inside the outer Modal so the create-customer dialog
+          stacks above the spec dialog instead of dismissing it. On
+          create we snap the new customer into the picker so the
+          scientist doesn't have to re-find it. Mirrors the proposal
+          create flow. */}
+      <CustomerFormModal
+        orgId={orgId}
+        mode="create"
+        isOpen={customerCreating}
+        onClose={() => setCustomerCreating(false)}
+        initial={null}
+        onCreated={(c) => setCustomer(c)}
+      />
     </Modal>
   );
 }

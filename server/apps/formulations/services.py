@@ -40,6 +40,8 @@ from apps.formulations.constants import (
     GUMMY_FLAVOUR_SYSTEM,
     NUTRITION_KEYS,
     POWDER_FLAVOUR_SYSTEM,
+    POWDER_REFERENCE_WATER_ML,
+    PowderType,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
     TABLET_MG_STEARATE_PCT,
@@ -48,6 +50,7 @@ from apps.formulations.constants import (
     auto_pick_capsule_size,
     capsule_size_by_key,
     normalize_compliance_value,
+    powder_flavour_system_for,
     tablet_size_by_key,
 )
 from apps.formulations.models import (
@@ -71,6 +74,20 @@ class FormulationCodeConflict(Exception):
     code = "formulation_code_conflict"
 
 
+class FormulationCodeRequired(Exception):
+    """Raised when a caller omits the project code on create.
+
+    Scientists now pick the project's internal code themselves — it
+    usually mirrors the MRPeasy / lab-book reference (``MA210367``,
+    ``FB-001``) and is part of the paperwork trail. We removed the
+    ``PRJ-NNNN`` auto-generator because auto-codes kept being quoted
+    back on specification sheets and signed contracts, then diverging
+    from the code the rest of the business used for the same project.
+    """
+
+    code = "formulation_code_required"
+
+
 class FormulationVersionNotFound(Exception):
     code = "formulation_version_not_found"
 
@@ -85,6 +102,10 @@ class InvalidCapsuleSize(Exception):
 
 class InvalidTabletSize(Exception):
     code = "invalid_tablet_size"
+
+
+class InvalidPowderType(Exception):
+    code = "invalid_powder_type"
 
 
 class RawMaterialNotInOrg(Exception):
@@ -204,12 +225,19 @@ class ExcipientRow:
     is machine-stable for i18n lookups; ``label`` is the fallback
     display copy; ``mg`` is the absolute per-unit weight; ``is_remainder``
     flags the row computed as ``target - active - sum(other rows)`` so
-    the UI can badge it distinctly from the fixed-% rows."""
+    the UI can badge it distinctly from the fixed-% rows.
+
+    ``concentration_mg_per_ml`` is populated for powder flavour rows
+    that scale linearly with the serving's water volume (Trisodium
+    Citrate, Citric Acid, etc.) so the UI can show the raw rate next
+    to the computed mg — matches the ``K7 × 0.1% × 100`` notation on
+    the Formulation Calculation Sheet."""
 
     slug: str
     label: str
     mg: Decimal
     is_remainder: bool = False
+    concentration_mg_per_ml: Decimal | None = None
 
 
 @dataclass
@@ -500,6 +528,8 @@ def _compute_fill_target(
     dosage_form: str,
     total_active: Decimal,
     target_fill_weight_mg: Decimal | None,
+    powder_type: str | None = None,
+    water_volume_ml: Decimal | None = None,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -530,22 +560,48 @@ def _compute_fill_target(
     # (row-level editing lives on the formulation, Phase F-next); for
     # now we ship the Rave Lytes / Moonlytes defaults so every new
     # sachet has the same five-row shape as Excel's BOM scratchpad.
-    preset = (
-        POWDER_FLAVOUR_SYSTEM
-        if dosage_form == DosageForm.POWDER.value
-        else GUMMY_FLAVOUR_SYSTEM
-    )
-    flavour_rows: tuple[ExcipientRow, ...] = tuple(
-        ExcipientRow(slug=slug, label=label, mg=_quantise(mg))
-        for slug, label, mg in preset
-    )
-    flavour_total = sum((float(r.mg) for r in flavour_rows), 0.0)
+    # Powder flavour rows are concentrations (mg per ml of water);
+    # multiplying by the serving's water volume produces the per-serving
+    # mg exactly as the Formulation Calculation Sheet does. Gummies
+    # stay on the legacy (slug, label, mg) tuple shape because their
+    # "Water" / "Acidity regulator" rows are per-gummy weights, not
+    # dilution targets.
+    is_powder = dosage_form == DosageForm.POWDER.value
+    flavour_rows: list[ExcipientRow] = []
+    if is_powder:
+        preset = powder_flavour_system_for(powder_type)
+        # Default to the reference volume when the scientist has not
+        # typed one yet so a fresh powder still shows a sensible
+        # flavour system rather than zero rows.
+        water_ml = (
+            max(float(water_volume_ml), 0.0)
+            if water_volume_ml is not None
+            else POWDER_REFERENCE_WATER_ML
+        )
+        for slug, label, mg_per_ml in preset:
+            flavour_rows.append(
+                ExcipientRow(
+                    slug=slug,
+                    label=label,
+                    mg=_quantise(mg_per_ml * water_ml),
+                    concentration_mg_per_ml=Decimal(str(mg_per_ml)),
+                )
+            )
+    else:
+        # Gummy — static mg values the workbook hand-types per product.
+        preset = GUMMY_FLAVOUR_SYSTEM
+        for slug, label, mg in preset:
+            flavour_rows.append(
+                ExcipientRow(slug=slug, label=label, mg=_quantise(mg))
+            )
+    flavour_rows_tuple: tuple[ExcipientRow, ...] = tuple(flavour_rows)
+    flavour_total = sum((float(r.mg) for r in flavour_rows_tuple), 0.0)
 
     breakdown = ExcipientBreakdown(
         mg_stearate_mg=Decimal("0"),
         silica_mg=Decimal("0"),
         mcc_mg=Decimal("0"),
-        rows=flavour_rows,
+        rows=flavour_rows_tuple,
     )
 
     if target_fill_weight_mg is None or target_fill_weight_mg <= 0:
@@ -625,6 +681,8 @@ def compute_totals(
     tablet_size_key: str | None = None,
     default_serving_size: int = 1,
     target_fill_weight_mg: Decimal | None = None,
+    powder_type: str | None = None,
+    water_volume_ml: Decimal | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
 
@@ -692,7 +750,11 @@ def compute_totals(
             viability,
             warnings,
         ) = _compute_fill_target(
-            dosage_form, total_active, target_fill_weight_mg
+            dosage_form,
+            total_active,
+            target_fill_weight_mg,
+            powder_type=powder_type,
+            water_volume_ml=water_volume_ml,
         )
     else:
         # Non-math dosage forms (liquid, other_solid) still report
@@ -753,45 +815,13 @@ def get_formulation(
     return obj
 
 
-#: Per-org sequential code scheme. ``PRJ-0001`` / ``PRJ-0002`` etc.
-#: Short, human-readable, and monotonically increasing — useful when
-#: scientists are looking at a list of a dozen drafts and need a
-#: quick mental index. Scientists can rename via ``update_formulation``
-#: if they prefer a domain-specific code like ``FB-001``.
-_CODE_PREFIX = "PRJ"
-_CODE_RE = re.compile(rf"^{_CODE_PREFIX}-(\d+)$")
-
-
-def _generate_unique_code(organization: Organization) -> str:
-    """Return the next ``PRJ-NNNN`` code for this organisation.
-
-    Reads the highest existing numeric suffix across the org's
-    formulations and increments by one, ignoring non-matching codes
-    (manual overrides, legacy MA-style codes). Padded to four digits
-    for column alignment and re-extends naturally once you cross
-    10_000 projects.
-    """
-
-    existing = (
-        Formulation.objects.filter(organization=organization)
-        .exclude(code="")
-        .values_list("code", flat=True)
-    )
-    highest = 0
-    for code in existing:
-        match = _CODE_RE.match(code)
-        if match is not None:
-            highest = max(highest, int(match.group(1)))
-    return f"{_CODE_PREFIX}-{highest + 1:04d}"
-
-
 @transaction.atomic
 def create_formulation(
     *,
     organization: Organization,
     actor: Any,
     name: str,
-    code: str = "",
+    code: str,
     description: str = "",
     dosage_form: str = DosageForm.CAPSULE.value,
     capsule_size: str = "",
@@ -803,40 +833,38 @@ def create_formulation(
     appearance: str = "",
     disintegration_spec: str = "",
     target_fill_weight_mg: Decimal | None = None,
+    powder_type: str = PowderType.STANDARD.value,
+    water_volume_ml: Decimal | None = None,
 ) -> Formulation:
     """Create a new formulation.
 
-    ``code`` is deliberately auto-generated here rather than trusted
-    from the caller: the New project modal used to accept a code
-    field, and the AI-drafting flow emitted hard-coded suggestions
-    like ``MA210367`` that collided on a second attempt. Scientists
-    can still rename via :func:`update_formulation` — this function
-    just guarantees the initial code is unique without the caller
-    having to probe for collisions.
-
-    When a caller explicitly passes a ``code`` we honour it only if
-    it's not already taken. Preserves the admin escape hatch for
-    scripted imports that do want deterministic codes.
+    ``code`` is the scientist's project reference (``MA210367``,
+    ``FB-001``). It's mandatory and must be unique per organisation:
+    the same string appears on the MRPeasy bill of materials, the
+    signed specification sheet and the commercial proposal, so a
+    server-assigned fallback would silently diverge from the code the
+    rest of the business uses. ``FormulationCodeRequired`` fires on a
+    blank value, ``FormulationCodeConflict`` on a duplicate — the API
+    layer maps both into 400s with machine-readable codes.
     """
+
+    code = (code or "").strip()
+    if not code:
+        raise FormulationCodeRequired()
 
     _validate_dosage_form(dosage_form)
 
-    if code:
-        duplicate = Formulation.objects.filter(
-            organization=organization, code=code
-        ).exists()
-        if duplicate:
-            # Fall through to auto-generation rather than raising —
-            # the caller wanted *a* code, and the auto-generated one
-            # is strictly better than a 400.
-            code = _generate_unique_code(organization)
-    else:
-        code = _generate_unique_code(organization)
+    duplicate = Formulation.objects.filter(
+        organization=organization, code=code
+    ).exists()
+    if duplicate:
+        raise FormulationCodeConflict()
 
     if capsule_size and capsule_size_by_key(capsule_size) is None:
         raise InvalidCapsuleSize()
     if tablet_size and tablet_size_by_key(tablet_size) is None:
         raise InvalidTabletSize()
+    _validate_powder_type(powder_type)
 
     formulation = Formulation.objects.create(
         organization=organization,
@@ -853,6 +881,8 @@ def create_formulation(
         appearance=appearance,
         disintegration_spec=disintegration_spec,
         target_fill_weight_mg=target_fill_weight_mg,
+        powder_type=powder_type,
+        water_volume_ml=water_volume_ml,
         created_by=actor,
         updated_by=actor,
     )
@@ -887,7 +917,10 @@ def update_formulation(
         "appearance",
         "disintegration_spec",
         "target_fill_weight_mg",
+        "powder_type",
+        "water_volume_ml",
         "project_status",
+        "project_type",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:
         _validate_dosage_form(changes["dosage_form"])
@@ -897,6 +930,8 @@ def update_formulation(
     if changes.get("tablet_size"):
         if tablet_size_by_key(changes["tablet_size"]) is None:
             raise InvalidTabletSize()
+    if "powder_type" in changes and changes["powder_type"] is not None:
+        _validate_powder_type(changes["powder_type"])
     if "code" in changes and changes["code"] and changes["code"] != formulation.code:
         duplicate = (
             Formulation.objects.filter(
@@ -933,6 +968,12 @@ def _validate_dosage_form(value: str) -> None:
     valid = {form.value for form in DosageForm}
     if value not in valid:
         raise InvalidDosageForm()
+
+
+def _validate_powder_type(value: str) -> None:
+    valid = {variant.value for variant in PowderType}
+    if value not in valid:
+        raise InvalidPowderType()
 
 
 @transaction.atomic
@@ -1576,6 +1617,8 @@ def compute_formulation_totals(
         tablet_size_key=formulation.tablet_size or None,
         default_serving_size=formulation.serving_size,
         target_fill_weight_mg=formulation.target_fill_weight_mg,
+        powder_type=formulation.powder_type or None,
+        water_volume_ml=formulation.water_volume_ml,
     )
 
 
@@ -1601,6 +1644,12 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
         "target_fill_weight_mg": (
             str(formulation.target_fill_weight_mg)
             if formulation.target_fill_weight_mg is not None
+            else None
+        ),
+        "powder_type": formulation.powder_type,
+        "water_volume_ml": (
+            str(formulation.water_volume_ml)
+            if formulation.water_volume_ml is not None
             else None
         ),
     }
@@ -1773,6 +1822,11 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                         "label": row.label,
                         "mg": str(row.mg),
                         "is_remainder": row.is_remainder,
+                        "concentration_mg_per_ml": (
+                            str(row.concentration_mg_per_ml)
+                            if row.concentration_mg_per_ml is not None
+                            else None
+                        ),
                     }
                     for row in totals.excipients.rows
                 ],
@@ -1894,6 +1948,45 @@ def get_version(
 
 
 @transaction.atomic
+def set_approved_version(
+    *,
+    formulation: Formulation,
+    actor: Any,
+    version_number: int | None,
+) -> Formulation:
+    """Mark one version as the current "approved" recipe, or clear it.
+
+    ``version_number=None`` wipes the pointer — used when scientists
+    want to un-approve without replacing with a new number. When a
+    number is provided we verify it corresponds to an existing version
+    of *this* formulation so we never point at a sibling's snapshot.
+    """
+
+    if version_number is not None:
+        exists = formulation.versions.filter(
+            version_number=version_number
+        ).exists()
+        if not exists:
+            raise FormulationVersionNotFound()
+
+    before = snapshot(formulation)
+    formulation.approved_version_number = version_number
+    formulation.updated_by = actor
+    formulation.save(
+        update_fields=["approved_version_number", "updated_by", "updated_at"]
+    )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.set_approved_version",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
+
+
+@transaction.atomic
 def rollback_to_version(
     *,
     formulation: Formulation,
@@ -1925,6 +2018,8 @@ def rollback_to_version(
         "suggested_dosage",
         "appearance",
         "disintegration_spec",
+        "powder_type",
+        "water_volume_ml",
     ):
         if key in metadata:
             setattr(formulation, key, metadata[key])

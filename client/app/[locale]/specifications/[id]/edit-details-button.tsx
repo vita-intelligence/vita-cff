@@ -51,14 +51,19 @@ export function EditDetailsButton({
   // the inputs retain focus across re-renders the parent triggers.
   useEffect(() => {
     if (!isOpen) return;
+    // ``total_weight_label`` and ``unit_quantity`` used to live on
+    // this form but the builder is authoritative for both (computed
+    // total weight + servings-per-pack). Editing them here only
+    // created a way to drift from the snapshot, so we dropped them.
+    // Existing stored values on old sheets stay in the DB untouched.
     setForm({
       code: sheet.code,
       client_name: sheet.client_name,
       client_email: sheet.client_email,
       client_company: sheet.client_company,
       cover_notes: sheet.cover_notes,
-      total_weight_label: sheet.total_weight_label,
-      unit_quantity: sheet.unit_quantity,
+      margin_percent: sheet.margin_percent,
+      final_price: sheet.final_price,
       food_contact_status: sheet.food_contact_status,
       shelf_life: sheet.shelf_life,
       storage_conditions: sheet.storage_conditions,
@@ -72,8 +77,8 @@ export function EditDetailsButton({
     sheet.client_email,
     sheet.client_company,
     sheet.cover_notes,
-    sheet.total_weight_label,
-    sheet.unit_quantity,
+    sheet.margin_percent,
+    sheet.final_price,
     sheet.food_contact_status,
     sheet.shelf_life,
     sheet.storage_conditions,
@@ -132,7 +137,12 @@ export function EditDetailsButton({
                   {tSpecs("edit_details.subtitle")}
                 </p>
 
-                {/* Client context */}
+                {/* Client context — identity the customer will see on
+                    their copy of the sheet. The create modal uses the
+                    address-book picker; here we surface the raw fields
+                    so a scientist can override a single value (e.g. a
+                    different contact for this specific sheet) without
+                    mutating the address-book record. */}
                 <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
                   <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
                     {tSpecs("edit_details.group.client")}
@@ -141,38 +151,105 @@ export function EditDetailsButton({
                     label={tSpecs("create.code")}
                     value={form.code ?? ""}
                     onChange={(v) => set("code", v)}
+                    hint={tSpecs("edit_details.code_hint")}
                   />
                   <TextField
                     label={tSpecs("create.client_company")}
                     value={form.client_company ?? ""}
                     onChange={(v) => set("client_company", v)}
+                    hint={tSpecs("edit_details.client_company_hint")}
                   />
                   <TextField
                     label={tSpecs("create.client_name")}
                     value={form.client_name ?? ""}
                     onChange={(v) => set("client_name", v)}
+                    hint={tSpecs("edit_details.client_name_hint")}
                   />
                   <TextField
                     label={tSpecs("create.client_email")}
                     value={form.client_email ?? ""}
                     onChange={(v) => set("client_email", v)}
                     type="email"
+                    hint={tSpecs("edit_details.client_email_hint")}
                   />
                 </fieldset>
 
-                {/* Product spec metadata — the rows that render
-                    inside the customer-facing Product Specification
-                    block. */}
+                {/* Commercial numbers the customer sees on the sheet.
+                    Optional on a draft; required once the sheet is
+                    ``sent`` to a client and a price has been agreed.
+                    Scientists quote in the sheet's currency (stored
+                    on the org, not per-sheet) so we show the bare
+                    number without an attached symbol here. */}
+                <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
+                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                    {tSpecs("edit_details.group.commercial")}
+                  </legend>
+                  <TextField
+                    label={tSpecs("edit_details.margin_percent")}
+                    value={
+                      form.margin_percent === null ||
+                      form.margin_percent === undefined
+                        ? ""
+                        : String(form.margin_percent)
+                    }
+                    onChange={(v) =>
+                      set("margin_percent", v === "" ? null : v)
+                    }
+                    placeholder="30"
+                    hint={tSpecs("edit_details.margin_percent_hint")}
+                    inputMode="decimal"
+                  />
+                  <TextField
+                    label={tSpecs("edit_details.final_price")}
+                    value={
+                      form.final_price === null ||
+                      form.final_price === undefined
+                        ? ""
+                        : String(form.final_price)
+                    }
+                    onChange={(v) =>
+                      set("final_price", v === "" ? null : v)
+                    }
+                    placeholder="0.00"
+                    hint={tSpecs("edit_details.final_price_hint")}
+                    inputMode="decimal"
+                  />
+                </fieldset>
+
+                {/* Client-negotiated product properties — shelf life,
+                    storage and food contact depend on the *quote*, not
+                    the recipe, so they live on the spec (not the
+                    formulation builder). Total weight + servings per
+                    pack are authoritative in the builder and flow
+                    through the snapshot; they're intentionally not
+                    duplicated here anymore.
+
+                    Weight uniformity stays because QC tolerance is
+                    negotiated per-client — a supermarket brand may
+                    demand ±5% where a boutique label accepts ±10%. */}
                 <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
                   <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
                     {tSpecs("edit_details.group.product_spec")}
                   </legend>
                   <TextField
-                    label={tSpecs("edit_details.total_weight_label")}
-                    value={form.total_weight_label ?? ""}
-                    onChange={(v) => set("total_weight_label", v)}
-                    placeholder="TBC"
-                    hint={tSpecs("edit_details.total_weight_label_hint")}
+                    label={tSpecs("edit_details.shelf_life")}
+                    value={form.shelf_life ?? ""}
+                    onChange={(v) => set("shelf_life", v)}
+                    placeholder="24 months"
+                    hint={tSpecs("edit_details.shelf_life_hint")}
+                  />
+                  <TextField
+                    label={tSpecs("edit_details.storage_conditions")}
+                    value={form.storage_conditions ?? ""}
+                    onChange={(v) => set("storage_conditions", v)}
+                    placeholder="Store in a cool dry place"
+                    hint={tSpecs("edit_details.storage_conditions_hint")}
+                  />
+                  <TextField
+                    label={tSpecs("edit_details.food_contact_status")}
+                    value={form.food_contact_status ?? ""}
+                    onChange={(v) => set("food_contact_status", v)}
+                    hint={tSpecs("edit_details.food_contact_status_hint")}
                   />
                   <TextField
                     label={tSpecs("edit_details.weight_uniformity")}
@@ -180,38 +257,6 @@ export function EditDetailsButton({
                     onChange={(v) => set("weight_uniformity", v)}
                     placeholder="10%"
                     hint={tSpecs("edit_details.weight_uniformity_hint")}
-                  />
-                </fieldset>
-
-                {/* Packaging spec metadata — the rows that render
-                    inside the Packaging Specification block beyond
-                    the four linked packaging items. */}
-                <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
-                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
-                    {tSpecs("edit_details.group.packaging_spec")}
-                  </legend>
-                  <TextField
-                    label={tSpecs("edit_details.unit_quantity")}
-                    value={form.unit_quantity ?? ""}
-                    onChange={(v) => set("unit_quantity", v)}
-                    hint={tSpecs("edit_details.unit_quantity_hint")}
-                  />
-                  <TextField
-                    label={tSpecs("edit_details.shelf_life")}
-                    value={form.shelf_life ?? ""}
-                    onChange={(v) => set("shelf_life", v)}
-                    placeholder="24 months"
-                  />
-                  <TextField
-                    label={tSpecs("edit_details.food_contact_status")}
-                    value={form.food_contact_status ?? ""}
-                    onChange={(v) => set("food_contact_status", v)}
-                  />
-                  <TextField
-                    label={tSpecs("edit_details.storage_conditions")}
-                    value={form.storage_conditions ?? ""}
-                    onChange={(v) => set("storage_conditions", v)}
-                    placeholder="Store in a cool dry place"
                   />
                 </fieldset>
 
@@ -228,6 +273,9 @@ export function EditDetailsButton({
                     onChange={(e) => set("cover_notes", e.target.value)}
                     className={INPUT_CLASS}
                   />
+                  <p className={HINT_CLASS}>
+                    {tSpecs("edit_details.cover_notes_hint")}
+                  </p>
                 </label>
 
                 {error ? (
@@ -276,6 +324,7 @@ function TextField({
   placeholder,
   type = "text",
   hint,
+  inputMode,
 }: {
   label: string;
   value: string;
@@ -283,12 +332,19 @@ function TextField({
   placeholder?: string;
   type?: string;
   hint?: string;
+  //: Forwarded to the underlying ``<input>``'s ``inputMode`` attr
+  //: so numeric commercial fields (margin, price) pop a decimal
+  //: keyboard on mobile without breaking the free-text semantics
+  //: (we still accept empty strings and trailing decimals during
+  //: typing, so ``type="number"`` isn't the right tool here).
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
 }) {
   return (
     <label className="flex flex-col gap-1.5">
       <span className={LABEL_CLASS}>{label}</span>
       <input
         type={type}
+        inputMode={inputMode}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}

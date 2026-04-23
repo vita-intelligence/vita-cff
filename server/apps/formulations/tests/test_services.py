@@ -13,6 +13,7 @@ from apps.catalogues.tests.factories import (
 from apps.formulations.models import FormulationLine
 from apps.formulations.services import (
     FormulationCodeConflict,
+    FormulationCodeRequired,
     FormulationNotFound,
     FormulationVersionNotFound,
     InvalidCapsuleSize,
@@ -41,58 +42,60 @@ class TestCreateFormulation:
             organization=org,
             actor=org.created_by,
             name="Test Capsule",
+            code="TC-001",
         )
         assert formulation.name == "Test Capsule"
+        assert formulation.code == "TC-001"
         assert formulation.project_status == "concept"
         assert formulation.dosage_form == "capsule"
 
-    def test_code_defaults_to_auto_generated_prj_sequence(self) -> None:
-        """With no caller-supplied code, the service auto-allocates
-        the next ``PRJ-NNNN`` slot for the org. Keeps the create
-        flow frictionless — AI drafts and scientists alike never
-        collide on the ``code`` uniqueness constraint."""
-
-        org = OrganizationFactory()
-        first = create_formulation(
-            organization=org, actor=org.created_by, name="A"
-        )
-        second = create_formulation(
-            organization=org, actor=org.created_by, name="B"
-        )
-        assert first.code == "PRJ-0001"
-        assert second.code == "PRJ-0002"
-
-    def test_code_conflict_falls_back_to_auto_generated(self) -> None:
-        """When a caller still passes an explicit code and it's
-        already taken, we auto-generate rather than raise — better
-        UX than a 400 for the one case where this used to matter
-        (AI re-drafting against a populated org)."""
-
-        org = OrganizationFactory()
-        create_formulation(
-            organization=org, actor=org.created_by, name="A", code="FORM-1"
-        )
-        second = create_formulation(
-            organization=org,
-            actor=org.created_by,
-            name="B",
-            code="FORM-1",
-        )
-        assert second.code != "FORM-1"
-        assert second.code.startswith("PRJ-")
-
-    def test_explicit_unique_code_is_honoured(self) -> None:
-        """Scripted imports that deliberately supply codes still
-        get their requested code when it's free."""
+    def test_explicit_code_is_persisted_verbatim(self) -> None:
+        """Scientists type their own reference (``MA210367``, ``FB-001``)
+        — the service trusts the caller and writes it through without
+        reformatting. The surrounding whitespace is trimmed because
+        the create modal's free-text input otherwise lets a trailing
+        space silently diverge from the ERP's copy."""
 
         org = OrganizationFactory()
         result = create_formulation(
             organization=org,
             actor=org.created_by,
             name="Imported",
-            code="IMPORT-2024-01",
+            code="  IMPORT-2024-01  ",
         )
         assert result.code == "IMPORT-2024-01"
+
+    def test_blank_code_raises(self) -> None:
+        """The code field is mandatory — a blank / whitespace-only
+        submission is rejected so the scientist has to pick a real
+        reference before the project exists."""
+
+        org = OrganizationFactory()
+        with pytest.raises(FormulationCodeRequired):
+            create_formulation(
+                organization=org,
+                actor=org.created_by,
+                name="A",
+                code="   ",
+            )
+
+    def test_duplicate_code_raises(self) -> None:
+        """Two projects in the same org cannot share a code. The API
+        layer maps ``FormulationCodeConflict`` to a 400 with a
+        machine-readable error so the create modal can surface the
+        clash on the ``code`` field."""
+
+        org = OrganizationFactory()
+        create_formulation(
+            organization=org, actor=org.created_by, name="A", code="FORM-1"
+        )
+        with pytest.raises(FormulationCodeConflict):
+            create_formulation(
+                organization=org,
+                actor=org.created_by,
+                name="B",
+                code="FORM-1",
+            )
 
     def test_invalid_dosage_form_raises(self) -> None:
         org = OrganizationFactory()
@@ -101,6 +104,7 @@ class TestCreateFormulation:
                 organization=org,
                 actor=org.created_by,
                 name="Bogus",
+                code="BOGUS-1",
                 dosage_form="nonsense",
             )
 
@@ -111,6 +115,7 @@ class TestCreateFormulation:
                 organization=org,
                 actor=org.created_by,
                 name="Bad",
+                code="BAD-1",
                 capsule_size="absolutely_made_up",
             )
 

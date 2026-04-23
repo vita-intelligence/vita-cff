@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.specifications.api.views import (
+    PublicProposalRenderView,
     PublicSpecificationAcceptView,
     PublicSpecificationPdfView,
     PublicSpecificationRenderView,
@@ -81,5 +82,10 @@ urlpatterns = [
         "public/specifications/<uuid:token>/accept/",
         PublicSpecificationAcceptView.as_view(),
         name="public-specification-accept",
+    ),
+    path(
+        "public/specifications/<uuid:token>/proposal/",
+        PublicProposalRenderView.as_view(),
+        name="public-specification-proposal",
     ),
 ]

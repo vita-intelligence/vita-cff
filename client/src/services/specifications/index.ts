@@ -47,6 +47,7 @@ export {
   type RenderedSheetContext,
   type RenderedTransition,
   type SetPackagingRequestDto,
+  type SpecificationDocumentKind,
   type SpecificationSheetDto,
   type SpecificationStatus,
   type TransitionStatusRequestDto,

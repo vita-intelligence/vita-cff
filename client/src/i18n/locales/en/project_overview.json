@@ -2,7 +2,11 @@
   "header": {
     "no_code": "No code",
     "owner": "Owner: {name}",
-    "no_versions_yet": "No versions saved yet"
+    "no_versions_yet": "No versions saved yet",
+    "edit_code": "Edit code",
+    "edit_code_aria": "Edit project code",
+    "edit_code_save": "Save",
+    "edit_code_cancel": "Cancel"
   },
   "status": {
     "concept": "Concept",
@@ -52,6 +56,7 @@
   },
   "actions": {
     "more_actions": "More actions",
+    "edit_code": "Edit project code",
     "delete_project": "Delete project"
   },
   "delete": {

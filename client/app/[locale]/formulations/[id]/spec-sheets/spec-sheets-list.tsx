@@ -28,11 +28,17 @@ import { NewSpecSheetButton } from "../new-spec-sheet-button";
 export function SpecSheetsList({
   orgId,
   formulationId,
+  projectCode,
   initialPage,
   canWrite,
 }: {
   orgId: string;
   formulationId: string;
+  //: The project's own code, forwarded to the create modal so the
+  //: spec sheet's ``code`` field is seeded with the same reference
+  //: the scientist already typed at project-creation time — they can
+  //: still override before saving.
+  projectCode: string;
   initialPage: PaginatedSpecificationsDto;
   canWrite: boolean;
 }) {
@@ -57,7 +63,11 @@ export function SpecSheetsList({
           </p>
         </div>
         {canWrite ? (
-          <NewSpecSheetButton orgId={orgId} versions={versions} />
+          <NewSpecSheetButton
+            orgId={orgId}
+            projectCode={projectCode}
+            versions={versions}
+          />
         ) : null}
       </div>
 

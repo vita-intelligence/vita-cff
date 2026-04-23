@@ -28,6 +28,10 @@
     "liquid": "Liquid",
     "other_solid": "Other solid"
   },
+  "powder_types": {
+    "standard": "Standard",
+    "protein": "Protein"
+  },
   "create": {
     "title": "New formulation",
     "submit": "Create",
@@ -44,11 +48,15 @@
     "serving_size_capsule": "Capsules per serving",
     "serving_size_tablet": "Tablets per serving",
     "serving_size_gummy": "Gummies per serving",
+    "serving_size_powder": "Scoops per serving",
     "servings_per_pack": "Servings per pack",
-    "powder_fill_weight": "Sachet fill weight (mg)",
-    "powder_fill_weight_hint": "Target mass per sachet (e.g. 10000 = 10g). Carrier absorbs the remainder.",
+    "powder_fill_weight": "Per-scoop fill weight (g)",
+    "powder_fill_weight_hint": "Target mass per scoop in grams (e.g. 10 = 10g). Total per serving = this value × scoops per serving.",
     "gummy_fill_weight": "Per-gummy weight (mg)",
     "gummy_fill_weight_hint": "Target mass per gummy. Gummy base absorbs the remainder.",
+    "powder_type": "Powder type",
+    "water_volume_ml": "Water volume per serving (ml)",
+    "water_volume_ml_hint": "Flavour-system mg (acidity regulator, flavouring, sweetener, colourant) scale linearly against this volume. Reference: 500ml.",
     "directions_of_use": "Directions of use",
     "suggested_dosage": "Suggested dosage",
     "appearance": "Appearance",
@@ -102,6 +110,10 @@
         "capsule_too_large": "Too large for any standard capsule"
       }
     },
+    "copy": {
+      "tooltip": "Click to copy the mg value",
+      "copied": "Copied"
+    },
     "excipients": {
       "title": "Excipients",
       "mg_stearate": "Mg Stearate",
@@ -110,7 +122,15 @@
       "mcc": "MCC",
       "total_active": "Total active",
       "total_weight": "Total weight",
-      "max_weight": "Max weight"
+      "total_weight_per_scoop": "Total weight / scoop",
+      "total_weight_per_capsule": "Total weight / capsule",
+      "total_weight_per_tablet": "Total weight / tablet",
+      "total_weight_per_gummy": "Total weight / gummy",
+      "total_weight_per_unit": "Total weight",
+      "max_weight": "Target / max",
+      "leftover": "Headroom",
+      "overshoot": "Overshoot",
+      "per_serving": "Per serving ({count, plural, one {# unit} other {# units}})"
     },
     "unsupported_form": "Excipient math for this dosage form is not yet supported. You can still track ingredients and metadata.",
     "failure_reason": {
@@ -158,6 +178,9 @@
     "save": "Save as new version",
     "label_placeholder": "Short note about this version",
     "version_prefix": "v",
+    "approved_badge": "Approved",
+    "approve": "Mark approved",
+    "unapprove": "Un-approve",
     "rollback": "Roll back",
     "rollback_confirm_title": "Roll back to version {version}?",
     "rollback_confirm_body": "The current working state will be replaced with the snapshot from v{version}. The rollback itself is saved as a new version so nothing is lost.",

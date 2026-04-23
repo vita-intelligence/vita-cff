@@ -27,6 +27,12 @@
     "accepted": "Accepted",
     "rejected": "Rejected"
   },
+  "document_kind": {
+    "legend": "Document kind",
+    "draft": "Draft",
+    "final": "Final",
+    "hint": "Draft prints with a diagonal watermark; Final prints clean for the client."
+  },
   "create": {
     "title": "New specification sheet",
     "subtitle": "Pick a saved formulation version and fill in the client context.",
@@ -35,6 +41,8 @@
     "version_none": "No saved versions yet — save one on the formulation first.",
     "version_picker_hint": "Only saved versions appear here. Catalogue edits after this point never rewrite the sheet.",
     "code": "Sheet code",
+    "client": "Client",
+    "client_picker_hint": "Pick from your address book, or create a new customer. Their name, email and company get seeded into the sheet.",
     "client_name": "Client contact",
     "client_email": "Client email",
     "client_company": "Client company",
@@ -62,22 +70,30 @@
   },
   "edit_details": {
     "title": "Edit specification details",
-    "subtitle": "Update the free-text rows that render on the customer-facing sheet and PDF. Leave a field blank to fall back to the default value.",
+    "subtitle": "Everything here appears on the customer-facing sheet. Fields shown in the formulation builder (total weight, servings per pack) are already snapshotted and aren't repeated here.",
     "save": "Save",
     "group": {
       "client": "Client context",
-      "product_spec": "Product specification",
-      "packaging_spec": "Packaging specification"
+      "commercial": "Commercial terms",
+      "product_spec": "Product specification"
     },
-    "total_weight_label": "Total weight (mg)",
-    "total_weight_label_hint": "Override the computed filled weight. Leave blank to render the calculated value or TBC.",
+    "margin_percent": "Margin %",
+    "margin_percent_hint": "Target margin used to derive the quoted price. Leave blank if price is entered directly.",
+    "final_price": "Final price",
+    "final_price_hint": "Per-pack price printed on the sheet. Leave blank to hide the commercial row until agreed.",
+    "code_hint": "Sheet reference printed in the header. Defaults to the project code when blank.",
+    "client_company_hint": "Company name on the client's copy of the sheet.",
+    "client_name_hint": "Primary contact person at the client.",
+    "client_email_hint": "Used for the public preview link — invite emails go to this address.",
     "weight_uniformity": "Weight uniformity",
-    "weight_uniformity_hint": "Tolerance band for the weight test (e.g. 10%). Leave blank for the default.",
-    "unit_quantity": "Unit quantity",
-    "unit_quantity_hint": "Free-text (e.g. 28 sachets, 60 capsules). Leave blank to fall back to servings per pack.",
+    "weight_uniformity_hint": "QC tolerance band for the per-unit weight test (e.g. 10% for consumer brands, ±5% for regulated channels). Falls back to the org default when blank.",
     "shelf_life": "Shelf life",
+    "shelf_life_hint": "Client-negotiated guaranteed shelf life (e.g. 24 months). Independent of the recipe — ambient vs chilled storage changes this.",
     "food_contact_status": "Food contact status",
-    "storage_conditions": "Storage conditions"
+    "food_contact_status_hint": "Regulatory declaration printed on the sheet (e.g. \"EU 10/2011 compliant\", \"FDA 21 CFR 177 compliant\").",
+    "storage_conditions": "Storage conditions",
+    "storage_conditions_hint": "Statement printed on the pack (e.g. \"Store in a cool dry place, below 25°C, protected from light\").",
+    "cover_notes_hint": "Free-form paragraph printed above the signature block — use it for bespoke caveats or a cover letter."
   },
   "signature": {
     "prepared_by_title": "Prepared-by signature required",
@@ -85,9 +101,13 @@
     "internal_subtitle": "Draw your signature to advance the spec sheet. The image is stored on the audit trail and appears on the printed sheet and PDF.",
     "customer_title": "Sign to accept this specification",
     "customer_subtitle": "By signing you confirm acceptance of the specification as presented. Your name, email, and company were captured when you entered this preview.",
+    "customer_title_bundled": "Sign to accept the specification and proposal",
+    "customer_subtitle_bundled": "A single signature accepts both the technical specification and the commercial proposal shown above. Your name, email, and company were captured when you entered this preview.",
     "confirm": "Sign and advance",
     "cancel": "Cancel",
     "accept_button": "Sign and accept",
+    "accept_button_bundled": "Sign and accept both",
+    "bundled_hint": "Signing accepts the specification and the commercial proposal shown together on this page.",
     "accepted_banner": "You accepted this specification as {name} on {when}.",
     "not_sent_yet": "This specification hasn't been sent for acceptance yet. Ask the sender to move it to the Sent state."
   },
@@ -121,7 +141,9 @@
     "banner": "You are viewing a shared specification sheet. Access can be revoked at any time by the sheet owner.",
     "footer": "Viewed via shared link",
     "not_found_title": "Link unavailable",
-    "not_found_body": "This sharing link is no longer active. Please contact the sheet owner for an updated link."
+    "not_found_body": "This sharing link is no longer active. Please contact the sheet owner for an updated link.",
+    "proposal_heading": "Commercial Proposal",
+    "proposal_body": "A single signature below accepts both the technical specification above and this commercial proposal."
   },
   "sheet": {
     "title": "Product Specification Sheet",
@@ -152,6 +174,9 @@
       "dosage_form": "Dosage Form",
       "appearance": "Appearance",
       "filling_weight": "Filling Weight/Volume (mg/mL)",
+      "filling_weight_per_scoop": "Filling Weight per Scoop (mg)",
+      "weight_per_serving": "Weight per Serving (mg)",
+      "total_pack_weight": "Total Pack Weight (mg)",
       "total_weight": "Total Weight (mg)",
       "weight_uniformity": "Weight Uniformity",
       "disintegration": "Disintegration",

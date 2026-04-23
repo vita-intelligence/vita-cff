@@ -5,7 +5,11 @@ from __future__ import annotations
 from rest_framework import serializers
 from rest_framework.exceptions import ErrorDetail
 
-from apps.specifications.models import SpecificationSheet, SpecificationStatus
+from apps.specifications.models import (
+    SpecificationDocumentKind,
+    SpecificationSheet,
+    SpecificationStatus,
+)
 
 
 def _code(value: str) -> ErrorDetail:
@@ -85,6 +89,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "packaging_antitemper",
             "packaging_details",
             "status",
+            "document_kind",
             "formulation_version",
             "formulation_id",
             "formulation_name",
@@ -120,6 +125,11 @@ class SpecificationSheetCreateSerializer(serializers.Serializer):
     )
     total_weight_label = serializers.CharField(
         max_length=64, required=False, allow_blank=True, default=""
+    )
+    document_kind = serializers.ChoiceField(
+        choices=SpecificationDocumentKind.choices,
+        required=False,
+        default=SpecificationDocumentKind.DRAFT.value,
     )
 
 
@@ -168,6 +178,9 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
             max_length=120, allow_blank=True, trim_whitespace=False
         ),
         required=False,
+    )
+    document_kind = serializers.ChoiceField(
+        choices=SpecificationDocumentKind.choices, required=False
     )
 
 

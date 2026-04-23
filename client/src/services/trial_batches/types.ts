@@ -2,10 +2,18 @@
  * Transport types for the trial-batches domain.
  */
 
+/** ``pack`` means the entered number is multiplied by the
+ *  formulation's ``servings_per_pack`` snapshot to reach a finished
+ *  unit count; ``unit`` means the entered number IS the raw count of
+ *  finished units. Scientists pick ``unit`` for bench-scale QC tests
+ *  (e.g. 10 capsules) so the BOM doesn't silently scale it to 3 600. */
+export type BatchSizeMode = "pack" | "unit";
+
 export interface TrialBatchDto {
   readonly id: string;
   readonly label: string;
   readonly batch_size_units: number;
+  readonly batch_size_mode: BatchSizeMode;
   readonly notes: string;
   readonly formulation_version: string;
   readonly formulation_id: string;
@@ -19,6 +27,7 @@ export interface TrialBatchDto {
 export interface CreateTrialBatchRequestDto {
   readonly formulation_version_id: string;
   readonly batch_size_units: number;
+  readonly batch_size_mode?: BatchSizeMode;
   readonly label?: string;
   readonly notes?: string;
 }
@@ -26,6 +35,7 @@ export interface CreateTrialBatchRequestDto {
 export type UpdateTrialBatchRequestDto = Partial<{
   readonly label: string;
   readonly batch_size_units: number;
+  readonly batch_size_mode: BatchSizeMode;
   readonly notes: string;
 }>;
 
@@ -56,12 +66,14 @@ export interface BOMEntry {
 export interface BOMResult {
   readonly batch_id: string;
   readonly label: string;
-  /** Number of finished packs (bottles, pouches, tubs) the batch produces. */
+  /** Entered number; interpretation depends on ``batch_size_mode``. */
   readonly batch_size_units: number;
+  readonly batch_size_mode: BatchSizeMode;
   /** Individual capsules/tablets/etc. inside each finished pack. */
   readonly units_per_pack: number;
-  /** ``batch_size_units × units_per_pack`` — the raw multiplier used
-   * against mg-per-unit values in every BOM entry. */
+  /** Total individual units the BOM multiplies mg-per-unit against.
+   * In ``pack`` mode that's ``batch_size_units × units_per_pack``;
+   * in ``unit`` mode it equals ``batch_size_units`` directly. */
   readonly total_units_in_batch: number;
   readonly formulation_id: string;
   readonly formulation_name: string;

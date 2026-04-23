@@ -43,6 +43,7 @@ from apps.specifications.constants import (
     SECTION_SLUGS,
 )
 from apps.specifications.models import (
+    SpecificationDocumentKind,
     SpecificationSheet,
     SpecificationStatus,
     SpecificationTransition,
@@ -70,6 +71,16 @@ class SignatureRequired(Exception):
 
 class InvalidStatusTransition(Exception):
     code = "invalid_status_transition"
+
+
+class InvalidSpecificationDocumentKind(Exception):
+    """Payload carried a ``document_kind`` value outside the allowed set
+    (``draft`` / ``final``). Rare in practice — the serializer's
+    ChoiceField already rejects unknown strings — but the service
+    defends in depth so a scripted import through the Python API
+    can't write a junk value."""
+
+    code = "invalid_specification_document_kind"
 
 
 class PublicLinkNotEnabled(Exception):
@@ -186,6 +197,7 @@ def create_sheet(
     final_price: Any = None,
     cover_notes: str = "",
     total_weight_label: str = "",
+    document_kind: str = SpecificationDocumentKind.DRAFT.value,
 ) -> SpecificationSheet:
     """Create a specification sheet locked to a formulation version.
 
@@ -209,6 +221,9 @@ def create_sheet(
         if duplicate:
             raise SpecificationCodeConflict()
 
+    if document_kind not in SpecificationDocumentKind.values:
+        raise InvalidSpecificationDocumentKind()
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=version,
@@ -221,6 +236,7 @@ def create_sheet(
         cover_notes=cover_notes,
         total_weight_label=total_weight_label,
         status=SpecificationStatus.DRAFT,
+        document_kind=document_kind,
         created_by=actor,
         updated_by=actor,
     )
@@ -261,7 +277,14 @@ def update_sheet(
         # ``limits_override`` is a JSON object; the serializer clamps
         # the shape before we see it here, so assignment is safe.
         "limits_override",
+        # Draft-vs-final decides the watermark. Lives here (not under
+        # the status machine) so scientists can flip it without
+        # triggering a lifecycle transition.
+        "document_kind",
     }
+    new_kind = changes.get("document_kind")
+    if new_kind is not None and new_kind not in SpecificationDocumentKind.values:
+        raise InvalidSpecificationDocumentKind()
     new_code = changes.get("code")
     if new_code and new_code != sheet.code:
         duplicate = (
@@ -631,6 +654,14 @@ def accept_as_customer(
     hands the name / email / company strings to this service. Those
     strings stamp onto the sheet alongside the drawn signature.
 
+    When the sheet has an attached :class:`apps.proposals.models.Proposal`
+    that is also in ``sent`` status, the same signature is written
+    onto the proposal in the same transaction. Scientists almost never
+    want a customer to accept the spec without also accepting the
+    commercial offer, so we bundle them — the alternative (separate
+    signatures on two scrolling kiosk pages) was the first thing R&D
+    complained about when they reviewed the flow.
+
     Rejects:
     * Sheets whose status is not ``sent`` (any other state already
       landed somewhere the customer should not be able to push).
@@ -689,7 +720,88 @@ def accept_as_customer(
             "signer_company": sheet.customer_company,
         },
     )
+
+    # Bundled proposal signature. Import locally to dodge the
+    # specifications → proposals → specifications circular import
+    # (Proposal.specification_sheet is an FK back here).
+    _sign_linked_proposal(
+        sheet=sheet,
+        name=name,
+        email=sheet.customer_email,
+        company=sheet.customer_company,
+        signature_image=normalised_image,
+    )
     return sheet
+
+
+def _sign_linked_proposal(
+    *,
+    sheet: SpecificationSheet,
+    name: str,
+    email: str,
+    company: str,
+    signature_image: str,
+) -> None:
+    """Mirror the customer signature onto the attached proposal (if any).
+
+    Only writes when the linked proposal is in ``sent`` — other
+    states mean the scientist has not finished internal review and
+    the kiosk should not advance it. The spec sheet accept path
+    already validates signature + signer name, so we re-use those
+    values directly rather than re-running the same checks.
+    """
+
+    # Lazy import — Proposal.specification_sheet points back here so
+    # top-level imports would deadlock.
+    from apps.proposals.models import Proposal, ProposalStatus, ProposalStatusTransition
+
+    proposal = Proposal.objects.filter(
+        specification_sheet_id=sheet.id
+    ).first()
+    if proposal is None:
+        return
+    if proposal.status != ProposalStatus.SENT.value:
+        return
+
+    previous = proposal.status
+    proposal.status = ProposalStatus.ACCEPTED.value
+    proposal.customer_signer_name = name
+    proposal.customer_signer_email = email
+    proposal.customer_signer_company = company
+    proposal.customer_signature_image = signature_image
+    proposal.customer_signed_at = timezone.now()
+    proposal.save(
+        update_fields=[
+            "status",
+            "customer_signer_name",
+            "customer_signer_email",
+            "customer_signer_company",
+            "customer_signature_image",
+            "customer_signed_at",
+            "updated_at",
+        ]
+    )
+    ProposalStatusTransition.objects.create(
+        proposal=proposal,
+        from_status=previous,
+        to_status=ProposalStatus.ACCEPTED.value,
+        actor=sheet.updated_by,
+        notes=f"Accepted by {name} (bundled with spec sheet)",
+    )
+    record_audit(
+        organization=proposal.organization,
+        actor=sheet.updated_by,
+        action="proposal.customer_accept",
+        target=proposal,
+        before={"status": previous},
+        after={
+            "status": ProposalStatus.ACCEPTED.value,
+            "signer_name": name,
+            "signer_email": email,
+            "signer_company": company,
+            "bundled_with_spec_sheet": str(sheet.id),
+        },
+    )
 
 
 def get_by_public_token(token: Any) -> SpecificationSheet:
@@ -911,18 +1023,20 @@ def resolve_section_order(sheet: SpecificationSheet) -> list[str]:
     return ordered
 
 
-def show_watermark_for(status: str) -> bool:
+def show_watermark_for(document_kind: str) -> bool:
     """Decide whether the sheet should render its diagonal ``DRAFT``
-    watermark. The rule: anything that is not yet customer-locked
-    still looks like a working document. Final states
-    (``approved``, ``sent``, ``accepted``) print clean."""
+    watermark.
 
-    final_states = {
-        SpecificationStatus.APPROVED,
-        SpecificationStatus.SENT,
-        SpecificationStatus.ACCEPTED,
-    }
-    return status not in final_states
+    The rule now hinges on the explicit ``document_kind`` flag: a
+    sheet marked ``final`` prints clean regardless of approval
+    status, and a sheet marked ``draft`` keeps the watermark even if
+    the lifecycle has reached ``approved``. This matches how
+    scientists actually use the document — an "internal review
+    draft" and a "client-ready final" are two distinct outputs even
+    for the same underlying version.
+    """
+
+    return document_kind != SpecificationDocumentKind.FINAL.value
 
 
 def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
@@ -934,10 +1048,32 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     totals = version.snapshot_totals or {}
     snapshot_lines = version.snapshot_lines or []
 
+    # The snapshot stores ``mg_per_serving`` as the raw-powder weight
+    # *per unit* (per capsule / per tablet / per scoop) — the variable
+    # was named when single-unit servings were the default and never
+    # got renamed. For ``instantiate_active_label`` we need the
+    # *per-serving* raw weight so the "From <Xmg> of 10:1 Extract"
+    # label reads correctly on multi-unit servings. A product with 2
+    # capsules/serving carrying 200mg of raw Maca per cap declares
+    # "From 400mg of 10:1 Extract" — not the per-cap 200mg — because
+    # the whole actives table is per-serving.
+    serving_size = metadata.get("serving_size") or 1
+    try:
+        serving_multiplier = Decimal(str(serving_size))
+    except (InvalidOperation, ValueError):
+        serving_multiplier = Decimal("1")
+    if serving_multiplier <= 0:
+        serving_multiplier = Decimal("1")
+
     actives = []
     for line in snapshot_lines:
         attrs = line.get("item_attributes") or {}
-        raw_mg = _coerce_decimal(line.get("mg_per_serving"))
+        raw_per_unit = _coerce_decimal(line.get("mg_per_serving"))
+        raw_per_serving = (
+            (raw_per_unit * serving_multiplier)
+            if raw_per_unit is not None
+            else None
+        )
         actives.append(
             {
                 "item_name": line.get("item_name", ""),
@@ -948,10 +1084,15 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                     ),
                     ingredient_list_name=attrs.get("ingredient_list_name"),
                     item_name=line.get("item_name", ""),
-                    raw_mg=raw_mg,
+                    raw_mg=raw_per_serving,
                 ),
                 "label_claim_mg": str(line.get("label_claim_mg") or ""),
-                "mg_per_serving": str(line.get("mg_per_serving") or ""),
+                # Surface the per-serving value under a per-serving
+                # key so any UI that consumed the old ``mg_per_serving``
+                # now reads the number that actually matches its label.
+                "mg_per_serving": (
+                    str(raw_per_serving) if raw_per_serving is not None else ""
+                ),
                 "nrv_percent": _nrv_percent(
                     line.get("label_claim_mg"), attrs
                 ),
@@ -973,6 +1114,32 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         size_key=totals.get("size_key"),
         fill_weight_mg=totals.get("total_weight_mg"),
     )
+
+    # Powder-only roll-ups that the workbook's FINAL spec sheet
+    # surfaces on the Product Specification panel:
+    #   per_serving_mg = serving_size (scoops) × total_weight_mg (per scoop)
+    #   total_pack_mg  = servings_per_pack × per_serving_mg
+    # Scientists paste these directly into the procurement ticket.
+    powder_per_serving_mg: Decimal | None = None
+    powder_pack_total_mg: Decimal | None = None
+    if metadata.get("dosage_form") == DosageForm.POWDER.value:
+        per_scoop_mg = _coerce_decimal(totals.get("total_weight_mg"))
+        serving_size = metadata.get("serving_size") or 1
+        servings_per_pack = metadata.get("servings_per_pack") or 0
+        if per_scoop_mg is not None:
+            try:
+                scoops = Decimal(str(serving_size))
+                packs = Decimal(str(servings_per_pack))
+            except (InvalidOperation, ValueError):
+                scoops = Decimal("1")
+                packs = Decimal("0")
+            powder_per_serving_mg = (per_scoop_mg * scoops).quantize(
+                Decimal("0.0001")
+            )
+            if packs > 0:
+                powder_pack_total_mg = (
+                    powder_per_serving_mg * packs
+                ).quantize(Decimal("0.0001"))
 
     # Transition history — newest first. Serialized inline rather
     # than behind a separate endpoint so the browser view and the PDF
@@ -1013,6 +1180,14 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "status": sheet.status,
             "created_at": sheet.created_at.isoformat(),
             "updated_at": sheet.updated_at.isoformat(),
+            # Signals to the kiosk + authenticated viewer that this
+            # sheet has a commercial proposal bundled with it. When
+            # true, the kiosk renders a second tab with the proposal
+            # body and the single "Accept & Sign" action advances
+            # both documents together.
+            "has_proposal": (
+                getattr(sheet, "proposal", None) is not None
+            ),
         },
         "signatures": {
             "prepared_by": _signature_payload(
@@ -1064,6 +1239,18 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "size_label": totals.get("size_label"),
             "excipients": totals.get("excipients"),
             "viability": totals.get("viability"),
+            # Powder-only fields; non-powder sheets leave them null and
+            # the template suppresses the corresponding rows.
+            "powder_per_serving_mg": (
+                str(powder_per_serving_mg)
+                if powder_per_serving_mg is not None
+                else None
+            ),
+            "powder_pack_total_mg": (
+                str(powder_pack_total_mg)
+                if powder_pack_total_mg is not None
+                else None
+            ),
         },
         "actives": actives,
         "compliance": compliance,
@@ -1095,7 +1282,7 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         ),
         "visibility": resolve_visibility(sheet),
         "section_order": resolve_section_order(sheet),
-        "watermark": show_watermark_for(sheet.status),
+        "watermark": show_watermark_for(sheet.document_kind),
     }
 
 

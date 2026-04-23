@@ -1,0 +1,328 @@
+{% load l10n %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ proposal.code }} · {{ proposal.customer_company|default:proposal.customer_name }}</title>
+  <style>
+    :root {
+      --ink: #0d1117;
+      --muted: #4a5568;
+      --line: #d7dce1;
+      --accent: #ea580c;
+      --bg: #ffffff;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      color: var(--ink);
+      background: var(--bg);
+      margin: 0;
+      padding: 40px;
+      max-width: 820px;
+      margin-left: auto;
+      margin-right: auto;
+      line-height: 1.55;
+      font-size: 14px;
+    }
+    h1 { font-size: 22px; margin-bottom: 4px; }
+    h2 { font-size: 15px; margin-top: 28px; margin-bottom: 8px; color: var(--ink); }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    .tag {
+      display: inline-block;
+      background: rgba(234, 88, 12, 0.08);
+      color: var(--accent);
+      padding: 2px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-weight: 600;
+      margin-bottom: 12px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f6f7f9; font-weight: 600; }
+    .right { text-align: right; }
+    .center { text-align: center; }
+    .signature-row {
+      margin-top: 40px;
+      padding-top: 16px;
+      border-top: 2px solid var(--ink);
+    }
+    .signature-pair {
+      display: flex;
+      gap: 32px;
+      margin-top: 16px;
+    }
+    .signature-box {
+      flex: 1;
+      padding: 16px;
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      min-height: 120px;
+    }
+    .signature-box img {
+      max-width: 240px;
+      max-height: 80px;
+    }
+    .stamp {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    @media print {
+      body { padding: 0; }
+      .signature-box { page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="tag">
+      {% if proposal.template_type == "custom" %}Custom Formulation{% else %}Ready to Go{% endif %}
+    </span>
+    <h1>Acceptance Form</h1>
+    <p class="muted">
+      Please fill out this form to confirm the details of your order.
+      Please find the products that you have requested listed in the
+      table below along with relevant prices.
+    </p>
+  </header>
+
+  <h2>Customer Information</h2>
+  <table class="customer">
+    <tr><th>Name</th><td>{{ proposal.customer_name|default:"—" }}</td></tr>
+    <tr><th>Email</th><td>{{ proposal.customer_email|default:"—" }}</td></tr>
+    <tr><th>Phone</th><td>{{ proposal.customer_phone|default:"—" }}</td></tr>
+    <tr><th>Company Name</th><td>{{ proposal.customer_company|default:"—" }}</td></tr>
+    <tr><th>Invoice Address</th><td>{{ proposal.invoice_address|linebreaksbr|default:"—" }}</td></tr>
+    <tr><th>Delivery Address</th><td>{{ proposal.delivery_address|linebreaksbr|default:"—" }}</td></tr>
+  </table>
+
+  <h2>Ref: {{ proposal.reference|default:proposal.code }}</h2>
+  <p>Dear {{ proposal.dear_name|default:proposal.customer_name|default:"Customer" }},</p>
+  <p>
+    We hereby confirm receipt of your request regarding your supplement
+    contract manufacture, and we would like to thank you for your
+    confidence in us.
+  </p>
+
+  {% if proposal.template_type == "custom" %}
+    <p>
+      This formula would require a laboratory development phase, and its
+      manufacturing process validated. Nevertheless, a lead time of
+      around 2–3 weeks will be needed to:
+    </p>
+    <ul>
+      <li>Reserve relevant raw material(s) needed to manufacture your product</li>
+      <li>Develop formulation(s) to meet required specification</li>
+      <li>Validate your formulation and its manufacturing process</li>
+      <li>Prepare some samples for your visual approval</li>
+      <li>Register your product in our production database</li>
+      <li>Validate and regulatory review of your label(s)</li>
+    </ul>
+    <p><strong>A deposit of at least 30% is required to commence this process.</strong></p>
+    <h2>Timelines</h2>
+    <p>
+      The first industrial batch lead-time will be confirmed at the end
+      of the above steps. An additional lead time of around 6–12 weeks
+      has to be taken into account.
+    </p>
+    <table>
+      <tr><th>Phase</th><th>Duration</th></tr>
+      <tr><td>Development (as stated above)</td><td>2–3 weeks</td></tr>
+      <tr><td>Production Material Reception and Validation</td><td>2–4 weeks</td></tr>
+      <tr><td>Manufacturing</td><td>3–6 weeks</td></tr>
+      <tr><td>Quality Assurance Checks</td><td>1–2 weeks</td></tr>
+      <tr><td>Delivery</td><td>Based on UK location</td></tr>
+    </table>
+  {% else %}
+    <p>
+      This formula does not require a laboratory development phase, as
+      its manufacturing process has been validated.
+    </p>
+    <h2>Timelines</h2>
+    <p>A lead time of around 2–6 weeks has to be taken into account.</p>
+    <table>
+      <tr><th>Phase</th><th>Duration</th></tr>
+      <tr><td>Production Material Reception and Validation</td><td>1–2 weeks</td></tr>
+      <tr><td>Manufacturing</td><td>1–3 weeks</td></tr>
+      <tr><td>Quality Assurance Checks</td><td>1 day – 1 week</td></tr>
+      <tr><td>Delivery</td><td>Based on UK location</td></tr>
+    </table>
+  {% endif %}
+
+  <h2>Commercial Offer</h2>
+  <p>
+    Please find below our commercial price for the manufacture of your
+    product(s) according to the formula agreement enclosed or attached
+    as Product Technical Document:
+  </p>
+  <table>
+    <thead>
+      <tr>
+        <th>Product Code</th>
+        <th>Description</th>
+        <th class="right">Quantity</th>
+        <th class="right">Unit Price ({{ proposal.currency }})</th>
+        <th class="right">Amount (VAT ex.)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>{{ formulation.code|default:"—" }}</td>
+        <td>{{ formulation.name|default:"—" }}</td>
+        <td class="right">{{ proposal.quantity }}</td>
+        <td class="right">
+          {% if proposal.unit_price is None %}TBC{% else %}{{ proposal.unit_price }}{% endif %}
+        </td>
+        <td class="right">
+          {% if subtotal is None %}TBC{% else %}{{ subtotal }}{% endif %}
+        </td>
+      </tr>
+      {% if proposal.freight_amount is not None and proposal.template_type == "ready_to_go" %}
+        <tr>
+          <td colspan="4" class="right"><strong>Freight (UK only):</strong></td>
+          <td class="right">{{ proposal.freight_amount }}</td>
+        </tr>
+      {% endif %}
+      <tr>
+        <td colspan="4" class="right"><strong>Total (VAT excluded):</strong></td>
+        <td class="right">
+          <strong>
+            {% if total_excl_vat is None %}TBC{% else %}{{ total_excl_vat }} {{ proposal.currency }}{% endif %}
+          </strong>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Conditions</h2>
+  <p class="small">
+    Delivery: DAP UK location only, EXW International<br />
+    Payment:
+    {% if proposal.template_type == "custom" %}
+      Prepayment for the 1st order, then 30 days net, date of invoice
+      (submitted for acceptance by our Accounting Department)
+    {% else %}
+      Prepayment
+    {% endif %}<br />
+    No other services or analytical services
+  </p>
+
+  <h2>Offer Validity and Pricing</h2>
+  <p class="small">
+    This offer is valid
+    {% if proposal.valid_until %}until <strong>{{ proposal.valid_until|date:"d M Y" }}</strong>{% else %}for 14 days{% endif %}.
+    Prices are subject to change due to fluctuations in raw material
+    costs, which are beyond our control. If raw material costs increase,
+    prices will be recalculated accordingly.
+  </p>
+
+  <h2>Raw Materials and Product Quality</h2>
+  <p class="small">
+    Made from natural components, some products may exhibit slight
+    colour variations between batches. These variations are a natural
+    characteristic of the materials used and do not affect the quality
+    of our products. Each product is assigned a unique Batch Number
+    that is tracked through all stages of manufacturing and delivery.
+  </p>
+
+  <h2>Formulation and Product Stability</h2>
+  <p class="small">
+    Vita NPD can provide advice concerning formulation stability. If
+    full stability testing is required, additional charges will apply.
+    You are legally responsible for your product's formulation and
+    stability. A "best before" date will be provided after the
+    development stage as part of the label guidelines and approval
+    process.
+  </p>
+
+  <h2>Responsibilities for Product Legality and Labelling</h2>
+  <p class="small">
+    Vita NPD Ltd, as the manufacturer, assumes no responsibility for
+    the legality of your product's formulation, labelling, presentation,
+    promotion, or marketing. We strongly recommend seeking professional
+    guidance from relevant regulatory authorities, such as: Health
+    Food Manufacturers Association, Medicines and Healthcare
+    Regulatory Agency, Food Standards Agency and Trading Standards.
+  </p>
+
+  <h2>Terms and Conditions</h2>
+  <p class="small">
+    Vita NPD terms and conditions apply for all orders. In the event
+    of a conflict between this offer and the T&amp;C's, the T&amp;C's
+    will prevail and control.
+  </p>
+  <p class="small">
+    If you decide to contract with us, please return this offer and
+    the formula agreement (Draft Product Specification Sheet)
+    countersigned and dated to us. Upon receipt of these documents,
+    planning for preparation of the samples will be confirmed.
+  </p>
+
+  <div class="signature-row">
+    <h2>Confirmation</h2>
+    <p class="small muted">
+      Please complete this section to agree to the Terms &amp;
+      Conditions and confirm the above.
+    </p>
+
+    <div class="signature-pair">
+      <div class="signature-box">
+        <p class="small muted">Prepared by</p>
+        {% if proposal.prepared_by_signature_image %}
+          <img src="{{ proposal.prepared_by_signature_image }}" alt="Prepared-by signature" />
+          <div class="stamp">
+            Signed {{ proposal.prepared_by_signed_at|date:"d M Y H:i" }}
+          </div>
+        {% else %}
+          <p class="muted small">Not yet signed.</p>
+        {% endif %}
+      </div>
+      <div class="signature-box">
+        <p class="small muted">Approved by (Director)</p>
+        {% if proposal.director_signature_image %}
+          <img src="{{ proposal.director_signature_image }}" alt="Director signature" />
+          <div class="stamp">
+            Signed {{ proposal.director_signed_at|date:"d M Y H:i" }}
+          </div>
+        {% else %}
+          <p class="muted small">Not yet signed.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="signature-box" style="margin-top: 16px;">
+      <p class="small muted">Customer Signature</p>
+      {% if proposal.customer_signature_image %}
+        <img src="{{ proposal.customer_signature_image }}" alt="Customer signature" />
+        <div class="stamp">
+          Signed by {{ proposal.customer_signer_name }}
+          {% if proposal.customer_signer_company %}
+            ({{ proposal.customer_signer_company }})
+          {% endif %}
+          on {{ proposal.customer_signed_at|date:"d M Y H:i" }}
+        </div>
+      {% else %}
+        <p class="muted small">Customer has not signed yet.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <p class="small muted" style="margin-top: 32px;">
+    Yours sincerely,
+  </p>
+</body>
+</html>

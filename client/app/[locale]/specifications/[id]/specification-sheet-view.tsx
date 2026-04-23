@@ -30,9 +30,12 @@ import {
   useDeleteSpecification,
   useRenderedSpecification,
   useSetSpecificationVisibility,
+  useSpecification,
   useTransitionSpecificationStatus,
+  useUpdateSpecification,
   type RenderedSheetContext,
   type RenderedTransition,
+  type SpecificationDocumentKind,
   type SpecificationSheetDto,
   type SpecificationStatus,
 } from "@/services/specifications";
@@ -94,7 +97,7 @@ const AMINO_GROUPS: readonly {
 
 export function SpecificationSheetView({
   orgId,
-  sheet,
+  sheet: initialSheet,
   rendered: initialRendered,
   canWrite,
   canAdmin,
@@ -116,6 +119,18 @@ export function SpecificationSheetView({
   const router = useRouter();
 
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Subscribe to the live cache for the sheet DTO — the SSR payload
+  // seeds the first paint, but every subsequent read comes from
+  // TanStack Query so mutations (status transitions, document-kind
+  // toggle, metadata edits) flip the toolbar immediately rather than
+  // waiting for a route refresh. Without this, ``useUpdateSpecification``
+  // writes to the cache but this component still renders the frozen
+  // SSR snapshot until the page is navigated away and back.
+  const sheetQuery = useSpecification(orgId, initialSheet.id, {
+    initialData: initialSheet,
+  });
+  const sheet = sheetQuery.data ?? initialSheet;
 
   // Hydrate the client-side cache from the SSR-fetched payload so
   // the first paint is identical to what the server rendered, then
@@ -231,11 +246,17 @@ export function SpecificationSheetView({
       {/* Top action bar — hidden when printing                         */}
       {/* ------------------------------------------------------------ */}
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl bg-ink-0 px-4 py-3 shadow-sm ring-1 ring-ink-200 print:hidden">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tSpecs("detail.status_label")}
           </span>
           <SpecStatusChip status={sheet.status} tSpecs={tSpecs} />
+          <DocumentKindToggle
+            orgId={orgId}
+            sheet={sheet}
+            canWrite={canWrite}
+            tSpecs={tSpecs}
+          />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite
@@ -445,14 +466,37 @@ export function SpecSheetContent({
             label={tSpecs("sheet.fields.appearance")}
             value={rendered.formulation.appearance || "TBC"}
           />
-          <SpecRow
-            label={tSpecs("sheet.fields.filling_weight")}
-            value={formatMg(rendered.totals.total_weight_mg)}
-          />
-          <SpecRow
-            label={tSpecs("sheet.fields.total_weight")}
-            value={resolveTotalWeight(rendered)}
-          />
+          {rendered.formulation.dosage_form === "powder" ? (
+            <>
+              <SpecRow
+                label={tSpecs("sheet.fields.filling_weight_per_scoop")}
+                value={formatMg(rendered.totals.total_weight_mg)}
+              />
+              {rendered.totals.powder_per_serving_mg ? (
+                <SpecRow
+                  label={tSpecs("sheet.fields.weight_per_serving")}
+                  value={formatMg(rendered.totals.powder_per_serving_mg)}
+                />
+              ) : null}
+              {rendered.totals.powder_pack_total_mg ? (
+                <SpecRow
+                  label={tSpecs("sheet.fields.total_pack_weight")}
+                  value={formatMg(rendered.totals.powder_pack_total_mg)}
+                />
+              ) : null}
+            </>
+          ) : (
+            <>
+              <SpecRow
+                label={tSpecs("sheet.fields.filling_weight")}
+                value={formatMg(rendered.totals.total_weight_mg)}
+              />
+              <SpecRow
+                label={tSpecs("sheet.fields.total_weight")}
+                value={resolveTotalWeight(rendered)}
+              />
+            </>
+          )}
           <SpecRow
             label={tSpecs("sheet.fields.weight_uniformity")}
             value={rendered.weight_uniformity}
@@ -570,6 +614,15 @@ export function SpecSheetContent({
     ),
     signatures: () => (
       <>
+        {/* Free-form cover copy the scientist entered on "Edit
+            details". Printed right above the signature block so the
+            customer reads any bespoke caveat before signing. The
+            Django-side PDF template renders this in the same slot. */}
+        {rendered.sheet.cover_notes ? (
+          <div className="mb-6 whitespace-pre-wrap rounded-xl bg-ink-50 px-4 py-3 text-sm leading-relaxed text-ink-800 ring-1 ring-inset ring-ink-200">
+            {rendered.sheet.cover_notes}
+          </div>
+        ) : null}
         <SectionTitle>
           {tSpecs("sheet.sections.signatures")}
         </SectionTitle>
@@ -1429,6 +1482,96 @@ function VisibilityMenu({
           })}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Draft / Final toggle
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Two-pill segmented control that flips ``document_kind`` between
+ * ``draft`` and ``final``. Final removes the diagonal DRAFT watermark
+ * from the rendered PDF immediately on the next render; we invalidate
+ * the spec-detail query in the underlying mutation so the toolbar
+ * re-reads the new value without a manual refresh.
+ *
+ * Readers (no write cap) see a read-only pill of whichever kind is
+ * currently set so they still know which output the sheet is printing.
+ */
+function DocumentKindToggle({
+  orgId,
+  sheet,
+  canWrite,
+  tSpecs,
+}: {
+  orgId: string;
+  sheet: SpecificationSheetDto;
+  canWrite: boolean;
+  tSpecs: ReturnType<typeof useTranslations<"specifications">>;
+}) {
+  const update = useUpdateSpecification(orgId, sheet.id);
+
+  const kind: SpecificationDocumentKind = sheet.document_kind ?? "draft";
+
+  const label = (value: SpecificationDocumentKind) =>
+    tSpecs(`document_kind.${value}` as "document_kind.draft");
+
+  // Read-only pill — preserves the label so readers know whether the
+  // doc is set to watermark or not, without exposing a control.
+  if (!canWrite) {
+    const pillClasses =
+      kind === "final"
+        ? "bg-success/10 text-success ring-success/30"
+        : "bg-amber-50 text-amber-900 ring-amber-200";
+    return (
+      <span
+        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide ring-1 ring-inset ${pillClasses}`}
+        title={tSpecs("document_kind.hint")}
+      >
+        {label(kind)}
+      </span>
+    );
+  }
+
+  const options: readonly SpecificationDocumentKind[] = ["draft", "final"];
+
+  return (
+    <div
+      className="inline-flex items-center gap-0 overflow-hidden rounded-full bg-ink-100 p-0.5 ring-1 ring-inset ring-ink-200"
+      role="group"
+      aria-label={tSpecs("document_kind.legend")}
+      title={tSpecs("document_kind.hint")}
+    >
+      {options.map((value) => {
+        const isActive = value === kind;
+        const activeClasses =
+          value === "final"
+            ? "bg-success text-ink-0 shadow-sm"
+            : "bg-amber-500 text-ink-0 shadow-sm";
+        return (
+          <button
+            key={value}
+            type="button"
+            onClick={() => {
+              if (isActive || update.isPending) return;
+              update.mutate({ document_kind: value });
+            }}
+            disabled={update.isPending}
+            aria-pressed={isActive}
+            className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors disabled:opacity-60 ${
+              isActive
+                ? activeClasses
+                : "text-ink-600 hover:text-ink-900"
+            }`}
+          >
+            {label(value)}
+          </button>
+        );
+      })}
     </div>
   );
 }

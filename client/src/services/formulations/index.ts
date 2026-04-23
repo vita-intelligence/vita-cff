@@ -12,6 +12,7 @@ export {
   replaceFormulationLines,
   rollbackFormulation,
   saveFormulationVersion,
+  setApprovedVersion,
   updateFormulation,
 } from "./api";
 export {
@@ -28,6 +29,7 @@ export {
   useReplaceLines,
   useRollbackFormulation,
   useSaveVersion,
+  useSetApprovedVersion,
   useUpdateFormulation,
 } from "./hooks";
 export {
@@ -71,7 +73,9 @@ export {
   COMPLIANCE_FLAGS,
   DOSAGE_FORMS,
   FULLY_SUPPORTED_DOSAGE_FORMS,
+  POWDER_TYPES,
   PROJECT_STATUSES,
+  PROJECT_TYPES,
   TABLET_SIZES,
   type CapsuleSizeOption,
   type ComplianceFlagKey,
@@ -83,9 +87,11 @@ export {
   type FormulationLineInput,
   type FormulationTotalsDto,
   type FormulationVersionDto,
+  type PowderType,
   type ProjectActivityEntryDto,
   type ProjectOverviewDto,
   type ProjectStatus,
+  type ProjectType,
   type FormulationsListQuery,
   type LineItemAttributes,
   type AssignSalesPersonRequestDto,

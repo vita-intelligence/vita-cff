@@ -12,7 +12,9 @@ import type { UserDto } from "@/services/accounts/types";
 export type ProtectedNavKey =
   | "dashboard"
   | "catalogues"
-  | "formulations";
+  | "formulations"
+  | "proposals"
+  | "customers";
 
 interface ProtectedHeaderProps {
   user: UserDto;
@@ -77,6 +79,23 @@ export async function ProtectedHeader({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
+    });
+    // Proposals live alongside Formulations so a sales user can
+    // stitch together a multi-project quote without needing to
+    // drill into a specific project first. Same capability as
+    // formulations because they piggyback on the same permissions.
+    navItems.push({
+      key: "proposals",
+      href: "/proposals",
+      label: tNav("main.proposals"),
+    });
+    // Customers are the address-book behind proposals — surfaced
+    // next to them so sales can manage the list without digging
+    // into a proposal first. Same capability gate as proposals.
+    navItems.push({
+      key: "customers",
+      href: "/customers",
+      label: tNav("main.customers"),
     });
   }
 

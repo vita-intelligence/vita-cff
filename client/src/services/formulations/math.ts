@@ -22,6 +22,7 @@ import type {
   CapsuleSizeOption,
   ComplianceFlagKey,
   DosageForm,
+  PowderType,
   TabletSizeOption,
 } from "./types";
 
@@ -37,22 +38,50 @@ const TABLET_SILICA_PCT = 0.004;
 const TABLET_DCP_PCT = 0.10;
 const TABLET_MCC_PCT = 0.20;
 
-/** Flavour-system rows every powder workbook hand-types on its
- * ``BOM Actives Calculation`` sheet. Values default to the Rave
- * Lytes / Moonlytes standard — scientists tune mg per product in
- * a later phase. Mirrors ``POWDER_FLAVOUR_SYSTEM`` on the Python
- * side; the two must stay in sync. */
+/** Powder flavour system — each row is a concentration in mg/ml of
+ * water. Multiplying by the serving's ``waterVolumeMl`` produces the
+ * per-serving mg exactly as the master Formulation Calculation
+ * Sheet's ``K7 × 0.1% × 100`` formula does. Must stay in lock-step
+ * with ``POWDER_FLAVOUR_SYSTEM`` on the Python side. */
 const POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
   readonly slug: string;
   readonly label: string;
-  readonly mg: number;
+  readonly mgPerMl: number;
 }> = [
-  { slug: "trisodium_citrate", label: "Trisodium Citrate", mg: 50 },
-  { slug: "citric_acid", label: "Citric Acid", mg: 150 },
-  { slug: "flavouring", label: "Flavouring", mg: 125 },
-  { slug: "sweetener", label: "Sweetener", mg: 30 },
-  { slug: "colourant", label: "Colourant", mg: 20 },
+  { slug: "trisodium_citrate", label: "Trisodium Citrate", mgPerMl: 0.1 },
+  { slug: "citric_acid", label: "Citric Acid", mgPerMl: 0.3 },
+  { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
+  { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
+  { slug: "colourant", label: "Colourant", mgPerMl: 0.04 },
 ];
+
+/** Protein-powder variant — drops the acidity regulators (Trisodium
+ * Citrate + Citric Acid). Protein matrices buffer themselves. */
+const PROTEIN_POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
+  readonly slug: string;
+  readonly label: string;
+  readonly mgPerMl: number;
+}> = [
+  { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
+  { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
+  { slug: "colourant", label: "Colourant", mgPerMl: 0.04 },
+];
+
+function powderFlavourSystemFor(
+  powderType: PowderType | null | undefined,
+): ReadonlyArray<{
+  readonly slug: string;
+  readonly label: string;
+  readonly mgPerMl: number;
+}> {
+  return powderType === "protein"
+    ? PROTEIN_POWDER_FLAVOUR_SYSTEM
+    : POWDER_FLAVOUR_SYSTEM;
+}
+
+/** Default water volume when the scientist has not typed one yet.
+ *  Matches ``POWDER_REFERENCE_WATER_ML`` on the Python side. */
+const POWDER_DEFAULT_WATER_ML = 500;
 
 const GUMMY_FLAVOUR_SYSTEM: ReadonlyArray<{
   readonly slug: string;
@@ -142,6 +171,10 @@ export interface ExcipientRow {
   readonly label: string;
   readonly mg: number;
   readonly isRemainder: boolean;
+  /** Concentration in mg per ml of water. Populated for powder
+   *  flavour rows that scale with ``waterVolumeMl``; null for
+   *  gummy and static excipients. */
+  readonly concentrationMgPerMl?: number | null;
 }
 
 export interface ExcipientBreakdown {
@@ -830,6 +863,8 @@ function computeFillTarget(
   dosageForm: "powder" | "gummy",
   totalActive: number,
   targetFillWeightMg: number | null,
+  powderType: PowderType | null | undefined,
+  waterVolumeMl: number | null | undefined,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -839,14 +874,34 @@ function computeFillTarget(
   viability: Viability;
   warnings: readonly string[];
 } {
-  const preset =
-    dosageForm === "powder" ? POWDER_FLAVOUR_SYSTEM : GUMMY_FLAVOUR_SYSTEM;
-  const flavourRows: ExcipientRow[] = preset.map((row) => ({
-    slug: row.slug,
-    label: row.label,
-    mg: row.mg,
-    isRemainder: false,
-  }));
+  // Powder flavour rows are concentrations in mg/ml of water —
+  // multiply by the serving's water volume to produce the per-serving
+  // mg, exactly the same math the Formulation Calculation Sheet uses.
+  // Gummy rows stay on the static ``mg`` tuple shape because their
+  // "Water" / "Acidity regulator" lines are per-gummy weights, not
+  // dilution targets.
+  const flavourRows: ExcipientRow[] =
+    dosageForm === "powder"
+      ? (() => {
+          const preset = powderFlavourSystemFor(powderType);
+          const waterMl =
+            waterVolumeMl !== null && waterVolumeMl !== undefined
+              ? Math.max(waterVolumeMl, 0)
+              : POWDER_DEFAULT_WATER_ML;
+          return preset.map((row) => ({
+            slug: row.slug,
+            label: row.label,
+            mg: row.mgPerMl * waterMl,
+            isRemainder: false,
+            concentrationMgPerMl: row.mgPerMl,
+          }));
+        })()
+      : GUMMY_FLAVOUR_SYSTEM.map((row) => ({
+          slug: row.slug,
+          label: row.label,
+          mg: row.mg,
+          isRemainder: false,
+        }));
   const flavourTotal = flavourRows.reduce((acc, r) => acc + r.mg, 0);
   const excipients: ExcipientBreakdown = {
     mgStearateMg: 0,
@@ -909,6 +964,8 @@ export function computeTotals({
   tabletSizeKey,
   defaultServingSize,
   targetFillWeightMg,
+  powderType,
+  waterVolumeMl,
 }: {
   lines: readonly ComputeLineInput[];
   dosageForm: DosageForm;
@@ -916,6 +973,8 @@ export function computeTotals({
   tabletSizeKey: string | null;
   defaultServingSize: number;
   targetFillWeightMg?: number | null;
+  powderType?: PowderType | null;
+  waterVolumeMl?: number | null;
 }): FormulationTotals {
   let totalActive = 0;
   const lineValues = new Map<string, number>();
@@ -994,6 +1053,8 @@ export function computeTotals({
       dosageForm,
       totalActive,
       targetFillWeightMg ?? null,
+      powderType ?? null,
+      waterVolumeMl ?? null,
     );
     return {
       totalActiveMg: totalActive,

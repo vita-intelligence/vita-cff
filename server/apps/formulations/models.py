@@ -23,7 +23,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from apps.formulations.constants import DosageForm
+from apps.formulations.constants import DosageForm, PowderType
 
 
 class ProjectStatus(models.TextChoices):
@@ -44,6 +44,22 @@ class ProjectStatus(models.TextChoices):
     DISCONTINUED = "discontinued", _("Discontinued")
 
 
+class ProjectType(models.TextChoices):
+    """Commercial engagement model for a project.
+
+    ``custom`` means the formulation is being developed bespoke for
+    the client (laboratory development phase, deposit required, long
+    lead time). ``ready_to_go`` means an existing validated recipe
+    is being manufactured for them with no dev work. Drives which
+    proposal template renders on the client kiosk — Custom.docx
+    includes the development phase + 30% deposit language; Ready to
+    Go.docx is a shorter straight-to-production quote.
+    """
+
+    CUSTOM = "custom", _("Custom")
+    READY_TO_GO = "ready_to_go", _("Ready to Go")
+
+
 class DosageFormChoices(models.TextChoices):
     POWDER = DosageForm.POWDER.value, _("Powder")
     CAPSULE = DosageForm.CAPSULE.value, _("Capsule")
@@ -51,6 +67,18 @@ class DosageFormChoices(models.TextChoices):
     GUMMY = DosageForm.GUMMY.value, _("Gummy")
     LIQUID = DosageForm.LIQUID.value, _("Liquid")
     OTHER_SOLID = DosageForm.OTHER_SOLID.value, _("Other solid")
+
+
+class PowderTypeChoices(models.TextChoices):
+    """Sub-variants of the powder dosage form.
+
+    Only surfaced in the UI when ``dosage_form == POWDER``; the field
+    stays at its default for every other form and is simply ignored
+    by the math in those cases.
+    """
+
+    STANDARD = PowderType.STANDARD.value, _("Standard")
+    PROTEIN = PowderType.PROTEIN.value, _("Protein")
 
 
 class Formulation(models.Model):
@@ -127,6 +155,33 @@ class Formulation(models.Model):
             "the math uses the selected size instead."
         ),
     )
+    powder_type = models.CharField(
+        _("powder type"),
+        max_length=16,
+        choices=PowderTypeChoices.choices,
+        default=PowderTypeChoices.STANDARD,
+        help_text=_(
+            "Sub-variant of the Powder dosage form. Protein powders "
+            "omit Trisodium Citrate + Citric Acid from the flavour "
+            "system because the protein matrix already buffers "
+            "itself. Ignored for non-powder forms."
+        ),
+    )
+    water_volume_ml = models.DecimalField(
+        _("water volume (ml)"),
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Volume of water the powder is designed to dissolve "
+            "in (per serving). Drives the flavour-system mg "
+            "concentrations — the preset values assume a 500ml "
+            "reference serving, so lowering to 250ml halves every "
+            "flavour row and raising to 1000ml doubles them. "
+            "Ignored for non-powder forms."
+        ),
+    )
 
     project_status = models.CharField(
         _("project status"),
@@ -137,6 +192,18 @@ class Formulation(models.Model):
         help_text=_(
             "Product-roadmap position. Drives the chip shown at the "
             "top of the project workspace and the project list filter."
+        ),
+    )
+    project_type = models.CharField(
+        _("project type"),
+        max_length=16,
+        choices=ProjectType.choices,
+        default=ProjectType.CUSTOM,
+        db_index=True,
+        help_text=_(
+            "Custom (bespoke development + deposit) vs Ready to Go "
+            "(existing recipe, faster turnaround). Drives the proposal "
+            "template rendered for the client."
         ),
     )
 
@@ -164,6 +231,19 @@ class Formulation(models.Model):
         null=True,
         blank=True,
     )
+    approved_version_number = models.PositiveIntegerField(
+        _("approved version number"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Points at the :class:`FormulationVersion` snapshot the "
+            "scientist marked as the current approved recipe. Every "
+            "version picker in the app (trial batch, spec sheet, "
+            "QC) badges this number so a teammate never plans a "
+            "procurement run off a stale draft."
+        ),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

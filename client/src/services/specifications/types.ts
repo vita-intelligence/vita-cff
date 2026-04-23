@@ -12,6 +12,12 @@ export const SPECIFICATION_STATUSES = [
 ] as const;
 export type SpecificationStatus = (typeof SPECIFICATION_STATUSES)[number];
 
+//: Document kind — independent of lifecycle status. Drives whether
+//: the rendered sheet carries the diagonal "DRAFT" watermark.
+export const SPECIFICATION_DOCUMENT_KINDS = ["draft", "final"] as const;
+export type SpecificationDocumentKind =
+  (typeof SPECIFICATION_DOCUMENT_KINDS)[number];
+
 /**
  * Allowed status transitions — mirrors ``ALLOWED_TRANSITIONS`` in
  * ``apps/specifications/services.py``. Keeps the UI's enable/disable
@@ -51,10 +57,14 @@ export interface SpecificationSheetDto {
   readonly packaging_antitemper: string | null;
   readonly packaging_details: PackagingDetails;
   readonly status: SpecificationStatus;
+  readonly document_kind: SpecificationDocumentKind;
   readonly formulation_version: string;
   readonly formulation_id: string;
   readonly formulation_name: string;
   readonly formulation_version_number: number;
+  /** Set on render payloads when a :class:`Proposal` is attached to
+   *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
+  readonly has_proposal?: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -119,6 +129,7 @@ export interface CreateSpecificationRequestDto {
   readonly final_price?: string | null;
   readonly cover_notes?: string;
   readonly total_weight_label?: string;
+  readonly document_kind?: SpecificationDocumentKind;
 }
 
 export type UpdateSpecificationRequestDto = Partial<
@@ -301,6 +312,10 @@ export interface RenderedSheetContext {
       readonly comfort_ok: boolean;
       readonly codes: readonly string[];
     } | null;
+    /** Powder-only: per-serving weight (scoops × per-scoop mg). */
+    readonly powder_per_serving_mg?: string | null;
+    /** Powder-only: servings_per_pack × per-serving-mg. */
+    readonly powder_pack_total_mg?: string | null;
   };
   readonly actives: readonly RenderedActive[];
   readonly compliance: RenderedCompliance;

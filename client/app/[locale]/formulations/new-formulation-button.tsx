@@ -134,10 +134,12 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     Readonly<Record<number, IngredientChoice>>
   >({});
 
-  // Form state — ``code`` is deliberately NOT tracked here. The
-  // backend auto-generates ``PRJ-NNNN`` sequences on create so the
-  // AI's suggested code (often collides) and the scientist's blank
-  // input both resolve cleanly. Users rename via the builder.
+  // Form state — ``code`` is the scientist's own project reference
+  // (``MA210367``, ``FB-001``). It's mandatory and must be unique
+  // per organisation; the backend rejects blank or duplicate codes
+  // so the same string can travel through MRPeasy, the spec sheet
+  // and the proposal without divergence.
+  const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [dosageForm, setDosageForm] = useState<DosageForm>("capsule");
@@ -165,6 +167,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     setIngredients([]);
     setChoices({});
     setDraftError(null);
+    setCode("");
     setName("");
     setDescription("");
     setDosageForm("capsule");
@@ -201,10 +204,14 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
         : "capsule";
 
       setName(draft.name);
-      // ``draft.code`` is intentionally ignored — the backend
-      // auto-generates a unique PRJ-NNNN on create. Preserving the
-      // AI's suggestion here would just cause a 400 on the second
-      // attempt with the same brief.
+      // ``draft.code`` is surfaced as a *suggestion* into the code
+      // field — scientists almost always overwrite it with their
+      // own MRPeasy / lab-book reference, but starting from the AI
+      // value saves a few keystrokes when the suggestion is close.
+      // The backend enforces uniqueness, so a collision on re-run
+      // against the same org surfaces as a 400 the user can fix in
+      // place rather than a silent auto-rewrite.
+      setCode(draft.code ?? "");
       setDescription(draft.description);
       setDosageForm(normalisedDosageForm);
       setServingsPerPack(
@@ -260,9 +267,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     try {
       const created = await createMutation.mutateAsync({
         name: name.trim(),
-        // Omitting ``code`` lets the backend auto-generate a unique
-        // PRJ-NNNN. The builder's metadata panel supports renaming
-        // afterwards for scientists who prefer domain-specific codes.
+        code: code.trim(),
         description: description.trim(),
         dosage_form: dosageForm,
         servings_per_pack: servingsPerPack,
@@ -404,18 +409,33 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                 {/* ------------------------------------------------- */}
                 {/* Core metadata                                     */}
                 {/* ------------------------------------------------- */}
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tFormulations("fields.name")}
-                  </span>
-                  <input
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    placeholder={tFormulations("placeholders.name")}
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                </label>
+                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tFormulations("fields.code")}
+                    </span>
+                    <input
+                      required
+                      value={code}
+                      onChange={(e) => setCode(e.target.value)}
+                      placeholder={tFormulations("placeholders.code")}
+                      maxLength={64}
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tFormulations("fields.name")}
+                    </span>
+                    <input
+                      required
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder={tFormulations("placeholders.name")}
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  </label>
+                </div>
 
                 {description ? (
                   <label className="flex flex-col gap-1.5">
@@ -591,7 +611,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                   variant="primary"
                   size="md"
                   className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
-                  isDisabled={isBusy || !name.trim()}
+                  isDisabled={isBusy || !name.trim() || !code.trim()}
                 >
                   {tFormulations("create.submit")}
                 </Button>

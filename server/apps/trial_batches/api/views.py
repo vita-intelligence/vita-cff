@@ -24,6 +24,7 @@ from apps.trial_batches.api.serializers import (
 from apps.trial_batches.services import (
     FormulationVersionNotInOrg,
     InvalidBatchSize,
+    InvalidBatchSizeMode,
     TrialBatchNotFound,
     compute_batch_scaleup,
     create_batch,
@@ -75,6 +76,7 @@ class TrialBatchListCreateView(APIView):
                 actor=request.user,
                 formulation_version_id=data["formulation_version_id"],
                 batch_size_units=data["batch_size_units"],
+                batch_size_mode=data.get("batch_size_mode", "pack"),
                 label=data.get("label", ""),
                 notes=data.get("notes", ""),
             )
@@ -90,6 +92,11 @@ class TrialBatchListCreateView(APIView):
         except InvalidBatchSize:
             return Response(
                 {"batch_size_units": ["invalid_batch_size"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidBatchSizeMode:
+            return Response(
+                {"batch_size_mode": ["invalid_batch_size_mode"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -147,6 +154,11 @@ class TrialBatchDetailView(APIView):
         except InvalidBatchSize:
             return Response(
                 {"batch_size_units": ["invalid_batch_size"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidBatchSizeMode:
+            return Response(
+                {"batch_size_mode": ["invalid_batch_size_mode"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(TrialBatchReadSerializer(updated).data)
@@ -327,6 +339,7 @@ class TrialBatchBOMExportView(APIView):
                     "dosage_form": result.dosage_form,
                     "size_label": result.size_label,
                     "batch_size_packs": result.batch_size_units,
+                    "batch_size_mode": result.batch_size_mode,
                     "units_per_pack": result.units_per_pack,
                     "total_units_in_batch": result.total_units_in_batch,
                 },

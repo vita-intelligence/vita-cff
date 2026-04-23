@@ -33,6 +33,7 @@ class TestSnapshot:
             organization=org,
             actor=org.created_by,
             name="Snapshot Demo",
+            code="SNAP-1",
         )
         data = snapshot(formulation)
         assert data is not None
@@ -49,6 +50,7 @@ class TestSnapshot:
             organization=org,
             actor=org.created_by,
             name="UUID Demo",
+            code="UUID-1",
         )
         data = snapshot(formulation)
         assert data is not None
@@ -62,6 +64,7 @@ class TestSnapshot:
             organization=org,
             actor=org.created_by,
             name="Decimal Demo",
+            code="DEC-1",
         )
         # Inject a Decimal-valued attribute via the extras channel
         # — mirrors how callers fold computed fields in.
@@ -77,6 +80,7 @@ class TestRecord:
             organization=org,
             actor=org.created_by,
             name="Record Demo",
+            code="REC-1",
         )
         created = record(
             organization=org,
@@ -145,6 +149,7 @@ class TestFormulationInstrumentation:
             organization=org,
             actor=org.created_by,
             name="Audit Create",
+            code="AUDIT-1",
         )
         rows = list(AuditLog.objects.filter(organization=org))
         assert len(rows) == 1
@@ -159,6 +164,7 @@ class TestFormulationInstrumentation:
             organization=org,
             actor=org.created_by,
             name="Before",
+            code="UPD-1",
         )
         AuditLog.objects.filter(action="formulation.create").delete()
 
@@ -179,6 +185,7 @@ class TestFormulationInstrumentation:
             organization=org,
             actor=org.created_by,
             name="Versioned",
+            code="VER-1",
         )
         save_version(
             formulation=formulation,

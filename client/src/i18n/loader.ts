@@ -30,6 +30,8 @@ export const namespaces = [
   "project_overview",
   "project_tabs",
   "specifications",
+  "proposals",
+  "customers",
   "trial_batches",
   "product_validation",
   "settings",

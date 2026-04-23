@@ -22,6 +22,20 @@ class DosageForm(str, Enum):
     OTHER_SOLID = "other_solid"
 
 
+class PowderType(str, Enum):
+    """Powder sub-variant chosen by the scientist.
+
+    The flavour-system preset swaps with this value — protein powders
+    drop the acidity-regulator pair (Trisodium Citrate + Citric Acid)
+    that the hydration / electrolyte sachets rely on, because the
+    protein matrix already buffers itself and adding more acid hurts
+    mouthfeel.
+    """
+
+    STANDARD = "standard"
+    PROTEIN = "protein"
+
+
 #: Dosage forms F1 supports with full excipient math + viability. Other
 #: forms store metadata but return ``None`` for the computed totals.
 FULLY_SUPPORTED_FORMS: frozenset[DosageForm] = frozenset(
@@ -105,13 +119,56 @@ TABLET_MCC_PCT = 0.20
 #: Maltodextrin``) that the scientist adds explicitly — same way they
 #: add actives. We keep it out of the auto-computed list so we don't
 #: fabricate a phantom row without a procurement code.
+#: Powder flavour system — each row is ``(slug, label, mg_per_ml)``
+#: with ``mg_per_ml`` the concentration the scientist dissolves into
+#: a serving's water. Values copied verbatim from the master
+#: Formulation Calculation Sheet (``=K7 * 0.1% * 100`` ⇒ 0.1 mg/ml
+#: for Trisodium Citrate, etc.). Multiplying by the serving's
+#: ``water_volume_ml`` produces the per-serving mg exactly as the
+#: Rave Lytes / Moonlytes / Soza reference workbooks compute it.
 POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
-    ("trisodium_citrate", "Trisodium Citrate", 50.0),
-    ("citric_acid", "Citric Acid", 150.0),
-    ("flavouring", "Flavouring", 125.0),
-    ("sweetener", "Sweetener", 30.0),
-    ("colourant", "Colourant", 20.0),
+    ("trisodium_citrate", "Trisodium Citrate", 0.1),
+    ("citric_acid", "Citric Acid", 0.3),
+    ("flavouring", "Flavouring", 0.25),
+    ("sweetener", "Sweetener", 0.06),
+    ("colourant", "Colourant", 0.04),
 )
+
+
+#: Protein-powder flavour system — same mg/ml convention as the
+#: standard powder preset but without the Trisodium Citrate /
+#: Citric Acid pair. Protein matrices buffer themselves and
+#: additional acid degrades mouthfeel, so scientists omit the
+#: acidity regulators on every reference protein formulation.
+PROTEIN_POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
+    ("flavouring", "Flavouring", 0.25),
+    ("sweetener", "Sweetener", 0.06),
+    ("colourant", "Colourant", 0.04),
+)
+
+
+#: Default water volume seeded into a new powder formulation when the
+#: scientist lands on the builder. The Formulation Calculation Sheet
+#: template defaults to 250 ml; Rave Lytes ships at 500 ml. We pick
+#: the Rave Lytes number because the preset mg values are printed
+#: against it in the user's primary reference workbook, but the
+#: scientist overrides per product.
+POWDER_REFERENCE_WATER_ML = 500.0
+
+
+def powder_flavour_system_for(
+    powder_type: str | None,
+) -> tuple[tuple[str, str, float], ...]:
+    """Pick the right flavour-system preset for a powder variant.
+
+    ``None`` and unknown values fall back to the standard preset so an
+    in-flight migration from an older client never loses the acidity
+    regulators silently.
+    """
+
+    if powder_type == PowderType.PROTEIN.value:
+        return PROTEIN_POWDER_FLAVOUR_SYSTEM
+    return POWDER_FLAVOUR_SYSTEM
 
 
 #: Gummy base / flavour system. Same convention as the powder preset
@@ -165,6 +222,49 @@ EXCIPIENT_CATALOGUE_NAME_CANDIDATES: dict[str, tuple[str, ...]] = {
         "HPMC Capsule Shell",
         "Hypromellose",
         "HPMC",
+    ),
+    # Powder flavour-system rows — the preset slugs emitted by
+    # :func:`_compute_fill_target` map to real catalogue items the
+    # team procures against. Generic categories (``flavouring``,
+    # ``sweetener``, ``colourant``) are deliberately broad because
+    # scientists pick a specific SKU per product; the istartswith
+    # match catches the first one in the catalogue so the BOM at
+    # least shows *a* code instead of an empty cell.
+    "trisodium_citrate": (
+        "Trisodium Citrate",
+        "Sodium Citrate",
+    ),
+    "citric_acid": (
+        "Citric Acid",
+    ),
+    "flavouring": (
+        "Flavouring",
+        "Flavour",
+        "Natural Flavour",
+    ),
+    "sweetener": (
+        "Sweetener",
+        "Sucralose",
+        "Stevia",
+        "Steviol",
+    ),
+    "colourant": (
+        "Colourant",
+        "Colour",
+        "Colorant",
+        "Beetroot",
+    ),
+    # Gummy-specific slugs. ``water`` is not a catalogued raw
+    # material so it intentionally has no mapping.
+    "acidity_regulator": (
+        "Citric Acid",
+        "Trisodium Citrate",
+        "Sodium Citrate",
+    ),
+    "flavouring_colourant": (
+        "Flavouring",
+        "Colourant",
+        "Natural Flavour",
     ),
 }
 #: Combined label for the magnesium-stearate + silica pair. The Valley

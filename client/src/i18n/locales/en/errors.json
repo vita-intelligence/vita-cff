@@ -24,6 +24,8 @@
     "refresh_token_missing": "Your session has expired. Please sign in again.",
     "refresh_token_invalid": "Your session has expired. Please sign in again.",
     "internal_code_conflict": "Another item already uses this internal code.",
+    "formulation_code_required": "Pick a project code (e.g. MA210367 or FB-001) before creating the project.",
+    "formulation_code_conflict": "Another project in this organisation already uses this code.",
     "attribute_key_invalid": "Key must start with a lowercase letter and use only a-z, 0-9, and underscores.",
     "attribute_key_conflict": "Another field already uses this key.",
     "attribute_options_invalid": "Options must be non-empty and unique for select fields.",

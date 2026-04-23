@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.http import HttpResponse
+from django.template.loader import render_to_string
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
@@ -24,6 +25,7 @@ from apps.specifications.api.serializers import (
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.services import (
     FormulationVersionNotInOrg,
+    InvalidSpecificationDocumentKind,
     InvalidStatusTransition,
     PACKAGING_SLOT_TYPES,
     PackagingItemNotAllowed,
@@ -91,6 +93,7 @@ class SpecificationListCreateView(APIView):
                 final_price=data.get("final_price"),
                 cover_notes=data.get("cover_notes", ""),
                 total_weight_label=data.get("total_weight_label", ""),
+                document_kind=data.get("document_kind", "draft"),
             )
         except FormulationVersionNotInOrg:
             return Response(
@@ -104,6 +107,11 @@ class SpecificationListCreateView(APIView):
         except SpecificationCodeConflict:
             return Response(
                 {"code": ["specification_code_conflict"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidSpecificationDocumentKind:
+            return Response(
+                {"document_kind": ["invalid_specification_document_kind"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -158,6 +166,11 @@ class SpecificationDetailView(APIView):
         except SpecificationCodeConflict:
             return Response(
                 {"code": ["specification_code_conflict"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidSpecificationDocumentKind:
+            return Response(
+                {"document_kind": ["invalid_specification_document_kind"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -576,6 +589,60 @@ class PublicSpecificationPdfView(APIView):
             f'{disposition}; filename="{filename}"'
         )
         return response
+
+
+class PublicProposalRenderView(APIView):
+    """``GET`` ``/api/public/specifications/<token>/proposal/``.
+
+    Returns the proposal attached to the shared spec sheet — as a PDF
+    rendered from the real Vita NPD Word template. The kiosk iframe
+    loads it inline so the customer sees the exact document they're
+    being asked to sign. Falls back to the HTML approximation when the
+    server has no DOCX→PDF converter (Linux boxes without
+    LibreOffice). 404 when no proposal is linked so the kiosk knows
+    to hide the section.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> HttpResponse:
+        # Lazy import — the proposals app is imported only when this
+        # endpoint fires so the specifications module stays load-clean
+        # in environments that don't serve proposals yet.
+        from apps.proposals.render import render_pdf_bytes
+
+        try:
+            sheet = get_by_public_token(token)
+        except PublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        proposal = getattr(sheet, "proposal", None)
+        if proposal is None:
+            raise NotFound()
+
+        pdf_bytes = render_pdf_bytes(proposal)
+        if pdf_bytes is not None:
+            response = HttpResponse(pdf_bytes, content_type="application/pdf")
+            filename = f"{proposal.code or 'proposal'}.pdf"
+            response["Content-Disposition"] = f'inline; filename="{filename}"'
+            return response
+
+        version = proposal.formulation_version
+        metadata = version.snapshot_metadata or {}
+        html = render_to_string(
+            "proposals/sheet.html",
+            {
+                "proposal": proposal,
+                "formulation": {
+                    "code": metadata.get("code") or version.formulation.code,
+                    "name": metadata.get("name") or version.formulation.name,
+                },
+                "subtotal": proposal.subtotal,
+                "total_excl_vat": proposal.total_excl_vat,
+            },
+        )
+        return HttpResponse(html)
 
 
 class PublicSpecificationAcceptView(APIView):

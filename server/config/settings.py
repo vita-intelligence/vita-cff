@@ -10,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Security
 SECRET_KEY = "django-insecure-paz2degn(!os0zf$fth7ag=kowl^4)ya@b7o=rh5bb)iiiz=&$"
 DEBUG = True
-ALLOWED_HOSTS: list[str] = []
+ALLOWED_HOSTS: list[str] = ["localhost", "127.0.0.1", "192.168.1.170"]
 
 
 # Applications
@@ -45,6 +45,8 @@ LOCAL_APPS = [
     "apps.specifications",
     "apps.trial_batches",
     "apps.product_validation",
+    "apps.proposals",
+    "apps.customers",
     "apps.ai",
     "apps.audit",
     "apps.comments",
@@ -116,6 +118,7 @@ AUTH_COOKIE_SAMESITE = "Lax"
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://192.168.1.170:3000",
 ]
 CORS_ALLOW_CREDENTIALS = True
 

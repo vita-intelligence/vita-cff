@@ -43,6 +43,10 @@ interface Props {
   readonly customerName: string;
   readonly customerSignedAt: string | null;
   readonly customerSignatureImage: string;
+  /** When true, accepting the spec sheet also marks the attached
+   *  proposal as accepted — the button surfaces that so the
+   *  customer knows what they're signing. */
+  readonly hasProposal?: boolean;
 }
 
 
@@ -84,6 +88,7 @@ export function KioskAcceptButton({
   customerName,
   customerSignedAt,
   customerSignatureImage,
+  hasProposal = false,
 }: Props) {
   const tSpecs = useTranslations("specifications");
   const router = useRouter();
@@ -213,8 +218,17 @@ export function KioskAcceptButton({
         }}
       >
         <PenLine className="h-4 w-4" />
-        {tSpecs("signature.accept_button")}
+        {tSpecs(
+          hasProposal
+            ? "signature.accept_button_bundled"
+            : "signature.accept_button",
+        )}
       </Button>
+      {hasProposal ? (
+        <p className="text-xs text-ink-500">
+          {tSpecs("signature.bundled_hint")}
+        </p>
+      ) : null}
       {identityOpen ? (
         <KioskIdentityModal
           token={token}
@@ -228,9 +242,21 @@ export function KioskAcceptButton({
           setDialogOpen(open);
           if (!open) setError(null);
         }}
-        title={tSpecs("signature.customer_title")}
-        subtitle={tSpecs("signature.customer_subtitle")}
-        confirmLabel={tSpecs("signature.accept_button")}
+        title={tSpecs(
+          hasProposal
+            ? "signature.customer_title_bundled"
+            : "signature.customer_title",
+        )}
+        subtitle={tSpecs(
+          hasProposal
+            ? "signature.customer_subtitle_bundled"
+            : "signature.customer_subtitle",
+        )}
+        confirmLabel={tSpecs(
+          hasProposal
+            ? "signature.accept_button_bundled"
+            : "signature.accept_button",
+        )}
         cancelLabel={tSpecs("signature.cancel")}
         busy={busy}
         errorMessage={error}

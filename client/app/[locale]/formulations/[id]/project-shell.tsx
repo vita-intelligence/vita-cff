@@ -5,6 +5,7 @@ import {
   FileText,
   FlaskConical,
   LayoutDashboard,
+  PoundSterling,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -22,6 +23,7 @@ export type ProjectTabKey =
   | "overview"
   | "builder"
   | "spec-sheets"
+  | "proposals"
   | "trial-batches"
   | "qc";
 
@@ -75,6 +77,12 @@ export function ProjectShell({
       href: `/formulations/${overview.id}/spec-sheets`,
       icon: <FileText className="h-4 w-4" />,
       count: overview.spec_sheets.total,
+    },
+    {
+      key: "proposals",
+      label: tTabs("proposals"),
+      href: `/formulations/${overview.id}/proposals`,
+      icon: <PoundSterling className="h-4 w-4" />,
     },
     {
       key: "trial-batches",
@@ -139,6 +147,7 @@ function CompactHeader({
       <ProjectHeaderActions
         organization={organization}
         formulationId={overview.id}
+        formulationCode={overview.code}
         projectStatus={overview.project_status}
         salesPerson={overview.sales_person}
       />

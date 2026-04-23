@@ -4,6 +4,16 @@
   "filter": {
     "show_resolved": "Show resolved"
   },
+  "visibility": {
+    "client": {
+      "title": "Client-visible thread",
+      "body": "The customer can see these comments on their kiosk page once this sheet is shared. Keep internal discussion on the project workspace."
+    },
+    "internal": {
+      "title": "Internal team only",
+      "body": "Customers and kiosk guests will never see these comments."
+    }
+  },
   "states": {
     "loading": "Loading…",
     "empty": "No comments yet. Start the conversation.",

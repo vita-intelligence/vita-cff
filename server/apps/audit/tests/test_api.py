@@ -87,10 +87,10 @@ class TestAuditLogList:
         client, user, org = _owner_client()
         # Each write records a row; one create = one audit entry.
         create_formulation(
-            organization=org, actor=user, name="Entry One"
+            organization=org, actor=user, name="Entry One", code="ENTRY-1"
         )
         create_formulation(
-            organization=org, actor=user, name="Entry Two"
+            organization=org, actor=user, name="Entry Two", code="ENTRY-2"
         )
         response = client.get(_list_url(org.id))
         assert response.status_code == status.HTTP_200_OK
@@ -120,7 +120,7 @@ class TestAuditLogList:
     def test_action_filter_narrows_results(self) -> None:
         client, user, org = _owner_client()
         formulation = create_formulation(
-            organization=org, actor=user, name="Filter Demo"
+            organization=org, actor=user, name="Filter Demo", code="FILT-1"
         )
         # Produce a distinct second action so filters have
         # something to exclude.
@@ -140,7 +140,7 @@ class TestAuditLogList:
     def test_action_prefix_groups_module_events(self) -> None:
         client, user, org = _owner_client()
         formulation = create_formulation(
-            organization=org, actor=user, name="Prefix Demo"
+            organization=org, actor=user, name="Prefix Demo", code="PREF-1"
         )
         from apps.formulations.services import save_version, update_formulation
 
@@ -164,7 +164,7 @@ class TestAuditLogList:
         # ~12 writes, capped at 5 per page.
         for i in range(12):
             create_formulation(
-                organization=org, actor=user, name=f"P{i}"
+                organization=org, actor=user, name=f"P{i}", code=f"P-{i:02d}"
             )
         response = client.get(_list_url(org.id), {"page_size": 5})
         assert response.status_code == status.HTTP_200_OK

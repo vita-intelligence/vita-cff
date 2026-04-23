@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Save, Trash2 } from "lucide-react";
+import { Check, Copy, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   useCallback,
@@ -9,6 +9,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 
 import { useRouter } from "@/i18n/navigation";
@@ -22,6 +23,7 @@ import {
   CAPSULE_SIZES,
   DOSAGE_FORMS,
   FULLY_SUPPORTED_DOSAGE_FORMS,
+  POWDER_TYPES,
   TABLET_SIZES,
   buildIngredientDeclaration,
   canComputeMaterial,
@@ -35,6 +37,7 @@ import {
   useReplaceLines,
   useRollbackFormulation,
   useSaveVersion,
+  useSetApprovedVersion,
   useUpdateFormulation,
   type AllergensResult,
   type ComplianceFlagResult,
@@ -47,6 +50,7 @@ import {
   type ItemAttributesForMath,
   type LineFailureReason,
   type LineItemAttributes,
+  type PowderType,
 } from "@/services/formulations";
 
 const RAW_MATERIALS_SLUG = "raw_materials";
@@ -72,6 +76,8 @@ interface MetadataDraft {
   serving_size: number;
   servings_per_pack: number;
   target_fill_weight_mg: string;
+  powder_type: PowderType;
+  water_volume_ml: string;
   directions_of_use: string;
   suggested_dosage: string;
   appearance: string;
@@ -85,9 +91,46 @@ interface MetadataDraft {
 // flavour system + carrier math immediately instead of sitting empty
 // until the user happens to notice the fill-weight input.
 const POWDER_DEFAULT_FILL_MG = "10000";
+// Default water volume for a fresh powder — aligns with the mg
+// values baked into ``POWDER_FLAVOUR_SYSTEM``. Scientists tune
+// this per product; changing it rescales every flavour row live.
+const POWDER_DEFAULT_WATER_ML = "500";
 
 function defaultFillWeightFor(dosageForm: string): string {
   return dosageForm === "powder" ? POWDER_DEFAULT_FILL_MG : "";
+}
+
+function defaultWaterVolumeFor(dosageForm: string): string {
+  return dosageForm === "powder" ? POWDER_DEFAULT_WATER_ML : "";
+}
+
+// Grams ↔ milligrams conversion for the powder fill-weight input.
+// Storage stays in mg across the API + math; only the one powder
+// field displays / accepts grams because scientists think about
+// scoop mass in grams (10g), not mg (10000). Gummy mass stays in mg
+// — per-gummy weights live in the 500mg–2500mg range where mg is
+// actually the natural unit.
+function mgStringToG(mg: string | null | undefined): string {
+  if (!mg) return "";
+  const parsed = Number.parseFloat(mg);
+  if (!Number.isFinite(parsed) || parsed <= 0) return "";
+  // Strip trailing zeros — ``10000 mg`` → ``"10"`` rather than
+  // ``"10.0"`` so the input doesn't read as if the scientist typed
+  // a fractional value.
+  const asG = parsed / 1000;
+  return Number.isInteger(asG) ? String(asG) : String(asG);
+}
+
+function gStringToMgString(raw: string): string {
+  const trimmed = (raw ?? "").trim();
+  if (!trimmed) return "";
+  const parsed = Number.parseFloat(trimmed);
+  if (!Number.isFinite(parsed) || parsed <= 0) return "";
+  // Quantise via ``toFixed`` to dodge float artefacts like
+  // ``10.5 * 1000 = 10499.999…``. Trim trailing zeros for compactness
+  // so the stored string stays short and the backend's tolerant
+  // Decimal parser never sees noise digits.
+  return (parsed * 1000).toFixed(4).replace(/\.?0+$/, "");
 }
 
 function metadataFrom(formulation: FormulationDto): MetadataDraft {
@@ -103,6 +146,10 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     servings_per_pack: formulation.servings_per_pack,
     target_fill_weight_mg:
       storedFill || defaultFillWeightFor(formulation.dosage_form),
+    powder_type: formulation.powder_type ?? "standard",
+    water_volume_ml:
+      (formulation.water_volume_ml ?? "") ||
+      defaultWaterVolumeFor(formulation.dosage_form),
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
     appearance: formulation.appearance,
@@ -197,6 +244,14 @@ export function FormulationBuilder({
   const [lines, setLines] = useState<BuilderLine[]>(
     linesFrom(initialFormulation),
   );
+  // Grams-side draft for the powder fill-weight input. The source
+  // of truth stays on ``metadata.target_fill_weight_mg`` (mg, matches
+  // the API); this local state just preserves what the scientist
+  // literally typed (e.g. the trailing ``.`` in ``10.``) so the
+  // controlled input doesn't clobber it on each re-render.
+  const [powderFillG, setPowderFillG] = useState<string>(() =>
+    mgStringToG(metadataFrom(initialFormulation).target_fill_weight_mg),
+  );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
@@ -207,6 +262,7 @@ export function FormulationBuilder({
   const replaceLinesMutation = useReplaceLines(orgId, formulation.id);
   const saveVersionMutation = useSaveVersion(orgId, formulation.id);
   const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
+  const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
 
   const numberFormatter = useMemo(
@@ -242,6 +298,7 @@ export function FormulationBuilder({
       fallbackName: line.item_name,
     }));
     const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
+    const parsedWater = Number.parseFloat(metadata.water_volume_ml);
     return computeTotals({
       lines: computeInputs,
       dosageForm: metadata.dosage_form,
@@ -251,6 +308,10 @@ export function FormulationBuilder({
       targetFillWeightMg: Number.isFinite(parsedFill) && parsedFill > 0
         ? parsedFill
         : null,
+      powderType: metadata.powder_type,
+      waterVolumeMl: Number.isFinite(parsedWater) && parsedWater >= 0
+        ? parsedWater
+        : null,
     });
   }, [
     lines,
@@ -259,6 +320,8 @@ export function FormulationBuilder({
     metadata.tablet_size,
     metadata.serving_size,
     metadata.target_fill_weight_mg,
+    metadata.powder_type,
+    metadata.water_volume_ml,
   ]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
@@ -301,6 +364,21 @@ export function FormulationBuilder({
     }, 200);
     return () => clearTimeout(timer);
   }, [searchInput]);
+
+  // Keep the powder grams draft in sync with the mg source of truth
+  // when the mg value changes from *outside* user typing — server
+  // reload, rollback, or the dosage-form seeder flipping the value
+  // from empty to the 10g default. The guard avoids feedback loops
+  // when the user is typing partial strings like "10." that don't
+  // yet re-serialise back to the stored mg value.
+  useEffect(() => {
+    if (gStringToMgString(powderFillG) !== (metadata.target_fill_weight_mg ?? "")) {
+      setPowderFillG(mgStringToG(metadata.target_fill_weight_mg));
+    }
+    // powderFillG read inside the guard only — including it in the
+    // deps array would turn every keystroke into a reset.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [metadata.target_fill_weight_mg]);
 
   const pickerQuery = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
     includeArchived: false,
@@ -388,6 +466,7 @@ export function FormulationBuilder({
     setErrorMessage(null);
     try {
       const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
+      const parsedWater = Number.parseFloat(metadata.water_volume_ml);
       const updated = await updateMutation.mutateAsync({
         name: metadata.name,
         code: metadata.code,
@@ -400,6 +479,11 @@ export function FormulationBuilder({
         target_fill_weight_mg:
           Number.isFinite(parsedFill) && parsedFill > 0
             ? String(parsedFill)
+            : null,
+        powder_type: metadata.powder_type,
+        water_volume_ml:
+          Number.isFinite(parsedWater) && parsedWater >= 0
+            ? String(parsedWater)
             : null,
         directions_of_use: metadata.directions_of_use,
         suggested_dosage: metadata.suggested_dosage,
@@ -472,6 +556,23 @@ export function FormulationBuilder({
       }
     },
     [rollbackMutation, router, tErrors, tFormulations],
+  );
+
+  const handleToggleApproved = useCallback(
+    async (versionNumber: number) => {
+      setErrorMessage(null);
+      const alreadyApproved =
+        formulation.approved_version_number === versionNumber;
+      try {
+        const updated = await approveMutation.mutateAsync(
+          alreadyApproved ? null : versionNumber,
+        );
+        setFormulation(updated);
+      } catch (err) {
+        setErrorMessage(extractErrorMessage(err, tErrors));
+      }
+    },
+    [approveMutation, formulation.approved_version_number, tErrors],
   );
 
   // ---------------------------------------------------------------------
@@ -593,12 +694,6 @@ export function FormulationBuilder({
                 dosage_form: v as DosageForm,
                 capsule_size: v === "capsule" ? metadata.capsule_size : "",
                 tablet_size: v === "tablet" ? metadata.tablet_size : "",
-                // Powder is one-sachet-per-serving by convention. If
-                // the user had ``serving_size=2`` from a previous
-                // capsule/tablet state, carrying it over would halve
-                // every label claim in the line math. Snap to 1.
-                serving_size:
-                  v === "powder" ? 1 : metadata.serving_size,
                 // Seed the sachet mass the reference workbooks use
                 // (10g = 10000mg) when the user lands on powder with
                 // an empty field — matches Excel's silent default so
@@ -607,6 +702,13 @@ export function FormulationBuilder({
                   v === "powder" && !metadata.target_fill_weight_mg
                     ? POWDER_DEFAULT_FILL_MG
                     : metadata.target_fill_weight_mg,
+                // Same reasoning for the water-volume default —
+                // 500ml is the reference the flavour-system mg
+                // values are calibrated against.
+                water_volume_ml:
+                  v === "powder" && !metadata.water_volume_ml
+                    ? POWDER_DEFAULT_WATER_ML
+                    : metadata.water_volume_ml,
               })
             }
             disabled={!canWrite}
@@ -615,6 +717,31 @@ export function FormulationBuilder({
               label: tFormulations(`dosage_forms.${key}`),
             }))}
           />
+          {metadata.dosage_form === "powder" ? (
+            <SelectField
+              label={tFormulations("fields.powder_type")}
+              value={metadata.powder_type}
+              onChange={(v) =>
+                setMetadata({ ...metadata, powder_type: v as PowderType })
+              }
+              disabled={!canWrite}
+              options={POWDER_TYPES.map((key) => ({
+                value: key,
+                label: tFormulations(`powder_types.${key}`),
+              }))}
+            />
+          ) : null}
+          {metadata.dosage_form === "powder" ? (
+            <TextField
+              label={tFormulations("fields.water_volume_ml")}
+              value={metadata.water_volume_ml}
+              onChange={(v) =>
+                setMetadata({ ...metadata, water_volume_ml: v })
+              }
+              disabled={!canWrite}
+              hint={tFormulations("fields.water_volume_ml_hint")}
+            />
+          ) : null}
           {metadata.dosage_form === "capsule" ? (
             <SelectField
               label={tFormulations("fields.capsule_size")}
@@ -645,49 +772,60 @@ export function FormulationBuilder({
               ]}
             />
           ) : null}
-          {metadata.dosage_form === "powder" ||
-          metadata.dosage_form === "gummy" ? (
+          {/* Powder fill weight is edited in grams because scientists
+              think about scoop mass as "10g", not "10000mg". The
+              storage + math stays in mg — ``powderFillG`` is a UI
+              draft that converts to mg on every keystroke. */}
+          {metadata.dosage_form === "powder" ? (
             <TextField
-              label={tFormulations(
-                metadata.dosage_form === "powder"
-                  ? "fields.powder_fill_weight"
-                  : "fields.gummy_fill_weight",
-              )}
+              label={tFormulations("fields.powder_fill_weight")}
+              value={powderFillG}
+              onChange={(v) => {
+                setPowderFillG(v);
+                setMetadata({
+                  ...metadata,
+                  target_fill_weight_mg: gStringToMgString(v),
+                });
+              }}
+              disabled={!canWrite}
+              hint={tFormulations("fields.powder_fill_weight_hint")}
+            />
+          ) : metadata.dosage_form === "gummy" ? (
+            // Per-gummy mass stays in mg — values live in the
+            // 500-2500mg band where mg reads more naturally than
+            // "0.5g".
+            <TextField
+              label={tFormulations("fields.gummy_fill_weight")}
               value={metadata.target_fill_weight_mg}
               onChange={(v) =>
                 setMetadata({ ...metadata, target_fill_weight_mg: v })
               }
               disabled={!canWrite}
-              hint={tFormulations(
-                metadata.dosage_form === "powder"
-                  ? "fields.powder_fill_weight_hint"
-                  : "fields.gummy_fill_weight_hint",
-              )}
+              hint={tFormulations("fields.gummy_fill_weight_hint")}
             />
           ) : null}
-          {/* "Units per serving" is meaningless for powder sachets —
-              every sachet is one serving by convention. Hiding the
-              input avoids inviting errors (scientists typing 1 when
-              they mean "1 sachet + 250ml water"). The backend still
-              defaults to ``1`` when the form is powder. Per-form
-              labels stay honest: "Capsules per serving" instead of
-              a generic "Units". */}
-          {metadata.dosage_form !== "powder" ? (
-            <NumberField
-              label={tFormulations(
-                metadata.dosage_form === "capsule"
-                  ? "fields.serving_size_capsule"
-                  : metadata.dosage_form === "tablet"
-                    ? "fields.serving_size_tablet"
-                    : metadata.dosage_form === "gummy"
-                      ? "fields.serving_size_gummy"
+          {/* Serving-size units vary by form: capsules, tablets,
+              gummies, and powders (scoops) each get their own label
+              so the input reads naturally in the scientist's mental
+              model. The line math divides ``label_claim_mg`` by this
+              value so ``mg / scoop`` scales correctly when a powder
+              serving is 2+ scoops. */}
+          <NumberField
+            label={tFormulations(
+              metadata.dosage_form === "capsule"
+                ? "fields.serving_size_capsule"
+                : metadata.dosage_form === "tablet"
+                  ? "fields.serving_size_tablet"
+                  : metadata.dosage_form === "gummy"
+                    ? "fields.serving_size_gummy"
+                    : metadata.dosage_form === "powder"
+                      ? "fields.serving_size_powder"
                       : "fields.serving_size",
-              )}
-              value={metadata.serving_size}
-              onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
-              disabled={!canWrite}
-            />
-          ) : null}
+            )}
+            value={metadata.serving_size}
+            onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
+            disabled={!canWrite}
+          />
           <NumberField
             label={tFormulations("fields.servings_per_pack")}
             value={metadata.servings_per_pack}
@@ -999,6 +1137,8 @@ export function FormulationBuilder({
 
           <TotalsBlock
             totals={liveTotals}
+            servingSize={metadata.serving_size}
+            dosageForm={metadata.dosage_form}
             numberFormatter={numberFormatter}
             tFormulations={tFormulations}
           />
@@ -1040,36 +1180,64 @@ export function FormulationBuilder({
           </p>
         ) : (
           <ul className="mt-4 flex flex-col gap-2">
-            {versions.map((v) => (
-              <li
-                key={v.id}
-                className="flex items-center justify-between rounded-lg px-3 py-2 ring-1 ring-inset ring-ink-200"
-              >
-                <div>
-                  <span className="font-semibold">
-                    {tFormulations("versions.version_prefix")}
-                    {v.version_number}
-                  </span>
-                  {v.label ? (
-                    <span className="ml-3 text-xs text-ink-600">
-                      {v.label}
+            {versions.map((v) => {
+              const isApproved =
+                formulation.approved_version_number === v.version_number;
+              return (
+                <li
+                  key={v.id}
+                  className={`flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2 ring-1 ring-inset ${
+                    isApproved
+                      ? "bg-success/5 ring-success/30"
+                      : "ring-ink-200"
+                  }`}
+                >
+                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    <span className="font-semibold">
+                      {tFormulations("versions.version_prefix")}
+                      {v.version_number}
                     </span>
+                    {isApproved ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-success ring-1 ring-inset ring-success/30">
+                        <ShieldCheck className="h-3 w-3" />
+                        {tFormulations("versions.approved_badge")}
+                      </span>
+                    ) : null}
+                    {v.label ? (
+                      <span className="text-xs text-ink-600">{v.label}</span>
+                    ) : null}
+                    <span className="text-xs text-ink-500">
+                      {dateFormatter.format(new Date(v.created_at))}
+                    </span>
+                  </div>
+                  {canWrite ? (
+                    <div className="flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleApproved(v.version_number)}
+                        disabled={approveMutation.isPending}
+                        className={`text-xs font-medium uppercase tracking-wide hover:text-ink-1000 disabled:cursor-not-allowed disabled:opacity-50 ${
+                          isApproved ? "text-success" : "text-ink-500"
+                        }`}
+                      >
+                        {tFormulations(
+                          isApproved
+                            ? "versions.unapprove"
+                            : "versions.approve",
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRollback(v.version_number)}
+                        className="text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-1000"
+                      >
+                        {tFormulations("versions.rollback")}
+                      </button>
+                    </div>
                   ) : null}
-                  <span className="ml-3 text-xs text-ink-500">
-                    {dateFormatter.format(new Date(v.created_at))}
-                  </span>
-                </div>
-                {canWrite ? (
-                  <button
-                    type="button"
-                    onClick={() => handleRollback(v.version_number)}
-                    className="text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-1000"
-                  >
-                    {tFormulations("versions.rollback")}
-                  </button>
-                ) : null}
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
       </section>
@@ -1332,10 +1500,14 @@ function CategoryBadge({
 
 function TotalsBlock({
   totals,
+  servingSize,
+  dosageForm,
   numberFormatter,
   tFormulations,
 }: {
   totals: FormulationTotals;
+  servingSize: number;
+  dosageForm: DosageForm;
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
@@ -1343,8 +1515,41 @@ function TotalsBlock({
     value === null || value === undefined
       ? "—"
       : numberFormatter.format(value);
+  // Gram formatter — the builder's primary numberFormatter keeps 4
+  // fraction digits so mg rounding stays exact. Grams read better
+  // with 2 fraction digits (``10.00g`` not ``10.0000g``).
+  const formatGrams = (mg: number | null | undefined) =>
+    mg === null || mg === undefined
+      ? "—"
+      : (mg / 1000).toLocaleString(undefined, {
+          minimumFractionDigits: 2,
+          maximumFractionDigits: 3,
+        });
 
   const excipients = totals.excipients;
+  const servings = Math.max(1, servingSize);
+  const perServingMg =
+    totals.totalWeightMg !== null ? totals.totalWeightMg * servings : null;
+  // Leftover = max - total. Positive ⇒ headroom (can add more);
+  // negative ⇒ overshoot (won't fit). Only meaningful when there's
+  // both a total and a ceiling to measure against.
+  const leftoverMg =
+    totals.totalWeightMg !== null && totals.maxWeightMg !== null
+      ? totals.maxWeightMg - totals.totalWeightMg
+      : null;
+  // Per-unit vocabulary: scientists think "per scoop" for powder,
+  // "per capsule" for capsule, etc. Keeps the per-serving math legible
+  // at a glance — "10g/scoop × 2 scoops = 20g/serving".
+  const perUnitKey: "per_scoop" | "per_capsule" | "per_tablet" | "per_gummy" | "per_unit" =
+    dosageForm === "powder"
+      ? "per_scoop"
+      : dosageForm === "capsule"
+        ? "per_capsule"
+        : dosageForm === "tablet"
+          ? "per_tablet"
+          : dosageForm === "gummy"
+            ? "per_gummy"
+            : "per_unit";
 
   return (
     <div className="mt-4 flex flex-col gap-4">
@@ -1352,9 +1557,21 @@ function TotalsBlock({
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("builder.excipients.total_active")}
         </p>
-        <p className="mt-1 text-xl font-semibold tracking-tight text-ink-1000">
-          {format(totals.totalActiveMg)}{" "}
-          <span className="text-sm text-ink-600">mg</span>
+        <div className="mt-1">
+          <CopyableValue
+            mg={totals.totalActiveMg}
+            display={
+              <span className="text-xl font-semibold tracking-tight text-ink-1000">
+                {format(totals.totalActiveMg)}{" "}
+                <span className="text-sm text-ink-600">mg</span>
+              </span>
+            }
+            copyLabel={tFormulations("builder.copy.tooltip")}
+            copiedLabel={tFormulations("builder.copy.copied")}
+          />
+        </div>
+        <p className="mt-0.5 text-xs text-ink-500">
+          {formatGrams(totals.totalActiveMg)} g
         </p>
       </div>
 
@@ -1368,16 +1585,27 @@ function TotalsBlock({
               // Flexible list used by powder + gummy. ``is_remainder``
               // rows (carrier / gummy base) get a subtle orange accent
               // so scientists can see which value is "whatever's left"
-              // at a glance.
+              // at a glance. For powders the concentration (mg/ml of
+              // water) is shown inline so the scientist can see the
+              // formula behind the computed mg — changing water volume
+              // rescales every row with this rate.
               excipients.rows.map((row) => (
                 <li
                   key={row.slug}
-                  className={`flex justify-between ${
+                  className={`flex justify-between gap-2 ${
                     row.isRemainder ? "font-medium text-orange-700" : ""
                   }`}
                 >
-                  <span>{row.label}</span>
-                  <span>{format(row.mg)} mg</span>
+                  <span className="flex min-w-0 items-baseline gap-1.5">
+                    <span>{row.label}</span>
+                    {row.concentrationMgPerMl !== null &&
+                    row.concentrationMgPerMl !== undefined ? (
+                      <span className="text-[10px] text-ink-500">
+                        ({row.concentrationMgPerMl} mg/ml)
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="tabular-nums">{format(row.mg)} mg</span>
                 </li>
               ))
             ) : (
@@ -1410,14 +1638,102 @@ function TotalsBlock({
 
       {totals.totalWeightMg !== null ? (
         <div className="border-t border-ink-100 pt-4 text-xs text-ink-700">
-          <div className="flex justify-between">
-            <span>{tFormulations("builder.excipients.total_weight")}</span>
-            <span>{format(totals.totalWeightMg)} mg</span>
+          <div className="flex items-baseline justify-between">
+            <span>
+              {tFormulations(
+                `builder.excipients.total_weight_${perUnitKey}` as "builder.excipients.total_weight_per_scoop",
+              )}
+            </span>
+            <CopyableValue
+              mg={totals.totalWeightMg}
+              display={
+                <span className="tabular-nums">
+                  {format(totals.totalWeightMg)} mg
+                  <span className="ml-1 text-ink-500">
+                    ({formatGrams(totals.totalWeightMg)} g)
+                  </span>
+                </span>
+              }
+              copyLabel={tFormulations("builder.copy.tooltip")}
+              copiedLabel={tFormulations("builder.copy.copied")}
+            />
           </div>
           {totals.maxWeightMg !== null ? (
-            <div className="flex justify-between">
+            <div className="mt-1 flex items-baseline justify-between">
               <span>{tFormulations("builder.excipients.max_weight")}</span>
-              <span>{format(totals.maxWeightMg)} mg</span>
+              <CopyableValue
+                mg={totals.maxWeightMg}
+                display={
+                  <span className="tabular-nums">
+                    {format(totals.maxWeightMg)} mg
+                    <span className="ml-1 text-ink-500">
+                      ({formatGrams(totals.maxWeightMg)} g)
+                    </span>
+                  </span>
+                }
+                copyLabel={tFormulations("builder.copy.tooltip")}
+                copiedLabel={tFormulations("builder.copy.copied")}
+              />
+            </div>
+          ) : null}
+          {/* Leftover / overshoot — guides the scientist toward an
+              optimal fill. Negative ``leftover`` is shown as
+              overshoot so they know the formula won't press. The mg
+              value is copied raw so the scientist can paste it
+              straight into a new ingredient line or into Excel. */}
+          {leftoverMg !== null ? (
+            <div
+              className={`mt-1 flex items-baseline justify-between ${
+                leftoverMg < 0
+                  ? "font-medium text-danger"
+                  : leftoverMg === 0
+                    ? "text-success"
+                    : "text-orange-700"
+              }`}
+            >
+              <span>
+                {leftoverMg < 0
+                  ? tFormulations("builder.excipients.overshoot")
+                  : tFormulations("builder.excipients.leftover")}
+              </span>
+              <CopyableValue
+                mg={Math.abs(leftoverMg)}
+                display={
+                  <span className="tabular-nums">
+                    {format(Math.abs(leftoverMg))} mg
+                    <span className="ml-1 opacity-70">
+                      ({formatGrams(Math.abs(leftoverMg))} g)
+                    </span>
+                  </span>
+                }
+                copyLabel={tFormulations("builder.copy.tooltip")}
+                copiedLabel={tFormulations("builder.copy.copied")}
+              />
+            </div>
+          ) : null}
+          {/* Per-serving roll-up. For powder that's "2 scoops × X mg
+              per scoop". Displayed in grams because at the serving
+              level scientists think in g, not mg. */}
+          {perServingMg !== null && servings > 1 ? (
+            <div className="mt-2 flex items-baseline justify-between border-t border-ink-100 pt-2 font-medium text-ink-1000">
+              <span>
+                {tFormulations("builder.excipients.per_serving", {
+                  count: servings,
+                })}
+              </span>
+              <CopyableValue
+                mg={perServingMg}
+                display={
+                  <span className="tabular-nums">
+                    {formatGrams(perServingMg)} g
+                    <span className="ml-1 text-ink-500">
+                      ({format(perServingMg)} mg)
+                    </span>
+                  </span>
+                }
+                copyLabel={tFormulations("builder.copy.tooltip")}
+                copiedLabel={tFormulations("builder.copy.copied")}
+              />
             </div>
           ) : null}
           {totals.sizeLabel ? (
@@ -1469,6 +1785,72 @@ function TotalsBlock({
 // ---------------------------------------------------------------------------
 // Tiny field primitives — enough for the builder, not a library
 // ---------------------------------------------------------------------------
+
+
+/**
+ * Click-to-copy wrapper for a numeric value in the Totals panel.
+ *
+ * The scientist frequently copies a computed number (headroom,
+ * total weight, per-serving) and pastes it into Excel, a new
+ * ingredient line, or a message. Rendering each number as a plain
+ * span forces them to manually select the digits between the unit
+ * suffix and the grams annotation, which is fiddly on the first
+ * try. This button wraps the visible display and copies the *raw*
+ * mg number — no ``mg`` suffix, no grouping — so a paste lands as
+ * a clean numeric value in any downstream tool.
+ *
+ * Feedback flashes for 1.2s after a successful copy; on failure the
+ * button silently swallows the error because the browser already
+ * surfaces clipboard permission issues in its own UI.
+ */
+function CopyableValue({
+  mg,
+  display,
+  copyLabel,
+  copiedLabel,
+}: {
+  mg: number;
+  display: ReactNode;
+  copyLabel: string;
+  copiedLabel: string;
+}) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = useCallback(async () => {
+    try {
+      // Plain, un-grouped number string. ``513.2285`` pastes as one
+      // cell, never broken into pieces by thousands separators.
+      const payload = Number.isFinite(mg) ? String(mg) : "";
+      if (!payload) return;
+      await navigator.clipboard.writeText(payload);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard permission errors surface in the browser's own UI */
+    }
+  }, [mg]);
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      title={copied ? copiedLabel : copyLabel}
+      aria-label={copied ? copiedLabel : copyLabel}
+      className="group inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 -mx-1.5 -my-0.5 text-left transition-colors hover:bg-ink-100/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+    >
+      {display}
+      {copied ? (
+        <Check className="h-3 w-3 shrink-0 text-success" aria-hidden />
+      ) : (
+        <Copy
+          className="h-3 w-3 shrink-0 text-ink-400 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+          aria-hidden
+        />
+      )}
+    </button>
+  );
+}
+
 
 
 function TextField({

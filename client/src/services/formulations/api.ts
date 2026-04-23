@@ -154,6 +154,21 @@ export async function rollbackFormulation(
   return data;
 }
 
+/** Mark one version as the current approved recipe, or pass
+ *  ``version_number: null`` to clear the pointer. Requires the
+ *  ``formulations.approve`` capability server-side. */
+export async function setApprovedVersion(
+  orgId: string,
+  formulationId: string,
+  versionNumber: number | null,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.post<FormulationDto>(
+    formulationsEndpoints.approvedVersion(orgId, formulationId),
+    { version_number: versionNumber },
+  );
+  return data;
+}
+
 export async function fetchProjectOverview(
   orgId: string,
   formulationId: string,

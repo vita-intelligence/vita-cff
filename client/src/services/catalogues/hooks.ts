@@ -224,10 +224,12 @@ export function useItem(
   orgId: string,
   slug: string,
   itemId: string,
+  options: { readonly initialData?: ItemDto } = {},
 ): UseQueryResult<ItemDto, ApiError> {
   return useQuery<ItemDto, ApiError>({
     queryKey: cataloguesQueryKeys.itemDetail(orgId, slug, itemId),
     queryFn: () => fetchItem(orgId, slug, itemId),
+    initialData: options.initialData,
   });
 }
 

@@ -1,12 +1,13 @@
 "use client";
 
-import { AlertDialog, Button } from "@heroui/react";
+import { AlertDialog, Button, Modal } from "@heroui/react";
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronDown,
   FlaskConical,
   MoreVertical,
+  Pencil,
   PlayCircle,
   Plus,
   Trash2,
@@ -19,11 +20,14 @@ import {
   useMemo,
   useRef,
   useState,
+  type FormEvent,
   type ReactNode,
 } from "react";
 
 import { useRouter } from "@/i18n/navigation";
+import { ApiError } from "@/lib/api";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
+import { translateCode } from "@/lib/errors/translate";
 import { useMemberships } from "@/services/members";
 import type { OrganizationDto } from "@/services/organizations/types";
 import {
@@ -33,6 +37,11 @@ import {
   type ProjectStatus,
   type SalesPersonDto,
 } from "@/services/formulations";
+
+
+interface ApiFieldErrors {
+  fieldErrors?: Record<string, unknown>;
+}
 
 
 //: Ordered so the dropdown reads top-to-bottom along the product
@@ -59,11 +68,13 @@ const PROJECT_STATUSES: readonly ProjectStatus[] = [
 export function ProjectHeaderActions({
   organization,
   formulationId,
+  formulationCode,
   projectStatus,
   salesPerson,
 }: {
   organization: OrganizationDto;
   formulationId: string;
+  formulationCode: string;
   projectStatus: ProjectStatus;
   salesPerson: SalesPersonDto | null;
 }) {
@@ -93,10 +104,13 @@ export function ProjectHeaderActions({
         canEdit={canEdit}
         tProject={tProject}
       />
-      {canDelete ? (
+      {canEdit || canDelete ? (
         <MoreActionsMenu
           orgId={organization.id}
           formulationId={formulationId}
+          formulationCode={formulationCode}
+          canEdit={canEdit}
+          canDelete={canDelete}
           tProject={tProject}
         />
       ) : null}
@@ -399,16 +413,27 @@ function SalesPersonMenu({
 function MoreActionsMenu({
   orgId,
   formulationId,
+  formulationCode,
+  canEdit,
+  canDelete,
   tProject,
 }: {
   orgId: string;
   formulationId: string;
+  formulationCode: string;
+  canEdit: boolean;
+  canDelete: boolean;
   tProject: ReturnType<typeof useTranslations<"project_overview">>;
 }) {
   const router = useRouter();
 
   const [open, setOpen] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  //: Edit-code modal is lazy-mounted on open so its internal state
+  //: (value, error) resets cleanly between invocations — closing the
+  //: modal unmounts it, so the next "Edit code" click starts from
+  //: the current ``formulationCode`` rather than a stale draft.
+  const [isEditCodeOpen, setIsEditCodeOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   useClickOutside(containerRef, () => setOpen(false));
 
@@ -444,21 +469,47 @@ function MoreActionsMenu({
             role="menu"
             className="absolute right-0 z-20 mt-2 flex w-64 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
           >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                setOpen(false);
-                setIsDeleteOpen(true);
-              }}
-              className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger transition-colors hover:bg-danger/10"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              {tProject("actions.delete_project")}
-            </button>
+            {canEdit ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  setIsEditCodeOpen(true);
+                }}
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-ink-800 transition-colors hover:bg-ink-50"
+              >
+                <Pencil className="h-3.5 w-3.5 text-ink-500" />
+                {tProject("actions.edit_code")}
+              </button>
+            ) : null}
+            {canDelete ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  setIsDeleteOpen(true);
+                }}
+                className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm text-danger transition-colors hover:bg-danger/10"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {tProject("actions.delete_project")}
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
+
+      {isEditCodeOpen ? (
+        <EditCodeDialog
+          orgId={orgId}
+          formulationId={formulationId}
+          initialCode={formulationCode}
+          onClose={() => setIsEditCodeOpen(false)}
+          tProject={tProject}
+        />
+      ) : null}
 
       <AlertDialog
         isOpen={isDeleteOpen}
@@ -516,6 +567,130 @@ function MoreActionsMenu({
         </AlertDialog.Backdrop>
       </AlertDialog>
     </>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Edit-code dialog (lives under the overflow menu)
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Minimal single-field modal for editing the project's ``code``.
+ * Reuses ``useUpdateFormulation`` so the shared invalidation path
+ * (detail, list, totals, overview) fires on success. Surfaces
+ * ``formulation_code_conflict`` / ``formulation_code_required``
+ * against the input so the scientist can fix the clash in place
+ * without dropping out of the dialog.
+ */
+function EditCodeDialog({
+  orgId,
+  formulationId,
+  initialCode,
+  onClose,
+  tProject,
+}: {
+  orgId: string;
+  formulationId: string;
+  initialCode: string;
+  onClose: () => void;
+  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+}) {
+  const tErrors = useTranslations("errors");
+  const tForms = useTranslations("formulations");
+
+  const [value, setValue] = useState(initialCode);
+  const [error, setError] = useState<string | null>(null);
+
+  const update = useUpdateFormulation(orgId, formulationId);
+
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setError(null);
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setError(translateCode(tErrors, "formulation_code_required"));
+      return;
+    }
+    if (trimmed === initialCode) {
+      onClose();
+      return;
+    }
+    try {
+      await update.mutateAsync({ code: trimmed });
+      onClose();
+    } catch (err) {
+      const fieldErrors = (err as ApiFieldErrors).fieldErrors ?? {};
+      const firstKey = Object.keys(fieldErrors)[0];
+      const firstCode =
+        firstKey && Array.isArray(fieldErrors[firstKey])
+          ? String((fieldErrors[firstKey] as string[])[0] ?? "")
+          : "";
+      setError(
+        firstCode ? translateCode(tErrors, firstCode) : tErrors("generic"),
+      );
+    }
+  };
+
+  return (
+    <Modal isOpen onOpenChange={(open) => (open ? null : onClose())}>
+      <Modal.Backdrop>
+        <Modal.Container size="sm">
+          <Modal.Dialog className="flex max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
+              <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
+                <Modal.Heading className="text-base font-semibold text-ink-1000">
+                  {tProject("header.edit_code")}
+                </Modal.Heading>
+              </Modal.Header>
+              <Modal.Body className="flex flex-col gap-4 px-6 py-6">
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-ink-700">
+                    {tForms("fields.code")}
+                  </span>
+                  <input
+                    autoFocus
+                    required
+                    value={value}
+                    onChange={(e) => setValue(e.target.value)}
+                    placeholder={tForms("placeholders.code")}
+                    maxLength={64}
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                  />
+                </label>
+                {error ? (
+                  <p
+                    role="alert"
+                    className="rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20"
+                  >
+                    {error}
+                  </p>
+                ) : null}
+              </Modal.Body>
+              <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={onClose}
+                  isDisabled={update.isPending}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                >
+                  {tProject("header.edit_code_cancel")}
+                </Button>
+                <Button
+                  type="submit"
+                  isDisabled={update.isPending || !value.trim()}
+                  className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                >
+                  {tProject("header.edit_code_save")}
+                </Button>
+              </Modal.Footer>
+            </form>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }
 

@@ -17,6 +17,7 @@ export {
   useUpdateTrialBatch,
 } from "./hooks";
 export type {
+  BatchSizeMode,
   BOMEntry,
   BOMResult,
   CreateTrialBatchRequestDto,

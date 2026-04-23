@@ -22,15 +22,18 @@ from apps.formulations.api.serializers import (
     FormulationWriteSerializer,
     ReplaceLinesSerializer,
     RollbackVersionSerializer,
+    SetApprovedVersionSerializer,
     SaveVersionSerializer,
 )
 from apps.formulations.overview import compute_project_overview
 from apps.formulations.services import (
     FormulationCodeConflict,
+    FormulationCodeRequired,
     FormulationNotFound,
     FormulationVersionNotFound,
     InvalidCapsuleSize,
     InvalidDosageForm,
+    InvalidPowderType,
     InvalidTabletSize,
     RawMaterialNotInOrg,
     SalesPersonNotMember,
@@ -43,6 +46,7 @@ from apps.formulations.services import (
     replace_lines,
     rollback_to_version,
     save_version,
+    set_approved_version,
     update_formulation,
 )
 from apps.organizations.modules import FormulationsCapability
@@ -59,6 +63,18 @@ def _totals_payload(totals) -> dict[str, Any]:
             "silica_mg": _as_str(totals.excipients.silica_mg),
             "mcc_mg": _as_str(totals.excipients.mcc_mg),
             "dcp_mg": _as_str(totals.excipients.dcp_mg),
+            "rows": [
+                {
+                    "slug": row.slug,
+                    "label": row.label,
+                    "mg": _as_str(row.mg),
+                    "is_remainder": row.is_remainder,
+                    "concentration_mg_per_ml": _as_str(
+                        row.concentration_mg_per_ml
+                    ),
+                }
+                for row in totals.excipients.rows
+            ],
         }
 
     return {
@@ -111,7 +127,7 @@ class FormulationListCreateView(APIView):
                 organization=self.organization,
                 actor=request.user,
                 name=data["name"],
-                code=data.get("code", ""),
+                code=data["code"],
                 description=data.get("description", ""),
                 dosage_form=data.get("dosage_form", "capsule"),
                 capsule_size=data.get("capsule_size", ""),
@@ -119,10 +135,17 @@ class FormulationListCreateView(APIView):
                 serving_size=data.get("serving_size", 1),
                 servings_per_pack=data.get("servings_per_pack", 60),
                 target_fill_weight_mg=data.get("target_fill_weight_mg"),
+                powder_type=data.get("powder_type", "standard"),
+                water_volume_ml=data.get("water_volume_ml"),
                 directions_of_use=data.get("directions_of_use", ""),
                 suggested_dosage=data.get("suggested_dosage", ""),
                 appearance=data.get("appearance", ""),
                 disintegration_spec=data.get("disintegration_spec", ""),
+            )
+        except FormulationCodeRequired:
+            return Response(
+                {"code": ["formulation_code_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except FormulationCodeConflict:
             return Response(
@@ -142,6 +165,11 @@ class FormulationListCreateView(APIView):
         except InvalidTabletSize:
             return Response(
                 {"tablet_size": ["invalid_tablet_size"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidPowderType:
+            return Response(
+                {"powder_type": ["invalid_powder_type"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -211,6 +239,11 @@ class FormulationDetailView(APIView):
         except InvalidTabletSize:
             return Response(
                 {"tablet_size": ["invalid_tablet_size"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidPowderType:
+            return Response(
+                {"powder_type": ["invalid_powder_type"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -463,6 +496,48 @@ class FormulationRollbackView(APIView):
         except RawMaterialNotInOrg:
             return Response(
                 {"lines": ["raw_material_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        formulation.refresh_from_db()
+        return Response(
+            FormulationReadSerializer(formulation).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class FormulationApprovedVersionView(APIView):
+    """``POST`` ``/.../formulations/<id>/approved-version/``.
+
+    Flips the formulation's pointer at "the current approved recipe".
+    ``version_number=null`` clears the pointer. Every version-picker
+    surface (trial batch modal, spec sheet creator, QC) reads this
+    field back out to badge the right row.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.APPROVE
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        serializer = SetApprovedVersionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        try:
+            set_approved_version(
+                formulation=formulation,
+                actor=request.user,
+                version_number=serializer.validated_data.get("version_number"),
+            )
+        except FormulationVersionNotFound:
+            return Response(
+                {"version_number": ["formulation_version_not_found"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         formulation.refresh_from_db()

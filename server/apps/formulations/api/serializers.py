@@ -12,7 +12,9 @@ from apps.formulations.models import (
     Formulation,
     FormulationLine,
     FormulationVersion,
+    PowderTypeChoices,
     ProjectStatus,
+    ProjectType,
 )
 
 
@@ -102,11 +104,15 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "serving_size",
             "servings_per_pack",
             "target_fill_weight_mg",
+            "powder_type",
+            "water_volume_ml",
             "directions_of_use",
             "suggested_dosage",
             "appearance",
             "disintegration_spec",
             "project_status",
+            "project_type",
+            "approved_version_number",
             "sales_person",
             "lines",
             "created_at",
@@ -141,9 +147,12 @@ class FormulationWriteSerializer(serializers.Serializer):
     that's how the scientist's spreadsheet workflow splits them too.
     """
 
-    code = serializers.CharField(
-        max_length=64, required=False, allow_blank=True
-    )
+    # Mandatory on create — the project code is the scientist's own
+    # reference and the system no longer auto-generates it. On update
+    # the serializer is instantiated with ``partial=True`` so omitting
+    # ``code`` is still fine when only other fields are changing; a
+    # caller who *does* submit it must still provide a non-blank value.
+    code = serializers.CharField(max_length=64)
     name = serializers.CharField(max_length=200)
     description = serializers.CharField(
         required=False, allow_blank=True, default=""
@@ -165,6 +174,16 @@ class FormulationWriteSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    powder_type = serializers.ChoiceField(
+        choices=PowderTypeChoices.choices, required=False
+    )
+    water_volume_ml = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=0,
+    )
     directions_of_use = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
@@ -180,6 +199,9 @@ class FormulationWriteSerializer(serializers.Serializer):
     project_status = serializers.ChoiceField(
         choices=ProjectStatus.choices, required=False
     )
+    project_type = serializers.ChoiceField(
+        choices=ProjectType.choices, required=False
+    )
 
     def validate_name(self, value: str) -> str:
         trimmed = value.strip()
@@ -188,7 +210,10 @@ class FormulationWriteSerializer(serializers.Serializer):
         return trimmed
 
     def validate_code(self, value: str) -> str:
-        return (value or "").strip()
+        trimmed = (value or "").strip()
+        if not trimmed:
+            raise serializers.ValidationError(_code("blank"))
+        return trimmed
 
 
 class FormulationLineWriteSerializer(serializers.Serializer):
@@ -230,3 +255,17 @@ class SaveVersionSerializer(serializers.Serializer):
 
 class RollbackVersionSerializer(serializers.Serializer):
     version_number = serializers.IntegerField(min_value=1)
+
+
+class SetApprovedVersionSerializer(serializers.Serializer):
+    """``POST`` ``/.../formulations/<id>/approved-version/``.
+
+    ``version_number=null`` clears the pointer. Any positive integer
+    has to correspond to an existing version of *this* formulation —
+    the service layer enforces that cross-check, the serializer only
+    validates the shape.
+    """
+
+    version_number = serializers.IntegerField(
+        min_value=1, required=False, allow_null=True
+    )

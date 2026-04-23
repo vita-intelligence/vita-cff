@@ -1,0 +1,40 @@
+{
+  "title": "Customers",
+  "subtitle": "Your client address-book. Add customers once and reuse them across proposals.",
+  "search_placeholder": "Search by name, company, email…",
+  "loading": "Loading customers…",
+  "empty": "No customers yet. Add one to stop re-typing details on every proposal.",
+  "empty_search": "No matches. Try a different search term.",
+  "add": "Add customer",
+  "columns": {
+    "company": "Company",
+    "name": "Contact",
+    "email": "Email",
+    "phone": "Phone"
+  },
+  "actions": {
+    "edit": "Edit",
+    "delete": "Delete",
+    "delete_confirm": "Delete this customer? Linked proposals keep their snapshot but lose the address-book link.",
+    "cancel": "Cancel",
+    "save": "Save"
+  },
+  "form": {
+    "title_create": "New customer",
+    "title_edit": "Edit customer",
+    "name": "Contact name",
+    "company": "Company",
+    "email": "Email",
+    "phone": "Phone",
+    "invoice_address": "Invoice address",
+    "delivery_address": "Delivery address",
+    "notes": "Notes (internal only)"
+  },
+  "picker": {
+    "label": "Customer",
+    "empty_results": "No customer matches. Create a new one?",
+    "create_new": "+ Create new customer",
+    "placeholder": "Search existing customers…",
+    "clear": "Clear"
+  }
+}

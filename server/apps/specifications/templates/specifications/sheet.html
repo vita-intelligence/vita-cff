@@ -171,10 +171,38 @@
           <tr><td class="label">Suggested Dosage:</td><td class="value">{{ formulation.suggested_dosage|default:"—" }}</td></tr>
           <tr><td class="label">Dosage Form:</td><td class="value">{{ formulation.dosage_form|title|default:"—" }}</td></tr>
           <tr><td class="label">Appearance:</td><td class="value">{{ formulation.appearance|default:"TBC" }}</td></tr>
-          <tr><td class="label">Filling Weight/Volume (mg):</td><td class="value">{{ totals.total_weight_mg|default:"—" }}</td></tr>
-          <tr><td class="label">Total Weight (mg):</td><td class="value">{{ total_weight_display }}</td></tr>
+          {% if formulation.dosage_form == "powder" %}
+            <tr><td class="label">Filling Weight per Scoop (mg):</td><td class="value">{{ totals.total_weight_mg|default:"—" }}</td></tr>
+            {% if totals.powder_per_serving_mg %}
+              <tr><td class="label">Weight per Serving (mg):</td><td class="value">{{ totals.powder_per_serving_mg }}</td></tr>
+            {% endif %}
+            {% if totals.powder_pack_total_mg %}
+              <tr><td class="label">Total Pack Weight (mg):</td><td class="value">{{ totals.powder_pack_total_mg }}</td></tr>
+            {% endif %}
+          {% else %}
+            <tr><td class="label">Filling Weight/Volume (mg):</td><td class="value">{{ totals.total_weight_mg|default:"—" }}</td></tr>
+            <tr><td class="label">Total Weight (mg):</td><td class="value">{{ total_weight_display }}</td></tr>
+          {% endif %}
           <tr><td class="label">Weight Uniformity:</td><td class="value">{{ weight_uniformity|default:"Not applicable" }}</td></tr>
           <tr><td class="label">Disintegration:</td><td class="value">{{ formulation.disintegration_spec|default:"Rapid disintegration (instantised)" }}</td></tr>
+          {# Shelf life / storage / food contact live on the sheet (not the
+             formulation) because they're client-negotiable — a product
+             can be quoted with a 24-month shelf at ambient for one
+             customer and 18-month chilled for another. They used to sit
+             under Packaging because the Excel workbook grouped them
+             that way, but scientists kept asking "where's shelf life?"
+             so we pulled them up here where they belong. #}
+          <tr><td class="label">Shelf Life:</td><td class="value">{{ sheet.shelf_life|default:"—" }}</td></tr>
+          <tr><td class="label">Storage Conditions:</td><td class="value">{{ sheet.storage_conditions|default:"—" }}</td></tr>
+          <tr><td class="label">Food Contact Status:</td><td class="value">{{ sheet.food_contact_status|default:"—" }}</td></tr>
+          {# Unit Quantity = servings per pack. Authoritative on the
+             formulation snapshot (scientists set it in the builder); we
+             fall back to a legacy ``sheet.unit_quantity`` override for
+             sheets created before the modal cleanup, and hide the row
+             entirely when neither is populated. #}
+          {% if formulation.servings_per_pack or sheet.unit_quantity %}
+            <tr><td class="label">Unit Quantity:</td><td class="value">{{ sheet.unit_quantity|default:formulation.servings_per_pack }}</td></tr>
+          {% endif %}
         </table>
 
       {% elif slug == "packaging_specification" %}
@@ -184,10 +212,6 @@
           <tr><td class="label">Bottle/Pouch/Tub:</td><td class="value">{{ packaging.bottle_pouch_tub|default:"TBD" }}</td></tr>
           <tr><td class="label">Label Size:</td><td class="value">{{ packaging.label_size|default:"TBD" }}</td></tr>
           <tr><td class="label">Antitemper:</td><td class="value">{{ packaging.antitemper|default:"TBD" }}</td></tr>
-          {% if packaging.unit_quantity %}<tr><td class="label">Unit Quantity:</td><td class="value">{{ packaging.unit_quantity }}</td></tr>{% endif %}
-          {% if packaging.food_contact_status %}<tr><td class="label">Food Contact Status:</td><td class="value">{{ packaging.food_contact_status }}</td></tr>{% endif %}
-          {% if packaging.shelf_life %}<tr><td class="label">Shelf Life:</td><td class="value">{{ packaging.shelf_life }}</td></tr>{% endif %}
-          {% if packaging.storage_conditions %}<tr><td class="label">Storage Condition on Pack:</td><td class="value">{{ packaging.storage_conditions }}</td></tr>{% endif %}
         </table>
 
       {% elif slug == "compliance" %}
@@ -214,6 +238,17 @@
         </table>
 
       {% elif slug == "signatures" %}
+        {# Free-form cover copy the scientist types into "Edit
+           details". Printed just above the signature block so the
+           customer reads any bespoke caveat (lead times, allergen
+           substitutions, custom testing terms) right before they
+           sign. CSS ``white-space: pre-wrap`` preserves hand-typed
+           paragraph breaks without requiring rich text. #}
+        {% if sheet.cover_notes %}
+          <div class="cover-notes" style="margin: 4mm 0 6mm; white-space: pre-wrap; font-size: 10pt; line-height: 1.5;">
+            {{ sheet.cover_notes }}
+          </div>
+        {% endif %}
         <div class="signatures">
           <h2 class="section-title">Signatures</h2>
           <div class="sign-row">

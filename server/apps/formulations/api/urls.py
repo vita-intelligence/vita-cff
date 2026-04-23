@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.formulations.api.views import (
+    FormulationApprovedVersionView,
     FormulationComputeView,
     FormulationDetailView,
     FormulationLinesView,
@@ -55,5 +56,10 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",
         FormulationSalesPersonView.as_view(),
         name="formulation-sales-person",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/approved-version/",
+        FormulationApprovedVersionView.as_view(),
+        name="formulation-approved-version",
     ),
 ]

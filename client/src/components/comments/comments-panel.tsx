@@ -11,7 +11,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { MessageSquare, Pin } from "lucide-react";
+import { Eye, EyeOff, MessageSquare, Pin } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { buttonClass } from "@/components/ui/button-styles";
@@ -45,6 +45,13 @@ interface Props {
   readonly canModerate: boolean;
   readonly currentUserId: string | null;
   readonly initialFirstPage?: PaginatedCommentsDto | null;
+  /** Who is expected to see this thread. ``"internal"`` means
+   *  team-only (formulation workspaces, QC), ``"client"`` means the
+   *  comments surface through the kiosk once the sheet is shared
+   *  with the customer. The panel renders a prominent banner so
+   *  scientists never accidentally post a rant onto a client's
+   *  kiosk view. Default: inferred from ``entityKind``. */
+  readonly visibility?: "internal" | "client";
 }
 
 
@@ -57,8 +64,16 @@ export function CommentsPanel({
   canModerate,
   currentUserId,
   initialFirstPage = null,
+  visibility,
 }: Props) {
   const tComments = useTranslations("comments");
+  // Client kiosks render comments from spec sheets only; everything
+  // else (formulations, future QC surfaces) is internal-only. If the
+  // caller passes ``visibility`` explicitly that wins — useful for
+  // forcing internal on a sheet still in draft.
+  const effectiveVisibility: "internal" | "client" =
+    visibility ??
+    (entityKind === "specification" ? "client" : "internal");
   const [includeResolved, setIncludeResolved] = useState(true);
 
   const query = useInfiniteComments({
@@ -177,6 +192,34 @@ export function CommentsPanel({
           </label>
         </div>
       </header>
+
+      {/* Visibility banner — scientists need to know at a glance
+          whether the thread is team-only or shared with the client.
+          Two states, different colours, different icons so the
+          signal survives a quick sideways glance. */}
+      {effectiveVisibility === "client" ? (
+        <div className="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-4 py-2 text-xs text-warning">
+          <Eye className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <div className="flex flex-col">
+            <span className="font-semibold">
+              {tComments("visibility.client.title")}
+            </span>
+            <span className="text-warning/90">
+              {tComments("visibility.client.body")}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start gap-2 border-b border-ink-100 bg-ink-50 px-4 py-2 text-xs text-ink-600">
+          <EyeOff className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+          <div className="flex flex-col">
+            <span className="font-semibold text-ink-700">
+              {tComments("visibility.internal.title")}
+            </span>
+            <span>{tComments("visibility.internal.body")}</span>
+          </div>
+        </div>
+      )}
 
       {/* Thread stream. A scroll container with ``overflow-y: auto``
           is required for ``position: sticky`` to anchor the pinned

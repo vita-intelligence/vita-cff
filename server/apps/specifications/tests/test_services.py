@@ -318,6 +318,119 @@ class TestRenderContext:
         assert ctx["packaging"]["bottle_pouch_tub"] == "TBD"
 
 
+class TestActivesLabelPerServing:
+    """Regression for the multi-capsule labelling bug: the snapshot's
+    ``mg_per_serving`` is actually per-*unit* (per-capsule), so the
+    templated nutrition name used to embed a per-capsule raw weight
+    and read wrong against the per-serving Claim column. The spec
+    renderer now multiplies by ``serving_size`` before instantiating
+    the label so "From Xmg of N:1 Extract" is always the per-serving
+    weight, matching scientist expectations."""
+
+    def test_multi_unit_serving_labels_per_serving_raw_weight(self) -> None:
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        # Botanical with a templated label + 10:1 extract. The template
+        # uses "??mg" which instantiate_active_label replaces with the
+        # raw extract weight.
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Maca Extract (10:1)",
+            attributes={
+                "type": "Botanical",
+                "extract_ratio": "10",
+                "ingredient_list_name": "Maca Extract",
+                "nutrition_information_name":
+                    "Maca Extract (From ??mg of 10:1 Extract)",
+            },
+        )
+        # 2 capsules per serving, label claim 200 mg *per serving*.
+        # Per-unit claim → 100 mg/cap; per-unit raw → 10 mg/cap
+        # (100 / 10 extract_ratio); per-serving raw → 20 mg.
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+            serving_size=2,
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "200"}],
+        )
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+        ctx = render_context(sheet)
+        maca = next(a for a in ctx["actives"] if a["item_name"].startswith("Maca"))
+
+        # "From 20mg" = per-serving raw weight (10 mg/cap × 2 caps).
+        # The bug rendered "From 10mg" (per-cap), which is what
+        # scientists reported as "the numbers look wrong by half" —
+        # on a 2-cap product the label claim reads 2× the embedded mg.
+        assert "From 20mg" in maca["ingredient_list_name"]
+        # The per-serving mg field on the active row itself should
+        # also reflect per-serving — downstream UIs consume this.
+        assert maca["mg_per_serving"].startswith("20")
+        # And the per-serving label claim column is the scientist's
+        # input verbatim (200 mg), not divided down. The snapshot
+        # stores Decimals at 4-decimal precision so the string carries
+        # trailing zeros — compare against the numeric value rather
+        # than the exact textual form.
+        from decimal import Decimal as _D
+        assert _D(maca["label_claim_mg"]) == _D("200")
+
+    def test_single_unit_serving_labels_unchanged(self) -> None:
+        """Single-capsule servings (serving_size=1) were correct
+        before the fix and must stay correct — the multiplier just
+        becomes a no-op."""
+
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Maca Extract (10:1)",
+            attributes={
+                "type": "Botanical",
+                "extract_ratio": "10",
+                "ingredient_list_name": "Maca Extract",
+                "nutrition_information_name":
+                    "Maca Extract (From ??mg of 10:1 Extract)",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+            serving_size=1,
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "200"}],
+        )
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+        ctx = render_context(sheet)
+        maca = next(a for a in ctx["actives"] if a["item_name"].startswith("Maca"))
+        # 200 / 10 extract_ratio = 20 mg raw per cap; 1 cap per
+        # serving → 20 mg per serving (same number either way).
+        assert "From 20mg" in maca["ingredient_list_name"]
+
+
 class TestGetSheetIsolation:
     def test_other_orgs_sheet_is_404(self) -> None:
         a = OrganizationFactory()
@@ -415,14 +528,18 @@ class TestSectionVisibility:
 
 
 class TestWatermarkDecision:
-    @pytest.mark.parametrize(
-        "state", ["draft", "in_review", "rejected"]
-    )
-    def test_non_final_states_watermark(self, state: str) -> None:
-        assert show_watermark_for(state) is True
+    """The watermark is driven by the explicit ``document_kind`` now,
+    not by lifecycle ``status``. ``draft`` prints watermarked,
+    ``final`` prints clean — regardless of where the sheet is in the
+    approval machine."""
 
-    @pytest.mark.parametrize(
-        "state", ["approved", "sent", "accepted"]
-    )
-    def test_final_states_do_not_watermark(self, state: str) -> None:
-        assert show_watermark_for(state) is False
+    def test_draft_kind_watermarks(self) -> None:
+        assert show_watermark_for("draft") is True
+
+    def test_final_kind_prints_clean(self) -> None:
+        assert show_watermark_for("final") is False
+
+    def test_unknown_value_defaults_to_watermark(self) -> None:
+        # Safety net — unknown kinds treated as "not explicitly final"
+        # so we never accidentally ship a clean PDF on a corrupted row.
+        assert show_watermark_for("bogus") is True

@@ -9,6 +9,7 @@ import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
 import type { FormulationVersionDto } from "@/services/formulations";
+import type { BatchSizeMode } from "@/services/trial_batches";
 import {
   useCreateTrialBatch,
   useDeleteTrialBatch,
@@ -27,6 +28,7 @@ export function TrialBatchesPanel({
   formulationId,
   formulationName,
   versions,
+  approvedVersionNumber,
   canWrite,
   canDelete,
 }: {
@@ -34,6 +36,7 @@ export function TrialBatchesPanel({
   formulationId: string;
   formulationName: string;
   versions: readonly FormulationVersionDto[];
+  approvedVersionNumber: number | null;
   canWrite: boolean;
   canDelete: boolean;
 }) {
@@ -75,6 +78,7 @@ export function TrialBatchesPanel({
             formulationId={formulationId}
             formulationName={formulationName}
             versions={versions}
+            approvedVersionNumber={approvedVersionNumber}
             onCreated={(batchId) =>
               router.push(
                 `/formulations/${formulationId}/trial-batches/${batchId}`,
@@ -121,7 +125,10 @@ export function TrialBatchesPanel({
                 <span className="text-xs text-ink-500">
                   v{batch.formulation_version_number} ·{" "}
                   {formatInteger(batch.batch_size_units)}{" "}
-                  {tBatches("list.packs")} ·{" "}
+                  {batch.batch_size_mode === "unit"
+                    ? tBatches("list.units")
+                    : tBatches("list.packs")}{" "}
+                  ·{" "}
                   {tBatches("list.created_by", {
                     name: batch.created_by_name,
                   })}
@@ -161,12 +168,14 @@ function NewTrialBatchButton({
   formulationId,
   formulationName,
   versions,
+  approvedVersionNumber,
   onCreated,
 }: {
   orgId: string;
   formulationId: string;
   formulationName: string;
   versions: readonly FormulationVersionDto[];
+  approvedVersionNumber: number | null;
   onCreated: (batchId: string) => void;
 }) {
   const tBatches = useTranslations("trial_batches");
@@ -176,6 +185,7 @@ function NewTrialBatchButton({
   const [versionId, setVersionId] = useState<string>("");
   const [label, setLabel] = useState("");
   const [batchSize, setBatchSize] = useState<string>("");
+  const [sizeMode, setSizeMode] = useState<BatchSizeMode>("pack");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -192,15 +202,22 @@ function NewTrialBatchButton({
     }
     const stillValid = versions.some((v) => v.id === versionId);
     if (!stillValid) {
-      setVersionId(versions[0]!.id);
+      // Default to the approved version if one is marked — scientists
+      // rarely want to plan a batch off a draft, so the picker
+      // pre-selects the known-good recipe.
+      const approved = versions.find(
+        (v) => v.version_number === approvedVersionNumber,
+      );
+      setVersionId((approved ?? versions[0]!).id);
     }
-  }, [versions, versionId]);
+  }, [versions, versionId, approvedVersionNumber]);
 
   const createMutation = useCreateTrialBatch(orgId, formulationId);
 
   const reset = () => {
     setLabel("");
     setBatchSize("");
+    setSizeMode("pack");
     setNotes("");
     setError(null);
   };
@@ -222,6 +239,7 @@ function NewTrialBatchButton({
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         batch_size_units: sizeNum,
+        batch_size_mode: sizeMode,
         label: label.trim(),
         notes: notes.trim(),
       });
@@ -286,18 +304,74 @@ function NewTrialBatchButton({
                     onChange={(e) => setVersionId(e.target.value)}
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   >
-                    {versions.map((v) => (
-                      <option key={v.id} value={v.id}>
-                        v{v.version_number}
-                        {v.label ? ` — ${v.label}` : ""}
-                      </option>
-                    ))}
+                    {versions.map((v) => {
+                      const isApproved =
+                        v.version_number === approvedVersionNumber;
+                      return (
+                        <option key={v.id} value={v.id}>
+                          {isApproved ? "✓ " : ""}v{v.version_number}
+                          {v.label ? ` — ${v.label}` : ""}
+                          {isApproved ? ` (${tBatches("create.approved_tag")})` : ""}
+                        </option>
+                      );
+                    })}
                   </select>
+                  {approvedVersionNumber !== null ? (
+                    <span className="text-xs text-success">
+                      {tBatches("create.approved_hint", {
+                        version: approvedVersionNumber,
+                      })}
+                    </span>
+                  ) : null}
                 </label>
+
+                <fieldset className="flex flex-col gap-1.5">
+                  <legend className="text-xs font-medium text-ink-700">
+                    {tBatches("create.batch_size_mode")}
+                  </legend>
+                  <div className="flex flex-wrap gap-2">
+                    {(
+                      [
+                        ["pack", "create.mode_pack"],
+                        ["unit", "create.mode_unit"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label
+                        key={value}
+                        className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-colors ${
+                          sizeMode === value
+                            ? "bg-orange-500 text-ink-0 ring-orange-500"
+                            : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="batch_size_mode"
+                          value={value}
+                          checked={sizeMode === value}
+                          onChange={() => setSizeMode(value)}
+                          className="sr-only"
+                        />
+                        {tBatches(label)}
+                      </label>
+                    ))}
+                  </div>
+                  <span className="text-xs text-ink-500">
+                    {tBatches(
+                      sizeMode === "unit"
+                        ? "create.mode_unit_hint"
+                        : "create.mode_pack_hint",
+                    )}
+                  </span>
+                </fieldset>
 
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-ink-700">
-                    {tBatches("create.batch_size")}
+                    {tBatches(
+                      sizeMode === "unit"
+                        ? "create.batch_size_unit_label"
+                        : "create.batch_size",
+                    )}
                   </span>
                   <input
                     type="number"
@@ -305,11 +379,15 @@ function NewTrialBatchButton({
                     step={1}
                     value={batchSize}
                     onChange={(e) => setBatchSize(e.target.value)}
-                    placeholder="10000"
+                    placeholder={sizeMode === "unit" ? "10" : "10000"}
                     className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                   <span className="text-xs text-ink-500">
-                    {tBatches("create.batch_size_hint")}
+                    {tBatches(
+                      sizeMode === "unit"
+                        ? "create.batch_size_unit_hint"
+                        : "create.batch_size_hint",
+                    )}
                   </span>
                 </label>
 

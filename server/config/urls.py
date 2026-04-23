@@ -31,6 +31,14 @@ urlpatterns = [
             namespace="product_validation",
         ),
     ),
+    path(
+        "api/",
+        include("apps.proposals.api.urls", namespace="proposals"),
+    ),
+    path(
+        "api/",
+        include("apps.customers.api.urls", namespace="customers"),
+    ),
     path("api/", include("apps.ai.api.urls", namespace="ai")),
     path("api/", include("apps.audit.api.urls", namespace="audit")),
     path("api/", include("apps.comments.api.urls", namespace="comments")),

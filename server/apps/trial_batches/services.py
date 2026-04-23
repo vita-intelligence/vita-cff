@@ -30,7 +30,7 @@ from apps.formulations.constants import (
 )
 from apps.formulations.models import FormulationVersion
 from apps.organizations.models import Organization
-from apps.trial_batches.models import TrialBatch
+from apps.trial_batches.models import BatchSizeMode, TrialBatch
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +56,14 @@ class InvalidBatchSize(Exception):
     never what the scientist meant."""
 
     code = "invalid_batch_size"
+
+
+class InvalidBatchSizeMode(Exception):
+    """The caller passed a ``batch_size_mode`` that is not a member
+    of :class:`BatchSizeMode`. Keeps a bad kwarg from silently
+    falling back to "pack" and producing a 360× over-count."""
+
+    code = "invalid_batch_size_mode"
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +101,11 @@ def get_batch(
     return batch
 
 
+def _validate_batch_size_mode(value: str) -> None:
+    if value not in {mode.value for mode in BatchSizeMode}:
+        raise InvalidBatchSizeMode()
+
+
 @transaction.atomic
 def create_batch(
     *,
@@ -102,6 +115,7 @@ def create_batch(
     batch_size_units: int,
     label: str = "",
     notes: str = "",
+    batch_size_mode: str = BatchSizeMode.PACK.value,
 ) -> TrialBatch:
     """Plan a new manufacturing run against a saved version snapshot.
 
@@ -113,6 +127,7 @@ def create_batch(
 
     if not isinstance(batch_size_units, int) or batch_size_units <= 0:
         raise InvalidBatchSize()
+    _validate_batch_size_mode(batch_size_mode)
 
     version = (
         FormulationVersion.objects.select_related("formulation")
@@ -127,6 +142,7 @@ def create_batch(
         formulation_version=version,
         label=label,
         batch_size_units=batch_size_units,
+        batch_size_mode=batch_size_mode,
         notes=notes,
         created_by=actor,
         updated_by=actor,
@@ -158,6 +174,10 @@ def update_batch(
         if not isinstance(size, int) or size <= 0:
             raise InvalidBatchSize()
         batch.batch_size_units = size
+    if "batch_size_mode" in changes and changes["batch_size_mode"] is not None:
+        mode = changes["batch_size_mode"]
+        _validate_batch_size_mode(mode)
+        batch.batch_size_mode = mode
     if changes.get("label") is not None:
         batch.label = changes["label"]
     if changes.get("notes") is not None:
@@ -248,6 +268,7 @@ class BOMResult:
     batch_id: str
     label: str
     batch_size_units: int
+    batch_size_mode: str
     units_per_pack: int
     total_units_in_batch: int
     formulation_id: str
@@ -405,12 +426,22 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
         units_per_pack = 1
     if units_per_pack <= 0:
         units_per_pack = 1
-    total_units_in_batch = batch.batch_size_units * units_per_pack
+    # ``pack`` mode multiplies by units_per_pack (a run of N full
+    # bottles); ``unit`` mode treats the entered number as the raw
+    # count of individual finished units — bench-scale QC testing
+    # with 10 capsules instead of 10 × 360. The pack column in the
+    # BOM still renders the ratio, just derived from 1 pack of
+    # ``units_per_pack`` units rather than the total run.
+    if batch.batch_size_mode == BatchSizeMode.UNIT.value:
+        total_units_in_batch = batch.batch_size_units
+    else:
+        total_units_in_batch = batch.batch_size_units * units_per_pack
 
     result = BOMResult(
         batch_id=str(batch.id),
         label=batch.label,
         batch_size_units=batch.batch_size_units,
+        batch_size_mode=batch.batch_size_mode,
         units_per_pack=units_per_pack,
         total_units_in_batch=total_units_in_batch,
         formulation_id=str(version.formulation_id),
@@ -471,26 +502,24 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
 
     # Flexible excipient rows (powder / gummy). Capsule + tablet leave
     # this list empty — the typed slots above cover them. Powders
-    # contribute the carrier / bulk powder row here; gummies the
-    # gummy base + any fixed flavour rows. Skipping it silently
-    # (as the previous code did) left the sachet's bulk powder off
-    # the BOM entirely, so a 10g sachet would scale up as if it only
-    # contained its actives.
+    # contribute the flavour system (TSC, Citric Acid, Flavouring,
+    # Sweetener, Colourant); gummies the Water / Acidity Regulator /
+    # Flavouring & Colourant trio. Each row's slug is looked up in the
+    # org's raw_materials catalogue via
+    # :data:`EXCIPIENT_CATALOGUE_NAME_CANDIDATES` so procurement sees
+    # the actual SKU they order against, not an empty code cell.
     for row in excipients.get("rows") or []:
         if not isinstance(row, dict):
             continue
         mg_per_unit = _coerce_decimal(row.get("mg"))
         if mg_per_unit is None or mg_per_unit <= 0:
             continue
+        slug = row.get("slug") or ""
         result.entries.append(
             _build_bom_entry(
                 category="excipient",
-                label=row.get("label") or row.get("slug") or "",
-                # Flexible rows don't resolve to a catalogue code yet
-                # — scientists pick the specific supplier at the BOM
-                # stage. Leaving the code blank matches the workbook's
-                # BOM which has manually-typed names and no codes.
-                internal_code="",
+                label=row.get("label") or slug or "",
+                internal_code=excipient_codes.get(slug, ""),
                 mg_per_unit=mg_per_unit,
                 units_per_pack=units_per_pack,
                 total_units_in_batch=total_units_in_batch,

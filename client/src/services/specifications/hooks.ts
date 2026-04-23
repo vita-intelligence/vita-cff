@@ -97,10 +97,12 @@ export function useInfiniteSpecifications(
 export function useSpecification(
   orgId: string,
   sheetId: string,
+  options: { readonly initialData?: SpecificationSheetDto } = {},
 ): UseQueryResult<SpecificationSheetDto, ApiError> {
   return useQuery<SpecificationSheetDto, ApiError>({
     queryKey: specificationsQueryKeys.detail(orgId, sheetId),
     queryFn: () => fetchSpecification(orgId, sheetId),
+    initialData: options.initialData,
   });
 }
 
@@ -160,6 +162,14 @@ export function useUpdateSpecification(
       );
       queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.infinite(orgId),
+      });
+      // The rendered preview pulls a separate payload whose watermark
+      // + body copy derive from mutable sheet fields (document_kind,
+      // code, client info). Without this invalidation a Draft → Final
+      // flip would leave the in-page preview watermarked until a
+      // manual refresh.
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.render(orgId, sheetId),
       });
     },
   });

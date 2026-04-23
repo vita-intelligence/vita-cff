@@ -11,7 +11,12 @@ import type { ProtectedNavKey } from "./protected-header";
 
 export interface HeaderNavItem {
   readonly key: ProtectedNavKey;
-  readonly href: "/home" | "/catalogues" | "/formulations";
+  readonly href:
+    | "/home"
+    | "/catalogues"
+    | "/formulations"
+    | "/proposals"
+    | "/customers";
   readonly label: string;
 }
 

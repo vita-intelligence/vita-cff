@@ -24,6 +24,21 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
+class BatchSizeMode(models.TextChoices):
+    """Two ways the scientist can size a trial run.
+
+    ``PACK`` multiplies the entered quantity by the formulation's
+    ``servings_per_pack`` snapshot — useful for production-scale
+    runs ("plan 1000 bottles of 60 capsules"). ``UNIT`` treats the
+    quantity as the raw number of finished individual capsules /
+    tablets / scoops — useful for bench-scale tests where the
+    scientist only needs 10 capsules, not 10 × 360 = 3 600.
+    """
+
+    PACK = "pack", _("Pack")
+    UNIT = "unit", _("Individual units")
+
+
 class TrialBatch(models.Model):
     """A planned manufacturing run against a frozen formulation version."""
 
@@ -55,10 +70,24 @@ class TrialBatch(models.Model):
         ),
     )
     batch_size_units = models.PositiveIntegerField(
-        _("batch size (units)"),
+        _("batch size"),
         help_text=_(
-            "Number of finished product units (capsules, tablets, bottles, "
-            "pouches...) the batch will produce. Drives the scale-up math."
+            "Numeric input; interpretation depends on ``batch_size_mode``. "
+            "In ``pack`` mode this is the number of finished packs "
+            "(bottles/pouches/tubs); in ``unit`` mode it is the raw "
+            "count of individual capsules/tablets/scoops."
+        ),
+    )
+    batch_size_mode = models.CharField(
+        _("batch size mode"),
+        max_length=8,
+        choices=BatchSizeMode.choices,
+        default=BatchSizeMode.PACK,
+        help_text=_(
+            "``pack`` multiplies by servings_per_pack; ``unit`` uses "
+            "the entered number directly. Bench-scale QC tests "
+            "usually want ``unit`` so a 10-capsule test does not get "
+            "scaled up to 10 × 360 = 3 600."
         ),
     )
     notes = models.TextField(_("notes"), blank=True, default="")

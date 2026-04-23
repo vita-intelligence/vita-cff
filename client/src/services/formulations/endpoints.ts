@@ -18,4 +18,6 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
   salesPerson: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
+  approvedVersion: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/approved-version/`,
 } as const;

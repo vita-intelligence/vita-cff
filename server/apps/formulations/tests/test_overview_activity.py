@@ -30,6 +30,7 @@ class TestProjectOverviewActivityFeed:
             organization=org,
             actor=org.created_by,
             name="Activity Demo",
+            code="ACT-1",
         )
         # Generate a sequence of events — each records an
         # ``AuditLog`` row that the feed should pick up.
@@ -61,6 +62,7 @@ class TestProjectOverviewActivityFeed:
             organization=org,
             actor=org.created_by,
             name="Version Demo",
+            code="VD-1",
         )
         save_version(
             formulation=formulation,
@@ -86,6 +88,7 @@ class TestProjectOverviewActivityFeed:
             organization=org,
             actor=org.created_by,
             name="Actor Demo",
+            code="AD-1",
         )
         overview = compute_project_overview(formulation)
         assert any(

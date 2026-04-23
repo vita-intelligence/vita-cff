@@ -31,6 +31,23 @@ class SpecificationStatus(models.TextChoices):
     REJECTED = "rejected", _("Rejected")
 
 
+class SpecificationDocumentKind(models.TextChoices):
+    """Whether a sheet is issued as a working draft or a final document.
+
+    Separate from :class:`SpecificationStatus` on purpose — status is
+    the approval lifecycle ("has a director signed?"), kind is what the
+    scientist *intends* the document to be. A ``final`` draft-lifecycle
+    sheet is perfectly valid (e.g. a reference copy for the client to
+    sight-check before signing), and a ``draft`` kind always reads as
+    unfinished even after it's approved. Watermarking keys off this
+    field so scientists control it explicitly instead of relying on
+    a status transition they haven't triggered yet.
+    """
+
+    DRAFT = "draft", _("Draft")
+    FINAL = "final", _("Final")
+
+
 class SpecificationSheet(models.Model):
     """A single client-facing specification sheet instance."""
 
@@ -305,6 +322,19 @@ class SpecificationSheet(models.Model):
         max_length=16,
         choices=SpecificationStatus.choices,
         default=SpecificationStatus.DRAFT,
+    )
+    document_kind = models.CharField(
+        _("document kind"),
+        max_length=16,
+        choices=SpecificationDocumentKind.choices,
+        default=SpecificationDocumentKind.DRAFT,
+        help_text=_(
+            "Whether this sheet prints as a working draft (with the "
+            "diagonal DRAFT watermark) or as a final document (clean). "
+            "Independent of ``status`` — scientists flip it explicitly "
+            "so an internal draft can circulate with the watermark "
+            "even on an ``approved`` sheet, and vice versa."
+        ),
     )
 
     created_by = models.ForeignKey(
