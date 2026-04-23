@@ -782,6 +782,14 @@ function ProposalLinesPanel({
   const [addOpen, setAddOpen] = useState(false);
   const [rowError, setRowError] = useState<string | null>(null);
 
+  //: Org-wide spec sheet list backs the per-line picker. Fetched
+  //: once at the panel level and passed down as a flat array so
+  //: every row reuses the same cached data instead of each rendering
+  //: its own round-trip.
+  const specSheetsQuery = useInfiniteSpecifications(orgId, { pageSize: 100 });
+  const specSheets: readonly SpecificationSheetDto[] =
+    specSheetsQuery.data?.pages.flatMap((p) => p.results) ?? [];
+
   /** Margin % is the UI-level concept; the backend stores unit_cost
    *  + unit_price. When the user edits either cost or margin we
    *  recompute the price client-side and PATCH both values. */
@@ -897,6 +905,7 @@ function ProposalLinesPanel({
                 <th className="px-2 py-2 text-right">{tProposals("lines.col_margin")}</th>
                 <th className="px-2 py-2 text-right">{tProposals("lines.col_price")}</th>
                 <th className="px-2 py-2 text-right">{tProposals("lines.col_subtotal")}</th>
+                <th className="px-2 py-2">{tProposals("lines.col_spec_sheet")}</th>
                 <th className="px-2 py-2" />
               </tr>
             </thead>
@@ -960,6 +969,30 @@ function ProposalLinesPanel({
                   <td className="px-2 py-2 text-right tabular-nums text-ink-700">
                     {line.subtotal ?? "—"}
                   </td>
+                  <td className="px-2 py-2">
+                    <LineSpecPicker
+                      line={line}
+                      specs={specSheets}
+                      onChange={async (sheetId) => {
+                        setRowError(null);
+                        try {
+                          await patchMutation.mutateAsync({
+                            lineId: line.id,
+                            payload: {
+                              specification_sheet_id: sheetId,
+                            },
+                          });
+                        } catch (err) {
+                          setRowError(
+                            err instanceof Error
+                              ? err.message
+                              : "update_failed",
+                          );
+                        }
+                      }}
+                      tProposals={tProposals}
+                    />
+                  </td>
                   <td className="px-2 py-2 text-right">
                     <button
                       type="button"
@@ -1000,6 +1033,70 @@ function _deriveMargin(cost: string | null, price: string | null): string {
   if (!Number.isFinite(c) || c <= 0) return "";
   if (!Number.isFinite(p) || p <= 0) return "";
   return (((p - c) / p) * 100).toFixed(2);
+}
+
+
+/**
+ * Per-line specification-sheet picker. Lets the scientist attach a
+ * saved spec sheet to each product line on the proposal, so a
+ * multi-product deal can bundle one sheet per product instead of
+ * one sheet for the whole envelope. The client kiosk uses these
+ * attachments to render one signature pad per document.
+ *
+ * Options are filtered to sheets that pin against the same
+ * formulation as this line when we have that link — scientists
+ * reported picking the wrong sheet in early usage because the
+ * dropdown was dozens of sheets long across the whole org. An
+ * "all sheets" escape hatch appears when no formulation-scoped
+ * match exists (e.g. a line backed by a formulation snapshot but
+ * the scientist wants to bundle a sheet from a different project).
+ */
+function LineSpecPicker({
+  line,
+  specs,
+  onChange,
+  tProposals,
+}: {
+  line: ProposalLineDto;
+  specs: readonly SpecificationSheetDto[];
+  onChange: (sheetId: string | null) => void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  // Scope to sheets pinned to the same formulation as this line's
+  // snapshot. When the line has no formulation (ad-hoc line) we
+  // fall through to the full list so there's always something to
+  // pick. ``useMemo`` avoids recomputing on every keystroke in a
+  // sibling cell.
+  const relevant = useMemo(() => {
+    if (!line.formulation_id) return specs;
+    const scoped = specs.filter(
+      (s) => s.formulation_id === line.formulation_id,
+    );
+    return scoped.length > 0 ? scoped : specs;
+  }, [line.formulation_id, specs]);
+
+  return (
+    <select
+      value={line.specification_sheet_id ?? ""}
+      onChange={(e) => onChange(e.target.value || null)}
+      className="w-full min-w-[180px] cursor-pointer rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+    >
+      <option value="">{tProposals("lines.no_spec")}</option>
+      {relevant.map((sheet) => {
+        const label = [sheet.code, `v${sheet.formulation_version_number}`]
+          .filter(Boolean)
+          .join(" · ");
+        const kindTag =
+          sheet.document_kind === "final" ? " [FINAL]" : " [DRAFT]";
+        return (
+          <option key={sheet.id} value={sheet.id}>
+            {label}
+            {kindTag}
+          </option>
+        );
+      })}
+    </select>
+  );
 }
 
 

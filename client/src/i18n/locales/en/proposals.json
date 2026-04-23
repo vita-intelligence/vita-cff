@@ -115,6 +115,8 @@
     "col_margin": "Margin %",
     "col_price": "Unit price",
     "col_subtotal": "Subtotal",
+    "col_spec_sheet": "Spec sheet",
+    "no_spec": "— none —",
     "delete": "Delete line",
     "delete_confirm": "Remove this product from the proposal?",
     "add_formulation": "Formulation",
