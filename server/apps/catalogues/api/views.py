@@ -186,6 +186,25 @@ class ItemListCreateView(APIView):
         )
         search = request.query_params.get("search", "") or None
 
+        # ``?use_as=Sweeteners&use_as=Bulking+Agent`` — repeated param
+        # narrows the list to items whose ``attributes.use_as`` sits
+        # in the provided set. Values are normalised through the
+        # same canonical vocabulary the rest of the system uses, so a
+        # caller passing "Sweetners" still hits "Sweeteners" rows.
+        raw_use_as = request.query_params.getlist("use_as")
+        use_as_in: tuple[str, ...] | None
+        if raw_use_as:
+            from apps.formulations.constants import normalize_use_as_value
+
+            canonicalised: list[str] = []
+            for raw in raw_use_as:
+                normalised = normalize_use_as_value(raw)
+                if normalised:
+                    canonicalised.append(normalised)
+            use_as_in = tuple(dict.fromkeys(canonicalised)) or None
+        else:
+            use_as_in = None
+
         raw_order = request.query_params.get("ordering", "name")
         descending = raw_order.startswith("-")
         field = raw_order.lstrip("-")
@@ -199,6 +218,7 @@ class ItemListCreateView(APIView):
             catalogue=self.catalogue,
             include_archived=include_archived,
             search=search,
+            use_as_in=use_as_in,
         ).order_by(*ordering)
 
         paginator = ItemCursorPagination()

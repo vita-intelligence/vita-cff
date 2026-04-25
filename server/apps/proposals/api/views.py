@@ -12,6 +12,8 @@ from typing import Any
 
 from django.http import HttpResponse
 from django.template.loader import render_to_string
+from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -682,6 +684,167 @@ def _render_public_proposal_payload(proposal) -> dict:
     }
 
 
+@method_decorator(xframe_options_sameorigin, name="dispatch")
+class PublicProposalPdfView(APIView):
+    """``GET`` ``/api/public/proposals/<token>/pdf/``.
+
+    Token-gated render of the proposal as PDF — the kiosk iframes
+    this so the signer sees the exact commercial terms they're about
+    to sign. Falls back to the HTML approximation when the server
+    has no DOCX→PDF converter, matching the authenticated
+    :class:`ProposalRenderView` contract byte-for-byte so the kiosk
+    and the internal preview stay visually identical.
+
+    Public access is intentional: no kiosk session required on the
+    preview GET, only on the sign POSTs. A shareable link must be
+    viewable even before the visitor clicks through the identity
+    modal, so they can decide whether to proceed.
+
+    The ``xframe_options_sameorigin`` decorator overrides Django's
+    default ``X-Frame-Options: DENY`` so the kiosk iframe (which
+    runs on the same origin as the API thanks to the Next.js
+    ``/api/*`` rewrite) can embed the PDF. Without it the browser
+    blocks the iframe content and the kiosk shows a broken-file
+    placeholder in place of the proposal preview.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> HttpResponse:
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        pdf_bytes = render_pdf_bytes(proposal)
+        if pdf_bytes is not None:
+            response = HttpResponse(pdf_bytes, content_type="application/pdf")
+            filename = f"{proposal.code or 'proposal'}.pdf"
+            disposition = (
+                "attachment"
+                if request.query_params.get("download") in {"1", "true"}
+                else "inline"
+            )
+            response["Content-Disposition"] = (
+                f'{disposition}; filename="{filename}"'
+            )
+            return response
+
+        version = proposal.formulation_version
+        metadata = version.snapshot_metadata or {}
+        html = render_to_string(
+            "proposals/sheet.html",
+            {
+                "proposal": proposal,
+                "formulation": {
+                    "code": metadata.get("code") or version.formulation.code,
+                    "name": metadata.get("name") or version.formulation.name,
+                },
+                "subtotal": proposal.subtotal,
+                "total_excl_vat": proposal.total_excl_vat,
+            },
+        )
+        return HttpResponse(html)
+
+
+class PublicProposalIdentifyView(APIView):
+    """``POST`` / ``DELETE`` ``/api/public/proposals/<token>/identify/``.
+
+    Mirrors :class:`PublicSpecificationIdentifyView` for the
+    proposal-centric kiosk: captures the visitor's name / email /
+    optional company, writes a :class:`KioskSession`, and stamps the
+    signed cookie that the sign / finalize endpoints rely on. Sharing
+    the underlying :func:`identify_visitor` means a session row
+    issued here is indistinguishable from one issued by the spec
+    kiosk — it's just bound to the proposal's ``public_token`` UUID.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str) -> Response:
+        from apps.comments.kiosk import (
+            KioskTokenInvalid,
+            attach_cookie,
+            identify_visitor,
+        )
+
+        data = request.data if isinstance(request.data, dict) else {}
+        name = str(data.get("name", "") or "").strip()
+        email = str(data.get("email", "") or "").strip()
+        company = str(data.get("company", "") or "").strip()
+
+        if not name or not email:
+            return Response(
+                {
+                    "name": [] if name else ["required"],
+                    "email": [] if email else ["required"],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            session, _token_uuid = identify_visitor(
+                public_token=token,
+                guest_name=name,
+                guest_email=email,
+                guest_org_label=company,
+            )
+        except KioskTokenInvalid:
+            return Response(
+                {"detail": ["kiosk_token_invalid"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        response = Response(
+            {
+                "name": session.guest_name,
+                "email": session.guest_email,
+                "company": session.guest_org_label,
+            },
+            status=status.HTTP_200_OK,
+        )
+        attach_cookie(response, session)
+        return response
+
+    def delete(self, request: Request, token: str) -> Response:
+        """Clear the session cookie and revoke the row.
+
+        Parallels the spec-side DELETE — we treat sign-out as best
+        effort: even when the cookie is already gone (or belongs to
+        a rotated token) we still blank the browser state so the
+        next visit starts clean.
+        """
+
+        from apps.comments.kiosk import (
+            KioskSessionInvalid,
+            KioskSessionRevoked,
+            clear_cookie,
+            resolve_from_request,
+        )
+        from django.utils import timezone
+
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        try:
+            identity = resolve_from_request(request, str(token))
+        except (KioskSessionInvalid, KioskSessionRevoked):
+            response = Response(status=status.HTTP_204_NO_CONTENT)
+            clear_cookie(response, proposal.public_token)
+            return response
+
+        session = identity.session
+        session.revoked_at = timezone.now()
+        session.save(update_fields=["revoked_at"])
+        response = Response(status=status.HTTP_204_NO_CONTENT)
+        clear_cookie(response, proposal.public_token)
+        return response
+
+
 class PublicProposalKioskView(APIView):
     """``GET`` ``/api/public/proposals/<token>/``.
 
@@ -690,16 +853,34 @@ class PublicProposalKioskView(APIView):
     required on the GET — establishing identity is deferred until
     the client actually tries to sign something, so shareable links
     can be previewed before committing.
+
+    Runs a best-effort backfill of the attached-specs'
+    ``public_token`` when the proposal is ``SENT``: the preview
+    iframes iframe each spec by its token, and bundles created
+    before token-minting was wired in would otherwise render a blank
+    preview. The helper is idempotent — already-tokened sheets are
+    untouched — so it's safe to run on every load.
     """
 
     permission_classes = (AllowAny,)
     authentication_classes: tuple = ()
 
     def get(self, request: Request, token: str) -> Response:
+        from apps.proposals.services import (
+            ProposalStatus,
+            _promote_attached_specs_to_sent,
+        )
+
         try:
             proposal = get_proposal_by_public_token(token)
         except ProposalPublicLinkNotEnabled as exc:
             raise NotFound() from exc
+
+        if proposal.status == ProposalStatus.SENT.value:
+            _promote_attached_specs_to_sent(
+                proposal=proposal, actor=proposal.updated_by
+            )
+
         return Response(
             _render_public_proposal_payload(proposal),
             status=status.HTTP_200_OK,

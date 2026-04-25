@@ -90,6 +90,14 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
 class FormulationReadSerializer(serializers.ModelSerializer):
     lines = FormulationLineReadSerializer(many=True, read_only=True)
     sales_person = serializers.SerializerMethodField()
+    gummy_base_item_ids = serializers.SerializerMethodField()
+    gummy_base_items = serializers.SerializerMethodField()
+    flavouring_item_ids = serializers.SerializerMethodField()
+    flavouring_items = serializers.SerializerMethodField()
+    colour_item_ids = serializers.SerializerMethodField()
+    colour_items = serializers.SerializerMethodField()
+    glazing_item_ids = serializers.SerializerMethodField()
+    glazing_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -106,6 +114,14 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "target_fill_weight_mg",
             "powder_type",
             "water_volume_ml",
+            "gummy_base_item_ids",
+            "gummy_base_items",
+            "flavouring_item_ids",
+            "flavouring_items",
+            "colour_item_ids",
+            "colour_items",
+            "glazing_item_ids",
+            "glazing_items",
             "directions_of_use",
             "suggested_dosage",
             "appearance",
@@ -119,6 +135,104 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_gummy_base_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat list of picked item ids — drives the multi-select
+        dropdown's ``selected`` state without chasing nested dicts."""
+
+        return [str(item.id) for item in obj.gummy_base_items.all()]
+
+    def get_flavouring_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list — drives the flavouring multi-select."""
+
+        return [str(item.id) for item in obj.flavouring_items.all()]
+
+    def get_colour_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list — drives the colour multi-select."""
+
+        return [str(item.id) for item in obj.colour_items.all()]
+
+    def get_glazing_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the glazing-agent multi-select."""
+
+        return [str(item.id) for item in obj.glazing_items.all()]
+
+    def get_glazing_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked glazing items (same shape as the other
+        M2M echoes) so the builder renders chips without a second
+        round-trip."""
+
+        rows: list[dict] = []
+        for item in obj.glazing_items.all().order_by("name"):
+            attrs = item.attributes or {}
+            rows.append(
+                {
+                    "id": str(item.id),
+                    "name": item.name,
+                    "internal_code": item.internal_code or "",
+                    "ingredient_list_name": (
+                        attrs.get("ingredient_list_name") or ""
+                    ),
+                    "use_as": attrs.get("use_as") or "",
+                }
+            )
+        return rows
+
+    def _echo_picks(self, manager) -> list[dict]:
+        """Common shape for the M2M echo blocks (gummy base, flavouring,
+        colour, glazing) so the builder can chip-render every pick list
+        from a single round-trip without per-band branching."""
+
+        rows: list[dict] = []
+        for item in manager.all().order_by("name"):
+            attrs = item.attributes or {}
+            rows.append(
+                {
+                    "id": str(item.id),
+                    "name": item.name,
+                    "internal_code": item.internal_code or "",
+                    "ingredient_list_name": (
+                        attrs.get("ingredient_list_name") or ""
+                    ),
+                    "use_as": attrs.get("use_as") or "",
+                }
+            )
+        return rows
+
+    def get_flavouring_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of every picked flavouring item so the builder
+        renders the chip list without a second round-trip."""
+
+        return self._echo_picks(obj.flavouring_items)
+
+    def get_colour_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of every picked colour item so the builder
+        renders the chip list without a second round-trip."""
+
+        return self._echo_picks(obj.colour_items)
+
+    def get_gummy_base_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of every picked gummy base so the builder can
+        render the chip list without a second round-trip. Empty when
+        nothing's been picked yet; attribute lookups are best-effort
+        (a missing ``ingredient_list_name`` falls back to the item's
+        canonical name)."""
+
+        rows: list[dict] = []
+        for item in obj.gummy_base_items.all().order_by("name"):
+            attrs = item.attributes or {}
+            rows.append(
+                {
+                    "id": str(item.id),
+                    "name": item.name,
+                    "internal_code": item.internal_code or "",
+                    "ingredient_list_name": (
+                        attrs.get("ingredient_list_name") or ""
+                    ),
+                    "use_as": attrs.get("use_as") or "",
+                }
+            )
+        return rows
 
     def get_sales_person(
         self, obj: Formulation
@@ -183,6 +297,53 @@ class FormulationWriteSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
         min_value=0,
+    )
+    gummy_base_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as the "
+            "gummy base. The base total is split equally across picks. "
+            "Every id must belong to the same org AND carry use_as ∈ "
+            "(Sweeteners, Bulking Agent). Ignored for non-gummy forms."
+        ),
+    )
+    flavouring_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as the "
+            "Flavouring block. The flavour total (0.4% of target gummy "
+            "weight) is split equally across picks. Every id must "
+            "belong to the same org AND carry use_as = 'Flavouring'. "
+            "Ignored for non-gummy forms."
+        ),
+    )
+    colour_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as the "
+            "Colour block. The colour total (2% of target gummy "
+            "weight) is split equally across picks. Every id must "
+            "belong to the same org AND carry use_as = 'Colour'. "
+            "Ignored for non-gummy forms."
+        ),
+    )
+    glazing_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as the "
+            "Glazing Agent block (carnauba wax, coconut oil, beeswax, "
+            "etc.). The glaze total (0.1% of target gummy weight) is "
+            "split equally across picks. Every id must carry use_as = "
+            "'Glazing Agent'. Ignored for non-gummy forms."
+        ),
     )
     directions_of_use = serializers.CharField(
         required=False, allow_blank=True, default=""

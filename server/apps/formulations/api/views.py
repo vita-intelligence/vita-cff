@@ -33,6 +33,10 @@ from apps.formulations.services import (
     FormulationVersionNotFound,
     InvalidCapsuleSize,
     InvalidDosageForm,
+    InvalidColourItem,
+    InvalidFlavouringItem,
+    InvalidGlazingItem,
+    InvalidGummyBaseItem,
     InvalidPowderType,
     InvalidTabletSize,
     RawMaterialNotInOrg,
@@ -244,6 +248,26 @@ class FormulationDetailView(APIView):
         except InvalidPowderType:
             return Response(
                 {"powder_type": ["invalid_powder_type"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidGummyBaseItem:
+            return Response(
+                {"gummy_base_item_ids": ["invalid_gummy_base_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidFlavouringItem:
+            return Response(
+                {"flavouring_item_ids": ["invalid_flavouring_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidColourItem:
+            return Response(
+                {"colour_item_ids": ["invalid_colour_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidGlazingItem:
+            return Response(
+                {"glazing_item_ids": ["invalid_glazing_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(

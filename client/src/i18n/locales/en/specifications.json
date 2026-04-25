@@ -145,6 +145,71 @@
     "proposal_heading": "Commercial Proposal",
     "proposal_body": "A single signature below accepts both the technical specification above and this commercial proposal."
   },
+  "card": {
+    "document_label": "Specification sheet",
+    "kind": {
+      "draft": "Draft",
+      "final": "Final"
+    },
+    "section": {
+      "product_spec": "Product specification",
+      "actives": "Active ingredients",
+      "excipients": "Excipients",
+      "nutrition": "Nutrition facts",
+      "compliance": "Compliance",
+      "declaration": "Ingredient declaration",
+      "cover_notes": "Notes"
+    },
+    "field": {
+      "dosage_form": "Dosage form",
+      "serving_size": "Serving size",
+      "servings_per_pack": "Servings per pack",
+      "directions": "Directions of use",
+      "suggested_dosage": "Suggested dosage",
+      "appearance": "Appearance",
+      "disintegration": "Disintegration",
+      "shelf_life": "Shelf life",
+      "storage": "Storage conditions",
+      "food_contact": "Food-contact status",
+      "size_label": "Capsule / tablet size",
+      "total_weight": "Total filled weight"
+    },
+    "actives": {
+      "col_ingredient": "Ingredient",
+      "col_label_claim": "Label claim",
+      "col_raw_mg": "Per serving",
+      "col_nrv": "%NRV"
+    },
+    "excipients": {
+      "mg_stearate": "Magnesium stearate",
+      "silica": "Silicon dioxide",
+      "mcc": "Microcrystalline cellulose",
+      "dcp": "Dicalcium phosphate",
+      "gummy_base": "Gummy base",
+      "water": "Water"
+    },
+    "nutrition": {
+      "col_nutrient": "Nutrient",
+      "col_per_serving": "Per serving",
+      "col_per_100g": "Per 100g"
+    },
+    "compliance": {
+      "yes": "Yes",
+      "no": "No",
+      "unknown": "Unknown"
+    },
+    "signature": {
+      "prepared_by": "Prepared by",
+      "director": "Approved by",
+      "customer": "Customer signature",
+      "awaiting": "Awaiting signature",
+      "customer_hint": "Sign below to confirm you've reviewed this specification.",
+      "signed_badge": "Signed",
+      "signed_on": "Signed on {date}",
+      "sign_cta": "Sign this specification",
+      "resign_cta": "Redraw"
+    }
+  },
   "sheet": {
     "title": "Product Specification Sheet",
     "sections": {

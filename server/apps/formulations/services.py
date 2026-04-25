@@ -15,6 +15,7 @@ formulation workspace, version snapshotting, rollback.
 
 from __future__ import annotations
 
+import html
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
@@ -36,8 +37,19 @@ from apps.formulations.constants import (
     DosageForm,
     EXCIPIENT_LABEL_ANTICAKING,
     EXCIPIENT_LABEL_DCP,
+    EXCIPIENT_LABEL_GUMMY_BASE,
     EXCIPIENT_LABEL_MCC,
-    GUMMY_FLAVOUR_SYSTEM,
+    FLAVOURING_USE_CATEGORIES,
+    COLOUR_USE_CATEGORIES,
+    GLAZING_USE_CATEGORIES,
+    EXCIPIENT_LABEL_WATER,
+    GUMMY_BASE_MIN_PCT,
+    GUMMY_BASE_USE_CATEGORIES,
+    GUMMY_ACIDITY_PCT,
+    GUMMY_FLAVOURING_PCT,
+    GUMMY_COLOUR_PCT,
+    GUMMY_GLAZING_PCT,
+    GUMMY_WATER_PCT,
     NUTRITION_KEYS,
     POWDER_FLAVOUR_SYSTEM,
     POWDER_REFERENCE_WATER_ML,
@@ -50,6 +62,7 @@ from apps.formulations.constants import (
     auto_pick_capsule_size,
     capsule_size_by_key,
     normalize_compliance_value,
+    normalize_use_as_value,
     powder_flavour_system_for,
     tablet_size_by_key,
 )
@@ -106,6 +119,41 @@ class InvalidTabletSize(Exception):
 
 class InvalidPowderType(Exception):
     code = "invalid_powder_type"
+
+
+class InvalidGummyBaseItem(Exception):
+    """Picked gummy base item is not valid — either unknown, outside
+    the org's raw_materials catalogue, or carries a ``use_as`` that
+    isn't in :data:`apps.formulations.constants.GUMMY_BASE_USE_CATEGORIES`.
+    The frontend maps the code back to a specific translation so the
+    scientist sees why their pick was rejected rather than a generic
+    form error."""
+
+    code = "invalid_gummy_base_item"
+
+
+class InvalidFlavouringItem(Exception):
+    """Picked flavouring item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Flavouring"``. Same
+    rejection semantics as :class:`InvalidGummyBaseItem`."""
+
+    code = "invalid_flavouring_item"
+
+
+class InvalidColourItem(Exception):
+    """Picked colour item is not in the org's raw_materials catalogue
+    or doesn't carry ``use_as == "Colour"``. Same rejection semantics
+    as :class:`InvalidGummyBaseItem`."""
+
+    code = "invalid_colour_item"
+
+
+class InvalidGlazingItem(Exception):
+    """Picked glazing item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Glazing Agent"``. Same
+    rejection shape as the base / flavour-colour siblings."""
+
+    code = "invalid_glazing_item"
 
 
 class RawMaterialNotInOrg(Exception):
@@ -241,11 +289,44 @@ class ExcipientRow:
 
 
 @dataclass
+class GummyBaseRow:
+    """One pick in the gummy-base blend.
+
+    The base total is split equally across picks — so three picked
+    items each carry ``total / 3``. ``label`` comes from the picked
+    catalogue item's ``ingredient_list_name`` (fallback: ``name``),
+    and ``use_as`` is the canonical category (Sweeteners / Bulking
+    Agent) that drives the EU-label grouping on the spec sheet
+    declaration.
+    """
+
+    item_id: str
+    label: str
+    use_as: str
+    mg: Decimal
+
+
+@dataclass
 class ExcipientBreakdown:
     mg_stearate_mg: Decimal
     silica_mg: Decimal
     mcc_mg: Decimal
     dcp_mg: Decimal | None = None  # tablet-only
+    #: Gummy-only auto-fills. ``gummy_base_mg`` is the TOTAL base
+    #: weight (target − water − actives − flavour, min 65% floor);
+    #: when multiple items are picked the total is split equally
+    #: across them on ``gummy_base_rows``. ``water_mg`` is a fixed
+    #: 5.5% of target. Both stay ``None`` on non-gummy forms so
+    #: serializers can suppress empty rows without a form-check.
+    gummy_base_mg: Decimal | None = None
+    water_mg: Decimal | None = None
+    #: Per-item breakdown of the gummy base. Empty on non-gummy or
+    #: when no bases were picked (the declaration falls back to the
+    #: generic :data:`EXCIPIENT_LABEL_GUMMY_BASE` label). Each entry
+    #: carries the per-item mg share, the label-friendly copy, and
+    #: the EU use_as category so the declaration can render
+    #: "Sweeteners (Xylitol, Maltitol)" as one grouped line.
+    gummy_base_rows: tuple["GummyBaseRow", ...] = ()
     #: Optional flexible list used for dosage forms that do not fit
     #: the capsule/tablet four-field shape. Powder + gummy populate
     #: this; capsule + tablet leave it empty.
@@ -357,6 +438,12 @@ class IngredientDeclarationEntry:
     #: The allergen class reported by the catalogue (``"Milk"``,
     #: ``"Soybeans"``, etc.). Blank when ``is_allergen`` is ``False``.
     allergen_source: str = ""
+    #: Canonical ``use_as`` value (``"Sweeteners"``, ``"Colourant"``,
+    #: etc.) for the sourcing catalogue item. Blank for synthetic
+    #: excipients (MCC, Anticaking, Capsule Shell) and for actives
+    #: where grouping is by individual name not by category. Drives
+    #: the EU 1169/2011 category grouping in the declaration string.
+    use_as: str = ""
 
 
 @dataclass
@@ -530,6 +617,10 @@ def _compute_fill_target(
     target_fill_weight_mg: Decimal | None,
     powder_type: str | None = None,
     water_volume_ml: Decimal | None = None,
+    gummy_base_items: tuple[Item, ...] = (),
+    flavouring_items: tuple[Item, ...] = (),
+    colour_items: tuple[Item, ...] = (),
+    glazing_items: tuple[Item, ...] = (),
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -588,19 +679,163 @@ def _compute_fill_target(
                 )
             )
     else:
-        # Gummy — static mg values the workbook hand-types per product.
-        preset = GUMMY_FLAVOUR_SYSTEM
-        for slug, label, mg in preset:
-            flavour_rows.append(
-                ExcipientRow(slug=slug, label=label, mg=_quantise(mg))
+        # Gummy flavour system — four scaled blocks, in order:
+        #
+        # 1. Acidity Regulator     — 2%   of target gummy weight
+        # 2. Flavouring            — 0.4% of target gummy weight
+        # 3. Colour                — 2%   of target gummy weight
+        # 4. Glazing Agent         — 0.1% of target gummy weight
+        #
+        # Each scales linearly with the gummy mass. Picks for
+        # Flavouring / Colour / Glazing split their respective totals
+        # equally across catalogue items so the spec sheet renders
+        # "Flavouring (Natural Strawberry, Lemon Extract)" and
+        # "Colour (Beetroot Extract, Turmeric)" with real procurement
+        # codes per name. Empty picks fall back to a single generic
+        # row at the full block total so the recipe still emits a
+        # placeholder line for the scientist.
+        target_for_scaled = (
+            float(target_fill_weight_mg)
+            if target_fill_weight_mg is not None
+            and target_fill_weight_mg > 0
+            else 0.0
+        )
+        flavour_rows.append(
+            ExcipientRow(
+                slug="acidity_regulator",
+                label="Acidity Regulator",
+                mg=_quantise(target_for_scaled * GUMMY_ACIDITY_PCT),
             )
+        )
+
+        def _emit_pick_band(
+            *,
+            block_slug: str,
+            block_label: str,
+            block_total_mg: float,
+            picks: tuple[Item, ...],
+        ) -> None:
+            """Emit either per-pick rows or a generic placeholder at
+            the block's full mg total. Zero target → no row (the
+            scientist sees a clean empty stretch and the placeholder
+            appears as soon as they type a fill weight)."""
+
+            if block_total_mg <= 0:
+                return
+            if picks:
+                per_item_mg = block_total_mg / len(picks)
+                for item in picks:
+                    attrs = item.attributes or {}
+                    pick_label = (
+                        attrs.get("ingredient_list_name") or ""
+                    ).strip() or item.name
+                    flavour_rows.append(
+                        ExcipientRow(
+                            slug=f"{block_slug}:{item.id}",
+                            label=pick_label,
+                            mg=_quantise(per_item_mg),
+                        )
+                    )
+            else:
+                flavour_rows.append(
+                    ExcipientRow(
+                        slug=block_slug,
+                        label=block_label,
+                        mg=_quantise(block_total_mg),
+                    )
+                )
+
+        _emit_pick_band(
+            block_slug="flavouring",
+            block_label="Flavouring",
+            block_total_mg=target_for_scaled * GUMMY_FLAVOURING_PCT,
+            picks=flavouring_items,
+        )
+        _emit_pick_band(
+            block_slug="colour",
+            block_label="Colour",
+            block_total_mg=target_for_scaled * GUMMY_COLOUR_PCT,
+            picks=colour_items,
+        )
+        _emit_pick_band(
+            block_slug="glazing",
+            block_label="Glazing Agent",
+            block_total_mg=target_for_scaled * GUMMY_GLAZING_PCT,
+            picks=glazing_items,
+        )
     flavour_rows_tuple: tuple[ExcipientRow, ...] = tuple(flavour_rows)
     flavour_total = sum((float(r.mg) for r in flavour_rows_tuple), 0.0)
+
+    # Gummy math (MCC-style remainder-fill, following scientist
+    # guidance 2026-04-24):
+    #
+    #   water       = target × 5.5%              (fixed)
+    #   actives+flav = whatever the scientist enters
+    #   gummy_base  = target − water − actives − flavour   (remainder)
+    #
+    # ``GUMMY_BASE_MIN_PCT`` is the **floor** — if the scientist
+    # loads enough actives that the remaining gummy base drops below
+    # that floor, the gel matrix can't set reliably and viability
+    # flips to ``cannot_make``. Below the floor the computed
+    # ``gummy_base_mg`` is still emitted (so the UI shows what it
+    # *would* be) but the viability code tells the scientist they
+    # need to either drop actives or raise the gummy target weight.
+    #
+    # Label + ``use_as`` come off the picked catalogue item so the
+    # spec sheet reads "Sweeteners (Xylitol)" instead of a generic
+    # "Gummy Base".
+    is_gummy = dosage_form == DosageForm.GUMMY.value
+    gummy_base_mg: Decimal | None = None
+    water_mg: Decimal | None = None
+    gummy_base_rows: list[GummyBaseRow] = []
+
+    if is_gummy and target_fill_weight_mg is not None and target_fill_weight_mg > 0:
+        target_float = float(target_fill_weight_mg)
+        water_mg = _quantise(target_float * GUMMY_WATER_PCT)
+        # Remainder = target − water − actives − flavour. Can go
+        # negative if the scientist has overloaded actives; we clamp
+        # to zero for display but viability handles the shortfall
+        # via the ``fill_overshoot`` / ``gummy_base_below_floor``
+        # codes below.
+        remainder = (
+            target_float - float(water_mg) - float(total_active) - flavour_total
+        )
+        gummy_base_mg = _quantise(max(remainder, 0.0))
+
+        # Split the total base equally across picked items. Three
+        # picks → each carries ``total / 3``; zero picks → the list
+        # stays empty and the declaration falls back to a generic
+        # "Gummy Base" line.
+        count = len(gummy_base_items)
+        if count > 0 and gummy_base_mg > 0:
+            per_item = float(gummy_base_mg) / count
+            for item in gummy_base_items:
+                attrs = item.attributes or {}
+                label = (attrs.get("ingredient_list_name") or "").strip()
+                if not label:
+                    label = item.name
+                raw_use_as = attrs.get("use_as")
+                use_as = (
+                    normalize_use_as_value(str(raw_use_as))
+                    if raw_use_as
+                    else ""
+                )
+                gummy_base_rows.append(
+                    GummyBaseRow(
+                        item_id=str(item.id),
+                        label=label,
+                        use_as=use_as,
+                        mg=_quantise(per_item),
+                    )
+                )
 
     breakdown = ExcipientBreakdown(
         mg_stearate_mg=Decimal("0"),
         silica_mg=Decimal("0"),
         mcc_mg=Decimal("0"),
+        gummy_base_mg=gummy_base_mg,
+        water_mg=water_mg,
+        gummy_base_rows=tuple(gummy_base_rows),
         rows=flavour_rows_tuple,
     )
 
@@ -621,7 +856,16 @@ def _compute_fill_target(
 
     target = float(target_fill_weight_mg)
     active = float(total_active)
-    recipe_total = active + flavour_total
+    # For gummies the base absorbs headroom, so the recipe either
+    # equals the target (scientist stayed inside the active budget)
+    # or overshoots (too many actives — base clamped to 0, water +
+    # flavour + active now exceed the target).
+    if is_gummy:
+        recipe_total = max(
+            target, active + flavour_total + float(water_mg or 0)
+        )
+    else:
+        recipe_total = active + flavour_total
     # Tolerance band: within 0.5% of target counts as "matches". This
     # accounts for rounding in the per-line mg math without declaring
     # a 9999mg sachet "short" against a 10000mg target.
@@ -630,9 +874,26 @@ def _compute_fill_target(
     matches = abs(recipe_total - target) <= tolerance
     codes: list[str] = []
     warnings: list[str] = []
+
+    # Gummy-specific floor check: the base must stay at
+    # ≥ ``GUMMY_BASE_MIN_PCT`` of the target or the gel matrix won't
+    # set reliably. Evaluated before the generic fits/matches so a
+    # below-floor bundle lands on ``cannot_make`` regardless of how
+    # the overall tolerance looks.
+    if is_gummy and gummy_base_mg is not None:
+        floor = target * GUMMY_BASE_MIN_PCT
+        if float(gummy_base_mg) + tolerance < floor:
+            fits = False
+            codes.append("cannot_make")
+            warnings.append("gummy_base_below_floor")
+
     if not fits:
-        codes.append("cannot_make")
-        warnings.append("fill_overshoot")
+        if "cannot_make" not in codes:
+            codes.append("cannot_make")
+        if is_gummy and "gummy_base_below_floor" not in warnings:
+            warnings.append("fill_overshoot")
+        elif not is_gummy:
+            warnings.append("fill_overshoot")
     elif matches:
         codes.extend(("can_make", "less_challenging", "proceed_to_quote"))
     else:
@@ -683,6 +944,10 @@ def compute_totals(
     target_fill_weight_mg: Decimal | None = None,
     powder_type: str | None = None,
     water_volume_ml: Decimal | None = None,
+    gummy_base_items: tuple[Item, ...] = (),
+    flavouring_items: tuple[Item, ...] = (),
+    colour_items: tuple[Item, ...] = (),
+    glazing_items: tuple[Item, ...] = (),
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
 
@@ -755,6 +1020,10 @@ def compute_totals(
             target_fill_weight_mg,
             powder_type=powder_type,
             water_volume_ml=water_volume_ml,
+            gummy_base_items=gummy_base_items,
+            flavouring_items=flavouring_items,
+            colour_items=colour_items,
+            glazing_items=glazing_items,
         )
     else:
         # Non-math dosage forms (liquid, other_solid) still report
@@ -932,6 +1201,36 @@ def update_formulation(
             raise InvalidTabletSize()
     if "powder_type" in changes and changes["powder_type"] is not None:
         _validate_powder_type(changes["powder_type"])
+    # Gummy base picks — read the id list off ``changes`` and resolve
+    # to org-scoped items. Empty / missing clears the selection; a
+    # list of UUIDs validates ``use_as`` on each and replaces the M2M
+    # atomically with the new set. Held back from the generic setattr
+    # loop below because M2M writes need ``.set()`` and have to run
+    # after the Formulation exists in the DB.
+    pending_gummy_bases: list[Item] | None = None
+    if "gummy_base_item_ids" in changes:
+        pending_gummy_bases = _resolve_gummy_base_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("gummy_base_item_ids"),
+        )
+    pending_flavouring: list[Item] | None = None
+    if "flavouring_item_ids" in changes:
+        pending_flavouring = _resolve_flavouring_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("flavouring_item_ids"),
+        )
+    pending_colour: list[Item] | None = None
+    if "colour_item_ids" in changes:
+        pending_colour = _resolve_colour_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("colour_item_ids"),
+        )
+    pending_glazing: list[Item] | None = None
+    if "glazing_item_ids" in changes:
+        pending_glazing = _resolve_glazing_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("glazing_item_ids"),
+        )
     if "code" in changes and changes["code"] and changes["code"] != formulation.code:
         duplicate = (
             Formulation.objects.filter(
@@ -953,6 +1252,14 @@ def update_formulation(
 
     formulation.updated_by = actor
     formulation.save()
+    if pending_gummy_bases is not None:
+        formulation.gummy_base_items.set(pending_gummy_bases)
+    if pending_flavouring is not None:
+        formulation.flavouring_items.set(pending_flavouring)
+    if pending_colour is not None:
+        formulation.colour_items.set(pending_colour)
+    if pending_glazing is not None:
+        formulation.glazing_items.set(pending_glazing)
     record_audit(
         organization=formulation.organization,
         actor=actor,
@@ -974,6 +1281,215 @@ def _validate_powder_type(value: str) -> None:
     valid = {variant.value for variant in PowderType}
     if value not in valid:
         raise InvalidPowderType()
+
+
+def _resolve_glazing_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``glazing_item_ids`` — same validation shape
+    as the base / flavour-colour resolvers, category
+    ``Glazing Agent``. Fails with :class:`InvalidGlazingItem` on any
+    off-vocab or foreign-tenant pick."""
+
+    if raw_ids is None:
+        return []
+    if isinstance(raw_ids, (str, bytes)) or not hasattr(raw_ids, "__iter__"):
+        raw_ids = [raw_ids]
+    unique_ids: list[Any] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        if value in (None, ""):
+            continue
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_ids.append(value)
+
+    if not unique_ids:
+        return []
+
+    catalogue = Catalogue.objects.filter(
+        organization=organization, slug=RAW_MATERIALS_SLUG
+    ).first()
+    if catalogue is None:
+        raise InvalidGlazingItem()
+
+    items_by_id = {
+        str(item.id): item
+        for item in Item.objects.filter(
+            catalogue=catalogue, id__in=unique_ids, is_archived=False
+        )
+    }
+    resolved: list[Item] = []
+    for value in unique_ids:
+        item = items_by_id.get(str(value))
+        if item is None:
+            raise InvalidGlazingItem()
+        raw_use_as = (item.attributes or {}).get("use_as") or ""
+        normalised = normalize_use_as_value(str(raw_use_as))
+        if normalised not in GLAZING_USE_CATEGORIES:
+            raise InvalidGlazingItem()
+        resolved.append(item)
+    return resolved
+
+
+def _resolve_use_as_picks(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+    allowed_categories: tuple[str, ...],
+    error_cls: type[Exception],
+) -> list[Item]:
+    """Generic id-list → ``Item`` resolver gated on ``use_as`` category.
+
+    Mirrors :func:`_resolve_gummy_base_items` but parameterised on the
+    allowed-category tuple and the exception type so each failure mode
+    still surfaces through a distinct API code (and a distinct
+    translation on the frontend) without four near-duplicate copies of
+    the same body.
+    """
+
+    if raw_ids is None:
+        return []
+    if isinstance(raw_ids, (str, bytes)) or not hasattr(raw_ids, "__iter__"):
+        raw_ids = [raw_ids]
+    unique_ids: list[Any] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        if value in (None, ""):
+            continue
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_ids.append(value)
+
+    if not unique_ids:
+        return []
+
+    catalogue = Catalogue.objects.filter(
+        organization=organization, slug=RAW_MATERIALS_SLUG
+    ).first()
+    if catalogue is None:
+        raise error_cls()
+
+    items_by_id = {
+        str(item.id): item
+        for item in Item.objects.filter(
+            catalogue=catalogue, id__in=unique_ids, is_archived=False
+        )
+    }
+    resolved: list[Item] = []
+    for value in unique_ids:
+        item = items_by_id.get(str(value))
+        if item is None:
+            raise error_cls()
+        raw_use_as = (item.attributes or {}).get("use_as") or ""
+        normalised = normalize_use_as_value(str(raw_use_as))
+        if normalised not in allowed_categories:
+            raise error_cls()
+        resolved.append(item)
+    return resolved
+
+
+def _resolve_flavouring_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``flavouring_item_ids`` — picks must carry
+    ``use_as == "Flavouring"``."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=FLAVOURING_USE_CATEGORIES,
+        error_cls=InvalidFlavouringItem,
+    )
+
+
+def _resolve_colour_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``colour_item_ids`` — picks must carry
+    ``use_as == "Colour"``."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=COLOUR_USE_CATEGORIES,
+        error_cls=InvalidColourItem,
+    )
+
+
+def _resolve_gummy_base_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve an incoming ``gummy_base_item_ids`` list.
+
+    Returns an empty list when the caller cleared the selection
+    (passed ``None`` / ``[]``). Otherwise every id in the list must
+    resolve to a non-archived :class:`Item` in the org's
+    ``raw_materials`` catalogue whose ``use_as`` sits in
+    :data:`GUMMY_BASE_USE_CATEGORIES`. Any other state raises
+    :class:`InvalidGummyBaseItem` — we fail the whole save rather
+    than drop rejected ids silently so the scientist notices the
+    pick they made was off-target.
+
+    Ids are de-duplicated while preserving order so a picker that
+    accidentally submits the same id twice still returns a single
+    :class:`Item` (the M2M would otherwise collapse it anyway).
+    """
+
+    if raw_ids is None:
+        return []
+    # Tolerate both a flat id and a list for forward/backward compat.
+    if isinstance(raw_ids, (str, bytes)) or not hasattr(raw_ids, "__iter__"):
+        raw_ids = [raw_ids]
+    unique_ids: list[Any] = []
+    seen: set[str] = set()
+    for value in raw_ids:
+        if value in (None, ""):
+            continue
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_ids.append(value)
+
+    if not unique_ids:
+        return []
+
+    catalogue = Catalogue.objects.filter(
+        organization=organization, slug=RAW_MATERIALS_SLUG
+    ).first()
+    if catalogue is None:
+        raise InvalidGummyBaseItem()
+
+    items_by_id = {
+        str(item.id): item
+        for item in Item.objects.filter(
+            catalogue=catalogue, id__in=unique_ids, is_archived=False
+        )
+    }
+    resolved: list[Item] = []
+    for value in unique_ids:
+        item = items_by_id.get(str(value))
+        if item is None:
+            raise InvalidGummyBaseItem()
+        raw_use_as = (item.attributes or {}).get("use_as") or ""
+        normalised = normalize_use_as_value(str(raw_use_as))
+        if normalised not in GUMMY_BASE_USE_CATEGORIES:
+            raise InvalidGummyBaseItem()
+        resolved.append(item)
+    return resolved
 
 
 @transaction.atomic
@@ -1504,11 +2020,24 @@ def build_ingredient_declaration(
 ) -> tuple[str, tuple[IngredientDeclarationEntry, ...]]:
     """Produce the product's ingredient declaration string.
 
-    All actives + excipients + (for capsules) the shell are merged
-    into a single list, sorted by ``mg/serving`` descending, and
-    rendered using each row's label-friendly name. Returns the
-    joined string plus the intermediate entry list so the UI can
-    show a table breakdown alongside the raw string.
+    Output follows the EU 1169/2011 labelling convention:
+
+    * **Actives** (``use_as == "Active"``) are listed individually by
+      their label-friendly name, sorted by mg/serving descending.
+    * **Non-active items** are grouped by their canonical ``use_as``
+      category and rendered as ``"Sweeteners (Xylitol, Maltitol)"``
+      so a typical gummy declaration reads:
+      ``"Sweeteners (Xylitol, Maltitol), Acidity Regulator (Citric
+      Acid), Colourant (Beetroot), Flavouring (Natural Strawberry)"``.
+    * **Synthetic excipients** (MCC carrier, anticaking agents,
+      capsule shell) keep their fixed label and rank by their own
+      mg weight — they don't carry a ``use_as`` so they stay
+      standalone.
+
+    The category-group position within the final string is driven by
+    the heaviest member of the group, so a 1500mg sweetener block
+    sits ahead of a 50mg acidity-regulator block regardless of the
+    order catalogue items appear.
     """
 
     entries: list[IngredientDeclarationEntry] = []
@@ -1518,15 +2047,27 @@ def build_ingredient_declaration(
         if item is None:
             continue
         is_allergen = _is_item_allergen(item)
+        attrs = item.attributes or {}
+        raw_use_as = attrs.get("use_as")
+        use_as = (
+            normalize_use_as_value(str(raw_use_as)) if raw_use_as else ""
+        )
+        # Category fallback: an untagged item is treated as an
+        # active. Catalogues imported before the ``use_as`` vocab was
+        # enforced leave most items blank, and they historically ran
+        # as actives — don't silently demote them. Only explicitly
+        # non-Active ``use_as`` values bucket into ``excipient``.
+        is_non_active = bool(use_as) and use_as != "Active"
         entries.append(
             IngredientDeclarationEntry(
                 label=_entry_label_for_item(item),
                 mg=mg,
-                category="active",
+                category=("excipient" if is_non_active else "active"),
                 is_allergen=is_allergen,
                 allergen_source=(
                     _allergen_source_for_item(item) if is_allergen else ""
                 ),
+                use_as=use_as,
             )
         )
 
@@ -1545,6 +2086,39 @@ def build_ingredient_declaration(
                 IngredientDeclarationEntry(
                     label=EXCIPIENT_LABEL_DCP,
                     mg=excipients.dcp_mg,
+                    category="excipient",
+                )
+            )
+        if excipients.gummy_base_rows:
+            # Multi-pick blend: emit one entry per picked item so the
+            # declaration groups them under their shared ``use_as``
+            # category ("Sweeteners (Xylitol, Maltitol)").
+            for base_row in excipients.gummy_base_rows:
+                if base_row.mg <= 0:
+                    continue
+                entries.append(
+                    IngredientDeclarationEntry(
+                        label=base_row.label,
+                        mg=base_row.mg,
+                        category="excipient",
+                        use_as=base_row.use_as or "",
+                    )
+                )
+        elif excipients.gummy_base_mg is not None and excipients.gummy_base_mg > 0:
+            # No picked items but a target was set → render a generic
+            # "Gummy Base" row so the declaration is still complete.
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_GUMMY_BASE,
+                    mg=excipients.gummy_base_mg,
+                    category="excipient",
+                )
+            )
+        if excipients.water_mg is not None and excipients.water_mg > 0:
+            entries.append(
+                IngredientDeclarationEntry(
+                    label=EXCIPIENT_LABEL_WATER,
+                    mg=excipients.water_mg,
                     category="excipient",
                 )
             )
@@ -1591,9 +2165,62 @@ def build_ingredient_declaration(
                 )
             )
 
+    declaration = _format_grouped_declaration(entries)
+    # Entries list stays sorted by weight for the UI breakdown — only
+    # the joined string receives the category grouping.
     entries.sort(key=lambda e: (-float(e.mg), e.label))
-    declaration = ", ".join(entry.label for entry in entries)
     return declaration, tuple(entries)
+
+
+def _format_grouped_declaration(
+    entries: list[IngredientDeclarationEntry],
+) -> str:
+    """Render the declaration string with EU category grouping.
+
+    Algorithm:
+
+    * Any entry with a non-Active ``use_as`` joins a group keyed by
+      that category. Every other entry stays standalone.
+    * Within a group, members are sorted by mg descending so the
+      heaviest sweetener leads ``"Sweeteners (Xylitol, Maltitol)"``.
+    * Groups and standalone entries are interleaved in the final
+      string by their leading member's mg, so a group with a 1500mg
+      heaviest member sits ahead of a 1000mg standalone active
+      regardless of insertion order.
+    * EU 1169/2011 art. 21 requires allergenic ingredients to be
+      visually emphasised in the list — every ``is_allergen`` entry's
+      label is wrapped in ``<b>…</b>``. Renderers that consume this
+      string must treat it as HTML (the spec PDF / web view both pass
+      it through ``|safe`` / ``dangerouslySetInnerHTML``).
+    """
+
+    groups: dict[str, list[IngredientDeclarationEntry]] = {}
+    standalone: list[IngredientDeclarationEntry] = []
+    for entry in entries:
+        if entry.use_as and entry.use_as != "Active":
+            groups.setdefault(entry.use_as, []).append(entry)
+        else:
+            standalone.append(entry)
+
+    def render_label(entry: IngredientDeclarationEntry) -> str:
+        escaped = html.escape(entry.label)
+        return f"<b>{escaped}</b>" if entry.is_allergen else escaped
+
+    # Each printable chunk is ``(leading_mg, rendered_string)`` so the
+    # merge below sorts them together by weight.
+    chunks: list[tuple[float, str]] = []
+
+    for entry in standalone:
+        chunks.append((float(entry.mg), render_label(entry)))
+
+    for category, members in groups.items():
+        members.sort(key=lambda e: (-float(e.mg), e.label))
+        leading = float(members[0].mg)
+        names = ", ".join(render_label(m) for m in members)
+        chunks.append((leading, f"{html.escape(category)} ({names})"))
+
+    chunks.sort(key=lambda c: -c[0])
+    return ", ".join(rendered for _, rendered in chunks)
 
 
 def compute_formulation_totals(
@@ -1619,6 +2246,18 @@ def compute_formulation_totals(
         target_fill_weight_mg=formulation.target_fill_weight_mg,
         powder_type=formulation.powder_type or None,
         water_volume_ml=formulation.water_volume_ml,
+        gummy_base_items=tuple(
+            formulation.gummy_base_items.all().order_by("name")
+        ),
+        flavouring_items=tuple(
+            formulation.flavouring_items.all().order_by("name")
+        ),
+        colour_items=tuple(
+            formulation.colour_items.all().order_by("name")
+        ),
+        glazing_items=tuple(
+            formulation.glazing_items.all().order_by("name")
+        ),
     )
 
 
@@ -1816,6 +2455,25 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                     if totals.excipients.dcp_mg is not None
                     else None
                 ),
+                "gummy_base_mg": (
+                    str(totals.excipients.gummy_base_mg)
+                    if totals.excipients.gummy_base_mg is not None
+                    else None
+                ),
+                "water_mg": (
+                    str(totals.excipients.water_mg)
+                    if totals.excipients.water_mg is not None
+                    else None
+                ),
+                "gummy_base_rows": [
+                    {
+                        "item_id": row.item_id,
+                        "label": row.label,
+                        "use_as": row.use_as,
+                        "mg": str(row.mg),
+                    }
+                    for row in totals.excipients.gummy_base_rows
+                ],
                 "rows": [
                     {
                         "slug": row.slug,

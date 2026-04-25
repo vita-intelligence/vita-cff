@@ -335,6 +335,10 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                     onChange={(e) => {
                       setFormulationId(e.target.value);
                       setVersionId("");
+                      // Swapping the formulation invalidates any
+                      // previously-picked spec — they're scoped to
+                      // a specific formulation, so drop it.
+                      setSpecSheetId("");
                     }}
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   >
@@ -410,29 +414,52 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   <select
                     value={specSheetId}
                     onChange={(e) => setSpecSheetId(e.target.value)}
-                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    disabled={!formulationId}
+                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     <option value="">
                       {tProposals("create.specification_sheet_none")}
                     </option>
-                    {specSheets.map((sheet) => {
-                      const label = [
-                        sheet.code,
-                        sheet.formulation_name,
-                        `v${sheet.formulation_version_number}`,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ");
-                      const kindTag =
-                        sheet.document_kind === "final" ? " [FINAL]" : " [DRAFT]";
-                      return (
-                        <option key={sheet.id} value={sheet.id}>
-                          {label}
-                          {kindTag}
-                        </option>
-                      );
-                    })}
+                    {
+                      // Strict scope: only sheets attached to the
+                      // picked formulation. Before a formulation's
+                      // been chosen the list stays empty — pick one
+                      // first, then its sheets populate. Keeps
+                      // scientists from accidentally bundling a
+                      // sheet from an unrelated project.
+                      (formulationId
+                        ? specSheets.filter(
+                            (s) => s.formulation_id === formulationId,
+                          )
+                        : []
+                      ).map((sheet) => {
+                        const label = [
+                          sheet.code,
+                          sheet.formulation_name,
+                          `v${sheet.formulation_version_number}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ");
+                        const kindTag =
+                          sheet.document_kind === "final"
+                            ? " [FINAL]"
+                            : " [DRAFT]";
+                        return (
+                          <option key={sheet.id} value={sheet.id}>
+                            {label}
+                            {kindTag}
+                          </option>
+                        );
+                      })
+                    }
                   </select>
+                  <span className="text-[11px] text-ink-500">
+                    {formulationId
+                      ? tProposals("create.specification_sheet_hint")
+                      : tProposals(
+                          "create.specification_sheet_hint_pick_formulation",
+                        )}
+                  </span>
                 </label>
 
                 <CustomerPicker

@@ -159,6 +159,19 @@ export interface SalesPersonDto {
   readonly email: string;
 }
 
+/** Light echo of a gummy-base raw-material item picked for this
+ *  formulation. Zero or more items can be picked; the total base
+ *  weight is split equally across them. When the list is empty the
+ *  spec-sheet declaration emits a generic "Gummy Base" row. */
+export interface GummyBaseItemDto {
+  readonly id: string;
+  readonly name: string;
+  readonly internal_code: string;
+  readonly ingredient_list_name: string;
+  readonly use_as: string;
+}
+
+
 export interface FormulationDto {
   readonly id: string;
   readonly code: string;
@@ -172,6 +185,16 @@ export interface FormulationDto {
   readonly target_fill_weight_mg: string | null;
   readonly powder_type: PowderType;
   readonly water_volume_ml: string | null;
+  readonly gummy_base_item_ids: readonly string[];
+  readonly gummy_base_items: readonly GummyBaseItemDto[];
+  readonly flavouring_item_ids: readonly string[];
+  //: Echo payload reuses :type:`GummyBaseItemDto` — same fields
+  //: (id / name / internal_code / ingredient_list_name / use_as).
+  readonly flavouring_items: readonly GummyBaseItemDto[];
+  readonly colour_item_ids: readonly string[];
+  readonly colour_items: readonly GummyBaseItemDto[];
+  readonly glazing_item_ids: readonly string[];
+  readonly glazing_items: readonly GummyBaseItemDto[];
   readonly directions_of_use: string;
   readonly suggested_dosage: string;
   readonly appearance: string;
@@ -210,6 +233,21 @@ export interface CreateFormulationRequestDto {
 export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> & {
   readonly project_status?: ProjectStatus;
   readonly project_type?: ProjectType;
+  /** Array of Item ids for the gummy-base blend; empty array clears
+   *  the selection. Server rejects items outside the raw_materials
+   *  catalogue or whose ``use_as`` isn't a valid gummy-base
+   *  category. */
+  readonly gummy_base_item_ids?: readonly string[];
+  /** Array of Item ids for the Flavouring block; empty array clears.
+   *  Server rejects items whose ``use_as`` ≠ 'Flavouring'. */
+  readonly flavouring_item_ids?: readonly string[];
+  /** Array of Item ids for the Colour block; empty array clears.
+   *  Server rejects items whose ``use_as`` ≠ 'Colour'. */
+  readonly colour_item_ids?: readonly string[];
+  /** Array of Item ids for the Glazing Agent block (wax, coconut
+   *  oil, etc.); empty array clears. Server rejects items whose
+   *  ``use_as`` ≠ 'Glazing Agent'. */
+  readonly glazing_item_ids?: readonly string[];
 };
 
 export interface FormulationLineInput {
@@ -232,11 +270,31 @@ export interface ExcipientRowDto {
   readonly concentration_mg_per_ml?: string | null;
 }
 
+/** One item in the gummy-base blend. Label + category come from the
+ *  picked catalogue item so the spec sheet reads "Sweeteners
+ *  (Xylitol, Maltitol)"; ``mg`` is the per-item share of the total
+ *  base weight (equal split across picks). */
+export interface GummyBaseRowDto {
+  readonly item_id: string;
+  readonly label: string;
+  readonly use_as: string;
+  readonly mg: string;
+}
+
+
 export interface ExcipientBreakdownDto {
   readonly mg_stearate_mg: string | null;
   readonly silica_mg: string | null;
   readonly mcc_mg: string | null;
   readonly dcp_mg: string | null;
+  /** Gummy-only TOTAL base weight (target − water − actives −
+   *  flavour, min 65% floor). ``null`` elsewhere. Per-item splits
+   *  live on :attr:`gummy_base_rows`. */
+  readonly gummy_base_mg: string | null;
+  /** Gummy-only: 5.5% of the target gummy weight. ``null`` elsewhere. */
+  readonly water_mg: string | null;
+  /** Per-item breakdown of the gummy base (empty when none picked). */
+  readonly gummy_base_rows: readonly GummyBaseRowDto[];
   /** Flexible per-form list populated for powder + gummy. Empty for
    * capsule + tablet — those consume the typed fields above. */
   readonly rows: readonly ExcipientRowDto[];

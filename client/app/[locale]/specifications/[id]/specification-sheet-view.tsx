@@ -1076,40 +1076,28 @@ function KeyValue({ label, value }: { label: string; value: string }) {
 }
 
 
-/** Render the ingredient declaration paragraph with allergen names
- * bolded in place. The backend's ``declaration.text`` is a plain
- * comma-joined string — fine for JSON clients — but EU 1169/2011
- * art. 21 requires allergenic ingredients in the list to stand out,
- * so the spec sheet rebuilds the copy from ``entries`` and wraps
- * ``is_allergen`` rows in ``<strong>``. Falls back to the plain
- * text when the entries array is empty (e.g. a freshly-created
- * version with no lines). */
+/** Render the ingredient declaration paragraph. The backend's
+ * ``declaration.text`` is the EU 1169/2011-compliant string with
+ * categories grouped (e.g. "Sweeteners (Xylitol, Maltitol)") and
+ * allergens wrapped in ``<b>``. Both the in-app view and the PDF
+ * render the same string so there's no visual drift between the two
+ * surfaces. Empty (no lines yet) falls back to a dash. */
 function IngredientDeclarationBody({
   rendered,
 }: {
   rendered: RenderedSheetContext;
 }) {
-  const entries = rendered.declaration.entries;
-  if (entries.length === 0) {
+  const text = rendered.declaration.text;
+  if (!text) {
     return (
-      <p className="font-serif text-sm leading-relaxed text-ink-1000">
-        {rendered.declaration.text || "—"}
-      </p>
+      <p className="font-serif text-sm leading-relaxed text-ink-1000">—</p>
     );
   }
   return (
-    <p className="font-serif text-sm leading-relaxed text-ink-1000">
-      {entries.map((entry, idx) => (
-        <Fragment key={`${entry.category}-${entry.label}-${idx}`}>
-          {idx > 0 ? ", " : ""}
-          {entry.is_allergen ? (
-            <strong>{entry.label}</strong>
-          ) : (
-            entry.label
-          )}
-        </Fragment>
-      ))}
-    </p>
+    <p
+      className="font-serif text-sm leading-relaxed text-ink-1000"
+      dangerouslySetInnerHTML={{ __html: text }}
+    />
   );
 }
 

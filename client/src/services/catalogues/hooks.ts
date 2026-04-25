@@ -60,6 +60,7 @@ export const cataloguesQueryKeys = {
       includeArchived: boolean;
       ordering: string;
       search?: string;
+      useAs?: string;
     },
   ) =>
     [
@@ -74,6 +75,7 @@ export const cataloguesQueryKeys = {
       // the picker does not thrash between two keys when the user
       // clears their search.
       (opts.search ?? "").trim(),
+      opts.useAs ?? "",
     ] as const,
   itemDetail: (orgId: string, slug: string, itemId: string) =>
     [
@@ -173,6 +175,10 @@ export function useInfiniteItems(
      * does not thrash as the user clears the input.
      */
     search?: string;
+    /** Filter items by ``use_as`` — typically a fixed array the
+     *  caller reuses (e.g. ``["Sweeteners", "Bulking Agent"]`` for
+     *  the gummy-base picker). */
+    useAsIn?: readonly string[];
     initialFirstPage?: PaginatedItemsDto | null;
   },
 ): UseInfiniteQueryResult<InfiniteData<PaginatedItemsDto, string | null>, ApiError> {
@@ -181,9 +187,12 @@ export function useInfiniteItems(
     ordering,
     pageSize,
     search,
+    useAsIn,
     initialFirstPage,
   } = options;
   const normalisedSearch = (search ?? "").trim() || undefined;
+  const useAsKey =
+    useAsIn && useAsIn.length > 0 ? [...useAsIn].sort().join(",") : undefined;
   return useInfiniteQuery<
     PaginatedItemsDto,
     ApiError,
@@ -195,6 +204,7 @@ export function useInfiniteItems(
       includeArchived,
       ordering,
       search: normalisedSearch,
+      useAs: useAsKey,
     }),
     queryFn: ({ pageParam }) =>
       fetchItemsPage(orgId, slug, {
@@ -202,6 +212,7 @@ export function useInfiniteItems(
         ordering,
         pageSize,
         search: normalisedSearch,
+        useAsIn,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,

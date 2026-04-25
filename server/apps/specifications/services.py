@@ -16,6 +16,8 @@ workflow:
 
 from __future__ import annotations
 
+import html
+import re
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -1039,6 +1041,59 @@ def show_watermark_for(document_kind: str) -> bool:
     return document_kind != SpecificationDocumentKind.FINAL.value
 
 
+def _augment_declaration_with_bolding(
+    text: str,
+    entries: list[dict[str, Any]],
+) -> str:
+    """Wrap allergen labels in ``<b>…</b>`` inside the frozen
+    declaration string.
+
+    Snapshots taken before the EU-1169-bolding rollout stored
+    ``declaration.text`` as plain text. Re-rendering the whole string
+    at view time would require ``use_as`` data the frozen entries
+    don't carry, so we take the cheaper path: walk the entries list,
+    pull out every ``is_allergen`` label, and substitute that label
+    inside ``text`` with a bold-wrapped version.
+
+    Skipped when ``text`` already contains ``<b>`` (a fresh snapshot
+    produced by the new pipeline already has the markup, no need to
+    double-wrap). HTML-escapes the result so any stray special chars
+    in labels remain safe to inject via ``|safe`` /
+    ``dangerouslySetInnerHTML``.
+    """
+
+    if not text:
+        return ""
+    if "<b>" in text or "<B>" in text:
+        # Already-bolded snapshot — pass through unchanged.
+        return text
+
+    allergen_labels: list[str] = []
+    for entry in entries:
+        if not entry.get("is_allergen"):
+            continue
+        label = (entry.get("label") or "").strip()
+        if label and label not in allergen_labels:
+            allergen_labels.append(label)
+
+    escaped = html.escape(text)
+    if not allergen_labels:
+        return escaped
+
+    # Sort by length descending so longer labels match before any
+    # shorter substring of them — protects "Whey Protein Isolate"
+    # from being half-bolded by an entry just titled "Whey".
+    for label in sorted(allergen_labels, key=len, reverse=True):
+        escaped_label = html.escape(label)
+        pattern = re.compile(
+            r"(?<![A-Za-z0-9])" + re.escape(escaped_label) + r"(?![A-Za-z0-9])"
+        )
+        escaped = pattern.sub(
+            lambda m, lbl=escaped_label: f"<b>{lbl}</b>", escaped
+        )
+    return escaped
+
+
 def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     """Turn a sheet + its snapshot into the flat dict the frontend
     renders. Pure function — no DB writes, no side effects."""
@@ -1101,6 +1156,19 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
 
     compliance = totals.get("compliance") or {"flags": []}
     declaration = totals.get("declaration") or {"text": "", "entries": []}
+    # Pre-split / pre-bolding snapshots stored ``declaration.text`` as
+    # a plain comma-joined string with no allergen markup. We can't
+    # rewrite the frozen blob, but we *can* re-render at view time
+    # using the entries list (which carries ``is_allergen`` flags) so
+    # the PDF + in-app view both show bolded allergens — same fix
+    # without forcing every existing version to re-snapshot.
+    declaration = {
+        **declaration,
+        "text": _augment_declaration_with_bolding(
+            declaration.get("text") or "",
+            declaration.get("entries") or [],
+        ),
+    }
     allergens = totals.get("allergens") or {"sources": [], "allergen_count": 0}
     nutrition = totals.get("nutrition") or {"rows": []}
     amino_acids = totals.get("amino_acids") or {"groups": []}

@@ -94,6 +94,13 @@ class ProposalReadSerializer(serializers.ModelSerializer):
     lines = ProposalLineReadSerializer(many=True, read_only=True)
     subtotal = serializers.SerializerMethodField()
     total_excl_vat = serializers.SerializerMethodField()
+    #: Three signature slots render as structured payloads (name +
+    #: signed_at + image) so the client doesn't have to hydrate two
+    #: parallel fields per slot. ``null`` means "not signed yet" for
+    #: any slot.
+    prepared_by = serializers.SerializerMethodField()
+    director = serializers.SerializerMethodField()
+    customer_signature = serializers.SerializerMethodField()
 
     class Meta:
         model = Proposal
@@ -134,6 +141,9 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "public_token",
             "prepared_by_signed_at",
             "director_signed_at",
+            "prepared_by",
+            "director",
+            "customer_signature",
             "customer_signer_name",
             "customer_signer_email",
             "customer_signer_company",
@@ -142,6 +152,40 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = fields
+
+    def _user_label(self, user) -> str:
+        if user is None:
+            return ""
+        return (user.get_full_name() or user.email or "").strip()
+
+    def get_prepared_by(self, obj: Proposal) -> dict | None:
+        if obj.prepared_by_signed_at is None:
+            return None
+        return {
+            "name": self._user_label(obj.prepared_by_user),
+            "signed_at": obj.prepared_by_signed_at.isoformat(),
+            "image": obj.prepared_by_signature_image or "",
+        }
+
+    def get_director(self, obj: Proposal) -> dict | None:
+        if obj.director_signed_at is None:
+            return None
+        return {
+            "name": self._user_label(obj.director_user),
+            "signed_at": obj.director_signed_at.isoformat(),
+            "image": obj.director_signature_image or "",
+        }
+
+    def get_customer_signature(self, obj: Proposal) -> dict | None:
+        if obj.customer_signed_at is None:
+            return None
+        return {
+            "name": obj.customer_signer_name or "",
+            "email": obj.customer_signer_email or "",
+            "company": obj.customer_signer_company or "",
+            "signed_at": obj.customer_signed_at.isoformat(),
+            "image": obj.customer_signature_image or "",
+        }
 
     def get_sales_person_name(self, obj: Proposal) -> str:
         user = obj.sales_person

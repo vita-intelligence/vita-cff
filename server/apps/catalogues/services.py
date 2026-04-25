@@ -200,6 +200,7 @@ def list_items(
     catalogue: Catalogue,
     include_archived: bool = False,
     search: str | None = None,
+    use_as_in: tuple[str, ...] | None = None,
 ) -> QuerySet[Item]:
     """Return items inside ``catalogue``, ordered by name.
 
@@ -207,6 +208,12 @@ def list_items(
     and ``internal_code``. Empty or whitespace-only strings are ignored
     so the builder's picker can submit whatever the user has typed
     without first trimming it.
+
+    ``use_as_in`` narrows to items whose ``attributes.use_as`` matches
+    any value in the tuple — used by the gummy-base picker to surface
+    only Sweeteners / Bulking Agents. We do an exact match on the
+    JSON value rather than a string ``LIKE`` so a carelessly named
+    "Sweetener Blend" active doesn't slip through as a base candidate.
     """
 
     qs = Item.objects.filter(catalogue=catalogue)
@@ -220,6 +227,14 @@ def list_items(
                 Q(name__icontains=trimmed)
                 | Q(internal_code__icontains=trimmed)
             )
+    if use_as_in:
+        from django.db.models import Q
+        # One OR branch per allowed value; exact JSON match so a
+        # free-text drift like ``"Sweet"`` won't accidentally match.
+        q = Q()
+        for value in use_as_in:
+            q |= Q(attributes__use_as=value)
+        qs = qs.filter(q)
     return qs.order_by("name")
 
 

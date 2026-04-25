@@ -36,10 +36,55 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.comments.models import KioskSession
-from apps.specifications.services import (
-    PublicLinkNotEnabled,
-    get_by_public_token,
-)
+
+
+def _resolve_token_uuid(public_token: Any) -> uuid.UUID:
+    """Resolve a kiosk share token to its canonical UUID.
+
+    The same cookie / session machinery backs two share surfaces —
+    spec sheets (``/p/<token>``) and proposals
+    (``/p/proposal/<token>``) — and :class:`KioskSession` stores only
+    the raw UUID, not an FK, so a single session row is agnostic to
+    which document type issued it. We try the spec resolver first
+    because that surface shipped earlier and is the hot path; fall
+    back to the proposal resolver for tokens rotated onto the
+    proposal kiosk. Raises :class:`KioskTokenInvalid` if neither
+    owns the token (or if the value isn't a valid UUID).
+
+    Imports are lazy so the comments app stays independent of the
+    specifications / proposals app load order.
+    """
+
+    # Quick malformed-UUID rejection — both resolvers would raise on
+    # this path anyway, but doing it once here avoids two pointless
+    # DB queries and gives a consistent error code.
+    try:
+        canonical = uuid.UUID(str(public_token))
+    except (ValueError, TypeError) as exc:
+        raise KioskTokenInvalid() from exc
+
+    from apps.specifications.services import (
+        PublicLinkNotEnabled,
+        get_by_public_token,
+    )
+
+    try:
+        sheet = get_by_public_token(canonical)
+    except PublicLinkNotEnabled:
+        sheet = None
+    if sheet is not None:
+        return sheet.public_token
+
+    from apps.proposals.services import (
+        ProposalPublicLinkNotEnabled,
+        get_proposal_by_public_token,
+    )
+
+    try:
+        proposal = get_proposal_by_public_token(canonical)
+    except ProposalPublicLinkNotEnabled as exc:
+        raise KioskTokenInvalid() from exc
+    return proposal.public_token
 
 
 #: Cookie name for the signed session id. Scoped per-token so one
@@ -168,18 +213,14 @@ def identify_visitor(
 ) -> tuple[KioskSession, uuid.UUID]:
     """Create or refresh a kiosk session for the given share token.
 
-    The target sheet's token is validated against
-    :func:`get_by_public_token`, which encapsulates the "revoked /
-    missing / never shared" disambiguation — we never leak existence
-    of a deleted sheet.
+    The target document's token is validated against
+    :func:`_resolve_token_uuid`, which probes both the spec-sheet
+    and proposal share surfaces, encapsulating the "revoked /
+    missing / never shared" disambiguation — we never leak
+    existence of a deleted document.
     """
 
-    try:
-        sheet = get_by_public_token(public_token)
-    except PublicLinkNotEnabled as exc:
-        raise KioskTokenInvalid() from exc
-
-    token_uuid = sheet.public_token
+    token_uuid = _resolve_token_uuid(public_token)
     name = (guest_name or "").strip()
     email = (guest_email or "").strip().lower()
     company = (guest_org_label or "").strip()
@@ -215,11 +256,7 @@ def resolve_from_request(request, public_token: str) -> KioskIdentity:
     ``api_code``.
     """
 
-    try:
-        sheet = get_by_public_token(public_token)
-    except PublicLinkNotEnabled as exc:
-        raise KioskTokenInvalid() from exc
-    token_uuid = sheet.public_token
+    token_uuid = _resolve_token_uuid(public_token)
 
     cookie_name = _cookie_name(token_uuid)
     signed_value = request.COOKIES.get(cookie_name)

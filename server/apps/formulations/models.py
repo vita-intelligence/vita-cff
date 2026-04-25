@@ -182,6 +182,66 @@ class Formulation(models.Model):
             "Ignored for non-powder forms."
         ),
     )
+    gummy_base_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("gummy base items"),
+        blank=True,
+        related_name="gummy_base_formulations",
+        help_text=_(
+            "Raw-material items that make up the gummy base — e.g. a "
+            "Xylitol + Maltitol blend. Each pick must have use_as ∈ "
+            "(Sweeteners, Bulking Agent). The base total "
+            "(target − water − actives − flavour, min 65% of target) "
+            "is split **equally** across picked items. Nutrition + "
+            "compliance + label copy flow from every picked item into "
+            "the spec sheet under the EU category label (e.g. "
+            "'Sweeteners (Xylitol, Maltitol)'). Ignored for non-gummy "
+            "forms."
+        ),
+    )
+    flavouring_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("flavouring items"),
+        blank=True,
+        related_name="flavouring_formulations",
+        help_text=_(
+            "Raw-material items used as flavour agents — e.g. Natural "
+            "Strawberry Flavour, Lemon Extract. Each pick must carry "
+            "use_as = 'Flavouring'. The flavour total (0.4% of target "
+            "gummy weight) splits equally across picks and groups on "
+            "the spec sheet as 'Flavouring (Natural Strawberry, "
+            "Lemon Extract)'. Ignored for non-gummy forms."
+        ),
+    )
+    colour_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("colour items"),
+        blank=True,
+        related_name="colour_formulations",
+        help_text=_(
+            "Raw-material items used as colours — e.g. Beetroot "
+            "Extract, Turmeric Oleoresin, Spirulina Powder. Each "
+            "pick must carry use_as = 'Colour'. The colour total (2% "
+            "of target gummy weight) splits equally across picks and "
+            "groups as 'Colour (Beetroot Extract, Turmeric)'. "
+            "Ignored for non-gummy forms."
+        ),
+    )
+    glazing_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("glazing agent items"),
+        blank=True,
+        related_name="glazing_formulations",
+        help_text=_(
+            "Raw-material items applied as the surface glaze on a "
+            "finished gummy — carnauba wax, coconut oil, beeswax, "
+            "shellac, etc. Each pick must have use_as = 'Glazing "
+            "Agent'. The glaze total (0.1% of target gummy weight) is "
+            "split **equally** across picks; the declaration groups "
+            "them as 'Glazing Agent (Carnauba Wax, Coconut Oil)'. "
+            "Ignored for non-gummy forms."
+        ),
+    )
 
     project_status = models.CharField(
         _("project status"),

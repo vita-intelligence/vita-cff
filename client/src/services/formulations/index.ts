@@ -83,6 +83,8 @@ export {
   type DosageForm,
   type ExcipientBreakdownDto,
   type FormulationDto,
+  type GummyBaseItemDto,
+  type GummyBaseRowDto,
   type FormulationLineDto,
   type FormulationLineInput,
   type FormulationTotalsDto,

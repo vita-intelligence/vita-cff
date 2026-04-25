@@ -24,6 +24,13 @@ interface Props {
   readonly token: string;
   readonly onIdentified: (identity: KioskIdentityEcho) => void;
   readonly onDismiss?: () => void;
+  /**
+   * Override the default spec-sheet kiosk URL
+   * (``/api/public/specifications/<token>``). Callers on the
+   * proposal kiosk pass ``/api/public/proposals/<token>`` so the
+   * identify POST lands on the matching endpoint.
+   */
+  readonly basePath?: string;
 }
 
 
@@ -31,6 +38,7 @@ export function KioskIdentityModal({
   token,
   onIdentified,
   onDismiss,
+  basePath,
 }: Props) {
   const tKiosk = useTranslations("comments.kiosk");
   const tCommon = useTranslations("common");
@@ -50,11 +58,15 @@ export function KioskIdentityModal({
     setError(null);
     setSubmitting(true);
     try {
-      const echo = await identifyKioskVisitor(token, {
-        name: name.trim(),
-        email: email.trim(),
-        company: company.trim() || undefined,
-      });
+      const echo = await identifyKioskVisitor(
+        token,
+        {
+          name: name.trim(),
+          email: email.trim(),
+          company: company.trim() || undefined,
+        },
+        basePath,
+      );
       onIdentified(echo);
     } catch {
       setError(tKiosk("error_generic"));

@@ -185,21 +185,21 @@
           {% endif %}
           <tr><td class="label">Weight Uniformity:</td><td class="value">{{ weight_uniformity|default:"Not applicable" }}</td></tr>
           <tr><td class="label">Disintegration:</td><td class="value">{{ formulation.disintegration_spec|default:"Rapid disintegration (instantised)" }}</td></tr>
-          {# Shelf life / storage / food contact live on the sheet (not the
-             formulation) because they're client-negotiable — a product
-             can be quoted with a 24-month shelf at ambient for one
-             customer and 18-month chilled for another. They used to sit
-             under Packaging because the Excel workbook grouped them
-             that way, but scientists kept asking "where's shelf life?"
-             so we pulled them up here where they belong. #}
+          {% comment %}
+            Shelf life / storage / food contact live on the sheet
+            (not the formulation) because they're client-negotiable —
+            same product can be quoted at 24-month ambient for one
+            customer and 18-month chilled for another.
+          {% endcomment %}
           <tr><td class="label">Shelf Life:</td><td class="value">{{ sheet.shelf_life|default:"—" }}</td></tr>
           <tr><td class="label">Storage Conditions:</td><td class="value">{{ sheet.storage_conditions|default:"—" }}</td></tr>
           <tr><td class="label">Food Contact Status:</td><td class="value">{{ sheet.food_contact_status|default:"—" }}</td></tr>
-          {# Unit Quantity = servings per pack. Authoritative on the
-             formulation snapshot (scientists set it in the builder); we
-             fall back to a legacy ``sheet.unit_quantity`` override for
-             sheets created before the modal cleanup, and hide the row
-             entirely when neither is populated. #}
+          {% comment %}
+            Unit Quantity = servings per pack. Authoritative on the
+            formulation snapshot; falls back to the legacy
+            ``sheet.unit_quantity`` override and hides the row when
+            neither is populated.
+          {% endcomment %}
           {% if formulation.servings_per_pack or sheet.unit_quantity %}
             <tr><td class="label">Unit Quantity:</td><td class="value">{{ sheet.unit_quantity|default:formulation.servings_per_pack }}</td></tr>
           {% endif %}
@@ -238,12 +238,12 @@
         </table>
 
       {% elif slug == "signatures" %}
-        {# Free-form cover copy the scientist types into "Edit
-           details". Printed just above the signature block so the
-           customer reads any bespoke caveat (lead times, allergen
-           substitutions, custom testing terms) right before they
-           sign. CSS ``white-space: pre-wrap`` preserves hand-typed
-           paragraph breaks without requiring rich text. #}
+        {% comment %}
+          Free-form cover copy the scientist types into "Edit
+          details" — printed just above the signature block so any
+          bespoke caveat (lead times, allergen substitutions, custom
+          testing terms) reads right before they sign.
+        {% endcomment %}
         {% if sheet.cover_notes %}
           <div class="cover-notes" style="margin: 4mm 0 6mm; white-space: pre-wrap; font-size: 10pt; line-height: 1.5;">
             {{ sheet.cover_notes }}

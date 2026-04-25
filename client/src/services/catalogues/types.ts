@@ -52,6 +52,11 @@ export interface ItemsListQuery {
   readonly pageSize?: number;
   /** Case-insensitive contains match against name + internal_code. */
   readonly search?: string;
+  /** Filter to items whose ``attributes.use_as`` matches one of the
+   *  provided canonical values. Powers the gummy-base picker (filters
+   *  to ``Sweeteners``/``Bulking Agent``). Values are normalised
+   *  server-side so callers can pass casing-drift strings safely. */
+  readonly useAsIn?: readonly string[];
 }
 
 export interface ItemDto {

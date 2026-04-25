@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from django.http import HttpResponse
 from django.template.loader import render_to_string
+from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.permissions import AllowAny
@@ -565,9 +567,16 @@ class PublicSpecificationRenderView(APIView):
         return Response(render_context(sheet), status=status.HTTP_200_OK)
 
 
+@method_decorator(xframe_options_sameorigin, name="dispatch")
 class PublicSpecificationPdfView(APIView):
     """Token-gated PDF download — same body as the authenticated PDF
-    view but reached via the public token."""
+    view but reached via the public token.
+
+    Same-origin iframe embedding is allowed so the proposal kiosk
+    (which renders an iframe per attached spec) can load this
+    response; without it Django's default ``X-Frame-Options: DENY``
+    shows the broken-file placeholder instead of the spec sheet.
+    """
 
     permission_classes = (AllowAny,)
     authentication_classes: tuple = ()

@@ -13,7 +13,9 @@ from apps.proposals.api.views import (
     ProposalStatusView,
     ProposalTransitionsView,
     PublicProposalFinalizeView,
+    PublicProposalIdentifyView,
     PublicProposalKioskView,
+    PublicProposalPdfView,
     PublicProposalSignProposalView,
     PublicProposalSignSpecView,
 )
@@ -71,6 +73,16 @@ urlpatterns = [
         "public/proposals/<uuid:token>/",
         PublicProposalKioskView.as_view(),
         name="proposal-public-kiosk",
+    ),
+    path(
+        "public/proposals/<uuid:token>/identify/",
+        PublicProposalIdentifyView.as_view(),
+        name="proposal-public-identify",
+    ),
+    path(
+        "public/proposals/<uuid:token>/pdf/",
+        PublicProposalPdfView.as_view(),
+        name="proposal-public-pdf",
     ),
     path(
         "public/proposals/<uuid:token>/sign/",

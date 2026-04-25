@@ -61,6 +61,10 @@ export interface ProposalDto {
   readonly formulation_name: string;
   readonly formulation_version_number: number;
   readonly specification_sheet_id: string | null;
+  //: FK to the linked ``Customer`` record (addressbook entry). ``null``
+  //: when the proposal was created before customer-picker rollout — the
+  //: edit panel still shows the manual customer fields for those.
+  readonly customer_id: string | null;
   readonly lines: readonly ProposalLineDto[];
   readonly customer_name: string;
   readonly customer_email: string;
@@ -94,6 +98,12 @@ export interface ProposalDto {
   readonly public_token: string | null;
   readonly prepared_by_signed_at: string | null;
   readonly director_signed_at: string | null;
+  //: Structured signature payloads. ``null`` means "not captured
+  //: yet"; any non-null value carries name + ISO timestamp + the
+  //: signature image data URL so the contract renders it inline.
+  readonly prepared_by: ProposalSignatureSlot | null;
+  readonly director: ProposalSignatureSlot | null;
+  readonly customer_signature: ProposalCustomerSignature | null;
   readonly customer_signer_name: string;
   readonly customer_signer_email: string;
   readonly customer_signer_company: string;
@@ -165,6 +175,25 @@ export interface CostPreviewDto {
 // ---------------------------------------------------------------------------
 // Proposal-centric kiosk (``/p/proposal/<token>``)
 // ---------------------------------------------------------------------------
+
+
+/** Three structured signature slots on the proposal. Each one is
+ *  ``null`` until captured, then carries name + timestamp + the
+ *  signature image data URL. */
+export interface ProposalSignatureSlot {
+  readonly name: string;
+  readonly signed_at: string;
+  readonly image: string;
+}
+
+
+export interface ProposalCustomerSignature {
+  readonly name: string;
+  readonly email: string;
+  readonly company: string;
+  readonly signed_at: string;
+  readonly image: string;
+}
 
 
 /** One specification sheet attached to a proposal, as exposed on

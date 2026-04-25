@@ -180,6 +180,7 @@ export function ProposalKioskView({
       {identifying ? (
         <KioskIdentityModal
           token={token}
+          basePath={`/api/public/proposals/${token}`}
           onIdentified={handleIdentity}
           onDismiss={() => {
             // Identity capture is mandatory for signing; if the
@@ -224,9 +225,12 @@ export function ProposalKioskView({
       {/* -------------------------------------------------------------- */}
       <section className="mt-6 flex flex-col gap-3">
         <DocumentCard
+          key="proposal"
           icon={<FileText className="h-4 w-4 text-orange-600" />}
           title={tProposals("public.doc.proposal_title")}
           subtitle={tProposals("public.doc.proposal_subtitle")}
+          previewSrc={`/api/public/proposals/${token}/pdf/`}
+          previewLabel={tProposals("public.doc.preview_label")}
           signedAt={kiosk.customer_signed_at}
           hasSignature={kiosk.has_signature}
           locked={isAccepted}
@@ -263,6 +267,12 @@ export function ProposalKioskView({
             ]
               .filter(Boolean)
               .join(" · ")}
+            previewSrc={
+              sheet.public_token
+                ? `/api/public/specifications/${sheet.public_token}/pdf/`
+                : null
+            }
+            previewLabel={tProposals("public.doc.preview_label")}
             signedAt={sheet.customer_signed_at}
             hasSignature={sheet.has_signature}
             locked={isAccepted}
@@ -338,6 +348,8 @@ function DocumentCard({
   icon,
   title,
   subtitle,
+  previewSrc,
+  previewLabel,
   signedAt,
   hasSignature,
   locked,
@@ -347,6 +359,8 @@ function DocumentCard({
   icon: React.ReactNode;
   title: string;
   subtitle: string;
+  previewSrc: string | null;
+  previewLabel: string;
   signedAt: string | null;
   hasSignature: boolean;
   locked: boolean;
@@ -354,48 +368,59 @@ function DocumentCard({
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
   return (
-    <article className="flex flex-wrap items-start gap-4 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
-      <div className="flex flex-1 min-w-0 flex-col gap-0.5">
-        <div className="flex items-center gap-2">
-          {icon}
-          <h3 className="text-sm font-semibold text-ink-1000">{title}</h3>
+    <article className="flex flex-col gap-4 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <div className="flex flex-wrap items-start gap-4">
+        <div className="flex flex-1 min-w-0 flex-col gap-0.5">
+          <div className="flex items-center gap-2">
+            {icon}
+            <h3 className="text-sm font-semibold text-ink-1000">{title}</h3>
+          </div>
+          {subtitle ? (
+            <p className="text-xs text-ink-500">{subtitle}</p>
+          ) : null}
+          {hasSignature && signedAt ? (
+            <p className="mt-1 text-[11px] text-ink-500">
+              {tProposals("public.doc.signed_on", {
+                date: signedAt.slice(0, 10),
+              })}
+            </p>
+          ) : null}
         </div>
-        {subtitle ? (
-          <p className="text-xs text-ink-500">{subtitle}</p>
-        ) : null}
-        {hasSignature && signedAt ? (
-          <p className="mt-1 text-[11px] text-ink-500">
-            {tProposals("public.doc.signed_on", {
-              date: signedAt.slice(0, 10),
-            })}
-          </p>
-        ) : null}
+        <div className="flex items-center gap-2">
+          {hasSignature ? (
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {tProposals("public.doc.signed_badge")}
+            </span>
+          ) : null}
+          {!locked ? (
+            <Button
+              type="button"
+              variant={hasSignature ? "outline" : "primary"}
+              onClick={onSign}
+              className={
+                hasSignature
+                  ? "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                  : "inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+              }
+            >
+              <PenLine className="h-4 w-4" />
+              {hasSignature
+                ? tProposals("public.doc.resign")
+                : tProposals("public.doc.sign_cta")}
+            </Button>
+          ) : null}
+        </div>
       </div>
-      <div className="flex items-center gap-2">
-        {hasSignature ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {tProposals("public.doc.signed_badge")}
-          </span>
-        ) : null}
-        {!locked ? (
-          <Button
-            type="button"
-            variant={hasSignature ? "outline" : "primary"}
-            onClick={onSign}
-            className={
-              hasSignature
-                ? "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                : "inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-            }
-          >
-            <PenLine className="h-4 w-4" />
-            {hasSignature
-              ? tProposals("public.doc.resign")
-              : tProposals("public.doc.sign_cta")}
-          </Button>
-        ) : null}
-      </div>
+      {previewSrc ? (
+        <div className="overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
+          <iframe
+            src={previewSrc}
+            title={previewLabel}
+            className="h-[70vh] w-full border-0 md:h-[780px]"
+          />
+        </div>
+      ) : null}
     </article>
   );
 }

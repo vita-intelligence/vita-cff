@@ -29,6 +29,9 @@ import {
   type ProposalStatus,
   type ProposalTemplateType,
 } from "@/services/proposals";
+import { type CustomerDto } from "@/services/customers";
+import { CustomerPicker } from "@/components/customers/customer-picker";
+import { CustomerFormModal } from "../../../customers/customers-list";
 
 
 /**
@@ -230,9 +233,8 @@ function NewProposalButton({
   const [template, setTemplate] = useState<ProposalTemplateType>(
     projectType as ProposalTemplateType,
   );
-  const [customerName, setCustomerName] = useState("");
-  const [customerEmail, setCustomerEmail] = useState("");
-  const [customerCompany, setCustomerCompany] = useState("");
+  const [customer, setCustomer] = useState<CustomerDto | null>(null);
+  const [customerCreating, setCustomerCreating] = useState(false);
   const [quantity, setQuantity] = useState<string>("1");
   // The pricing model the user wants: unit cost (what it costs us)
   // + target margin → the unit price the customer pays is the
@@ -290,9 +292,7 @@ function NewProposalButton({
   }, [orgId, versionId]);
 
   const reset = () => {
-    setCustomerName("");
-    setCustomerEmail("");
-    setCustomerCompany("");
+    setCustomer(null);
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
@@ -316,9 +316,13 @@ function NewProposalButton({
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         template_type: template,
-        customer_name: customerName.trim(),
-        customer_email: customerEmail.trim(),
-        customer_company: customerCompany.trim(),
+        // Customer is bound via FK — the backend seeds the proposal's
+        // customer_* fields (name / email / company / addresses) from
+        // the picked Customer record, so we don't forward them here.
+        customer_id: customer?.id ?? null,
+        customer_name: customer?.name ?? "",
+        customer_email: customer?.email ?? "",
+        customer_company: customer?.company ?? "",
         quantity: Math.max(1, Number.parseInt(quantity, 10) || 1),
         // Unit price is derived from cost + margin on the client so
         // the backend never has to figure out which of three fields
@@ -428,40 +432,12 @@ function NewProposalButton({
                   </div>
                 </fieldset>
 
-                <div className="grid grid-cols-2 gap-3">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.customer_name")}
-                    </span>
-                    <input
-                      value={customerName}
-                      onChange={(e) => setCustomerName(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.customer_company")}
-                    </span>
-                    <input
-                      value={customerCompany}
-                      onChange={(e) => setCustomerCompany(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                </div>
-
-                <label className="flex flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tProposals("create.customer_email")}
-                  </span>
-                  <input
-                    type="email"
-                    value={customerEmail}
-                    onChange={(e) => setCustomerEmail(e.target.value)}
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                </label>
+                <CustomerPicker
+                  orgId={orgId}
+                  value={customer}
+                  onChange={setCustomer}
+                  onCreateNew={() => setCustomerCreating(true)}
+                />
 
                 <div className="grid grid-cols-3 gap-3">
                   <label className="flex flex-col gap-1.5">
@@ -555,6 +531,26 @@ function NewProposalButton({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
+
+      {/*
+        Inline "create customer" escape hatch. Nested inside the
+        proposal modal's Modal component so opening it here doesn't
+        collapse the outer dialog — the HeroUI Modal stacks dialogs
+        on top of each other instead of unmounting the parent.
+      */}
+      <CustomerFormModal
+        orgId={orgId}
+        mode="create"
+        isOpen={customerCreating}
+        initial={null}
+        onClose={() => setCustomerCreating(false)}
+        onCreated={(c) => {
+          // Seed the picker with the freshly-created customer so the
+          // scientist doesn't have to find them in the search list.
+          setCustomer(c);
+          setCustomerCreating(false);
+        }}
+      />
     </Modal>
   );
 }

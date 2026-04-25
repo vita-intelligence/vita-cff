@@ -42,6 +42,8 @@
     "price_derived": "Unit price: {price} = cost ÷ (1 − margin ÷ 100) — gross margin",
     "specification_sheet": "Bundled specification sheet (optional)",
     "specification_sheet_none": "No bundled spec — proposal stands alone",
+    "specification_sheet_hint": "Only sheets attached to the picked formulation are listed. Pick one to bundle or leave blank.",
+    "specification_sheet_hint_pick_formulation": "Pick a product above first — the spec list populates with sheets for that formulation.",
     "submit": "Create",
     "cancel": "Cancel",
     "invalid_input": "Pick a version and fill in the quantity."
@@ -55,6 +57,11 @@
     "share_kiosk": "Copy kiosk link",
     "share_kiosk_copied": "Copied",
     "share_kiosk_copy_prompt": "Copy this kiosk link and share it with the client",
+    "attached_specs": {
+      "title": "Bundled specification sheets",
+      "subtitle": "Exactly what the client will see alongside the proposal on their kiosk link.",
+      "failed": "We couldn't load this specification preview. Open the spec directly to retry."
+    },
     "edit_heading": "Edit proposal",
     "edit_subtitle": "Fill the customer details and commercial terms the template needs. The preview above re-renders after you save.",
     "download_pdf": "Download PDF",
@@ -81,6 +88,7 @@
     }
   },
   "edit": {
+    "customer_picker_hint": "Pick a customer from your address book — the fields below auto-populate from their saved details. You can still override any field per proposal (e.g. a one-off delivery address).",
     "customer_name": "Customer name",
     "customer_company": "Company",
     "customer_email": "Email",
@@ -148,6 +156,113 @@
       "lines": "At least one priced product"
     }
   },
+  "contract": {
+    "document_label": "Acceptance Form",
+    "intro": "Please fill out this form to confirm the details of your order. Please find the products that you have requested listed in the table below along with relevant prices.",
+    "field": {
+      "reference": "Ref",
+      "valid_until": "Valid until",
+      "issued": "Issued {date}"
+    },
+    "customer_info": {
+      "title": "Customer Information",
+      "name": "Name",
+      "email": "Email",
+      "phone": "Phone",
+      "company": "Company Name",
+      "invoice_address": "Invoice Address",
+      "delivery_address": "Delivery Address"
+    },
+    "greeting": "Dear {name},",
+    "greeting_fallback": "Dear Customer,",
+    "preamble_1": "We hereby confirm receipt of your request regarding your supplement contract manufacture, and we would like to thank you for your confidence in us.",
+    "preamble_2": "This formula does not require a laboratory development phase, as its manufacturing process validated has been validated.",
+    "timelines": {
+      "title": "Timelines",
+      "lead_time": "A lead time of around 2 - 6 weeks has to be taken into account.",
+      "col_phase": "Phase",
+      "col_duration": "Duration",
+      "rows": {
+        "reception": "Production Material Reception and Validation",
+        "reception_duration": "1-2 weeks",
+        "manufacturing": "Manufacturing",
+        "manufacturing_duration": "1-3 weeks",
+        "qa": "Quality Assurance Checks",
+        "qa_duration": "1 day - 1 week",
+        "delivery": "Delivery",
+        "delivery_duration": "Based on UK location"
+      }
+    },
+    "pricing_intro": "Please find below our commercial price for the manufacture of your product(s) according to the formula agreement enclosed or attached as Product Technical Document:",
+    "lines": {
+      "col_code": "Product Code",
+      "col_description": "Description",
+      "col_qty": "Quantity",
+      "col_unit_price": "Unit Price ({currency})",
+      "col_subtotal": "Amount",
+      "empty": "No products on this proposal yet."
+    },
+    "totals": {
+      "subtotal": "Subtotal",
+      "freight": "Freight (UK only)",
+      "total_excl_vat": "Total (VAT excluded)"
+    },
+    "conditions": {
+      "title": "Conditions:",
+      "delivery": "Delivery: DAP UK location only, EXW International",
+      "payment": "Payment: Prepayment",
+      "no_other_services": "No other services or analytical services"
+    },
+    "offer_validity": {
+      "title": "Offer Validity and Pricing",
+      "body": "This offer is valid for 14 days. Prices are subject to change due to fluctuations in raw material costs, which are beyond our control. If raw material costs increase, prices will be recalculated accordingly."
+    },
+    "raw_materials": {
+      "title": "Raw Materials and Product Quality",
+      "body_1": "Made from natural components, some products may exhibit slight colour variations between batches. These variations are a natural characteristic of the materials used and do not affect the quality of our products.",
+      "body_2": "Each product is assigned a unique Batch Number that is tracked through all stages of manufacturing and delivery. This ensures accuracy during production and at Quality Control checks."
+    },
+    "stability": {
+      "title": "Formulation and Product Stability",
+      "body": "Vita Manufacture can provide advice concerning formulation stability. If full stability testing is required, additional charges will apply. You are legally responsible for your product's formulation and stability. A \"best before\" date will be provided after the development stage as part of the label guidelines and approval process."
+    },
+    "legality": {
+      "title": "Responsibilities for Product Legality and Labelling",
+      "body": "Vita Manufacture Ltd, as the manufacturer, assumes no responsibility for the legality of your product's formulation, labelling, presentation, promotion, or marketing. Your product label must not include Vita Manufacture's name or address. We strongly recommend seeking professional guidance from relevant regulatory authorities, such as: Health Food Manufacturers Association, Medicines and Healthcare Regulatory Agency, Food Standards Agency and Trading Standards."
+    },
+    "terms": {
+      "title": "Terms and conditions",
+      "body_1": "Vita Manufacture terms and conditions apply for all orders. Vita Manufacture General Terms and Conditions (T&C's) are available on https://www.vitamanufacture.co.uk/termsandcondition. Extract of T&C's is included in this document. In the event of a conflict between this offer and the T&C's, the T&C's will prevail and control.",
+      "body_2": "If you decide to contract with us, we kindly ask you to return this offer, and the formula agreement (Draft Product Specification Sheet) countersigned and dated to us. Upon receipt of these documents, planning for preparation of the samples will be confirmed.",
+      "body_3": "The information included in this document is established according to the current European Regulation. It's our customer's responsibility to check that the use and conditions of use of their product are conforming to their activities segment and geographical sales areas. Vita Manufacture manufactures and releases batches for further operations. The batches are produced according to ISO 22000:2018 standards, Good Manufacturing Practice (GMP) standards, the European legislation for Food Supplements and Food Safety Agency UK. For one year, as of the date of your first order, Vita Manufacture shall be the exclusive manufacturer of the products and references mentioned in this offer.",
+      "vat": "Vita Manufacture will apply VAT to all commercial products delivered to any UK address where VAT is applicable."
+    },
+    "closing": {
+      "help": "We will be pleased to assist you with any additional questions or queries.",
+      "sign_off": "Yours sincerely,",
+      "default_signer": "Mathew Bowden",
+      "team_line": "Vita Manufacture Sales Team"
+    },
+    "cover_notes": "Additional notes",
+    "acceptance": {
+      "title": "Acceptance",
+      "intro": "Please complete this form to agree to the Terms & Conditions and confirm the above:",
+      "item_1": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval.",
+      "item_2": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed and not before.",
+      "item_3": "I have read the terms and Conditions which can be found below."
+    },
+    "signature": {
+      "prepared_by": "Prepared by",
+      "director": "Approved by",
+      "customer": "Customer signature",
+      "awaiting": "Awaiting signature",
+      "customer_hint": "Sign below to accept this Acceptance Form and the commercial terms above.",
+      "signed_badge": "Signed",
+      "signed_on": "Signed on {date}",
+      "sign_cta": "Sign this proposal",
+      "resign_cta": "Redraw"
+    }
+  },
   "public": {
     "banner": "This is a shareable preview link. You're identified by the name you entered on arrival; every signature is audit-logged.",
     "footer": "Powered by Vita NPD",
@@ -164,6 +279,7 @@
       "spec_title_untitled": "Specification sheet",
       "spec_final": "Final",
       "spec_draft": "Draft",
+      "preview_label": "Document preview",
       "sign_cta": "Sign this",
       "resign": "Resign",
       "signed_badge": "Signed",

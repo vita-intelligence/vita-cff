@@ -951,6 +951,14 @@ def transition_status(
     proposal.updated_by = actor
     proposal.save()
 
+    # When the proposal is sent to the client, pull every attached
+    # spec into ``SENT`` alongside it. The kiosk signs the whole
+    # bundle at once and gates on each document being ``SENT``, so
+    # leaving a bundled spec in ``DRAFT`` / ``APPROVED`` would
+    # silently lock the client out of signing that document.
+    if to_status == ProposalStatus.SENT.value:
+        _promote_attached_specs_to_sent(proposal=proposal, actor=actor)
+
     ProposalStatusTransition.objects.create(
         proposal=proposal,
         from_status=from_status,
@@ -1044,6 +1052,66 @@ def _attached_spec_sheets(proposal: Proposal) -> list[SpecificationSheet]:
         for sheet in SpecificationSheet.objects.filter(id__in=sheet_ids)
     }
     return [by_id[sid] for sid in sheet_ids if sid in by_id]
+
+
+def _promote_attached_specs_to_sent(
+    *, proposal: Proposal, actor: Any
+) -> list[SpecificationSheet]:
+    """Move every attached spec sheet into ``SENT`` when the proposal
+    is sent to the client.
+
+    The spec state machine only permits ``APPROVED → SENT``, but a
+    spec bundled into a proposal inherits the proposal's approval
+    chain (prepared-by + director signatures on the proposal itself
+    apply to the whole bundle). So we deliberately shortcut the
+    spec's internal review here — the kiosk has to treat every
+    document in the bundle as signable at the same moment, and
+    legally the proposal's signatures cover the bundled specs.
+
+    Already-``SENT`` / already-``ACCEPTED`` specs are skipped so we
+    don't clobber a sheet that went through its own lifecycle. An
+    audit row is recorded for every promoted sheet so the trail
+    shows exactly which specs rode the proposal's send.
+    """
+
+    from apps.specifications.services import SpecificationStatus
+
+    promoted: list[SpecificationSheet] = []
+    for sheet in _attached_spec_sheets(proposal):
+        mint_token = sheet.public_token is None
+        if sheet.status in (
+            SpecificationStatus.SENT,
+            SpecificationStatus.ACCEPTED,
+        ):
+            # Still make sure the kiosk iframe can render it — a spec
+            # that reached ``SENT`` on its own lifecycle might not have
+            # had its token rotated yet.
+            if mint_token:
+                sheet.public_token = uuid.uuid4()
+                sheet.updated_by = actor
+                sheet.save(
+                    update_fields=["public_token", "updated_by", "updated_at"]
+                )
+            continue
+        before = {"status": sheet.status}
+        sheet.status = SpecificationStatus.SENT
+        if mint_token:
+            sheet.public_token = uuid.uuid4()
+        sheet.updated_by = actor
+        update_fields = ["status", "updated_by", "updated_at"]
+        if mint_token:
+            update_fields.append("public_token")
+        sheet.save(update_fields=update_fields)
+        record_audit(
+            organization=sheet.organization,
+            actor=actor,
+            action="spec_sheet.promoted_via_proposal",
+            target=sheet,
+            before=before,
+            after={"status": sheet.status, "proposal_id": str(proposal.id)},
+        )
+        promoted.append(sheet)
+    return promoted
 
 
 def get_proposal_by_public_token(token: Any) -> Proposal:
@@ -1146,6 +1214,19 @@ def capture_customer_signature_on_attached_spec(
         SpecificationStatus,
         InvalidStatusTransition as SpecInvalidStatusTransition,
     )
+
+    # Safety net for bundles that were sent to the client before the
+    # eager promotion in :func:`transition_status` existed. The spec
+    # legitimately rides the proposal's lifecycle once bundled, so
+    # if the proposal itself is ``SENT`` we pull the sheet along.
+    if (
+        sheet.status != SpecificationStatus.SENT
+        and proposal.status == ProposalStatus.SENT.value
+    ):
+        _promote_attached_specs_to_sent(
+            proposal=proposal, actor=sheet.updated_by
+        )
+        sheet.refresh_from_db()
 
     if sheet.status != SpecificationStatus.SENT:
         raise SpecInvalidStatusTransition()

@@ -104,6 +104,209 @@ TABLET_SILICA_PCT = 0.004
 TABLET_DCP_PCT = 0.10
 TABLET_MCC_PCT = 0.20
 
+#: Gummy excipient ratios. Water is a **fixed** 5.5% of the target
+#: gummy weight (small enough that actives never push against it).
+#: Gummy base is a **minimum** — scientists treat 65% as the floor
+#: below which the gel matrix won't set reliably. The MCC-style
+#: remainder-fill rule applies: gummy base = target - water -
+#: actives - flavour, and the viability check flags the formulation
+#: as ``cannot_make`` when that remainder drops below
+#: ``GUMMY_BASE_MIN_PCT × target``. Scientists can keep actives
+#: light and let the base grow above the floor; they cannot push
+#: actives so heavy that the base collapses below it.
+GUMMY_BASE_MIN_PCT = 0.65
+GUMMY_WATER_PCT = 0.055
+
+#: Acidity regulator auto-fills at 2% of the target gummy weight —
+#: scales linearly with the gummy mass (a 3000 mg gummy → 60 mg, a
+#: 5000 mg gummy → 100 mg). Scientist direction, 2026-04-24 revision.
+GUMMY_ACIDITY_PCT = 0.02
+
+#: Flavouring auto-fills at 0.4% of the target gummy weight — flavour
+#: picks (strawberry, lemon, etc.) split this total equally; generic
+#: fallback row shows when nothing's picked.
+GUMMY_FLAVOURING_PCT = 0.004
+
+#: Colour auto-fills at 2% of the target gummy weight — colour picks
+#: (beetroot extract, turmeric, spirulina, etc.) split this total
+#: equally; separate from flavouring because the two bands differ
+#: significantly (0.4% vs 2%) and scientists tag items accordingly.
+GUMMY_COLOUR_PCT = 0.02
+
+#: Glazing agent (carnauba wax, coconut oil, beeswax, etc.) at 0.1%
+#: of the target gummy weight — applied as a thin surface coating.
+#: Scales linearly with the gummy mass (a 3000 mg gummy → 3 mg).
+GUMMY_GLAZING_PCT = 0.001
+
+#: Legacy alias — kept so any in-flight consumer reading the flat
+#: 65% target still sees a sensible number. Prefer
+#: :data:`GUMMY_BASE_MIN_PCT` going forward.
+GUMMY_BASE_PCT = GUMMY_BASE_MIN_PCT
+
+
+# ---------------------------------------------------------------------------
+# ``use_as`` — functional category of a raw-material item
+# ---------------------------------------------------------------------------
+#
+# The catalogue's ``use_as`` attribute classifies every raw material by
+# its functional role (Active / Sweeteners / Colourant / ...). Two
+# places consume it:
+#
+# 1. The **ingredient declaration builder** groups non-Active items by
+#    this value so the EU 1169/2011 label copy reads as
+#    ``"Sweeteners (Xylitol, Maltitol), Colourant (Beetroot)"``.
+# 2. The **gummy-base picker** filters items where ``use_as`` ∈
+#    :data:`GUMMY_BASE_USE_CATEGORIES` — Sweeteners for sugar-alcohol
+#    bases (Xylitol, Maltitol, Erythritol), Bulking Agent for
+#    starch / pectin / gelatin bases.
+#
+# ``USE_AS_CANONICAL_VALUES`` is the controlled vocabulary the
+# catalogue's ``use_as`` attribute is locked to (``single_select``).
+# ``USE_AS_NORMALISATION`` collapses historical free-text typos and
+# casing drift onto the canonical value. A data migration reads this
+# map on upgrade; the attribute validator reads the canonical list at
+# save time so nothing off-vocab can re-enter.
+
+#: Canonical controlled vocabulary for ``use_as`` values. Plural
+#: category names where the EU label convention expects plural copy
+#: (``Sweeteners`` not ``Sweetener``); singular elsewhere. Order
+#: roughly matches how often each category shows up on a typical
+#: spec sheet so the single-select picker surfaces common picks first.
+USE_AS_CANONICAL_VALUES: tuple[str, ...] = (
+    "Active",
+    "Sweeteners",
+    "Bulking Agent",
+    "Flavouring",
+    "Colour",
+    "Acidity Regulator",
+    "Glazing Agent",
+    "Emulsifier",
+    "Disintegrant",
+    "Stabiliser",
+    "Anti-caking Agent",
+    "Coating Agent",
+    "Preservative",
+    "Carrier",
+    "Excipient",
+    "Other",
+)
+
+
+#: Fold historical free-text values (typos, casing variants) onto the
+#: canonical vocab. Applied both by the one-shot normalisation
+#: migration and at read time by :func:`normalize_use_as_value` so a
+#: value sourced from an Excel import with an old spelling still maps
+#: cleanly. Keys are **lowercase** so the lookup is case-insensitive.
+USE_AS_NORMALISATION: dict[str, str] = {
+    "active": "Active",
+    "sweeteners": "Sweeteners",
+    "sweetners": "Sweeteners",  # historical typo in the 1114-row import
+    "sweetener": "Sweeteners",
+    "bulking agent": "Bulking Agent",
+    "bulking agents": "Bulking Agent",
+    # Flavouring + Colour are separate canonical categories (split
+    # 2026-04-24 at scientist direction — gummies spec flavours at
+    # 0.4% and colours at 2% of target, different rates so they must
+    # land in different buckets).
+    "flavouring": "Flavouring",
+    "flavourings": "Flavouring",
+    "flavoring": "Flavouring",
+    "flavor": "Flavouring",
+    # The old merged "Flavouring and Colour" canonical collapses onto
+    # "Flavouring" here as the safer default — flavour mg is the
+    # smaller of the two bands, so mis-bucketing a colour into the
+    # flavour picker merely understates weight (the floor check
+    # still catches any overshoot). Scientists retag colours via
+    # the Items page when the split is rolled out.
+    "flavouring and colour": "Flavouring",
+    "flavouring & colour": "Flavouring",
+    "flavouring and colourant": "Flavouring",
+    "flavouring & colourant": "Flavouring",
+    "colourant": "Colour",
+    "colourants": "Colour",
+    "colorant": "Colour",
+    "colour": "Colour",
+    "colours": "Colour",
+    "color": "Colour",
+    "colors": "Colour",
+    "acidity regulator": "Acidity Regulator",
+    "acidity regulators": "Acidity Regulator",
+    "acid": "Acidity Regulator",
+    "emulsifier": "Emulsifier",
+    "emulsifiers": "Emulsifier",
+    "disintegrant": "Disintegrant",
+    "disintegrants": "Disintegrant",
+    "stabiliser": "Stabiliser",
+    "stabilizers": "Stabiliser",
+    "stabilizer": "Stabiliser",
+    "stabilisers": "Stabiliser",
+    "anti-caking agent": "Anti-caking Agent",
+    "anti-caking agents": "Anti-caking Agent",
+    "anticaking agent": "Anti-caking Agent",
+    "coating agent": "Coating Agent",
+    "coating agents": "Coating Agent",
+    "glazing agent": "Glazing Agent",
+    "glazing agents": "Glazing Agent",
+    "glazing": "Glazing Agent",
+    "glaze": "Glazing Agent",
+    "glazes": "Glazing Agent",
+    "wax": "Glazing Agent",
+    "waxes": "Glazing Agent",
+    "preservative": "Preservative",
+    "preservatives": "Preservative",
+    "carrier": "Carrier",
+    "carriers": "Carrier",
+    "excipient": "Excipient",
+    "excipients": "Excipient",
+    "other": "Other",
+    "others": "Other",
+}
+
+
+def normalize_use_as_value(value: str | None) -> str:
+    """Fold a free-text ``use_as`` into the canonical vocab.
+
+    Empty / unknown values return ``""`` rather than defaulting to
+    ``"Other"`` — a missing classification is a data issue to surface,
+    not something to silently bucket. The gummy-base picker and the
+    declaration builder both treat empty values as "uncategorised" and
+    handle them explicitly.
+    """
+
+    if value is None:
+        return ""
+    key = value.strip().lower()
+    if not key:
+        return ""
+    return USE_AS_NORMALISATION.get(key, value.strip())
+
+
+#: The categories the gummy-base picker surfaces. Sugar-alcohol bases
+#: (xylitol, maltitol, erythritol, allulose) all live under
+#: ``Sweeteners``; starch / pectin / gelatin bases live under
+#: ``Bulking Agent``. Extend this tuple if a future base ends up
+#: under a different canonical category — don't loosen the filter to
+#: match items outside the list.
+GUMMY_BASE_USE_CATEGORIES: tuple[str, ...] = (
+    "Sweeteners",
+    "Bulking Agent",
+)
+
+#: Categories the Flavouring picker surfaces — a single value
+#: today, held as a tuple for filter-shape consistency.
+FLAVOURING_USE_CATEGORIES: tuple[str, ...] = ("Flavouring",)
+
+#: Categories the Colour picker surfaces.
+COLOUR_USE_CATEGORIES: tuple[str, ...] = ("Colour",)
+
+#: Categories the glazing-agent picker surfaces (carnauba wax,
+#: coconut oil, beeswax, shellac, etc.). Single canonical value
+#: for now — same tuple shape as the siblings so filter logic
+#: reads uniformly.
+GLAZING_USE_CATEGORIES: tuple[str, ...] = (
+    "Glazing Agent",
+)
+
 
 #: Powder flavour system — reference rows that the scientist sees in
 #: their ``BOM Actives Calculation`` scratchpad in every workbook.
@@ -171,17 +374,6 @@ def powder_flavour_system_for(
     return POWDER_FLAVOUR_SYSTEM
 
 
-#: Gummy base / flavour system. Same convention as the powder preset
-#: — reference rows the scientist tunes per product. ``Gummy Base``
-#: (usually sugar + glucose syrup) is picked from the catalogue as a
-#: real line like Maltodextrin, not auto-filled.
-GUMMY_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
-    ("water", "Water", 275.0),
-    ("acidity_regulator", "Acidity Regulator", 75.0),
-    ("flavouring_colourant", "Flavouring & Colourant", 100.0),
-)
-
-
 #: Label-copy strings used in the ingredient declaration (F2a). Kept
 #: next to the ratios so the whole label-facing surface area lives in
 #: one file. Each entry is the exact string that ends up on the
@@ -190,6 +382,8 @@ EXCIPIENT_LABEL_MCC = "Microcrystalline Cellulose (Carrier)"
 EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate"
 EXCIPIENT_LABEL_SILICA = "Silicon Dioxide"
 EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate"
+EXCIPIENT_LABEL_GUMMY_BASE = "Gummy Base"
+EXCIPIENT_LABEL_WATER = "Water"
 CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
 
 

@@ -53,11 +53,29 @@ function kioskBaseUrl(token: string): string {
 }
 
 
+/** Compute the kiosk base URL for either share surface.
+ *
+ * The spec kiosk lives under ``/api/public/specifications/<token>``
+ * and the proposal kiosk under ``/api/public/proposals/<token>``.
+ * Callers either pass a full override (``basePath``) or let the
+ * default pick the spec URL so the legacy comments flow keeps
+ * working untouched. The ``KioskSession`` row is identical on both
+ * surfaces — only the URL prefix differs.
+ */
+function resolveBasePath(
+  token: string,
+  basePath: string | undefined,
+): string {
+  return basePath ?? kioskBaseUrl(token);
+}
+
+
 export async function identifyKioskVisitor(
   token: string,
   input: KioskIdentityInput,
+  basePath?: string,
 ): Promise<KioskIdentityEcho> {
-  const res = await fetch(`${kioskBaseUrl(token)}/identify/`, {
+  const res = await fetch(`${resolveBasePath(token, basePath)}/identify/`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -74,8 +92,11 @@ export async function identifyKioskVisitor(
 }
 
 
-export async function signOutKioskVisitor(token: string): Promise<void> {
-  await fetch(`${kioskBaseUrl(token)}/identify/`, {
+export async function signOutKioskVisitor(
+  token: string,
+  basePath?: string,
+): Promise<void> {
+  await fetch(`${resolveBasePath(token, basePath)}/identify/`, {
     method: "DELETE",
     credentials: "include",
   });

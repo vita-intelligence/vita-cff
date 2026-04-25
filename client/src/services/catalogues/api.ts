@@ -105,15 +105,26 @@ export async function fetchItemsPage(
     return data;
   }
 
-  const params: Record<string, string> = {};
-  if (args.includeArchived) params.include_archived = "true";
-  if (args.ordering) params.ordering = args.ordering;
-  if (args.pageSize) params.page_size = String(args.pageSize);
-  if (args.search && args.search.trim()) params.search = args.search.trim();
-  const { data } = await apiClient.get<PaginatedItemsDto>(
-    cataloguesEndpoints.itemList(orgId, slug),
-    { params },
-  );
+  // Axios turns a URL-param object into a query string; a ``use_as``
+  // array has to go through ``URLSearchParams`` so each value becomes
+  // a repeated ``?use_as=X&use_as=Y`` pair (matching what the
+  // server's ``getlist`` reads).
+  const searchParams = new URLSearchParams();
+  if (args.includeArchived) searchParams.set("include_archived", "true");
+  if (args.ordering) searchParams.set("ordering", args.ordering);
+  if (args.pageSize) searchParams.set("page_size", String(args.pageSize));
+  if (args.search && args.search.trim())
+    searchParams.set("search", args.search.trim());
+  if (args.useAsIn && args.useAsIn.length > 0) {
+    for (const value of args.useAsIn) {
+      searchParams.append("use_as", value);
+    }
+  }
+  const qs = searchParams.toString();
+  const url = qs
+    ? `${cataloguesEndpoints.itemList(orgId, slug)}?${qs}`
+    : cataloguesEndpoints.itemList(orgId, slug);
+  const { data } = await apiClient.get<PaginatedItemsDto>(url);
   return data;
 }
 

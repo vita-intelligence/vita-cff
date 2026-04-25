@@ -45,6 +45,7 @@ import {
   type ComputeLineInput,
   type DosageForm,
   type FormulationDto,
+  type GummyBaseItemDto,
   type FormulationTotals,
   type IngredientDeclaration,
   type ItemAttributesForMath,
@@ -78,6 +79,26 @@ interface MetadataDraft {
   target_fill_weight_mg: string;
   powder_type: PowderType;
   water_volume_ml: string;
+  //: Picked gummy-base raw-material ids (multi-select). Empty list
+  //: = no picks yet — the declaration falls back to a synthetic
+  //: "Gummy Base" row and the totals pane shows a generic entry.
+  //: Total base weight is split equally across picks.
+  gummy_base_item_ids: readonly string[];
+  //: Picked flavouring raw-material ids (multi-select). Empty list
+  //: = the 0.4%-of-target flavour block renders as a generic
+  //: "Flavouring" row; any picks → the block is split equally across
+  //: picked items and the spec sheet lists them under
+  //: "Flavouring (Natural Strawberry, Lemon Extract)".
+  flavouring_item_ids: readonly string[];
+  //: Picked colour raw-material ids. Empty list = the 2%-of-target
+  //: colour block renders as a generic "Colour" row; any picks →
+  //: split equally and listed under "Colour (Beetroot Extract,
+  //: Turmeric)" on the spec sheet.
+  colour_item_ids: readonly string[];
+  //: Picked glazing-agent ids (carnauba wax, coconut oil, beeswax,
+  //: etc.). The 0.1%-of-target glaze total is split equally across
+  //: picks; empty list renders a generic "Glazing Agent" row.
+  glazing_item_ids: readonly string[];
   directions_of_use: string;
   suggested_dosage: string;
   appearance: string;
@@ -150,6 +171,10 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     water_volume_ml:
       (formulation.water_volume_ml ?? "") ||
       defaultWaterVolumeFor(formulation.dosage_form),
+    gummy_base_item_ids: formulation.gummy_base_item_ids ?? [],
+    flavouring_item_ids: formulation.flavouring_item_ids ?? [],
+    colour_item_ids: formulation.colour_item_ids ?? [],
+    glazing_item_ids: formulation.glazing_item_ids ?? [],
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
     appearance: formulation.appearance,
@@ -299,6 +324,46 @@ export function FormulationBuilder({
     }));
     const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
     const parsedWater = Number.parseFloat(metadata.water_volume_ml);
+    // Gummy-base picks flow through to the breakdown so the totals
+    // panel can render one row per pick ("Sweeteners (Xylitol) …
+    // 975 mg", "Sweeteners (Maltitol) … 975 mg"). Skips non-gummy
+    // forms; empty picks render a generic "Gummy Base" row.
+    const gummyBaseForMath =
+      metadata.dosage_form === "gummy"
+        ? formulation.gummy_base_items.map((pick) => ({
+            id: pick.id,
+            label: pick.ingredient_list_name || pick.name,
+            useAs: pick.use_as || "",
+          }))
+        : [];
+    // Flavouring + Colour picks — split bands at separate percentages
+    // (0.4% / 2% of target gummy weight). The math splits each block
+    // equally across its picks; empty picks fall back to a generic
+    // placeholder row at the full block total.
+    const flavouringForMath =
+      metadata.dosage_form === "gummy"
+        ? formulation.flavouring_items.map((pick) => ({
+            id: pick.id,
+            label: pick.ingredient_list_name || pick.name,
+            useAs: pick.use_as || "",
+          }))
+        : [];
+    const colourForMath =
+      metadata.dosage_form === "gummy"
+        ? formulation.colour_items.map((pick) => ({
+            id: pick.id,
+            label: pick.ingredient_list_name || pick.name,
+            useAs: pick.use_as || "",
+          }))
+        : [];
+    const glazingForMath =
+      metadata.dosage_form === "gummy"
+        ? formulation.glazing_items.map((pick) => ({
+            id: pick.id,
+            label: pick.ingredient_list_name || pick.name,
+            useAs: pick.use_as || "",
+          }))
+        : [];
     return computeTotals({
       lines: computeInputs,
       dosageForm: metadata.dosage_form,
@@ -312,6 +377,10 @@ export function FormulationBuilder({
       waterVolumeMl: Number.isFinite(parsedWater) && parsedWater >= 0
         ? parsedWater
         : null,
+      gummyBaseItems: gummyBaseForMath,
+      flavouringItems: flavouringForMath,
+      colourItems: colourForMath,
+      glazingItems: glazingForMath,
     });
   }, [
     lines,
@@ -322,6 +391,10 @@ export function FormulationBuilder({
     metadata.target_fill_weight_mg,
     metadata.powder_type,
     metadata.water_volume_ml,
+    formulation.gummy_base_items,
+    formulation.flavouring_items,
+    formulation.colour_items,
+    formulation.glazing_items,
   ]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
@@ -485,6 +558,25 @@ export function FormulationBuilder({
           Number.isFinite(parsedWater) && parsedWater >= 0
             ? String(parsedWater)
             : null,
+        // Empty array clears the picks; any other array replaces
+        // the M2M. The server validates cross-org + canonical
+        // ``use_as`` on every id.
+        gummy_base_item_ids:
+          metadata.dosage_form === "gummy"
+            ? metadata.gummy_base_item_ids
+            : [],
+        flavouring_item_ids:
+          metadata.dosage_form === "gummy"
+            ? metadata.flavouring_item_ids
+            : [],
+        colour_item_ids:
+          metadata.dosage_form === "gummy"
+            ? metadata.colour_item_ids
+            : [],
+        glazing_item_ids:
+          metadata.dosage_form === "gummy"
+            ? metadata.glazing_item_ids
+            : [],
         directions_of_use: metadata.directions_of_use,
         suggested_dosage: metadata.suggested_dosage,
         appearance: metadata.appearance,
@@ -804,6 +896,92 @@ export function FormulationBuilder({
               hint={tFormulations("fields.gummy_fill_weight_hint")}
             />
           ) : null}
+          {metadata.dosage_form === "gummy" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.gummy_base_item_ids}
+              preselected={formulation.gummy_base_items}
+              disabled={!canWrite}
+              useAsIn={GUMMY_BASE_USE_CATEGORIES}
+              label={tFormulations("fields.gummy_base_item")}
+              placeholderText={tFormulations(
+                "fields.gummy_base_item_placeholder",
+              )}
+              hint={tFormulations("fields.gummy_base_item_hint")}
+              loadingText={tFormulations(
+                "fields.gummy_base_item_loading",
+              )}
+              emptyText={tFormulations("fields.gummy_base_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, gummy_base_item_ids: ids })
+              }
+            />
+          ) : null}
+          {metadata.dosage_form === "gummy" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.flavouring_item_ids}
+              preselected={formulation.flavouring_items}
+              disabled={!canWrite}
+              useAsIn={FLAVOURING_USE_CATEGORIES}
+              label={tFormulations("fields.flavouring_item")}
+              placeholderText={tFormulations(
+                "fields.flavouring_item_placeholder",
+              )}
+              hint={tFormulations("fields.flavouring_item_hint")}
+              loadingText={tFormulations(
+                "fields.flavouring_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.flavouring_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, flavouring_item_ids: ids })
+              }
+            />
+          ) : null}
+          {metadata.dosage_form === "gummy" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.colour_item_ids}
+              preselected={formulation.colour_items}
+              disabled={!canWrite}
+              useAsIn={COLOUR_USE_CATEGORIES}
+              label={tFormulations("fields.colour_item")}
+              placeholderText={tFormulations(
+                "fields.colour_item_placeholder",
+              )}
+              hint={tFormulations("fields.colour_item_hint")}
+              loadingText={tFormulations(
+                "fields.colour_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.colour_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, colour_item_ids: ids })
+              }
+            />
+          ) : null}
+          {metadata.dosage_form === "gummy" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.glazing_item_ids}
+              preselected={formulation.glazing_items}
+              disabled={!canWrite}
+              useAsIn={GLAZING_USE_CATEGORIES}
+              label={tFormulations("fields.glazing_item")}
+              placeholderText={tFormulations(
+                "fields.glazing_item_placeholder",
+              )}
+              hint={tFormulations("fields.glazing_item_hint")}
+              loadingText={tFormulations("fields.glazing_item_loading")}
+              emptyText={tFormulations("fields.glazing_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, glazing_item_ids: ids })
+              }
+            />
+          ) : null}
           {/* Serving-size units vary by form: capsules, tablets,
               gummies, and powders (scoops) each get their own label
               so the input reads naturally in the scientist's mental
@@ -837,6 +1015,15 @@ export function FormulationBuilder({
             value={metadata.appearance}
             onChange={(v) => setMetadata({ ...metadata, appearance: v })}
             disabled={!canWrite}
+            placeholder={tFormulations(
+              `fields.appearance_placeholder_${metadata.dosage_form}` as
+                | "fields.appearance_placeholder_capsule"
+                | "fields.appearance_placeholder_tablet"
+                | "fields.appearance_placeholder_gummy"
+                | "fields.appearance_placeholder_powder"
+                | "fields.appearance_placeholder_default",
+            )}
+            hint={tFormulations("fields.appearance_hint")}
           />
           <TextField
             label={tFormulations("fields.disintegration_spec")}
@@ -845,6 +1032,8 @@ export function FormulationBuilder({
               setMetadata({ ...metadata, disintegration_spec: v })
             }
             disabled={!canWrite}
+            placeholder={tFormulations("fields.disintegration_spec_placeholder")}
+            hint={tFormulations("fields.disintegration_spec_hint")}
           />
           <TextAreaField
             label={tFormulations("fields.directions_of_use")}
@@ -853,6 +1042,15 @@ export function FormulationBuilder({
               setMetadata({ ...metadata, directions_of_use: v })
             }
             disabled={!canWrite}
+            placeholder={tFormulations(
+              `fields.directions_of_use_placeholder_${metadata.dosage_form}` as
+                | "fields.directions_of_use_placeholder_capsule"
+                | "fields.directions_of_use_placeholder_tablet"
+                | "fields.directions_of_use_placeholder_gummy"
+                | "fields.directions_of_use_placeholder_powder"
+                | "fields.directions_of_use_placeholder_default",
+            )}
+            hint={tFormulations("fields.directions_of_use_hint")}
           />
           <TextAreaField
             label={tFormulations("fields.suggested_dosage")}
@@ -861,6 +1059,15 @@ export function FormulationBuilder({
               setMetadata({ ...metadata, suggested_dosage: v })
             }
             disabled={!canWrite}
+            placeholder={tFormulations(
+              `fields.suggested_dosage_placeholder_${metadata.dosage_form}` as
+                | "fields.suggested_dosage_placeholder_capsule"
+                | "fields.suggested_dosage_placeholder_tablet"
+                | "fields.suggested_dosage_placeholder_gummy"
+                | "fields.suggested_dosage_placeholder_powder"
+                | "fields.suggested_dosage_placeholder_default",
+            )}
+            hint={tFormulations("fields.suggested_dosage_hint")}
           />
         </div>
       </section>
@@ -1518,6 +1725,14 @@ function TotalsBlock({
   // Gram formatter — the builder's primary numberFormatter keeps 4
   // fraction digits so mg rounding stays exact. Grams read better
   // with 2 fraction digits (``10.00g`` not ``10.0000g``).
+  // Percentage-of-total helper for the gummy excipient rows. Keeps
+  // one decimal so a 5.5% water row doesn't read as 6%. Guards against
+  // a zero denominator by returning "0.0" — the row hides itself
+  // anyway when the scientist hasn't typed a target.
+  const percentOf = (part: number, whole: number): string => {
+    if (!whole || whole <= 0) return "0.0";
+    return ((part / whole) * 100).toFixed(1);
+  };
   const formatGrams = (mg: number | null | undefined) =>
     mg === null || mg === undefined
       ? "—"
@@ -1581,6 +1796,77 @@ function TotalsBlock({
             {tFormulations("builder.excipients.title")}
           </p>
           <ul className="mt-2 flex flex-col gap-1 text-xs text-ink-700">
+            {/*
+              Gummy base lines lead the list because they're the
+              absorber-rows — scientists check the combined percentage
+              to confirm the base is above the 65% floor before
+              tweaking flavours. A multi-item blend renders one row
+              per pick (each with its equal share); an un-picked
+              gummy renders a single generic "Gummy Base" row.
+            */}
+            {/*
+              Gummy base — when the scientist picked multiple items,
+              collapse them into one EU-label-style entry per
+              ``use_as`` category ("Sweeteners (Xylitol, Maltitol)").
+              The per-item breakdown still exists underneath on the
+              wire (procurement BOM, ingredient declaration); the
+              totals panel just groups it for the scientist's eye.
+            */}
+            {excipients.gummyBaseRows.length > 0
+              ? groupRowsByUseAs(excipients.gummyBaseRows).map((group) => (
+                  <li
+                    key={group.useAs || "gummy_base"}
+                    className="flex justify-between gap-2 font-medium text-orange-700"
+                  >
+                    <span className="flex min-w-0 items-baseline gap-1.5">
+                      <span>{group.label}</span>
+                    </span>
+                    <span className="tabular-nums">
+                      {format(group.mg)} mg
+                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          ({percentOf(group.mg, totals.totalWeightMg)}%)
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ))
+              : excipients.gummyBaseMg !== null
+                ? (
+                    <li
+                      className={`flex justify-between gap-2 font-medium ${
+                        excipients.gummyBaseMg > 0
+                          ? "text-orange-700"
+                          : "text-danger"
+                      }`}
+                    >
+                      <span>
+                        {tFormulations("builder.excipients.gummy_base")}
+                      </span>
+                      <span className="tabular-nums">
+                        {format(excipients.gummyBaseMg)} mg
+                        {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                          <span className="ml-1 text-ink-500">
+                            ({percentOf(excipients.gummyBaseMg, totals.totalWeightMg)}%)
+                          </span>
+                        ) : null}
+                      </span>
+                    </li>
+                  )
+                : null}
+            {excipients.waterMg !== null ? (
+              <li className="flex justify-between gap-2">
+                <span>{tFormulations("builder.excipients.water")}</span>
+                <span className="tabular-nums">
+                  {format(excipients.waterMg)} mg
+                  {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                    <span className="ml-1 text-ink-500">
+                      ({percentOf(excipients.waterMg, totals.totalWeightMg)}%)
+                    </span>
+                  ) : null}
+                </span>
+              </li>
+            ) : null}
             {excipients.rows.length > 0 ? (
               // Flexible list used by powder + gummy. ``is_remainder``
               // rows (carrier / gummy base) get a subtle orange accent
@@ -1589,7 +1875,14 @@ function TotalsBlock({
               // water) is shown inline so the scientist can see the
               // formula behind the computed mg — changing water volume
               // rescales every row with this rate.
-              excipients.rows.map((row) => (
+              //
+              // Flavouring (slug prefix ``flavouring:``) and Colour
+              // (``colour:``) items collapse into "Flavouring (Natural
+              // Strawberry, Lemon Extract)" / "Colour (Beetroot,
+              // Turmeric)" rows — EU label convention. Glazing
+              // similarly groups under ``glazing:``. Everything else
+              // (acidity, powder flavour rows) stays standalone.
+              groupGummyFlavourRows(excipients.rows).map((row) => (
                 <li
                   key={row.slug}
                   className={`flex justify-between gap-2 ${
@@ -1605,10 +1898,21 @@ function TotalsBlock({
                       </span>
                     ) : null}
                   </span>
-                  <span className="tabular-nums">{format(row.mg)} mg</span>
+                  <span className="tabular-nums">
+                    {format(row.mg)} mg
+                    {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                      <span className="ml-1 text-ink-500">
+                        ({percentOf(row.mg, totals.totalWeightMg)}%)
+                      </span>
+                    ) : null}
+                  </span>
                 </li>
               ))
-            ) : (
+            ) : null}
+            {excipients.rows.length === 0 &&
+            excipients.gummyBaseMg === null &&
+            excipients.waterMg === null &&
+            excipients.gummyBaseRows.length === 0 ? (
               <>
                 <li className="flex justify-between">
                   <span>
@@ -1631,7 +1935,7 @@ function TotalsBlock({
                   <span>{format(excipients.mccMg)} mg</span>
                 </li>
               </>
-            )}
+            ) : null}
           </ul>
         </div>
       ) : null}
@@ -1859,12 +2163,14 @@ function TextField({
   onChange,
   disabled,
   hint,
+  placeholder,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
   hint?: string;
+  placeholder?: string;
 }) {
   return (
     <label className="flex flex-col gap-1.5">
@@ -1874,6 +2180,7 @@ function TextField({
       <input
         value={value}
         disabled={disabled}
+        placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
@@ -1912,6 +2219,134 @@ function NumberField({
     </label>
   );
 }
+
+
+/**
+ * Catalogue-backed multi-select for a filtered slice of
+ * ``raw_materials`` items (filtered by ``use_as``). Used by both
+ * the gummy-base picker (``use_as ∈ (Sweeteners, Bulking Agent)``)
+ * and the Flavouring and Colour picker (``use_as = 'Flavouring
+ * and Colour'``). Callers pass their own labels + hints so the
+ * surface reads natively for each picker's context.
+ *
+ * ``preselected`` items are merged into the option list even when
+ * outside the paginated window (e.g. a legacy pick that's since
+ * been archived or renamed), so the checkbox keeps showing as
+ * active and the scientist can opt out explicitly.
+ */
+function CatalogueMultiPicker({
+  orgId,
+  value,
+  preselected,
+  disabled,
+  useAsIn,
+  label,
+  placeholderText,
+  hint,
+  loadingText,
+  emptyText,
+  onChange,
+}: {
+  orgId: string;
+  value: readonly string[];
+  preselected: readonly GummyBaseItemDto[];
+  disabled?: boolean;
+  useAsIn: readonly string[];
+  label: string;
+  placeholderText: string;
+  hint: string;
+  loadingText: string;
+  emptyText: string;
+  onChange: (ids: readonly string[]) => void;
+}) {
+  const query = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
+    includeArchived: false,
+    ordering: "name",
+    pageSize: 50,
+    useAsIn,
+  });
+
+  const fetched = query.data?.pages.flatMap((p) => p.results) ?? [];
+  const knownIds = new Set(fetched.map((i) => i.id));
+  const merged = [
+    ...fetched,
+    ...preselected
+      .filter((p) => !knownIds.has(p.id))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        internal_code: p.internal_code,
+      })),
+  ];
+
+  const selected = new Set(value);
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    onChange([...next]);
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
+        {label}
+      </span>
+      <div
+        className={`flex max-h-56 flex-col overflow-y-auto rounded-xl bg-ink-0 ring-1 ring-inset ring-ink-200 ${
+          disabled || query.isLoading ? "opacity-60" : ""
+        }`}
+      >
+        {merged.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-ink-500">
+            {query.isLoading ? loadingText : emptyText}
+          </p>
+        ) : (
+          merged.map((item) => {
+            const checked = selected.has(item.id);
+            return (
+              <label
+                key={item.id}
+                className={`flex cursor-pointer items-center gap-2 border-b border-ink-100 px-3 py-2 text-sm last:border-b-0 ${
+                  checked
+                    ? "bg-orange-50 text-ink-1000"
+                    : "text-ink-700 hover:bg-ink-50"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={disabled}
+                  onChange={() => toggle(item.id)}
+                  className="h-4 w-4 cursor-pointer accent-orange-500"
+                />
+                <span className="flex-1">
+                  {item.internal_code
+                    ? `${item.name} (${item.internal_code})`
+                    : item.name}
+                </span>
+              </label>
+            );
+          })
+        )}
+      </div>
+      <span className="text-[11px] text-ink-500">{hint}</span>
+    </div>
+  );
+}
+
+
+// Canonical categories the two pickers filter on. Kept in sync with
+// their server-side counterparts on ``apps.formulations.constants``
+// — short enough to hardcode without a per-request round-trip to an
+// enum endpoint.
+const GUMMY_BASE_USE_CATEGORIES = ["Sweeteners", "Bulking Agent"] as const;
+const FLAVOURING_USE_CATEGORIES = ["Flavouring"] as const;
+const COLOUR_USE_CATEGORIES = ["Colour"] as const;
+const GLAZING_USE_CATEGORIES = ["Glazing Agent"] as const;
 
 
 function SelectField({
@@ -1954,11 +2389,15 @@ function TextAreaField({
   value,
   onChange,
   disabled,
+  hint,
+  placeholder,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
+  hint?: string;
+  placeholder?: string;
 }) {
   return (
     <label className="flex flex-col gap-1.5 md:col-span-2">
@@ -1969,11 +2408,139 @@ function TextAreaField({
         rows={2}
         value={value}
         disabled={disabled}
+        placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         className="w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
       />
+      {hint ? (
+        <span className="text-[10px] text-ink-500">{hint}</span>
+      ) : null}
     </label>
   );
+}
+
+
+/**
+ * Collapse gummy-base rows into one grouped entry per ``useAs``
+ * category. Given three rows with ``useAs == "Sweeteners"`` it
+ * produces a single ``{label: "Sweeteners (Xylitol, Maltitol,
+ * Erythritol)", mg: <sum>}`` entry — EU 1169/2011 label convention,
+ * matching the ingredient declaration builder on the backend. Rows
+ * without a ``useAs`` land on a fallback group under their own
+ * label so un-tagged picks still render.
+ */
+function groupRowsByUseAs(
+  rows: readonly {
+    readonly itemId: string;
+    readonly label: string;
+    readonly useAs: string;
+    readonly mg: number;
+  }[],
+): readonly { readonly useAs: string; readonly label: string; readonly mg: number }[] {
+  const groups = new Map<
+    string,
+    { useAs: string; labels: string[]; mg: number }
+  >();
+  for (const row of rows) {
+    const key = row.useAs || row.label;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.labels.push(row.label);
+      existing.mg += row.mg;
+    } else {
+      groups.set(key, {
+        useAs: row.useAs,
+        labels: [row.label],
+        mg: row.mg,
+      });
+    }
+  }
+  return Array.from(groups.values()).map((g) => ({
+    useAs: g.useAs,
+    label: g.useAs ? `${g.useAs} (${g.labels.join(", ")})` : g.labels.join(", "),
+    mg: g.mg,
+  }));
+}
+
+
+/**
+ * Collapse gummy flavouring / colour / glazing rows in the generic
+ * ``excipients.rows`` list into one grouped entry per category,
+ * leaving every other row (acidity, powder flavour rows) untouched.
+ * Slugs prefixed with ``flavouring:``, ``colour:`` and ``glazing:``
+ * get recognised and combined; each combined label reads as e.g.
+ * ``"Flavouring (Natural Strawberry, Lemon Extract)"`` — the EU
+ * label convention mirrored on both totals panel and spec sheet.
+ */
+function groupGummyFlavourRows(
+  rows: readonly {
+    readonly slug: string;
+    readonly label: string;
+    readonly mg: number;
+    readonly isRemainder: boolean;
+    readonly concentrationMgPerMl?: number | null;
+  }[],
+): readonly {
+  readonly slug: string;
+  readonly label: string;
+  readonly mg: number;
+  readonly isRemainder: boolean;
+  readonly concentrationMgPerMl?: number | null;
+}[] {
+  const GROUPINGS: readonly {
+    readonly prefix: string;
+    readonly combinedSlug: string;
+    readonly heading: string;
+  }[] = [
+    {
+      prefix: "flavouring:",
+      combinedSlug: "flavouring:__combined",
+      heading: "Flavouring",
+    },
+    {
+      prefix: "colour:",
+      combinedSlug: "colour:__combined",
+      heading: "Colour",
+    },
+    {
+      prefix: "glazing:",
+      combinedSlug: "glazing:__combined",
+      heading: "Glazing Agent",
+    },
+  ];
+
+  const output: typeof rows[number][] = [];
+  const remaining = [...rows];
+
+  for (const group of GROUPINGS) {
+    const members = remaining.filter((r) => r.slug.startsWith(group.prefix));
+    // Strip matched rows in-place so the leftover pass below only
+    // sees the rows we haven't claimed yet.
+    for (const m of members) {
+      const idx = remaining.indexOf(m);
+      if (idx >= 0) remaining.splice(idx, 1);
+    }
+    if (members.length === 0) continue;
+    if (members.length === 1) {
+      // Single pick: keep the original row (single-item "group" is
+      // more readable as the item's name alone — matches the
+      // backend's declaration builder convention).
+      output.push(members[0]!);
+      continue;
+    }
+    const combinedMg = members.reduce((acc, r) => acc + r.mg, 0);
+    output.push({
+      slug: group.combinedSlug,
+      label: `${group.heading} (${members.map((r) => r.label).join(", ")})`,
+      mg: combinedMg,
+      isRemainder: false,
+      concentrationMgPerMl: null,
+    });
+  }
+  // Untouched rows (acidity, powder flavour entries) pass through
+  // first so the visual order stays "acidity → flavour group →
+  // glazing group" on a gummy panel.
+  return [...remaining, ...output];
 }
 
 

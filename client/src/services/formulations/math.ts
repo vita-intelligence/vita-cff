@@ -83,19 +83,32 @@ function powderFlavourSystemFor(
  *  Matches ``POWDER_REFERENCE_WATER_ML`` on the Python side. */
 const POWDER_DEFAULT_WATER_ML = 500;
 
-const GUMMY_FLAVOUR_SYSTEM: ReadonlyArray<{
-  readonly slug: string;
-  readonly label: string;
-  readonly mg: number;
-}> = [
-  { slug: "water", label: "Water", mg: 275 },
-  { slug: "acidity_regulator", label: "Acidity Regulator", mg: 75 },
-  {
-    slug: "flavouring_colourant",
-    label: "Flavouring & Colourant",
-    mg: 100,
-  },
-];
+/** Water is auto-filled at 5.5% of the target gummy weight (fixed),
+ *  mirroring :data:`apps.formulations.constants.GUMMY_WATER_PCT`. */
+const GUMMY_WATER_PCT = 0.055;
+
+/** Acidity regulator auto-fills at 2% of the target gummy weight —
+ *  scales linearly with the recipe, mirrors
+ *  :data:`GUMMY_ACIDITY_PCT` on the server. */
+const GUMMY_ACIDITY_PCT = 0.02;
+
+/** Flavouring at 0.4% of target — split equally across flavouring
+ *  picks; mirrors :data:`GUMMY_FLAVOURING_PCT` on the server. */
+const GUMMY_FLAVOURING_PCT = 0.004;
+
+/** Colour at 2% of target — split equally across colour picks;
+ *  mirrors :data:`GUMMY_COLOUR_PCT` on the server. */
+const GUMMY_COLOUR_PCT = 0.02;
+
+/** Glazing agent (carnauba wax, coconut oil, beeswax, etc.) at 0.1%
+ *  of the target gummy weight — applied as a thin surface coating,
+ *  also scales linearly, mirrors :data:`GUMMY_GLAZING_PCT` on the
+ *  server. */
+const GUMMY_GLAZING_PCT = 0.001;
+
+/** Minimum gummy-base ratio. Below this the gel matrix won't set
+ *  reliably — mirrors :data:`GUMMY_BASE_MIN_PCT` on the server. */
+const GUMMY_BASE_MIN_PCT = 0.65;
 
 /**
  * Thresholds for the capsule auto-picker, transcribed from the
@@ -182,8 +195,27 @@ export interface ExcipientBreakdown {
   readonly silicaMg: number;
   readonly mccMg: number;
   readonly dcpMg: number | null;
+  /** Gummy-only TOTAL base weight. ``target − water − actives −
+   *  flavour`` clamped at zero, with a 65% floor enforced via
+   *  :attr:`Viability.codes`. ``null`` on every other dosage form. */
+  readonly gummyBaseMg: number | null;
+  /** Gummy-only: 5.5% of the target gummy weight (fixed). */
+  readonly waterMg: number | null;
+  /** Per-item breakdown of the blended gummy base. Empty when no
+   *  items picked; total is split equally across picks. */
+  readonly gummyBaseRows: readonly GummyBaseRow[];
   /** Powder / gummy flexible list. Empty for capsule + tablet. */
   readonly rows: readonly ExcipientRow[];
+}
+
+
+export interface GummyBaseRow {
+  readonly itemId: string;
+  readonly label: string;
+  /** Canonical ``use_as`` category (Sweeteners / Bulking Agent). */
+  readonly useAs: string;
+  /** Equal share of the total base weight (total / number of picks). */
+  readonly mg: number;
 }
 
 export interface Viability {
@@ -758,6 +790,9 @@ function computeCapsule(
       silicaMg: silica,
       mccMg: mcc,
       dcpMg: null,
+      gummyBaseMg: null,
+      waterMg: null,
+      gummyBaseRows: [],
       rows: [],
     },
     viability: { fits, comfortOk, codes },
@@ -788,6 +823,9 @@ function computeTablet(
     silicaMg: silica,
     mccMg: mcc,
     dcpMg: dcp,
+    gummyBaseMg: null,
+    waterMg: null,
+    gummyBaseRows: [],
     rows: [],
   };
 
@@ -865,6 +903,26 @@ function computeFillTarget(
   targetFillWeightMg: number | null,
   powderType: PowderType | null | undefined,
   waterVolumeMl: number | null | undefined,
+  gummyBaseItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  flavouringItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  colourItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  glazingItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -896,18 +954,121 @@ function computeFillTarget(
             concentrationMgPerMl: row.mgPerMl,
           }));
         })()
-      : GUMMY_FLAVOUR_SYSTEM.map((row) => ({
-          slug: row.slug,
-          label: row.label,
-          mg: row.mg,
-          isRemainder: false,
-        }));
+      : (() => {
+          // Gummy flavour system — four scaled blocks:
+          //
+          //   acidity   = target × 2%
+          //   flavour   = target × 0.4%   (split across flavouring picks)
+          //   colour    = target × 2%     (split across colour picks)
+          //   glazing   = target × 0.1%   (split across glazing picks)
+          //
+          // Each block emits either per-pick rows (so the spec sheet
+          // declaration reads "Flavouring (Natural Strawberry, Lemon
+          // Extract)") or a single generic placeholder when nothing's
+          // picked. Mirrors ``_compute_fill_target`` server-side.
+          const targetForScaled =
+            targetFillWeightMg && targetFillWeightMg > 0
+              ? targetFillWeightMg
+              : 0;
+          const rows: ExcipientRow[] = [
+            {
+              slug: "acidity_regulator",
+              label: "Acidity Regulator",
+              mg: targetForScaled * GUMMY_ACIDITY_PCT,
+              isRemainder: false,
+            },
+          ];
+          const emitPickBand = (
+            blockSlug: string,
+            blockLabel: string,
+            blockTotalMg: number,
+            picks: ReadonlyArray<{
+              readonly id: string;
+              readonly label: string;
+              readonly useAs: string;
+            }>,
+          ) => {
+            if (blockTotalMg <= 0) return;
+            if (picks.length > 0) {
+              const perItem = blockTotalMg / picks.length;
+              for (const pick of picks) {
+                rows.push({
+                  slug: `${blockSlug}:${pick.id}`,
+                  label: pick.label,
+                  mg: perItem,
+                  isRemainder: false,
+                });
+              }
+            } else {
+              rows.push({
+                slug: blockSlug,
+                label: blockLabel,
+                mg: blockTotalMg,
+                isRemainder: false,
+              });
+            }
+          };
+          emitPickBand(
+            "flavouring",
+            "Flavouring",
+            targetForScaled * GUMMY_FLAVOURING_PCT,
+            flavouringItems,
+          );
+          emitPickBand(
+            "colour",
+            "Colour",
+            targetForScaled * GUMMY_COLOUR_PCT,
+            colourItems,
+          );
+          emitPickBand(
+            "glazing",
+            "Glazing Agent",
+            targetForScaled * GUMMY_GLAZING_PCT,
+            glazingItems,
+          );
+          return rows;
+        })();
   const flavourTotal = flavourRows.reduce((acc, r) => acc + r.mg, 0);
+  const isGummy = dosageForm === "gummy";
+
+  // Gummy excipient math (mirrors the server):
+  //   water       = target × 5.5%             (fixed)
+  //   gummy_base  = target − water − actives − flavour   (remainder)
+  //   floor       = target × GUMMY_BASE_MIN_PCT          (65%)
+  // When the scientist loads enough actives that ``gummy_base`` drops
+  // below the floor the gel matrix won't set reliably and viability
+  // flips to ``cannot_make`` (code ``gummy_base_below_floor``). The
+  // ``gummyBaseMg`` value is still exposed so the UI shows what the
+  // base *would* be under the current line-up.
+  let waterMg: number | null = null;
+  let gummyBaseMg: number | null = null;
+  const gummyBaseRows: GummyBaseRow[] = [];
+  if (isGummy && targetFillWeightMg && targetFillWeightMg > 0) {
+    waterMg = targetFillWeightMg * GUMMY_WATER_PCT;
+    const remainder = targetFillWeightMg - waterMg - totalActive - flavourTotal;
+    gummyBaseMg = Math.max(remainder, 0);
+    const count = gummyBaseItems.length;
+    if (count > 0 && gummyBaseMg > 0) {
+      const perItem = gummyBaseMg / count;
+      for (const pick of gummyBaseItems) {
+        gummyBaseRows.push({
+          itemId: pick.id,
+          label: pick.label,
+          useAs: pick.useAs,
+          mg: perItem,
+        });
+      }
+    }
+  }
+
   const excipients: ExcipientBreakdown = {
     mgStearateMg: 0,
     silicaMg: 0,
     mccMg: 0,
     dcpMg: null,
+    gummyBaseMg,
+    waterMg,
+    gummyBaseRows,
     rows: flavourRows,
   };
 
@@ -927,15 +1088,40 @@ function computeFillTarget(
     };
   }
 
-  const recipeTotal = totalActive + flavourTotal;
+  // Recipe total behaves differently for gummies: the base absorbs
+  // headroom, so the true sum stays at the target unless actives push
+  // the remainder below zero (the clamp above), in which case the
+  // actual sum = water + actives + flavour > target.
+  const recipeTotal = isGummy
+    ? Math.max(
+        targetFillWeightMg,
+        totalActive + flavourTotal + (waterMg ?? 0),
+      )
+    : totalActive + flavourTotal;
   const tolerance = Math.max(targetFillWeightMg * 0.005, 0.1);
-  const fits = recipeTotal <= targetFillWeightMg + tolerance;
+  let fits = recipeTotal <= targetFillWeightMg + tolerance;
   const matches = Math.abs(recipeTotal - targetFillWeightMg) <= tolerance;
   const codes: string[] = [];
   const warnings: string[] = [];
+
+  // Gummy floor check — evaluated first so a below-floor bundle
+  // always lands on ``cannot_make`` even when total weight looks fine.
+  if (isGummy && gummyBaseMg !== null) {
+    const floor = targetFillWeightMg * GUMMY_BASE_MIN_PCT;
+    if (gummyBaseMg + tolerance < floor) {
+      fits = false;
+      if (!codes.includes("cannot_make")) codes.push("cannot_make");
+      warnings.push("gummy_base_below_floor");
+    }
+  }
+
   if (!fits) {
-    codes.push("cannot_make");
-    warnings.push("fill_overshoot");
+    if (!codes.includes("cannot_make")) codes.push("cannot_make");
+    if (!warnings.includes("gummy_base_below_floor") && !isGummy) {
+      warnings.push("fill_overshoot");
+    } else if (!warnings.includes("gummy_base_below_floor")) {
+      warnings.push("fill_overshoot");
+    }
   } else if (matches) {
     codes.push("can_make", "less_challenging", "proceed_to_quote");
   } else {
@@ -966,6 +1152,10 @@ export function computeTotals({
   targetFillWeightMg,
   powderType,
   waterVolumeMl,
+  gummyBaseItems,
+  flavouringItems,
+  colourItems,
+  glazingItems,
 }: {
   lines: readonly ComputeLineInput[];
   dosageForm: DosageForm;
@@ -975,6 +1165,38 @@ export function computeTotals({
   targetFillWeightMg?: number | null;
   powderType?: PowderType | null;
   waterVolumeMl?: number | null;
+  /** Picked gummy-base items, for per-item label + category on the
+   *  auto-filled rows. Empty / omitted → the builder renders a
+   *  generic "Gummy Base" row. Total base weight is split equally
+   *  across picks. */
+  gummyBaseItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Picked Flavouring items. The 0.4% flavour total splits equally
+   *  across them so the declaration reads "Flavouring (Natural
+   *  Strawberry, Lemon Extract)" with real procurement codes behind
+   *  each name. */
+  flavouringItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Picked Colour items. The 2% colour total splits equally across
+   *  them; same declaration pattern as flavouring. */
+  colourItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Picked Glazing Agent items (carnauba wax, coconut oil, etc.).
+   *  The 0.1% glaze total splits equally across them. */
+  glazingItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
 }): FormulationTotals {
   let totalActive = 0;
   const lineValues = new Map<string, number>();
@@ -1055,6 +1277,10 @@ export function computeTotals({
       targetFillWeightMg ?? null,
       powderType ?? null,
       waterVolumeMl ?? null,
+      gummyBaseItems ?? [],
+      flavouringItems ?? [],
+      colourItems ?? [],
+      glazingItems ?? [],
     );
     return {
       totalActiveMg: totalActive,

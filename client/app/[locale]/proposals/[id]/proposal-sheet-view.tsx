@@ -10,6 +10,7 @@ import {
   Plus,
   Save,
   Send,
+  Sparkles,
   Trash2,
   Undo2,
   UserRound,
@@ -20,6 +21,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@heroui/react";
 
+import { CustomerPicker } from "@/components/customers/customer-picker";
+import { useCustomers, type CustomerDto } from "@/services/customers";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link } from "@/i18n/navigation";
 import { apiClient, ApiError } from "@/lib/api";
@@ -44,6 +47,7 @@ import {
 } from "@/services/formulations";
 import { useMemberships } from "@/services/members";
 import {
+  specificationsEndpoints,
   useInfiniteSpecifications,
   type SpecificationSheetDto,
 } from "@/services/specifications";
@@ -78,18 +82,14 @@ export function ProposalSheetView({
   const [signatureDialogOpen, setSignatureDialogOpen] = useState<
     false | "in_review" | "approved"
   >(false);
-  // Proposal body HTML is rendered server-side (Django template) so
-  // every surface — authenticated detail, kiosk, PDF — reads the
-  // same document. The iframe src cannot point at the API origin
-  // directly (cookies are not sent cross-site in an iframe) so we
-  // fetch through apiClient and write the response into an iframe's
-  // srcdoc. Re-fetches whenever the proposal changes (status,
-  // signatures, customer info) so the preview stays current.
-  // Fetch the proposal bytes (PDF when Word/LibreOffice converted
-  // it, raw HTML otherwise) and surface them to the iframe through
-  // a ``blob:`` URL. That keeps cookies scoped (the API request
-  // goes through apiClient) while letting the iframe render binary
-  // PDF output the browser can't embed from a direct path.
+  // Proposal body is rendered server-side (Django template → DOCX
+  // → PDF via LibreOffice when available, raw HTML fallback
+  // otherwise) and streamed into an iframe here. The iframe src
+  // cannot point directly at the API origin (cookies aren't sent
+  // on cross-site iframes) so we fetch the bytes through
+  // ``apiClient`` and expose them to the iframe as a ``blob:`` URL.
+  // Re-runs whenever the proposal's ``updated_at`` changes so the
+  // preview reflects edits immediately.
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
   const [previewKind, setPreviewKind] = useState<"pdf" | "html" | null>(null);
   const proposalVersion = proposalQuery.data?.updated_at ?? "";
@@ -358,6 +358,9 @@ export function ProposalSheetView({
         </p>
       )}
 
+      <AttachedSpecPreviews orgId={orgId} proposal={proposal} />
+
+
       <SignatureDialog
         isOpen={Boolean(signatureDialogOpen)}
         onOpenChange={(open) => {
@@ -418,7 +421,26 @@ function EditProposalPanel({
   const specSheets: readonly SpecificationSheetDto[] =
     specSheetsQuery.data?.pages.flatMap((p) => p.results) ?? [];
 
+  // Seed the "selected customer" state from the proposal's FK when
+  // present — the picker shows the right record on first render.
+  // ``useCustomers("")`` pulls the full addressbook so we can find
+  // the match without an extra lookup endpoint.
+  const allCustomersQuery = useCustomers(orgId, "");
+  const seededCustomer: CustomerDto | null = useMemo(() => {
+    if (!proposal.customer_id) return null;
+    return (
+      allCustomersQuery.data?.find((c) => c.id === proposal.customer_id) ??
+      null
+    );
+  }, [proposal.customer_id, allCustomersQuery.data]);
+  const [customer, setCustomer] = useState<CustomerDto | null>(null);
+  // Keep in sync when the proposal FK or addressbook changes.
+  useEffect(() => {
+    setCustomer(seededCustomer);
+  }, [seededCustomer]);
+
   const [form, setForm] = useState(() => ({
+    customer_id: proposal.customer_id ?? "",
     customer_name: proposal.customer_name,
     customer_email: proposal.customer_email,
     customer_phone: proposal.customer_phone,
@@ -473,6 +495,11 @@ function EditProposalPanel({
 
   const handleSave = async () => {
     await onSubmit({
+      // Explicit FK write: ``null`` detaches the address-book link,
+      // a UUID binds it. The per-proposal text fields below stay
+      // sent so they win on overrides — the customer_id is a
+      // reference, not a cascading rewrite.
+      customer_id: customer?.id ?? null,
       customer_name: form.customer_name,
       customer_email: form.customer_email,
       customer_phone: form.customer_phone,
@@ -513,6 +540,49 @@ function EditProposalPanel({
       <p className="mt-0.5 text-sm text-ink-500">
         {tProposals("detail.edit_subtitle")}
       </p>
+
+      {/*
+        Address-book picker. Changing the pick auto-populates the
+        per-proposal customer fields below — scientists can still
+        tweak those for this specific quote (different delivery
+        address for one shipment, etc.) without detaching the FK.
+      */}
+      <div className="mt-5 rounded-xl border border-ink-100 bg-ink-50 p-4">
+        <CustomerPicker
+          orgId={orgId}
+          value={customer}
+          onChange={(next) => {
+            setCustomer(next);
+            if (next) {
+              setForm((prev) => ({
+                ...prev,
+                customer_id: next.id,
+                customer_name: next.name || prev.customer_name,
+                customer_email: next.email || prev.customer_email,
+                customer_phone: next.phone || prev.customer_phone,
+                customer_company: next.company || prev.customer_company,
+                invoice_address:
+                  next.invoice_address || prev.invoice_address,
+                delivery_address:
+                  next.delivery_address || prev.delivery_address,
+                dear_name: next.name || prev.dear_name,
+              }));
+            } else {
+              setForm((prev) => ({ ...prev, customer_id: "" }));
+            }
+          }}
+          onCreateNew={() => {
+            /* Create-new escape hatch not wired on edit panel — send
+               the scientist to the Customers list to add a record. */
+            if (typeof window !== "undefined") {
+              window.open("/customers", "_blank");
+            }
+          }}
+        />
+        <p className="mt-2 text-[11px] text-ink-500">
+          {tProposals("edit.customer_picker_hint")}
+        </p>
+      </div>
 
       <div className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2">
         <Field label={tProposals("edit.customer_name")}>
@@ -621,23 +691,46 @@ function EditProposalPanel({
             <option value="">
               {tProposals("edit.specification_sheet_none")}
             </option>
-            {specSheets.map((sheet) => {
-              const label = [
-                sheet.code,
-                sheet.formulation_name,
-                `v${sheet.formulation_version_number}`,
-              ]
-                .filter(Boolean)
-                .join(" · ");
-              const kindTag =
-                sheet.document_kind === "final" ? " [FINAL]" : " [DRAFT]";
-              return (
-                <option key={sheet.id} value={sheet.id}>
-                  {label}
-                  {kindTag}
-                </option>
-              );
-            })}
+            {
+              // Legacy OneToOne bundled-spec slot. Scope strictly to
+              // sheets attached to the proposal's primary formulation
+              // so scientists never see sheets from unrelated projects
+              // bleed in. The currently-bound sheet stays visible even
+              // if its formulation changed after binding — avoids the
+              // optics of silent data loss.
+              (() => {
+                const primary = proposal.formulation_id;
+                const scoped = primary
+                  ? specSheets.filter((s) => s.formulation_id === primary)
+                  : [];
+                const bound = form.specification_sheet_id
+                  ? specSheets.find(
+                      (s) => s.id === form.specification_sheet_id,
+                    )
+                  : null;
+                const list =
+                  bound && !scoped.some((s) => s.id === bound.id)
+                    ? [bound, ...scoped]
+                    : scoped;
+                return list.map((sheet) => {
+                  const label = [
+                    sheet.code,
+                    sheet.formulation_name,
+                    `v${sheet.formulation_version_number}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ");
+                  const kindTag =
+                    sheet.document_kind === "final" ? " [FINAL]" : " [DRAFT]";
+                  return (
+                    <option key={sheet.id} value={sheet.id}>
+                      {label}
+                      {kindTag}
+                    </option>
+                  );
+                });
+              })()
+            }
           </select>
         </Field>
         <Field label={tProposals("edit.quantity")}>
@@ -1069,18 +1162,29 @@ function LineSpecPicker({
   onChange: (sheetId: string | null) => void;
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
-  // Scope to sheets pinned to the same formulation as this line's
-  // snapshot. When the line has no formulation (ad-hoc line) we
-  // fall through to the full list so there's always something to
-  // pick. ``useMemo`` avoids recomputing on every keystroke in a
-  // sibling cell.
+  // Strict scoping: only sheets pinned to the same formulation as
+  // this line's snapshot. No fallback to the full list — scientists
+  // reported picking the wrong sheet because unrelated sheets bled
+  // through. An ad-hoc line (no ``formulation_id``) yields zero
+  // matches, which renders the "— none —" option alone so the field
+  // stays explicitly empty rather than randomly pre-filling.
+  //
+  // Exception: if the currently-bound sheet isn't in the filtered
+  // set (e.g. the line's formulation was swapped AFTER a spec was
+  // attached), keep it visible so the scientist sees what's bound
+  // and can deliberately clear or change it — silently hiding it
+  // would look like data loss.
   const relevant = useMemo(() => {
-    if (!line.formulation_id) return specs;
-    const scoped = specs.filter(
-      (s) => s.formulation_id === line.formulation_id,
-    );
-    return scoped.length > 0 ? scoped : specs;
-  }, [line.formulation_id, specs]);
+    const scoped = line.formulation_id
+      ? specs.filter((s) => s.formulation_id === line.formulation_id)
+      : [];
+    const boundId = line.specification_sheet_id;
+    if (boundId && !scoped.some((s) => s.id === boundId)) {
+      const bound = specs.find((s) => s.id === boundId);
+      if (bound) return [bound, ...scoped];
+    }
+    return scoped;
+  }, [line.formulation_id, line.specification_sheet_id, specs]);
 
   return (
     <select
@@ -1392,6 +1496,172 @@ function extractErrorMessage(
     }
   }
   return tErrors("generic");
+}
+
+
+/**
+ * Inline previews of every specification sheet bundled with the
+ * proposal, rendered under the proposal preview so staff can eyeball
+ * the full packet before sending it to the client. The kiosk already
+ * renders the same documents for the client signer — showing them
+ * here means "what staff sees" matches "what the client gets"
+ * byte-for-byte, eliminating the "I didn't realise that doc was
+ * bundled" class of mistake.
+ *
+ * De-duplicates attached sheets drawn from two sources (per-line refs
+ * + the legacy proposal-level OneToOne) so a spec referenced twice
+ * only renders once. Returns ``null`` when nothing is attached so the
+ * section collapses away on a standalone proposal.
+ */
+/**
+ * Bundled spec previews rendered inline under the proposal PDF.
+ * De-duplicates attached sheets drawn from two sources (per-line refs
+ * + the legacy proposal-level OneToOne) so a spec referenced twice
+ * only renders once. Returns ``null`` when nothing is attached so the
+ * section collapses away on a standalone proposal.
+ */
+function AttachedSpecPreviews({
+  orgId,
+  proposal,
+}: {
+  orgId: string;
+  proposal: ProposalDto;
+}) {
+  const tProposals = useTranslations("proposals");
+  const attached = useMemo(() => {
+    const seen = new Set<string>();
+    const refs: {
+      readonly sheetId: string;
+      readonly title: string;
+      readonly subtitle: string;
+    }[] = [];
+    for (const line of proposal.lines) {
+      const sheetId = line.specification_sheet_id;
+      if (!sheetId || seen.has(sheetId)) continue;
+      seen.add(sheetId);
+      refs.push({
+        sheetId,
+        title:
+          line.formulation_name ||
+          line.description ||
+          line.product_code ||
+          "",
+        subtitle: line.formulation_version_number
+          ? `v${line.formulation_version_number}`
+          : "",
+      });
+    }
+    const legacy = proposal.specification_sheet_id;
+    if (legacy && !seen.has(legacy)) {
+      refs.push({
+        sheetId: legacy,
+        title: proposal.formulation_name || "",
+        subtitle: proposal.formulation_version_number
+          ? `v${proposal.formulation_version_number}`
+          : "",
+      });
+    }
+    return refs;
+  }, [proposal]);
+
+  if (attached.length === 0) return null;
+
+  return (
+    <section className="flex flex-col gap-3">
+      <header className="flex flex-col gap-0.5">
+        <h2 className="text-sm font-semibold text-ink-1000">
+          {tProposals("detail.attached_specs.title")}
+        </h2>
+        <p className="text-xs text-ink-500">
+          {tProposals("detail.attached_specs.subtitle")}
+        </p>
+      </header>
+      {attached.map((ref) => (
+        <AttachedSpecPreviewCard
+          key={ref.sheetId}
+          orgId={orgId}
+          sheetId={ref.sheetId}
+          title={ref.title}
+          subtitle={ref.subtitle}
+        />
+      ))}
+    </section>
+  );
+}
+
+
+/**
+ * Single bundled-spec preview. Fetches the sheet's PDF through
+ * ``apiClient`` (cookies attached) and binds the bytes to an iframe
+ * via a ``blob:`` URL — same mechanism the proposal-level preview
+ * uses, for the same reason: cross-origin iframes drop cookies, so
+ * we can't point the iframe at the API origin directly.
+ */
+function AttachedSpecPreviewCard({
+  orgId,
+  sheetId,
+  title,
+  subtitle,
+}: {
+  orgId: string;
+  sheetId: string;
+  title: string;
+  subtitle: string;
+}) {
+  const tProposals = useTranslations("proposals");
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    (async () => {
+      try {
+        const response = await apiClient.get<Blob>(
+          specificationsEndpoints.pdf(orgId, sheetId),
+          { responseType: "blob" },
+        );
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(response.data);
+        setBlobUrl(objectUrl);
+        setFailed(false);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [orgId, sheetId]);
+
+  return (
+    <article className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex flex-wrap items-center gap-2">
+        <Sparkles className="h-4 w-4 text-orange-600" />
+        <h3 className="text-sm font-semibold text-ink-1000">
+          {title || tProposals("public.doc.spec_title_untitled")}
+        </h3>
+        {subtitle ? (
+          <span className="text-xs text-ink-500">{subtitle}</span>
+        ) : null}
+      </header>
+      <div className="mt-3 overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
+        {blobUrl ? (
+          <iframe
+            src={blobUrl}
+            title={title || tProposals("public.doc.spec_title_untitled")}
+            className="h-[780px] w-full border-0"
+          />
+        ) : (
+          <div className="flex h-64 items-center justify-center text-sm text-ink-500">
+            {failed
+              ? tProposals("detail.attached_specs.failed")
+              : tProposals("detail.preview_loading")}
+          </div>
+        )}
+      </div>
+    </article>
+  );
 }
 
 

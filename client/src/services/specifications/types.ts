@@ -306,6 +306,18 @@ export interface RenderedSheetContext {
       readonly silica_mg: string | null;
       readonly mcc_mg: string | null;
       readonly dcp_mg: string | null;
+      /** Gummy-only TOTAL base weight. ``null`` on every other form. */
+      readonly gummy_base_mg: string | null;
+      /** Gummy-only: 5.5% of target. ``null`` elsewhere. */
+      readonly water_mg: string | null;
+      /** Per-item breakdown of the gummy base; empty list when
+       *  nothing picked or for non-gummy forms. */
+      readonly gummy_base_rows?: readonly {
+        readonly item_id: string;
+        readonly label: string;
+        readonly use_as: string;
+        readonly mg: string;
+      }[];
     } | null;
     readonly viability: {
       readonly fits: boolean;
