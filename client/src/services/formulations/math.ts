@@ -106,9 +106,64 @@ const GUMMY_COLOUR_PCT = 0.02;
  *  server. */
 const GUMMY_GLAZING_PCT = 0.001;
 
+/** Gelling agent (pectin, gelatin, agar, etc.) at 3% of target —
+ *  emitted only when the scientist has actually picked at least one
+ *  gelling item. Mirrors :data:`GUMMY_GELLING_PCT` on the server. */
+const GUMMY_GELLING_PCT = 0.03;
+
+/** Premix sweetener at 6% of target, **carved out** of the gummy
+ *  base remainder so the visible base shrinks when the premix is
+ *  emitted. Coupled to gelling — only emitted when gelling items are
+ *  picked. Mirrors :data:`GUMMY_PREMIX_SWEETENER_PCT` on the server. */
+const GUMMY_PREMIX_SWEETENER_PCT = 0.06;
+
 /** Minimum gummy-base ratio. Below this the gel matrix won't set
  *  reliably — mirrors :data:`GUMMY_BASE_MIN_PCT` on the server. */
 const GUMMY_BASE_MIN_PCT = 0.65;
+
+/** Default percentages keyed by override slug. ``resolveBandPct``
+ *  reads this map to fall back when an override is missing. Must
+ *  stay in lock-step with ``GUMMY_BAND_DEFAULT_PCT`` on the Python
+ *  side. */
+const GUMMY_BAND_DEFAULT_PCT: Readonly<Record<string, number>> = {
+  water: GUMMY_WATER_PCT,
+  acidity: GUMMY_ACIDITY_PCT,
+  flavouring: GUMMY_FLAVOURING_PCT,
+  colour: GUMMY_COLOUR_PCT,
+  glazing: GUMMY_GLAZING_PCT,
+  gelling: GUMMY_GELLING_PCT,
+  premix_sweetener: GUMMY_PREMIX_SWEETENER_PCT,
+};
+
+/** Override slugs the formulation's ``excipient_overrides`` JSON
+ *  recognises. Anything else is ignored (server-side validation
+ *  rejects unknown slugs at write time). */
+export const GUMMY_BAND_SLUGS = [
+  "water",
+  "acidity",
+  "flavouring",
+  "colour",
+  "glazing",
+  "gelling",
+  "premix_sweetener",
+] as const;
+export type GummyBandSlug = (typeof GUMMY_BAND_SLUGS)[number];
+
+/** Resolve the effective % for a gummy excipient band: override if
+ *  the formulation has one, otherwise the constant default. Mirrors
+ *  :func:`_resolve_band_pct` on the server. */
+function resolveBandPct(
+  slug: string,
+  overrides: Readonly<Record<string, number>> | null | undefined,
+): number {
+  if (overrides) {
+    const raw = overrides[slug];
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+      return raw;
+    }
+  }
+  return GUMMY_BAND_DEFAULT_PCT[slug] ?? 0;
+}
 
 /**
  * Thresholds for the capsule auto-picker, transcribed from the
@@ -188,6 +243,13 @@ export interface ExcipientRow {
    *  flavour rows that scale with ``waterVolumeMl``; null for
    *  gummy and static excipients. */
   readonly concentrationMgPerMl?: number | null;
+  /** Canonical ``use_as`` from the source catalogue item — drives
+   *  EU 1169 grouping when this row flows into the ingredient
+   *  declaration ("Gelling Agent (Pectin)"). Blank for synthetic
+   *  placeholder rows. */
+  readonly useAs?: string;
+  readonly isAllergen?: boolean;
+  readonly allergenSource?: string;
 }
 
 export interface ExcipientBreakdown {
@@ -579,6 +641,8 @@ export const CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)";
 //: to clients.
 export const EXCIPIENT_LABEL_ANTICAKING =
   "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)";
+export const EXCIPIENT_LABEL_GUMMY_BASE = "Gummy Base";
+export const EXCIPIENT_LABEL_WATER = "Water";
 
 
 export interface IngredientDeclarationEntry {
@@ -591,6 +655,12 @@ export interface IngredientDeclarationEntry {
    * so scientists see the final rendering before save. */
   readonly isAllergen: boolean;
   readonly allergenSource: string;
+  /** Canonical ``use_as`` (``"Sweeteners"``, ``"Gelling Agent"``…)
+   *  for the source catalogue item. Drives the EU 1169/2011 group
+   *  bracket in the joined declaration string ("Gelling Agent
+   *  (Pectin)"). Blank for synthetic excipients (MCC, anticaking,
+   *  capsule shell) and actives — they sit standalone. */
+  readonly useAs?: string;
 }
 
 
@@ -668,6 +738,52 @@ export function buildIngredientDeclaration({
         allergenSource: "",
       });
     }
+    // Gummy-only: per-pick gummy base rows + water + the flexible
+    // ``rows`` list (acidity, flavouring, colour, glazing, gelling,
+    // premix sweetener). Each per-pick row carries its source
+    // ``useAs`` so the formatter at the bottom of this function can
+    // group them under their EU label category.
+    if (excipients.gummyBaseRows.length > 0) {
+      for (const r of excipients.gummyBaseRows) {
+        if (r.mg <= 0) continue;
+        entries.push({
+          label: r.label,
+          mg: r.mg,
+          category: "excipient",
+          isAllergen: false,
+          allergenSource: "",
+          useAs: r.useAs || "",
+        });
+      }
+    } else if (excipients.gummyBaseMg !== null && excipients.gummyBaseMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_GUMMY_BASE,
+        mg: excipients.gummyBaseMg,
+        category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
+      });
+    }
+    if (excipients.waterMg !== null && excipients.waterMg > 0) {
+      entries.push({
+        label: EXCIPIENT_LABEL_WATER,
+        mg: excipients.waterMg,
+        category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
+      });
+    }
+    for (const row of excipients.rows) {
+      if (row.mg <= 0) continue;
+      entries.push({
+        label: row.label,
+        mg: row.mg,
+        category: "excipient",
+        isAllergen: row.isAllergen ?? false,
+        allergenSource: row.allergenSource ?? "",
+        useAs: row.useAs ?? "",
+      });
+    }
   }
 
   if (totals.dosageForm === "capsule" && totals.sizeKey) {
@@ -685,9 +801,59 @@ export function buildIngredientDeclaration({
 
   entries.sort((a, b) => b.mg - a.mg || a.label.localeCompare(b.label));
   return {
-    text: entries.map((e) => e.label).join(", "),
+    text: formatGroupedDeclaration(entries),
     entries,
   };
+}
+
+
+/**
+ * Mirror of ``_format_grouped_declaration`` on the server — groups
+ * entries by canonical ``useAs`` so the joined string reads
+ * ``"Sweeteners (Xylitol, Maltitol), Gelling Agent (Pectin)"``
+ * rather than each pick rendering individually. Allergen entries
+ * wrap in ``<b>`` tags for the spec-sheet HTML render path.
+ */
+function formatGroupedDeclaration(
+  entries: readonly IngredientDeclarationEntry[],
+): string {
+  const escape = (raw: string): string =>
+    raw
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  const renderLabel = (e: IngredientDeclarationEntry): string => {
+    const escaped = escape(e.label);
+    return e.isAllergen ? `<b>${escaped}</b>` : escaped;
+  };
+
+  const groups = new Map<string, IngredientDeclarationEntry[]>();
+  const standalone: IngredientDeclarationEntry[] = [];
+  for (const entry of entries) {
+    if (entry.useAs && entry.useAs !== "Active") {
+      const list = groups.get(entry.useAs) ?? [];
+      list.push(entry);
+      groups.set(entry.useAs, list);
+    } else {
+      standalone.push(entry);
+    }
+  }
+
+  const chunks: { leading: number; rendered: string }[] = [];
+  for (const entry of standalone) {
+    chunks.push({ leading: entry.mg, rendered: renderLabel(entry) });
+  }
+  for (const [category, members] of groups.entries()) {
+    members.sort((a, b) => b.mg - a.mg || a.label.localeCompare(b.label));
+    const leading = members[0]?.mg ?? 0;
+    const names = members.map(renderLabel).join(", ");
+    chunks.push({
+      leading,
+      rendered: `${escape(category)} (${names})`,
+    });
+  }
+  chunks.sort((a, b) => b.leading - a.leading);
+  return chunks.map((c) => c.rendered).join(", ");
 }
 
 
@@ -923,6 +1089,23 @@ function computeFillTarget(
     readonly label: string;
     readonly useAs: string;
   }> = [],
+  gellingItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  premixSweetenerItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  acidityItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  excipientOverrides: Readonly<Record<string, number>> | null | undefined =
+    null,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -955,29 +1138,34 @@ function computeFillTarget(
           }));
         })()
       : (() => {
-          // Gummy flavour system — four scaled blocks:
+          // Gummy flavour system — six scaled blocks (gelling +
+          // premix only emit when gelling items are picked):
           //
-          //   acidity   = target × 2%
-          //   flavour   = target × 0.4%   (split across flavouring picks)
-          //   colour    = target × 2%     (split across colour picks)
-          //   glazing   = target × 0.1%   (split across glazing picks)
+          //   acidity         = target × 2%   (default, override-aware)
+          //   flavour         = target × 0.4% (split across flavouring picks)
+          //   colour          = target × 2%   (split across colour picks)
+          //   glazing         = target × 0.1% (split across glazing picks)
+          //   gelling         = target × 3%   (split across gelling picks)
+          //   premix_sweetener = target × 6%  (split across premix picks,
+          //                                    carved from gummy base)
           //
-          // Each block emits either per-pick rows (so the spec sheet
-          // declaration reads "Flavouring (Natural Strawberry, Lemon
-          // Extract)") or a single generic placeholder when nothing's
-          // picked. Mirrors ``_compute_fill_target`` server-side.
+          // Empty gelling picks → no gelling/premix bands at all
+          // (non-gelling gummy). Each band's % is override-aware via
+          // ``resolveBandPct(slug, excipientOverrides)``.
           const targetForScaled =
             targetFillWeightMg && targetFillWeightMg > 0
               ? targetFillWeightMg
               : 0;
-          const rows: ExcipientRow[] = [
-            {
-              slug: "acidity_regulator",
-              label: "Acidity Regulator",
-              mg: targetForScaled * GUMMY_ACIDITY_PCT,
-              isRemainder: false,
-            },
-          ];
+          const acidityPct = resolveBandPct("acidity", excipientOverrides);
+          const flavouringPct = resolveBandPct("flavouring", excipientOverrides);
+          const colourPct = resolveBandPct("colour", excipientOverrides);
+          const glazingPct = resolveBandPct("glazing", excipientOverrides);
+          const gellingPct = resolveBandPct("gelling", excipientOverrides);
+          const premixSweetenerPct = resolveBandPct(
+            "premix_sweetener",
+            excipientOverrides,
+          );
+          const rows: ExcipientRow[] = [];
           const emitPickBand = (
             blockSlug: string,
             blockLabel: string,
@@ -987,6 +1175,7 @@ function computeFillTarget(
               readonly label: string;
               readonly useAs: string;
             }>,
+            placeholderWhenEmpty = true,
           ) => {
             if (blockTotalMg <= 0) return;
             if (picks.length > 0) {
@@ -997,9 +1186,16 @@ function computeFillTarget(
                   label: pick.label,
                   mg: perItem,
                   isRemainder: false,
+                  // Forward the pick's canonical ``use_as`` so the
+                  // declaration formatter groups per-pick rows under
+                  // the EU 1169 category label
+                  // ("Gelling Agent (Pectin, Agar)"). Synthetic
+                  // placeholder rows leave it blank — they sit
+                  // standalone in the declaration.
+                  useAs: pick.useAs || "",
                 });
               }
-            } else {
+            } else if (placeholderWhenEmpty) {
               rows.push({
                 slug: blockSlug,
                 label: blockLabel,
@@ -1009,23 +1205,48 @@ function computeFillTarget(
             }
           };
           emitPickBand(
+            "acidity",
+            "Acidity Regulator",
+            targetForScaled * acidityPct,
+            acidityItems,
+          );
+          emitPickBand(
             "flavouring",
             "Flavouring",
-            targetForScaled * GUMMY_FLAVOURING_PCT,
+            targetForScaled * flavouringPct,
             flavouringItems,
           );
           emitPickBand(
             "colour",
             "Colour",
-            targetForScaled * GUMMY_COLOUR_PCT,
+            targetForScaled * colourPct,
             colourItems,
           );
           emitPickBand(
             "glazing",
             "Glazing Agent",
-            targetForScaled * GUMMY_GLAZING_PCT,
+            targetForScaled * glazingPct,
             glazingItems,
           );
+          // Gelling + premix sweetener are coupled — both emit only
+          // when gelling items have been picked. Premix on its own
+          // without a gelling pick is meaningless and silently
+          // ignored to mirror the server's behaviour.
+          if (gellingItems.length > 0) {
+            emitPickBand(
+              "gelling",
+              "Gelling Agent",
+              targetForScaled * gellingPct,
+              gellingItems,
+              false,
+            );
+            emitPickBand(
+              "premix_sweetener",
+              "Premix Sweetener",
+              targetForScaled * premixSweetenerPct,
+              premixSweetenerItems,
+            );
+          }
           return rows;
         })();
   const flavourTotal = flavourRows.reduce((acc, r) => acc + r.mg, 0);
@@ -1044,7 +1265,8 @@ function computeFillTarget(
   let gummyBaseMg: number | null = null;
   const gummyBaseRows: GummyBaseRow[] = [];
   if (isGummy && targetFillWeightMg && targetFillWeightMg > 0) {
-    waterMg = targetFillWeightMg * GUMMY_WATER_PCT;
+    const waterPct = resolveBandPct("water", excipientOverrides);
+    waterMg = targetFillWeightMg * waterPct;
     const remainder = targetFillWeightMg - waterMg - totalActive - flavourTotal;
     gummyBaseMg = Math.max(remainder, 0);
     const count = gummyBaseItems.length;
@@ -1156,6 +1378,10 @@ export function computeTotals({
   flavouringItems,
   colourItems,
   glazingItems,
+  gellingItems,
+  premixSweetenerItems,
+  acidityItems,
+  excipientOverrides,
 }: {
   lines: readonly ComputeLineInput[];
   dosageForm: DosageForm;
@@ -1197,6 +1423,35 @@ export function computeTotals({
     readonly label: string;
     readonly useAs: string;
   }>;
+  /** Picked Gelling Agent items (pectin, gelatin, agar, etc.). The
+   *  3% gelling total splits equally across them. Empty / omitted →
+   *  no gelling band, no premix-sweetener band (non-gelling gummy). */
+  gellingItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Picked Premix Sweetener items combined with the gelling agent
+   *  into the in-house "Pectin Premix" BOM line. The 6% premix
+   *  total splits equally across them. Only emitted when
+   *  ``gellingItems`` is non-empty. */
+  premixSweetenerItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Picked Acidity Regulator items (Citric Acid, Trisodium
+   *  Citrate, etc.). The 2% acidity total splits equally across
+   *  picks. Empty / omitted → a generic "Acidity Regulator"
+   *  placeholder appears in the totals panel. */
+  acidityItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }>;
+  /** Per-band % overrides for the gummy excipient system. Missing
+   *  keys fall back to constant defaults. */
+  excipientOverrides?: Readonly<Record<string, number>> | null;
 }): FormulationTotals {
   let totalActive = 0;
   const lineValues = new Map<string, number>();
@@ -1281,6 +1536,10 @@ export function computeTotals({
       flavouringItems ?? [],
       colourItems ?? [],
       glazingItems ?? [],
+      gellingItems ?? [],
+      premixSweetenerItems ?? [],
+      acidityItems ?? [],
+      excipientOverrides ?? null,
     );
     return {
       totalActiveMg: totalActive,

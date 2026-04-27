@@ -231,5 +231,12 @@ export interface ProposalKioskDto {
   readonly total_excl_vat: string | null;
   readonly customer_signed_at: string | null;
   readonly has_signature: boolean;
+  /** Customer-facing acknowledgement tickboxes — three required
+   *  consents matching the ☐ boxes in the docx template. The kiosk
+   *  disables the Sign button until all three are ticked, and the
+   *  rendered PDF flips ☐ → ☑ for each one when set. */
+  readonly ack_spec_signing: boolean;
+  readonly ack_lead_times: boolean;
+  readonly ack_terms: boolean;
   readonly attached_specs: readonly ProposalKioskSpecDto[];
 }

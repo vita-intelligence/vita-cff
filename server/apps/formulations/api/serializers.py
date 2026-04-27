@@ -98,6 +98,12 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     colour_items = serializers.SerializerMethodField()
     glazing_item_ids = serializers.SerializerMethodField()
     glazing_items = serializers.SerializerMethodField()
+    gelling_item_ids = serializers.SerializerMethodField()
+    gelling_items = serializers.SerializerMethodField()
+    premix_sweetener_item_ids = serializers.SerializerMethodField()
+    premix_sweetener_items = serializers.SerializerMethodField()
+    acidity_item_ids = serializers.SerializerMethodField()
+    acidity_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -122,6 +128,13 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "colour_items",
             "glazing_item_ids",
             "glazing_items",
+            "gelling_item_ids",
+            "gelling_items",
+            "premix_sweetener_item_ids",
+            "premix_sweetener_items",
+            "acidity_item_ids",
+            "acidity_items",
+            "excipient_overrides",
             "directions_of_use",
             "suggested_dosage",
             "appearance",
@@ -156,6 +169,27 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         """Flat id list for the glazing-agent multi-select."""
 
         return [str(item.id) for item in obj.glazing_items.all()]
+
+    def get_gelling_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the gelling-agent multi-select."""
+
+        return [str(item.id) for item in obj.gelling_items.all()]
+
+    def get_premix_sweetener_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the premix-sweetener multi-select."""
+
+        return [str(item.id) for item in obj.premix_sweetener_items.all()]
+
+    def get_acidity_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the acidity-regulator multi-select."""
+
+        return [str(item.id) for item in obj.acidity_items.all()]
+
+    def get_acidity_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked acidity-regulator items so the
+        builder chips render without a second request."""
+
+        return self._echo_picks(obj.acidity_items)
 
     def get_glazing_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked glazing items (same shape as the other
@@ -210,6 +244,18 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         renders the chip list without a second round-trip."""
 
         return self._echo_picks(obj.colour_items)
+
+    def get_gelling_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked gelling items (pectin, gelatin, etc.)
+        so the builder chips render without a second request."""
+
+        return self._echo_picks(obj.gelling_items)
+
+    def get_premix_sweetener_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked premix-sweetener items so the builder
+        chips render without a second request."""
+
+        return self._echo_picks(obj.premix_sweetener_items)
 
     def get_gummy_base_items(self, obj: Formulation) -> list[dict]:
         """Light echo of every picked gummy base so the builder can
@@ -343,6 +389,62 @@ class FormulationWriteSerializer(serializers.Serializer):
             "etc.). The glaze total (0.1% of target gummy weight) is "
             "split equally across picks. Every id must carry use_as = "
             "'Glazing Agent'. Ignored for non-gummy forms."
+        ),
+    )
+    gelling_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as "
+            "the Gelling Agent block — pectin, gelatin, agar, "
+            "carrageenan, etc. The gelling total (3% of target gummy "
+            "weight, default) is split equally across picks. Every "
+            "id must carry use_as = 'Gelling Agent'. An empty list "
+            "means a non-gelling gummy and skips both the gelling "
+            "and the premix-sweetener bands. Ignored for non-gummy "
+            "forms."
+        ),
+    )
+    premix_sweetener_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items combined with the "
+            "gelling agent into the in-house 'Pectin Premix' BOM "
+            "line. Picks pull from the gummy-base catalogue pool "
+            "(use_as ∈ Sweeteners, Bulking Agent). The premix-"
+            "sweetener total (6% of target, default) is carved out "
+            "of the gummy base remainder. Only emitted when "
+            "gelling_item_ids is non-empty."
+        ),
+    )
+    acidity_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used as the "
+            "Acidity Regulator block — Citric Acid, Trisodium "
+            "Citrate, etc. Each pick must carry use_as = 'Acidity "
+            "Regulator'. The acidity total (2% of target gummy "
+            "weight) is split equally across picks. Empty list "
+            "leaves a placeholder row."
+        ),
+    )
+    excipient_overrides = serializers.DictField(
+        required=False,
+        allow_null=True,
+        child=serializers.FloatField(min_value=0.0, max_value=1.0),
+        help_text=(
+            "Per-band percentage overrides for the gummy excipient "
+            "system. Keys: water, acidity, flavouring, colour, "
+            "glazing, gelling, premix_sweetener. Values are decimal "
+            "fractions (0.02 = 2%, 0.06 = 6%). Pass an empty dict "
+            "to clear all overrides; ``null`` means no change. "
+            "Unknown keys are rejected with "
+            "``invalid_excipient_overrides``."
         ),
     )
     directions_of_use = serializers.CharField(

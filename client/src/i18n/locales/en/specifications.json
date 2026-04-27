@@ -50,6 +50,49 @@
     "submit": "Create",
     "cancel": "Cancel"
   },
+  "overrides": {
+    "trigger": "Edit overrides",
+    "title": "Last-mile spec sheet overrides",
+    "subtitle": "Tweak any value before sending the sheet to a client. Each input is empty by default — populating one creates an override on save; clearing it falls back to the formulation snapshot. Underlying formulation data is not affected.",
+    "save": "Save overrides",
+    "cancel": "Cancel",
+    "reset_all": "Reset all",
+    "fallback_placeholder": "(uses formulation snapshot)",
+    "fallback_hint": "Leave empty to fall back to the formulation snapshot.",
+    "group": {
+      "formulation": "Formulation metadata",
+      "declaration": "Ingredient declaration",
+      "allergens": "Allergens",
+      "compliance": "Compliance flags",
+      "actives": "Active ingredients",
+      "excipients": "Excipient information"
+    },
+    "excipients_hint": "Override the mg shown next to each excipient row on the rendered sheet. Empty inputs fall back to the snapshot value.",
+    "excipients_col_name": "Excipient",
+    "excipients_col_mg": "mg",
+    "directions_of_use": "Directions of use",
+    "suggested_dosage": "Suggested dosage",
+    "appearance": "Appearance",
+    "disintegration_spec": "Disintegration spec",
+    "declaration_text": "Ingredient declaration",
+    "declaration_placeholder": "Enter the EU 1169-style declaration string. Empty = use the auto-built declaration.",
+    "declaration_hint": "Free-text override for the comma-joined ingredient list shown on the sheet. Allergens are not auto-bolded when overridden.",
+    "allergens": "Allergens (comma-separated)",
+    "allergens_placeholder": "Milk, Soy",
+    "allergens_hint": "Comma-separated list shown on the Allergens row. Empty = use the auto-aggregated list from active ingredients.",
+    "compliance_vegan": "Vegan",
+    "compliance_organic": "Organic",
+    "compliance_halal": "Halal",
+    "compliance_kosher": "Kosher",
+    "compliance_unset": "(use computed)",
+    "compliance_yes": "Yes",
+    "compliance_no": "No",
+    "compliance_unknown": "Unknown",
+    "actives_hint": "Override the per-active label claim mg or %NRV displayed on the sheet. Inputs left empty fall back to the snapshot.",
+    "actives_col_name": "Ingredient",
+    "actives_col_claim": "Claim (mg)",
+    "actives_col_nrv": "%NRV"
+  },
   "detail": {
     "back": "Back to specifications",
     "status_label": "Status",
@@ -65,7 +108,11 @@
       "header": "Customer-visible sections",
       "hint": "Show, hide, or reorder any printable block. Use the arrows to change the order the customer sees.",
       "move_up": "Move section up",
-      "move_down": "Move section down"
+      "move_down": "Move section down",
+      "columns_header": "Hide cells",
+      "column": {
+        "excipients_numbers": "Excipient mg numbers"
+      }
     }
   },
   "edit_details": {

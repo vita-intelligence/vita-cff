@@ -307,6 +307,40 @@ class Proposal(models.Model):
         _("customer signature image"), blank=True, default=""
     )
 
+    # Acknowledgement tickboxes from the proposal's docx template.
+    # Three required boxes the customer ticks in the kiosk before
+    # signing; the render layer swaps ☐ → ☑ in the docx so the PDF
+    # the customer + sales team download reflects the ticks. Default
+    # ``False`` so a fresh proposal renders with empty checkboxes
+    # exactly like the original template.
+    ack_spec_signing = models.BooleanField(
+        _("acknowledged spec sheet signing"),
+        default=False,
+        help_text=_(
+            "Customer ticked: 'I understand that before label "
+            "printing, Production Specification Sheets must be "
+            "signed, and label designs must be reviewed and "
+            "approved.' Required before signing the proposal."
+        ),
+    )
+    ack_lead_times = models.BooleanField(
+        _("acknowledged lead times"),
+        default=False,
+        help_text=_(
+            "Customer ticked: 'I understand that manufacturing "
+            "lead times…'. Required before signing the proposal."
+        ),
+    )
+    ack_terms = models.BooleanField(
+        _("acknowledged terms and conditions"),
+        default=False,
+        help_text=_(
+            "Customer ticked: 'I have read the Terms and "
+            "Conditions which can be found below.' Required "
+            "before signing the proposal."
+        ),
+    )
+
     public_token = models.UUIDField(
         _("public token"),
         null=True,

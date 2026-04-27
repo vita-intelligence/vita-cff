@@ -27,6 +27,7 @@ from django.db.models import Max, QuerySet
 from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
 from apps.formulations.constants import (
+    ACIDITY_USE_CATEGORIES,
     AMINO_ACID_GROUPS,
     AMINO_ACID_KEYS,
     CAPSULE_MG_STEARATE_PCT,
@@ -37,22 +38,30 @@ from apps.formulations.constants import (
     DosageForm,
     EXCIPIENT_LABEL_ANTICAKING,
     EXCIPIENT_LABEL_DCP,
+    EXCIPIENT_LABEL_GELLING_AGENT,
     EXCIPIENT_LABEL_GUMMY_BASE,
     EXCIPIENT_LABEL_MCC,
+    EXCIPIENT_LABEL_PREMIX_SWEETENER,
     FLAVOURING_USE_CATEGORIES,
     COLOUR_USE_CATEGORIES,
+    GELLING_USE_CATEGORIES,
     GLAZING_USE_CATEGORIES,
     EXCIPIENT_LABEL_WATER,
+    GUMMY_BAND_DEFAULT_PCT,
+    GUMMY_BAND_OVERRIDE_KEYS,
     GUMMY_BASE_MIN_PCT,
     GUMMY_BASE_USE_CATEGORIES,
     GUMMY_ACIDITY_PCT,
     GUMMY_FLAVOURING_PCT,
     GUMMY_COLOUR_PCT,
+    GUMMY_GELLING_PCT,
     GUMMY_GLAZING_PCT,
+    GUMMY_PREMIX_SWEETENER_PCT,
     GUMMY_WATER_PCT,
     NUTRITION_KEYS,
     POWDER_FLAVOUR_SYSTEM,
     POWDER_REFERENCE_WATER_ML,
+    PREMIX_SWEETENER_USE_CATEGORIES,
     PowderType,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
@@ -132,6 +141,14 @@ class InvalidGummyBaseItem(Exception):
     code = "invalid_gummy_base_item"
 
 
+class InvalidAcidityItem(Exception):
+    """Picked acidity regulator item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Acidity Regulator"``.
+    Same rejection semantics as :class:`InvalidGummyBaseItem`."""
+
+    code = "invalid_acidity_item"
+
+
 class InvalidFlavouringItem(Exception):
     """Picked flavouring item is not in the org's raw_materials
     catalogue or doesn't carry ``use_as == "Flavouring"``. Same
@@ -154,6 +171,38 @@ class InvalidGlazingItem(Exception):
     rejection shape as the base / flavour-colour siblings."""
 
     code = "invalid_glazing_item"
+
+
+class InvalidGellingItem(Exception):
+    """Picked gelling item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Gelling Agent"``. Same
+    rejection shape as the base / flavour-colour / glazing siblings —
+    the frontend maps the code to its own translation so a scientist
+    sees "this pick isn't a gelling agent" instead of a generic form
+    error."""
+
+    code = "invalid_gelling_item"
+
+
+class InvalidPremixSweetenerItem(Exception):
+    """Picked premix-sweetener item is not in the org's raw_materials
+    catalogue or doesn't carry a ``use_as`` in the gummy-base pool
+    (Sweeteners / Bulking Agent). The premix-sweetener picker reuses
+    the gummy-base catalogue so picks are validated against the same
+    category set, but the error code is distinct so the frontend can
+    surface it on the right field."""
+
+    code = "invalid_premix_sweetener_item"
+
+
+class InvalidExcipientOverrides(Exception):
+    """The submitted ``excipient_overrides`` dict is malformed —
+    either not a dict, contains a non-numeric value, or names a
+    band slug we do not recognise. We fail loudly rather than
+    silently dropping bad keys so the scientist notices the typo
+    before it gets baked into a snapshot."""
+
+    code = "invalid_excipient_overrides"
 
 
 class RawMaterialNotInOrg(Exception):
@@ -286,6 +335,18 @@ class ExcipientRow:
     mg: Decimal
     is_remainder: bool = False
     concentration_mg_per_ml: Decimal | None = None
+    #: Canonical ``use_as`` category for the source catalogue item.
+    #: Drives EU 1169/2011 grouping in the ingredient declaration —
+    #: per-pick rows emit ``use_as = "Flavouring"`` etc. so the
+    #: formatter renders "Flavouring (Strawberry, Lemon)". Blank for
+    #: synthetic placeholder rows (acidity, generic gummy base) and
+    #: powder flavour rows so they sit standalone in the declaration.
+    use_as: str = ""
+    #: Per-pick allergen flags pulled from the source catalogue item.
+    #: Forward into the declaration entry so an allergen-flagged
+    #: gelatin pick still renders bold in the grouped output.
+    is_allergen: bool = False
+    allergen_source: str = ""
 
 
 @dataclass
@@ -611,6 +672,80 @@ def _compute_tablet(
     )
 
 
+def _resolve_band_pct(
+    slug: str, overrides: dict[str, Any] | None
+) -> float:
+    """Pick the effective % for a gummy excipient band.
+
+    Reads ``overrides[slug]`` if it's a positive-or-zero number,
+    otherwise falls back to :data:`GUMMY_BAND_DEFAULT_PCT[slug]`. We
+    treat any non-numeric, negative, or unknown value as "no override"
+    so a stray key from a future build never crashes the math — the
+    write-side validator (:func:`_validate_excipient_overrides`)
+    rejects malformed payloads up front so by the time we reach this
+    helper the data is already known-good.
+    """
+
+    if isinstance(overrides, dict):
+        raw = overrides.get(slug)
+        if isinstance(raw, bool):
+            raw = None
+        if isinstance(raw, (int, float)):
+            value = float(raw)
+            if value >= 0:
+                return value
+        elif isinstance(raw, str):
+            parsed = _coerce_float(raw)
+            if parsed is not None and parsed >= 0:
+                return parsed
+    return GUMMY_BAND_DEFAULT_PCT.get(slug, 0.0)
+
+
+def _validate_excipient_overrides(value: Any) -> dict[str, float]:
+    """Coerce + validate an incoming ``excipient_overrides`` payload.
+
+    * Accepts ``None`` / ``{}`` as "no overrides".
+    * Rejects non-dict shapes.
+    * Each key must sit in :data:`GUMMY_BAND_OVERRIDE_KEYS`.
+    * Each value must parse to a non-negative float ≤ 1.0 (we treat
+      anything > 100% as a typo — even an aggressive 50% override
+      stays well under that ceiling).
+    * Missing keys aren't required — partial overrides are valid.
+
+    Returns a clean ``{slug: float}`` dict ready to persist on the
+    formulation. Raises :class:`InvalidExcipientOverrides` on any
+    structural error so the API surfaces a 400 with a code the
+    frontend can translate.
+    """
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidExcipientOverrides()
+    cleaned: dict[str, float] = {}
+    for key, raw in value.items():
+        if not isinstance(key, str) or key not in GUMMY_BAND_OVERRIDE_KEYS:
+            raise InvalidExcipientOverrides()
+        if isinstance(raw, bool):
+            raise InvalidExcipientOverrides()
+        if isinstance(raw, (int, float)):
+            num = float(raw)
+        elif isinstance(raw, str):
+            parsed = _coerce_float(raw)
+            if parsed is None:
+                raise InvalidExcipientOverrides()
+            num = parsed
+        elif raw is None:
+            # Explicit ``null`` clears the override for that band.
+            continue
+        else:
+            raise InvalidExcipientOverrides()
+        if num < 0 or num > 1.0:
+            raise InvalidExcipientOverrides()
+        cleaned[key] = num
+    return cleaned
+
+
 def _compute_fill_target(
     dosage_form: str,
     total_active: Decimal,
@@ -621,6 +756,10 @@ def _compute_fill_target(
     flavouring_items: tuple[Item, ...] = (),
     colour_items: tuple[Item, ...] = (),
     glazing_items: tuple[Item, ...] = (),
+    gelling_items: tuple[Item, ...] = (),
+    premix_sweetener_items: tuple[Item, ...] = (),
+    acidity_items: tuple[Item, ...] = (),
+    excipient_overrides: dict[str, Any] | None = None,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -679,33 +818,41 @@ def _compute_fill_target(
                 )
             )
     else:
-        # Gummy flavour system — four scaled blocks, in order:
+        # Gummy flavour system — six scaled blocks, in order:
         #
         # 1. Acidity Regulator     — 2%   of target gummy weight
         # 2. Flavouring            — 0.4% of target gummy weight
         # 3. Colour                — 2%   of target gummy weight
         # 4. Glazing Agent         — 0.1% of target gummy weight
+        # 5. Gelling Agent         — 3%   of target  (only when picks)
+        # 6. Premix Sweetener      — 6%   of target  (only when gelling
+        #                                            picks present —
+        #                                            carved from base)
         #
-        # Each scales linearly with the gummy mass. Picks for
-        # Flavouring / Colour / Glazing split their respective totals
+        # Each percentage is the *default*; per-band overrides come
+        # from ``excipient_overrides`` so a scientist can fine-tune
+        # any band on a per-formulation basis without forking the
+        # global defaults. Picks for any band split their total
         # equally across catalogue items so the spec sheet renders
-        # "Flavouring (Natural Strawberry, Lemon Extract)" and
-        # "Colour (Beetroot Extract, Turmeric)" with real procurement
-        # codes per name. Empty picks fall back to a single generic
-        # row at the full block total so the recipe still emits a
-        # placeholder line for the scientist.
+        # "Flavouring (Natural Strawberry, Lemon Extract)" with real
+        # procurement codes per name. Empty picks for flavouring /
+        # colour / glazing fall back to a generic placeholder row;
+        # empty picks for gelling skip the gelling + premix bands
+        # entirely (a non-gelling gummy).
         target_for_scaled = (
             float(target_fill_weight_mg)
             if target_fill_weight_mg is not None
             and target_fill_weight_mg > 0
             else 0.0
         )
-        flavour_rows.append(
-            ExcipientRow(
-                slug="acidity_regulator",
-                label="Acidity Regulator",
-                mg=_quantise(target_for_scaled * GUMMY_ACIDITY_PCT),
-            )
+
+        acidity_pct = _resolve_band_pct("acidity", excipient_overrides)
+        flavouring_pct = _resolve_band_pct("flavouring", excipient_overrides)
+        colour_pct = _resolve_band_pct("colour", excipient_overrides)
+        glazing_pct = _resolve_band_pct("glazing", excipient_overrides)
+        gelling_pct = _resolve_band_pct("gelling", excipient_overrides)
+        premix_sweetener_pct = _resolve_band_pct(
+            "premix_sweetener", excipient_overrides
         )
 
         def _emit_pick_band(
@@ -714,11 +861,25 @@ def _compute_fill_target(
             block_label: str,
             block_total_mg: float,
             picks: tuple[Item, ...],
+            band_use_as: str,
+            placeholder_when_empty: bool = True,
         ) -> None:
             """Emit either per-pick rows or a generic placeholder at
             the block's full mg total. Zero target → no row (the
             scientist sees a clean empty stretch and the placeholder
-            appears as soon as they type a fill weight)."""
+            appears as soon as they type a fill weight).
+
+            ``placeholder_when_empty=False`` suppresses the generic
+            row when the picker is empty — used for the gelling band
+            because an empty gelling pick means a non-gelling gummy
+            (no band at all), not "fall back to a placeholder".
+
+            Per-pick rows carry ``use_as = band_use_as`` so the EU
+            1169/2011 declaration formatter groups them as e.g.
+            "Flavouring (Strawberry, Lemon)" / "Gelling Agent
+            (Pectin, Agar)". Allergen flags are forwarded so a
+            gelatin pick still renders bold.
+            """
 
             if block_total_mg <= 0:
                 return
@@ -734,9 +895,12 @@ def _compute_fill_target(
                             slug=f"{block_slug}:{item.id}",
                             label=pick_label,
                             mg=_quantise(per_item_mg),
+                            use_as=band_use_as,
+                            is_allergen=_is_item_allergen(item),
+                            allergen_source=_allergen_source_for_item(item),
                         )
                     )
-            else:
+            elif placeholder_when_empty:
                 flavour_rows.append(
                     ExcipientRow(
                         slug=block_slug,
@@ -746,23 +910,71 @@ def _compute_fill_target(
                 )
 
         _emit_pick_band(
+            block_slug="acidity",
+            block_label="Acidity Regulator",
+            block_total_mg=target_for_scaled * acidity_pct,
+            picks=acidity_items,
+            band_use_as="Acidity Regulator",
+        )
+        _emit_pick_band(
             block_slug="flavouring",
             block_label="Flavouring",
-            block_total_mg=target_for_scaled * GUMMY_FLAVOURING_PCT,
+            block_total_mg=target_for_scaled * flavouring_pct,
             picks=flavouring_items,
+            band_use_as="Flavouring",
         )
         _emit_pick_band(
             block_slug="colour",
             block_label="Colour",
-            block_total_mg=target_for_scaled * GUMMY_COLOUR_PCT,
+            block_total_mg=target_for_scaled * colour_pct,
             picks=colour_items,
+            band_use_as="Colour",
         )
         _emit_pick_band(
             block_slug="glazing",
             block_label="Glazing Agent",
-            block_total_mg=target_for_scaled * GUMMY_GLAZING_PCT,
+            block_total_mg=target_for_scaled * glazing_pct,
             picks=glazing_items,
+            band_use_as="Glazing Agent",
         )
+
+        # Gelling + premix sweetener are coupled: both emit only when
+        # the scientist has actually picked at least one gelling
+        # agent. Empty gelling picks → a non-gelling gummy (no
+        # gelling band, no premix sweetener band). The premix
+        # sweetener picker on its own without a gelling pick is
+        # ignored — the premix is meaningless without something to
+        # gel with.
+        if gelling_items:
+            _emit_pick_band(
+                block_slug="gelling",
+                block_label=EXCIPIENT_LABEL_GELLING_AGENT,
+                block_total_mg=target_for_scaled * gelling_pct,
+                picks=gelling_items,
+                band_use_as="Gelling Agent",
+                placeholder_when_empty=False,
+            )
+            # Premix sweeteners use the picked items' canonical
+            # ``use_as`` (Sweeteners / Bulking Agent) — the band's
+            # rows merge with the gummy-base picks under the EU
+            # label, e.g. ``"Sweeteners (Maltitol, Xylitol)"`` with
+            # premix + base items combined. Reading the use_as off
+            # the first pick keeps the row tagged with its actual
+            # category rather than a synthetic "Premix" bucket that
+            # the label rules don't recognise.
+            premix_use_as = ""
+            if premix_sweetener_items:
+                first_attrs = premix_sweetener_items[0].attributes or {}
+                premix_use_as = normalize_use_as_value(
+                    str(first_attrs.get("use_as") or "")
+                )
+            _emit_pick_band(
+                block_slug="premix_sweetener",
+                block_label=EXCIPIENT_LABEL_PREMIX_SWEETENER,
+                block_total_mg=target_for_scaled * premix_sweetener_pct,
+                picks=premix_sweetener_items,
+                band_use_as=premix_use_as,
+            )
     flavour_rows_tuple: tuple[ExcipientRow, ...] = tuple(flavour_rows)
     flavour_total = sum((float(r.mg) for r in flavour_rows_tuple), 0.0)
 
@@ -791,7 +1003,8 @@ def _compute_fill_target(
 
     if is_gummy and target_fill_weight_mg is not None and target_fill_weight_mg > 0:
         target_float = float(target_fill_weight_mg)
-        water_mg = _quantise(target_float * GUMMY_WATER_PCT)
+        water_pct = _resolve_band_pct("water", excipient_overrides)
+        water_mg = _quantise(target_float * water_pct)
         # Remainder = target − water − actives − flavour. Can go
         # negative if the scientist has overloaded actives; we clamp
         # to zero for display but viability handles the shortfall
@@ -948,6 +1161,10 @@ def compute_totals(
     flavouring_items: tuple[Item, ...] = (),
     colour_items: tuple[Item, ...] = (),
     glazing_items: tuple[Item, ...] = (),
+    gelling_items: tuple[Item, ...] = (),
+    premix_sweetener_items: tuple[Item, ...] = (),
+    acidity_items: tuple[Item, ...] = (),
+    excipient_overrides: dict[str, Any] | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
 
@@ -1024,6 +1241,10 @@ def compute_totals(
             flavouring_items=flavouring_items,
             colour_items=colour_items,
             glazing_items=glazing_items,
+            gelling_items=gelling_items,
+            premix_sweetener_items=premix_sweetener_items,
+            acidity_items=acidity_items,
+            excipient_overrides=excipient_overrides,
         )
     else:
         # Non-math dosage forms (liquid, other_solid) still report
@@ -1135,6 +1356,24 @@ def create_formulation(
         raise InvalidTabletSize()
     _validate_powder_type(powder_type)
 
+    # Seed the four free-text product cells with per-dosage-form
+    # defaults when the caller submitted blanks — gives scientists
+    # a sensible draft to copy + tweak rather than four empty
+    # textareas. Non-blank input always wins so the AI-builder /
+    # import flows that already know what to write are not
+    # overridden.
+    from apps.formulations.constants import FORMULATION_TEXT_DEFAULTS
+
+    text_defaults = FORMULATION_TEXT_DEFAULTS.get(dosage_form, {})
+    if not (directions_of_use or "").strip():
+        directions_of_use = text_defaults.get("directions_of_use", "")
+    if not (suggested_dosage or "").strip():
+        suggested_dosage = text_defaults.get("suggested_dosage", "")
+    if not (appearance or "").strip():
+        appearance = text_defaults.get("appearance", "")
+    if not (disintegration_spec or "").strip():
+        disintegration_spec = text_defaults.get("disintegration_spec", "")
+
     formulation = Formulation.objects.create(
         organization=organization,
         name=name,
@@ -1231,6 +1470,35 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("glazing_item_ids"),
         )
+    pending_gelling: list[Item] | None = None
+    if "gelling_item_ids" in changes:
+        pending_gelling = _resolve_gelling_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("gelling_item_ids"),
+        )
+    pending_premix_sweetener: list[Item] | None = None
+    if "premix_sweetener_item_ids" in changes:
+        pending_premix_sweetener = _resolve_premix_sweetener_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("premix_sweetener_item_ids"),
+        )
+    pending_acidity: list[Item] | None = None
+    if "acidity_item_ids" in changes:
+        pending_acidity = _resolve_acidity_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("acidity_item_ids"),
+        )
+    # Excipient overrides — validate up front so any malformed
+    # payload short-circuits before we touch the M2M setters or the
+    # audit row, but defer the actual write until after the audit
+    # ``before`` snapshot so the diff captures the previous map.
+    # ``None`` in ``changes`` is treated as "no change"; an empty
+    # dict is treated as "clear overrides".
+    pending_overrides: dict[str, float] | None = None
+    if "excipient_overrides" in changes:
+        raw_overrides = changes.pop("excipient_overrides")
+        if raw_overrides is not None:
+            pending_overrides = _validate_excipient_overrides(raw_overrides)
     if "code" in changes and changes["code"] and changes["code"] != formulation.code:
         duplicate = (
             Formulation.objects.filter(
@@ -1249,6 +1517,8 @@ def update_formulation(
     for key, value in changes.items():
         if key in mutable and value is not None:
             setattr(formulation, key, value)
+    if pending_overrides is not None:
+        formulation.excipient_overrides = pending_overrides
 
     formulation.updated_by = actor
     formulation.save()
@@ -1260,6 +1530,12 @@ def update_formulation(
         formulation.colour_items.set(pending_colour)
     if pending_glazing is not None:
         formulation.glazing_items.set(pending_glazing)
+    if pending_gelling is not None:
+        formulation.gelling_items.set(pending_gelling)
+    if pending_premix_sweetener is not None:
+        formulation.premix_sweetener_items.set(pending_premix_sweetener)
+    if pending_acidity is not None:
+        formulation.acidity_items.set(pending_acidity)
     record_audit(
         organization=formulation.organization,
         actor=actor,
@@ -1395,6 +1671,23 @@ def _resolve_use_as_picks(
     return resolved
 
 
+def _resolve_acidity_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``acidity_item_ids`` — picks must carry
+    ``use_as == "Acidity Regulator"``. Citric Acid, Trisodium
+    Citrate, etc."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=ACIDITY_USE_CATEGORIES,
+        error_cls=InvalidAcidityItem,
+    )
+
+
 def _resolve_flavouring_items(
     *,
     organization: Organization,
@@ -1424,6 +1717,44 @@ def _resolve_colour_items(
         raw_ids=raw_ids,
         allowed_categories=COLOUR_USE_CATEGORIES,
         error_cls=InvalidColourItem,
+    )
+
+
+def _resolve_gelling_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``gelling_item_ids`` — picks must carry
+    ``use_as == "Gelling Agent"``. Pectin / gelatin / agar all
+    normalise to the same canonical category in the catalogue."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=GELLING_USE_CATEGORIES,
+        error_cls=InvalidGellingItem,
+    )
+
+
+def _resolve_premix_sweetener_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``premix_sweetener_item_ids``.
+
+    Reuses the gummy-base catalogue pool — picks must carry
+    ``use_as ∈ (Sweeteners, Bulking Agent)``. Distinct error class so
+    the frontend can surface "this isn't a valid premix sweetener"
+    on the right form field rather than confusing it with a gummy-
+    base validation failure."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=PREMIX_SWEETENER_USE_CATEGORIES,
+        error_cls=InvalidPremixSweetenerItem,
     )
 
 
@@ -2143,6 +2474,11 @@ def build_ingredient_declaration(
         # becomes its own excipient entry on the declaration; the
         # remainder row (carrier / gummy base) sits alongside the
         # rest and gets sorted by weight like every other entry.
+        # Per-pick rows carry ``use_as`` (Flavouring / Colour /
+        # Glazing Agent / Gelling Agent / Sweeteners) so the EU
+        # 1169/2011 grouping renders e.g. "Gelling Agent (Pectin,
+        # Agar)" instead of listing each pick standalone. Allergen
+        # flags forward through so a gelatin pick still bolds.
         for row in excipients.rows:
             if row.mg is None or row.mg <= 0:
                 continue
@@ -2151,6 +2487,9 @@ def build_ingredient_declaration(
                     label=row.label,
                     mg=row.mg,
                     category="excipient",
+                    use_as=row.use_as or "",
+                    is_allergen=row.is_allergen,
+                    allergen_source=row.allergen_source or "",
                 )
             )
 
@@ -2164,6 +2503,36 @@ def build_ingredient_declaration(
                     category="shell",
                 )
             )
+
+    # Dedupe entries that resolve to the same label within the same
+    # ``use_as`` group — happens when a scientist picks the same
+    # catalogue item in two band pickers (e.g. Maltitol in both
+    # ``gummy_base_items`` and ``premix_sweetener_items``). The
+    # customer eats one ingredient called "Maltitol", so the EU
+    # declaration must list it once with the summed mg. The
+    # procurement BOM keeps each source split because it reads
+    # ``excipients.rows`` / ``gummy_base_rows`` directly, not this
+    # entries list, so Pectin Premix accounting stays untouched.
+    deduped_map: dict[tuple[str, str], IngredientDeclarationEntry] = {}
+    deduped_order: list[tuple[str, str]] = []
+    for entry in entries:
+        key = (entry.label, entry.use_as or "")
+        if key in deduped_map:
+            prev = deduped_map[key]
+            deduped_map[key] = IngredientDeclarationEntry(
+                label=prev.label,
+                mg=prev.mg + entry.mg,
+                category=prev.category,
+                is_allergen=prev.is_allergen or entry.is_allergen,
+                allergen_source=(
+                    prev.allergen_source or entry.allergen_source
+                ),
+                use_as=prev.use_as,
+            )
+        else:
+            deduped_map[key] = entry
+            deduped_order.append(key)
+    entries = [deduped_map[k] for k in deduped_order]
 
     declaration = _format_grouped_declaration(entries)
     # Entries list stays sorted by weight for the UI breakdown — only
@@ -2258,6 +2627,16 @@ def compute_formulation_totals(
         glazing_items=tuple(
             formulation.glazing_items.all().order_by("name")
         ),
+        gelling_items=tuple(
+            formulation.gelling_items.all().order_by("name")
+        ),
+        premix_sweetener_items=tuple(
+            formulation.premix_sweetener_items.all().order_by("name")
+        ),
+        acidity_items=tuple(
+            formulation.acidity_items.all().order_by("name")
+        ),
+        excipient_overrides=formulation.excipient_overrides or {},
     )
 
 
@@ -2291,6 +2670,11 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
             if formulation.water_volume_ml is not None
             else None
         ),
+        # Per-band gummy excipient overrides — frozen onto the
+        # snapshot so a downstream spec-sheet render reproduces the
+        # exact percentages the scientist had set at save time, even
+        # if they later tweak the formulation again.
+        "excipient_overrides": dict(formulation.excipient_overrides or {}),
     }
 
 
@@ -2485,6 +2869,9 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                             if row.concentration_mg_per_ml is not None
                             else None
                         ),
+                        "use_as": row.use_as or "",
+                        "is_allergen": bool(row.is_allergen),
+                        "allergen_source": row.allergen_source or "",
                     }
                     for row in totals.excipients.rows
                 ],

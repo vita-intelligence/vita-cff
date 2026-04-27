@@ -90,6 +90,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "packaging_details",
             "status",
             "document_kind",
+            "snapshot_overrides",
             "formulation_version",
             "formulation_id",
             "formulation_name",
@@ -178,6 +179,21 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
             max_length=120, allow_blank=True, trim_whitespace=False
         ),
         required=False,
+    )
+    # Phase G5a — last-mile spec-sheet edits. Free-form nested
+    # JSON validated by the service layer
+    # (:func:`_validate_snapshot_overrides`) so the API surface stays
+    # forward-compatible with new override sections without touching
+    # this serializer. Pass ``{}`` to clear all overrides; a partial
+    # dict replaces the override map verbatim.
+    snapshot_overrides = serializers.JSONField(
+        required=False,
+        allow_null=True,
+        help_text=(
+            "Per-section overrides applied at render time. Keys: "
+            "formulation, declaration, allergens, compliance, "
+            "actives. See the Specification model for the schema."
+        ),
     )
     document_kind = serializers.ChoiceField(
         choices=SpecificationDocumentKind.choices, required=False

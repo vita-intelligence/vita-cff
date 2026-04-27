@@ -27,6 +27,7 @@ from apps.specifications.api.serializers import (
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.services import (
     FormulationVersionNotInOrg,
+    InvalidSnapshotOverrides,
     InvalidSpecificationDocumentKind,
     InvalidStatusTransition,
     PACKAGING_SLOT_TYPES,
@@ -173,6 +174,11 @@ class SpecificationDetailView(APIView):
         except InvalidSpecificationDocumentKind:
             return Response(
                 {"document_kind": ["invalid_specification_document_kind"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidSnapshotOverrides:
+            return Response(
+                {"snapshot_overrides": ["invalid_snapshot_overrides"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(

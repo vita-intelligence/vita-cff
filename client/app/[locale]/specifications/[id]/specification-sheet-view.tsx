@@ -40,6 +40,7 @@ import {
   type SpecificationStatus,
 } from "@/services/specifications";
 import { EditDetailsButton } from "./edit-details-button";
+import { EditOverridesButton } from "./edit-overrides-button";
 import { EditPackagingButton } from "./edit-packaging-button";
 import { SharePublicLinkButton } from "./share-public-link-button";
 
@@ -292,6 +293,13 @@ export function SpecificationSheetView({
           </a>
           {canWrite ? (
             <EditDetailsButton orgId={orgId} sheet={sheet} />
+          ) : null}
+          {canWrite ? (
+            <EditOverridesButton
+              orgId={orgId}
+              sheet={sheet}
+              rendered={rendered}
+            />
           ) : null}
           {canWrite ? (
             <EditPackagingButton orgId={orgId} sheet={sheet} />
@@ -800,6 +808,13 @@ export function SpecSheetContent({
       // header with an empty table on old snapshots saved before
       // the powder / gummy flavour system landed.
       if (excipientEntries.length === 0) return null;
+      // Column-level toggle: ``excipients_numbers === false`` keeps
+      // the section header + ingredient names but redacts the mg
+      // cell (and the mg column header). Used for customer-facing
+      // sheets where the formulation outline is OK to share but
+      // the exact quantities are commercially sensitive.
+      const numbersHidden =
+        visibility["excipients_numbers"] === false;
       return (
         <>
           <SectionTitle>
@@ -809,14 +824,20 @@ export function SpecSheetContent({
             <thead>
               <tr>
                 <DataTh>{tSpecs("sheet.columns.excipients")}</DataTh>
-                <DataTh center>{tSpecs("sheet.columns.mg_per_unit")}</DataTh>
+                {numbersHidden ? null : (
+                  <DataTh center>
+                    {tSpecs("sheet.columns.mg_per_unit")}
+                  </DataTh>
+                )}
               </tr>
             </thead>
             <tbody>
               {excipientEntries.map((entry, idx) => (
                 <tr key={`${entry.category}-${entry.label}-${idx}`}>
                   <DataTd>{entry.label}</DataTd>
-                  <DataTd center>{stripTrailingZeros(entry.mg)}</DataTd>
+                  {numbersHidden ? null : (
+                    <DataTd center>{stripTrailingZeros(entry.mg)}</DataTd>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -1324,6 +1345,22 @@ const SECTION_LABEL_KEYS: Readonly<Record<string, string>> = {
 };
 
 
+/** Column-level visibility toggles — sub-flags that hide cells
+ *  *inside* an otherwise-visible section. The slug is the key the
+ *  backend stores in ``section_visibility``; the ``label`` resolves
+ *  the menu copy. */
+const COLUMN_TOGGLES: ReadonlyArray<{
+  readonly slug: string;
+  readonly translationKey:
+    | "detail.visibility.column.excipients_numbers";
+}> = [
+  {
+    slug: "excipients_numbers",
+    translationKey: "detail.visibility.column.excipients_numbers",
+  },
+];
+
+
 /**
  * Dropdown that lets a user with ``formulations.manage_spec_visibility``
  * toggle individual customer-facing sections on or off. The menu
@@ -1468,6 +1505,52 @@ function VisibilityMenu({
               </div>
             );
           })}
+          {/* Column-level toggles — hide individual cells inside an
+              otherwise-visible section. Currently only one entry
+              (excipient mg numbers) but the slot accommodates more
+              as the redaction needs grow (per-active claim numbers,
+              nutrition columns, etc.). */}
+          {COLUMN_TOGGLES.length > 0 ? (
+            <>
+              <p className="mt-2 px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                {tSpecs("detail.visibility.columns_header")}
+              </p>
+              {COLUMN_TOGGLES.map(({ slug, translationKey }) => {
+                const hidden = isHidden(slug);
+                return (
+                  <div
+                    key={slug}
+                    className="flex items-center gap-1 rounded-lg px-1 py-1 hover:bg-ink-50"
+                  >
+                    <span className="inline-block w-[3.25rem]" />
+                    <button
+                      type="button"
+                      role="menuitemcheckbox"
+                      aria-checked={!hidden}
+                      disabled={mutation.isPending}
+                      onClick={() => handleToggle(slug)}
+                      className="flex flex-1 items-center justify-between gap-2 rounded px-2 py-1 text-left text-sm transition-colors disabled:opacity-60"
+                    >
+                      <span
+                        className={
+                          hidden
+                            ? "text-ink-500 line-through"
+                            : "text-ink-1000"
+                        }
+                      >
+                        {tSpecs(translationKey)}
+                      </span>
+                      {hidden ? (
+                        <EyeOff className="h-4 w-4 shrink-0 text-ink-400" />
+                      ) : (
+                        <Eye className="h-4 w-4 shrink-0 text-orange-500" />
+                      )}
+                    </button>
+                  </div>
+                );
+              })}
+            </>
+          ) : null}
         </div>
       ) : null}
     </div>

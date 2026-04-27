@@ -149,6 +149,13 @@ class ProposalRenderContext:
     director_signature_image_png: bytes | None
     director_name: str
     director_date: str
+    #: Customer-facing acknowledgement tickboxes — flip ☐ → ☑ in the
+    #: docx confirmation table when ``True``. Default to ``False`` so
+    #: a draft / unsigned proposal renders empty boxes exactly like
+    #: the original template.
+    ack_spec_signing: bool = False
+    ack_lead_times: bool = False
+    ack_terms: bool = False
 
     @classmethod
     def from_proposal(cls, proposal: Proposal) -> "ProposalRenderContext":
@@ -317,6 +324,13 @@ class ProposalRenderContext:
                 if proposal.director_signed_at
                 else ""
             ),
+            ack_spec_signing=bool(
+                getattr(proposal, "ack_spec_signing", False)
+            ),
+            ack_lead_times=bool(
+                getattr(proposal, "ack_lead_times", False)
+            ),
+            ack_terms=bool(getattr(proposal, "ack_terms", False)),
         )
 
 
@@ -540,6 +554,52 @@ def _paint_signature_table(
                     cell,
                     "Signature: ________________________________",
                 )
+
+
+def _paint_acknowledgement_table(
+    table: Table, ctx: ProposalRenderContext
+) -> None:
+    """Flip ☐ → ☑ in the consent-checkbox table for any
+    acknowledgement the customer ticked in the kiosk.
+
+    The docx templates carry three free-floating ☐ unicode runs,
+    each followed by descriptive text. We match each box to one of
+    the three booleans on the render context by inspecting the
+    surrounding text — a substring search is robust to the minor
+    template drift we see between the Custom and Ready-to-Go docx
+    files (one wraps the consent text in a sub-table, the other
+    inlines it directly).
+
+    Walks every paragraph in the table cells; for each paragraph
+    that contains ``☐`` we look at the paragraph's plain text to
+    decide which ack it belongs to and rewrite the matching run.
+    Runs without ``☐`` are left alone, so styling on the
+    descriptive text is preserved.
+    """
+
+    def _ack_for_text(text: str) -> bool:
+        # Lower-cased substring match — order matters because the
+        # "spec sheets must be signed" line also says "label
+        # printing", so the more specific phrase wins first.
+        lowered = text.lower()
+        if "label printing" in lowered or "specification sheets" in lowered:
+            return ctx.ack_spec_signing
+        if "lead time" in lowered:
+            return ctx.ack_lead_times
+        if "terms and conditions" in lowered or "terms and condition" in lowered:
+            return ctx.ack_terms
+        return False
+
+    for row in table.rows:
+        for cell in row.cells:
+            for paragraph in cell.paragraphs:
+                if "☐" not in paragraph.text:
+                    continue
+                if not _ack_for_text(paragraph.text):
+                    continue
+                for run in paragraph.runs:
+                    if "☐" in run.text:
+                        run.text = run.text.replace("☐", "☑")
 
 
 def _append_internal_signatures(
@@ -1100,6 +1160,12 @@ def render_docx_bytes(proposal: Proposal) -> bytes:
             for c in row.cells
         ):
             _paint_signature_table(table, ctx)
+        elif any("☐" in c.text for row in table.rows for c in row.cells):
+            # Confirmation check-boxes table — flip ☐ → ☑ for any
+            # acknowledgement the customer ticked in the kiosk so
+            # the rendered PDF + downloaded docx both reflect the
+            # consent the customer gave at sign time.
+            _paint_acknowledgement_table(table, ctx)
 
     # Append the Prepared-by / Director block so the customer PDF
     # shows who inside Vita NPD already approved the offer.
@@ -1180,6 +1246,13 @@ def _proposal_digest(proposal: Proposal) -> str:
         # (``get_full_name``) without the proposal itself being
         # touched.
         str(proposal.sales_person_id or ""),
+        # Ack tickboxes flip ☐ → ☑ in the docx; updated_at already
+        # moves on save (capture_customer_signature_on_proposal sets
+        # them in the same write) so this is mostly belt-and-braces,
+        # but keeps the digest sensitive to ack-only edits if a
+        # future flow ever lets a scientist tick on the customer's
+        # behalf without a re-sign.
+        f"a{int(proposal.ack_spec_signing)}{int(proposal.ack_lead_times)}{int(proposal.ack_terms)}",
     ]
     for line in proposal.lines.order_by("id").values_list(
         "id", "updated_at"

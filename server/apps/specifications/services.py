@@ -38,11 +38,13 @@ from apps.formulations.models import FormulationVersion
 from apps.formulations.services import instantiate_active_label
 from apps.organizations.models import Organization
 from apps.specifications.constants import (
+    DEFAULT_FOOD_CONTACT_STATUS,
     DEFAULT_SAFETY_LIMITS,
     DEFAULT_WEIGHT_UNIFORMITY_PCT,
     PACKAGING_PLACEHOLDER,
     SAFETY_LIMIT_ROWS,
     SECTION_SLUGS,
+    VISIBILITY_SLUGS,
 )
 from apps.specifications.models import (
     SpecificationDocumentKind,
@@ -83,6 +85,16 @@ class InvalidSpecificationDocumentKind(Exception):
     can't write a junk value."""
 
     code = "invalid_specification_document_kind"
+
+
+class InvalidSnapshotOverrides(Exception):
+    """Submitted ``snapshot_overrides`` payload is malformed — bad
+    section name, unknown key inside a section, or a value of the
+    wrong type. We fail loudly rather than silently dropping bad
+    keys so the scientist notices the typo before the override
+    silently no-ops on render."""
+
+    code = "invalid_snapshot_overrides"
 
 
 class PublicLinkNotEnabled(Exception):
@@ -226,6 +238,18 @@ def create_sheet(
     if document_kind not in SpecificationDocumentKind.values:
         raise InvalidSpecificationDocumentKind()
 
+    # Seed shelf-life / storage / weight-uniformity from the per-
+    # dosage-form defaults so the spec sheet lands populated rather
+    # than three blank cells. Read the dosage form off the locked
+    # snapshot — the formulation header may have moved on, but the
+    # version is the canonical state of the product when the sheet
+    # was issued.
+    from apps.specifications.constants import SPECIFICATION_TEXT_DEFAULTS
+
+    snapshot_metadata = version.snapshot_metadata or {}
+    dosage_form = snapshot_metadata.get("dosage_form", "") or ""
+    spec_defaults = SPECIFICATION_TEXT_DEFAULTS.get(dosage_form, {})
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=version,
@@ -237,6 +261,9 @@ def create_sheet(
         final_price=final_price,
         cover_notes=cover_notes,
         total_weight_label=total_weight_label,
+        shelf_life=spec_defaults.get("shelf_life", ""),
+        storage_conditions=spec_defaults.get("storage_conditions", ""),
+        weight_uniformity=spec_defaults.get("weight_uniformity", ""),
         status=SpecificationStatus.DRAFT,
         document_kind=document_kind,
         created_by=actor,
@@ -299,10 +326,22 @@ def update_sheet(
         if duplicate:
             raise SpecificationCodeConflict()
 
+    # Phase G5a — last-mile overrides. Validate up front so any
+    # malformed payload short-circuits before we touch the sheet.
+    # ``None`` = leave the existing dict alone; ``{}`` = clear all
+    # overrides; a populated dict replaces the override map.
+    pending_overrides: dict[str, Any] | None = None
+    if "snapshot_overrides" in changes:
+        raw_overrides = changes.pop("snapshot_overrides")
+        if raw_overrides is not None:
+            pending_overrides = _validate_snapshot_overrides(raw_overrides)
+
     before = snapshot(sheet)
     for key, value in changes.items():
         if key in mutable and value is not None:
             setattr(sheet, key, value)
+    if pending_overrides is not None:
+        sheet.snapshot_overrides = pending_overrides
 
     sheet.updated_by = actor
     sheet.save()
@@ -446,7 +485,11 @@ def set_section_visibility(
     before = snapshot(sheet)
     stored = dict(sheet.section_visibility or {})
     for slug, value in visibility.items():
-        if slug not in SECTION_SLUGS:
+        # Accept both section toggles and column-level toggles
+        # (e.g. ``excipients_numbers``). Both share the same flat
+        # ``{slug: bool}`` storage shape; the renderer reads each
+        # flag under a separate key.
+        if slug not in VISIBILITY_SLUGS:
             continue
         stored[slug] = bool(value)
     sheet.section_visibility = stored
@@ -995,7 +1038,7 @@ def resolve_visibility(sheet: SpecificationSheet) -> dict[str, bool]:
     """
 
     stored = sheet.section_visibility or {}
-    return {slug: bool(stored.get(slug, True)) for slug in SECTION_SLUGS}
+    return {slug: bool(stored.get(slug, True)) for slug in VISIBILITY_SLUGS}
 
 
 def resolve_section_order(sheet: SpecificationSheet) -> list[str]:
@@ -1094,6 +1137,252 @@ def _augment_declaration_with_bolding(
     return escaped
 
 
+# ---------------------------------------------------------------------------
+# Snapshot override validation + merge (Phase G5a)
+# ---------------------------------------------------------------------------
+
+
+#: Top-level keys allowed in :attr:`SpecificationSheet.snapshot_overrides`.
+#: Anything else is rejected at write time so a stray key from a future
+#: build never silently no-ops on render.
+_OVERRIDE_SECTIONS: frozenset[str] = frozenset(
+    {
+        "formulation",
+        "declaration",
+        "allergens",
+        "compliance",
+        "actives",
+        "excipients_mg",
+    }
+)
+
+#: Per-section schema. Each entry is the set of keys that section
+#: accepts. ``actives`` uses a different layout — the keys at that
+#: level are line ids and the value is a ``{label_claim_mg, nrv_pct}``
+#: dict — so it is validated separately below.
+_OVERRIDE_KEYS_PER_SECTION: dict[str, frozenset[str]] = {
+    "formulation": frozenset(
+        {
+            "directions_of_use",
+            "suggested_dosage",
+            "appearance",
+            "disintegration_spec",
+        }
+    ),
+    "declaration": frozenset({"text"}),
+    "allergens": frozenset({"sources"}),
+    "compliance": frozenset({"vegan", "organic", "halal", "kosher"}),
+}
+
+#: Per-line keys allowed inside ``actives.<line_id>``.
+_OVERRIDE_ACTIVE_KEYS: frozenset[str] = frozenset(
+    {"label_claim_mg", "nrv_pct"}
+)
+
+#: Compliance flag values the validator accepts. Map onto the same
+#: tri-state the snapshot exposes (yes / no / unknown). ``""`` is
+#: treated as a clear-the-override sentinel by the merge layer.
+_OVERRIDE_COMPLIANCE_VALUES: frozenset[str] = frozenset(
+    {"yes", "no", "unknown", ""}
+)
+
+
+def _validate_snapshot_overrides(value: Any) -> dict[str, Any]:
+    """Coerce + validate an incoming ``snapshot_overrides`` payload.
+
+    * ``None`` / ``{}`` — no overrides, returned as ``{}``.
+    * Top-level keys must sit in :data:`_OVERRIDE_SECTIONS`.
+    * Each section's inner keys must match the per-section schema.
+    * Compliance flag values must be ``yes`` / ``no`` / ``unknown``
+      (or ``""`` to clear that key).
+    * Allergens must be a list of non-empty strings.
+    * Active per-line entries must be keyed by string id and only
+      carry ``label_claim_mg`` / ``nrv_pct`` numeric strings.
+
+    Raises :class:`InvalidSnapshotOverrides` on any structural error.
+    """
+
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise InvalidSnapshotOverrides()
+
+    cleaned: dict[str, Any] = {}
+    for section, inner in value.items():
+        if section not in _OVERRIDE_SECTIONS:
+            raise InvalidSnapshotOverrides()
+        if inner is None:
+            # Explicit ``null`` clears the whole section.
+            continue
+        if not isinstance(inner, dict):
+            raise InvalidSnapshotOverrides()
+
+        if section == "excipients_mg":
+            # ``{row_slug: mg_value_string}`` — keys are the totals
+            # ``excipients.rows`` slugs ("acidity", "flavouring",
+            # "flavouring:<id>", etc.) plus the four typed cells
+            # ("water_mg", "gummy_base_mg", "mg_stearate_mg",
+            # "silica_mg", "mcc_mg", "dcp_mg"). Values are free-text
+            # decimal strings so a scientist can type "200" or
+            # "199.85". Empty / null clears that key.
+            cleaned_excipients: dict[str, str] = {}
+            for row_slug, raw in inner.items():
+                if not isinstance(row_slug, str) or not row_slug:
+                    raise InvalidSnapshotOverrides()
+                if raw is None or raw == "":
+                    continue
+                if isinstance(raw, bool):
+                    raise InvalidSnapshotOverrides()
+                if isinstance(raw, (int, float)):
+                    cleaned_excipients[row_slug] = str(raw)
+                    continue
+                if isinstance(raw, str):
+                    cleaned_excipients[row_slug] = raw
+                    continue
+                raise InvalidSnapshotOverrides()
+            if cleaned_excipients:
+                cleaned[section] = cleaned_excipients
+            continue
+
+        if section == "actives":
+            cleaned_actives: dict[str, dict[str, str]] = {}
+            for line_id, line_payload in inner.items():
+                if not isinstance(line_id, str) or not line_id:
+                    raise InvalidSnapshotOverrides()
+                if line_payload is None:
+                    continue
+                if not isinstance(line_payload, dict):
+                    raise InvalidSnapshotOverrides()
+                cleaned_line: dict[str, str] = {}
+                for key, raw in line_payload.items():
+                    if key not in _OVERRIDE_ACTIVE_KEYS:
+                        raise InvalidSnapshotOverrides()
+                    if raw is None or raw == "":
+                        # Empty string / null clears that field.
+                        continue
+                    if isinstance(raw, bool):
+                        raise InvalidSnapshotOverrides()
+                    if isinstance(raw, (int, float)):
+                        cleaned_line[key] = str(raw)
+                        continue
+                    if isinstance(raw, str):
+                        # Defer numeric strictness to render time —
+                        # the field is free-text per the workbook
+                        # convention (some products carry "TBC" or
+                        # "200 (≥98% pure)" strings).
+                        cleaned_line[key] = raw
+                        continue
+                    raise InvalidSnapshotOverrides()
+                if cleaned_line:
+                    cleaned_actives[line_id] = cleaned_line
+            if cleaned_actives:
+                cleaned[section] = cleaned_actives
+            continue
+
+        allowed_keys = _OVERRIDE_KEYS_PER_SECTION[section]
+        cleaned_section: dict[str, Any] = {}
+        for key, raw in inner.items():
+            if key not in allowed_keys:
+                raise InvalidSnapshotOverrides()
+            if raw is None:
+                # Explicit clear for this key.
+                continue
+            if section == "compliance":
+                if not isinstance(raw, str):
+                    raise InvalidSnapshotOverrides()
+                if raw not in _OVERRIDE_COMPLIANCE_VALUES:
+                    raise InvalidSnapshotOverrides()
+                if raw == "":
+                    continue
+                cleaned_section[key] = raw
+                continue
+            if section == "allergens":
+                if not isinstance(raw, list):
+                    raise InvalidSnapshotOverrides()
+                cleaned_list: list[str] = []
+                for entry in raw:
+                    if isinstance(entry, str):
+                        trimmed = entry.strip()
+                        if trimmed:
+                            cleaned_list.append(trimmed)
+                cleaned_section[key] = cleaned_list
+                continue
+            # ``formulation`` + ``declaration`` accept free-text
+            # strings only — guard against arrays / dicts so a UI
+            # bug cannot stash structured data here and trip the
+            # template render.
+            if not isinstance(raw, str):
+                raise InvalidSnapshotOverrides()
+            cleaned_section[key] = raw
+
+        if cleaned_section:
+            cleaned[section] = cleaned_section
+
+    return cleaned
+
+
+def _override_compliance_status(raw: str) -> bool | None:
+    """Map a stored compliance override (``yes`` / ``no`` /
+    ``unknown``) to the tri-state used in ``snapshot_totals.compliance``.
+    Unknown overrides surface as ``None`` so the chip fades the same
+    way it does for missing snapshot data."""
+
+    if raw == "yes":
+        return True
+    if raw == "no":
+        return False
+    return None
+
+
+def _apply_compliance_override(
+    compliance: dict[str, Any],
+    overrides: dict[str, str],
+) -> dict[str, Any]:
+    """Layer per-flag overrides onto the snapshot's compliance block.
+
+    Walks ``compliance.flags`` and replaces ``status`` for any flag
+    whose key is overridden. The compliant / non-compliant counts
+    stay frozen — they describe the underlying ingredient breakdown,
+    not the human-edited final answer.
+    """
+
+    if not overrides:
+        return compliance
+    flags = list(compliance.get("flags") or [])
+    by_key = {flag.get("key"): flag for flag in flags if isinstance(flag, dict)}
+    next_flags: list[dict[str, Any]] = []
+    for flag in flags:
+        if not isinstance(flag, dict):
+            next_flags.append(flag)
+            continue
+        key = flag.get("key")
+        if key in overrides:
+            patched = dict(flag)
+            patched["status"] = _override_compliance_status(overrides[key])
+            patched["override_applied"] = True
+            next_flags.append(patched)
+        else:
+            next_flags.append(flag)
+    # Patch flags that exist in the override but were missing from
+    # the snapshot — covers the "scientist marked Halal yes on a
+    # snapshot that never tracked halal" edge case.
+    for key, raw in overrides.items():
+        if key in by_key:
+            continue
+        next_flags.append(
+            {
+                "key": key,
+                "label": key.title(),
+                "status": _override_compliance_status(raw),
+                "compliant_count": 0,
+                "non_compliant_count": 0,
+                "unknown_count": 0,
+                "override_applied": True,
+            }
+        )
+    return {**compliance, "flags": next_flags}
+
+
 def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     """Turn a sheet + its snapshot into the flat dict the frontend
     renders. Pure function — no DB writes, no side effects."""
@@ -1102,6 +1391,24 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     metadata = version.snapshot_metadata or {}
     totals = version.snapshot_totals or {}
     snapshot_lines = version.snapshot_lines or []
+    # Phase G5a — last-mile overrides applied at render time. The
+    # validator already coerces the payload at write time so by the
+    # time we reach here every key sits in the canonical schema.
+    overrides = sheet.snapshot_overrides or {}
+    formulation_overrides: dict[str, str] = (
+        overrides.get("formulation") or {}
+    )
+    declaration_overrides: dict[str, str] = (
+        overrides.get("declaration") or {}
+    )
+    allergens_overrides: dict[str, Any] = overrides.get("allergens") or {}
+    compliance_overrides: dict[str, str] = overrides.get("compliance") or {}
+    actives_overrides: dict[str, dict[str, str]] = (
+        overrides.get("actives") or {}
+    )
+    excipient_mg_overrides: dict[str, str] = (
+        overrides.get("excipients_mg") or {}
+    )
 
     # The snapshot stores ``mg_per_serving`` as the raw-powder weight
     # *per unit* (per capsule / per tablet / per scoop) — the variable
@@ -1129,10 +1436,29 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             if raw_per_unit is not None
             else None
         )
+        # Per-line overrides — sales tweaks "Caffeine 200mg" → "210mg"
+        # for a specific client without forking the formulation.
+        # Lookup is by snapshot line ``item_id`` (the version stores
+        # one line per active and the id is stable across re-renders).
+        line_override = actives_overrides.get(str(line.get("item_id") or ""))
+        override_label_claim = (
+            line_override.get("label_claim_mg") if line_override else None
+        )
+        override_nrv = (
+            line_override.get("nrv_pct") if line_override else None
+        )
+        effective_label_claim = (
+            override_label_claim
+            if override_label_claim
+            else (line.get("label_claim_mg") or "")
+        )
         actives.append(
             {
                 "item_name": line.get("item_name", ""),
                 "item_internal_code": line.get("item_internal_code", ""),
+                # Stable identifier so the UI can target the right
+                # row when patching ``snapshot_overrides.actives``.
+                "item_id": str(line.get("item_id") or ""),
                 "ingredient_list_name": instantiate_active_label(
                     nutrition_information_name=attrs.get(
                         "nutrition_information_name"
@@ -1141,20 +1467,25 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                     item_name=line.get("item_name", ""),
                     raw_mg=raw_per_serving,
                 ),
-                "label_claim_mg": str(line.get("label_claim_mg") or ""),
+                "label_claim_mg": str(effective_label_claim),
+                "label_claim_overridden": bool(override_label_claim),
                 # Surface the per-serving value under a per-serving
                 # key so any UI that consumed the old ``mg_per_serving``
                 # now reads the number that actually matches its label.
                 "mg_per_serving": (
                     str(raw_per_serving) if raw_per_serving is not None else ""
                 ),
-                "nrv_percent": _nrv_percent(
-                    line.get("label_claim_mg"), attrs
+                "nrv_percent": (
+                    str(override_nrv)
+                    if override_nrv
+                    else _nrv_percent(line.get("label_claim_mg"), attrs)
                 ),
+                "nrv_overridden": bool(override_nrv),
             }
         )
 
     compliance = totals.get("compliance") or {"flags": []}
+    compliance = _apply_compliance_override(compliance, compliance_overrides)
     declaration = totals.get("declaration") or {"text": "", "entries": []}
     # Pre-split / pre-bolding snapshots stored ``declaration.text`` as
     # a plain comma-joined string with no allergen markup. We can't
@@ -1162,16 +1493,110 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     # using the entries list (which carries ``is_allergen`` flags) so
     # the PDF + in-app view both show bolded allergens — same fix
     # without forcing every existing version to re-snapshot.
-    declaration = {
-        **declaration,
-        "text": _augment_declaration_with_bolding(
-            declaration.get("text") or "",
-            declaration.get("entries") or [],
-        ),
-    }
+    declaration_text_override = declaration_overrides.get("text")
+    if declaration_text_override is not None:
+        # Manual override — render verbatim and skip the auto-bolding
+        # pass so a sales-edited string is shown exactly as typed.
+        # ``html.escape`` keeps any stray ``<`` safe to inject via
+        # ``dangerouslySetInnerHTML`` / Django ``|safe``.
+        declaration = {
+            **declaration,
+            "text": html.escape(declaration_text_override),
+            "text_overridden": True,
+        }
+    else:
+        declaration = {
+            **declaration,
+            "text": _augment_declaration_with_bolding(
+                declaration.get("text") or "",
+                declaration.get("entries") or [],
+            ),
+            "text_overridden": False,
+        }
     allergens = totals.get("allergens") or {"sources": [], "allergen_count": 0}
+    if "sources" in allergens_overrides:
+        override_sources = allergens_overrides.get("sources")
+        if isinstance(override_sources, list):
+            cleaned_sources = [
+                s.strip()
+                for s in override_sources
+                if isinstance(s, str) and s.strip()
+            ]
+            allergens = {
+                **allergens,
+                "sources": cleaned_sources,
+                "allergen_count": len(cleaned_sources),
+                "sources_overridden": True,
+            }
     nutrition = totals.get("nutrition") or {"rows": []}
     amino_acids = totals.get("amino_acids") or {"groups": []}
+
+    # Phase G5a — apply per-row excipient mg overrides on top of the
+    # frozen excipients dict. Keys match either the four typed cells
+    # (water_mg / gummy_base_mg / mg_stearate_mg / silica_mg / mcc_mg
+    # / dcp_mg) or one of the per-row slugs in ``excipients.rows``
+    # (e.g. ``acidity``, ``flavouring:<id>``). Overrides only swap
+    # the displayed mg + tag the cell with ``*_overridden`` so the UI
+    # can badge the edit; the snapshot itself stays untouched.
+    raw_excipients = totals.get("excipients") or {}
+    if excipient_mg_overrides and raw_excipients:
+        excipients_payload = dict(raw_excipients)
+        for typed_key in (
+            "water_mg",
+            "gummy_base_mg",
+            "mg_stearate_mg",
+            "silica_mg",
+            "mcc_mg",
+            "dcp_mg",
+        ):
+            if typed_key in excipient_mg_overrides:
+                excipients_payload[typed_key] = excipient_mg_overrides[
+                    typed_key
+                ]
+                excipients_payload[f"{typed_key}_overridden"] = True
+        rows_payload = list(excipients_payload.get("rows") or [])
+        if rows_payload:
+            patched_rows: list[dict[str, Any]] = []
+            for row in rows_payload:
+                if not isinstance(row, dict):
+                    patched_rows.append(row)
+                    continue
+                slug = row.get("slug")
+                if isinstance(slug, str) and slug in excipient_mg_overrides:
+                    patched_rows.append(
+                        {
+                            **row,
+                            "mg": excipient_mg_overrides[slug],
+                            "mg_overridden": True,
+                        }
+                    )
+                else:
+                    patched_rows.append(row)
+            excipients_payload["rows"] = patched_rows
+        gummy_rows_payload = list(
+            excipients_payload.get("gummy_base_rows") or []
+        )
+        if gummy_rows_payload:
+            patched_gummy: list[dict[str, Any]] = []
+            for row in gummy_rows_payload:
+                if not isinstance(row, dict):
+                    patched_gummy.append(row)
+                    continue
+                slug = f"gummy_base:{row.get('item_id', '')}"
+                if slug in excipient_mg_overrides:
+                    patched_gummy.append(
+                        {
+                            **row,
+                            "mg": excipient_mg_overrides[slug],
+                            "mg_overridden": True,
+                        }
+                    )
+                else:
+                    patched_gummy.append(row)
+            excipients_payload["gummy_base_rows"] = patched_gummy
+        excipients_for_render = excipients_payload
+    else:
+        excipients_for_render = raw_excipients or None
 
     # Filled total weight = powder fill + capsule shell (if any). For
     # tablets the filled weight is just the fill weight (no shell), and
@@ -1242,7 +1667,12 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "cover_notes": sheet.cover_notes,
             "total_weight_label": sheet.total_weight_label,
             "unit_quantity": sheet.unit_quantity,
-            "food_contact_status": sheet.food_contact_status,
+            # Free-text per sheet, falls back to the standing default
+            # ("Packaging to be food-grade and fit for purpose.") when
+            # the scientist hasn't typed a custom phrasing yet.
+            "food_contact_status": (
+                sheet.food_contact_status or DEFAULT_FOOD_CONTACT_STATUS
+            ),
             "shelf_life": sheet.shelf_life,
             "storage_conditions": sheet.storage_conditions,
             "status": sheet.status,
@@ -1256,6 +1686,13 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "has_proposal": (
                 getattr(sheet, "proposal", None) is not None
             ),
+            # Raw override map — surfaced unmerged so the inline
+            # editors on the spec sheet view know which fields are
+            # currently overridden and what value to seed each input
+            # with. The merged values still flow through the
+            # ``formulation`` / ``declaration`` / ``allergens`` /
+            # ``compliance`` / ``actives`` blocks below.
+            "snapshot_overrides": dict(sheet.snapshot_overrides or {}),
         },
         "signatures": {
             "prepared_by": _signature_payload(
@@ -1292,10 +1729,37 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "tablet_size": metadata.get("tablet_size", ""),
             "serving_size": metadata.get("serving_size", 1),
             "servings_per_pack": metadata.get("servings_per_pack", 0),
-            "directions_of_use": metadata.get("directions_of_use", ""),
-            "suggested_dosage": metadata.get("suggested_dosage", ""),
-            "appearance": metadata.get("appearance", ""),
-            "disintegration_spec": metadata.get("disintegration_spec", ""),
+            # Last-mile overrides applied per-key — falls back to the
+            # snapshot value when a key is not in the override map.
+            "directions_of_use": formulation_overrides.get(
+                "directions_of_use",
+                metadata.get("directions_of_use", ""),
+            ),
+            "suggested_dosage": formulation_overrides.get(
+                "suggested_dosage",
+                metadata.get("suggested_dosage", ""),
+            ),
+            "appearance": formulation_overrides.get(
+                "appearance",
+                metadata.get("appearance", ""),
+            ),
+            "disintegration_spec": formulation_overrides.get(
+                "disintegration_spec",
+                metadata.get("disintegration_spec", ""),
+            ),
+            # Per-key flags so the UI can badge "Edited" cells.
+            "directions_of_use_overridden": bool(
+                formulation_overrides.get("directions_of_use")
+            ),
+            "suggested_dosage_overridden": bool(
+                formulation_overrides.get("suggested_dosage")
+            ),
+            "appearance_overridden": bool(
+                formulation_overrides.get("appearance")
+            ),
+            "disintegration_spec_overridden": bool(
+                formulation_overrides.get("disintegration_spec")
+            ),
         },
         "totals": {
             "total_active_mg": totals.get("total_active_mg"),
@@ -1305,7 +1769,7 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             ),
             "max_weight_mg": totals.get("max_weight_mg"),
             "size_label": totals.get("size_label"),
-            "excipients": totals.get("excipients"),
+            "excipients": excipients_for_render,
             "viability": totals.get("viability"),
             # Powder-only fields; non-powder sheets leave them null and
             # the template suppresses the corresponding rows.
@@ -1340,7 +1804,9 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "unit_quantity": (
                 sheet.unit_quantity or metadata.get("servings_per_pack") or ""
             ),
-            "food_contact_status": sheet.food_contact_status,
+            "food_contact_status": (
+                sheet.food_contact_status or DEFAULT_FOOD_CONTACT_STATUS
+            ),
             "shelf_life": sheet.shelf_life,
             "storage_conditions": sheet.storage_conditions,
         },

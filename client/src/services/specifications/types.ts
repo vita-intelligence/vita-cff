@@ -58,6 +58,16 @@ export interface SpecificationSheetDto {
   readonly packaging_details: PackagingDetails;
   readonly status: SpecificationStatus;
   readonly document_kind: SpecificationDocumentKind;
+  /** Phase G5a — last-mile per-section overrides applied at render
+   *  time. Schema:
+   *    formulation.{directions_of_use, suggested_dosage, appearance,
+   *                 disintegration_spec}: string
+   *    declaration.text: string
+   *    allergens.sources: string[]
+   *    compliance.{vegan, organic, halal, kosher}: "yes"|"no"|"unknown"
+   *    actives.<line_id>.{label_claim_mg, nrv_pct}: string
+   *  Empty / missing keys fall back to the snapshot value. */
+  readonly snapshot_overrides: SnapshotOverrides;
   readonly formulation_version: string;
   readonly formulation_id: string;
   readonly formulation_name: string;
@@ -67,6 +77,34 @@ export interface SpecificationSheetDto {
   readonly has_proposal?: boolean;
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+export interface SnapshotOverrides {
+  readonly formulation?: Readonly<{
+    directions_of_use?: string;
+    suggested_dosage?: string;
+    appearance?: string;
+    disintegration_spec?: string;
+  }>;
+  readonly declaration?: Readonly<{ text?: string }>;
+  readonly allergens?: Readonly<{ sources?: readonly string[] }>;
+  readonly compliance?: Readonly<{
+    vegan?: "yes" | "no" | "unknown";
+    organic?: "yes" | "no" | "unknown";
+    halal?: "yes" | "no" | "unknown";
+    kosher?: "yes" | "no" | "unknown";
+  }>;
+  readonly actives?: Readonly<
+    Record<string, Readonly<{ label_claim_mg?: string; nrv_pct?: string }>>
+  >;
+  /** ``excipients_mg`` — per-row mg override applied at render time.
+   *  Keys are either the typed cell names (``water_mg``,
+   *  ``gummy_base_mg``, ``mg_stearate_mg``, ``silica_mg``,
+   *  ``mcc_mg``, ``dcp_mg``) or one of the rows-list slugs
+   *  (``acidity``, ``flavouring:<id>``, ``gummy_base:<id>``).
+   *  Values are decimal mg strings. Empty/missing keys keep the
+   *  snapshot value. */
+  readonly excipients_mg?: Readonly<Record<string, string>>;
 }
 
 export const PACKAGING_SLOTS = [
@@ -143,6 +181,11 @@ export type UpdateSpecificationRequestDto = Partial<
   /** Per-sheet override ``{slug: value}`` for the microbial / PAH /
    *  heavy-metal block. Empty or unset falls back to the org default. */
   readonly limits_override?: Readonly<Record<string, string>>;
+  /** Phase G5a — per-section last-mile overrides. Pass ``{}`` to
+   *  clear all overrides; ``null`` means no change. Server validates
+   *  shape and rejects unknown sections / keys with
+   *  ``invalid_snapshot_overrides``. */
+  readonly snapshot_overrides?: SnapshotOverrides | null;
 };
 
 /** Visibility / ordering write. Either field is optional:
@@ -179,12 +222,17 @@ export interface PublicAcceptRequestDto {
 // ---------------------------------------------------------------------------
 
 export interface RenderedActive {
+  /** Stable identifier — equal to the snapshot line's ``item_id``.
+   *  Used as the key when patching ``snapshot_overrides.actives``. */
+  readonly item_id: string;
   readonly item_name: string;
   readonly item_internal_code: string;
   readonly ingredient_list_name: string;
   readonly label_claim_mg: string;
+  readonly label_claim_overridden?: boolean;
   readonly mg_per_serving: string;
   readonly nrv_percent: string | null;
+  readonly nrv_overridden?: boolean;
 }
 
 export interface RenderedCompliance {
@@ -195,11 +243,16 @@ export interface RenderedCompliance {
     readonly compliant_count: number;
     readonly non_compliant_count: number;
     readonly unknown_count: number;
+    readonly override_applied?: boolean;
   }[];
 }
 
 export interface RenderedDeclaration {
   readonly text: string;
+  /** Set by the render layer when ``snapshot_overrides.declaration.text``
+   *  is in effect — the UI uses it to show an "Edited" badge and the
+   *  reset button next to the declaration block. */
+  readonly text_overridden?: boolean;
   readonly entries: readonly {
     readonly label: string;
     readonly mg: string;
@@ -217,6 +270,7 @@ export interface RenderedDeclaration {
 export interface RenderedAllergens {
   readonly sources: readonly string[];
   readonly allergen_count: number;
+  readonly sources_overridden?: boolean;
 }
 
 /** One row of the nutrition facts panel. ``key`` matches the
@@ -294,6 +348,10 @@ export interface RenderedSheetContext {
     readonly suggested_dosage: string;
     readonly appearance: string;
     readonly disintegration_spec: string;
+    readonly directions_of_use_overridden?: boolean;
+    readonly suggested_dosage_overridden?: boolean;
+    readonly appearance_overridden?: boolean;
+    readonly disintegration_spec_overridden?: boolean;
   };
   readonly totals: {
     readonly total_active_mg: string | null;
@@ -317,6 +375,22 @@ export interface RenderedSheetContext {
         readonly label: string;
         readonly use_as: string;
         readonly mg: string;
+      }[];
+      /** Powder + gummy flexible row list — acidity / flavouring /
+       *  colour / glazing / gelling / premix-sweetener picks plus
+       *  the powder flavour-system rows. ``mg_overridden`` is
+       *  ``true`` when the spec sheet's ``snapshot_overrides.
+       *  excipients_mg.<slug>`` swapped the value at render time. */
+      readonly rows?: readonly {
+        readonly slug: string;
+        readonly label: string;
+        readonly mg: string;
+        readonly is_remainder?: boolean;
+        readonly concentration_mg_per_ml?: string | null;
+        readonly use_as?: string;
+        readonly is_allergen?: boolean;
+        readonly allergen_source?: string;
+        readonly mg_overridden?: boolean;
       }[];
     } | null;
     readonly viability: {

@@ -1131,6 +1131,14 @@ def get_proposal_by_public_token(token: Any) -> Proposal:
     return proposal
 
 
+class ProposalAcknowledgementsRequired(Exception):
+    """Customer attempted to sign the proposal without ticking every
+    acknowledgement checkbox (spec signing / lead times / terms).
+    The kiosk surfaces a 400 with a code the i18n layer translates."""
+
+    code = "proposal_acknowledgements_required"
+
+
 @transaction.atomic
 def capture_customer_signature_on_proposal(
     *,
@@ -1139,6 +1147,9 @@ def capture_customer_signature_on_proposal(
     signer_email: str,
     signer_company: str,
     signature_image: str,
+    ack_spec_signing: bool = False,
+    ack_lead_times: bool = False,
+    ack_terms: bool = False,
 ) -> Proposal:
     """Record a customer signature on the proposal without moving it
     to ``accepted``. Used by the proposal-centric kiosk where many
@@ -1148,10 +1159,19 @@ def capture_customer_signature_on_proposal(
     Idempotent: resigning overwrites the stored image and timestamp so
     a client who scribbled the first time can redraw without us
     needing a separate "reset signature" endpoint.
+
+    The three acknowledgement tickboxes (``ack_spec_signing`` /
+    ``ack_lead_times`` / ``ack_terms``) must all be true — they
+    correspond to the consent ☐ boxes on the docx template, and the
+    rendered PDF flips each ticked box to ☑ so the customer + sales
+    team see what was confirmed.
     """
 
     if proposal.status != ProposalStatus.SENT.value:
         raise InvalidProposalTransition()
+
+    if not (ack_spec_signing and ack_lead_times and ack_terms):
+        raise ProposalAcknowledgementsRequired()
 
     normalised_image = validate_signature_image(signature_image)
     name = (signer_name or "").strip()
@@ -1163,6 +1183,9 @@ def capture_customer_signature_on_proposal(
     proposal.customer_signer_company = (signer_company or "").strip()
     proposal.customer_signature_image = normalised_image
     proposal.customer_signed_at = timezone.now()
+    proposal.ack_spec_signing = bool(ack_spec_signing)
+    proposal.ack_lead_times = bool(ack_lead_times)
+    proposal.ack_terms = bool(ack_terms)
     proposal.save(
         update_fields=[
             "customer_signer_name",
@@ -1170,6 +1193,9 @@ def capture_customer_signature_on_proposal(
             "customer_signer_company",
             "customer_signature_image",
             "customer_signed_at",
+            "ack_spec_signing",
+            "ack_lead_times",
+            "ack_terms",
             "updated_at",
         ]
     )

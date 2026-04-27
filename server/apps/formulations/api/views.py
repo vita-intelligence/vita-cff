@@ -31,13 +31,17 @@ from apps.formulations.services import (
     FormulationCodeRequired,
     FormulationNotFound,
     FormulationVersionNotFound,
+    InvalidAcidityItem,
     InvalidCapsuleSize,
     InvalidDosageForm,
     InvalidColourItem,
+    InvalidExcipientOverrides,
     InvalidFlavouringItem,
+    InvalidGellingItem,
     InvalidGlazingItem,
     InvalidGummyBaseItem,
     InvalidPowderType,
+    InvalidPremixSweetenerItem,
     InvalidTabletSize,
     RawMaterialNotInOrg,
     SalesPersonNotMember,
@@ -76,6 +80,9 @@ def _totals_payload(totals) -> dict[str, Any]:
                     "concentration_mg_per_ml": _as_str(
                         row.concentration_mg_per_ml
                     ),
+                    "use_as": row.use_as or "",
+                    "is_allergen": bool(row.is_allergen),
+                    "allergen_source": row.allergen_source or "",
                 }
                 for row in totals.excipients.rows
             ],
@@ -268,6 +275,30 @@ class FormulationDetailView(APIView):
         except InvalidGlazingItem:
             return Response(
                 {"glazing_item_ids": ["invalid_glazing_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidGellingItem:
+            return Response(
+                {"gelling_item_ids": ["invalid_gelling_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidPremixSweetenerItem:
+            return Response(
+                {
+                    "premix_sweetener_item_ids": [
+                        "invalid_premix_sweetener_item"
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidAcidityItem:
+            return Response(
+                {"acidity_item_ids": ["invalid_acidity_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidExcipientOverrides:
+            return Response(
+                {"excipient_overrides": ["invalid_excipient_overrides"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(

@@ -223,6 +223,50 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # Phase G5a — last-mile spec sheet edits before sending to a
+    # client. Stores per-section overrides on top of the frozen
+    # :class:`FormulationVersion.snapshot_totals`. The render layer
+    # (``apps.specifications.services.render_context``) deep-merges
+    # this dict over the snapshot at view time so the underlying
+    # formulation snapshot stays untouched.
+    #
+    # Schema (every key optional):
+    #     {
+    #       "formulation": {
+    #         "directions_of_use": "...",
+    #         "suggested_dosage":  "...",
+    #         "appearance":        "...",
+    #         "disintegration_spec": "..."
+    #       },
+    #       "declaration": { "text": "..." },
+    #       "allergens":   { "sources": ["Milk", "Soy"] },
+    #       "compliance":  {
+    #         "vegan":   "yes" | "no" | "unknown",
+    #         "organic": "yes" | "no" | "unknown",
+    #         "halal":   "yes" | "no" | "unknown",
+    #         "kosher":  "yes" | "no" | "unknown"
+    #       },
+    #       "actives": {
+    #         "<line_id>": {
+    #           "label_claim_mg": "200",
+    #           "nrv_pct":         "100"
+    #         }
+    #       }
+    #     }
+    snapshot_overrides = models.JSONField(
+        _("snapshot overrides"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Per-sheet overrides applied on top of the frozen "
+            "formulation snapshot at render time. Lets sales tweak "
+            "directions, declaration text, allergen list, compliance "
+            "flags and per-active claims for a specific client "
+            "without forking the underlying formulation. Empty dict "
+            "= render the snapshot verbatim."
+        ),
+    )
+
     section_visibility = models.JSONField(
         _("section visibility"),
         default=dict,

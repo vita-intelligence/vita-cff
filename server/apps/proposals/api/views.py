@@ -40,6 +40,7 @@ from apps.proposals.services import (
     KioskSignaturesPending,
     KioskSpecNotOnProposal,
     MissingRequiredFields,
+    ProposalAcknowledgementsRequired,
     ProposalCodeConflict,
     ProposalLineNotFound,
     ProposalNotFound,
@@ -680,6 +681,13 @@ def _render_public_proposal_payload(proposal) -> dict:
             else None
         ),
         "has_signature": bool(proposal.customer_signature_image),
+        # Customer-facing ack state — drives the kiosk's three
+        # required tickboxes. Frontend disables the Sign button
+        # until all three are ticked, matching the consent model
+        # the printable proposal carries.
+        "ack_spec_signing": bool(proposal.ack_spec_signing),
+        "ack_lead_times": bool(proposal.ack_lead_times),
+        "ack_terms": bool(proposal.ack_terms),
         "attached_specs": specs_payload,
     }
 
@@ -917,7 +925,8 @@ class PublicProposalSignProposalView(APIView):
             )
         session = identity.session
 
-        signature_image = (request.data or {}).get("signature_image") or ""
+        payload = request.data or {}
+        signature_image = payload.get("signature_image") or ""
         try:
             updated = capture_customer_signature_on_proposal(
                 proposal=proposal,
@@ -925,10 +934,22 @@ class PublicProposalSignProposalView(APIView):
                 signer_email=session.guest_email or "",
                 signer_company=session.guest_org_label or "",
                 signature_image=signature_image,
+                ack_spec_signing=bool(payload.get("ack_spec_signing")),
+                ack_lead_times=bool(payload.get("ack_lead_times")),
+                ack_terms=bool(payload.get("ack_terms")),
             )
         except InvalidProposalTransition:
             return Response(
                 {"status": ["invalid_proposal_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ProposalAcknowledgementsRequired:
+            return Response(
+                {
+                    "acknowledgements": [
+                        "proposal_acknowledgements_required"
+                    ]
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except (SignatureRequired, SignatureImageInvalid):

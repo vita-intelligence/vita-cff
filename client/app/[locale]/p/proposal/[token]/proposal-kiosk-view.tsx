@@ -28,11 +28,18 @@
  */
 
 import { Button } from "@heroui/react";
-import { CheckCircle2, FileText, PenLine, Sparkles } from "lucide-react";
+import {
+  CheckCircle2,
+  FileText,
+  MessageCircle,
+  PenLine,
+  Sparkles,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 
+import { Link } from "@/i18n/navigation";
 import { KioskIdentityModal } from "@/components/comments/kiosk/kiosk-identity-modal";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { ApiError, apiClient } from "@/lib/api";
@@ -136,6 +143,29 @@ export function ProposalKioskView({
   const [error, setError] = useState<string | null>(null);
   const [finalizing, setFinalizing] = useState<boolean>(false);
 
+  // Three required acknowledgement tickboxes mirrored on the docx
+  // proposal — must all be true before the customer can sign the
+  // proposal. Seeded from the server payload so a refresh after
+  // signing keeps the boxes ticked. Spec sheets sign without acks
+  // (their own consents live on each spec's signature page).
+  const [acks, setAcks] = useState<{
+    spec_signing: boolean;
+    lead_times: boolean;
+    terms: boolean;
+  }>(() => ({
+    spec_signing: kiosk.ack_spec_signing,
+    lead_times: kiosk.ack_lead_times,
+    terms: kiosk.ack_terms,
+  }));
+  useEffect(() => {
+    setAcks({
+      spec_signing: kiosk.ack_spec_signing,
+      lead_times: kiosk.ack_lead_times,
+      terms: kiosk.ack_terms,
+    });
+  }, [kiosk.ack_spec_signing, kiosk.ack_lead_times, kiosk.ack_terms]);
+  const allAcksTicked = acks.spec_signing && acks.lead_times && acks.terms;
+
   const allSigned = useMemo(() => {
     if (!kiosk.has_signature) return false;
     return kiosk.attached_specs.every((s) => s.has_signature);
@@ -152,7 +182,18 @@ export function ProposalKioskView({
         pending.kind === "proposal"
           ? proposalsEndpoints.publicSign(token)
           : proposalsEndpoints.publicSignSpec(token, pending.sheet.id);
-      await apiClient.post(url, { signature_image: dataUrl });
+      // Proposal sign carries the three ack flags; spec signs skip
+      // them (the spec's own consent lives on its sign page).
+      const payload =
+        pending.kind === "proposal"
+          ? {
+              signature_image: dataUrl,
+              ack_spec_signing: acks.spec_signing,
+              ack_lead_times: acks.lead_times,
+              ack_terms: acks.terms,
+            }
+          : { signature_image: dataUrl };
+      await apiClient.post(url, payload);
       setPending(null);
       router.refresh();
     } catch (err) {
@@ -234,11 +275,36 @@ export function ProposalKioskView({
           signedAt={kiosk.customer_signed_at}
           hasSignature={kiosk.has_signature}
           locked={isAccepted}
+          // Block the Sign button unless every consent is ticked —
+          // the API enforces this server-side too, but disabling the
+          // button gives the customer immediate feedback rather than
+          // a 400 after drawing their signature.
+          signDisabled={!allAcksTicked}
+          signDisabledHint={
+            !allAcksTicked
+              ? tProposals("public.doc.sign_disabled_hint")
+              : undefined
+          }
+          // Pre-sign consent block — three required tickboxes that
+          // mirror the ☐ rows on the docx proposal. Toggling them
+          // updates ``acks``; the ☐ → ☑ swap happens server-side at
+          // render time so the rendered PDF reflects what the
+          // customer confirmed at sign time.
+          extraBody={
+            !isAccepted ? (
+              <AcknowledgementBlock
+                acks={acks}
+                onChange={(next) => setAcks(next)}
+                tProposals={tProposals}
+              />
+            ) : null
+          }
           onSign={() => {
             if (!identified) {
               setIdentifying(true);
               return;
             }
+            if (!allAcksTicked) return;
             setError(null);
             setPending({ kind: "proposal" });
           }}
@@ -284,6 +350,15 @@ export function ProposalKioskView({
               setError(null);
               setPending({ kind: "spec", sheet });
             }}
+            // Per-spec public page anchored at its comments panel.
+            // ``public_token`` is the spec sheet's own kiosk link;
+            // sheets without a public link (rare for sheets bundled
+            // into a proposal, but possible if the link was revoked)
+            // simply hide the chat button.
+            commentsHref={
+              sheet.public_token ? `/p/${sheet.public_token}#comments` : null
+            }
+            commentsLabel={tProposals("public.doc.spec_comments_cta")}
             tProposals={tProposals}
           />
         ))}
@@ -354,6 +429,11 @@ function DocumentCard({
   hasSignature,
   locked,
   onSign,
+  signDisabled,
+  signDisabledHint,
+  extraBody,
+  commentsHref,
+  commentsLabel,
   tProposals,
 }: {
   icon: React.ReactNode;
@@ -365,6 +445,24 @@ function DocumentCard({
   hasSignature: boolean;
   locked: boolean;
   onSign: () => void;
+  /** Set to ``true`` when consent gates haven't been satisfied
+   *  yet (e.g. the proposal card needs all three ack checkboxes
+   *  ticked). The Sign button still renders but greys out so the
+   *  customer can see the next step is consent, not a hidden form
+   *  state. */
+  signDisabled?: boolean;
+  signDisabledHint?: string;
+  /** Optional in-card slot for content that lives between the
+   *  preview iframe and the actions row — used by the proposal
+   *  card to render its three required acknowledgement
+   *  tickboxes. */
+  extraBody?: React.ReactNode;
+  /** Per-document chat link. Set on attached spec sheets (the
+   *  spec's own ``/p/<token>#comments`` page); ``null`` on the
+   *  proposal card itself, where the kiosk's main comments panel
+   *  already lives one step down. */
+  commentsHref?: string | null;
+  commentsLabel?: string;
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
   return (
@@ -386,32 +484,47 @@ function DocumentCard({
             </p>
           ) : null}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {hasSignature ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
               <CheckCircle2 className="h-3.5 w-3.5" />
               {tProposals("public.doc.signed_badge")}
             </span>
           ) : null}
-          {!locked ? (
-            <Button
-              type="button"
-              variant={hasSignature ? "outline" : "primary"}
-              onClick={onSign}
-              className={
-                hasSignature
-                  ? "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                  : "inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-              }
+          {commentsHref ? (
+            <Link
+              href={commentsHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
             >
-              <PenLine className="h-4 w-4" />
-              {hasSignature
-                ? tProposals("public.doc.resign")
-                : tProposals("public.doc.sign_cta")}
-            </Button>
+              <MessageCircle className="h-4 w-4" />
+              {commentsLabel}
+            </Link>
+          ) : null}
+          {!locked ? (
+            <span title={signDisabled ? signDisabledHint : undefined}>
+              <Button
+                type="button"
+                variant={hasSignature ? "outline" : "primary"}
+                onClick={onSign}
+                isDisabled={signDisabled}
+                className={
+                  hasSignature
+                    ? "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    : "inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                }
+              >
+                <PenLine className="h-4 w-4" />
+                {hasSignature
+                  ? tProposals("public.doc.resign")
+                  : tProposals("public.doc.sign_cta")}
+              </Button>
+            </span>
           ) : null}
         </div>
       </div>
+      {extraBody}
       {previewSrc ? (
         <div className="overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
           <iframe
@@ -422,6 +535,63 @@ function DocumentCard({
         </div>
       ) : null}
     </article>
+  );
+}
+
+
+/**
+ * Three required consent tickboxes shown above the proposal preview
+ * in the kiosk. Mirrors the ☐ rows on the docx template — ticking
+ * them flips the matching boxes to ☑ on the rendered PDF + the
+ * downloaded docx. The Sign button stays disabled until all three
+ * are true; the API also enforces it server-side.
+ */
+function AcknowledgementBlock({
+  acks,
+  onChange,
+  tProposals,
+}: {
+  acks: { spec_signing: boolean; lead_times: boolean; terms: boolean };
+  onChange: (next: typeof acks) => void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const ROWS: ReadonlyArray<{
+    readonly key: keyof typeof acks;
+    readonly translationKey:
+      | "public.doc.ack_spec_signing"
+      | "public.doc.ack_lead_times"
+      | "public.doc.ack_terms";
+  }> = [
+    { key: "spec_signing", translationKey: "public.doc.ack_spec_signing" },
+    { key: "lead_times", translationKey: "public.doc.ack_lead_times" },
+    { key: "terms", translationKey: "public.doc.ack_terms" },
+  ];
+
+  return (
+    <div className="rounded-xl bg-amber-50 px-4 py-3 ring-1 ring-inset ring-amber-200">
+      <p className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-amber-900">
+        {tProposals("public.doc.ack_heading")}
+      </p>
+      <ul className="flex flex-col gap-2">
+        {ROWS.map(({ key, translationKey }) => (
+          <li key={key} className="flex items-start gap-2 text-xs text-ink-1000">
+            <input
+              type="checkbox"
+              id={`ack-${key}`}
+              checked={acks[key]}
+              onChange={(e) => onChange({ ...acks, [key]: e.target.checked })}
+              className="mt-[2px] h-4 w-4 cursor-pointer rounded border-ink-300 text-orange-500 focus:ring-2 focus:ring-orange-400"
+            />
+            <label
+              htmlFor={`ack-${key}`}
+              className="cursor-pointer leading-snug"
+            >
+              {tProposals(translationKey)}
+            </label>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

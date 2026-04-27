@@ -249,6 +249,7 @@ export function EditDetailsButton({
                     label={tSpecs("edit_details.food_contact_status")}
                     value={form.food_contact_status ?? ""}
                     onChange={(v) => set("food_contact_status", v)}
+                    placeholder="Packaging to be food-grade and fit for purpose."
                     hint={tSpecs("edit_details.food_contact_status_hint")}
                   />
                   <TextField

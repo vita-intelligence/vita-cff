@@ -318,6 +318,206 @@ class TestRenderContext:
         assert ctx["packaging"]["bottle_pouch_tub"] == "TBD"
 
 
+class TestSnapshotOverrides:
+    """Phase G5a — last-mile spec sheet edits. The override map sits
+    on the sheet and is merged over the frozen snapshot at render
+    time."""
+
+    def test_formulation_metadata_overrides_apply(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={
+                "formulation": {
+                    "directions_of_use": "Take with breakfast.",
+                    "appearance": "Yellow capsule",
+                }
+            },
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+        assert ctx["formulation"]["directions_of_use"] == "Take with breakfast."
+        assert ctx["formulation"]["directions_of_use_overridden"] is True
+        assert ctx["formulation"]["appearance"] == "Yellow capsule"
+        # Untouched keys still flow from the snapshot.
+        assert ctx["formulation"]["suggested_dosage_overridden"] is False
+
+    def test_declaration_text_override_replaces_string(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={
+                "declaration": {"text": "Custom declaration"}
+            },
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+        assert ctx["declaration"]["text"] == "Custom declaration"
+        assert ctx["declaration"]["text_overridden"] is True
+
+    def test_compliance_override_swaps_status(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={
+                "compliance": {"vegan": "no", "halal": "unknown"}
+            },
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+        flags = {f["key"]: f for f in ctx["compliance"]["flags"]}
+        assert flags["vegan"]["status"] is False
+        assert flags["vegan"]["override_applied"] is True
+        assert flags["halal"]["status"] is None
+        assert flags["halal"]["override_applied"] is True
+        # An untouched flag still comes through unchanged.
+        assert "override_applied" not in flags["organic"]
+
+    def test_allergens_override_replaces_list(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={"allergens": {"sources": ["Milk", "Soy"]}},
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+        assert ctx["allergens"]["sources"] == ["Milk", "Soy"]
+        assert ctx["allergens"]["allergen_count"] == 2
+        assert ctx["allergens"]["sources_overridden"] is True
+
+    def test_per_active_overrides_apply(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        # Pull the snapshot's first line id to target the override.
+        line_id = version.snapshot_lines[0]["item_id"]
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={
+                "actives": {
+                    line_id: {"label_claim_mg": "200", "nrv_pct": "120"}
+                }
+            },
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+        active = ctx["actives"][0]
+        assert active["label_claim_mg"] == "200"
+        assert active["label_claim_overridden"] is True
+        assert active["nrv_percent"] == "120"
+        assert active["nrv_overridden"] is True
+
+    def test_invalid_section_rejected(self) -> None:
+        from apps.specifications.services import (
+            InvalidSnapshotOverrides,
+            update_sheet,
+        )
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        with pytest.raises(InvalidSnapshotOverrides):
+            update_sheet(
+                sheet=sheet,
+                actor=org.created_by,
+                snapshot_overrides={"unknown_section": {"x": "y"}},
+            )
+
+    def test_invalid_compliance_value_rejected(self) -> None:
+        from apps.specifications.services import (
+            InvalidSnapshotOverrides,
+            update_sheet,
+        )
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        with pytest.raises(InvalidSnapshotOverrides):
+            update_sheet(
+                sheet=sheet,
+                actor=org.created_by,
+                snapshot_overrides={"compliance": {"vegan": "maybe"}},
+            )
+
+    def test_empty_overrides_clears_all(self) -> None:
+        from apps.specifications.services import update_sheet
+
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={
+                "formulation": {"appearance": "Edited appearance"}
+            },
+        )
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={},
+        )
+        sheet.refresh_from_db()
+        assert sheet.snapshot_overrides == {}
+        ctx = render_context(sheet)
+        assert ctx["formulation"]["appearance_overridden"] is False
+
+
 class TestActivesLabelPerServing:
     """Regression for the multi-capsule labelling bug: the snapshot's
     ``mg_per_serving`` is actually per-*unit* (per-capsule), so the

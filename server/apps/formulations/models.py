@@ -199,6 +199,22 @@ class Formulation(models.Model):
             "forms."
         ),
     )
+    acidity_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("acidity regulator items"),
+        blank=True,
+        related_name="acidity_formulations",
+        help_text=_(
+            "Raw-material items used as the acidity regulator on a "
+            "gummy — Citric Acid, Trisodium Citrate, Sodium Citrate, "
+            "etc. Each pick must carry use_as = 'Acidity Regulator'. "
+            "The acidity total (2% of target gummy weight) splits "
+            "**equally** across picks; the declaration groups them "
+            "as 'Acidity Regulator (Citric Acid, …)'. Empty list "
+            "leaves a placeholder row — scientists must pick items "
+            "before the MRPeasy BOM is procurement-ready."
+        ),
+    )
     flavouring_items = models.ManyToManyField(
         "catalogues.Item",
         verbose_name=_("flavouring items"),
@@ -240,6 +256,53 @@ class Formulation(models.Model):
             "split **equally** across picks; the declaration groups "
             "them as 'Glazing Agent (Carnauba Wax, Coconut Oil)'. "
             "Ignored for non-gummy forms."
+        ),
+    )
+    gelling_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("gelling agent items"),
+        blank=True,
+        related_name="gelling_formulations",
+        help_text=_(
+            "Raw-material items used as the gel matrix on a gummy — "
+            "pectin, gelatin, agar, carrageenan, etc. Each pick must "
+            "carry use_as = 'Gelling Agent'. The gelling total (3% of "
+            "target gummy weight, default) splits **equally** across "
+            "picks; the declaration groups them as 'Gelling Agent "
+            "(Pectin)'. An empty pick list means a non-gelling gummy "
+            "and skips the gelling + premix-sweetener bands "
+            "entirely. Ignored for non-gummy forms."
+        ),
+    )
+    premix_sweetener_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("premix sweetener items"),
+        blank=True,
+        related_name="premix_sweetener_formulations",
+        help_text=_(
+            "Raw-material items combined with the gelling agent to "
+            "form the in-house 'Pectin Premix' line on the MRPeasy "
+            "BOM — typically maltitol, xylitol, sucrose. Picks pull "
+            "from the same catalogue pool as the gummy base "
+            "(use_as ∈ Sweeteners, Bulking Agent). The premix-"
+            "sweetener total (6% of target, default) is **carved "
+            "out** of the gummy base remainder so the visible base "
+            "shrinks accordingly. Only emitted when gelling items "
+            "are also picked."
+        ),
+    )
+    excipient_overrides: models.JSONField = models.JSONField(
+        _("excipient overrides"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Per-band percentage overrides for the gummy excipient "
+            "system. Keys: water, acidity, flavouring, colour, "
+            "glazing, gelling, premix_sweetener. Values are decimal "
+            "fractions (0.02 = 2%). Missing keys fall back to the "
+            "constant defaults. Empty dict = no overrides. Used so "
+            "scientists can fine-tune ratios at the trial-batch / "
+            "spec-sheet stage without forking the global defaults."
         ),
     )
 

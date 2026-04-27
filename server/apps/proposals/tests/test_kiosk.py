@@ -84,12 +84,35 @@ class TestProposalKioskSigning:
             signer_email="alex@buyer.test",
             signer_company="Buyer Ltd",
             signature_image=_TINY_PNG,
+            ack_spec_signing=True,
+            ack_lead_times=True,
+            ack_terms=True,
         )
 
         assert updated.customer_signed_at is not None
         # Status must stay at sent — the signature alone is not the
         # acceptance, the finalize call is.
         assert updated.status == ProposalStatus.SENT.value
+        assert updated.ack_spec_signing is True
+        assert updated.ack_lead_times is True
+        assert updated.ack_terms is True
+
+    def test_sign_proposal_requires_all_acknowledgements(self) -> None:
+        from apps.proposals.services import ProposalAcknowledgementsRequired
+
+        proposal, _ = _sent_proposal_with_spec()
+
+        with pytest.raises(ProposalAcknowledgementsRequired):
+            capture_customer_signature_on_proposal(
+                proposal=proposal,
+                signer_name="Alex Buyer",
+                signer_email="alex@buyer.test",
+                signer_company="Buyer Ltd",
+                signature_image=_TINY_PNG,
+                ack_spec_signing=True,
+                ack_lead_times=False,  # missing
+                ack_terms=True,
+            )
 
     def test_sign_attached_spec_captures_signature(self) -> None:
         proposal, sheet = _sent_proposal_with_spec()
@@ -151,6 +174,9 @@ class TestProposalKioskFinalize:
             signer_email="alex@buyer.test",
             signer_company="Buyer",
             signature_image=_TINY_PNG,
+            ack_spec_signing=True,
+            ack_lead_times=True,
+            ack_terms=True,
         )
         with pytest.raises(KioskSignaturesPending) as exc:
             finalize_proposal_kiosk(proposal=proposal)
@@ -165,6 +191,9 @@ class TestProposalKioskFinalize:
             signer_email="alex@buyer.test",
             signer_company="Buyer",
             signature_image=_TINY_PNG,
+            ack_spec_signing=True,
+            ack_lead_times=True,
+            ack_terms=True,
         )
         capture_customer_signature_on_attached_spec(
             proposal=proposal,
@@ -195,6 +224,9 @@ class TestProposalKioskFinalize:
             signer_email="alex@buyer.test",
             signer_company="Buyer",
             signature_image=_TINY_PNG,
+            ack_spec_signing=True,
+            ack_lead_times=True,
+            ack_terms=True,
         )
         capture_customer_signature_on_attached_spec(
             proposal=proposal,

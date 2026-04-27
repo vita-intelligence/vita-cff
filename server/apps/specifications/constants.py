@@ -60,11 +60,87 @@ SECTION_SLUGS: tuple[str, ...] = (
 )
 
 
+#: Section toggles that hide *cells* inside an otherwise-visible
+#: section rather than the section as a whole. Mirrors the same
+#: ``{slug: bool}`` shape used by :data:`SECTION_SLUGS` so writes
+#: to ``section_visibility`` accept either a section name or one
+#: of these column-level flags.
+#:
+#: ``excipients_numbers`` keeps the Excipient Information block
+#: visible (header + ingredient names) but redacts the mg + %
+#: cells. Useful when sharing a sheet with a customer who should
+#: see the formulation outline without the exact quantities. The
+#: bullet renderer collapses those cells to an em-dash.
+COLUMN_VISIBILITY_SLUGS: tuple[str, ...] = (
+    "excipients_numbers",
+)
+
+
+#: Combined whitelist the visibility validator accepts — section
+#: toggles + column-level toggles in one map. Keeps the storage
+#: schema backwards-compatible (still a flat ``{slug: bool}`` JSON).
+VISIBILITY_SLUGS: tuple[str, ...] = SECTION_SLUGS + COLUMN_VISIBILITY_SLUGS
+
+
 #: Default weight-uniformity tolerance as a percentage. Standard for
 #: capsule + tablet dosage forms in the workbook.
 DEFAULT_WEIGHT_UNIFORMITY_PCT = "10%"
 
 
+#: Default copy rendered for the ``food_contact_status`` cell when
+#: the scientist has not typed a sheet-specific value. Matches the
+#: standing line every spec sheet carries (until a customer asks for
+#: a more specific phrasing). Free-text override per sheet still wins.
+DEFAULT_FOOD_CONTACT_STATUS = (
+    "Packaging to be food-grade and fit for purpose."
+)
+
+
 #: Copy rendered in place of packaging selections until F3b adds real
 #: linkage to the packaging catalogue.
 PACKAGING_PLACEHOLDER = "TBD"
+
+
+#: Per-dosage-form defaults seeded at :func:`create_sheet` time so the
+#: scientist lands on a populated spec sheet rather than four blank
+#: shelf-life / storage / weight-uniformity cells. Non-blank input
+#: always wins; the snapshot's ``dosage_form`` decides which sub-map
+#: to read. Liquid / other-solid forms stay blank — their conventions
+#: vary too widely to seed safely.
+SPECIFICATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
+    "capsule": {
+        "shelf_life": "24 months from manufacture",
+        "storage_conditions": (
+            "Store in a cool, dry place below 25°C. "
+            "Keep out of reach of children."
+        ),
+        "weight_uniformity": "10%",
+    },
+    "tablet": {
+        "shelf_life": "24 months from manufacture",
+        "storage_conditions": (
+            "Store in a cool, dry place below 25°C. "
+            "Keep out of reach of children."
+        ),
+        "weight_uniformity": "10%",
+    },
+    "gummy": {
+        # Gummies have a noticeably shorter shelf life — sugar
+        # alcohol matrices crystallise and lose chew over time, so
+        # 12 months is the usual cap on the customer-facing sheet.
+        "shelf_life": "12 months from manufacture",
+        "storage_conditions": (
+            "Store in a cool, dry place below 25°C. "
+            "Keep out of reach of children."
+        ),
+        "weight_uniformity": "10%",
+    },
+    "powder": {
+        "shelf_life": "24 months from manufacture",
+        "storage_conditions": (
+            "Store in a cool, dry place below 25°C. "
+            "Keep out of reach of children."
+        ),
+        "weight_uniformity": "5%",
+    },
+}

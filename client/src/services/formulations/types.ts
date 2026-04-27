@@ -195,6 +195,18 @@ export interface FormulationDto {
   readonly colour_items: readonly GummyBaseItemDto[];
   readonly glazing_item_ids: readonly string[];
   readonly glazing_items: readonly GummyBaseItemDto[];
+  readonly gelling_item_ids: readonly string[];
+  readonly gelling_items: readonly GummyBaseItemDto[];
+  readonly premix_sweetener_item_ids: readonly string[];
+  readonly premix_sweetener_items: readonly GummyBaseItemDto[];
+  readonly acidity_item_ids: readonly string[];
+  readonly acidity_items: readonly GummyBaseItemDto[];
+  /** Per-band percentage overrides for the gummy excipient system.
+   *  Keys: water | acidity | flavouring | colour | glazing | gelling
+   *  | premix_sweetener. Values are decimal fractions (0.02 = 2%).
+   *  Missing keys fall back to constant defaults; ``{}`` means
+   *  "all defaults". */
+  readonly excipient_overrides: Readonly<Record<string, number>>;
   readonly directions_of_use: string;
   readonly suggested_dosage: string;
   readonly appearance: string;
@@ -248,6 +260,24 @@ export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> &
    *  oil, etc.); empty array clears. Server rejects items whose
    *  ``use_as`` ≠ 'Glazing Agent'. */
   readonly glazing_item_ids?: readonly string[];
+  /** Array of Item ids for the Gelling Agent block (pectin, gelatin,
+   *  agar, etc.); empty array means a non-gelling gummy and skips
+   *  the gelling + premix-sweetener bands entirely. */
+  readonly gelling_item_ids?: readonly string[];
+  /** Array of Item ids combined into the in-house "Pectin Premix"
+   *  BOM line. Picks pull from the gummy-base catalogue pool. Only
+   *  emitted when ``gelling_item_ids`` is non-empty. */
+  readonly premix_sweetener_item_ids?: readonly string[];
+  /** Array of Item ids for the Acidity Regulator block (Citric
+   *  Acid, Trisodium Citrate, etc.). Empty → a generic placeholder
+   *  row is shown until items are picked. Server rejects items
+   *  whose ``use_as`` ≠ 'Acidity Regulator'. */
+  readonly acidity_item_ids?: readonly string[];
+  /** Per-band % overrides for the gummy excipient system. Pass an
+   *  empty object to clear all overrides; ``null`` (or omit) means
+   *  no change. Server validates keys against the canonical band
+   *  list and clamps values to [0, 1]. */
+  readonly excipient_overrides?: Readonly<Record<string, number>> | null;
 };
 
 export interface FormulationLineInput {
@@ -268,6 +298,12 @@ export interface ExcipientRowDto {
   readonly mg: string;
   readonly is_remainder: boolean;
   readonly concentration_mg_per_ml?: string | null;
+  /** Canonical ``use_as`` for the source catalogue item — drives EU
+   *  1169 grouping in the declaration ("Gelling Agent (Pectin)").
+   *  Blank for synthetic placeholder rows. */
+  readonly use_as?: string;
+  readonly is_allergen?: boolean;
+  readonly allergen_source?: string;
 }
 
 /** One item in the gummy-base blend. Label + category come from the

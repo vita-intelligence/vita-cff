@@ -138,10 +138,55 @@ GUMMY_COLOUR_PCT = 0.02
 #: Scales linearly with the gummy mass (a 3000 mg gummy → 3 mg).
 GUMMY_GLAZING_PCT = 0.001
 
+#: Gelling agent (pectin, gelatin, agar) at 3% of the target gummy
+#: weight — provides the gel matrix. Only emitted when the scientist
+#: has actually picked a gelling agent; an empty pick list means a
+#: non-gelling gummy and no gelling band shows up.
+GUMMY_GELLING_PCT = 0.03
+
+#: Premix sweetener at 6% of the target gummy weight — carved out of
+#: the gummy base remainder (so the visible gummy base shrinks by 6%
+#: when a gelling agent is picked). Together with the 3% gelling
+#: agent it forms the in-house "Pectin Premix" line on the MRPeasy
+#: BOM (3% + 6% = 9% combined). Only emitted when gelling items are
+#: present — coupled to the gelling band.
+GUMMY_PREMIX_SWEETENER_PCT = 0.06
+
 #: Legacy alias — kept so any in-flight consumer reading the flat
 #: 65% target still sees a sensible number. Prefer
 #: :data:`GUMMY_BASE_MIN_PCT` going forward.
 GUMMY_BASE_PCT = GUMMY_BASE_MIN_PCT
+
+
+#: Slugs the formulation's ``excipient_overrides`` JSON dict accepts.
+#: Each band has a default percentage (the constants above); the
+#: scientist can override any of them per-formulation by writing a
+#: float into this map. Unknown slugs are silently ignored at compute
+#: time so a stray key from a future band never crashes older
+#: formulations.
+GUMMY_BAND_OVERRIDE_KEYS: tuple[str, ...] = (
+    "water",
+    "acidity",
+    "flavouring",
+    "colour",
+    "glazing",
+    "gelling",
+    "premix_sweetener",
+)
+
+
+#: Default percentages for each gummy band, keyed by override slug.
+#: ``_compute_fill_target`` reads this map to resolve "default unless
+#: overridden" without a long if/elif ladder.
+GUMMY_BAND_DEFAULT_PCT: dict[str, float] = {
+    "water": GUMMY_WATER_PCT,
+    "acidity": GUMMY_ACIDITY_PCT,
+    "flavouring": GUMMY_FLAVOURING_PCT,
+    "colour": GUMMY_COLOUR_PCT,
+    "glazing": GUMMY_GLAZING_PCT,
+    "gelling": GUMMY_GELLING_PCT,
+    "premix_sweetener": GUMMY_PREMIX_SWEETENER_PCT,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +225,7 @@ USE_AS_CANONICAL_VALUES: tuple[str, ...] = (
     "Colour",
     "Acidity Regulator",
     "Glazing Agent",
+    "Gelling Agent",
     "Emulsifier",
     "Disintegrant",
     "Stabiliser",
@@ -252,6 +298,23 @@ USE_AS_NORMALISATION: dict[str, str] = {
     "glazes": "Glazing Agent",
     "wax": "Glazing Agent",
     "waxes": "Glazing Agent",
+    # Gelling agent — pectin / gelatin / agar variants. The canonical
+    # spelling is ``Gelling Agent`` (matches the EU 1169/2011 label
+    # category). Specific items keep their own names; this normalises
+    # the ``use_as`` tag scientists assign in the catalogue.
+    "gelling agent": "Gelling Agent",
+    "gelling agents": "Gelling Agent",
+    "gelling": "Gelling Agent",
+    "gel": "Gelling Agent",
+    "gel base": "Gelling Agent",
+    "gelling base": "Gelling Agent",
+    "pectin": "Gelling Agent",
+    "gelatin": "Gelling Agent",
+    "gelatine": "Gelling Agent",
+    "agar": "Gelling Agent",
+    "agar agar": "Gelling Agent",
+    "agar-agar": "Gelling Agent",
+    "carrageenan": "Gelling Agent",
     "preservative": "Preservative",
     "preservatives": "Preservative",
     "carrier": "Carrier",
@@ -292,12 +355,25 @@ GUMMY_BASE_USE_CATEGORIES: tuple[str, ...] = (
     "Bulking Agent",
 )
 
+#: Categories the Acidity Regulator picker surfaces. Scientists
+#: pick from items tagged with this single canonical value (Citric
+#: Acid, Trisodium Citrate, etc.). The 2% acidity total splits
+#: equally across picks the same way Flavouring + Colour do.
+ACIDITY_USE_CATEGORIES: tuple[str, ...] = ("Acidity Regulator",)
+
 #: Categories the Flavouring picker surfaces — a single value
 #: today, held as a tuple for filter-shape consistency.
 FLAVOURING_USE_CATEGORIES: tuple[str, ...] = ("Flavouring",)
 
-#: Categories the Colour picker surfaces.
-COLOUR_USE_CATEGORIES: tuple[str, ...] = ("Colour",)
+#: Categories the Colour picker surfaces. Includes ``Flavouring``
+#: alongside ``Colour`` because most flavour items in the catalogue
+#: double as colourants (beetroot extract, turmeric oleoresin,
+#: spirulina powder all carry colour as well as flavour) — the
+#: scientist picks them under whichever band they want the mg
+#: allocated to. The per-pick row still tags as ``use_as = "Colour"``
+#: so the EU 1169 declaration groups it under "Colour (...)" even
+#: when the source catalogue item is canonically Flavouring.
+COLOUR_USE_CATEGORIES: tuple[str, ...] = ("Colour", "Flavouring")
 
 #: Categories the glazing-agent picker surfaces (carnauba wax,
 #: coconut oil, beeswax, shellac, etc.). Single canonical value
@@ -306,6 +382,21 @@ COLOUR_USE_CATEGORIES: tuple[str, ...] = ("Colour",)
 GLAZING_USE_CATEGORIES: tuple[str, ...] = (
     "Glazing Agent",
 )
+
+#: Categories the gelling-agent picker surfaces (pectin, gelatin,
+#: agar, carrageenan, etc.). Tagged ``Gelling Agent`` in the
+#: catalogue and rendered as ``Gelling Agent (Pectin)`` on the EU
+#: 1169/2011 ingredient declaration.
+GELLING_USE_CATEGORIES: tuple[str, ...] = (
+    "Gelling Agent",
+)
+
+#: The premix-sweetener picker reuses the gummy-base catalogue pool —
+#: scientists pick from the same maltitol/xylitol/sucrose universe.
+#: Holding it as a constant keeps "what does the picker filter on"
+#: in one place and lets a future split (a curated premix-only pool)
+#: change just this tuple.
+PREMIX_SWEETENER_USE_CATEGORIES: tuple[str, ...] = GUMMY_BASE_USE_CATEGORIES
 
 
 #: Powder flavour system — reference rows that the scientist sees in
@@ -359,6 +450,54 @@ PROTEIN_POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
 POWDER_REFERENCE_WATER_ML = 500.0
 
 
+#: Pre-filled text defaults seeded at :func:`create_formulation`
+#: time so the scientist lands on a sensible draft of the four
+#: free-text product cells (Directions of use / Suggested dosage /
+#: Appearance / Disintegration spec) rather than four blank inputs.
+#:
+#: Defaults only apply when the caller submits a blank value AND the
+#: dosage form has an entry below — non-blank input always wins, so
+#: the AI-builder + import flows that already know what to put in
+#: each cell are not overridden. Liquid / other-solid forms stay
+#: blank because their conventions vary too widely to seed safely.
+FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
+    "capsule": {
+        "directions_of_use": "Take 1 capsule with food, daily.",
+        "suggested_dosage": "1 capsule per day",
+        "appearance": "Off-white powder filled in HPMC capsule",
+        "disintegration_spec": "Disintegrate within 30 minutes",
+    },
+    "tablet": {
+        "directions_of_use": "Take 1 tablet with water, daily.",
+        "suggested_dosage": "1 tablet per day",
+        "appearance": "Off-white round tablet",
+        "disintegration_spec": "Disintegrate within 30 minutes",
+    },
+    "gummy": {
+        "directions_of_use": (
+            "Chew 2 gummies daily, preferably with food."
+        ),
+        "suggested_dosage": "2 gummies per day",
+        "appearance": "Coloured dome-shape gummy",
+        # Gummies dissolve on chewing — disintegration spec stays
+        # blank by convention; scientists fill it only when the QC
+        # protocol calls for one (rare on consumer chewables).
+        "disintegration_spec": "",
+    },
+    "powder": {
+        "directions_of_use": (
+            "Mix 1 scoop (10 g) with 500 ml water. Shake well. "
+            "Drink once daily."
+        ),
+        "suggested_dosage": "1 scoop per day",
+        "appearance": "Free-flowing powder",
+        # Powders dissolve in water rather than disintegrate, so
+        # the cell stays blank.
+        "disintegration_spec": "",
+    },
+}
+
+
 def powder_flavour_system_for(
     powder_type: str | None,
 ) -> tuple[tuple[str, str, float], ...]:
@@ -383,6 +522,9 @@ EXCIPIENT_LABEL_MG_STEARATE = "Magnesium Stearate"
 EXCIPIENT_LABEL_SILICA = "Silicon Dioxide"
 EXCIPIENT_LABEL_DCP = "Dicalcium Phosphate"
 EXCIPIENT_LABEL_GUMMY_BASE = "Gummy Base"
+EXCIPIENT_LABEL_GELLING_AGENT = "Gelling Agent"
+EXCIPIENT_LABEL_PREMIX_SWEETENER = "Premix Sweetener"
+EXCIPIENT_LABEL_PECTIN_PREMIX = "Pectin Premix"
 EXCIPIENT_LABEL_WATER = "Water"
 CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
 

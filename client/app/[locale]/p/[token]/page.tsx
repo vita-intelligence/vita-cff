@@ -97,7 +97,7 @@ export default async function PublicSpecificationPage({
           />
         </div>
 
-        <div className="mt-8 print:hidden">
+        <div id="comments" className="mt-8 scroll-mt-6 print:hidden">
           <KioskCommentsPanel token={token} />
         </div>
 

@@ -281,9 +281,15 @@
       "spec_draft": "Draft",
       "preview_label": "Document preview",
       "sign_cta": "Sign this",
+      "sign_disabled_hint": "Tick every consent below before signing.",
       "resign": "Resign",
       "signed_badge": "Signed",
-      "signed_on": "Signed on {date}"
+      "signed_on": "Signed on {date}",
+      "spec_comments_cta": "Chat about this spec",
+      "ack_heading": "Please confirm before signing",
+      "ack_spec_signing": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved.",
+      "ack_lead_times": "I understand that manufacturing lead times depend on raw-material availability, packaging supply, and approval timing of the spec sheets and labels.",
+      "ack_terms": "I have read the Terms and Conditions which can be found below."
     },
     "sign_dialog": {
       "proposal_title": "Sign the commercial proposal",
