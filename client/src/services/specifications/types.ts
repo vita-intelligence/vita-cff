@@ -75,6 +75,16 @@ export interface SpecificationSheetDto {
   /** Set on render payloads when a :class:`Proposal` is attached to
    *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
   readonly has_proposal?: boolean;
+  /** Customer-side signature state. ``customer_signed_at`` is the
+   *  ISO timestamp of the kiosk acceptance; the matching
+   *  ``customer_*`` fields carry whoever signed (name / email /
+   *  company captured on the kiosk identity step). All four are
+   *  empty/null on draft sheets — they only populate once the
+   *  client signs in the kiosk. */
+  readonly customer_name?: string;
+  readonly customer_email?: string;
+  readonly customer_company?: string;
+  readonly customer_signed_at?: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }

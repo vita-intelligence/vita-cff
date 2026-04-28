@@ -42,12 +42,17 @@ import type {
 
 export const proposalsQueryKeys = {
   all: [rootQueryKey, "proposals"] as const,
-  list: (orgId: string, formulationId?: string) =>
+  list: (
+    orgId: string,
+    formulationId?: string,
+    status?: string,
+  ) =>
     [
       rootQueryKey,
       "proposals",
       orgId,
       formulationId ?? "__all__",
+      status ?? "__any__",
     ] as const,
   detail: (orgId: string, proposalId: string) =>
     [rootQueryKey, "proposals", orgId, proposalId] as const,
@@ -73,11 +78,12 @@ export const proposalsQueryKeys = {
 
 export function useProposals(
   orgId: string,
-  formulationId?: string,
+  args: { formulationId?: string; status?: string } = {},
 ): UseQueryResult<ProposalDto[], ApiError> {
+  const { formulationId, status } = args;
   return useQuery<ProposalDto[], ApiError>({
-    queryKey: proposalsQueryKeys.list(orgId, formulationId),
-    queryFn: () => fetchProposals(orgId, formulationId),
+    queryKey: proposalsQueryKeys.list(orgId, formulationId, status),
+    queryFn: () => fetchProposals(orgId, { formulationId, status }),
     enabled: Boolean(orgId),
   });
 }

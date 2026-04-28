@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@heroui/react";
@@ -121,6 +122,19 @@ export function ProposalSheetView({
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [orgId, proposalId, proposalVersion]);
+
+  // Auto-open the director-approve dialog when arriving from the
+  // approvals inbox (``?action=approve``). Guarded on status so a
+  // stale link can't dispatch an illegal transition; the user lands
+  // on the page normally if the proposal has already moved on.
+  const searchParams = useSearchParams();
+  const autoApproveAction = searchParams?.get("action");
+  const proposalStatus = proposalQuery.data?.status;
+  useEffect(() => {
+    if (autoApproveAction !== "approve") return;
+    if (proposalStatus !== "in_review") return;
+    setSignatureDialogOpen("approved");
+  }, [autoApproveAction, proposalStatus]);
 
   if (proposalQuery.isLoading || !proposalQuery.data) {
     return (

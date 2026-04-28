@@ -15,6 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { CommentsPanel } from "@/components/comments";
@@ -151,6 +152,18 @@ export function SpecificationSheetView({
   const [signaturePending, setSignaturePending] =
     useState<SpecificationStatus | null>(null);
   const [signatureError, setSignatureError] = useState<string | null>(null);
+
+  // Auto-open the director-approve dialog when arriving from the
+  // approvals inbox (``?action=approve``). Guarded on status so a
+  // stale link can't dispatch an illegal transition.
+  const searchParams = useSearchParams();
+  const autoApproveAction = searchParams?.get("action");
+  useEffect(() => {
+    if (autoApproveAction !== "approve") return;
+    if (sheet.status !== "in_review") return;
+    setSignatureError(null);
+    setSignaturePending("approved");
+  }, [autoApproveAction, sheet.status]);
 
   // Sign-off transitions require a drawn signature; everything else
   // (rewinds, sent → rejected, rejected → draft) goes straight to

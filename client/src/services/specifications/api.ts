@@ -24,6 +24,9 @@ export interface FetchSpecificationsPageArgs {
   /** Optional project scope — drives the Spec Sheets tab so it
    * surfaces only sheets built against this project's versions. */
   readonly formulationId?: string;
+  /** Optional lifecycle filter, e.g. ``"in_review"`` for the
+   *  director's approval inbox. */
+  readonly status?: string;
 }
 
 export async function fetchSpecificationsPage(
@@ -40,6 +43,7 @@ export async function fetchSpecificationsPage(
   const params: Record<string, string> = {};
   if (args.pageSize) params.page_size = String(args.pageSize);
   if (args.formulationId) params.formulation_id = args.formulationId;
+  if (args.status) params.status = args.status;
   const { data } = await apiClient.get<PaginatedSpecificationsDto>(
     specificationsEndpoints.list(orgId),
     { params },

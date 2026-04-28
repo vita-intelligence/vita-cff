@@ -7,7 +7,9 @@
     "specifications": "Specifications",
     "proposals": "Proposals",
     "customers": "Customers",
-    "clients": "Clients"
+    "clients": "Clients",
+    "approvals": "Approvals",
+    "signed": "Signed"
   },
   "account": {
     "profile": "Profile",

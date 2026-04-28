@@ -1,0 +1,34 @@
+{
+  "title": "Customer documents",
+  "subtitle": "Sent to the client and signed on the kiosk",
+  "tabs": {
+    "proposals": "Proposals",
+    "specifications": "Specification sheets"
+  },
+  "sections": {
+    "awaiting": "Awaiting customer signature",
+    "signed": "Signed by customer"
+  },
+  "empty": {
+    "awaiting_proposals": "No proposals are out for signature.",
+    "awaiting_specs": "No specification sheets are out for signature.",
+    "signed_proposals": "No proposals signed by customers yet.",
+    "signed_specs": "No specification sheets signed by customers yet."
+  },
+  "loading": "Loading…",
+  "errors": {
+    "load": "Couldn't load the documents. Try refreshing."
+  },
+  "card": {
+    "open": "View",
+    "no_customer": "No customer",
+    "no_client": "No client",
+    "no_formulation": "Untitled formulation",
+    "version": "v{version}",
+    "products_one": "{count} product",
+    "products_other": "{count} products",
+    "sent_at": "Sent {time}",
+    "signed_at": "Signed {time}",
+    "signed_by": "by {name}"
+  }
+}

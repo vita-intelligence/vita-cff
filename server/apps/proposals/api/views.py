@@ -86,10 +86,23 @@ class ProposalListCreateView(APIView):
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
+        from apps.proposals.models import ProposalStatus
+
         formulation_id = request.query_params.get("formulation_id") or None
+        status_filter = request.query_params.get("status") or None
+        # Reject unknown values rather than silently returning every
+        # proposal — the inbox queue would otherwise show noise on a
+        # typo, and the surface is gated by ``view`` so leaking a 400
+        # carries no information.
+        if status_filter and status_filter not in ProposalStatus.values:
+            return Response(
+                {"status": ["invalid_status"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         queryset = list_proposals(
             organization=self.organization,
             formulation_id=formulation_id,
+            status=status_filter,
         )
         serializer = ProposalReadSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

@@ -14,7 +14,9 @@ export type ProtectedNavKey =
   | "catalogues"
   | "formulations"
   | "proposals"
-  | "customers";
+  | "customers"
+  | "approvals"
+  | "signed";
 
 interface ProtectedHeaderProps {
   user: UserDto;
@@ -60,6 +62,22 @@ export async function ProtectedHeader({
     "formulations",
     "view",
   );
+  // Approvals + Signed each have their own dedicated visibility
+  // capability so admins can hand out read access independently
+  // of the actual sign-off right (``approve``). A QA lead can
+  // then watch the queue without being able to flip statuses; a
+  // sales rep can browse signed history without project-edit
+  // access. Both are off by default for non-owners.
+  const canSeeApprovals = hasFlatCapability(
+    primaryOrg,
+    "formulations",
+    "view_approvals",
+  );
+  const canSeeSigned = hasFlatCapability(
+    primaryOrg,
+    "formulations",
+    "view_signed",
+  );
 
   // Specifications intentionally omitted — every spec sheet belongs
   // to a project, so it's surfaced inside the project workspace's
@@ -96,6 +114,20 @@ export async function ProtectedHeader({
       key: "customers",
       href: "/customers",
       label: tNav("main.customers"),
+    });
+  }
+  if (canSeeApprovals) {
+    navItems.push({
+      key: "approvals",
+      href: "/approvals",
+      label: tNav("main.approvals"),
+    });
+  }
+  if (canSeeSigned) {
+    navItems.push({
+      key: "signed",
+      href: "/signed",
+      label: tNav("main.signed"),
     });
   }
 

@@ -69,10 +69,20 @@ class SpecificationListCreateView(APIView):
     def get(self, request: Request, org_id: str) -> Response:
         # Optional ?formulation_id scopes the list to one project —
         # drives the Spec Sheets tab on the project workspace.
+        # Optional ?status drives the director's approval inbox.
+        from apps.specifications.models import SpecificationStatus
+
         formulation_id = request.query_params.get("formulation_id") or None
+        status_filter = request.query_params.get("status") or None
+        if status_filter and status_filter not in SpecificationStatus.values:
+            return Response(
+                {"status": ["invalid_status"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         queryset = list_sheets(
             organization=self.organization,
             formulation_id=formulation_id,
+            status=status_filter,
         )
         paginator = SpecificationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)

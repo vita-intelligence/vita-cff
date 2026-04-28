@@ -255,11 +255,15 @@ def list_proposals(
     *,
     organization: Organization,
     formulation_id: Any = None,
+    status: str | None = None,
 ) -> QuerySet[Proposal]:
     """Return the org's proposals, newest first.
 
     ``formulation_id`` scopes down to one project's proposals so the
     project workspace's panel can render without a second query.
+    ``status`` (e.g. ``"in_review"``) filters by lifecycle stage so
+    the director's approval inbox can pull "things waiting on me"
+    without re-implementing the queryset client-side.
     """
 
     queryset = Proposal.objects.filter(organization=organization)
@@ -267,6 +271,8 @@ def list_proposals(
         queryset = queryset.filter(
             formulation_version__formulation_id=formulation_id
         )
+    if status:
+        queryset = queryset.filter(status=status)
     return queryset.select_related(
         "formulation_version__formulation",
         "specification_sheet",

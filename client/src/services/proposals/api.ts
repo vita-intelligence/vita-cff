@@ -20,10 +20,14 @@ import type {
 
 export async function fetchProposals(
   orgId: string,
-  formulationId?: string,
+  args: { formulationId?: string; status?: string } = {},
 ): Promise<ProposalDto[]> {
-  const url = formulationId
-    ? proposalsEndpoints.forFormulation(orgId, formulationId)
+  const params = new URLSearchParams();
+  if (args.formulationId) params.set("formulation_id", args.formulationId);
+  if (args.status) params.set("status", args.status);
+  const qs = params.toString();
+  const url = qs
+    ? `${proposalsEndpoints.list(orgId)}?${qs}`
     : proposalsEndpoints.list(orgId);
   const { data } = await apiClient.get<ProposalDto[]>(url);
   return data;

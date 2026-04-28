@@ -170,17 +170,25 @@ def list_sheets(
     *,
     organization: Organization,
     formulation_id: Any | None = None,
+    status: str | None = None,
 ) -> QuerySet[SpecificationSheet]:
     """List spec sheets newest-first, optionally scoped to a single
     formulation. The project workspace's Spec Sheets tab passes
     ``formulation_id`` so it only surfaces sheets hanging off this
-    project's versions; the global list page omits it."""
+    project's versions; the global list page omits it.
+
+    ``status`` (e.g. ``"in_review"``) filters by lifecycle stage so
+    the director's approval inbox can pull "things waiting on me"
+    in one query.
+    """
 
     queryset = SpecificationSheet.objects.filter(organization=organization)
     if formulation_id is not None:
         queryset = queryset.filter(
             formulation_version__formulation_id=formulation_id
         )
+    if status:
+        queryset = queryset.filter(status=status)
     return queryset.select_related(*_SHEET_RELATED).order_by("-updated_at")
 
 

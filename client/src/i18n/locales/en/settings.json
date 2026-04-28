@@ -100,6 +100,8 @@
       "edit": "Edit",
       "approve": "Approve & send",
       "delete": "Delete",
+      "view_approvals": "View approvals queue",
+      "view_signed": "View signed documents",
       "assign_sales_person": "Assign sales person",
       "manage_spec_visibility": "Manage spec visibility",
       "sign_spec": "Sign spec sheet",

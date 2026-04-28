@@ -55,7 +55,7 @@ export function ProposalsList({
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
 
-  const proposalsQuery = useProposals(orgId, formulationId);
+  const proposalsQuery = useProposals(orgId, { formulationId });
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const deleteMutation = useDeleteProposal(orgId);
 

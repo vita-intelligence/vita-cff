@@ -45,8 +45,19 @@ import type {
 
 export const specificationsQueryKeys = {
   all: [...rootQueryKey, "specifications"] as const,
-  infinite: (orgId: string) =>
+  // Stable prefix for every paginated list cache in the org —
+  // ``invalidateQueries({ queryKey: infiniteAll(orgId) })`` blows
+  // the cache for both the unfiltered list and any per-status
+  // queue (e.g. the director's approvals inbox) in one call.
+  infiniteAll: (orgId: string) =>
     [...specificationsQueryKeys.all, orgId, "infinite"] as const,
+  infinite: (orgId: string, status?: string) =>
+    [
+      ...specificationsQueryKeys.all,
+      orgId,
+      "infinite",
+      status ?? "__any__",
+    ] as const,
   detail: (orgId: string, sheetId: string) =>
     [...specificationsQueryKeys.all, orgId, "detail", sheetId] as const,
   render: (orgId: string, sheetId: string) =>
@@ -66,12 +77,13 @@ export function useInfiniteSpecifications(
   options: {
     pageSize?: number;
     initialFirstPage?: PaginatedSpecificationsDto | null;
+    status?: string;
   } = {},
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedSpecificationsDto, string | null>,
   ApiError
 > {
-  const { pageSize, initialFirstPage } = options;
+  const { pageSize, initialFirstPage, status } = options;
   return useInfiniteQuery<
     PaginatedSpecificationsDto,
     ApiError,
@@ -79,10 +91,11 @@ export function useInfiniteSpecifications(
     readonly unknown[],
     string | null
   >({
-    queryKey: specificationsQueryKeys.infinite(orgId),
+    queryKey: specificationsQueryKeys.infinite(orgId, status),
     queryFn: ({ pageParam }) =>
       fetchSpecificationsPage(orgId, {
         pageSize,
+        status,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,
@@ -134,7 +147,7 @@ export function useCreateSpecification(
     mutationFn: (payload) => createSpecification(orgId, payload),
     onSuccess: async () => {
       await queryClient.invalidateQueries({
-        queryKey: specificationsQueryKeys.infinite(orgId),
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
   });
@@ -161,7 +174,7 @@ export function useUpdateSpecification(
         updated,
       );
       queryClient.invalidateQueries({
-        queryKey: specificationsQueryKeys.infinite(orgId),
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
       // The rendered preview pulls a separate payload whose watermark
       // + body copy derive from mutable sheet fields (document_kind,
@@ -186,7 +199,7 @@ export function useDeleteSpecification(
         queryKey: specificationsQueryKeys.detail(orgId, sheetId),
       });
       await queryClient.invalidateQueries({
-        queryKey: specificationsQueryKeys.infinite(orgId),
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
   });
@@ -337,7 +350,7 @@ export function useTransitionSpecificationStatus(
         queryKey: specificationsQueryKeys.render(orgId, sheetId),
       });
       queryClient.invalidateQueries({
-        queryKey: specificationsQueryKeys.infinite(orgId),
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
   });

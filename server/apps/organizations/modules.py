@@ -62,6 +62,18 @@ class FormulationsCapability:
     EDIT = "edit"
     APPROVE = "approve"
     DELETE = "delete"
+    #: Read the org-wide "documents waiting for approval" inbox.
+    #: Split from :attr:`APPROVE` so admins can grant a stakeholder
+    #: read-only visibility into the queue (e.g. ops watching the
+    #: pipeline) without giving them the right to actually flip a
+    #: document's status.
+    VIEW_APPROVALS = "view_approvals"
+    #: Read the org-wide "sent + signed by customer" archive. Split
+    #: from :attr:`VIEW` so the customer-facing history surface can
+    #: be opened up to commercial roles (sales tracking what's gone
+    #: out and come back) without granting broader project-view
+    #: access to the formulations themselves.
+    VIEW_SIGNED = "view_signed"
     #: Assign / clear the commercial owner ("sales person") of a
     #: project. Deliberately split from ``EDIT`` so the role can be
     #: delegated to non-technical staff without giving them write
@@ -161,6 +173,8 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.EDIT,
             FormulationsCapability.APPROVE,
             FormulationsCapability.DELETE,
+            FormulationsCapability.VIEW_APPROVALS,
+            FormulationsCapability.VIEW_SIGNED,
             FormulationsCapability.ASSIGN_SALES_PERSON,
             FormulationsCapability.MANAGE_SPEC_VISIBILITY,
             FormulationsCapability.SIGN_SPEC,

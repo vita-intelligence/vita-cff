@@ -1,0 +1,28 @@
+{
+  "title": "Approvals",
+  "subtitle": "Documents waiting on your sign-off",
+  "tabs": {
+    "proposals": "Proposals",
+    "specifications": "Specification sheets"
+  },
+  "empty": {
+    "proposals": "No proposals are waiting for director approval right now.",
+    "specifications": "No specification sheets are waiting for director approval right now."
+  },
+  "loading": "Loading…",
+  "errors": {
+    "load": "Couldn't load the approval queue. Try refreshing."
+  },
+  "card": {
+    "open": "Open & sign",
+    "submitted_by": "Submitted by {name}",
+    "submitted_at": "Sent for review {time}",
+    "no_customer": "No customer",
+    "no_client": "No client",
+    "no_formulation": "Untitled formulation",
+    "version": "v{version}",
+    "products_one": "{count} product",
+    "products_other": "{count} products"
+  },
+  "count_pill": "{count}"
+}
