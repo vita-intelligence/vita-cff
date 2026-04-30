@@ -90,11 +90,18 @@ interface MetadataDraft {
   //: picked items and the spec sheet lists them under
   //: "Flavouring (Natural Strawberry, Lemon Extract)".
   flavouring_item_ids: readonly string[];
-  //: Picked colour raw-material ids. Empty list = the 2%-of-target
-  //: colour block renders as a generic "Colour" row; any picks →
-  //: split equally and listed under "Colour (Beetroot Extract,
-  //: Turmeric)" on the spec sheet.
+  //: Picked colour raw-material ids. Empty list = the colour block
+  //: renders as a generic "Colour" row; any picks → split equally
+  //: and listed under "Colour (Beetroot Extract, Turmeric)" on the
+  //: spec sheet. Used by both gummies (2% of target weight) and
+  //: powders (0.04 mg/ml × water volume).
   colour_item_ids: readonly string[];
+  //: Picked sweetener raw-material ids for powders (Sucralose,
+  //: Stevia, Steviol, etc.). The 0.06 mg/ml × water volume sweetener
+  //: total splits equally across picks; empty list renders a generic
+  //: "Sweetener" row. Powder-only — gummies use ``gummy_base_item_ids``
+  //: + ``premix_sweetener_item_ids`` for their sweetener picks.
+  sweetener_item_ids: readonly string[];
   //: Picked glazing-agent ids (carnauba wax, coconut oil, beeswax,
   //: etc.). The 0.1%-of-target glaze total is split equally across
   //: picks; empty list renders a generic "Glazing Agent" row.
@@ -192,6 +199,7 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     gummy_base_item_ids: formulation.gummy_base_item_ids ?? [],
     flavouring_item_ids: formulation.flavouring_item_ids ?? [],
     colour_item_ids: formulation.colour_item_ids ?? [],
+    sweetener_item_ids: formulation.sweetener_item_ids ?? [],
     glazing_item_ids: formulation.glazing_item_ids ?? [],
     gelling_item_ids: formulation.gelling_item_ids ?? [],
     premix_sweetener_item_ids:
@@ -618,18 +626,26 @@ export function FormulationBuilder({
             : null,
         // Empty array clears the picks; any other array replaces
         // the M2M. The server validates cross-org + canonical
-        // ``use_as`` on every id.
+        // ``use_as`` on every id. Flavouring + Colour are shared
+        // between gummy + powder; sweetener is powder-only; the
+        // rest are gummy-only.
         gummy_base_item_ids:
           metadata.dosage_form === "gummy"
             ? metadata.gummy_base_item_ids
             : [],
         flavouring_item_ids:
-          metadata.dosage_form === "gummy"
+          metadata.dosage_form === "gummy" ||
+          metadata.dosage_form === "powder"
             ? metadata.flavouring_item_ids
             : [],
         colour_item_ids:
-          metadata.dosage_form === "gummy"
+          metadata.dosage_form === "gummy" ||
+          metadata.dosage_form === "powder"
             ? metadata.colour_item_ids
+            : [],
+        sweetener_item_ids:
+          metadata.dosage_form === "powder"
+            ? metadata.sweetener_item_ids
             : [],
         glazing_item_ids:
           metadata.dosage_form === "gummy"
@@ -968,6 +984,81 @@ export function FormulationBuilder({
               }
               disabled={!canWrite}
               hint={tFormulations("fields.gummy_fill_weight_hint")}
+            />
+          ) : null}
+          {/* Powder pickers — Flavouring / Sweetener / Colour mirror
+              the gummy pickers but pull from powder-relevant
+              ``use_as`` pools. The picker mg total = preset rate
+              (mg/ml) × water volume, split equally across picks.
+              Empty list keeps the generic placeholder row in the
+              flavour-system table. */}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.flavouring_item_ids}
+              preselected={formulation.flavouring_items}
+              disabled={!canWrite}
+              useAsIn={FLAVOURING_USE_CATEGORIES}
+              label={tFormulations("fields.powder_flavouring_item")}
+              placeholderText={tFormulations(
+                "fields.powder_flavouring_item_placeholder",
+              )}
+              hint={tFormulations("fields.powder_flavouring_item_hint")}
+              loadingText={tFormulations(
+                "fields.powder_flavouring_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.powder_flavouring_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, flavouring_item_ids: ids })
+              }
+            />
+          ) : null}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.sweetener_item_ids}
+              preselected={formulation.sweetener_items}
+              disabled={!canWrite}
+              useAsIn={SWEETENER_USE_CATEGORIES}
+              label={tFormulations("fields.powder_sweetener_item")}
+              placeholderText={tFormulations(
+                "fields.powder_sweetener_item_placeholder",
+              )}
+              hint={tFormulations("fields.powder_sweetener_item_hint")}
+              loadingText={tFormulations(
+                "fields.powder_sweetener_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.powder_sweetener_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, sweetener_item_ids: ids })
+              }
+            />
+          ) : null}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.colour_item_ids}
+              preselected={formulation.colour_items}
+              disabled={!canWrite}
+              useAsIn={COLOUR_USE_CATEGORIES}
+              label={tFormulations("fields.powder_colour_item")}
+              placeholderText={tFormulations(
+                "fields.powder_colour_item_placeholder",
+              )}
+              hint={tFormulations("fields.powder_colour_item_hint")}
+              loadingText={tFormulations(
+                "fields.powder_colour_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.powder_colour_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, colour_item_ids: ids })
+              }
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -3123,6 +3214,11 @@ const FLAVOURING_USE_CATEGORIES = ["Flavouring"] as const;
 // whichever band they want the mg allocated to. Mirrors
 // ``COLOUR_USE_CATEGORIES`` on the server.
 const COLOUR_USE_CATEGORIES = ["Colour", "Flavouring"] as const;
+// Powder sweetener picker pulls from pure ``Sweeteners`` only —
+// bulking agents are deliberately excluded (the powder sweetener row
+// is a flavour-facing pick, not the structural bulk a gummy base
+// provides). Mirrors ``SWEETENER_USE_CATEGORIES`` on the server.
+const SWEETENER_USE_CATEGORIES = ["Sweeteners"] as const;
 const GLAZING_USE_CATEGORIES = ["Glazing Agent"] as const;
 const GELLING_USE_CATEGORIES = ["Gelling Agent"] as const;
 const ACIDITY_USE_CATEGORIES = ["Acidity Regulator"] as const;

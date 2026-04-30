@@ -42,6 +42,7 @@ from apps.formulations.services import (
     InvalidGummyBaseItem,
     InvalidPowderType,
     InvalidPremixSweetenerItem,
+    InvalidSweetenerItem,
     InvalidTabletSize,
     RawMaterialNotInOrg,
     SalesPersonNotMember,
@@ -270,6 +271,11 @@ class FormulationDetailView(APIView):
         except InvalidColourItem:
             return Response(
                 {"colour_item_ids": ["invalid_colour_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidSweetenerItem:
+            return Response(
+                {"sweetener_item_ids": ["invalid_sweetener_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidGlazingItem:

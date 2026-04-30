@@ -62,6 +62,7 @@ from apps.formulations.constants import (
     POWDER_FLAVOUR_SYSTEM,
     POWDER_REFERENCE_WATER_ML,
     PREMIX_SWEETENER_USE_CATEGORIES,
+    SWEETENER_USE_CATEGORIES,
     PowderType,
     TABLET_DCP_PCT,
     TABLET_MCC_PCT,
@@ -182,6 +183,16 @@ class InvalidGellingItem(Exception):
     error."""
 
     code = "invalid_gelling_item"
+
+
+class InvalidSweetenerItem(Exception):
+    """Picked sweetener item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Sweeteners"``. Powder-only
+    picker — keep the rejection shape parallel to the gummy-base /
+    flavour / colour siblings so the frontend can surface a field-
+    specific error rather than a generic form failure."""
+
+    code = "invalid_sweetener_item"
 
 
 class InvalidPremixSweetenerItem(Exception):
@@ -1514,6 +1525,12 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("colour_item_ids"),
         )
+    pending_sweetener: list[Item] | None = None
+    if "sweetener_item_ids" in changes:
+        pending_sweetener = _resolve_sweetener_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("sweetener_item_ids"),
+        )
     pending_glazing: list[Item] | None = None
     if "glazing_item_ids" in changes:
         pending_glazing = _resolve_glazing_items(
@@ -1578,6 +1595,8 @@ def update_formulation(
         formulation.flavouring_items.set(pending_flavouring)
     if pending_colour is not None:
         formulation.colour_items.set(pending_colour)
+    if pending_sweetener is not None:
+        formulation.sweetener_items.set(pending_sweetener)
     if pending_glazing is not None:
         formulation.glazing_items.set(pending_glazing)
     if pending_gelling is not None:
@@ -1767,6 +1786,25 @@ def _resolve_colour_items(
         raw_ids=raw_ids,
         allowed_categories=COLOUR_USE_CATEGORIES,
         error_cls=InvalidColourItem,
+    )
+
+
+def _resolve_sweetener_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``sweetener_item_ids`` — picks must carry
+    ``use_as == "Sweeteners"``. Powder-only picker; the gummy-base
+    catalogue pool is intentionally NOT reused so a sweetener that
+    doubles as a bulking agent doesn't sneak through here.
+    """
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=SWEETENER_USE_CATEGORIES,
+        error_cls=InvalidSweetenerItem,
     )
 
 
@@ -2409,7 +2447,7 @@ def build_ingredient_declaration(
       category and rendered as ``"Sweeteners (Xylitol, Maltitol)"``
       so a typical gummy declaration reads:
       ``"Sweeteners (Xylitol, Maltitol), Acidity Regulator (Citric
-      Acid), Colourant (Beetroot), Flavouring (Natural Strawberry)"``.
+      Acid), Colour (Beetroot), Flavouring (Natural Strawberry)"``.
     * **Synthetic excipients** (MCC carrier, anticaking agents,
       capsule shell) keep their fixed label and rank by their own
       mg weight — they don't carry a ``use_as`` so they stay

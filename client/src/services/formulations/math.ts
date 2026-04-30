@@ -52,7 +52,7 @@ const POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
   { slug: "citric_acid", label: "Citric Acid", mgPerMl: 0.3 },
   { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
   { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
-  { slug: "colourant", label: "Colourant", mgPerMl: 0.04 },
+  { slug: "colour", label: "Colour", mgPerMl: 0.04 },
 ];
 
 /** Protein-powder variant — drops the acidity regulators (Trisodium
@@ -64,7 +64,7 @@ const PROTEIN_POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
 }> = [
   { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
   { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
-  { slug: "colourant", label: "Colourant", mgPerMl: 0.04 },
+  { slug: "colour", label: "Colour", mgPerMl: 0.04 },
 ];
 
 function powderFlavourSystemFor(

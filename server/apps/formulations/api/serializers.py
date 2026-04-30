@@ -96,6 +96,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     flavouring_items = serializers.SerializerMethodField()
     colour_item_ids = serializers.SerializerMethodField()
     colour_items = serializers.SerializerMethodField()
+    sweetener_item_ids = serializers.SerializerMethodField()
+    sweetener_items = serializers.SerializerMethodField()
     glazing_item_ids = serializers.SerializerMethodField()
     glazing_items = serializers.SerializerMethodField()
     gelling_item_ids = serializers.SerializerMethodField()
@@ -126,6 +128,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "flavouring_items",
             "colour_item_ids",
             "colour_items",
+            "sweetener_item_ids",
+            "sweetener_items",
             "glazing_item_ids",
             "glazing_items",
             "gelling_item_ids",
@@ -164,6 +168,11 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         """Flat id list — drives the colour multi-select."""
 
         return [str(item.id) for item in obj.colour_items.all()]
+
+    def get_sweetener_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list — drives the powder sweetener multi-select."""
+
+        return [str(item.id) for item in obj.sweetener_items.all()]
 
     def get_glazing_item_ids(self, obj: Formulation) -> list[str]:
         """Flat id list for the glazing-agent multi-select."""
@@ -244,6 +253,12 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         renders the chip list without a second round-trip."""
 
         return self._echo_picks(obj.colour_items)
+
+    def get_sweetener_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of every picked sweetener item so the powder
+        builder renders the chip list without a second round-trip."""
+
+        return self._echo_picks(obj.sweetener_items)
 
     def get_gelling_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked gelling items (pectin, gelatin, etc.)
@@ -374,9 +389,24 @@ class FormulationWriteSerializer(serializers.Serializer):
         help_text=(
             "IDs of raw_materials catalogue Items used together as the "
             "Colour block. The colour total (2% of target gummy "
-            "weight) is split equally across picks. Every id must "
-            "belong to the same org AND carry use_as = 'Colour'. "
-            "Ignored for non-gummy forms."
+            "weight, or 0.04 mg/ml × water volume on a powder) is "
+            "split equally across picks. Every id must belong to the "
+            "same org AND carry use_as = 'Colour'. Used by both gummy "
+            "and powder forms."
+        ),
+    )
+    sweetener_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used together as the "
+            "powder Sweetener block (Sucralose, Stevia, Steviol, etc.). "
+            "The sweetener total (0.06 mg/ml × water volume) is split "
+            "equally across picks. Every id must belong to the same "
+            "org AND carry use_as = 'Sweeteners'. Ignored for non-"
+            "powder forms — gummies use ``gummy_base_item_ids`` and "
+            "``premix_sweetener_item_ids`` instead."
         ),
     )
     glazing_item_ids = serializers.ListField(

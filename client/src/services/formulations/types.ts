@@ -193,6 +193,8 @@ export interface FormulationDto {
   readonly flavouring_items: readonly GummyBaseItemDto[];
   readonly colour_item_ids: readonly string[];
   readonly colour_items: readonly GummyBaseItemDto[];
+  readonly sweetener_item_ids: readonly string[];
+  readonly sweetener_items: readonly GummyBaseItemDto[];
   readonly glazing_item_ids: readonly string[];
   readonly glazing_items: readonly GummyBaseItemDto[];
   readonly gelling_item_ids: readonly string[];
@@ -256,6 +258,12 @@ export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> &
   /** Array of Item ids for the Colour block; empty array clears.
    *  Server rejects items whose ``use_as`` ≠ 'Colour'. */
   readonly colour_item_ids?: readonly string[];
+  /** Array of Item ids for the powder Sweetener block (Sucralose,
+   *  Stevia, Steviol, etc.); empty array clears. Server rejects
+   *  items whose ``use_as`` ≠ 'Sweeteners'. Powder-only — gummies
+   *  use ``gummy_base_item_ids`` and ``premix_sweetener_item_ids``
+   *  for their sweetener picks. */
+  readonly sweetener_item_ids?: readonly string[];
   /** Array of Item ids for the Glazing Agent block (wax, coconut
    *  oil, etc.); empty array clears. Server rejects items whose
    *  ``use_as`` ≠ 'Glazing Agent'. */
