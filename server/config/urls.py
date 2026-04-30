@@ -1,9 +1,16 @@
 """Root URL configuration for the Vita NPD platform."""
 
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import include, path
 
+
+def _healthz(_request):
+    return JsonResponse({"status": "ok"})
+
+
 urlpatterns = [
+    path("healthz/", _healthz, name="healthz"),
     path("admin/", admin.site.urls),
     path("api/", include("apps.accounts.api.urls", namespace="accounts")),
     path(

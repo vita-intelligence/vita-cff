@@ -237,10 +237,28 @@ class Formulation(models.Model):
         help_text=_(
             "Raw-material items used as colours — e.g. Beetroot "
             "Extract, Turmeric Oleoresin, Spirulina Powder. Each "
-            "pick must carry use_as = 'Colour'. The colour total (2% "
-            "of target gummy weight) splits equally across picks and "
-            "groups as 'Colour (Beetroot Extract, Turmeric)'. "
-            "Ignored for non-gummy forms."
+            "pick must carry use_as = 'Colour'. The colour total "
+            "splits equally across picks and groups as "
+            "'Colour (Beetroot Extract, Turmeric)' on the spec sheet. "
+            "Used by both gummies (2% of target weight) and powders "
+            "(0.04 mg/ml × water volume)."
+        ),
+    )
+    sweetener_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("sweetener items"),
+        blank=True,
+        related_name="sweetener_formulations",
+        help_text=_(
+            "Raw-material items used as the sweetener on a powder — "
+            "Sucralose, Stevia, Steviol, etc. Each pick must carry "
+            "use_as = 'Sweeteners'. The sweetener total "
+            "(0.06 mg/ml × water volume) splits equally across picks "
+            "and groups as 'Sweetener (Sucralose, Stevia)' on the "
+            "spec sheet. Empty list keeps the generic placeholder. "
+            "Ignored for non-powder forms — gummies use "
+            "``gummy_base_items`` and ``premix_sweetener_items`` "
+            "instead."
         ),
     )
     glazing_items = models.ManyToManyField(

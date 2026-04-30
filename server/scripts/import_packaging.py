@@ -26,9 +26,13 @@ from apps.catalogues.services import ItemInternalCodeConflict, create_item
 from apps.organizations.models import Organization
 
 
+import os
+
 FILE_PATH = "/Users/maxchergik/Downloads/Raw Material Data (FOR FORMULATION - DO NOT MOVE OR CHANGE NAME) NEW.xlsx"
 SHEET_NAME = "Packaging Information"
-ORG_NAME = "Drink Better"
+# Override at run time with ``VITA_IMPORT_ORG=...`` — see
+# ``scripts/import_raw_materials.py`` for the rationale.
+ORG_NAME = os.environ.get("VITA_IMPORT_ORG", "Vita Manufacture Limited")
 
 HEADER_ROW_INDEX = 2  # row 3 in the spreadsheet, the short header labels
 DATA_START_INDEX = 5  # row 6 onward is real data (row 5 is a "None -" placeholder)

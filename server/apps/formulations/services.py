@@ -755,6 +755,7 @@ def _compute_fill_target(
     gummy_base_items: tuple[Item, ...] = (),
     flavouring_items: tuple[Item, ...] = (),
     colour_items: tuple[Item, ...] = (),
+    sweetener_items: tuple[Item, ...] = (),
     glazing_items: tuple[Item, ...] = (),
     gelling_items: tuple[Item, ...] = (),
     premix_sweetener_items: tuple[Item, ...] = (),
@@ -798,6 +799,72 @@ def _compute_fill_target(
     # dilution targets.
     is_powder = dosage_form == DosageForm.POWDER.value
     flavour_rows: list[ExcipientRow] = []
+
+    def _emit_pick_band(
+        *,
+        block_slug: str,
+        block_label: str,
+        block_total_mg: float,
+        picks: tuple[Item, ...],
+        band_use_as: str,
+        placeholder_when_empty: bool = True,
+        concentration_mg_per_ml: Decimal | None = None,
+    ) -> None:
+        """Emit either per-pick rows or a generic placeholder at the
+        block's full mg total. Shared between the powder and gummy
+        branches so picker semantics stay identical: pick the same
+        catalogue items, get the same per-pick row + label-copy
+        treatment, regardless of dosage form.
+
+        ``concentration_mg_per_ml`` is propagated from the powder
+        preset so each per-pick row still carries the dilution
+        target the FRONTEND uses to render the "0.06 mg/ml × Nml"
+        breakdown next to the row.
+
+        Per-pick rows carry ``use_as = band_use_as`` so the EU
+        1169/2011 declaration formatter groups them as e.g.
+        "Flavouring (Strawberry, Lemon)" / "Sweetener (Sucralose,
+        Stevia)". Allergen flags are forwarded so a gelatin pick
+        still renders bold.
+        """
+
+        if block_total_mg <= 0:
+            return
+        if picks:
+            per_item_mg = block_total_mg / len(picks)
+            per_item_concentration: Decimal | None
+            if concentration_mg_per_ml is not None and len(picks) > 0:
+                per_item_concentration = (
+                    concentration_mg_per_ml / Decimal(len(picks))
+                )
+            else:
+                per_item_concentration = None
+            for item in picks:
+                attrs = item.attributes or {}
+                pick_label = (
+                    attrs.get("ingredient_list_name") or ""
+                ).strip() or item.name
+                flavour_rows.append(
+                    ExcipientRow(
+                        slug=f"{block_slug}:{item.id}",
+                        label=pick_label,
+                        mg=_quantise(per_item_mg),
+                        use_as=band_use_as,
+                        is_allergen=_is_item_allergen(item),
+                        allergen_source=_allergen_source_for_item(item),
+                        concentration_mg_per_ml=per_item_concentration,
+                    )
+                )
+        elif placeholder_when_empty:
+            flavour_rows.append(
+                ExcipientRow(
+                    slug=block_slug,
+                    label=block_label,
+                    mg=_quantise(block_total_mg),
+                    concentration_mg_per_ml=concentration_mg_per_ml,
+                )
+            )
+
     if is_powder:
         preset = powder_flavour_system_for(powder_type)
         # Default to the reference volume when the scientist has not
@@ -808,12 +875,43 @@ def _compute_fill_target(
             if water_volume_ml is not None
             else POWDER_REFERENCE_WATER_ML
         )
+        # Powder rows fall into two camps:
+        #   * Acidity regulators (trisodium_citrate, citric_acid) —
+        #     auto-resolved by name lookup against the catalogue,
+        #     no picker needed. Render as a single generic row.
+        #   * Flavour-facing rows (flavouring, sweetener, colour) —
+        #     scientist picks specific catalogue items; the per-row
+        #     mg total splits equally across picks just like gummies.
+        #     Empty picks fall back to the generic placeholder so an
+        #     in-flight powder formulation still renders a sensible
+        #     row before the scientist makes their picks.
+        powder_pickers: dict[str, tuple[tuple[Item, ...], str]] = {
+            "flavouring": (flavouring_items, "Flavouring"),
+            "sweetener": (sweetener_items, "Sweeteners"),
+            "colour": (colour_items, "Colour"),
+        }
         for slug, label, mg_per_ml in preset:
+            block_total_mg = mg_per_ml * water_ml
+            picker = powder_pickers.get(slug)
+            if picker is not None:
+                picks, band_use_as = picker
+                _emit_pick_band(
+                    block_slug=slug,
+                    block_label=label,
+                    block_total_mg=block_total_mg,
+                    picks=picks,
+                    band_use_as=band_use_as,
+                    concentration_mg_per_ml=Decimal(str(mg_per_ml)),
+                )
+                continue
+            # Non-picker row: keep the current generic-row behaviour
+            # so name-resolved excipients (Trisodium Citrate, Citric
+            # Acid) render as before.
             flavour_rows.append(
                 ExcipientRow(
                     slug=slug,
                     label=label,
-                    mg=_quantise(mg_per_ml * water_ml),
+                    mg=_quantise(block_total_mg),
                     concentration_mg_per_ml=Decimal(str(mg_per_ml)),
                 )
             )
@@ -855,59 +953,9 @@ def _compute_fill_target(
             "premix_sweetener", excipient_overrides
         )
 
-        def _emit_pick_band(
-            *,
-            block_slug: str,
-            block_label: str,
-            block_total_mg: float,
-            picks: tuple[Item, ...],
-            band_use_as: str,
-            placeholder_when_empty: bool = True,
-        ) -> None:
-            """Emit either per-pick rows or a generic placeholder at
-            the block's full mg total. Zero target → no row (the
-            scientist sees a clean empty stretch and the placeholder
-            appears as soon as they type a fill weight).
-
-            ``placeholder_when_empty=False`` suppresses the generic
-            row when the picker is empty — used for the gelling band
-            because an empty gelling pick means a non-gelling gummy
-            (no band at all), not "fall back to a placeholder".
-
-            Per-pick rows carry ``use_as = band_use_as`` so the EU
-            1169/2011 declaration formatter groups them as e.g.
-            "Flavouring (Strawberry, Lemon)" / "Gelling Agent
-            (Pectin, Agar)". Allergen flags are forwarded so a
-            gelatin pick still renders bold.
-            """
-
-            if block_total_mg <= 0:
-                return
-            if picks:
-                per_item_mg = block_total_mg / len(picks)
-                for item in picks:
-                    attrs = item.attributes or {}
-                    pick_label = (
-                        attrs.get("ingredient_list_name") or ""
-                    ).strip() or item.name
-                    flavour_rows.append(
-                        ExcipientRow(
-                            slug=f"{block_slug}:{item.id}",
-                            label=pick_label,
-                            mg=_quantise(per_item_mg),
-                            use_as=band_use_as,
-                            is_allergen=_is_item_allergen(item),
-                            allergen_source=_allergen_source_for_item(item),
-                        )
-                    )
-            elif placeholder_when_empty:
-                flavour_rows.append(
-                    ExcipientRow(
-                        slug=block_slug,
-                        label=block_label,
-                        mg=_quantise(block_total_mg),
-                    )
-                )
+        # ``_emit_pick_band`` was lifted to enclosing scope above so
+        # the powder branch can reuse the same picker semantics. The
+        # gummy bands keep using it identically — no behaviour change.
 
         _emit_pick_band(
             block_slug="acidity",
@@ -1160,6 +1208,7 @@ def compute_totals(
     gummy_base_items: tuple[Item, ...] = (),
     flavouring_items: tuple[Item, ...] = (),
     colour_items: tuple[Item, ...] = (),
+    sweetener_items: tuple[Item, ...] = (),
     glazing_items: tuple[Item, ...] = (),
     gelling_items: tuple[Item, ...] = (),
     premix_sweetener_items: tuple[Item, ...] = (),
@@ -1240,6 +1289,7 @@ def compute_totals(
             gummy_base_items=gummy_base_items,
             flavouring_items=flavouring_items,
             colour_items=colour_items,
+            sweetener_items=sweetener_items,
             glazing_items=glazing_items,
             gelling_items=gelling_items,
             premix_sweetener_items=premix_sweetener_items,
@@ -2623,6 +2673,9 @@ def compute_formulation_totals(
         ),
         colour_items=tuple(
             formulation.colour_items.all().order_by("name")
+        ),
+        sweetener_items=tuple(
+            formulation.sweetener_items.all().order_by("name")
         ),
         glazing_items=tuple(
             formulation.glazing_items.all().order_by("name")

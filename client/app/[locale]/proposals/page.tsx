@@ -1,6 +1,7 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getUserOrganizationsServer,
@@ -34,6 +35,12 @@ export default async function OrgProposalsPage({
   const organizations = (await getUserOrganizationsServer()) ?? [];
   const organization = organizations[0];
   if (!organization) redirect({ href: "/home", locale });
+
+  // Gate on the dedicated proposals module so commercial roles can
+  // own this surface without inheriting broader formulations rights.
+  if (!hasFlatCapability(organization!, "proposals", "view")) {
+    redirect({ href: "/home", locale });
+  }
 
   const tCommon = await getTranslations("common");
 

@@ -104,6 +104,10 @@ export function useInfiniteSpecifications(
     initialData: initialFirstPage
       ? { pages: [initialFirstPage], pageParams: [null] }
       : undefined,
+    // Skip the fetch when the caller has no org id — used by surfaces
+    // (e.g. the approvals inbox) that gate the read on a capability
+    // and pass an empty string when the member can't see this tab.
+    enabled: Boolean(orgId),
   });
 }
 

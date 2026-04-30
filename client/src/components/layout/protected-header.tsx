@@ -62,22 +62,29 @@ export async function ProtectedHeader({
     "formulations",
     "view",
   );
-  // Approvals + Signed each have their own dedicated visibility
-  // capability so admins can hand out read access independently
-  // of the actual sign-off right (``approve``). A QA lead can
-  // then watch the queue without being able to flip statuses; a
-  // sales rep can browse signed history without project-edit
-  // access. Both are off by default for non-owners.
-  const canSeeApprovals = hasFlatCapability(
+  // Proposals split out into their own RBAC module so commercial
+  // roles (sales, account management) can be granted the proposal
+  // surface without inheriting the broader ``formulations.*``
+  // project-edit rights. The header link follows that split — visible
+  // to anyone with ``proposals.view``, hidden otherwise. Customers are
+  // the address book behind proposals so they piggyback on the same
+  // gate.
+  const canSeeProposals = hasFlatCapability(
     primaryOrg,
-    "formulations",
-    "view_approvals",
+    "proposals",
+    "view",
   );
-  const canSeeSigned = hasFlatCapability(
-    primaryOrg,
-    "formulations",
-    "view_signed",
-  );
+  // Approvals + Signed surfaces are now split per module — the
+  // queue is shared between Projects (spec sheets) and Proposals,
+  // so the nav item shows whenever the member can read EITHER tab.
+  // The page itself hides the tab the member cannot read so the
+  // surface stays consistent with the per-module grants.
+  const canSeeApprovals =
+    hasFlatCapability(primaryOrg, "formulations", "view_approvals") ||
+    hasFlatCapability(primaryOrg, "proposals", "view_approvals");
+  const canSeeSigned =
+    hasFlatCapability(primaryOrg, "formulations", "view_signed") ||
+    hasFlatCapability(primaryOrg, "proposals", "view_signed");
 
   // Specifications intentionally omitted — every spec sheet belongs
   // to a project, so it's surfaced inside the project workspace's
@@ -98,18 +105,16 @@ export async function ProtectedHeader({
       href: "/formulations",
       label: tNav("main.formulations"),
     });
-    // Proposals live alongside Formulations so a sales user can
-    // stitch together a multi-project quote without needing to
-    // drill into a specific project first. Same capability as
-    // formulations because they piggyback on the same permissions.
+  }
+  if (canSeeProposals) {
+    // Proposals + Customers gated on the dedicated ``proposals``
+    // module — sales-only roles see these even without any Projects
+    // capability.
     navItems.push({
       key: "proposals",
       href: "/proposals",
       label: tNav("main.proposals"),
     });
-    // Customers are the address-book behind proposals — surfaced
-    // next to them so sales can manage the list without digging
-    // into a proposal first. Same capability gate as proposals.
     navItems.push({
       key: "customers",
       href: "/customers",

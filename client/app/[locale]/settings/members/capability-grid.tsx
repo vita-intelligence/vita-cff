@@ -67,7 +67,9 @@ function ModuleBlock({
   disabled: boolean;
 }) {
   const tCapabilities = useTranslations("settings.capabilities");
+  const tCapabilityHints = useTranslations("settings.capability_hints");
   const tModules = useTranslations("settings.modules");
+  const tRolePresets = useTranslations("settings.role_presets");
 
   // Safe label lookup — unknown keys fall back to the raw string so a
   // new capability shipped from the backend without a translation
@@ -78,6 +80,18 @@ function ModuleBlock({
       return tCapabilities(key);
     } catch {
       return capability.replace(/_/g, " ");
+    }
+  };
+
+  // Per-capability description used as a hover tooltip + a11y label.
+  // Falls back to an empty string so unknown capabilities render
+  // without the help indicator instead of crashing.
+  const hintFor = (capability: string): string => {
+    const key = `${module.key}.${capability}` as "members.view";
+    try {
+      return tCapabilityHints(key);
+    } catch {
+      return "";
     }
   };
 
@@ -96,6 +110,27 @@ function ModuleBlock({
       return tModules(key);
     } catch {
       return module.description;
+    }
+  })();
+
+  // Common-role hints rendered in the module footer. Both lookups
+  // are wrapped so a missing translation produces no footer rather
+  // than a render-time crash.
+  const rolePresetLabel = (() => {
+    const key = `${module.key}_label` as "members_label";
+    try {
+      return tRolePresets(key);
+    } catch {
+      return "";
+    }
+  })();
+
+  const rolePresetText = (() => {
+    const key = module.key as "members";
+    try {
+      return tRolePresets(key);
+    } catch {
+      return "";
     }
   })();
 
@@ -119,6 +154,7 @@ function ModuleBlock({
                 moduleKey={module.key}
                 capabilities={module.capabilities}
                 labelFor={labelFor}
+                hintFor={hintFor}
                 slug={slug}
                 value={value}
                 onChange={onChange}
@@ -131,6 +167,7 @@ function ModuleBlock({
         <CheckboxRow
           capabilities={module.capabilities}
           labelFor={labelFor}
+          hintFor={hintFor}
           selected={getFlatCaps(value, module.key)}
           onToggle={(capability, next) =>
             onChange((prev) =>
@@ -140,6 +177,19 @@ function ModuleBlock({
           disabled={disabled}
         />
       )}
+
+      {rolePresetText ? (
+        <footer className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
+          {rolePresetLabel ? (
+            <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-ink-500">
+              {rolePresetLabel}
+            </p>
+          ) : null}
+          <p className="text-xs leading-relaxed text-ink-700">
+            {rolePresetText}
+          </p>
+        </footer>
+      ) : null}
     </section>
   );
 }
@@ -149,6 +199,7 @@ function SlugRow({
   moduleKey,
   capabilities,
   labelFor,
+  hintFor,
   slug,
   value,
   onChange,
@@ -157,6 +208,7 @@ function SlugRow({
   moduleKey: string;
   capabilities: readonly string[];
   labelFor: (cap: string) => string;
+  hintFor: (cap: string) => string;
   slug: string;
   value: PermissionsDict;
   onChange: Dispatch<SetStateAction<PermissionsDict>>;
@@ -169,6 +221,7 @@ function SlugRow({
       <CheckboxRow
         capabilities={capabilities}
         labelFor={labelFor}
+        hintFor={hintFor}
         selected={selected}
         onToggle={(capability, next) =>
           onChange((prev) =>
@@ -185,12 +238,14 @@ function SlugRow({
 function CheckboxRow({
   capabilities,
   labelFor,
+  hintFor,
   selected,
   onToggle,
   disabled,
 }: {
   capabilities: readonly string[];
   labelFor: (cap: string) => string;
+  hintFor: (cap: string) => string;
   selected: ReadonlySet<string>;
   onToggle: (capability: string, next: boolean) => void;
   disabled: boolean;
@@ -199,9 +254,15 @@ function CheckboxRow({
     <div className="flex flex-wrap gap-2">
       {capabilities.map((capability) => {
         const checked = selected.has(capability);
+        const hint = hintFor(capability);
+        // Native ``title`` is enough for a hover tooltip and gets the
+        // accessible name treatment for free; no extra dependency
+        // needed and nothing to wire up on the keyboard side beyond
+        // the focusable input we already render.
         return (
           <label
             key={capability}
+            title={hint || undefined}
             className={
               checked
                 ? "flex cursor-pointer items-center gap-2 rounded-lg bg-orange-50 px-3 py-1.5 text-sm text-orange-800 ring-1 ring-inset ring-orange-200"
@@ -216,6 +277,14 @@ function CheckboxRow({
               className="h-4 w-4 rounded accent-orange-500"
             />
             <span>{labelFor(capability)}</span>
+            {hint ? (
+              <span
+                aria-hidden="true"
+                className="flex h-4 w-4 items-center justify-center rounded-full bg-ink-200/60 text-[10px] font-bold leading-none text-ink-600"
+              >
+                ?
+              </span>
+            ) : null}
           </label>
         );
       })}

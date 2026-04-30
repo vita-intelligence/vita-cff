@@ -18,6 +18,11 @@ const BACKEND_INTERNAL_URL =
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  // Standalone output ships a minimal node server + only the
+  // dependencies the build actually pulls in. The container image
+  // copies that tree alongside ``public/`` and ``.next/static/`` and
+  // runs ``node server.js`` — keeps the image small and reproducible.
+  output: "standalone",
   // Django routes require trailing slashes (``APPEND_SLASH``). We match the
   // backend convention site-wide so rewrites pass trailing slashes through
   // to ``/api/...`` and Next app routes get canonicalised consistently.

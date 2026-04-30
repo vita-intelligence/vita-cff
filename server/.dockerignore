@@ -1,0 +1,57 @@
+# Version control
+.git
+.gitignore
+.gitattributes
+
+# Python bytecode and caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Test and coverage artifacts
+.pytest_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+coverage.xml
+
+# Local databases (never ship dev SQLite into the image)
+*.sqlite3
+*.sqlite3-journal
+db.sqlite3
+
+# Environment files (secrets must be injected at runtime)
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+venv
+.venv
+env
+.python-version
+
+# Editor / IDE state
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Build artifacts
+*.egg-info
+dist
+build
+
+# Docker recursion guard
+Dockerfile
+Dockerfile.*
+.dockerignore
+docker-compose*.yml
+
+# Generated static/media
+staticfiles
+media

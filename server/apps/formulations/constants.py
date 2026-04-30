@@ -399,6 +399,15 @@ GELLING_USE_CATEGORIES: tuple[str, ...] = (
 PREMIX_SWEETENER_USE_CATEGORIES: tuple[str, ...] = GUMMY_BASE_USE_CATEGORIES
 
 
+#: Powder sweetener picker pool. Pure ``Sweeteners`` only — no
+#: bulking agents — because the powder sweetener row is a flavour-
+#: facing pick (Sucralose, Stevia, Steviol) rather than the structural
+#: bulk a gummy base provides. Keeping this distinct from
+#: :data:`GUMMY_BASE_USE_CATEGORIES` lets the picker surfaces filter
+#: independently if scientists ever tag a sweetener as both.
+SWEETENER_USE_CATEGORIES: tuple[str, ...] = ("Sweeteners",)
+
+
 #: Powder flavour system — reference rows that the scientist sees in
 #: their ``BOM Actives Calculation`` scratchpad in every workbook.
 #: Excel hand-types these with product-specific mg values (Rave Lytes
@@ -425,7 +434,11 @@ POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
     ("citric_acid", "Citric Acid", 0.3),
     ("flavouring", "Flavouring", 0.25),
     ("sweetener", "Sweetener", 0.06),
-    ("colourant", "Colourant", 0.04),
+    # Canonical category is "Colour" (matches the gummy band + EU
+    # 1169/2011 declaration grouping). Older snapshots may carry the
+    # legacy "colourant" slug — a one-off data migration rewrites
+    # them so every persisted FormulationVersion uses the new name.
+    ("colour", "Colour", 0.04),
 )
 
 
@@ -437,7 +450,7 @@ POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
 PROTEIN_POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
     ("flavouring", "Flavouring", 0.25),
     ("sweetener", "Sweetener", 0.06),
-    ("colourant", "Colourant", 0.04),
+    ("colour", "Colour", 0.04),
 )
 
 
@@ -584,9 +597,9 @@ EXCIPIENT_CATALOGUE_NAME_CANDIDATES: dict[str, tuple[str, ...]] = {
         "Stevia",
         "Steviol",
     ),
-    "colourant": (
-        "Colourant",
+    "colour": (
         "Colour",
+        "Colourant",
         "Colorant",
         "Beetroot",
     ),

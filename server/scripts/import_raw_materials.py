@@ -27,14 +27,48 @@ import openpyxl
 from apps.attributes.models import AttributeDefinition, DataType
 from apps.catalogues.models import RAW_MATERIALS_SLUG, Catalogue
 from apps.catalogues.services import create_item, ItemInternalCodeConflict
+from apps.formulations.constants import AMINO_ACID_KEYS, NUTRITION_KEYS
 from apps.organizations.models import Organization
 
 
 FILE_PATH = "/Users/maxchergik/Downloads/Raw Material Data (FOR FORMULATION - DO NOT MOVE OR CHANGE NAME) NEW.xlsx"
 SHEET_NAME = "Raw Material Information"
-ORG_NAME = "Drink Better"
+# Override at run time with ``VITA_IMPORT_ORG=...`` so the same script
+# can target prod's "Vita Manufacture Limited" or a local dev org
+# (e.g. "Vita Dev Server") without editing the file.
+ORG_NAME = os.environ.get("VITA_IMPORT_ORG", "Vita Manufacture Limited")
 HEADER_ROW_INDEX = 3  # Row 4 in the spreadsheet (0-indexed here)
 DATA_START_INDEX = 4  # Row 5 onwards is real data
+
+
+# Header → canonical-key remap. The source workbook is hand-typed and
+# carries a few persistent typos that downstream features can't fold
+# at read time (unlike ``use_as`` which has its own normalisation
+# layer). Each entry is ``slug_from_excel → key_features_expect``.
+HEADER_KEY_ALIASES: dict[str, str] = {
+    # Workbook has 'Phylalanine' (missing the 'en'); spec sheet's
+    # amino acid panel reads from 'phenylalanine'.
+    "phylalanine": "phenylalanine",
+}
+
+
+# Canonical attribute keys the features depend on. Used by the
+# end-of-import audit so we can spot-check that everything landed.
+CANONICAL_KEYS: dict[str, list[str]] = {
+    "math/identity": [
+        "purity",
+        "extract_ratio",
+        "overage",
+        "ingredient_list_name",
+        "nutrition_information_name",
+    ],
+    "classification": ["type", "use_as"],
+    "compliance": ["vegan", "organic", "halal", "kosher"],
+    "allergens": ["allergen", "allergen_source"],
+    "nrv": ["nrv_mg"],
+    "nutrition": list(NUTRITION_KEYS),
+    "amino_acids": list(AMINO_ACID_KEYS),
+}
 
 
 def _slugify(label: str) -> str:
@@ -125,6 +159,10 @@ def run() -> None:
         label_clean = str(label).strip()
 
         base_key = _slugify(label_clean)
+        # Apply known header → canonical-key aliases (Phylalanine
+        # typo etc.) before the dedupe loop so a renamed column still
+        # collides with itself if the workbook ever lists it twice.
+        base_key = HEADER_KEY_ALIASES.get(base_key, base_key)
         key = base_key
         suffix = 2
         while key in used_keys:
@@ -223,6 +261,29 @@ def run() -> None:
     print(f"skipped duplicates:   {skipped_duplicate}")
     print(f"failed rows:          {failed}")
     print(f"attribute defs added: {created_defs}")
+
+    # Canonical schema audit — confirm every key the features rely
+    # on actually has a definition after the import. A missing key
+    # here means the matching column was absent from the workbook
+    # OR the slug didn't survive the alias step.
+    print()
+    print("=" * 60)
+    print("Canonical schema audit:")
+    all_keys = {
+        d.key
+        for d in AttributeDefinition.objects.filter(catalogue=catalogue)
+    }
+    missing_total = 0
+    for group, keys in CANONICAL_KEYS.items():
+        print(f"\n  [{group}]")
+        for key in keys:
+            ok = key in all_keys
+            marker = "OK     " if ok else "MISSING"
+            print(f"    [{marker}] {key}")
+            if not ok:
+                missing_total += 1
+    print()
+    print(f"canonical keys missing: {missing_total}")
 
 
 run()

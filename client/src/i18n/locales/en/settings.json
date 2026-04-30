@@ -77,6 +77,8 @@
     "catalogues_description": "Raw materials, packaging, and any custom reference tables — scoped per catalogue.",
     "formulations": "Projects",
     "formulations_description": "Build projects, save versions, approve spec sheets, run QC validations.",
+    "proposals": "Proposals",
+    "proposals_description": "Customer-facing proposal pipeline — list, edit, approve, sign, browse approvals queue and signed archive. Split from Projects so commercial roles can own this workflow without project-edit rights.",
     "audit": "Audit log",
     "audit_description": "Read the org-wide trail of every write across catalogues, projects, spec sheets, trial batches, and QC validations.",
     "no_row_scopes": "No catalogues exist yet — create one to scope access."
@@ -109,8 +111,72 @@
       "comments_write": "Post & reply to comments",
       "comments_moderate": "Moderate others' comments"
     },
+    "proposals": {
+      "view": "View",
+      "edit": "Edit",
+      "approve": "Approve & send",
+      "delete": "Delete",
+      "sign": "Sign proposal",
+      "view_approvals": "View approvals queue",
+      "view_signed": "View signed documents",
+      "assign_sales_person": "Assign sales person"
+    },
     "audit": {
       "view": "View audit log"
     }
+  },
+  "capability_hints": {
+    "members": {
+      "view": "See the team roster and each member's role.",
+      "invite": "Send invitations to new teammates by email.",
+      "edit_permissions": "Change which capabilities other members have.",
+      "remove": "Revoke a member's access to this organization."
+    },
+    "catalogues": {
+      "view": "Open the catalogue table and read its rows.",
+      "edit": "Create, edit, and archive individual rows.",
+      "import": "Run the bulk Excel import to load many rows at once.",
+      "manage_fields": "Add, edit, or archive attribute definitions (the columns of the catalogue).",
+      "delete": "Permanently remove rows. Cannot be undone."
+    },
+    "formulations": {
+      "view": "Read formulations, spec sheets, proposals, trial batches, and QC records.",
+      "edit": "Create and edit formulations, spec sheets, proposals, trial batches, and QC records.",
+      "approve": "Move documents through draft → in review → approved → sent. Required to send a proposal or spec sheet to a customer.",
+      "delete": "Permanently remove a formulation or any of its child documents.",
+      "view_approvals": "Open the org-wide inbox showing every document currently waiting for a signature.",
+      "view_signed": "Open the customer-signed archive showing what's been sent out and what's come back signed.",
+      "assign_sales_person": "Pick or change the commercial owner (sales rep) of a project. Split out so sales managers can reassign accounts without spec-edit rights.",
+      "manage_spec_visibility": "Toggle individual sections (Nutrition, Microbiology, etc.) on or off for the customer-facing spec sheet.",
+      "sign_spec": "Apply your signature to a spec sheet or proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). Without this, the signature pad is read-only.",
+      "comments_view": "Read comment threads on any project entity.",
+      "comments_write": "Post comments and reply. You can always edit, delete, or resolve your own threads.",
+      "comments_moderate": "Edit, delete, or resolve OTHER users' comment threads. The moderator role — typically team leads only."
+    },
+    "proposals": {
+      "view": "Read the proposals list, individual proposals, and the customer-facing PDF.",
+      "edit": "Create proposals, edit lines, customer info, pricing, and acknowledgements. Render and re-render the PDF.",
+      "approve": "Move a proposal through draft → in review → approved → sent. Required to send the customer signing link.",
+      "delete": "Permanently remove a proposal.",
+      "sign": "Apply your signature to a proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). The customer signature on the public kiosk is gated by the link, not by this capability.",
+      "view_approvals": "Open the proposals tab of the org-wide approvals inbox showing every proposal waiting for a signature.",
+      "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed.",
+      "assign_sales_person": "Pick or change the commercial owner (sales rep) on a proposal's parent project. Split out so sales managers can reassign accounts without proposal-edit rights."
+    },
+    "audit": {
+      "view": "Read the org-wide log of every write across catalogues, projects, spec sheets, trial batches, and QC."
+    }
+  },
+  "role_presets": {
+    "members_label": "Common roles",
+    "members": "Owners have all of these implicitly. Most members only need View. Grant Invite and Edit permissions to admins / team leads.",
+    "catalogues_label": "Common roles",
+    "catalogues": "Scientist: View + Edit on raw_materials & packaging. Bulk import for whoever loads new supplier sheets. Manage fields and Hard delete are admin-only.",
+    "formulations_label": "Common roles",
+    "formulations": "Scientist: View, Edit, Sign spec sheet, Comments view + write. R&D Manager / Director: everything above + Approve & send + Comments moderate. Read-only stakeholder: View only. (Sales typically does not need any Projects capability — they live in the Proposals module instead.)",
+    "proposals_label": "Common roles",
+    "proposals": "Sales: View, Edit, View approvals queue, View signed, Assign sales person. Sales lead: everything above + Approve & send. Director: all of the above + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only.",
+    "audit_label": "Common roles",
+    "audit": "Compliance and QA leads. Owners get it implicitly."
   }
 }

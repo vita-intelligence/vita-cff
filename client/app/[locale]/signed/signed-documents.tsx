@@ -30,30 +30,55 @@ type Tab = "proposals" | "specifications";
  * ``status`` filter (added when the approvals inbox was wired in),
  * so no new backend surface is needed here.
  */
-export function SignedDocuments({ orgId }: { orgId: string }) {
+export function SignedDocuments({
+  orgId,
+  canViewProposals,
+  canViewSpecs,
+}: {
+  orgId: string;
+  canViewProposals: boolean;
+  canViewSpecs: boolean;
+}) {
   const t = useTranslations("signed");
-  const [tab, setTab] = useState<Tab>("proposals");
+  const [tab, setTab] = useState<Tab>(
+    canViewProposals ? "proposals" : "specifications",
+  );
 
-  const sentProposals = useProposals(orgId, { status: "sent" });
-  const signedProposals = useProposals(orgId, { status: "accepted" });
-  const sentSpecs = useInfiniteSpecifications(orgId, {
+  // Empty orgId disables the underlying hook (see the
+  // ``enabled: Boolean(orgId)`` guard) so we don't fire a fetch the
+  // caller would only get back as 403.
+  const sentProposals = useProposals(canViewProposals ? orgId : "", {
+    status: "sent",
+  });
+  const signedProposals = useProposals(canViewProposals ? orgId : "", {
+    status: "accepted",
+  });
+  const sentSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "sent",
     pageSize: 100,
   });
-  const signedSpecs = useInfiniteSpecifications(orgId, {
+  const signedSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "accepted",
     pageSize: 100,
   });
 
-  const proposalsSent = sentProposals.data ?? [];
-  const proposalsSigned = signedProposals.data ?? [];
+  const proposalsSent = canViewProposals ? sentProposals.data ?? [] : [];
+  const proposalsSigned = canViewProposals
+    ? signedProposals.data ?? []
+    : [];
   const specsSent = useMemo(
-    () => sentSpecs.data?.pages.flatMap((p) => p.results) ?? [],
-    [sentSpecs.data],
+    () =>
+      canViewSpecs
+        ? sentSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [sentSpecs.data, canViewSpecs],
   );
   const specsSigned = useMemo(
-    () => signedSpecs.data?.pages.flatMap((p) => p.results) ?? [],
-    [signedSpecs.data],
+    () =>
+      canViewSpecs
+        ? signedSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [signedSpecs.data, canViewSpecs],
   );
 
   const proposalsTotal = proposalsSent.length + proposalsSigned.length;
@@ -71,23 +96,27 @@ export function SignedDocuments({ orgId }: { orgId: string }) {
       </header>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <TabButton
-          active={tab === "proposals"}
-          onClick={() => setTab("proposals")}
-          icon={<FileSignature className="h-4 w-4" />}
-          label={t("tabs.proposals")}
-          count={proposalsTotal}
-        />
-        <TabButton
-          active={tab === "specifications"}
-          onClick={() => setTab("specifications")}
-          icon={<ClipboardCheck className="h-4 w-4" />}
-          label={t("tabs.specifications")}
-          count={specsTotal}
-        />
+        {canViewProposals ? (
+          <TabButton
+            active={tab === "proposals"}
+            onClick={() => setTab("proposals")}
+            icon={<FileSignature className="h-4 w-4" />}
+            label={t("tabs.proposals")}
+            count={proposalsTotal}
+          />
+        ) : null}
+        {canViewSpecs ? (
+          <TabButton
+            active={tab === "specifications"}
+            onClick={() => setTab("specifications")}
+            icon={<ClipboardCheck className="h-4 w-4" />}
+            label={t("tabs.specifications")}
+            count={specsTotal}
+          />
+        ) : null}
       </div>
 
-      {tab === "proposals" ? (
+      {tab === "proposals" && canViewProposals ? (
         <div className="mt-6 flex flex-col gap-8">
           <ProposalsSection
             heading={t("sections.awaiting")}
@@ -108,7 +137,8 @@ export function SignedDocuments({ orgId }: { orgId: string }) {
             mode="signed"
           />
         </div>
-      ) : (
+      ) : null}
+      {tab === "specifications" && canViewSpecs ? (
         <div className="mt-6 flex flex-col gap-8">
           <SpecsSection
             heading={t("sections.awaiting")}
@@ -129,7 +159,7 @@ export function SignedDocuments({ orgId }: { orgId: string }) {
             mode="signed"
           />
         </div>
-      )}
+      ) : null}
     </section>
   );
 }

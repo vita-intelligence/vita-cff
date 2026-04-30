@@ -1,8 +1,11 @@
 """API views for the proposals app.
 
-Every endpoint is gated by :class:`HasFormulationsPermission` — the
-proposal lives alongside the spec sheet inside a formulation project,
-so it shares the same ``formulations.*`` capability surface.
+Every endpoint is gated by :class:`HasProposalsPermission` — proposals
+carry their own capability surface (``proposals.*``) so commercial
+roles can be granted the proposal pipeline without the broader
+``formulations.*`` project-edit rights. A data migration mirrors any
+pre-existing ``formulations.*`` grants onto the new module so members
+do not lose access on upgrade.
 """
 
 from __future__ import annotations
@@ -22,8 +25,8 @@ from rest_framework.views import APIView
 
 from apps.proposals.render import render_docx_bytes, render_pdf_bytes
 
-from apps.formulations.api.permissions import HasFormulationsPermission
-from apps.organizations.modules import FormulationsCapability
+from apps.organizations.modules import ProposalsCapability
+from apps.proposals.api.permissions import HasProposalsPermission
 from apps.proposals.api.serializers import (
     ProposalCreateSerializer,
     ProposalLineReadSerializer,
@@ -75,13 +78,13 @@ class ProposalListCreateView(APIView):
     to filter client-side.
     """
 
-    permission_classes = (HasFormulationsPermission,)
+    permission_classes = (HasProposalsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         self.required_capability = (
-            FormulationsCapability.VIEW
+            ProposalsCapability.VIEW
             if request.method == "GET"
-            else FormulationsCapability.EDIT
+            else ProposalsCapability.EDIT
         )
         super().initial(request, *args, **kwargs)
 
@@ -166,15 +169,15 @@ class ProposalListCreateView(APIView):
 class ProposalDetailView(APIView):
     """``GET`` / ``PATCH`` / ``DELETE`` ``/api/organizations/<org>/proposals/<id>/``."""
 
-    permission_classes = (HasFormulationsPermission,)
+    permission_classes = (HasProposalsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_capability = FormulationsCapability.VIEW
+            self.required_capability = ProposalsCapability.VIEW
         elif request.method == "DELETE":
-            self.required_capability = FormulationsCapability.DELETE
+            self.required_capability = ProposalsCapability.DELETE
         else:
-            self.required_capability = FormulationsCapability.EDIT
+            self.required_capability = ProposalsCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def _load(self, proposal_id: str):
@@ -230,8 +233,8 @@ class ProposalStatusView(APIView):
     """``POST`` ``/.../proposals/<id>/status/`` — transition the sheet
     one step along its state machine."""
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.EDIT
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
 
     def post(
         self, request: Request, org_id: str, proposal_id: str
@@ -288,8 +291,8 @@ class ProposalTransitionsView(APIView):
     """``GET`` ``/.../proposals/<id>/transitions/`` — timeline of
     status changes used by the detail page's audit sidebar."""
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.VIEW
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, proposal_id: str
@@ -317,8 +320,8 @@ class ProposalRenderView(APIView):
     feature keep working on CI containers / Linux boxes without Word.
     """
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.VIEW
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, proposal_id: str
@@ -368,8 +371,8 @@ class ProposalDocxView(APIView):
     .docx so sales can email it or tweak the copy manually before
     sending."""
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.VIEW
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, proposal_id: str
@@ -404,13 +407,13 @@ class ProposalLineListCreateView(APIView):
     plausible values immediately.
     """
 
-    permission_classes = (HasFormulationsPermission,)
+    permission_classes = (HasProposalsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         self.required_capability = (
-            FormulationsCapability.VIEW
+            ProposalsCapability.VIEW
             if request.method == "GET"
-            else FormulationsCapability.EDIT
+            else ProposalsCapability.EDIT
         )
         super().initial(request, *args, **kwargs)
 
@@ -479,8 +482,8 @@ class ProposalLineDetailView(APIView):
     """``PATCH`` / ``DELETE``
     ``/api/organizations/<org>/proposals/<id>/lines/<line_id>/``."""
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.EDIT
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
 
     def _load(self, proposal_id: str):
         try:
@@ -554,8 +557,8 @@ class ProposalCostPreviewView(APIView):
     pre-fill the unit price field before the scientist clicks Submit.
     """
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.VIEW
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
 
     def get(
         self, request: Request, org_id: str, version_id: str

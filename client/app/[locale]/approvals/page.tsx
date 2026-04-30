@@ -39,7 +39,21 @@ export default async function ApprovalsPage({
   const organization = organizations[0];
   if (!organization) redirect({ href: "/home", locale });
 
-  if (!hasFlatCapability(organization!, "formulations", "view_approvals")) {
+  // Approvals queue spans two modules now — proposals (sales-driven
+  // queue) and formulations (spec sheet sign-off). Bail only when the
+  // member can read NEITHER tab; otherwise show the page and let the
+  // inbox component hide the tab the member cannot see.
+  const canViewProposalApprovals = hasFlatCapability(
+    organization!,
+    "proposals",
+    "view_approvals",
+  );
+  const canViewSpecApprovals = hasFlatCapability(
+    organization!,
+    "formulations",
+    "view_approvals",
+  );
+  if (!canViewProposalApprovals && !canViewSpecApprovals) {
     redirect({ href: "/home", locale });
   }
 
@@ -50,7 +64,11 @@ export default async function ApprovalsPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user!} active="approvals" />
 
-        <ApprovalsInbox orgId={organization!.id} />
+        <ApprovalsInbox
+          orgId={organization!.id}
+          canViewProposals={canViewProposalApprovals}
+          canViewSpecs={canViewSpecApprovals}
+        />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>

@@ -41,7 +41,17 @@ export default async function SignedPage({
   const organization = organizations[0];
   if (!organization) redirect({ href: "/home", locale });
 
-  if (!hasFlatCapability(organization!, "formulations", "view_signed")) {
+  const canViewProposalSigned = hasFlatCapability(
+    organization!,
+    "proposals",
+    "view_signed",
+  );
+  const canViewSpecSigned = hasFlatCapability(
+    organization!,
+    "formulations",
+    "view_signed",
+  );
+  if (!canViewProposalSigned && !canViewSpecSigned) {
     redirect({ href: "/home", locale });
   }
 
@@ -52,7 +62,11 @@ export default async function SignedPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user!} active="signed" />
 
-        <SignedDocuments orgId={organization!.id} />
+        <SignedDocuments
+          orgId={organization!.id}
+          canViewProposals={canViewProposalSigned}
+          canViewSpecs={canViewSpecSigned}
+        />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>

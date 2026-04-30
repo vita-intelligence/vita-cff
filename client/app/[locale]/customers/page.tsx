@@ -1,6 +1,7 @@
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getUserOrganizationsServer,
@@ -29,6 +30,12 @@ export default async function CustomersPage({
   const organizations = (await getUserOrganizationsServer()) ?? [];
   const organization = organizations[0];
   if (!organization) redirect({ href: "/home", locale });
+
+  // Customers are the address book behind proposals — gated on the
+  // same module so a sales role can manage the list.
+  if (!hasFlatCapability(organization!, "proposals", "view")) {
+    redirect({ href: "/home", locale });
+  }
 
   const tCommon = await getTranslations("common");
 

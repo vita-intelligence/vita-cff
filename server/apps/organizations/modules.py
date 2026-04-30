@@ -32,6 +32,7 @@ from dataclasses import dataclass
 MEMBERS_MODULE = "members"
 CATALOGUES_MODULE = "catalogues"
 FORMULATIONS_MODULE = "formulations"
+PROPOSALS_MODULE = "proposals"
 AUDIT_MODULE = "audit"
 
 
@@ -105,6 +106,34 @@ class FormulationsCapability:
     #: only. Required to close out a thread a teammate forgot to
     #: resolve, or to take down an accidental client-facing comment.
     COMMENTS_MODERATE = "comments_moderate"
+
+
+class ProposalsCapability:
+    """Capabilities specific to the customer-facing proposal surface.
+
+    Split out of :class:`FormulationsCapability` so commercial roles
+    (sales, account management) can be granted access to the proposal
+    workflow — list, edit, approve, sign, watch the queue, browse
+    signed history — without inheriting the broader project-edit
+    rights. The membership backfill migration mirrors any existing
+    ``formulations.*`` grants onto matching ``proposals.*`` keys so
+    no member loses access on upgrade.
+    """
+
+    VIEW = "view"
+    EDIT = "edit"
+    APPROVE = "approve"
+    DELETE = "delete"
+    #: Sign a proposal in any internal slot (Scientist, R&D Manager,
+    #: Product Manager, Director). The customer signature on the
+    #: public kiosk is gated by token only, not by this capability.
+    SIGN = "sign"
+    #: Read the proposals tab of the org-wide approvals inbox.
+    VIEW_APPROVALS = "view_approvals"
+    #: Read the proposals tab of the customer-signed archive.
+    VIEW_SIGNED = "view_signed"
+    #: Assign / clear the sales person on a proposal's parent project.
+    ASSIGN_SALES_PERSON = "assign_sales_person"
 
 
 class AuditCapability:
@@ -181,6 +210,26 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.COMMENTS_VIEW,
             FormulationsCapability.COMMENTS_WRITE,
             FormulationsCapability.COMMENTS_MODERATE,
+        ),
+    ),
+    PROPOSALS_MODULE: Module(
+        key=PROPOSALS_MODULE,
+        name="Proposals",
+        description=(
+            "Customer-facing proposal workflow: list, edit, approve, "
+            "send, sign, browse approval queue and signed archive. "
+            "Split from Projects so commercial roles can own the "
+            "proposal pipeline without project-edit rights."
+        ),
+        capabilities=(
+            ProposalsCapability.VIEW,
+            ProposalsCapability.EDIT,
+            ProposalsCapability.APPROVE,
+            ProposalsCapability.DELETE,
+            ProposalsCapability.SIGN,
+            ProposalsCapability.VIEW_APPROVALS,
+            ProposalsCapability.VIEW_SIGNED,
+            ProposalsCapability.ASSIGN_SALES_PERSON,
         ),
     ),
     AUDIT_MODULE: Module(

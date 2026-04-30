@@ -23,21 +23,51 @@ type Tab = "proposals" | "specifications";
  * a backlog, in which case we want them to see *everything* on a
  * single screen and clear it rather than hide items behind a
  * "load more" button.
+ *
+ * The two tabs are gated independently — proposals on
+ * ``proposals.view_approvals`` and specs on
+ * ``formulations.view_approvals``. The page-level guard already
+ * ensures the caller has at least one of the two; we hide the tab
+ * the caller cannot read here so a sales user without spec access
+ * doesn't see an empty "Specifications" tab they can't use.
  */
-export function ApprovalsInbox({ orgId }: { orgId: string }) {
+export function ApprovalsInbox({
+  orgId,
+  canViewProposals,
+  canViewSpecs,
+}: {
+  orgId: string;
+  canViewProposals: boolean;
+  canViewSpecs: boolean;
+}) {
   const t = useTranslations("approvals");
-  const [tab, setTab] = useState<Tab>("proposals");
+  // Default the active tab to whichever one the caller can actually
+  // see. Proposals takes priority because it's the more common
+  // sales-driven queue; specs is the fallback when the caller is
+  // spec-only.
+  const [tab, setTab] = useState<Tab>(
+    canViewProposals ? "proposals" : "specifications",
+  );
 
-  const proposalsQuery = useProposals(orgId, { status: "in_review" });
-  const specsQuery = useInfiniteSpecifications(orgId, {
+  // Pass an empty orgId to short-circuit the underlying ``enabled``
+  // guard on each hook — that's the cheapest way to skip a fetch
+  // the caller is not allowed to make without plumbing a new
+  // ``enabled`` option through every consumer of these hooks.
+  const proposalsQuery = useProposals(canViewProposals ? orgId : "", {
+    status: "in_review",
+  });
+  const specsQuery = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "in_review",
     pageSize: 100,
   });
 
-  const proposals = proposalsQuery.data ?? [];
+  const proposals = canViewProposals ? proposalsQuery.data ?? [] : [];
   const specs = useMemo(
-    () => specsQuery.data?.pages.flatMap((p) => p.results) ?? [],
-    [specsQuery.data],
+    () =>
+      canViewSpecs
+        ? specsQuery.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [specsQuery.data, canViewSpecs],
   );
 
   return (
@@ -52,35 +82,40 @@ export function ApprovalsInbox({ orgId }: { orgId: string }) {
       </header>
 
       <div className="mt-4 flex flex-wrap gap-2">
-        <TabButton
-          active={tab === "proposals"}
-          onClick={() => setTab("proposals")}
-          icon={<FileSignature className="h-4 w-4" />}
-          label={t("tabs.proposals")}
-          count={proposals.length}
-        />
-        <TabButton
-          active={tab === "specifications"}
-          onClick={() => setTab("specifications")}
-          icon={<ClipboardCheck className="h-4 w-4" />}
-          label={t("tabs.specifications")}
-          count={specs.length}
-        />
+        {canViewProposals ? (
+          <TabButton
+            active={tab === "proposals"}
+            onClick={() => setTab("proposals")}
+            icon={<FileSignature className="h-4 w-4" />}
+            label={t("tabs.proposals")}
+            count={proposals.length}
+          />
+        ) : null}
+        {canViewSpecs ? (
+          <TabButton
+            active={tab === "specifications"}
+            onClick={() => setTab("specifications")}
+            icon={<ClipboardCheck className="h-4 w-4" />}
+            label={t("tabs.specifications")}
+            count={specs.length}
+          />
+        ) : null}
       </div>
 
-      {tab === "proposals" ? (
+      {tab === "proposals" && canViewProposals ? (
         <ProposalsPanel
           proposals={proposals}
           loading={proposalsQuery.isLoading}
           errored={proposalsQuery.isError}
         />
-      ) : (
+      ) : null}
+      {tab === "specifications" && canViewSpecs ? (
         <SpecificationsPanel
           specs={specs}
           loading={specsQuery.isLoading}
           errored={specsQuery.isError}
         />
-      )}
+      ) : null}
     </section>
   );
 }

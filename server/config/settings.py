@@ -4,13 +4,70 @@ import os
 from datetime import timedelta
 from pathlib import Path
 
+import dj_database_url
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_list(name: str, default: list[str] | None = None) -> list[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return list(default or [])
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
 # Security
-SECRET_KEY = "django-insecure-paz2degn(!os0zf$fth7ag=kowl^4)ya@b7o=rh5bb)iiiz=&$"
-DEBUG = True
-ALLOWED_HOSTS: list[str] = ["localhost", "127.0.0.1", "192.168.1.170"]
+#
+# Every value below is environment-driven. The dev defaults keep
+# ``runserver`` working out of the box (``DJANGO_DEBUG`` defaults to
+# True); **production MUST set ``DJANGO_DEBUG=False`` and
+# ``DJANGO_SECRET_KEY``** in App Service Configuration. With DEBUG
+# off, a missing secret aborts boot rather than running with a known
+# key — that is the safety net against a half-configured deploy.
+DEBUG = _env_bool("DJANGO_DEBUG", default=True)
+
+_DEV_SECRET_KEY = "django-insecure-paz2degn(!os0zf$fth7ag=kowl^4)ya@b7o=rh5bb)iiiz=&$"
+SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or (
+    _DEV_SECRET_KEY if DEBUG else ""
+)
+if not SECRET_KEY:
+    raise RuntimeError(
+        "DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is False"
+    )
+
+ALLOWED_HOSTS: list[str] = _env_list(
+    "DJANGO_ALLOWED_HOSTS",
+    default=["localhost", "127.0.0.1", "192.168.1.170"] if DEBUG else [],
+)
+
+CSRF_TRUSTED_ORIGINS: list[str] = _env_list(
+    "DJANGO_CSRF_TRUSTED_ORIGINS",
+    default=[],
+)
+
+# Reverse-proxy TLS termination (Azure App Service / Front Door).
+# When the upstream proxy speaks HTTPS to the client and HTTP to the
+# container, Django needs to trust ``X-Forwarded-Proto`` to set
+# ``request.is_secure()`` correctly — otherwise ``Secure`` cookies and
+# the SSL redirect both misbehave.
+if _env_bool("DJANGO_USE_X_FORWARDED_PROTO", default=False):
+    SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+SECURE_SSL_REDIRECT = _env_bool("DJANGO_SECURE_SSL_REDIRECT", default=False)
+SECURE_HSTS_SECONDS = int(os.environ.get("DJANGO_SECURE_HSTS_SECONDS", "0"))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = _env_bool(
+    "DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS", default=False
+)
+SECURE_HSTS_PRELOAD = _env_bool("DJANGO_SECURE_HSTS_PRELOAD", default=False)
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SECURE_REFERRER_POLICY = "same-origin"
 
 
 # Applications
@@ -34,6 +91,7 @@ THIRD_PARTY_APPS = [
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
+    "storages",
 ]
 
 LOCAL_APPS = [
@@ -107,24 +165,33 @@ SIMPLE_JWT = {
 # set/clear helpers that read these names.
 AUTH_COOKIE_ACCESS_NAME = "vita_access"
 AUTH_COOKIE_REFRESH_NAME = "vita_refresh"
-AUTH_COOKIE_DOMAIN: str | None = None
+AUTH_COOKIE_DOMAIN: str | None = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 AUTH_COOKIE_PATH = "/"
-AUTH_COOKIE_SECURE = not DEBUG
+AUTH_COOKIE_SECURE = _env_bool("AUTH_COOKIE_SECURE", default=not DEBUG)
 AUTH_COOKIE_HTTPONLY = True
-AUTH_COOKIE_SAMESITE = "Lax"
+AUTH_COOKIE_SAMESITE = os.environ.get("AUTH_COOKIE_SAMESITE", "Lax")
 
 
 # CORS — cookie credentials require an explicit origin list, not a wildcard.
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://192.168.1.170:3000",
-]
+CORS_ALLOWED_ORIGINS = _env_list(
+    "DJANGO_CORS_ALLOWED_ORIGINS",
+    default=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://192.168.1.170:3000",
+    ]
+    if DEBUG
+    else [],
+)
 CORS_ALLOW_CREDENTIALS = True
 
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # WhiteNoise serves collected static files directly from the
+    # container without needing nginx / Azure Blob in front. Sits
+    # immediately after SecurityMiddleware per the WhiteNoise docs.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -185,12 +252,28 @@ TEMPLATES = [
 
 
 # Database
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+#
+# Production sets ``DATABASE_URL`` (Postgres). Dev falls back to a
+# local SQLite file so a fresh checkout boots without a server.
+# ``conn_max_age`` recycles connections every 60s, which suits
+# App Service's container model where idle workers may be reaped.
+_DATABASE_URL = os.environ.get("DATABASE_URL")
+if _DATABASE_URL:
+    DATABASES = {
+        "default": dj_database_url.parse(
+            _DATABASE_URL,
+            conn_max_age=60,
+            conn_health_checks=True,
+            ssl_require=_env_bool("DATABASE_SSL_REQUIRE", default=True),
+        ),
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
 
 
 # Password validation
@@ -209,8 +292,59 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files
-STATIC_URL = "static/"
+# Static + media files
+#
+# Static (admin CSS, DRF browsable API assets) is collected into
+# ``STATIC_ROOT`` at image-build time and served by WhiteNoise from
+# inside the container — no external dependency required.
+#
+# Media (user-uploaded PDFs, signature images, generated proposal
+# kiosk artefacts) lives in Azure Blob Storage in production so it
+# survives container restarts. When the Azure account name is unset
+# (dev), media falls back to local disk under ``BASE_DIR/media``.
+STATIC_URL = "/static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+AZURE_ACCOUNT_NAME = os.environ.get("AZURE_STORAGE_ACCOUNT_NAME")
+AZURE_ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
+AZURE_MEDIA_CONTAINER = os.environ.get(
+    "AZURE_STORAGE_MEDIA_CONTAINER", "media"
+)
+
+if AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY:
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.azure_storage.AzureStorage",
+            "OPTIONS": {
+                "account_name": AZURE_ACCOUNT_NAME,
+                "account_key": AZURE_ACCOUNT_KEY,
+                "azure_container": AZURE_MEDIA_CONTAINER,
+                "expiration_secs": None,
+            },
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+    MEDIA_URL = (
+        f"https://{AZURE_ACCOUNT_NAME}.blob.core.windows.net/"
+        f"{AZURE_MEDIA_CONTAINER}/"
+    )
+else:
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": (
+                "whitenoise.storage.CompressedManifestStaticFilesStorage"
+                if not DEBUG
+                else "django.contrib.staticfiles.storage.StaticFilesStorage"
+            ),
+        },
+    }
+    MEDIA_URL = "/media/"
+    MEDIA_ROOT = BASE_DIR / "media"
 
 
 # Defaults
