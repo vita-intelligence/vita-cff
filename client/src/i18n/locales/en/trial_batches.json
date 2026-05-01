@@ -43,15 +43,16 @@
     "scale_equation": "{packs} packs × {perPack} per pack = {total} individual units",
     "scale_equation_unit": "{units} individual units (bench-scale)",
     "back": "Back to formulation",
-    "print": "Print",
+    "print_button": "Print",
     "print_columns": "Print columns",
     "column_label": {
       "code": "Code",
       "material": "Material",
-      "mg_per_unit": "mg / unit",
-      "g_per_pack": "g / pack",
-      "bom": "BOM / kg",
-      "totals": "Totals / batch"
+      "mg_per_unit": "Per unit (mg)",
+      "g_per_pack": "Per pack (g)",
+      "bom": "Per 1 kg blend (g)",
+      "totals": "Total / batch (g)",
+      "actual": "Actual (handwrite, g)"
     },
     "export_csv": "Export CSV",
     "export_json": "Export JSON",
@@ -64,15 +65,50 @@
     "column": {
       "code": "Code",
       "material": "Raw material",
-      "mg_per_unit": "mg / unit",
-      "g_per_pack": "g / pack",
-      "bom": "BOM (per kg)",
-      "kg_per_batch": "kg or each / batch"
+      "mg_per_unit_dynamic": "Per {unit} (mg)",
+      "g_per_pack_dynamic": "Per pack of {perPack} (g)",
+      "bom": "Per 1 kg blend (g)",
+      "kg_per_batch": "Total / batch (g)",
+      "actual": "Actual measured (g)"
+    },
+    "column_hint": {
+      "code": "Procurement code from the catalogue.",
+      "material": "Raw-material name as it appears in the BOM.",
+      "mg_per_unit": "Milligrams of this raw material in one finished {unit}.",
+      "g_per_pack": "Grams of this raw material in one pack ({perPack} {unit}s per pack).",
+      "bom": "Grams of this raw material in 1 kg of finished blend. The weight column sums to exactly 1 000 g.",
+      "kg_per_batch": "Total grams (or count) needed for the whole batch run.",
+      "actual": "Empty column for the technician to write the actual weighed amount in pen — in grams."
     },
     "section": {
       "active": "Active Ingredients",
       "excipient": "Excipients",
       "shell": "Capsule Shell"
+    },
+    "unit_name": {
+      "powder": "scoop",
+      "capsule": "capsule",
+      "tablet": "tablet",
+      "gummy": "gummy",
+      "liquid": "dose",
+      "other_solid": "unit"
+    },
+    "print": {
+      "title": "Trial Batch — Bill of Materials",
+      "printed_on": "Printed {date}",
+      "version_line": "Formulation v{version} · {dosageForm}",
+      "scale_caption": "Scale-up basis",
+      "totals_caption": "Batch totals",
+      "actual_caption": "Actual measured (technician fills in)",
+      "signature_technician": "Technician",
+      "signature_supervisor": "R&D Supervisor",
+      "signature_date": "Date",
+      "signature_line": "____________________"
+    },
+    "legend": {
+      "title": "How to read this BOM",
+      "show": "Show legend",
+      "hide": "Hide legend"
     }
   }
 }

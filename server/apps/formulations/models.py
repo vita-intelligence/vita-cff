@@ -441,6 +441,46 @@ class FormulationLine(models.Model):
         blank=True,
         help_text=_("Per-line override; falls back to the formulation's serving size."),
     )
+    #: Optional per-line overrides for the three catalogue attributes
+    #: that drive the purity/overage cascade. ``null`` (the default)
+    #: means "use the source raw material's catalogue value"; any
+    #: non-null value wins for THIS formulation only — the catalogue
+    #: stays untouched. Scientists tune these per product when a
+    #: specific batch / supplier deviates from the standard purity
+    #: spec without polluting the global master.
+    purity_override = models.DecimalField(
+        _("purity override"),
+        max_digits=8,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Override the raw material's purity for this formulation "
+            "only. Leave blank to use the catalogue value."
+        ),
+    )
+    overage_override = models.DecimalField(
+        _("overage override"),
+        max_digits=8,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Override the raw material's overage for this formulation "
+            "only. Leave blank to use the catalogue value."
+        ),
+    )
+    extract_ratio_override = models.DecimalField(
+        _("extract ratio override"),
+        max_digits=10,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Override the raw material's extract ratio (botanical "
+            "items only). Leave blank to use the catalogue value."
+        ),
+    )
     mg_per_serving_cached = models.DecimalField(
         _("mg per serving (cached)"),
         max_digits=14,

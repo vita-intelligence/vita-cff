@@ -1,7 +1,13 @@
 "use client";
 
-import { ArrowLeft, Download, FileJson, Printer } from "lucide-react";
-import { useTranslations } from "next-intl";
+import {
+  ArrowLeft,
+  Download,
+  FileJson,
+  HelpCircle,
+  Printer,
+} from "lucide-react";
+import { useLocale, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
@@ -38,6 +44,7 @@ export function TrialBatchDetail({
   canWrite: boolean;
 }) {
   const tBatches = useTranslations("trial_batches");
+  const locale = useLocale();
 
   const batchQuery = useTrialBatch(orgId, initialBatch.id);
   const renderQuery = useTrialBatchRender(orgId, initialBatch.id);
@@ -46,6 +53,38 @@ export function TrialBatchDetail({
   const bom = renderQuery.data ?? initialBom;
 
   const grouped = useMemo(() => groupByCategory(bom.entries), [bom.entries]);
+
+  // Dosage-form-specific unit name — "scoop" for powders, "capsule"
+  // for capsules, etc. Drives every column header so scientists see
+  // "Per scoop (mg)" instead of an ambiguous "mg / unit".
+  const unitName = useMemo(() => {
+    const key = bom.dosage_form as
+      | "powder"
+      | "capsule"
+      | "tablet"
+      | "gummy"
+      | "liquid"
+      | "other_solid";
+    try {
+      return tBatches(`detail.unit_name.${key}` as "detail.unit_name.powder");
+    } catch {
+      return tBatches("detail.unit_name.other_solid");
+    }
+  }, [bom.dosage_form, tBatches]);
+
+  // Localised "DD Mon YYYY" used in the print header. Deterministic
+  // across server / client because we call ``Intl.DateTimeFormat``
+  // with an explicit locale rather than the platform default — the
+  // SSR step and the hydration step would otherwise diverge.
+  const printedOn = useMemo(() => {
+    return new Intl.DateTimeFormat(locale, {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    }).format(new Date());
+  }, [locale]);
+
+  const [legendOpen, setLegendOpen] = useState(false);
 
   // Columns actually relevant to this batch's size mode. ``pack``
   // mode exposes every BOM column; ``unit`` mode drops the pack
@@ -84,16 +123,80 @@ export function TrialBatchDetail({
   // Rendered into a <style> tag and scoped via the ``bom-print-root``
   // marker class so these @media print rules never leak out to other
   // pages that happen to render BOM data.
+  //
+  // The ``Actual`` handwrite column is print-only: hidden on screen
+  // (so the screen layout stays compact) and shown on print when
+  // ticked in the print-columns toolbar.
   const hiddenColumnSelectors = COLUMN_KEYS.filter((k) => !visibleColumns[k])
     .map((k) => `.bom-print-root [data-col="${k}"]`)
     .join(",\n");
   const printCss = `
+    /* Print-only columns are always hidden on screen — they take up
+       table real estate the scientist doesn't need until they walk
+       the printout to the bench. */
+    @media screen {
+      .bom-print-root [data-col-print-only="true"] { display: none !important; }
+    }
     @media print {
-      html, body { background: #fff !important; }
+      /* Default to landscape with comfortable margins — BOM tables
+         have 5-7 columns and several lines, portrait truncates the
+         right edge or shrinks the type. The browser dialog still
+         lets the scientist switch to portrait if they need to. */
+      @page { size: A4 landscape; margin: 12mm 14mm; }
+      /* Hide every other DOM node by default. The "visibility: hidden"
+         trick keeps layout intact for ancestor wrappers (so React's
+         tree still renders) but suppresses the ink, then we re-enable
+         visibility on the BOM root and its descendants only. */
+      html, body { background: #fff !important; color: #111 !important; }
+      body * { visibility: hidden !important; }
+      .bom-print-root, .bom-print-root * { visibility: visible !important; }
+      /* Fixed positioning yanks the BOM to the top-left of the page so
+         the empty space the now-invisible app chrome would have left
+         doesn't push the table down a page. */
+      .bom-print-root {
+        position: absolute !important;
+        left: 0 !important;
+        top: 0 !important;
+        width: 100% !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        font-family: "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+        color: #111 !important;
+      }
       .bom-print-hide { display: none !important; }
-      .bom-print-root { padding: 0 !important; margin: 0 !important; }
+      .bom-print-only-block { display: block !important; }
+      .bom-print-root section {
+        box-shadow: none !important;
+        border: none !important;
+        padding: 0 !important;
+        margin: 0 !important;
+      }
+      .bom-print-root table {
+        page-break-inside: auto;
+        font-size: 10pt;
+      }
+      .bom-print-root table thead {
+        display: table-header-group;
+      }
+      .bom-print-root table tr {
+        page-break-inside: avoid;
+      }
+      .bom-print-root .bom-print-handwrite {
+        border-bottom: 1px solid #555;
+        height: 1.2em;
+        min-width: 4em;
+        display: block;
+      }
+      .bom-print-root .bom-print-signature {
+        margin-top: 24pt;
+        page-break-inside: avoid;
+      }
       ${hiddenColumnSelectors ? `${hiddenColumnSelectors} { display: none !important; }` : ""}
     }
+    /* Block displayed only on print — wrappers like the print header
+       + signature footer are screen-hidden but flow with the table on
+       paper. */
+    .bom-print-only-block { display: none; }
   `;
 
   return (
@@ -134,7 +237,7 @@ export function TrialBatchDetail({
             className="inline-flex items-center gap-1.5 rounded-lg bg-ink-1000 px-3 py-2 text-sm font-medium text-ink-0 transition-colors hover:bg-ink-800"
           >
             <Printer className="h-4 w-4" />
-            {tBatches("detail.print")}
+            {tBatches("detail.print_button")}
           </button>
           <a
             href={trialBatchesEndpoints.bom(orgId, initialBatch.id, "csv")}
@@ -168,26 +271,42 @@ export function TrialBatchDetail({
         <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tBatches("detail.print_columns")}
         </span>
-        {availableColumns.map((key) => (
-          <label
-            key={key}
-            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset transition-colors ${
-              visibleColumns[key]
-                ? "bg-orange-500 text-ink-0 ring-orange-500"
-                : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-100"
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={visibleColumns[key]}
-              onChange={() => toggleColumn(key)}
-              className="sr-only"
-            />
-            {tBatches(
+        {availableColumns.map((key) => {
+          // Dynamic labels for the unit-aware columns so the toggle
+          // chip reads "Per scoop (mg)" instead of "mg / unit".
+          let label: string;
+          if (key === "mg_per_unit") {
+            label = tBatches("detail.column.mg_per_unit_dynamic", {
+              unit: unitName,
+            });
+          } else if (key === "g_per_pack") {
+            label = tBatches("detail.column.g_per_pack_dynamic", {
+              perPack: formatInteger(bom.units_per_pack),
+            });
+          } else {
+            label = tBatches(
               `detail.column_label.${key}` as "detail.column_label.code",
-            )}
-          </label>
-        ))}
+            );
+          }
+          return (
+            <label
+              key={key}
+              className={`inline-flex cursor-pointer items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset transition-colors ${
+                visibleColumns[key]
+                  ? "bg-orange-500 text-ink-0 ring-orange-500"
+                  : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-100"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={visibleColumns[key]}
+                onChange={() => toggleColumn(key)}
+                className="sr-only"
+              />
+              {label}
+            </label>
+          );
+        })}
       </div>
 
       {batch.notes ? (
@@ -197,21 +316,73 @@ export function TrialBatchDetail({
       ) : null}
 
       <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
-        <h2 className="text-base font-semibold text-ink-1000">
-          {tBatches("detail.bom_title")}
-        </h2>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="text-base font-semibold text-ink-1000">
+            {tBatches("detail.bom_title")}
+          </h2>
+          <button
+            type="button"
+            onClick={() => setLegendOpen((v) => !v)}
+            className="bom-print-hide inline-flex items-center gap-1.5 rounded-lg bg-ink-50 px-2.5 py-1 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-100"
+          >
+            <HelpCircle className="h-3.5 w-3.5" />
+            {legendOpen
+              ? tBatches("detail.legend.hide")
+              : tBatches("detail.legend.show")}
+          </button>
+        </div>
+        {legendOpen ? (
+          <ColumnLegend
+            unitName={unitName}
+            unitsPerPack={bom.units_per_pack}
+            availableColumns={availableColumns}
+            tBatches={tBatches}
+          />
+        ) : null}
+
+        {/* Print-only header. On screen this stays hidden; on paper
+            it's the first thing under the table heading so the
+            printout reads as a standalone document. */}
+        <div className="bom-print-only-block mt-2 border-b border-ink-300 pb-2 text-[10pt] text-ink-700">
+          <div className="font-semibold text-ink-1000">
+            {batch.label || tBatches("detail.untitled")}
+          </div>
+          <div>
+            {bom.formulation_name} · v{bom.version_number}
+            {bom.version_label ? ` — ${bom.version_label}` : ""}
+            {" · "}
+            {bom.dosage_form
+              ? bom.dosage_form.charAt(0).toUpperCase() +
+                bom.dosage_form.slice(1)
+              : ""}
+          </div>
+          <div className="text-[9pt] text-ink-500">
+            {tBatches("detail.print.printed_on", { date: printedOn })}
+            {" · "}
+            {bom.batch_size_mode === "unit"
+              ? tBatches("detail.scale_equation_unit", {
+                  units: formatInteger(bom.total_units_in_batch),
+                })
+              : tBatches("detail.scale_equation", {
+                  packs: formatInteger(bom.batch_size_units),
+                  perPack: formatInteger(bom.units_per_pack),
+                  total: formatInteger(bom.total_units_in_batch),
+                })}
+          </div>
+        </div>
 
         <div className="mt-6 overflow-hidden rounded-xl ring-1 ring-ink-200">
           <table className="w-full border-collapse">
             <colgroup>
               <col className="w-28" />
               <col />
-              <col className="w-28" />
+              <col className="w-32" />
               {availableColumns.includes("g_per_pack") ? (
-                <col className="w-28" />
+                <col className="w-32" />
               ) : null}
               <col className="w-32" />
               <col className="w-36" />
+              {visibleColumns.actual ? <col className="w-36" /> : null}
             </colgroup>
             <thead className="bg-ink-50">
               <tr>
@@ -231,14 +402,18 @@ export function TrialBatchDetail({
                   data-col="mg_per_unit"
                   className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500"
                 >
-                  {tBatches("detail.column.mg_per_unit")}
+                  {tBatches("detail.column.mg_per_unit_dynamic", {
+                    unit: unitName,
+                  })}
                 </th>
                 {availableColumns.includes("g_per_pack") ? (
                   <th
                     data-col="g_per_pack"
                     className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500"
                   >
-                    {tBatches("detail.column.g_per_pack")}
+                    {tBatches("detail.column.g_per_pack_dynamic", {
+                      perPack: formatInteger(bom.units_per_pack),
+                    })}
                   </th>
                 ) : null}
                 <th
@@ -252,6 +427,13 @@ export function TrialBatchDetail({
                   className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500"
                 >
                   {tBatches("detail.column.kg_per_batch")}
+                </th>
+                <th
+                  data-col="actual"
+                  data-col-print-only="true"
+                  className="px-3 py-2 text-right text-xs font-medium uppercase tracking-wide text-ink-500"
+                >
+                  {tBatches("detail.column.actual")}
                 </th>
               </tr>
             </thead>
@@ -317,14 +499,89 @@ export function TrialBatchDetail({
                       >
                         {entry.uom === "count"
                           ? `${formatInteger(entry.count_per_batch)} ${tBatches("detail.each")}`
-                          : `${formatNumber(entry.kg_per_batch, 4)} kg`}
+                          : `${formatNumber(entry.g_per_batch, 2)} g`}
+                      </td>
+                      <td
+                        data-col="actual"
+                        data-col-print-only="true"
+                        className="px-3 py-3.5"
+                      >
+                        <span className="bom-print-handwrite block" />
                       </td>
                     </tr>
                   )),
                 ];
               })}
             </tbody>
+            {/* Print-only totals + signature footer. Renders after
+                the BOM table so it sits at the bottom of the printed
+                page; on screen it stays hidden behind the regular
+                TotalTile grid below. */}
+            <tfoot className="bom-print-only-block">
+              <tr>
+                <td colSpan={2} className="border-t border-ink-300 px-3 pt-2 text-[10pt] font-semibold text-ink-1000">
+                  {tBatches("detail.print.totals_caption")}
+                </td>
+                <td
+                  data-col="mg_per_unit"
+                  className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
+                >
+                  {formatNumber(bom.total_mg_per_unit, 4)} mg
+                </td>
+                {availableColumns.includes("g_per_pack") ? (
+                  <td
+                    data-col="g_per_pack"
+                    className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
+                  >
+                    {formatNumber(bom.total_g_per_pack, 4)} g
+                  </td>
+                ) : null}
+                <td
+                  data-col="bom"
+                  className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
+                >
+                  1 000 g
+                </td>
+                <td
+                  data-col="totals"
+                  className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
+                >
+                  {formatNumber(bom.total_g_per_batch, 2)} g
+                </td>
+                <td
+                  data-col="actual"
+                  data-col-print-only="true"
+                  className="border-t border-ink-300 px-3 pt-2"
+                >
+                  <span className="bom-print-handwrite block" />
+                </td>
+              </tr>
+            </tfoot>
           </table>
+        </div>
+
+        {/* Print-only signature block. Three lines for technician,
+            supervisor, and date — anchored under the BOM so a 1-pager
+            stays a 1-pager. */}
+        <div className="bom-print-only-block bom-print-signature mt-6 grid grid-cols-3 gap-6 text-[10pt] text-ink-1000">
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tBatches("detail.print.signature_technician")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tBatches("detail.print.signature_supervisor")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tBatches("detail.print.signature_date")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
         </div>
 
         <div className="bom-print-hide mt-8 grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -341,7 +598,7 @@ export function TrialBatchDetail({
           <TotalTile
             emphasis
             label={tBatches("detail.fill_per_batch")}
-            value={`${formatNumber(bom.total_kg_per_batch, 4)} kg`}
+            value={`${formatNumber(bom.total_g_per_batch, 2)} g`}
           />
           {bom.total_count_per_batch > 0 ? (
             <TotalTile
@@ -352,6 +609,86 @@ export function TrialBatchDetail({
           ) : null}
         </div>
       </section>
+    </div>
+  );
+}
+
+
+/** Plain-English legend that explains every column. Shown on screen
+ *  only — scientists read it once, untick the help, get a clean view.
+ *  Each row keys off the dynamic unit name so a powder reads "Per
+ *  scoop" while a capsule reads "Per capsule". */
+function ColumnLegend({
+  unitName,
+  unitsPerPack,
+  availableColumns,
+  tBatches,
+}: {
+  unitName: string;
+  unitsPerPack: number;
+  availableColumns: readonly ColumnKey[];
+  tBatches: ReturnType<typeof useTranslations<"trial_batches">>;
+}) {
+  const ENTRIES: ReadonlyArray<{
+    readonly key: ColumnKey;
+    readonly title: string;
+    readonly hint: string;
+  }> = [
+    {
+      key: "code",
+      title: tBatches("detail.column.code"),
+      hint: tBatches("detail.column_hint.code"),
+    },
+    {
+      key: "material",
+      title: tBatches("detail.column.material"),
+      hint: tBatches("detail.column_hint.material"),
+    },
+    {
+      key: "mg_per_unit",
+      title: tBatches("detail.column.mg_per_unit_dynamic", { unit: unitName }),
+      hint: tBatches("detail.column_hint.mg_per_unit", { unit: unitName }),
+    },
+    {
+      key: "g_per_pack",
+      title: tBatches("detail.column.g_per_pack_dynamic", {
+        perPack: String(unitsPerPack),
+      }),
+      hint: tBatches("detail.column_hint.g_per_pack", {
+        perPack: String(unitsPerPack),
+        unit: unitName,
+      }),
+    },
+    {
+      key: "bom",
+      title: tBatches("detail.column.bom"),
+      hint: tBatches("detail.column_hint.bom"),
+    },
+    {
+      key: "totals",
+      title: tBatches("detail.column.kg_per_batch"),
+      hint: tBatches("detail.column_hint.kg_per_batch"),
+    },
+    {
+      key: "actual",
+      title: tBatches("detail.column.actual"),
+      hint: tBatches("detail.column_hint.actual"),
+    },
+  ];
+  const visible = ENTRIES.filter((e) => availableColumns.includes(e.key));
+  return (
+    <div className="bom-print-hide mt-3 rounded-xl bg-ink-50 px-4 py-3 ring-1 ring-inset ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+        {tBatches("detail.legend.title")}
+      </p>
+      <dl className="mt-2 grid grid-cols-1 gap-x-6 gap-y-2 md:grid-cols-2">
+        {visible.map((e) => (
+          <div key={e.key} className="text-xs leading-snug">
+            <dt className="font-semibold text-ink-1000">{e.title}</dt>
+            <dd className="text-ink-700">{e.hint}</dd>
+          </div>
+        ))}
+      </dl>
     </div>
   );
 }
@@ -406,7 +743,12 @@ const CATEGORIES: readonly BOMEntry["category"][] = [
 /** Every data column the BOM table can show. The scientist can
  *  toggle any subset for printing. ``code`` and ``material`` stay
  *  on-by-default (the BOM is useless without them) but remain
- *  togglable so a kg-only-column print stays compact. */
+ *  togglable so a kg-only-column print stays compact.
+ *
+ *  ``actual`` is a print-only handwrite column: the cell renders an
+ *  empty box with a horizontal line so the technician can scribble
+ *  the actual measured weight on the paper. Off on screen, on by
+ *  default for print. */
 const COLUMN_KEYS = [
   "code",
   "material",
@@ -414,6 +756,7 @@ const COLUMN_KEYS = [
   "g_per_pack",
   "bom",
   "totals",
+  "actual",
 ] as const;
 type ColumnKey = (typeof COLUMN_KEYS)[number];
 
@@ -422,6 +765,10 @@ type ColumnKey = (typeof COLUMN_KEYS)[number];
  *  testing) there's no pack concept and the column shows a
  *  multiplier that means nothing to the scientist. */
 const PACK_ONLY_COLUMNS: ReadonlySet<ColumnKey> = new Set(["g_per_pack"]);
+
+/** Columns that only render on print — they take screen real estate
+ *  scientists don't need until they're at the bench with a printout. */
+const PRINT_ONLY_COLUMNS: ReadonlySet<ColumnKey> = new Set(["actual"]);
 
 
 function groupByCategory(
@@ -491,10 +838,10 @@ function formatBomPerKg(
 
   const mgPerUnit = Number.parseFloat(entry.mg_per_unit);
   if (!Number.isFinite(mgPerUnit)) return "—";
-  // Weight rows in kg so the column values agree with the "per kg"
-  // header. The numbers sum to exactly 1.000 kg across the blended
-  // fill by construction, so scaling to any batch size is just
-  // ``(row value × batch kg)``.
-  const kg = mgPerUnit / totalFillMg;
-  return `${formatNumber(kg.toFixed(6), 6)} kg`;
+  // R&D works at bench scale, so we render the column in **grams**
+  // not kilograms — a 0.034 kg active reads as "34.29 g" which is
+  // far easier to weigh against a balance. The numbers sum to
+  // exactly 1 000 g across the blended fill by construction.
+  const grams = (mgPerUnit / totalFillMg) * 1000;
+  return `${formatNumber(grams.toFixed(2), 2)} g`;
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from rest_framework import serializers
@@ -40,6 +41,9 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "display_order",
             "label_claim_mg",
             "serving_size_override",
+            "purity_override",
+            "overage_override",
+            "extract_ratio_override",
             "mg_per_serving_cached",
             "notes",
         )
@@ -514,6 +518,30 @@ class FormulationLineWriteSerializer(serializers.Serializer):
     label_claim_mg = serializers.DecimalField(max_digits=12, decimal_places=4)
     serving_size_override = serializers.IntegerField(
         min_value=1, required=False, allow_null=True
+    )
+    # Per-line overrides for the catalogue's purity / overage / extract
+    # ratio. Null (the default) means "use the catalogue value"; any
+    # non-null value wins for THIS formulation only.
+    purity_override = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0"),
+    )
+    overage_override = serializers.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0"),
+    )
+    extract_ratio_override = serializers.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0"),
     )
     display_order = serializers.IntegerField(min_value=0, required=False)
     notes = serializers.CharField(required=False, allow_blank=True, default="")

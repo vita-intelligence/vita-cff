@@ -1,9 +1,10 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, Save, ShieldCheck, Trash2 } from "lucide-react";
+import { Check, Copy, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -64,6 +65,12 @@ interface BuilderLine {
   readonly item_internal_code: string;
   readonly item_attributes: ItemAttributesForMath;
   label_claim_mg: string;
+  /** Per-line override of the catalogue's purity. Empty string means
+   *  "use the catalogue value"; any non-empty numeric string wins on
+   *  the math cascade and is persisted on save. */
+  purity_override: string;
+  overage_override: string;
+  extract_ratio_override: string;
   display_order: number;
 }
 
@@ -274,6 +281,9 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     item_internal_code: line.item_internal_code,
     item_attributes: attributesFromLine(line.item_attributes),
     label_claim_mg: line.label_claim_mg,
+    purity_override: line.purity_override ?? "",
+    overage_override: line.overage_override ?? "",
+    extract_ratio_override: line.extract_ratio_override ?? "",
     display_order: line.display_order ?? index,
   }));
 }
@@ -346,13 +356,23 @@ export function FormulationBuilder({
   // types a label claim or swaps a capsule size.
   // ---------------------------------------------------------------------
   const liveTotals: FormulationTotals = useMemo(() => {
-    const computeInputs: ComputeLineInput[] = lines.map((line) => ({
-      externalId: line.key,
-      attributes: line.item_attributes,
-      labelClaimMg: Number.parseFloat(line.label_claim_mg || "0"),
-      servingSizeOverride: null,
-      fallbackName: line.item_name,
-    }));
+    const computeInputs: ComputeLineInput[] = lines.map((line) => {
+      const parseOverride = (raw: string): number | null => {
+        if (!raw) return null;
+        const v = Number.parseFloat(raw);
+        return Number.isFinite(v) ? v : null;
+      };
+      return {
+        externalId: line.key,
+        attributes: line.item_attributes,
+        labelClaimMg: Number.parseFloat(line.label_claim_mg || "0"),
+        servingSizeOverride: null,
+        purityOverride: parseOverride(line.purity_override),
+        overageOverride: parseOverride(line.overage_override),
+        extractRatioOverride: parseOverride(line.extract_ratio_override),
+        fallbackName: line.item_name,
+      };
+    });
     const parsedFill = Number.parseFloat(metadata.target_fill_weight_mg);
     const parsedWater = Number.parseFloat(metadata.water_volume_ml);
     // Gummy-base picks flow through to the breakdown so the totals
@@ -574,6 +594,9 @@ export function FormulationBuilder({
           item_internal_code: item.internal_code,
           item_attributes: attributesFromItem(item),
           label_claim_mg: "0",
+          purity_override: "",
+          overage_override: "",
+          extract_ratio_override: "",
           display_order: prev.length,
         },
       ]);
@@ -590,12 +613,47 @@ export function FormulationBuilder({
     );
   }, []);
 
+  const updateLineOverride = useCallback(
+    (
+      key: string,
+      field: "purity_override" | "overage_override" | "extract_ratio_override",
+      value: string,
+    ) => {
+      const sanitized = sanitizeDecimalInput(value);
+      setLines((prev) =>
+        prev.map((line) =>
+          line.key === key ? { ...line, [field]: sanitized } : line,
+        ),
+      );
+    },
+    [],
+  );
+
   const removeLine = useCallback((key: string) => {
     setLines((prev) =>
       prev
         .filter((line) => line.key !== key)
         .map((line, index) => ({ ...line, display_order: index })),
     );
+  }, []);
+
+  // Per-line "Advanced" disclosure — toggles the row that exposes
+  // purity / overage / extract-ratio override inputs. Stored as a
+  // ``Set`` of line keys so toggling is a single set/unset call and
+  // the rest of the page never re-renders unnecessarily.
+  const [expandedOverrides, setExpandedOverrides] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const toggleOverridePanel = useCallback((key: string) => {
+    setExpandedOverrides((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
   }, []);
 
   // ---------------------------------------------------------------------
@@ -683,10 +741,18 @@ export function FormulationBuilder({
   const handleSaveLines = useCallback(async () => {
     setErrorMessage(null);
     try {
+      // Empty override strings → ``null`` so the backend clears any
+      // existing override (back to catalogue value). Non-empty strings
+      // travel as-is; the DRF DecimalField parses them.
+      const overrideOrNull = (raw: string): string | null =>
+        raw && raw.trim() !== "" ? raw : null;
       const updated = await replaceLinesMutation.mutateAsync({
         lines: lines.map((line, index) => ({
           item_id: line.item_id,
           label_claim_mg: line.label_claim_mg || "0",
+          purity_override: overrideOrNull(line.purity_override),
+          overage_override: overrideOrNull(line.overage_override),
+          extract_ratio_override: overrideOrNull(line.extract_ratio_override),
           display_order: index,
         })),
       });
@@ -1436,13 +1502,29 @@ export function FormulationBuilder({
                     canComputeMaterial(line.item_attributes);
                   const showFailure =
                     failure !== null && failure !== "missing_claim";
+                  const parseOverrideForExplain = (raw: string): number | null => {
+                    if (!raw) return null;
+                    const v = Number.parseFloat(raw);
+                    return Number.isFinite(v) ? v : null;
+                  };
                   const explanation = explainLine(
                     line.item_attributes,
                     Number.parseFloat(line.label_claim_mg || "0"),
+                    {
+                      purityOverride: parseOverrideForExplain(
+                        line.purity_override,
+                      ),
+                      overageOverride: parseOverrideForExplain(
+                        line.overage_override,
+                      ),
+                      extractRatioOverride: parseOverrideForExplain(
+                        line.extract_ratio_override,
+                      ),
+                    },
                   );
                   return (
+                    <Fragment key={line.key}>
                     <tr
-                      key={line.key}
                       className="border-b border-ink-100 last:border-b-0"
                     >
                       <td className="px-3 py-3">
@@ -1548,19 +1630,56 @@ export function FormulationBuilder({
                         })()}
                       </td>
                       <td className="px-2 py-3 text-right">
-                        {canWrite ? (
+                        <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
-                            onClick={() => removeLine(line.key)}
-                            aria-label={tFormulations("builder.remove_line")}
-                            title={tFormulations("builder.remove_line")}
-                            className="inline-flex items-center justify-center rounded-md p-1.5 text-ink-500 hover:bg-ink-50 hover:text-danger"
+                            onClick={() => toggleOverridePanel(line.key)}
+                            aria-label={tFormulations(
+                              "builder.toggle_overrides",
+                            )}
+                            title={tFormulations(
+                              "builder.toggle_overrides",
+                            )}
+                            className={`inline-flex items-center justify-center rounded-md p-1.5 text-ink-500 hover:bg-ink-50 ${
+                              expandedOverrides.has(line.key)
+                                ? "bg-ink-100 text-ink-1000"
+                                : ""
+                            }`}
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Sliders className="h-4 w-4" />
                           </button>
-                        ) : null}
+                          {canWrite ? (
+                            <button
+                              type="button"
+                              onClick={() => removeLine(line.key)}
+                              aria-label={tFormulations("builder.remove_line")}
+                              title={tFormulations("builder.remove_line")}
+                              className="inline-flex items-center justify-center rounded-md p-1.5 text-ink-500 hover:bg-ink-50 hover:text-danger"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
+                    {expandedOverrides.has(line.key) ? (
+                      <tr
+                        key={`${line.key}-overrides`}
+                        className="border-b border-ink-100 bg-ink-50/50 last:border-b-0"
+                      >
+                        <td colSpan={5} className="px-3 py-3">
+                          <LineOverridesPanel
+                            line={line}
+                            disabled={!canWrite}
+                            onChange={(field, value) =>
+                              updateLineOverride(line.key, field, value)
+                            }
+                            tFormulations={tFormulations}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                    </Fragment>
                   );
                 })}
               </tbody>
@@ -2239,9 +2358,72 @@ function MrpeasyBomCard({
   const formatKg = (g: number) => (g / 1000).toFixed(4);
   const totalKg = totalGrams / 1000;
 
+  // Localised "DD Mon YYYY" used in the print header. Deterministic
+  // across server / client because we hand ``Intl.DateTimeFormat``
+  // an explicit locale rather than relying on the platform default —
+  // SSR / hydration would otherwise diverge.
+  const printedOn = useMemo(
+    () =>
+      new Intl.DateTimeFormat("en-GB", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+      }).format(new Date()),
+    [],
+  );
+
   return (
-    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 print:break-before-page">
-      <div className="flex items-center justify-between gap-3 print:hidden">
+    <section className="bom-print-card rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 print:break-before-page">
+      {/* Print-scoped stylesheet — hides every other DOM node so a
+          Cmd+P emits ONLY the BOM card. The "visibility: hidden"
+          trick keeps React's ancestor tree rendered (so descendants
+          still mount) but suppresses the ink; we re-enable visibility
+          on the card itself + its descendants and yank it to the
+          top-left of the page so the now-invisible chrome doesn't
+          leave a blank first page. */}
+      <style>{`
+        @media screen {
+          .bom-print-card .bom-print-only { display: none !important; }
+        }
+        @media print {
+          /* Landscape A4 by default — BOM tables read better wide,
+             especially with the new Actual handwrite column on the
+             right edge. Scientists can override in the browser
+             dialog if they want portrait. */
+          @page { size: A4 landscape; margin: 12mm 14mm; }
+          html, body { background: #fff !important; color: #111 !important; }
+          body * { visibility: hidden !important; }
+          .bom-print-card, .bom-print-card * { visibility: visible !important; }
+          .bom-print-card {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+            box-shadow: none !important;
+            border: none !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            font-family: "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+            color: #111 !important;
+          }
+          .bom-print-card .bom-print-hide { display: none !important; }
+          .bom-print-card table { font-size: 10pt; page-break-inside: auto; }
+          .bom-print-card thead { display: table-header-group; }
+          .bom-print-card tr { page-break-inside: avoid; }
+          .bom-print-card .bom-print-handwrite {
+            border-bottom: 1px solid #555;
+            height: 1.2em;
+            min-width: 4em;
+            display: block;
+          }
+          .bom-print-card .bom-print-signature {
+            margin-top: 24pt;
+            page-break-inside: avoid;
+          }
+        }
+      `}</style>
+
+      <div className="flex items-center justify-between gap-3 bom-print-hide">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("mrpeasy_bom.title")}
@@ -2258,15 +2440,23 @@ function MrpeasyBomCard({
           {tFormulations("mrpeasy_bom.print")}
         </button>
       </div>
-      <div className="hidden print:block">
-        <h1 className="text-lg font-semibold">
+
+      {/* Print-only header. Reads as a standalone document on paper:
+          formulation code + name as the title, scale basis and date
+          underneath. */}
+      <div className="bom-print-only border-b border-ink-300 pb-3">
+        <h1 className="text-[14pt] font-semibold text-ink-1000">
           {formulationCode ? `${formulationCode} — ` : ""}
           {formulationName}
         </h1>
-        <p className="text-xs text-ink-700">
+        <p className="mt-1 text-[10pt] text-ink-700">
           {tFormulations("mrpeasy_bom.print_subtitle")}
         </p>
+        <p className="text-[9pt] text-ink-500">
+          {tFormulations("mrpeasy_bom.print_printed_on", { date: printedOn })}
+        </p>
       </div>
+
       {rows.length === 0 ? (
         <p className="mt-4 text-sm text-ink-600">
           {tFormulations("mrpeasy_bom.empty_hint")}
@@ -2286,6 +2476,12 @@ function MrpeasyBomCard({
               </th>
               <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
                 {tFormulations("mrpeasy_bom.col_pct")}
+              </th>
+              {/* Print-only Actual column — empty cell with a horizontal
+                  rule so the technician writes the actual measured kg
+                  next to each line in pen. */}
+              <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
+                {tFormulations("mrpeasy_bom.col_actual")}
               </th>
             </tr>
           </thead>
@@ -2315,6 +2511,9 @@ function MrpeasyBomCard({
                 <td className="px-2 py-1.5 text-right text-ink-700 tabular-nums">
                   {row.pct.toFixed(2)}
                 </td>
+                <td className="bom-print-only px-2 py-2.5">
+                  <span className="bom-print-handwrite block" />
+                </td>
               </tr>
             ))}
           </tbody>
@@ -2330,10 +2529,39 @@ function MrpeasyBomCard({
               <td className="px-2 py-2 text-right text-ink-700 tabular-nums">
                 {totalWeight ? "100.00" : "—"}
               </td>
+              <td className="bom-print-only px-2 py-2">
+                <span className="bom-print-handwrite block" />
+              </td>
             </tr>
           </tfoot>
         </table>
       )}
+
+      {/* Print-only signature footer — three short lines at the
+          bottom of the printout so the BOM can be signed and dated
+          before it goes into the lab book. */}
+      {rows.length > 0 ? (
+        <div className="bom-print-only bom-print-signature mt-6 grid grid-cols-3 gap-6 text-[10pt] text-ink-1000">
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tFormulations("mrpeasy_bom.print_signature_technician")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tFormulations("mrpeasy_bom.print_signature_supervisor")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
+          <div>
+            <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+              {tFormulations("mrpeasy_bom.print_signature_date")}
+            </div>
+            <div className="mt-2 border-b border-ink-700">&nbsp;</div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2548,10 +2776,10 @@ function TotalsBlock({
                 >
                   <span className="flex min-w-0 items-baseline gap-1.5">
                     <span>{row.label}</span>
-                    {row.concentrationMgPerMl !== null &&
-                    row.concentrationMgPerMl !== undefined ? (
+                    {row.concentrationMgPerGPowder !== null &&
+                    row.concentrationMgPerGPowder !== undefined ? (
                       <span className="text-[10px] text-ink-500">
-                        ({row.concentrationMgPerMl} mg/ml)
+                        ({row.concentrationMgPerGPowder} mg/g)
                       </span>
                     ) : null}
                   </span>
@@ -3020,6 +3248,109 @@ const GUMMY_BAND_DEFAULTS = {
 type GummyBandKey = keyof typeof GUMMY_BAND_DEFAULTS;
 
 
+/** Inline panel under each picked active that exposes the three
+ *  per-line override inputs. Catalogue values are shown as the
+ *  placeholder; an empty input means "use the catalogue value".
+ *
+ *  Stays inline (no submit step) — typing into any field updates the
+ *  builder's live math immediately and is persisted on the next
+ *  Save / Save Version. */
+function LineOverridesPanel({
+  line,
+  disabled,
+  onChange,
+  tFormulations,
+}: {
+  line: BuilderLine;
+  disabled: boolean;
+  onChange: (
+    field: "purity_override" | "overage_override" | "extract_ratio_override",
+    value: string,
+  ) => void;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const formatPlaceholder = (
+    value: string | number | null | undefined,
+  ): string =>
+    value === null || value === undefined || value === ""
+      ? tFormulations("line_overrides.catalogue_blank")
+      : String(value);
+  const cataloguePurity = line.item_attributes.purity;
+  const catalogueOverage = line.item_attributes.overage;
+  const catalogueExtract = line.item_attributes.extract_ratio;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+          {tFormulations("line_overrides.title")}
+        </p>
+        <button
+          type="button"
+          disabled={
+            disabled ||
+            (line.purity_override === "" &&
+              line.overage_override === "" &&
+              line.extract_ratio_override === "")
+          }
+          onClick={() => {
+            onChange("purity_override", "");
+            onChange("overage_override", "");
+            onChange("extract_ratio_override", "");
+          }}
+          className="text-[10px] font-medium uppercase tracking-wide text-ink-500 underline-offset-2 hover:text-ink-1000 hover:underline disabled:opacity-40 disabled:hover:no-underline"
+        >
+          {tFormulations("line_overrides.reset")}
+        </button>
+      </div>
+      <p className="text-[11px] leading-snug text-ink-500">
+        {tFormulations("line_overrides.hint")}
+      </p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <label className="flex flex-col gap-1 text-[11px] text-ink-700">
+          <span>{tFormulations("line_overrides.purity_label")}</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={line.purity_override}
+            disabled={disabled}
+            placeholder={formatPlaceholder(cataloguePurity)}
+            onChange={(e) => onChange("purity_override", e.target.value)}
+            className="w-full rounded-xl bg-ink-0 px-3 py-1.5 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-700">
+          <span>{tFormulations("line_overrides.overage_label")}</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={line.overage_override}
+            disabled={disabled}
+            placeholder={formatPlaceholder(catalogueOverage)}
+            onChange={(e) => onChange("overage_override", e.target.value)}
+            className="w-full rounded-xl bg-ink-0 px-3 py-1.5 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-[11px] text-ink-700">
+          <span>{tFormulations("line_overrides.extract_label")}</span>
+          <input
+            type="text"
+            inputMode="decimal"
+            value={line.extract_ratio_override}
+            disabled={disabled}
+            placeholder={formatPlaceholder(catalogueExtract)}
+            onChange={(e) =>
+              onChange("extract_ratio_override", e.target.value)
+            }
+            className="w-full rounded-xl bg-ink-0 px-3 py-1.5 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+
 function GummyOverridesPanel({
   overrides,
   gellingPicked,
@@ -3353,14 +3684,14 @@ function groupGummyFlavourRows(
     readonly label: string;
     readonly mg: number;
     readonly isRemainder: boolean;
-    readonly concentrationMgPerMl?: number | null;
+    readonly concentrationMgPerGPowder?: number | null;
   }[],
 ): readonly {
   readonly slug: string;
   readonly label: string;
   readonly mg: number;
   readonly isRemainder: boolean;
-  readonly concentrationMgPerMl?: number | null;
+  readonly concentrationMgPerGPowder?: number | null;
 }[] {
   // Each entry collapses every row whose slug starts with one of
   // ``prefixes`` into a single grouped entry. ``gelling:`` and
@@ -3429,7 +3760,7 @@ function groupGummyFlavourRows(
         label: group.heading,
         mg: combinedMg,
         isRemainder: false,
-        concentrationMgPerMl: null,
+        concentrationMgPerGPowder: null,
       });
       continue;
     }
@@ -3452,7 +3783,7 @@ function groupGummyFlavourRows(
           : `${group.heading} (${labelOrder.join(", ")})`,
       mg: combinedMg,
       isRemainder: false,
-      concentrationMgPerMl: null,
+      concentrationMgPerGPowder: null,
     });
   }
   // Untouched rows (powder flavour entries, etc.) pass through
@@ -3484,9 +3815,14 @@ function sanitizeDecimalInput(raw: string): string {
       value.slice(0, firstDot + 1) +
       value.slice(firstDot + 1).replace(/\./g, "");
   }
+  // Backend DecimalField stores 4 decimal places (matches the
+  // workbook's mg/serving precision), so the UI lets the scientist
+  // type up to 4. Anything beyond is silently truncated rather than
+  // rounded so a half-typed ``0.12345`` doesn't snap to ``0.1235``
+  // mid-keystroke.
   const dot = value.indexOf(".");
-  if (dot !== -1 && value.length - dot - 1 > 2) {
-    value = value.slice(0, dot + 3);
+  if (dot !== -1 && value.length - dot - 1 > 4) {
+    value = value.slice(0, dot + 5);
   }
   return value;
 }

@@ -422,45 +422,58 @@ SWEETENER_USE_CATEGORIES: tuple[str, ...] = ("Sweeteners",)
 #: Maltodextrin``) that the scientist adds explicitly — same way they
 #: add actives. We keep it out of the auto-computed list so we don't
 #: fabricate a phantom row without a procurement code.
-#: Powder flavour system — each row is ``(slug, label, mg_per_ml)``
-#: with ``mg_per_ml`` the concentration the scientist dissolves into
-#: a serving's water. Values copied verbatim from the master
-#: Formulation Calculation Sheet (``=K7 * 0.1% * 100`` ⇒ 0.1 mg/ml
-#: for Trisodium Citrate, etc.). Multiplying by the serving's
-#: ``water_volume_ml`` produces the per-serving mg exactly as the
-#: Rave Lytes / Moonlytes / Soza reference workbooks compute it.
+#:
+#: Each row is ``(slug, label, mg_per_g_powder)`` — milligrams of
+#: that band's material per **gram of finished powder**. The
+#: per-serving mg total is ``mg_per_g_powder × per_scoop_g ×
+#: scoops_per_serving``, matching how Excel's
+#: ``Formulation Calculation Sheet`` sums the BOM (per-gram column,
+#: then × Serving Size to get per-serving mass). Switching the
+#: serving size from 5 g to 10 g doubles every flavour row, exactly
+#: as scientists hand-type when they re-base a workbook for a
+#: bigger scoop.
+#:
+#: Defaults below are the Rave Lytes / Moonlytes / Soza standard at
+#: 5 g sachet weight: 25/75/62.5/15/10 mg per gram of powder.
 POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
-    ("trisodium_citrate", "Trisodium Citrate", 0.1),
-    ("citric_acid", "Citric Acid", 0.3),
-    ("flavouring", "Flavouring", 0.25),
-    ("sweetener", "Sweetener", 0.06),
+    ("trisodium_citrate", "Trisodium Citrate", 25.0),
+    ("citric_acid", "Citric Acid", 75.0),
+    ("flavouring", "Flavouring", 62.5),
+    ("sweetener", "Sweetener", 15.0),
     # Canonical category is "Colour" (matches the gummy band + EU
     # 1169/2011 declaration grouping). Older snapshots may carry the
     # legacy "colourant" slug — a one-off data migration rewrites
     # them so every persisted FormulationVersion uses the new name.
-    ("colour", "Colour", 0.04),
+    ("colour", "Colour", 10.0),
 )
 
 
-#: Protein-powder flavour system — same mg/ml convention as the
-#: standard powder preset but without the Trisodium Citrate /
-#: Citric Acid pair. Protein matrices buffer themselves and
-#: additional acid degrades mouthfeel, so scientists omit the
-#: acidity regulators on every reference protein formulation.
+#: Protein-powder flavour system — same mg/g-of-powder convention as
+#: the standard preset but without the Trisodium Citrate / Citric
+#: Acid pair. Protein matrices buffer themselves and additional acid
+#: degrades mouthfeel, so scientists omit the acidity regulators on
+#: every reference protein formulation.
 PROTEIN_POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
-    ("flavouring", "Flavouring", 0.25),
-    ("sweetener", "Sweetener", 0.06),
-    ("colour", "Colour", 0.04),
+    ("flavouring", "Flavouring", 62.5),
+    ("sweetener", "Sweetener", 15.0),
+    ("colour", "Colour", 10.0),
 )
 
 
 #: Default water volume seeded into a new powder formulation when the
-#: scientist lands on the builder. The Formulation Calculation Sheet
-#: template defaults to 250 ml; Rave Lytes ships at 500 ml. We pick
-#: the Rave Lytes number because the preset mg values are printed
-#: against it in the user's primary reference workbook, but the
-#: scientist overrides per product.
+#: scientist lands on the builder. Reference value only — no longer
+#: load-bearing in the flavour-system math (which is now keyed to
+#: the powder's own mass per serving), but still used as the default
+#: drink volume on the spec sheet's directions-of-use copy.
 POWDER_REFERENCE_WATER_ML = 500.0
+
+
+#: Default per-scoop fill weight (mg) seeded when the scientist has
+#: not entered ``target_fill_weight_mg`` yet. Matches the Rave Lytes
+#: / Moonlytes 5 g sachet so a fresh powder still renders a sensible
+#: flavour-system breakdown before the scientist tunes the scoop
+#: weight per product.
+POWDER_REFERENCE_FILL_WEIGHT_MG = 5000.0
 
 
 #: Pre-filled text defaults seeded at :func:`create_formulation`

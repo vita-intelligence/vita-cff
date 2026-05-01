@@ -396,7 +396,7 @@ export interface RenderedSheetContext {
         readonly label: string;
         readonly mg: string;
         readonly is_remainder?: boolean;
-        readonly concentration_mg_per_ml?: string | null;
+        readonly concentration_mg_per_g_powder?: string | null;
         readonly use_as?: string;
         readonly is_allergen?: boolean;
         readonly allergen_source?: string;

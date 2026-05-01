@@ -60,7 +60,7 @@ from apps.formulations.constants import (
     GUMMY_WATER_PCT,
     NUTRITION_KEYS,
     POWDER_FLAVOUR_SYSTEM,
-    POWDER_REFERENCE_WATER_ML,
+    POWDER_REFERENCE_FILL_WEIGHT_MG,
     PREMIX_SWEETENER_USE_CATEGORIES,
     SWEETENER_USE_CATEGORIES,
     PowderType,
@@ -277,6 +277,9 @@ def compute_line(
     item: Item,
     label_claim_mg: Decimal | float,
     serving_size: int = 1,
+    purity_override: Decimal | float | None = None,
+    overage_override: Decimal | float | None = None,
+    extract_ratio_override: Decimal | float | None = None,
 ) -> Decimal | None:
     """Compute the raw-powder mg/serving for a single ingredient line.
 
@@ -291,6 +294,12 @@ def compute_line(
     ``serving_size`` divides the label claim before the purity /
     extract-ratio scaling, matching the workbook's ``label_claim /
     serving_size`` intermediate column.
+
+    ``purity_override`` / ``overage_override`` /
+    ``extract_ratio_override`` are per-formulation tweaks that win
+    over the catalogue value. ``None`` (the default) keeps the source
+    raw material's attribute. Each override is type-coerced through
+    :func:`_coerce_float` so the API can pass strings or Decimals.
     """
 
     claim = float(label_claim_mg)
@@ -302,17 +311,33 @@ def compute_line(
     per_unit_claim = claim / serving_size
     attributes = item.attributes or {}
 
+    purity_override_f = _coerce_float(purity_override)
+    overage_override_f = _coerce_float(overage_override)
+    extract_ratio_override_f = _coerce_float(extract_ratio_override)
+
     if _is_botanical(item):
-        extract_ratio = _coerce_float(attributes.get("extract_ratio"))
+        extract_ratio = (
+            extract_ratio_override_f
+            if extract_ratio_override_f is not None
+            else _coerce_float(attributes.get("extract_ratio"))
+        )
         if extract_ratio is None or extract_ratio <= 0:
             return None
         raw_mg = per_unit_claim / extract_ratio
     else:
-        purity = _coerce_float(attributes.get("purity"))
+        purity = (
+            purity_override_f
+            if purity_override_f is not None
+            else _coerce_float(attributes.get("purity"))
+        )
         if purity is None or purity <= 0:
             return None
         raw_mg = per_unit_claim / purity
-        overage = _coerce_float(attributes.get("overage"))
+        overage = (
+            overage_override_f
+            if overage_override_f is not None
+            else _coerce_float(attributes.get("overage"))
+        )
         if overage is not None and overage > 0:
             raw_mg = raw_mg + (raw_mg * overage)
 
@@ -335,17 +360,17 @@ class ExcipientRow:
     flags the row computed as ``target - active - sum(other rows)`` so
     the UI can badge it distinctly from the fixed-% rows.
 
-    ``concentration_mg_per_ml`` is populated for powder flavour rows
-    that scale linearly with the serving's water volume (Trisodium
-    Citrate, Citric Acid, etc.) so the UI can show the raw rate next
-    to the computed mg — matches the ``K7 × 0.1% × 100`` notation on
-    the Formulation Calculation Sheet."""
+    ``concentration_mg_per_g_powder`` is populated for powder flavour
+    rows that scale linearly with the powder's mass per serving
+    (Trisodium Citrate, Citric Acid, etc.) so the UI can show the
+    per-gram load next to the computed mg — matches Excel's BOM
+    "25 mg per gram of powder × 5 g serving" pattern."""
 
     slug: str
     label: str
     mg: Decimal
     is_remainder: bool = False
-    concentration_mg_per_ml: Decimal | None = None
+    concentration_mg_per_g_powder: Decimal | None = None
     #: Canonical ``use_as`` category for the source catalogue item.
     #: Drives EU 1169/2011 grouping in the ingredient declaration —
     #: per-pick rows emit ``use_as = "Flavouring"`` etc. so the
@@ -772,6 +797,7 @@ def _compute_fill_target(
     premix_sweetener_items: tuple[Item, ...] = (),
     acidity_items: tuple[Item, ...] = (),
     excipient_overrides: dict[str, Any] | None = None,
+    default_serving_size: int = 1,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -802,12 +828,15 @@ def _compute_fill_target(
     # (row-level editing lives on the formulation, Phase F-next); for
     # now we ship the Rave Lytes / Moonlytes defaults so every new
     # sachet has the same five-row shape as Excel's BOM scratchpad.
-    # Powder flavour rows are concentrations (mg per ml of water);
-    # multiplying by the serving's water volume produces the per-serving
-    # mg exactly as the Formulation Calculation Sheet does. Gummies
-    # stay on the legacy (slug, label, mg) tuple shape because their
-    # "Water" / "Acidity regulator" rows are per-gummy weights, not
-    # dilution targets.
+    #
+    # Powder flavour rows are mg per **gram of finished powder**:
+    # multiplying by the serving's powder grams (target_fill_weight_mg
+    # × serving_size / 1000) produces the per-serving mg the same way
+    # Excel's Formulation Calculation Sheet does (per-gram column ×
+    # Serving Size = per-serving mass). Gummies stay on the percentage-
+    # of-target shape — both branches now scale linearly with the
+    # finished product's mass, so doubling the serving size doubles
+    # the flavour load on either form.
     is_powder = dosage_form == DosageForm.POWDER.value
     flavour_rows: list[ExcipientRow] = []
 
@@ -819,7 +848,7 @@ def _compute_fill_target(
         picks: tuple[Item, ...],
         band_use_as: str,
         placeholder_when_empty: bool = True,
-        concentration_mg_per_ml: Decimal | None = None,
+        concentration_mg_per_g_powder: Decimal | None = None,
     ) -> None:
         """Emit either per-pick rows or a generic placeholder at the
         block's full mg total. Shared between the powder and gummy
@@ -827,10 +856,12 @@ def _compute_fill_target(
         catalogue items, get the same per-pick row + label-copy
         treatment, regardless of dosage form.
 
-        ``concentration_mg_per_ml`` is propagated from the powder
-        preset so each per-pick row still carries the dilution
-        target the FRONTEND uses to render the "0.06 mg/ml × Nml"
-        breakdown next to the row.
+        ``concentration_mg_per_g_powder`` is propagated from the
+        powder preset so each per-pick row still carries the band's
+        per-gram load that the FRONTEND uses to render the
+        "25 mg/g × 5 g" breakdown next to the row. Empty for gummy
+        bands (which scale by percentage of target weight, not by
+        per-gram-of-powder).
 
         Per-pick rows carry ``use_as = band_use_as`` so the EU
         1169/2011 declaration formatter groups them as e.g.
@@ -844,9 +875,9 @@ def _compute_fill_target(
         if picks:
             per_item_mg = block_total_mg / len(picks)
             per_item_concentration: Decimal | None
-            if concentration_mg_per_ml is not None and len(picks) > 0:
+            if concentration_mg_per_g_powder is not None and len(picks) > 0:
                 per_item_concentration = (
-                    concentration_mg_per_ml / Decimal(len(picks))
+                    concentration_mg_per_g_powder / Decimal(len(picks))
                 )
             else:
                 per_item_concentration = None
@@ -863,7 +894,7 @@ def _compute_fill_target(
                         use_as=band_use_as,
                         is_allergen=_is_item_allergen(item),
                         allergen_source=_allergen_source_for_item(item),
-                        concentration_mg_per_ml=per_item_concentration,
+                        concentration_mg_per_g_powder=per_item_concentration,
                     )
                 )
         elif placeholder_when_empty:
@@ -872,20 +903,35 @@ def _compute_fill_target(
                     slug=block_slug,
                     label=block_label,
                     mg=_quantise(block_total_mg),
-                    concentration_mg_per_ml=concentration_mg_per_ml,
+                    concentration_mg_per_g_powder=(
+                        concentration_mg_per_g_powder
+                    ),
                 )
             )
 
     if is_powder:
         preset = powder_flavour_system_for(powder_type)
-        # Default to the reference volume when the scientist has not
-        # typed one yet so a fresh powder still shows a sensible
-        # flavour system rather than zero rows.
-        water_ml = (
-            max(float(water_volume_ml), 0.0)
-            if water_volume_ml is not None
-            else POWDER_REFERENCE_WATER_ML
+        # Powder grams per serving = per-scoop fill weight × scoops
+        # per serving. Default to a 5 g sachet reference when the
+        # scientist hasn't entered a fill weight yet so a fresh
+        # powder still shows the band breakdown rather than zero rows.
+        if target_fill_weight_mg is not None and target_fill_weight_mg > 0:
+            powder_g_per_serving = float(target_fill_weight_mg) / 1000.0
+        else:
+            powder_g_per_serving = (
+                POWDER_REFERENCE_FILL_WEIGHT_MG / 1000.0
+            )
+        # ``serving_size`` lives on the formulation header (scoops per
+        # serving). For powders it scales the flavour load alongside
+        # the scoop weight — two scoops of a 5 g sachet doubles every
+        # band, exactly how Excel re-bases when scientists move from
+        # one scoop per serving to two.
+        scoops = (
+            int(default_serving_size)
+            if default_serving_size and default_serving_size > 0
+            else 1
         )
+        powder_g_per_serving *= float(scoops)
         # Powder rows fall into two camps:
         #   * Acidity regulators (trisodium_citrate, citric_acid) —
         #     auto-resolved by name lookup against the catalogue,
@@ -901,8 +947,8 @@ def _compute_fill_target(
             "sweetener": (sweetener_items, "Sweeteners"),
             "colour": (colour_items, "Colour"),
         }
-        for slug, label, mg_per_ml in preset:
-            block_total_mg = mg_per_ml * water_ml
+        for slug, label, mg_per_g_powder in preset:
+            block_total_mg = mg_per_g_powder * powder_g_per_serving
             picker = powder_pickers.get(slug)
             if picker is not None:
                 picks, band_use_as = picker
@@ -912,7 +958,9 @@ def _compute_fill_target(
                     block_total_mg=block_total_mg,
                     picks=picks,
                     band_use_as=band_use_as,
-                    concentration_mg_per_ml=Decimal(str(mg_per_ml)),
+                    concentration_mg_per_g_powder=Decimal(
+                        str(mg_per_g_powder)
+                    ),
                 )
                 continue
             # Non-picker row: keep the current generic-row behaviour
@@ -923,7 +971,9 @@ def _compute_fill_target(
                     slug=slug,
                     label=label,
                     mg=_quantise(block_total_mg),
-                    concentration_mg_per_ml=Decimal(str(mg_per_ml)),
+                    concentration_mg_per_g_powder=Decimal(
+                        str(mg_per_g_powder)
+                    ),
                 )
             )
     else:
@@ -1208,7 +1258,17 @@ def _format_fill_weight(mg: float) -> str:
 
 def compute_totals(
     *,
-    lines: Iterable[tuple[str, Item, Decimal | float, int | None]],
+    lines: Iterable[
+        tuple[
+            str,
+            Item,
+            Decimal | float,
+            int | None,
+            Decimal | None,
+            Decimal | None,
+            Decimal | None,
+        ]
+    ],
     dosage_form: str,
     capsule_size_key: str | None = None,
     tablet_size_key: str | None = None,
@@ -1229,19 +1289,42 @@ def compute_totals(
     """Compute the full totals block for a formulation.
 
     ``lines`` is an iterable of ``(external_id, item, label_claim_mg,
-    serving_size_override)`` tuples. ``external_id`` is opaque to this
-    function and just flows through to ``FormulationTotals.line_values``
-    so callers can key the computed mg values back to their own rows.
+    serving_size_override, purity_override, overage_override,
+    extract_ratio_override)`` tuples. ``external_id`` is opaque to
+    this function and just flows through to
+    ``FormulationTotals.line_values`` so callers can key the computed
+    mg values back to their own rows. The override fields default to
+    ``None`` (use catalogue value); pass a Decimal to take precedence
+    on the per-line cascade.
     """
 
     total_active = Decimal("0")
     line_values: dict[str, Decimal] = {}
 
-    for external_id, item, label_claim, override in lines:
+    for line_tuple in lines:
+        # Tolerate the legacy 4-tuple shape so any in-flight caller
+        # that still passes ``(id, item, claim, override)`` keeps
+        # working — the override fields just default to ``None``.
+        if len(line_tuple) == 4:
+            external_id, item, label_claim, override = line_tuple
+            purity_o = overage_o = extract_o = None
+        else:
+            (
+                external_id,
+                item,
+                label_claim,
+                override,
+                purity_o,
+                overage_o,
+                extract_o,
+            ) = line_tuple
         mg = compute_line(
             item=item,
             label_claim_mg=label_claim,
             serving_size=override if override is not None else default_serving_size,
+            purity_override=purity_o,
+            overage_override=overage_o,
+            extract_ratio_override=extract_o,
         )
         if mg is not None:
             line_values[external_id] = mg
@@ -1306,6 +1389,7 @@ def compute_totals(
             premix_sweetener_items=premix_sweetener_items,
             acidity_items=acidity_items,
             excipient_overrides=excipient_overrides,
+            default_serving_size=default_serving_size,
         )
     else:
         # Non-math dosage forms (liquid, other_solid) still report
@@ -2002,15 +2086,29 @@ def replace_lines(
 
     FormulationLine.objects.filter(formulation=formulation).delete()
 
+    def _to_decimal(value: Any) -> Decimal | None:
+        if value is None or value == "":
+            return None
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+
     created: list[FormulationLine] = []
     for index, data in enumerate(lines):
         item = items_by_id[str(data["item_id"])]
         claim = Decimal(str(data["label_claim_mg"]))
         override = data.get("serving_size_override")
+        purity_o = _to_decimal(data.get("purity_override"))
+        overage_o = _to_decimal(data.get("overage_override"))
+        extract_o = _to_decimal(data.get("extract_ratio_override"))
         mg = compute_line(
             item=item,
             label_claim_mg=claim,
             serving_size=override if override is not None else formulation.serving_size,
+            purity_override=purity_o,
+            overage_override=overage_o,
+            extract_ratio_override=extract_o,
         )
         created.append(
             FormulationLine.objects.create(
@@ -2019,6 +2117,9 @@ def replace_lines(
                 display_order=data.get("display_order", index),
                 label_claim_mg=claim,
                 serving_size_override=override,
+                purity_override=purity_o,
+                overage_override=overage_o,
+                extract_ratio_override=extract_o,
                 mg_per_serving_cached=mg,
                 notes=data.get("notes", ""),
             )
@@ -2052,6 +2153,21 @@ def _lines_snapshot(formulation: Formulation) -> list[dict[str, Any]]:
             "item_name": line.item.name,
             "label_claim_mg": str(line.label_claim_mg),
             "serving_size_override": line.serving_size_override,
+            "purity_override": (
+                str(line.purity_override)
+                if line.purity_override is not None
+                else None
+            ),
+            "overage_override": (
+                str(line.overage_override)
+                if line.overage_override is not None
+                else None
+            ),
+            "extract_ratio_override": (
+                str(line.extract_ratio_override)
+                if line.extract_ratio_override is not None
+                else None
+            ),
             "display_order": line.display_order,
             "mg_per_serving_cached": (
                 str(line.mg_per_serving_cached)
@@ -2691,6 +2807,9 @@ def compute_formulation_totals(
             line.item,
             line.label_claim_mg,
             line.serving_size_override,
+            line.purity_override,
+            line.overage_override,
+            line.extract_ratio_override,
         )
         for line in formulation.lines.select_related("item").all()
     ]
@@ -2815,6 +2934,21 @@ def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
                 "display_order": line.display_order,
                 "label_claim_mg": str(line.label_claim_mg),
                 "serving_size_override": line.serving_size_override,
+                "purity_override": (
+                    str(line.purity_override)
+                    if line.purity_override is not None
+                    else None
+                ),
+                "overage_override": (
+                    str(line.overage_override)
+                    if line.overage_override is not None
+                    else None
+                ),
+                "extract_ratio_override": (
+                    str(line.extract_ratio_override)
+                    if line.extract_ratio_override is not None
+                    else None
+                ),
                 "mg_per_serving": (
                     str(line.mg_per_serving_cached)
                     if line.mg_per_serving_cached is not None
@@ -2955,9 +3089,9 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                         "label": row.label,
                         "mg": str(row.mg),
                         "is_remainder": row.is_remainder,
-                        "concentration_mg_per_ml": (
-                            str(row.concentration_mg_per_ml)
-                            if row.concentration_mg_per_ml is not None
+                        "concentration_mg_per_g_powder": (
+                            str(row.concentration_mg_per_g_powder)
+                            if row.concentration_mg_per_g_powder is not None
                             else None
                         ),
                         "use_as": row.use_as or "",

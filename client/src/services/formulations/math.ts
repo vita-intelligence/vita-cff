@@ -38,21 +38,22 @@ const TABLET_SILICA_PCT = 0.004;
 const TABLET_DCP_PCT = 0.10;
 const TABLET_MCC_PCT = 0.20;
 
-/** Powder flavour system — each row is a concentration in mg/ml of
- * water. Multiplying by the serving's ``waterVolumeMl`` produces the
- * per-serving mg exactly as the master Formulation Calculation
- * Sheet's ``K7 × 0.1% × 100`` formula does. Must stay in lock-step
+/** Powder flavour system — each row is mg per **gram of finished
+ * powder**. The per-serving mg total is
+ * ``mgPerGPowder × per_scoop_g × scoops_per_serving``, matching how
+ * Excel's ``Formulation Calculation Sheet`` sums the BOM (per-gram
+ * column × Serving Size = per-serving mass). Must stay in lock-step
  * with ``POWDER_FLAVOUR_SYSTEM`` on the Python side. */
 const POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
   readonly slug: string;
   readonly label: string;
-  readonly mgPerMl: number;
+  readonly mgPerGPowder: number;
 }> = [
-  { slug: "trisodium_citrate", label: "Trisodium Citrate", mgPerMl: 0.1 },
-  { slug: "citric_acid", label: "Citric Acid", mgPerMl: 0.3 },
-  { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
-  { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
-  { slug: "colour", label: "Colour", mgPerMl: 0.04 },
+  { slug: "trisodium_citrate", label: "Trisodium Citrate", mgPerGPowder: 25 },
+  { slug: "citric_acid", label: "Citric Acid", mgPerGPowder: 75 },
+  { slug: "flavouring", label: "Flavouring", mgPerGPowder: 62.5 },
+  { slug: "sweetener", label: "Sweetener", mgPerGPowder: 15 },
+  { slug: "colour", label: "Colour", mgPerGPowder: 10 },
 ];
 
 /** Protein-powder variant — drops the acidity regulators (Trisodium
@@ -60,11 +61,11 @@ const POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
 const PROTEIN_POWDER_FLAVOUR_SYSTEM: ReadonlyArray<{
   readonly slug: string;
   readonly label: string;
-  readonly mgPerMl: number;
+  readonly mgPerGPowder: number;
 }> = [
-  { slug: "flavouring", label: "Flavouring", mgPerMl: 0.25 },
-  { slug: "sweetener", label: "Sweetener", mgPerMl: 0.06 },
-  { slug: "colour", label: "Colour", mgPerMl: 0.04 },
+  { slug: "flavouring", label: "Flavouring", mgPerGPowder: 62.5 },
+  { slug: "sweetener", label: "Sweetener", mgPerGPowder: 15 },
+  { slug: "colour", label: "Colour", mgPerGPowder: 10 },
 ];
 
 function powderFlavourSystemFor(
@@ -72,16 +73,18 @@ function powderFlavourSystemFor(
 ): ReadonlyArray<{
   readonly slug: string;
   readonly label: string;
-  readonly mgPerMl: number;
+  readonly mgPerGPowder: number;
 }> {
   return powderType === "protein"
     ? PROTEIN_POWDER_FLAVOUR_SYSTEM
     : POWDER_FLAVOUR_SYSTEM;
 }
 
-/** Default water volume when the scientist has not typed one yet.
- *  Matches ``POWDER_REFERENCE_WATER_ML`` on the Python side. */
-const POWDER_DEFAULT_WATER_ML = 500;
+/** Default per-scoop fill weight (mg) seeded when the scientist has
+ *  not entered ``targetFillWeightMg`` yet. Matches
+ *  ``POWDER_REFERENCE_FILL_WEIGHT_MG`` on the Python side — a 5 g
+ *  sachet reference (Rave Lytes / Moonlytes). */
+const POWDER_DEFAULT_FILL_WEIGHT_MG = 5000;
 
 /** Water is auto-filled at 5.5% of the target gummy weight (fixed),
  *  mirroring :data:`apps.formulations.constants.GUMMY_WATER_PCT`. */
@@ -219,6 +222,11 @@ export interface ComputeLineInput {
   readonly attributes: ItemAttributesForMath;
   readonly labelClaimMg: number;
   readonly servingSizeOverride?: number | null;
+  //: Per-line overrides for the catalogue's purity/overage/extract
+  //: cascade. Null (or undefined) means "use the catalogue value".
+  readonly purityOverride?: number | null;
+  readonly overageOverride?: number | null;
+  readonly extractRatioOverride?: number | null;
   //: Raw-material display name. Falls back here when
   //: ``attributes.ingredient_list_name`` is blank.
   readonly fallbackName?: string;
@@ -239,10 +247,11 @@ export interface ExcipientRow {
   readonly label: string;
   readonly mg: number;
   readonly isRemainder: boolean;
-  /** Concentration in mg per ml of water. Populated for powder
-   *  flavour rows that scale with ``waterVolumeMl``; null for
+  /** Concentration in mg per gram of finished powder. Populated for
+   *  powder flavour rows that scale with the powder's mass per
+   *  serving (per-scoop fill weight × scoops per serving); null for
    *  gummy and static excipients. */
-  readonly concentrationMgPerMl?: number | null;
+  readonly concentrationMgPerGPowder?: number | null;
   /** Canonical ``use_as`` from the source catalogue item — drives
    *  EU 1169 grouping when this row flows into the ingredient
    *  declaration ("Gelling Agent (Pectin)"). Blank for synthetic
@@ -366,10 +375,17 @@ export function getNrvTargetMg(
 // Line math — Table3 ``mg/serving`` formula
 // ---------------------------------------------------------------------------
 
+export interface LineOverrides {
+  readonly purityOverride?: number | null;
+  readonly overageOverride?: number | null;
+  readonly extractRatioOverride?: number | null;
+}
+
 export function computeLine(
   attributes: ItemAttributesForMath,
   labelClaimMg: number,
   servingSize: number,
+  overrides: LineOverrides = {},
 ): LineComputation {
   if (!Number.isFinite(labelClaimMg) || labelClaimMg <= 0) {
     return { mgPerServing: null, failureReason: "missing_claim" };
@@ -381,19 +397,31 @@ export function computeLine(
   const perUnitClaim = labelClaimMg / servingSize;
 
   if (isBotanical(attributes)) {
-    const extractRatio = coerceFloat(attributes.extract_ratio);
+    const extractRatio =
+      typeof overrides.extractRatioOverride === "number" &&
+      Number.isFinite(overrides.extractRatioOverride)
+        ? overrides.extractRatioOverride
+        : coerceFloat(attributes.extract_ratio);
     if (extractRatio === null || extractRatio <= 0) {
       return { mgPerServing: null, failureReason: "missing_extract_ratio" };
     }
     return { mgPerServing: perUnitClaim / extractRatio, failureReason: null };
   }
 
-  const purity = coerceFloat(attributes.purity);
+  const purity =
+    typeof overrides.purityOverride === "number" &&
+    Number.isFinite(overrides.purityOverride)
+      ? overrides.purityOverride
+      : coerceFloat(attributes.purity);
   if (purity === null || purity <= 0) {
     return { mgPerServing: null, failureReason: "missing_purity" };
   }
   let raw = perUnitClaim / purity;
-  const overage = coerceFloat(attributes.overage);
+  const overage =
+    typeof overrides.overageOverride === "number" &&
+    Number.isFinite(overrides.overageOverride)
+      ? overrides.overageOverride
+      : coerceFloat(attributes.overage);
   if (overage !== null && overage > 0) {
     raw = raw + raw * overage;
   }
@@ -434,25 +462,46 @@ export function canComputeMaterial(
 export function explainLine(
   attributes: ItemAttributesForMath,
   labelClaimMg: number,
+  overrides: LineOverrides = {},
 ): string | null {
   if (!Number.isFinite(labelClaimMg) || labelClaimMg <= 0) return null;
 
   if (isBotanical(attributes)) {
-    const extractRatio = coerceFloat(attributes.extract_ratio);
+    const extractRatio =
+      typeof overrides.extractRatioOverride === "number" &&
+      Number.isFinite(overrides.extractRatioOverride)
+        ? overrides.extractRatioOverride
+        : coerceFloat(attributes.extract_ratio);
     if (extractRatio === null || extractRatio <= 0) return null;
-    return `${formatNumber(labelClaimMg)} / ${formatNumber(extractRatio)}:1 extract`;
+    const overrideTag =
+      typeof overrides.extractRatioOverride === "number" ? "*" : "";
+    return `${formatNumber(labelClaimMg)} / ${formatNumber(extractRatio)}${overrideTag}:1 extract`;
   }
 
-  const purity = coerceFloat(attributes.purity);
+  const purityOverridden =
+    typeof overrides.purityOverride === "number" &&
+    Number.isFinite(overrides.purityOverride);
+  const overageOverridden =
+    typeof overrides.overageOverride === "number" &&
+    Number.isFinite(overrides.overageOverride);
+  const purity = purityOverridden
+    ? overrides.purityOverride!
+    : coerceFloat(attributes.purity);
   if (purity === null || purity <= 0) return null;
-  const overage = coerceFloat(attributes.overage);
+  const overage = overageOverridden
+    ? overrides.overageOverride!
+    : coerceFloat(attributes.overage);
 
   const parts: string[] = [formatNumber(labelClaimMg)];
   if (purity !== 1) {
-    parts.push(`/ ${formatNumber(purity)} purity`);
+    parts.push(
+      `/ ${formatNumber(purity)}${purityOverridden ? "*" : ""} purity`,
+    );
   }
   if (overage !== null && overage > 0) {
-    parts.push(`× ${formatNumber(1 + overage)} (${formatPercent(overage)} overage)`);
+    parts.push(
+      `× ${formatNumber(1 + overage)}${overageOverridden ? "*" : ""} (${formatPercent(overage)} overage)`,
+    );
   }
   // If neither purity nor overage changed the value, there's nothing
   // interesting to show — the label claim IS the raw mg.
@@ -1106,6 +1155,7 @@ function computeFillTarget(
   }> = [],
   excipientOverrides: Readonly<Record<string, number>> | null | undefined =
     null,
+  defaultServingSize: number = 1,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1115,26 +1165,32 @@ function computeFillTarget(
   viability: Viability;
   warnings: readonly string[];
 } {
-  // Powder flavour rows are concentrations in mg/ml of water —
-  // multiply by the serving's water volume to produce the per-serving
-  // mg, exactly the same math the Formulation Calculation Sheet uses.
-  // Gummy rows stay on the static ``mg`` tuple shape because their
-  // "Water" / "Acidity regulator" lines are per-gummy weights, not
-  // dilution targets.
+  // Powder flavour rows are mg per **gram of finished powder** —
+  // multiply by the powder's mass per serving (per-scoop fill weight ×
+  // scoops per serving) to produce the per-serving mg, exactly the
+  // same way Excel's Formulation Calculation Sheet sums the BOM
+  // (per-gram column × Serving Size). Gummy rows scale by percentage
+  // of target weight; both forms now respond linearly to changes in
+  // the finished product's mass.
   const flavourRows: ExcipientRow[] =
     dosageForm === "powder"
       ? (() => {
           const preset = powderFlavourSystemFor(powderType);
-          const waterMl =
-            waterVolumeMl !== null && waterVolumeMl !== undefined
-              ? Math.max(waterVolumeMl, 0)
-              : POWDER_DEFAULT_WATER_ML;
+          const fillWeightMg =
+            targetFillWeightMg && targetFillWeightMg > 0
+              ? targetFillWeightMg
+              : POWDER_DEFAULT_FILL_WEIGHT_MG;
+          const scoops =
+            defaultServingSize && defaultServingSize > 0
+              ? defaultServingSize
+              : 1;
+          const powderGPerServing = (fillWeightMg / 1000) * scoops;
           return preset.map((row) => ({
             slug: row.slug,
             label: row.label,
-            mg: row.mgPerMl * waterMl,
+            mg: row.mgPerGPowder * powderGPerServing,
             isRemainder: false,
-            concentrationMgPerMl: row.mgPerMl,
+            concentrationMgPerGPowder: row.mgPerGPowder,
           }));
         })()
       : (() => {
@@ -1466,6 +1522,11 @@ export function computeTotals({
       line.attributes,
       line.labelClaimMg,
       servingSize,
+      {
+        purityOverride: line.purityOverride ?? null,
+        overageOverride: line.overageOverride ?? null,
+        extractRatioOverride: line.extractRatioOverride ?? null,
+      },
     );
     if (result.mgPerServing !== null) {
       lineValues.set(line.externalId, result.mgPerServing);
@@ -1540,6 +1601,7 @@ export function computeTotals({
       premixSweetenerItems ?? [],
       acidityItems ?? [],
       excipientOverrides ?? null,
+      defaultServingSize,
     );
     return {
       totalActiveMg: totalActive,

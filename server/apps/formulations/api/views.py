@@ -78,8 +78,8 @@ def _totals_payload(totals) -> dict[str, Any]:
                     "label": row.label,
                     "mg": _as_str(row.mg),
                     "is_remainder": row.is_remainder,
-                    "concentration_mg_per_ml": _as_str(
-                        row.concentration_mg_per_ml
+                    "concentration_mg_per_g_powder": _as_str(
+                        row.concentration_mg_per_g_powder
                     ),
                     "use_as": row.use_as or "",
                     "is_allergen": bool(row.is_allergen),

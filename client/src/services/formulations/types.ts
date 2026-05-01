@@ -149,6 +149,12 @@ export interface FormulationLineDto {
   readonly display_order: number;
   readonly label_claim_mg: string;
   readonly serving_size_override: number | null;
+  /** Per-line override of the catalogue's purity. ``null`` means
+   *  "use the catalogue value". Strings are emitted by the Decimal
+   *  serializer; the math layer coerces them. */
+  readonly purity_override: string | null;
+  readonly overage_override: string | null;
+  readonly extract_ratio_override: string | null;
   readonly mg_per_serving_cached: string | null;
   readonly notes: string;
 }
@@ -292,6 +298,12 @@ export interface FormulationLineInput {
   readonly item_id: string;
   readonly label_claim_mg: string;
   readonly serving_size_override?: number | null;
+  /** Per-line override of the catalogue's purity. ``null`` clears
+   *  any existing override (back to catalogue value). Omit to leave
+   *  the existing override untouched. Strings or numbers both fly. */
+  readonly purity_override?: string | number | null;
+  readonly overage_override?: string | number | null;
+  readonly extract_ratio_override?: string | number | null;
   readonly display_order?: number;
   readonly notes?: string;
 }
@@ -305,7 +317,7 @@ export interface ExcipientRowDto {
   readonly label: string;
   readonly mg: string;
   readonly is_remainder: boolean;
-  readonly concentration_mg_per_ml?: string | null;
+  readonly concentration_mg_per_g_powder?: string | null;
   /** Canonical ``use_as`` for the source catalogue item — drives EU
    *  1169 grouping in the declaration ("Gelling Agent (Pectin)").
    *  Blank for synthetic placeholder rows. */
