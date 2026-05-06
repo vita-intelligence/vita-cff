@@ -132,6 +132,88 @@ class TestUpdateSheet:
             update_sheet(sheet=other, actor=org.created_by, code="LOCKED")
 
 
+class TestSetPackaging:
+    """Slot-by-slot packaging assignment. Partial calls (one slot at a
+    time) must leave the rest of the sheet untouched — the spec sheet
+    builder regularly opens the modal to swap a single slot, and a
+    full-payload re-validation would fail the whole request whenever
+    any previously-stored item drifts (item archived, ``packaging_type``
+    edited)."""
+
+    def _packaging_item(self, org, packaging_type: str):
+        from apps.catalogues.tests.factories import (
+            ItemFactory,
+            packaging_catalogue,
+        )
+
+        return ItemFactory(
+            catalogue=packaging_catalogue(org),
+            name=f"Test {packaging_type}",
+            attributes={"packaging_type": packaging_type},
+        )
+
+    def test_assigns_single_slot_without_touching_others(self) -> None:
+        from apps.specifications.services import set_packaging
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        lid = self._packaging_item(org, "closure")
+        # Caller sends only the slot it wants to set — siblings stay
+        # untouched and don't need to round-trip through the picker.
+        updated = set_packaging(
+            sheet=sheet,
+            actor=org.created_by,
+            selections={"packaging_lid": str(lid.id)},
+        )
+        assert updated.packaging_lid_id == lid.id
+        assert updated.packaging_container_id is None
+        assert updated.packaging_label_id is None
+        assert updated.packaging_antitemper_id is None
+
+    def test_clearing_one_slot_keeps_others(self) -> None:
+        from apps.specifications.services import set_packaging
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        lid = self._packaging_item(org, "closure")
+        container = self._packaging_item(org, "material")
+        # Two slots set up front.
+        set_packaging(
+            sheet=sheet,
+            actor=org.created_by,
+            selections={
+                "packaging_lid": str(lid.id),
+                "packaging_container": str(container.id),
+            },
+        )
+        # Now clear just the lid; container must survive.
+        updated = set_packaging(
+            sheet=sheet,
+            actor=org.created_by,
+            selections={"packaging_lid": None},
+        )
+        assert updated.packaging_lid_id is None
+        assert updated.packaging_container_id == container.id
+
+    def test_rejects_slot_type_mismatch(self) -> None:
+        from apps.specifications.services import (
+            PackagingItemNotAllowed,
+            set_packaging,
+        )
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org)
+        # A material item handed to the lid slot must fail with the
+        # codified error — the API layer maps it to a 400.
+        material = self._packaging_item(org, "material")
+        with pytest.raises(PackagingItemNotAllowed):
+            set_packaging(
+                sheet=sheet,
+                actor=org.created_by,
+                selections={"packaging_lid": str(material.id)},
+            )
+
+
 _SIG_FIXTURE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
 
 

@@ -77,8 +77,26 @@ export function EditPackagingButton({
 
   const handleSubmit = async () => {
     setError(null);
+    // Send only slots whose value actually differs from what's on
+    // the sheet. ``set_packaging`` re-validates every slot it
+    // receives — including unchanged FKs — so blindly resending the
+    // full state would fail the whole request when a previously-set
+    // item drifts (e.g. its ``packaging_type`` got edited in the
+    // catalogue). Diffing here keeps partial updates partial.
+    const diff: SetPackagingRequestDto = {};
+    for (const slot of PACKAGING_SLOTS) {
+      const current = sheet[slot] ?? null;
+      const next = selections[slot] ?? null;
+      if (current !== next) {
+        diff[slot] = next;
+      }
+    }
+    if (Object.keys(diff).length === 0) {
+      setIsOpen(false);
+      return;
+    }
     try {
-      await mutation.mutateAsync(selections);
+      await mutation.mutateAsync(diff);
       setIsOpen(false);
       router.refresh();
     } catch (err) {
