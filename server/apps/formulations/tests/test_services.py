@@ -17,7 +17,9 @@ from apps.formulations.services import (
     FormulationNotFound,
     FormulationVersionNotFound,
     InvalidCapsuleSize,
+    InvalidDcpCarrierItem,
     InvalidDosageForm,
+    InvalidMccCarrierItem,
     RawMaterialNotInOrg,
     compute_formulation_totals,
     create_formulation,
@@ -352,3 +354,243 @@ class TestRollback:
                 actor=org.created_by,
                 version_number=42,
             )
+
+
+class TestCapsuleCarrierPicker:
+    """Cover the capsule MCC carrier picker.
+
+    Mirrors the gummy-base picker pattern: scientists pick one or more
+    catalogue items tagged ``use_as = "Bulking Agent"`` and the MCC
+    remainder splits equally across them. With no picks the spec
+    sheet falls back to the generic placeholder and a soft warning
+    surfaces.
+    """
+
+    def _capsule(self, org, mcc_picks=()):
+        active = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": 1.0, "type": "Vitamin"},
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(active.id), "label_claim_mg": "500"}],
+        )
+        if mcc_picks:
+            update_formulation(
+                formulation=formulation,
+                actor=org.created_by,
+                mcc_carrier_item_ids=[str(p.id) for p in mcc_picks],
+            )
+        return formulation
+
+    def test_no_picks_emits_warning_and_keeps_aggregate_mcc_mg(
+        self,
+    ) -> None:
+        """A capsule with active mg but no carrier picks still shows
+        the MCC remainder; the warning lives in ``totals.warnings``
+        so the UI can surface it without blocking the spec sheet."""
+
+        org = OrganizationFactory()
+        formulation = self._capsule(org)
+
+        totals = compute_formulation_totals(formulation=formulation)
+
+        assert totals.excipients is not None
+        assert totals.excipients.mcc_mg > 0
+        assert totals.excipients.mcc_carrier_rows == ()
+        assert "mcc_carrier_unpicked" in totals.warnings
+
+    def test_picks_split_mcc_equally_and_drop_warning(self) -> None:
+        """Two MCC picks split the carrier mg in half; the unpicked
+        warning goes away once a pick exists."""
+
+        org = OrganizationFactory()
+        carrier_a = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            name="MCC Brand A",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Microcrystalline Cellulose A",
+            },
+        )
+        carrier_b = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            name="MCC Brand B",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Microcrystalline Cellulose B",
+            },
+        )
+        formulation = self._capsule(org, mcc_picks=(carrier_a, carrier_b))
+
+        totals = compute_formulation_totals(formulation=formulation)
+
+        rows = totals.excipients.mcc_carrier_rows
+        assert len(rows) == 2
+        assert sum(r.mg for r in rows) == totals.excipients.mcc_mg
+        assert {r.label for r in rows} == {
+            "Microcrystalline Cellulose A",
+            "Microcrystalline Cellulose B",
+        }
+        assert "mcc_carrier_unpicked" not in totals.warnings
+
+    def test_pick_must_carry_bulking_agent_use_as(self) -> None:
+        """A non-Bulking-Agent item is rejected at save time so the
+        carrier slot never receives an Active or Sweetener leak."""
+
+        org = OrganizationFactory()
+        bad_pick = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"use_as": "Active"},
+        )
+        formulation = self._capsule(org)
+
+        with pytest.raises(InvalidMccCarrierItem):
+            update_formulation(
+                formulation=formulation,
+                actor=org.created_by,
+                mcc_carrier_item_ids=[str(bad_pick.id)],
+            )
+
+
+class TestTabletCarrierPicker:
+    """Tablets carry both an MCC and a DCP carrier picker. Each
+    splits its respective total across picks and emits its own
+    ``unpicked`` warning when left empty."""
+
+    def _tablet(self, org, *, mcc_picks=(), dcp_picks=()):
+        active = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": 1.0, "type": "Vitamin"},
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="tablet",
+            tablet_size="round_11mm",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(active.id), "label_claim_mg": "300"}],
+        )
+        kwargs: dict = {}
+        if mcc_picks:
+            kwargs["mcc_carrier_item_ids"] = [str(p.id) for p in mcc_picks]
+        if dcp_picks:
+            kwargs["dcp_carrier_item_ids"] = [str(p.id) for p in dcp_picks]
+        if kwargs:
+            update_formulation(
+                formulation=formulation, actor=org.created_by, **kwargs
+            )
+        return formulation
+
+    def test_both_pickers_split_their_totals(self) -> None:
+        org = OrganizationFactory()
+        mcc = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            name="MCC",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Microcrystalline Cellulose",
+            },
+        )
+        dcp = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            name="DCP",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Dicalcium Phosphate Dihydrate",
+            },
+        )
+        formulation = self._tablet(org, mcc_picks=(mcc,), dcp_picks=(dcp,))
+
+        totals = compute_formulation_totals(formulation=formulation)
+
+        assert len(totals.excipients.mcc_carrier_rows) == 1
+        assert (
+            totals.excipients.mcc_carrier_rows[0].label
+            == "Microcrystalline Cellulose"
+        )
+        assert len(totals.excipients.dcp_carrier_rows) == 1
+        assert (
+            totals.excipients.dcp_carrier_rows[0].label
+            == "Dicalcium Phosphate Dihydrate"
+        )
+        assert "mcc_carrier_unpicked" not in totals.warnings
+        assert "dcp_carrier_unpicked" not in totals.warnings
+
+    def test_no_picks_emits_both_warnings(self) -> None:
+        org = OrganizationFactory()
+        formulation = self._tablet(org)
+
+        totals = compute_formulation_totals(formulation=formulation)
+
+        assert totals.excipients.mcc_carrier_rows == ()
+        assert totals.excipients.dcp_carrier_rows == ()
+        assert "mcc_carrier_unpicked" in totals.warnings
+        assert "dcp_carrier_unpicked" in totals.warnings
+
+    def test_dcp_picker_validation_rejects_wrong_use_as(self) -> None:
+        org = OrganizationFactory()
+        formulation = self._tablet(org)
+        bad = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"use_as": "Sweeteners"},
+        )
+
+        with pytest.raises(InvalidDcpCarrierItem):
+            update_formulation(
+                formulation=formulation,
+                actor=org.created_by,
+                dcp_carrier_item_ids=[str(bad.id)],
+            )
+
+
+class TestCarrierSnapshot:
+    """Carrier picks must round-trip through the version snapshot so
+    a spec sheet rendered weeks later still references the picked
+    items, even after catalogue edits."""
+
+    def test_snapshot_captures_carrier_rows(self) -> None:
+        org = OrganizationFactory()
+        active = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": 1.0, "type": "Vitamin"},
+        )
+        carrier = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            name="MCC PH-101",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Microcrystalline Cellulose",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(active.id), "label_claim_mg": "500"}],
+        )
+        update_formulation(
+            formulation=formulation,
+            actor=org.created_by,
+            mcc_carrier_item_ids=[str(carrier.id)],
+        )
+
+        version = save_version(formulation=formulation, actor=org.created_by)
+
+        excipients = version.snapshot_totals["excipients"]
+        rows = excipients["mcc_carrier_rows"]
+        assert len(rows) == 1
+        assert rows[0]["item_id"] == str(carrier.id)
+        assert rows[0]["label"] == "Microcrystalline Cellulose"

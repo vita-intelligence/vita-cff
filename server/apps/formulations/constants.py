@@ -399,6 +399,22 @@ GELLING_USE_CATEGORIES: tuple[str, ...] = (
 PREMIX_SWEETENER_USE_CATEGORIES: tuple[str, ...] = GUMMY_BASE_USE_CATEGORIES
 
 
+#: The capsule + tablet MCC-carrier picker. Strict ``Bulking Agent``
+#: filter so accidentally tagging a non-carrier item as MCC is caught
+#: at save time instead of leaking an "Active" or "Sweeteners" row
+#: into the spec sheet's carrier slot. Scientists must re-tag any
+#: legacy MCC rows still carrying ``use_as=None``.
+MCC_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Bulking Agent",)
+
+
+#: The tablet DCP-carrier picker. Same ``Bulking Agent`` filter as
+#: the MCC carrier — DCP is a structural filler in the same family
+#: and lives under the same canonical category in the catalogue. Held
+#: as a separate constant so a future split (e.g. a dedicated DCP
+#: ``use_as`` value) lands here without touching MCC.
+DCP_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Bulking Agent",)
+
+
 #: Powder sweetener picker pool. Pure ``Sweeteners`` only — no
 #: bulking agents — because the powder sweetener row is a flavour-
 #: facing pick (Sucralose, Stevia, Steviol) rather than the structural

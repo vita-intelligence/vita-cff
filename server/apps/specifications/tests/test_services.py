@@ -713,6 +713,140 @@ class TestActivesLabelPerServing:
         assert "From 20mg" in maca["ingredient_list_name"]
 
 
+class TestActivesLabelFieldPriority:
+    """Cover the actives-table label resolution.
+
+    Per R&D's workbook convention, ``nutrition_information_name`` is
+    the canonical clean spec-sheet label — the ``Raw Material`` and
+    ``Ingredient list Name`` columns frequently carry full technical
+    names (purity, mesh, encapsulation grade) that are noise in the
+    customer-facing sheet. The renderer prefers ``nutrition_
+    information_name`` for that reason, with the legacy
+    ``ingredient_list_name`` and raw item name kept as fallbacks.
+    """
+
+    def _build_sheet(self, org, attributes):
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="L-Leucine (95%)(DC grade)(5% HPMC)",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                **attributes,
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
+        )
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        return create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+    def test_nutrition_name_plain_string_wins_over_ingredient_list(
+        self,
+    ) -> None:
+        """When R&D fills both fields, the clean ``nutrition_
+        information_name`` (``L-Leucine``) is what appears on the
+        spec sheet — the messier ``ingredient_list_name`` is
+        ignored. This is the bug fix that triggered the rule."""
+
+        org = OrganizationFactory()
+        sheet = self._build_sheet(
+            org,
+            {
+                "ingredient_list_name":
+                    "L-Leucine (95%)(DC grade)(5% HPMC)",
+                "nutrition_information_name": "L-Leucine",
+            },
+        )
+        active = render_context(sheet)["actives"][0]
+        assert active["ingredient_list_name"] == "L-Leucine"
+
+    def test_falls_back_to_ingredient_list_when_nutrition_name_blank(
+        self,
+    ) -> None:
+        """Older catalogue rows that only filled
+        ``ingredient_list_name`` must still render the clean label."""
+
+        org = OrganizationFactory()
+        sheet = self._build_sheet(
+            org,
+            {
+                "ingredient_list_name": "Branched-Chain Amino Acid",
+                # nutrition_information_name deliberately empty
+            },
+        )
+        active = render_context(sheet)["actives"][0]
+        assert active["ingredient_list_name"] == "Branched-Chain Amino Acid"
+
+    def test_falls_back_to_item_name_when_both_blank(self) -> None:
+        """A catalogue row missing both label fields gracefully
+        degrades to the raw item name rather than rendering an
+        empty cell."""
+
+        org = OrganizationFactory()
+        sheet = self._build_sheet(org, attributes={})
+        active = render_context(sheet)["actives"][0]
+        assert active["ingredient_list_name"] == (
+            "L-Leucine (95%)(DC grade)(5% HPMC)"
+        )
+
+    def test_botanical_template_path_unaffected(self) -> None:
+        """The ``??mg`` extract template still wins over the plain-
+        nutrition-name path, so botanicals keep rendering with their
+        per-serving raw weight inlined."""
+
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        item = ItemFactory(
+            catalogue=catalogue,
+            name="Acerola Extract (4:1)",
+            attributes={
+                "type": "Botanical",
+                "extract_ratio": "4",
+                "ingredient_list_name": "Acerola Extract",
+                "nutrition_information_name":
+                    "Acerola Extract (From ??mg of 4:1 Extract)",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "200"}],
+        )
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        active = render_context(sheet)["actives"][0]
+        # 200 mg claim ÷ 4 extract ratio = 50 mg raw per serving.
+        assert active["ingredient_list_name"] == (
+            "Acerola Extract (From 50mg of 4:1 Extract)"
+        )
+
+
 class TestGetSheetIsolation:
     def test_other_orgs_sheet_is_404(self) -> None:
         a = OrganizationFactory()

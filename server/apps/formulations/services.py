@@ -44,8 +44,10 @@ from apps.formulations.constants import (
     EXCIPIENT_LABEL_PREMIX_SWEETENER,
     FLAVOURING_USE_CATEGORIES,
     COLOUR_USE_CATEGORIES,
+    DCP_CARRIER_USE_CATEGORIES,
     GELLING_USE_CATEGORIES,
     GLAZING_USE_CATEGORIES,
+    MCC_CARRIER_USE_CATEGORIES,
     EXCIPIENT_LABEL_WATER,
     GUMMY_BAND_DEFAULT_PCT,
     GUMMY_BAND_OVERRIDE_KEYS,
@@ -204,6 +206,25 @@ class InvalidPremixSweetenerItem(Exception):
     surface it on the right field."""
 
     code = "invalid_premix_sweetener_item"
+
+
+class InvalidMccCarrierItem(Exception):
+    """Picked MCC carrier item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Bulking Agent"``. The
+    capsule + tablet MCC carrier picker rejects every other category
+    so a misplaced "Active" or "Sweeteners" item never lands in the
+    structural carrier slot."""
+
+    code = "invalid_mcc_carrier_item"
+
+
+class InvalidDcpCarrierItem(Exception):
+    """Picked DCP carrier item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Bulking Agent"``. Same
+    rejection shape as :class:`InvalidMccCarrierItem` — the frontend
+    surfaces the distinct code on the dedicated DCP field."""
+
+    code = "invalid_dcp_carrier_item"
 
 
 class InvalidExcipientOverrides(Exception):
@@ -404,6 +425,23 @@ class GummyBaseRow:
 
 
 @dataclass
+class CarrierRow:
+    """One pick in the capsule / tablet carrier blend (MCC or DCP).
+
+    Same per-pick shape as :class:`GummyBaseRow` — kept distinct so
+    the spec sheet renderer can tell a "structural carrier" row from
+    a gummy base row by where it lives on the breakdown, not by the
+    type. ``mg`` is the per-pick share (total carrier mg ÷ pick
+    count); ``label`` is the picked item's
+    ``ingredient_list_name`` with the raw item name as the fallback.
+    """
+
+    item_id: str
+    label: str
+    mg: Decimal
+
+
+@dataclass
 class ExcipientBreakdown:
     mg_stearate_mg: Decimal
     silica_mg: Decimal
@@ -424,6 +462,17 @@ class ExcipientBreakdown:
     #: the EU use_as category so the declaration can render
     #: "Sweeteners (Xylitol, Maltitol)" as one grouped line.
     gummy_base_rows: tuple["GummyBaseRow", ...] = ()
+    #: Per-pick breakdown of the MCC carrier (capsule + tablet). Empty
+    #: when no items were picked — the declaration falls back to the
+    #: generic ``EXCIPIENT_LABEL_MCC`` placeholder and the spec sheet
+    #: surfaces a soft warning so the scientist knows to firm up the
+    #: choice. Total mg always equals :attr:`mcc_mg`.
+    mcc_carrier_rows: tuple["CarrierRow", ...] = ()
+    #: Per-pick breakdown of the tablet's DCP carrier. Empty on every
+    #: non-tablet form and on tablets where no DCP picks were made;
+    #: same fallback semantics as :attr:`mcc_carrier_rows`. Total mg
+    #: always equals :attr:`dcp_mg`.
+    dcp_carrier_rows: tuple["CarrierRow", ...] = ()
     #: Optional flexible list used for dosage forms that do not fit
     #: the capsule/tablet four-field shape. Powder + gummy populate
     #: this; capsule + tablet leave it empty.
@@ -571,9 +620,49 @@ def _empty_viability() -> ViabilityResult:
     )
 
 
+def _build_carrier_rows(
+    *,
+    total_mg: Decimal | float,
+    items: tuple[Item, ...],
+) -> tuple[CarrierRow, ...]:
+    """Split a carrier total equally across picked catalogue items and
+    return one :class:`CarrierRow` per pick.
+
+    Returns an empty tuple when no items were picked or the total is
+    non-positive — the caller renders the generic carrier label in
+    that case. Picks contributing zero or negative mg are dropped so
+    a tablet whose actives already exceed max weight doesn't emit
+    phantom carrier rows.
+    """
+
+    total = float(total_mg)
+    if total <= 0 or not items:
+        return ()
+
+    per_item = total / len(items)
+    if per_item <= 0:
+        return ()
+
+    rows: list[CarrierRow] = []
+    for item in items:
+        attrs = item.attributes or {}
+        label = (attrs.get("ingredient_list_name") or "").strip()
+        if not label:
+            label = item.name
+        rows.append(
+            CarrierRow(
+                item_id=str(item.id),
+                label=_strip_label_punctuation(label),
+                mg=_quantise(per_item),
+            )
+        )
+    return tuple(rows)
+
+
 def _compute_capsule(
     total_active: Decimal,
     requested_size_key: str | None,
+    mcc_carrier_items: tuple[Item, ...] = (),
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -628,10 +717,29 @@ def _compute_capsule(
         else:
             codes.extend(("more_challenging_to_make", "consult_r_and_d"))
 
+    # Soft warning when there's structural carrier mg to allocate but
+    # the scientist hasn't picked any specific items. Spec sheet falls
+    # back to the generic "Microcrystalline Cellulose (Carrier)" copy
+    # in that case — keeps legacy formulations rendering, but the
+    # warning surfaces in the viability strip so R&D knows to firm
+    # up the pick before the sheet ships.
+    if mcc > 0 and not mcc_carrier_items:
+        warnings.append("mcc_carrier_unpicked")
+
+    # Build per-pick rows AFTER the warning check so an empty-pick
+    # capsule still emits a coherent excipients block (no rows, just
+    # the aggregate ``mcc_mg``); the declaration falls back to the
+    # generic "Microcrystalline Cellulose (Carrier)" placeholder.
+    mcc_carrier_rows = _build_carrier_rows(
+        total_mg=max(mcc, 0.0),
+        items=mcc_carrier_items,
+    )
+
     excipients = ExcipientBreakdown(
         mg_stearate_mg=_quantise(stearate),
         silica_mg=_quantise(silica),
         mcc_mg=_quantise(mcc),
+        mcc_carrier_rows=mcc_carrier_rows,
     )
 
     return (
@@ -648,6 +756,8 @@ def _compute_capsule(
 def _compute_tablet(
     total_active: Decimal,
     requested_size_key: str | None,
+    mcc_carrier_items: tuple[Item, ...] = (),
+    dcp_carrier_items: tuple[Item, ...] = (),
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -659,11 +769,26 @@ def _compute_tablet(
     mcc = active * TABLET_MCC_PCT
     total_weight = active + stearate + silica + dcp + mcc
 
+    warnings: list[str] = []
+    if mcc > 0 and not mcc_carrier_items:
+        warnings.append("mcc_carrier_unpicked")
+    if dcp > 0 and not dcp_carrier_items:
+        warnings.append("dcp_carrier_unpicked")
+
+    mcc_carrier_rows = _build_carrier_rows(
+        total_mg=mcc, items=mcc_carrier_items
+    )
+    dcp_carrier_rows = _build_carrier_rows(
+        total_mg=dcp, items=dcp_carrier_items
+    )
+
     excipients = ExcipientBreakdown(
         mg_stearate_mg=_quantise(stearate),
         silica_mg=_quantise(silica),
         mcc_mg=_quantise(mcc),
         dcp_mg=_quantise(dcp),
+        mcc_carrier_rows=mcc_carrier_rows,
+        dcp_carrier_rows=dcp_carrier_rows,
     )
 
     if not requested_size_key:
@@ -678,7 +803,7 @@ def _compute_tablet(
             ViabilityResult(
                 fits=False, comfort_ok=False, codes=("tablet_size_required",)
             ),
-            (),
+            tuple(warnings),
         )
 
     size = tablet_size_by_key(requested_size_key)
@@ -704,7 +829,7 @@ def _compute_tablet(
         _quantise(total_weight),
         excipients,
         ViabilityResult(fits=fits, comfort_ok=comfort_ok, codes=tuple(codes)),
-        (),
+        tuple(warnings),
     )
 
 
@@ -1284,6 +1409,8 @@ def compute_totals(
     gelling_items: tuple[Item, ...] = (),
     premix_sweetener_items: tuple[Item, ...] = (),
     acidity_items: tuple[Item, ...] = (),
+    mcc_carrier_items: tuple[Item, ...] = (),
+    dcp_carrier_items: tuple[Item, ...] = (),
     excipient_overrides: dict[str, Any] | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
@@ -1354,7 +1481,11 @@ def compute_totals(
             excipients,
             viability,
             warnings,
-        ) = _compute_capsule(total_active, capsule_size_key or None)
+        ) = _compute_capsule(
+            total_active,
+            capsule_size_key or None,
+            mcc_carrier_items=mcc_carrier_items,
+        )
     elif dosage_form == DosageForm.TABLET.value:
         (
             size_key,
@@ -1364,7 +1495,12 @@ def compute_totals(
             excipients,
             viability,
             warnings,
-        ) = _compute_tablet(total_active, tablet_size_key or None)
+        ) = _compute_tablet(
+            total_active,
+            tablet_size_key or None,
+            mcc_carrier_items=mcc_carrier_items,
+            dcp_carrier_items=dcp_carrier_items,
+        )
     elif dosage_form in (DosageForm.POWDER.value, DosageForm.GUMMY.value):
         (
             size_key,
@@ -1639,6 +1775,18 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("acidity_item_ids"),
         )
+    pending_mcc_carrier: list[Item] | None = None
+    if "mcc_carrier_item_ids" in changes:
+        pending_mcc_carrier = _resolve_mcc_carrier_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("mcc_carrier_item_ids"),
+        )
+    pending_dcp_carrier: list[Item] | None = None
+    if "dcp_carrier_item_ids" in changes:
+        pending_dcp_carrier = _resolve_dcp_carrier_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("dcp_carrier_item_ids"),
+        )
     # Excipient overrides — validate up front so any malformed
     # payload short-circuits before we touch the M2M setters or the
     # audit row, but defer the actual write until after the audit
@@ -1689,6 +1837,10 @@ def update_formulation(
         formulation.premix_sweetener_items.set(pending_premix_sweetener)
     if pending_acidity is not None:
         formulation.acidity_items.set(pending_acidity)
+    if pending_mcc_carrier is not None:
+        formulation.mcc_carrier_items.set(pending_mcc_carrier)
+    if pending_dcp_carrier is not None:
+        formulation.dcp_carrier_items.set(pending_dcp_carrier)
     record_audit(
         organization=formulation.organization,
         actor=actor,
@@ -1927,6 +2079,43 @@ def _resolve_premix_sweetener_items(
         raw_ids=raw_ids,
         allowed_categories=PREMIX_SWEETENER_USE_CATEGORIES,
         error_cls=InvalidPremixSweetenerItem,
+    )
+
+
+def _resolve_mcc_carrier_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``mcc_carrier_item_ids`` — picks must carry
+    ``use_as == "Bulking Agent"``. Used by the capsule + tablet MCC
+    pickers to swap the hardcoded "Microcrystalline Cellulose
+    (Carrier)" placeholder for real catalogue items."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=MCC_CARRIER_USE_CATEGORIES,
+        error_cls=InvalidMccCarrierItem,
+    )
+
+
+def _resolve_dcp_carrier_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``dcp_carrier_item_ids``. Same ``Bulking
+    Agent`` filter as the MCC carrier — DCP is a structural filler
+    in the same canonical category. Tablet-only picker; capsules
+    ignore any DCP picks because their excipient math has no DCP
+    line."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=DCP_CARRIER_USE_CATEGORIES,
+        error_cls=InvalidDcpCarrierItem,
     )
 
 
@@ -2504,48 +2693,65 @@ def instantiate_active_label(
 ) -> str:
     """Return the label that appears in the spec sheet's actives table.
 
-    The Valley workbook's convention: when the catalogue provides a
-    ``Nutrition information Name`` template containing the ``??mg``
-    placeholder, the spec sheet renders that template with ``??``
-    replaced by the actual raw extract weight and any ``X% Marker``
-    fragments scaled to ``mg`` (e.g. ``95% Polyphenols`` at 10 mg
-    becomes ``9.5mg Polyphenols``). When the template is absent or
-    contains no placeholder, the simpler ``ingredient_list_name``
-    wins so straightforward purity-based actives like
-    "Caffeine Anhydrous" still render as a single tidy label.
+    Priority — matches R&D's workbook convention where
+    ``Nutrition information Name`` is the canonical spec-sheet label:
+
+    1. **Botanical template** — if ``nutrition_information_name``
+       contains the ``??mg`` placeholder, expand it with the actual
+       raw-powder weight and scale any ``X% Marker`` fragments to
+       mg (e.g. ``95% Polyphenols`` at 10 mg becomes ``9.5mg
+       Polyphenols``).
+    2. **Plain nutrition name** — when the field is non-empty and
+       carries no template, use it directly. R&D fills this with the
+       clean spec-sheet label (e.g. ``L-Leucine`` for the row whose
+       raw name is ``L-Leucine (95%)(DC grade)(5% HPMC)``).
+    3. **Ingredient list name** — fallback when nutrition name is
+       blank. Cleaned of trailing commas the EU declaration string
+       leaves behind.
+    4. **Raw item name** — last-resort when both label fields are
+       missing on the catalogue row.
     """
 
-    template = (
+    nin_text = (
         nutrition_information_name
         if isinstance(nutrition_information_name, str)
         and nutrition_information_name.strip()
-        else None
+        else ""
     )
-
-    fallback = (
-        _strip_label_punctuation(ingredient_list_name)
+    iln_text = (
+        ingredient_list_name
         if isinstance(ingredient_list_name, str)
         and ingredient_list_name.strip()
-        else item_name
+        else ""
     )
 
-    if template is None or "??" not in template:
-        return fallback
+    has_template = "??" in nin_text
 
-    if raw_mg is None:
-        return fallback
+    # 1. Botanical template — expand with the raw-powder weight.
+    if has_template and raw_mg is not None:
+        raw_decimal = Decimal(str(raw_mg))
+        raw_text = _format_label_mg(raw_decimal)
+        expanded = nin_text.replace("??mg", f"{raw_text}mg").replace(
+            "??", raw_text
+        )
+        expanded = _scale_marker_percentages(expanded, raw_decimal)
+        # Clean up double spaces that sometimes appear when the
+        # template had ``of 10:1 Extract`` and the marker rewrite
+        # removed intermediate words.
+        expanded = re.sub(r" {2,}", " ", expanded).strip()
+        return expanded
 
-    raw_decimal = Decimal(str(raw_mg))
-    raw_text = _format_label_mg(raw_decimal)
-    expanded = template.replace("??mg", f"{raw_text}mg").replace(
-        "??", raw_text
-    )
-    expanded = _scale_marker_percentages(expanded, raw_decimal)
-    # Clean up double spaces that sometimes appear when the template
-    # had ``of 10:1 Extract`` and the marker rewrite removed
-    # intermediate words.
-    expanded = re.sub(r" {2,}", " ", expanded).strip()
-    return expanded
+    # 2. Plain non-template ``nutrition_information_name`` — the
+    #    canonical clean spec-sheet label R&D fills in.
+    if nin_text and not has_template:
+        return _strip_label_punctuation(nin_text)
+
+    # 3. ``ingredient_list_name`` fallback.
+    if iln_text:
+        return _strip_label_punctuation(iln_text)
+
+    # 4. Last resort: the raw catalogue name.
+    return item_name
 
 
 def build_ingredient_declaration(
@@ -2608,7 +2814,23 @@ def build_ingredient_declaration(
 
     excipients = totals.excipients
     if excipients is not None:
-        if excipients.mcc_mg and excipients.mcc_mg > 0:
+        # MCC carrier — per-pick rows when the scientist picked
+        # specific items; otherwise the generic placeholder so legacy
+        # capsule / tablet formulations keep rendering. The warning
+        # path (``mcc_carrier_unpicked``) flags the soft fallback in
+        # the viability strip; the declaration still emits the row.
+        if excipients.mcc_carrier_rows:
+            for row in excipients.mcc_carrier_rows:
+                if row.mg <= 0:
+                    continue
+                entries.append(
+                    IngredientDeclarationEntry(
+                        label=row.label,
+                        mg=row.mg,
+                        category="excipient",
+                    )
+                )
+        elif excipients.mcc_mg and excipients.mcc_mg > 0:
             entries.append(
                 IngredientDeclarationEntry(
                     label=EXCIPIENT_LABEL_MCC,
@@ -2616,7 +2838,19 @@ def build_ingredient_declaration(
                     category="excipient",
                 )
             )
-        if excipients.dcp_mg is not None and excipients.dcp_mg > 0:
+        # DCP carrier (tablet only) — same per-pick / fallback shape.
+        if excipients.dcp_carrier_rows:
+            for row in excipients.dcp_carrier_rows:
+                if row.mg <= 0:
+                    continue
+                entries.append(
+                    IngredientDeclarationEntry(
+                        label=row.label,
+                        mg=row.mg,
+                        category="excipient",
+                    )
+                )
+        elif excipients.dcp_mg is not None and excipients.dcp_mg > 0:
             entries.append(
                 IngredientDeclarationEntry(
                     label=EXCIPIENT_LABEL_DCP,
@@ -2845,6 +3079,12 @@ def compute_formulation_totals(
         ),
         acidity_items=tuple(
             formulation.acidity_items.all().order_by("name")
+        ),
+        mcc_carrier_items=tuple(
+            formulation.mcc_carrier_items.all().order_by("name")
+        ),
+        dcp_carrier_items=tuple(
+            formulation.dcp_carrier_items.all().order_by("name")
         ),
         excipient_overrides=formulation.excipient_overrides or {},
     )
@@ -3082,6 +3322,22 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                         "mg": str(row.mg),
                     }
                     for row in totals.excipients.gummy_base_rows
+                ],
+                "mcc_carrier_rows": [
+                    {
+                        "item_id": row.item_id,
+                        "label": row.label,
+                        "mg": str(row.mg),
+                    }
+                    for row in totals.excipients.mcc_carrier_rows
+                ],
+                "dcp_carrier_rows": [
+                    {
+                        "item_id": row.item_id,
+                        "label": row.label,
+                        "mg": str(row.mg),
+                    }
+                    for row in totals.excipients.dcp_carrier_rows
                 ],
                 "rows": [
                     {

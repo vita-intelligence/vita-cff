@@ -309,6 +309,41 @@ class Formulation(models.Model):
             "are also picked."
         ),
     )
+    mcc_carrier_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("MCC carrier items"),
+        blank=True,
+        related_name="mcc_carrier_formulations",
+        help_text=_(
+            "Raw-material items used as the MCC (microcrystalline "
+            "cellulose) carrier on a capsule or tablet. Each pick "
+            "must carry use_as = 'Bulking Agent'. The MCC total "
+            "(remainder for capsules, fixed ratio for tablets) "
+            "splits **equally** across picks; the declaration emits "
+            "one row per pick with the picked item's "
+            "ingredient_list_name + nutrition + compliance flags "
+            "flowing through. Empty list falls back to the generic "
+            "'Microcrystalline Cellulose (Carrier)' placeholder so "
+            "legacy formulations keep rendering — the spec sheet "
+            "surfaces a soft warning so the scientist knows to "
+            "tighten it up. Ignored for powders / gummies."
+        ),
+    )
+    dcp_carrier_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("DCP carrier items"),
+        blank=True,
+        related_name="dcp_carrier_formulations",
+        help_text=_(
+            "Raw-material items used as the DCP (dicalcium "
+            "phosphate) carrier on a tablet. Each pick must carry "
+            "use_as = 'Bulking Agent'. The DCP total (10% of total "
+            "active) splits **equally** across picks; same per-pick "
+            "row + label + nutrition flow as the MCC carrier picker. "
+            "Empty list falls back to the generic 'Dicalcium "
+            "Phosphate' placeholder. Ignored for non-tablet forms."
+        ),
+    )
     excipient_overrides: models.JSONField = models.JSONField(
         _("excipient overrides"),
         default=dict,

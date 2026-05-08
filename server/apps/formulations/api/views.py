@@ -33,6 +33,7 @@ from apps.formulations.services import (
     FormulationVersionNotFound,
     InvalidAcidityItem,
     InvalidCapsuleSize,
+    InvalidDcpCarrierItem,
     InvalidDosageForm,
     InvalidColourItem,
     InvalidExcipientOverrides,
@@ -40,6 +41,7 @@ from apps.formulations.services import (
     InvalidGellingItem,
     InvalidGlazingItem,
     InvalidGummyBaseItem,
+    InvalidMccCarrierItem,
     InvalidPowderType,
     InvalidPremixSweetenerItem,
     InvalidSweetenerItem,
@@ -300,6 +302,16 @@ class FormulationDetailView(APIView):
         except InvalidAcidityItem:
             return Response(
                 {"acidity_item_ids": ["invalid_acidity_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidMccCarrierItem:
+            return Response(
+                {"mcc_carrier_item_ids": ["invalid_mcc_carrier_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidDcpCarrierItem:
+            return Response(
+                {"dcp_carrier_item_ids": ["invalid_dcp_carrier_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidExcipientOverrides:

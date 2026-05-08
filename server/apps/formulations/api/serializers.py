@@ -110,6 +110,10 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     premix_sweetener_items = serializers.SerializerMethodField()
     acidity_item_ids = serializers.SerializerMethodField()
     acidity_items = serializers.SerializerMethodField()
+    mcc_carrier_item_ids = serializers.SerializerMethodField()
+    mcc_carrier_items = serializers.SerializerMethodField()
+    dcp_carrier_item_ids = serializers.SerializerMethodField()
+    dcp_carrier_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -142,6 +146,10 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "premix_sweetener_items",
             "acidity_item_ids",
             "acidity_items",
+            "mcc_carrier_item_ids",
+            "mcc_carrier_items",
+            "dcp_carrier_item_ids",
+            "dcp_carrier_items",
             "excipient_overrides",
             "directions_of_use",
             "suggested_dosage",
@@ -203,6 +211,28 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         builder chips render without a second request."""
 
         return self._echo_picks(obj.acidity_items)
+
+    def get_mcc_carrier_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the capsule + tablet MCC carrier
+        multi-select. Drives the picker's ``selected`` state."""
+
+        return [str(item.id) for item in obj.mcc_carrier_items.all()]
+
+    def get_mcc_carrier_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked MCC carrier items so the builder
+        renders chips without a second round-trip."""
+
+        return self._echo_picks(obj.mcc_carrier_items)
+
+    def get_dcp_carrier_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the tablet DCP carrier multi-select."""
+
+        return [str(item.id) for item in obj.dcp_carrier_items.all()]
+
+    def get_dcp_carrier_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked DCP carrier items."""
+
+        return self._echo_picks(obj.dcp_carrier_items)
 
     def get_glazing_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked glazing items (same shape as the other
@@ -465,6 +495,37 @@ class FormulationWriteSerializer(serializers.Serializer):
             "Regulator'. The acidity total (2% of target gummy "
             "weight) is split equally across picks. Empty list "
             "leaves a placeholder row."
+        ),
+    )
+    mcc_carrier_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used as the MCC "
+            "(microcrystalline cellulose) carrier on a capsule or "
+            "tablet. Each pick must carry use_as = 'Bulking Agent'. "
+            "The MCC total (remainder for capsules, fixed % for "
+            "tablets) is split equally across picks. Empty list "
+            "falls back to the generic 'Microcrystalline Cellulose "
+            "(Carrier)' placeholder and surfaces an "
+            "``mcc_carrier_unpicked`` viability warning. Ignored "
+            "for powder / gummy forms."
+        ),
+    )
+    dcp_carrier_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used as the DCP "
+            "(dicalcium phosphate) carrier on a tablet. Each pick "
+            "must carry use_as = 'Bulking Agent'. The DCP total "
+            "(10% of total active) is split equally across picks. "
+            "Empty list falls back to the generic 'Dicalcium "
+            "Phosphate' placeholder and surfaces a "
+            "``dcp_carrier_unpicked`` warning. Ignored for non-"
+            "tablet forms."
         ),
     )
     excipient_overrides = serializers.DictField(

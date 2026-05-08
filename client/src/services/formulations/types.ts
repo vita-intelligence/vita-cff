@@ -209,6 +209,14 @@ export interface FormulationDto {
   readonly premix_sweetener_items: readonly GummyBaseItemDto[];
   readonly acidity_item_ids: readonly string[];
   readonly acidity_items: readonly GummyBaseItemDto[];
+  /** Capsule + tablet MCC carrier picks. Empty array means the spec
+   *  sheet renders the generic "Microcrystalline Cellulose (Carrier)"
+   *  placeholder and surfaces an ``mcc_carrier_unpicked`` warning. */
+  readonly mcc_carrier_item_ids: readonly string[];
+  readonly mcc_carrier_items: readonly GummyBaseItemDto[];
+  /** Tablet DCP carrier picks. Same picker shape as the MCC field. */
+  readonly dcp_carrier_item_ids: readonly string[];
+  readonly dcp_carrier_items: readonly GummyBaseItemDto[];
   /** Per-band percentage overrides for the gummy excipient system.
    *  Keys: water | acidity | flavouring | colour | glazing | gelling
    *  | premix_sweetener. Values are decimal fractions (0.02 = 2%).
@@ -287,6 +295,15 @@ export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> &
    *  row is shown until items are picked. Server rejects items
    *  whose ``use_as`` ≠ 'Acidity Regulator'. */
   readonly acidity_item_ids?: readonly string[];
+  /** Array of Item ids for the capsule + tablet MCC carrier. Empty
+   *  array clears, falls back to the generic placeholder + soft
+   *  warning. Server rejects items whose ``use_as`` ≠ 'Bulking
+   *  Agent'. Ignored on powder / gummy forms. */
+  readonly mcc_carrier_item_ids?: readonly string[];
+  /** Array of Item ids for the tablet DCP carrier. Same shape and
+   *  validation as the MCC carrier picker. Ignored on non-tablet
+   *  forms. */
+  readonly dcp_carrier_item_ids?: readonly string[];
   /** Per-band % overrides for the gummy excipient system. Pass an
    *  empty object to clear all overrides; ``null`` (or omit) means
    *  no change. Server validates keys against the canonical band

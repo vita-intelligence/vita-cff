@@ -126,6 +126,16 @@ interface MetadataDraft {
   //: etc.). 2% of target gummy weight split equally across picks.
   //: Empty list = a generic "Acidity Regulator" placeholder row.
   acidity_item_ids: readonly string[];
+  //: Picked MCC carrier ids for capsules + tablets. Total MCC mg
+  //: (capsule remainder / tablet 20%) splits equally across picks.
+  //: Empty list → generic "Microcrystalline Cellulose (Carrier)"
+  //: placeholder + ``mcc_carrier_unpicked`` viability warning.
+  mcc_carrier_item_ids: readonly string[];
+  //: Picked DCP carrier ids for tablets. Total DCP mg (10% of total
+  //: active) splits equally across picks. Empty list → generic
+  //: "Dicalcium Phosphate" placeholder + ``dcp_carrier_unpicked``
+  //: warning.
+  dcp_carrier_item_ids: readonly string[];
   //: Per-band % overrides for the gummy excipient system (water,
   //: acidity, flavouring, colour, glazing, gelling, premix_sweetener).
   //: Values are decimal fractions (0.02 = 2%). Missing keys → defaults.
@@ -211,6 +221,8 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     premix_sweetener_item_ids:
       formulation.premix_sweetener_item_ids ?? [],
     acidity_item_ids: formulation.acidity_item_ids ?? [],
+    mcc_carrier_item_ids: formulation.mcc_carrier_item_ids ?? [],
+    dcp_carrier_item_ids: formulation.dcp_carrier_item_ids ?? [],
     excipient_overrides: formulation.excipient_overrides ?? {},
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
@@ -720,6 +732,20 @@ export function FormulationBuilder({
           metadata.dosage_form === "gummy"
             ? metadata.acidity_item_ids
             : [],
+        // MCC carrier flows to BOTH capsules and tablets — they
+        // share the same structural-filler slot. Other dosage forms
+        // clear the picks so a one-off swap from capsule → powder
+        // doesn't leave orphaned references behind.
+        mcc_carrier_item_ids:
+          metadata.dosage_form === "capsule" ||
+          metadata.dosage_form === "tablet"
+            ? metadata.mcc_carrier_item_ids
+            : [],
+        // DCP carrier is tablet-only; capsules have no DCP line.
+        dcp_carrier_item_ids:
+          metadata.dosage_form === "tablet"
+            ? metadata.dcp_carrier_item_ids
+            : [],
         excipient_overrides:
           metadata.dosage_form === "gummy"
             ? metadata.excipient_overrides
@@ -1017,6 +1043,57 @@ export function FormulationBuilder({
                   label: `${s.label} (${s.max_weight_mg} mg)`,
                 })),
               ]}
+            />
+          ) : null}
+          {/* Capsule + tablet MCC carrier picker. Mirrors the gummy
+              base picker — picks split the MCC remainder equally
+              and the spec sheet emits one row per pick. Empty list
+              falls back to the generic placeholder + a soft warning
+              in the viability strip; the form is intentionally
+              optional so legacy formulations keep rendering. */}
+          {metadata.dosage_form === "capsule" ||
+          metadata.dosage_form === "tablet" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.mcc_carrier_item_ids}
+              preselected={formulation.mcc_carrier_items}
+              disabled={!canWrite}
+              useAsIn={MCC_CARRIER_USE_CATEGORIES}
+              label={tFormulations("fields.mcc_carrier_item")}
+              placeholderText={tFormulations(
+                "fields.mcc_carrier_item_placeholder",
+              )}
+              hint={tFormulations("fields.mcc_carrier_item_hint")}
+              loadingText={tFormulations(
+                "fields.mcc_carrier_item_loading",
+              )}
+              emptyText={tFormulations("fields.mcc_carrier_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, mcc_carrier_item_ids: ids })
+              }
+            />
+          ) : null}
+          {/* DCP carrier — tablet-only, since capsules don't have a
+              DCP line in their excipient math. */}
+          {metadata.dosage_form === "tablet" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.dcp_carrier_item_ids}
+              preselected={formulation.dcp_carrier_items}
+              disabled={!canWrite}
+              useAsIn={DCP_CARRIER_USE_CATEGORIES}
+              label={tFormulations("fields.dcp_carrier_item")}
+              placeholderText={tFormulations(
+                "fields.dcp_carrier_item_placeholder",
+              )}
+              hint={tFormulations("fields.dcp_carrier_item_hint")}
+              loadingText={tFormulations(
+                "fields.dcp_carrier_item_loading",
+              )}
+              emptyText={tFormulations("fields.dcp_carrier_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, dcp_carrier_item_ids: ids })
+              }
             />
           ) : null}
           {/* Powder fill weight is edited in grams because scientists
@@ -3552,6 +3629,15 @@ const SWEETENER_USE_CATEGORIES = ["Sweeteners"] as const;
 const GLAZING_USE_CATEGORIES = ["Glazing Agent"] as const;
 const GELLING_USE_CATEGORIES = ["Gelling Agent"] as const;
 const ACIDITY_USE_CATEGORIES = ["Acidity Regulator"] as const;
+// Capsule + tablet MCC carrier picker — mirrors
+// ``MCC_CARRIER_USE_CATEGORIES`` on the server. Strict ``Bulking
+// Agent`` filter so a misplaced Active or Sweetener never lands in
+// the structural carrier slot.
+const MCC_CARRIER_USE_CATEGORIES = ["Bulking Agent"] as const;
+// Tablet DCP carrier picker. Same canonical category as the MCC
+// carrier today; held as a separate constant to match the server
+// (``DCP_CARRIER_USE_CATEGORIES``) so a future split lands here too.
+const DCP_CARRIER_USE_CATEGORIES = ["Bulking Agent"] as const;
 
 
 function SelectField({
