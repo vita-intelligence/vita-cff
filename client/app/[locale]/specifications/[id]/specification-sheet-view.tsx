@@ -1285,8 +1285,21 @@ function formatNutrientValue(raw: string | null | undefined): React.ReactNode {
   if (raw === null || raw === undefined) {
     return <span className="text-ink-500">0</span>;
   }
-  const parsed = Number.parseFloat(raw);
-  if (!Number.isFinite(parsed) || parsed === 0) {
+  const trimmed = String(raw).trim();
+  if (!trimmed) {
+    return <span className="text-ink-500">0</span>;
+  }
+  // Free-text override path: spec-sheet edits accept arbitrary
+  // strings ("TBC", "<0.1", "trace amounts", or scientist-typed
+  // free text) so the renderer falls through to the raw value when
+  // the input doesn't parse as a clean number. Without this guard
+  // every non-numeric override silently rendered as "0".
+  const parsed = Number.parseFloat(trimmed);
+  const looksNumeric = /^-?\d+(\.\d+)?$/.test(trimmed);
+  if (!looksNumeric || !Number.isFinite(parsed)) {
+    return trimmed;
+  }
+  if (parsed === 0) {
     return <span className="text-ink-500">0</span>;
   }
   return parsed.toFixed(2).replace(/\.?0+$/, "");
