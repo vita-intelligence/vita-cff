@@ -452,16 +452,26 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
         size_label=totals.get("size_label"),
     )
 
-    # Actives — iterate the snapshot_lines in the order the scientist
-    # sees them on the builder, preserving display_order.
-    ordered_lines = sorted(
-        (line for line in snapshot_lines if isinstance(line, dict)),
-        key=lambda line: line.get("display_order", 0),
-    )
-    for line in ordered_lines:
+    # Actives — sort smallest→largest mg/unit so the MRPeasy BOM
+    # mirrors the manual workbook convention. Operators read down the
+    # list pouring the trace ingredients first; if they don't, the
+    # bigger powders smother the micro-actives at the bottom of the
+    # mixer and the blend goes inhomogeneous. Lines with no computable
+    # mg/unit are dropped (same gate as before). ``display_order`` is
+    # used purely as a tiebreaker for two actives at the exact same
+    # weight so the output is deterministic across renders.
+    bom_lines: list[tuple[Decimal, dict]] = []
+    for line in snapshot_lines:
+        if not isinstance(line, dict):
+            continue
         mg_per_unit = _coerce_decimal(line.get("mg_per_serving"))
         if mg_per_unit is None or mg_per_unit <= 0:
             continue
+        bom_lines.append((mg_per_unit, line))
+    bom_lines.sort(
+        key=lambda pair: (pair[0], pair[1].get("display_order", 0))
+    )
+    for mg_per_unit, line in bom_lines:
         result.entries.append(
             _build_bom_entry(
                 category="active",

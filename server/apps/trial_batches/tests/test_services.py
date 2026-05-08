@@ -352,6 +352,86 @@ class TestComputeBatchScaleupCapsule:
             Decimal("0.000001")
         )
 
+    def test_actives_sorted_smallest_to_largest(self) -> None:
+        """MRPeasy BOM convention: active rows ascend by mg/unit so
+        the operator pours the trace ingredients first and they
+        don't get smothered by the bulk powders. The builder's
+        display_order is ignored for this list — purely amount-
+        driven, with display_order only kicking in as a tiebreaker
+        between two actives at the exact same weight."""
+
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        # Three actives: 5 mg, 50 mg, 200 mg. Inserted in REVERSE
+        # weight order so the builder's display_order would emit
+        # them descending — confirms the sort overrides it.
+        big = ItemFactory(
+            catalogue=catalogue,
+            name="Big Active",
+            internal_code="SKU-BIG",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Big Active",
+            },
+        )
+        mid = ItemFactory(
+            catalogue=catalogue,
+            name="Mid Active",
+            internal_code="SKU-MID",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Mid Active",
+            },
+        )
+        tiny = ItemFactory(
+            catalogue=catalogue,
+            name="Tiny Active",
+            internal_code="SKU-TINY",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Tiny Active",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+            servings_per_pack=60,
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {"item_id": str(big.id), "label_claim_mg": "200"},
+                {"item_id": str(mid.id), "label_claim_mg": "50"},
+                {"item_id": str(tiny.id), "label_claim_mg": "5"},
+            ],
+        )
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        batch = create_batch(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+            batch_size_units=10,
+        )
+
+        result = compute_batch_scaleup(batch)
+        active_labels = [
+            entry.label
+            for entry in result.entries
+            if entry.category == "active"
+        ]
+        assert active_labels == [
+            "Tiny Active",
+            "Mid Active",
+            "Big Active",
+        ]
+
 
 class TestComputeBatchScaleupTablet:
     def test_tablet_has_no_shell_but_has_dcp(self) -> None:
