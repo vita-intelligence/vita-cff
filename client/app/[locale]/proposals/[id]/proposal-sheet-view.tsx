@@ -27,7 +27,7 @@ import { useCustomers, type CustomerDto } from "@/services/customers";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link } from "@/i18n/navigation";
 import { apiClient, ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   proposalsEndpoints,
   useAddProposalLine,
@@ -170,7 +170,7 @@ export function ProposalSheetView({
           return;
         }
       }
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -1498,21 +1498,6 @@ function MissingFieldsModal({
 }
 
 
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
-}
-
-
 /**
  * Inline previews of every specification sheet bundled with the
  * proposal, rendered under the proposal preview so staff can eyeball
@@ -1823,7 +1808,7 @@ function ProposalSalesPersonMenu({
     try {
       await update.mutateAsync({ sales_person_id: userId });
     } catch (err) {
-      onError(extractErrorMessage(err, tErrors));
+      onError(extractApiErrorMessage(err, tErrors));
     }
   };
 

@@ -4,6 +4,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getCataloguesServer,
   getCurrentUserServer,
@@ -20,7 +21,7 @@ export default async function CataloguesIndexPage({
 
   const user = await getCurrentUserServer();
   if (!user) {
-    redirect({ href: "/login", locale });
+    await redirectToLogin(locale);
   }
   const currentUser = user!;
 

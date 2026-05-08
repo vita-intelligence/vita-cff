@@ -4,6 +4,7 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Link, redirect } from "@/i18n/navigation";
 import { resolveLegacyFlatLevel } from "@/lib/auth/capabilities";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getCurrentUserServer,
   getFormulationsFirstPageServer,
@@ -23,7 +24,7 @@ export default async function FormulationsListPage({
 
   const user = await getCurrentUserServer();
   if (!user) {
-    redirect({ href: "/login", locale });
+    await redirectToLogin(locale);
   }
   const currentUser = user!;
 

@@ -6,8 +6,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useUpdateSpecification,
   type SpecificationSheetDto,
@@ -98,7 +97,7 @@ export function EditDetailsButton({
       setIsOpen(false);
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -354,19 +353,4 @@ function TextField({
       {hint ? <p className={HINT_CLASS}>{hint}</p> : null}
     </label>
   );
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }

@@ -42,8 +42,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "@/i18n/navigation";
 import { KioskIdentityModal } from "@/components/comments/kiosk/kiosk-identity-modal";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
-import { ApiError, apiClient } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { apiClient } from "@/lib/api";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import type { KioskIdentityEcho } from "@/services/comments/kiosk-api";
 import {
   proposalsEndpoints,
@@ -197,7 +197,7 @@ export function ProposalKioskView({
       setPending(null);
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     } finally {
       setBusy(false);
     }
@@ -210,7 +210,7 @@ export function ProposalKioskView({
       await apiClient.post(proposalsEndpoints.publicFinalize(token));
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     } finally {
       setFinalizing(false);
     }
@@ -593,19 +593,4 @@ function AcknowledgementBlock({
       </ul>
     </div>
   );
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }

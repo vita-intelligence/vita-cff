@@ -7,6 +7,7 @@ import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
 import { resolveLegacyRowScopedLevel } from "@/lib/auth/capabilities";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getAttributeDefinitionsServer,
   getCatalogueItemServer,
@@ -27,7 +28,7 @@ export default async function CatalogueItemDetailPage({
 
   const user = await getCurrentUserServer();
   if (!user) {
-    redirect({ href: "/login", locale });
+    await redirectToLogin(locale);
   }
   const currentUser = user!;
 

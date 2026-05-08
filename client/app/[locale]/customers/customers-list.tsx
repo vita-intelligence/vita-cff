@@ -6,8 +6,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
 
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useCreateCustomer,
   useCustomers,
@@ -147,7 +146,7 @@ export function CustomersList({ orgId }: { orgId: string }) {
                         try {
                           await deleteMutation.mutateAsync(customer.id);
                         } catch (err) {
-                          setError(extractErrorMessage(err, tErrors));
+                          setError(extractApiErrorMessage(err, tErrors));
                         }
                       }}
                       className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
@@ -240,7 +239,7 @@ export function CustomerFormModal({
       }
       onClose();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -372,19 +371,4 @@ function Field({
       {children}
     </label>
   );
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }

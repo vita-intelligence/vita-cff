@@ -6,8 +6,7 @@ import { useLocale, useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useRevokeSpecificationPublicLink,
   useRotateSpecificationPublicLink,
@@ -69,7 +68,7 @@ export function SharePublicLinkButton({
       // sees the fresh value without a hard reload.
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -81,7 +80,7 @@ export function SharePublicLinkButton({
       setToken(null);
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -218,19 +217,4 @@ export function SharePublicLinkButton({
       </Modal.Backdrop>
     </Modal>
   );
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }

@@ -21,9 +21,8 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { CommentsPanel } from "@/components/comments";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import type { OrganizationDto } from "@/services/organizations/types";
 import {
   ALLOWED_TRANSITIONS,
@@ -186,7 +185,7 @@ export function SpecificationSheetView({
       await transitionMutation.mutateAsync({ status: next });
       router.refresh();
     } catch (err) {
-      setErrorMessage(extractErrorMessage(err, tErrors));
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -201,7 +200,7 @@ export function SpecificationSheetView({
       setSignaturePending(null);
       router.refresh();
     } catch (err) {
-      setSignatureError(extractErrorMessage(err, tErrors));
+      setSignatureError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -215,7 +214,7 @@ export function SpecificationSheetView({
       // global list.
       router.push(`/formulations/${rendered.formulation.id}/spec-sheets`);
     } catch (err) {
-      setErrorMessage(extractErrorMessage(err, tErrors));
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -1320,21 +1319,6 @@ function nutritionContributorCount(rendered: RenderedSheetContext): number {
     }
   }
   return max;
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }
 
 

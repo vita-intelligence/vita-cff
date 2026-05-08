@@ -7,6 +7,7 @@ import {
   hasFlatCapability,
   resolveLegacyFlatLevel,
 } from "@/lib/auth/capabilities";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getCurrentUserServer,
   getRenderedSpecificationServer,
@@ -26,7 +27,7 @@ export default async function SpecificationDetailPage({
 
   const user = await getCurrentUserServer();
   if (!user) {
-    redirect({ href: "/login", locale });
+    await redirectToLogin(locale);
   }
   const currentUser = user!;
 

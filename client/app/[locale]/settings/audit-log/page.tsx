@@ -3,6 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getCurrentUserServer,
   getUserOrganizationsServer,
@@ -34,7 +35,7 @@ export default async function SettingsAuditLogPage({
 
   const user = await getCurrentUserServer();
   if (!user) {
-    redirect({ href: "/login", locale });
+    await redirectToLogin(locale);
   }
   const currentUser = user!;
 

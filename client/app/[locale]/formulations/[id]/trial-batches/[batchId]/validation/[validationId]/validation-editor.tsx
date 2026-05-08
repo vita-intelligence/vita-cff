@@ -20,8 +20,7 @@ import {
 
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { clientUuid } from "@/lib/utils";
 import {
   ALLOWED_VALIDATION_TRANSITIONS,
@@ -196,7 +195,7 @@ export function ValidationEditor({
       });
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -220,7 +219,7 @@ export function ValidationEditor({
       await transitionMutation.mutateAsync({ status: next });
       router.refresh();
     } catch (err) {
-      setError(extractErrorMessage(err, tErrors));
+      setError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -235,7 +234,7 @@ export function ValidationEditor({
       setPendingTransition(null);
       router.refresh();
     } catch (err) {
-      setSigError(extractErrorMessage(err, tErrors));
+      setSigError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -1242,19 +1241,4 @@ function formatTimestamp(iso: string): string {
   const hour = String(d.getUTCHours()).padStart(2, "0");
   const minute = String(d.getUTCMinutes()).padStart(2, "0");
   return `${day} ${month} ${year}, ${hour}:${minute} UTC`;
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }

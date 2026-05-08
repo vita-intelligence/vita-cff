@@ -114,6 +114,9 @@ async function attemptRefresh(
 }
 
 
+/** Header name used to surface the inbound pathname to server pages. */
+const APP_PATHNAME_HEADER = "x-app-pathname";
+
 export default async function proxy(
   request: NextRequest,
 ): Promise<NextResponse> {
@@ -134,12 +137,25 @@ export default async function proxy(
   // Mirror the new tokens back onto ``request.cookies`` so the
   // downstream :func:`getCurrentUserServer` (and every sibling server
   // fetch) forwards the fresh access cookie when it probes the backend.
+  // The Edge runtime's ``RequestCookies.set`` side-effects through to
+  // ``request.headers["cookie"]``, so next-intl's ``new Headers(...)``
+  // pickup at line ``createMiddleware`` captures the rotated value.
   if (refreshed?.accessToken) {
     request.cookies.set(ACCESS_COOKIE, refreshed.accessToken);
   }
   if (refreshed?.refreshToken) {
     request.cookies.set(REFRESH_COOKIE, refreshed.refreshToken);
   }
+
+  // Surface the inbound pathname on the *request* headers (not the
+  // response) so ``next/headers.headers()`` inside server components
+  // sees it. ``intlMiddleware`` does ``new Headers(request.headers)``
+  // internally and forwards that copy through ``NextResponse.next``,
+  // so anything we add here survives the locale-routing layer and
+  // reaches the page guards downstream.
+  const pathnameWithSearch =
+    request.nextUrl.pathname + (request.nextUrl.search ?? "");
+  request.headers.set(APP_PATHNAME_HEADER, pathnameWithSearch);
 
   const response = intlMiddleware(request);
 

@@ -3,19 +3,40 @@
 import { Button } from "@heroui/react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useTranslations } from "next-intl";
+import { useSearchParams } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 
 import { FormField } from "@/components/ui/form-field";
 import { Link, useRouter } from "@/i18n/navigation";
-import { translateCode } from "@/lib/errors/translate";
+import {
+  extractApiErrorMessage,
+  translateCode,
+} from "@/lib/errors/translate";
 import {
   loginSchema,
   useLogin,
   type LoginInput,
 } from "@/services/accounts";
 
-interface ApiFieldErrors {
-  fieldErrors?: Record<string, readonly string[]>;
+/**
+ * Resolve a safe post-login redirect target from the ``?next=`` query
+ * string. Limited to same-origin relative paths so a poisoned link
+ * cannot bounce a freshly signed-in user to an external phishing
+ * lookalike. Falls back to ``/home``.
+ */
+function resolveNextPath(raw: string | null | undefined): string {
+  if (!raw) return "/home";
+  let candidate: string;
+  try {
+    candidate = decodeURIComponent(raw);
+  } catch {
+    return "/home";
+  }
+  if (!candidate.startsWith("/")) return "/home";
+  // Defend against ``//evil.example.com`` and protocol-relative URLs.
+  if (candidate.startsWith("//") || candidate.startsWith("/\\")) return "/home";
+  if (candidate.startsWith("/login")) return "/home";
+  return candidate;
 }
 
 export function LoginForm() {
@@ -23,6 +44,8 @@ export function LoginForm() {
   const tErrors = useTranslations("errors");
 
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const nextPath = resolveNextPath(searchParams.get("next"));
   const login = useLogin();
 
   const {
@@ -38,12 +61,11 @@ export function LoginForm() {
   const onSubmit = handleSubmit(async (values) => {
     try {
       await login.mutateAsync(values);
-      router.replace("/home");
+      router.replace(nextPath);
     } catch (error) {
-      const detailCodes = (error as ApiFieldErrors).fieldErrors?.detail;
       setError("root", {
         type: "server",
-        message: translateCode(tErrors, detailCodes?.[0]),
+        message: extractApiErrorMessage(error, tErrors),
       });
     }
   });

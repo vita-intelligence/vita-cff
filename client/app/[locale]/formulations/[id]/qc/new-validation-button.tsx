@@ -6,8 +6,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { useCreateValidation } from "@/services/product_validation";
 import type { ProductValidationDto } from "@/services/product_validation";
 import { useTrialBatches } from "@/services/trial_batches";
@@ -102,7 +101,11 @@ export function NewValidationButton({
         `/formulations/${formulationId}/trial-batches/${batchId}/validation/${created.id}`,
       );
     } catch (err) {
-      setError(extractErrorMessage(err, tV, tErrors));
+      setError(
+        extractApiErrorMessage(err, tErrors, {
+          fallback: tV("create.generic_error"),
+        }),
+      );
     }
   };
 
@@ -239,22 +242,3 @@ export function NewValidationButton({
 }
 
 
-/**
- * Translate backend error codes into locale copy. Mirrors the
- * pattern from ``new-formulation-button.tsx`` — DRF field errors
- * arrive on ``fieldErrors.detail[0]`` and we prefer the localised
- * version when we have one, falling back to a generic message.
- */
-function extractErrorMessage(
-  err: unknown,
-  tV: ReturnType<typeof useTranslations<"product_validation">>,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (err instanceof ApiError) {
-    const detail = err.fieldErrors.detail;
-    const first =
-      Array.isArray(detail) && detail.length > 0 ? String(detail[0]) : "";
-    if (first) return translateCode(tErrors, first);
-  }
-  return tV("create.generic_error");
-}

@@ -47,6 +47,9 @@ import type {
   TrialBatchDto,
 } from "@/services/trial_batches/types";
 
+const ACCESS_COOKIE = "vita_access";
+const REFRESH_COOKIE = "vita_refresh";
+
 async function buildCookieHeader(): Promise<string> {
   const cookieStore = await cookies();
   return cookieStore
@@ -55,14 +58,81 @@ async function buildCookieHeader(): Promise<string> {
     .join("; ");
 }
 
+/**
+ * Issue a server-to-server refresh against the backend using the
+ * cookie header forwarded from the inbound request. Returns a fresh
+ * cookie string with the rotated tokens spliced in, or ``null`` if
+ * the refresh itself failed (refresh cookie missing/expired/etc).
+ *
+ * We can't write Set-Cookie back to the browser from a Server
+ * Component — that's an architectural Next.js constraint — but we
+ * can use the new tokens for the duration of the current render so
+ * the user isn't bounced to /login in the middle of a navigation
+ * just because the proxy missed a refresh window. The browser picks
+ * up the rotated tokens on its next request through the proxy.
+ */
+async function attemptServerRefresh(
+  cookieHeader: string,
+): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `${env.NEXT_PUBLIC_API_URL}/api/auth/refresh/`,
+      {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          Cookie: cookieHeader,
+        },
+        cache: "no-store",
+      },
+    );
+    if (!response.ok) return null;
+
+    const headers = response.headers as Headers & {
+      getSetCookie?: () => string[];
+    };
+    const setCookies = headers.getSetCookie?.() ?? [];
+    if (setCookies.length === 0) return null;
+
+    // Splice the rotated cookies into the inbound cookie string so
+    // the replay request carries the new access (and refresh) value
+    // without dropping unrelated cookies the caller is forwarding.
+    const cookieMap = new Map<string, string>();
+    for (const pair of cookieHeader.split(";")) {
+      const trimmed = pair.trim();
+      if (!trimmed) continue;
+      const eq = trimmed.indexOf("=");
+      if (eq === -1) continue;
+      cookieMap.set(trimmed.slice(0, eq), trimmed.slice(eq + 1));
+    }
+    for (const cookie of setCookies) {
+      const [nameValue] = cookie.split(";", 1);
+      if (!nameValue) continue;
+      const eq = nameValue.indexOf("=");
+      if (eq === -1) continue;
+      const name = nameValue.slice(0, eq).trim();
+      const value = nameValue.slice(eq + 1).trim();
+      if (name === ACCESS_COOKIE || name === REFRESH_COOKIE) {
+        cookieMap.set(name, value);
+      }
+    }
+    return Array.from(cookieMap.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; ");
+  } catch {
+    return null;
+  }
+}
+
 async function serverFetch<T>(path: string): Promise<T | null> {
   const cookieHeader = await buildCookieHeader();
   if (!cookieHeader) {
     return null;
   }
 
+  const url = `${env.NEXT_PUBLIC_API_URL}${path}`;
   try {
-    const response = await fetch(`${env.NEXT_PUBLIC_API_URL}${path}`, {
+    const initial = await fetch(url, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -71,11 +141,34 @@ async function serverFetch<T>(path: string): Promise<T | null> {
       cache: "no-store",
     });
 
-    if (!response.ok) {
+    if (initial.ok) {
+      return (await initial.json()) as T;
+    }
+
+    // Only a 401 is worth a refresh-and-retry. Everything else
+    // (403/404/5xx) is a real outcome the page should reflect as a
+    // missing payload, not an auth issue.
+    if (initial.status !== 401) {
       return null;
     }
 
-    return (await response.json()) as T;
+    const refreshedCookieHeader = await attemptServerRefresh(cookieHeader);
+    if (!refreshedCookieHeader) {
+      return null;
+    }
+
+    const replay = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Cookie: refreshedCookieHeader,
+      },
+      cache: "no-store",
+    });
+    if (!replay.ok) {
+      return null;
+    }
+    return (await replay.json()) as T;
   } catch {
     return null;
   }

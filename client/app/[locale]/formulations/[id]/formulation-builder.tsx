@@ -14,8 +14,7 @@ import {
 } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
-import { translateCode } from "@/lib/errors/translate";
+import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { clientUuid } from "@/lib/utils";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
@@ -734,7 +733,7 @@ export function FormulationBuilder({
       setMetadata(metadataFrom(updated));
       router.refresh();
     } catch (err) {
-      setErrorMessage(extractErrorMessage(err, tErrors));
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
   }, [metadata, updateMutation, router, tErrors]);
 
@@ -759,7 +758,7 @@ export function FormulationBuilder({
       setFormulation(updated);
       setLines(linesFrom(updated));
     } catch (err) {
-      setErrorMessage(extractErrorMessage(err, tErrors));
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
   }, [lines, replaceLinesMutation, tErrors]);
 
@@ -770,7 +769,7 @@ export function FormulationBuilder({
       await handleSaveLines();
       await saveVersionMutation.mutateAsync({ label: "" });
     } catch (err) {
-      setErrorMessage(extractErrorMessage(err, tErrors));
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
   }, [
     handleSaveMetadata,
@@ -800,7 +799,7 @@ export function FormulationBuilder({
         setLines(linesFrom(updated));
         router.refresh();
       } catch (err) {
-        setErrorMessage(extractErrorMessage(err, tErrors));
+        setErrorMessage(extractApiErrorMessage(err, tErrors));
       }
     },
     [rollbackMutation, router, tErrors, tFormulations],
@@ -817,7 +816,7 @@ export function FormulationBuilder({
         );
         setFormulation(updated);
       } catch (err) {
-        setErrorMessage(extractErrorMessage(err, tErrors));
+        setErrorMessage(extractApiErrorMessage(err, tErrors));
       }
     },
     [approveMutation, formulation.approved_version_number, tErrors],
@@ -3789,21 +3788,6 @@ function groupGummyFlavourRows(
   // Untouched rows (powder flavour entries, etc.) pass through
   // first so the visual order stays predictable on a gummy panel.
   return [...remaining, ...output];
-}
-
-
-function extractErrorMessage(
-  error: unknown,
-  tErrors: ReturnType<typeof useTranslations<"errors">>,
-): string {
-  if (error instanceof ApiError) {
-    for (const codes of Object.values(error.fieldErrors)) {
-      if (Array.isArray(codes) && codes.length > 0) {
-        return translateCode(tErrors, String(codes[0]));
-      }
-    }
-  }
-  return tErrors("generic");
 }
 
 
