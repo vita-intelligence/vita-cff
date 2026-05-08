@@ -105,7 +105,14 @@ export interface SnapshotOverrides {
     kosher?: "yes" | "no" | "unknown";
   }>;
   readonly actives?: Readonly<
-    Record<string, Readonly<{ label_claim_mg?: string; nrv_pct?: string }>>
+    Record<
+      string,
+      Readonly<{
+        label_claim_mg?: string;
+        nrv_pct?: string;
+        ingredient_list_name?: string;
+      }>
+    >
   >;
   /** ``excipients_mg`` — per-row mg override applied at render time.
    *  Keys are either the typed cell names (``water_mg``,
@@ -115,6 +122,35 @@ export interface SnapshotOverrides {
    *  Values are decimal mg strings. Empty/missing keys keep the
    *  snapshot value. */
   readonly excipients_mg?: Readonly<Record<string, string>>;
+  /** Per-row excipient label rewrites — same slug vocabulary as
+   *  ``excipients_mg``. */
+  readonly excipients_label?: Readonly<Record<string, string>>;
+  /** Capsule-shell row override (label and / or mg). */
+  readonly capsule_shell?: Readonly<{ label?: string; mg?: string }>;
+  /** Per-row Nutrition Information edits keyed by row slug
+   *  (``energy_kj``, ``fat_g``, ...). */
+  readonly nutrition?: Readonly<
+    Record<
+      string,
+      Readonly<{ amount_per_100g?: string; amount_per_serving?: string }>
+    >
+  >;
+  /** Amino acid block override: outer key is the group slug
+   *  (``essential`` / ``non_essential`` / ``conditional``), inner key
+   *  is the acid key, value is the mg amount per serving as a string. */
+  readonly amino_acids?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+  /** Microbiological / heavy metal / pesticide spec limits, keyed by
+   *  the canonical slug (``total_aerobic``, ``e_coli``, ...). */
+  readonly limits?: Readonly<Record<string, string>>;
+  /** Per-cell metadata edits surfaced on the Product Specification
+   *  block (filled total weight, weight uniformity tolerance, etc.). */
+  readonly metadata?: Readonly<{
+    filled_total_mg?: string;
+    total_weight_label?: string;
+    weight_uniformity?: string;
+    powder_per_serving_mg?: string;
+    powder_pack_total_mg?: string;
+  }>;
 }
 
 export const PACKAGING_SLOTS = [

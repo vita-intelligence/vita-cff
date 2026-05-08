@@ -42,6 +42,13 @@ from apps.formulations.constants import (
     EXCIPIENT_LABEL_GUMMY_BASE,
     EXCIPIENT_LABEL_MCC,
     EXCIPIENT_LABEL_PREMIX_SWEETENER,
+    CARRIER_USE_AS,
+    EXCIPIENT_SLUG_ANTICAKING,
+    EXCIPIENT_SLUG_CAPSULE_SHELL,
+    EXCIPIENT_SLUG_DCP,
+    EXCIPIENT_SLUG_GUMMY_BASE,
+    EXCIPIENT_SLUG_MCC,
+    EXCIPIENT_SLUG_WATER,
     FLAVOURING_USE_CATEGORIES,
     COLOUR_USE_CATEGORIES,
     DCP_CARRIER_USE_CATEGORIES,
@@ -590,6 +597,17 @@ class IngredientDeclarationEntry:
     #: where grouping is by individual name not by category. Drives
     #: the EU 1169/2011 category grouping in the declaration string.
     use_as: str = ""
+    #: Stable identifier the spec-sheet override layer uses to pair an
+    #: ``excipients_mg`` override with the declaration entry it should
+    #: drop or rewrite. Mirrors the ``editableExcipients`` slugs the
+    #: override modal exposes (``mcc_mg``, ``dcp_mg``, ``gummy_base_mg``,
+    #: ``water_mg``, ``anticaking``, ``gummy_base:<item_id>``, plus the
+    #: arbitrary slugs powder / gummy bands assign to flexible rows).
+    #: Active line items get ``active:<item_id>`` so future per-active
+    #: overrides can target the right entry. Empty for the capsule
+    #: shell row and for old snapshots taken before slugs landed —
+    #: render-time fallback uses a label heuristic in that case.
+    slug: str = ""
 
 
 @dataclass
@@ -2844,6 +2862,7 @@ def build_ingredient_declaration(
                     _allergen_source_for_item(item) if is_allergen else ""
                 ),
                 use_as=use_as,
+                slug=f"active:{item.id}",
             )
         )
 
@@ -2863,6 +2882,13 @@ def build_ingredient_declaration(
                         label=row.label,
                         mg=row.mg,
                         category="excipient",
+                        slug=EXCIPIENT_SLUG_MCC,
+                        # Group every carrier pick under a single
+                        # ``Carrier (Brand A, Brand B)`` block in the
+                        # joined declaration string — mirrors the EU
+                        # 1169 grouped phrasing the gummy base /
+                        # sweetener / flavouring blocks already use.
+                        use_as=CARRIER_USE_AS,
                     )
                 )
         elif excipients.mcc_mg and excipients.mcc_mg > 0:
@@ -2871,6 +2897,7 @@ def build_ingredient_declaration(
                     label=EXCIPIENT_LABEL_MCC,
                     mg=excipients.mcc_mg,
                     category="excipient",
+                    slug=EXCIPIENT_SLUG_MCC,
                 )
             )
         # DCP carrier (tablet only) — same per-pick / fallback shape.
@@ -2883,6 +2910,8 @@ def build_ingredient_declaration(
                         label=row.label,
                         mg=row.mg,
                         category="excipient",
+                        slug=EXCIPIENT_SLUG_DCP,
+                        use_as=CARRIER_USE_AS,
                     )
                 )
         elif excipients.dcp_mg is not None and excipients.dcp_mg > 0:
@@ -2891,12 +2920,15 @@ def build_ingredient_declaration(
                     label=EXCIPIENT_LABEL_DCP,
                     mg=excipients.dcp_mg,
                     category="excipient",
+                    slug=EXCIPIENT_SLUG_DCP,
                 )
             )
         if excipients.gummy_base_rows:
             # Multi-pick blend: emit one entry per picked item so the
             # declaration groups them under their shared ``use_as``
-            # category ("Sweeteners (Xylitol, Maltitol)").
+            # category ("Sweeteners (Xylitol, Maltitol)"). Per-pick
+            # slugs match the ``gummy_base:<item_id>`` keys the
+            # override modal exposes for individual control.
             for base_row in excipients.gummy_base_rows:
                 if base_row.mg <= 0:
                     continue
@@ -2906,6 +2938,7 @@ def build_ingredient_declaration(
                         mg=base_row.mg,
                         category="excipient",
                         use_as=base_row.use_as or "",
+                        slug=f"gummy_base:{base_row.item_id}",
                     )
                 )
         elif excipients.gummy_base_mg is not None and excipients.gummy_base_mg > 0:
@@ -2916,6 +2949,7 @@ def build_ingredient_declaration(
                     label=EXCIPIENT_LABEL_GUMMY_BASE,
                     mg=excipients.gummy_base_mg,
                     category="excipient",
+                    slug=EXCIPIENT_SLUG_GUMMY_BASE,
                 )
             )
         if excipients.water_mg is not None and excipients.water_mg > 0:
@@ -2924,6 +2958,7 @@ def build_ingredient_declaration(
                     label=EXCIPIENT_LABEL_WATER,
                     mg=excipients.water_mg,
                     category="excipient",
+                    slug=EXCIPIENT_SLUG_WATER,
                 )
             )
         # Magnesium stearate + silicon dioxide collapse into a single
@@ -2940,6 +2975,7 @@ def build_ingredient_declaration(
                     label=EXCIPIENT_LABEL_ANTICAKING,
                     mg=anticaking_mg,
                     category="excipient",
+                    slug=EXCIPIENT_SLUG_ANTICAKING,
                 )
             )
         # Powder / gummy flexible rows — capsule/tablet leave this
@@ -2963,6 +2999,7 @@ def build_ingredient_declaration(
                     use_as=row.use_as or "",
                     is_allergen=row.is_allergen,
                     allergen_source=row.allergen_source or "",
+                    slug=row.slug or "",
                 )
             )
 
@@ -2974,6 +3011,7 @@ def build_ingredient_declaration(
                     label=CAPSULE_SHELL_LABEL,
                     mg=Decimal(str(capsule_size.shell_weight_mg)),
                     category="shell",
+                    slug=EXCIPIENT_SLUG_CAPSULE_SHELL,
                 )
             )
 
@@ -3302,6 +3340,15 @@ def _serialize_declaration(
                 "category": e.category,
                 "is_allergen": e.is_allergen,
                 "allergen_source": e.allergen_source,
+                # ``use_as`` lets the spec-sheet override layer rebuild
+                # the EU 1169/2011 grouped declaration text after a
+                # drop/update without losing the "Sweeteners (Xylitol,
+                # Maltitol)" phrasing.
+                "use_as": e.use_as,
+                # ``slug`` pairs each entry with the ``excipients_mg``
+                # override key the modal exposes so an override on
+                # ``mcc_mg`` finds the right row to drop / rewrite.
+                "slug": e.slug,
             }
             for e in entries
         ],

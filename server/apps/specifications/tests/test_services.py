@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from apps.formulations.services import replace_lines, save_version
+from apps.formulations.services import (
+    replace_lines,
+    save_version,
+    update_formulation,
+)
 from apps.formulations.tests.factories import FormulationFactory
 from apps.catalogues.tests.factories import (
     ItemFactory,
@@ -598,6 +602,116 @@ class TestSnapshotOverrides:
         assert sheet.snapshot_overrides == {}
         ctx = render_context(sheet)
         assert ctx["formulation"]["appearance_overridden"] is False
+
+
+class TestExcipientMgOverridesDropEntries:
+    """Setting an ``excipients_mg`` override to ``"0"`` must drop the
+    matching row from BOTH the rendered excipient table (which the
+    frontend reads off ``rendered.declaration.entries``) AND the
+    joined ingredient declaration string. Anything else means the
+    override modal silently lies — the user clicks Save, sees the row
+    still listed, and stops trusting the override surface."""
+
+    def _seed_capsule_with_carrier(self, org):
+        catalogue = raw_materials_catalogue(org)
+        active = ItemFactory(
+            catalogue=catalogue,
+            name="Active Raw",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Active Compound",
+            },
+        )
+        carrier = ItemFactory(
+            catalogue=catalogue,
+            name="MCC PH-101",
+            attributes={
+                "use_as": "Bulking Agent",
+                "ingredient_list_name": "Microcrystalline Cellulose",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(active.id), "label_claim_mg": "500"}],
+        )
+        update_formulation(
+            formulation=formulation,
+            actor=org.created_by,
+            mcc_carrier_item_ids=[str(carrier.id)],
+        )
+        return save_version(formulation=formulation, actor=org.created_by)
+
+    def test_mcc_zero_override_drops_carrier_row(self) -> None:
+        org = OrganizationFactory()
+        version = self._seed_capsule_with_carrier(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+        # Sanity: the snapshot has a non-zero MCC carrier entry.
+        ctx_before = render_context(sheet)
+        excipient_labels_before = {
+            e["label"]
+            for e in ctx_before["declaration"]["entries"]
+            if e["category"] != "active"
+        }
+        assert "Microcrystalline Cellulose" in excipient_labels_before
+
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={"excipients_mg": {"mcc_mg": "0"}},
+        )
+        sheet.refresh_from_db()
+        ctx_after = render_context(sheet)
+
+        excipient_labels_after = {
+            e["label"]
+            for e in ctx_after["declaration"]["entries"]
+            if e["category"] != "active"
+        }
+        # MCC row gone from the per-row entries the spec sheet
+        # excipient table renders from.
+        assert "Microcrystalline Cellulose" not in excipient_labels_after
+        # And gone from the joined declaration string the ingredient
+        # paragraph prints.
+        assert "Microcrystalline Cellulose" not in ctx_after["declaration"]["text"]
+        assert "Carrier" not in ctx_after["declaration"]["text"]
+
+    def test_mcc_positive_override_rewrites_mg(self) -> None:
+        org = OrganizationFactory()
+        version = self._seed_capsule_with_carrier(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+        update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            snapshot_overrides={"excipients_mg": {"mcc_mg": "42"}},
+        )
+        sheet.refresh_from_db()
+        ctx = render_context(sheet)
+
+        carrier_entries = [
+            e
+            for e in ctx["declaration"]["entries"]
+            if e["label"] == "Microcrystalline Cellulose"
+        ]
+        assert len(carrier_entries) == 1
+        assert carrier_entries[0]["mg"] == "42"
+        assert carrier_entries[0].get("mg_overridden") is True
 
 
 class TestActivesLabelPerServing:

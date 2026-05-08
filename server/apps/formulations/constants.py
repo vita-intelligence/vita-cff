@@ -570,6 +570,29 @@ EXCIPIENT_LABEL_PECTIN_PREMIX = "Pectin Premix"
 EXCIPIENT_LABEL_WATER = "Water"
 CAPSULE_SHELL_LABEL = "Capsule Shell (Hypromellose)"
 
+#: Slugs the spec-sheet override layer uses to pair an
+#: ``excipients_mg`` override with the declaration entry it should
+#: drop or rewrite. They mirror the keys the override modal exposes
+#: so a ``snapshot_overrides.excipients_mg.<slug>`` value lands on
+#: the right declaration row at render time.
+EXCIPIENT_SLUG_MCC = "mcc_mg"
+EXCIPIENT_SLUG_DCP = "dcp_mg"
+EXCIPIENT_SLUG_GUMMY_BASE = "gummy_base_mg"
+EXCIPIENT_SLUG_WATER = "water_mg"
+
+#: ``use_as`` category MCC + DCP carrier picks ride under so the EU
+#: 1169/2011 grouped declaration emits ``Carrier (Microcrystalline
+#: Cellulose A, Microcrystalline Cellulose B)`` — same shape as the
+#: gummy base / sweetener / flavouring blocks rather than listing
+#: each carrier brand standalone.
+CARRIER_USE_AS = "Carrier"
+#: Magnesium stearate + silicon dioxide collapse into a single
+#: "Anticaking Agents" entry on the declaration. Two override keys
+#: feed it (``mg_stearate_mg`` + ``silica_mg``) and the render layer
+#: sums whichever side is overridden.
+EXCIPIENT_SLUG_ANTICAKING = "anticaking"
+EXCIPIENT_SLUG_CAPSULE_SHELL = "capsule_shell"
+
 
 #: Candidate names we probe in the org's ``raw_materials`` catalogue
 #: when resolving the procurement code for a hard-coded excipient.

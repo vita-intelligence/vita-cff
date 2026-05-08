@@ -45,11 +45,41 @@ interface DraftState {
   };
   // Per-active line keyed by ``item_id``. Empty strings clear that
   // field on save so the snapshot value re-takes effect.
-  actives: Record<string, { label_claim_mg: string; nrv_pct: string }>;
+  actives: Record<
+    string,
+    { label_claim_mg: string; nrv_pct: string; ingredient_list_name: string }
+  >;
   // Per-excipient-row mg override keyed by row slug (``water_mg``,
   // ``gummy_base_mg``, ``acidity``, ``flavouring:<id>``, etc.).
   // Empty strings clear the override on save.
   excipients_mg: Record<string, string>;
+  // Per-excipient-row LABEL override (same slug vocabulary as
+  // ``excipients_mg``). Empty string keeps the snapshot label.
+  excipients_label: Record<string, string>;
+  // Capsule-shell row override (label + mg). Both empty = no override.
+  capsule_shell: { label: string; mg: string };
+  // Per-nutrition-row override keyed by row slug. Each row has two
+  // editable cells; empty cells fall back to the snapshot.
+  nutrition: Record<
+    string,
+    { amount_per_100g: string; amount_per_serving: string }
+  >;
+  // Per-amino-acid override: outer key is the group slug, inner key
+  // is the acid key, value is the mg-per-serving string.
+  amino_acids: Record<string, Record<string, string>>;
+  // Microbiological / heavy-metal / pesticide spec limits keyed by
+  // the canonical slug (``total_aerobic``, ``e_coli``, ...).
+  limits: Record<string, string>;
+  // Per-cell metadata fields surfaced on the Product Specification
+  // block. Empty cells fall back to the sheet-model field or the
+  // snapshot value, whichever the renderer normally uses.
+  metadata: {
+    filled_total_mg: string;
+    total_weight_label: string;
+    weight_uniformity: string;
+    powder_per_serving_mg: string;
+    powder_pack_total_mg: string;
+  };
 }
 
 
@@ -60,6 +90,18 @@ interface DraftState {
  * computed value (which would flip every render into an override
  * the moment the user clicks "Save").
  */
+/**
+ * Allergens roundtrip as a comma-separated string in the modal but
+ * the wire format is an array of source names. Build a stable CSV the
+ * baseline-equality check below can compare against without
+ * worrying about whitespace drift.
+ */
+function allergenSourcesCsv(rendered: RenderedSheetContext): string {
+  const sources = (rendered.allergens?.sources ?? []) as readonly string[];
+  return sources.join(", ");
+}
+
+
 function draftFromOverrides(
   overrides: SnapshotOverrides | undefined,
   rendered: RenderedSheetContext,
@@ -71,34 +113,186 @@ function draftFromOverrides(
   const activesOverride = overrides?.actives ?? {};
   const excipientsMgOverride = overrides?.excipients_mg ?? {};
 
+  // Pre-populate every input with the **current** rendered value
+  // (override-if-set, otherwise the snapshot baseline) so the
+  // scientist can see what each field is set to without flipping
+  // back to the spec sheet. Save-time logic below diffs against the
+  // baseline so unchanged fields don't get persisted as overrides
+  // and the "active overrides" badge stays honest.
   const actives: DraftState["actives"] = {};
   for (const active of rendered.actives) {
     const id = active.item_id;
     if (!id) continue;
     const o = activesOverride[id];
     actives[id] = {
-      label_claim_mg: o?.label_claim_mg ?? "",
-      nrv_pct: o?.nrv_pct ?? "",
+      label_claim_mg: o?.label_claim_mg ?? (active.label_claim_mg ?? ""),
+      nrv_pct: o?.nrv_pct ?? (active.nrv_percent ?? ""),
+      ingredient_list_name:
+        o?.ingredient_list_name ?? (active.ingredient_list_name ?? ""),
     };
   }
 
-  // Seed the excipients-mg draft with whatever the user has already
-  // overridden — keeps inputs blank otherwise so the placeholder
-  // shows the snapshot value.
+  // Excipient-mg seeds: prefer the existing override; fall back to
+  // the snapshot mg pulled off ``totals.excipients`` (the typed cells
+  // and per-row entries the modal renders inputs for).
   const excipients_mg: Record<string, string> = {};
+  const ex = rendered.totals.excipients;
+  if (ex) {
+    const seedFromSnapshot = (slug: string, snapshotMg: string | null | undefined) => {
+      const overridden = excipientsMgOverride[slug];
+      if (typeof overridden === "string") {
+        excipients_mg[slug] = overridden;
+        return;
+      }
+      if (snapshotMg) excipients_mg[slug] = snapshotMg;
+    };
+    if (ex.water_mg) seedFromSnapshot("water_mg", ex.water_mg);
+    if (ex.gummy_base_mg) seedFromSnapshot("gummy_base_mg", ex.gummy_base_mg);
+    if (ex.mg_stearate_mg && Number(ex.mg_stearate_mg) > 0) {
+      seedFromSnapshot("mg_stearate_mg", ex.mg_stearate_mg);
+    }
+    if (ex.silica_mg && Number(ex.silica_mg) > 0) {
+      seedFromSnapshot("silica_mg", ex.silica_mg);
+    }
+    if (ex.mcc_mg && Number(ex.mcc_mg) > 0) {
+      seedFromSnapshot("mcc_mg", ex.mcc_mg);
+    }
+    if (ex.dcp_mg && Number(ex.dcp_mg) > 0) {
+      seedFromSnapshot("dcp_mg", ex.dcp_mg);
+    }
+    for (const r of ex.gummy_base_rows ?? []) {
+      seedFromSnapshot(`gummy_base:${r.item_id}`, r.mg);
+    }
+    for (const r of ex.rows ?? []) {
+      seedFromSnapshot(r.slug, r.mg);
+    }
+  }
+  // Pick up override-only slugs (e.g. an excipient that was zeroed
+  // out and so isn't listed in ``totals.excipients`` anymore) so the
+  // modal still surfaces them for editing.
   for (const [key, value] of Object.entries(excipientsMgOverride)) {
-    if (typeof value === "string") {
+    if (typeof value === "string" && excipients_mg[key] === undefined) {
       excipients_mg[key] = value;
     }
   }
 
+  // Excipient-label seeds: prefer the existing override, otherwise
+  // pull the current displayed label off the rendered declaration
+  // entries (which is what the spec sheet excipient table renders).
+  const excipients_label: Record<string, string> = {};
+  const labelOverrides = (overrides?.excipients_label ?? {}) as Record<
+    string,
+    string
+  >;
+  for (const slug of Object.keys(excipients_mg)) {
+    excipients_label[slug] = labelOverrides[slug] ?? "";
+  }
+
+  // Capsule-shell seed.
+  const shellOverride = (overrides?.capsule_shell ?? {}) as {
+    label?: string;
+    mg?: string;
+  };
+  // Pull the shell entry from the rendered declaration so the modal
+  // can pre-fill its label / mg.
+  const shellEntry = (rendered.declaration?.entries ?? []).find(
+    (e) => e.category === "shell",
+  );
+  const capsule_shell = {
+    label: shellOverride.label ?? (shellEntry?.label ?? ""),
+    mg: shellOverride.mg ?? (shellEntry?.mg ?? ""),
+  };
+
+  // Nutrition seeds. Use the rendered rows to know which slugs to
+  // expose; pre-fill each cell with the override-or-snapshot value.
+  const nutritionOverrides = (overrides?.nutrition ?? {}) as Record<
+    string,
+    { amount_per_100g?: string; amount_per_serving?: string }
+  >;
+  const nutrition: DraftState["nutrition"] = {};
+  for (const row of rendered.nutrition?.rows ?? []) {
+    const slug = (row as { slug?: string; key?: string }).slug
+      ?? (row as { slug?: string; key?: string }).key
+      ?? "";
+    if (!slug) continue;
+    const ov = nutritionOverrides[slug] ?? {};
+    nutrition[slug] = {
+      amount_per_100g:
+        ov.amount_per_100g
+        ?? ((row as { amount_per_100g?: string }).amount_per_100g ?? ""),
+      amount_per_serving:
+        ov.amount_per_serving
+        ?? ((row as { amount_per_serving?: string }).amount_per_serving ?? ""),
+    };
+  }
+
+  // Amino acid seeds.
+  const aminoAcidsOverrides = (overrides?.amino_acids ?? {}) as Record<
+    string,
+    Record<string, string>
+  >;
+  const amino_acids: DraftState["amino_acids"] = {};
+  for (const group of rendered.amino_acids?.groups ?? []) {
+    const groupSlug = (group as { slug?: string; key?: string }).slug
+      ?? (group as { slug?: string; key?: string }).key
+      ?? "";
+    if (!groupSlug) continue;
+    const groupOv = aminoAcidsOverrides[groupSlug] ?? {};
+    amino_acids[groupSlug] = {};
+    for (const acid of (group as { acids?: ReadonlyArray<unknown> }).acids ?? []) {
+      const a = acid as { key?: string; slug?: string; amount_per_serving?: string };
+      const acidKey = a.key ?? a.slug ?? "";
+      if (!acidKey) continue;
+      amino_acids[groupSlug]![acidKey] =
+        groupOv[acidKey] ?? (a.amount_per_serving ?? "");
+    }
+  }
+
+  // Limits seeds.
+  const limitsOverrides = (overrides?.limits ?? {}) as Record<string, string>;
+  const limits: Record<string, string> = {};
+  for (const row of rendered.limits ?? []) {
+    const slug = row.slug ?? "";
+    if (!slug) continue;
+    limits[slug] = limitsOverrides[slug] ?? (row.value ?? "");
+  }
+
+  const metadataOverrides = (overrides?.metadata ?? {}) as {
+    filled_total_mg?: string;
+    total_weight_label?: string;
+    weight_uniformity?: string;
+    powder_per_serving_mg?: string;
+    powder_pack_total_mg?: string;
+  };
+  const metadata = {
+    filled_total_mg:
+      metadataOverrides.filled_total_mg
+      ?? (rendered.totals.filled_total_mg ?? ""),
+    total_weight_label:
+      metadataOverrides.total_weight_label
+      ?? (rendered.sheet.total_weight_label ?? ""),
+    weight_uniformity:
+      metadataOverrides.weight_uniformity ?? (rendered.weight_uniformity ?? ""),
+    powder_per_serving_mg:
+      metadataOverrides.powder_per_serving_mg
+      ?? (rendered.totals.powder_per_serving_mg ?? ""),
+    powder_pack_total_mg:
+      metadataOverrides.powder_pack_total_mg
+      ?? (rendered.totals.powder_pack_total_mg ?? ""),
+  };
+
   return {
-    directions_of_use: formulation.directions_of_use ?? "",
-    suggested_dosage: formulation.suggested_dosage ?? "",
-    appearance: formulation.appearance ?? "",
-    disintegration_spec: formulation.disintegration_spec ?? "",
+    directions_of_use:
+      formulation.directions_of_use ?? (rendered.formulation.directions_of_use ?? ""),
+    suggested_dosage:
+      formulation.suggested_dosage ?? (rendered.formulation.suggested_dosage ?? ""),
+    appearance: formulation.appearance ?? (rendered.formulation.appearance ?? ""),
+    disintegration_spec:
+      formulation.disintegration_spec
+      ?? (rendered.formulation.disintegration_spec ?? ""),
     declaration_text: declaration.text ?? "",
-    allergens_csv: Array.isArray(allergens) ? allergens.join(", ") : "",
+    allergens_csv:
+      Array.isArray(allergens) ? allergens.join(", ") : allergenSourcesCsv(rendered),
     compliance: {
       vegan: (compliance.vegan as ComplianceValue) ?? "",
       organic: (compliance.organic as ComplianceValue) ?? "",
@@ -107,81 +301,374 @@ function draftFromOverrides(
     },
     actives,
     excipients_mg,
+    excipients_label,
+    capsule_shell,
+    nutrition,
+    amino_acids,
+    limits,
+    metadata,
   };
 }
 
 
 /**
- * Convert the draft back into the wire-format ``snapshot_overrides``
- * payload. Empty strings are dropped so the validator sees a clean
- * payload — empty = "no override", populated = override.
+ * Deep-clone the existing snapshot_overrides so we can mutate it
+ * without churning React state. JSON roundtrip is fine here — the
+ * payload is plain JSON.
  */
-function draftToPayload(draft: DraftState): SnapshotOverrides {
-  const formulation: Record<string, string> = {};
-  if (draft.directions_of_use) {
-    formulation.directions_of_use = draft.directions_of_use;
-  }
-  if (draft.suggested_dosage) {
-    formulation.suggested_dosage = draft.suggested_dosage;
-  }
-  if (draft.appearance) formulation.appearance = draft.appearance;
-  if (draft.disintegration_spec) {
-    formulation.disintegration_spec = draft.disintegration_spec;
+function cloneOverrides(value: SnapshotOverrides | undefined): SnapshotOverrides {
+  return value ? JSON.parse(JSON.stringify(value)) : {};
+}
+
+
+/**
+ * Convert the draft back into the wire-format ``snapshot_overrides``
+ * payload by diffing the draft against the *initial* draft captured
+ * when the modal opened, then layering only those edits on top of
+ * ``existing`` (the sheet's current saved overrides).
+ *
+ * Why this shape: the modal pre-populates every input with the
+ * field's current value (override-if-set, otherwise the snapshot
+ * baseline) so the scientist sees what each field is at without
+ * flipping back to the spec sheet. Naively persisting every
+ * populated input would silently pin every baseline value as an
+ * override the moment Save was clicked, freezing the sheet against
+ * future formulation recomputes. The PATCH endpoint replaces the
+ * full ``snapshot_overrides`` map, so we have to send the *complete
+ * desired state* — that's ``existing`` for fields the user did not
+ * touch + the user's edits for fields they did. Clearing an input
+ * removes the override; typing the same value the modal opened with
+ * is a no-op.
+ */
+function draftToPayload(
+  draft: DraftState,
+  initial: DraftState,
+  existing: SnapshotOverrides | undefined,
+): SnapshotOverrides {
+  const payload = cloneOverrides(existing) as {
+    formulation?: Record<string, string>;
+    declaration?: { text?: string };
+    allergens?: { sources?: string[] };
+    compliance?: Record<string, "yes" | "no" | "unknown">;
+    actives?: Record<
+      string,
+      {
+        label_claim_mg?: string;
+        nrv_pct?: string;
+        ingredient_list_name?: string;
+      }
+    >;
+    excipients_mg?: Record<string, string>;
+    excipients_label?: Record<string, string>;
+    capsule_shell?: { label?: string; mg?: string };
+    nutrition?: Record<
+      string,
+      { amount_per_100g?: string; amount_per_serving?: string }
+    >;
+    amino_acids?: Record<string, Record<string, string>>;
+    limits?: Record<string, string>;
+    metadata?: {
+      filled_total_mg?: string;
+      total_weight_label?: string;
+      weight_uniformity?: string;
+      powder_per_serving_mg?: string;
+      powder_pack_total_mg?: string;
+    };
+  };
+
+  const setOrClear = <T extends Record<string, string>>(
+    section: T | undefined,
+    key: string,
+    next: string,
+  ): T | undefined => {
+    const map = (section ?? {}) as Record<string, string>;
+    if (next) map[key] = next;
+    else delete map[key];
+    if (Object.keys(map).length === 0) return undefined;
+    return map as T;
+  };
+
+  for (const key of [
+    "directions_of_use",
+    "suggested_dosage",
+    "appearance",
+    "disintegration_spec",
+  ] as const) {
+    if (draft[key] !== initial[key]) {
+      payload.formulation = setOrClear(
+        payload.formulation,
+        key,
+        draft[key],
+      ) as Record<string, string> | undefined;
+    }
   }
 
-  const declaration: Record<string, string> = {};
-  if (draft.declaration_text) declaration.text = draft.declaration_text;
-
-  const allergens: { sources?: readonly string[] } = {};
-  const csv = draft.allergens_csv.trim();
-  if (csv) {
-    allergens.sources = csv
-      .split(",")
-      .map((s) => s.trim())
-      .filter(Boolean);
+  if (draft.declaration_text !== initial.declaration_text) {
+    if (draft.declaration_text) {
+      payload.declaration = { text: draft.declaration_text };
+    } else {
+      delete payload.declaration;
+    }
   }
 
-  const compliance: Record<string, "yes" | "no" | "unknown"> = {};
+  if (draft.allergens_csv.trim() !== initial.allergens_csv.trim()) {
+    const csv = draft.allergens_csv.trim();
+    if (csv) {
+      payload.allergens = {
+        sources: csv
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      };
+    } else {
+      delete payload.allergens;
+    }
+  }
+
   for (const key of ["vegan", "organic", "halal", "kosher"] as const) {
-    const v = draft.compliance[key];
-    if (v === "yes" || v === "no" || v === "unknown") {
-      compliance[key] = v;
+    if (draft.compliance[key] !== initial.compliance[key]) {
+      const v = draft.compliance[key];
+      if (v === "yes" || v === "no" || v === "unknown") {
+        payload.compliance = setOrClear(
+          payload.compliance as Record<string, string> | undefined,
+          key,
+          v,
+        ) as Record<string, "yes" | "no" | "unknown"> | undefined;
+      } else {
+        // Cleared — drop just this flag from the existing payload.
+        if (payload.compliance) {
+          delete payload.compliance[key];
+          if (Object.keys(payload.compliance).length === 0) {
+            delete payload.compliance;
+          }
+        }
+      }
     }
   }
 
-  const actives: Record<string, { label_claim_mg?: string; nrv_pct?: string }> =
-    {};
   for (const [id, vals] of Object.entries(draft.actives)) {
-    const cleaned: { label_claim_mg?: string; nrv_pct?: string } = {};
-    if (vals.label_claim_mg.trim()) {
-      cleaned.label_claim_mg = vals.label_claim_mg.trim();
+    const initialVals = initial.actives[id] ?? {
+      label_claim_mg: "",
+      nrv_pct: "",
+      ingredient_list_name: "",
+    };
+    const claimChanged =
+      vals.label_claim_mg.trim() !== initialVals.label_claim_mg.trim();
+    const nrvChanged = vals.nrv_pct.trim() !== initialVals.nrv_pct.trim();
+    const nameChanged =
+      vals.ingredient_list_name.trim()
+      !== initialVals.ingredient_list_name.trim();
+    if (!claimChanged && !nrvChanged && !nameChanged) continue;
+
+    const lineMap =
+      payload.actives?.[id] ?? ({} as {
+        label_claim_mg?: string;
+        nrv_pct?: string;
+        ingredient_list_name?: string;
+      });
+    if (claimChanged) {
+      const next = vals.label_claim_mg.trim();
+      if (next) lineMap.label_claim_mg = next;
+      else delete lineMap.label_claim_mg;
     }
-    if (vals.nrv_pct.trim()) cleaned.nrv_pct = vals.nrv_pct.trim();
-    if (Object.keys(cleaned).length > 0) actives[id] = cleaned;
+    if (nrvChanged) {
+      const next = vals.nrv_pct.trim();
+      if (next) lineMap.nrv_pct = next;
+      else delete lineMap.nrv_pct;
+    }
+    if (nameChanged) {
+      const next = vals.ingredient_list_name.trim();
+      if (next) lineMap.ingredient_list_name = next;
+      else delete lineMap.ingredient_list_name;
+    }
+    payload.actives = payload.actives ?? {};
+    if (Object.keys(lineMap).length === 0) {
+      delete payload.actives[id];
+    } else {
+      payload.actives[id] = lineMap;
+    }
+    if (payload.actives && Object.keys(payload.actives).length === 0) {
+      delete payload.actives;
+    }
   }
 
-  const excipients_mg: Record<string, string> = {};
-  for (const [slug, value] of Object.entries(draft.excipients_mg)) {
-    const trimmed = value.trim();
-    if (trimmed) excipients_mg[slug] = trimmed;
+  // Layer excipient-mg edits on top, walking the union of both sides
+  // so a slug that was removed from the modal (e.g. an excipient row
+  // that no longer exists) gets cleared if it had been overridden.
+  const allMgSlugs = new Set([
+    ...Object.keys(draft.excipients_mg),
+    ...Object.keys(initial.excipients_mg),
+  ]);
+  for (const slug of allMgSlugs) {
+    const before = (initial.excipients_mg[slug] ?? "").trim();
+    const after = (draft.excipients_mg[slug] ?? "").trim();
+    if (after === before) continue;
+    payload.excipients_mg = setOrClear(
+      payload.excipients_mg,
+      slug,
+      after,
+    ) as Record<string, string> | undefined;
   }
 
-  const payload: {
-    formulation?: typeof formulation;
-    declaration?: typeof declaration;
-    allergens?: typeof allergens;
-    compliance?: typeof compliance;
-    actives?: typeof actives;
-    excipients_mg?: typeof excipients_mg;
-  } = {};
-  if (Object.keys(formulation).length > 0) payload.formulation = formulation;
-  if (Object.keys(declaration).length > 0) payload.declaration = declaration;
-  if (Object.keys(allergens).length > 0) payload.allergens = allergens;
-  if (Object.keys(compliance).length > 0) payload.compliance = compliance;
-  if (Object.keys(actives).length > 0) payload.actives = actives;
-  if (Object.keys(excipients_mg).length > 0) {
-    payload.excipients_mg = excipients_mg;
+  const allLabelSlugs = new Set([
+    ...Object.keys(draft.excipients_label),
+    ...Object.keys(initial.excipients_label),
+  ]);
+  for (const slug of allLabelSlugs) {
+    const before = (initial.excipients_label[slug] ?? "").trim();
+    const after = (draft.excipients_label[slug] ?? "").trim();
+    if (after === before) continue;
+    payload.excipients_label = setOrClear(
+      payload.excipients_label,
+      slug,
+      after,
+    ) as Record<string, string> | undefined;
   }
+
+  // Capsule shell — both keys flip together.
+  const shellLabelChanged =
+    draft.capsule_shell.label.trim() !== initial.capsule_shell.label.trim();
+  const shellMgChanged =
+    draft.capsule_shell.mg.trim() !== initial.capsule_shell.mg.trim();
+  if (shellLabelChanged || shellMgChanged) {
+    const shellMap = (payload.capsule_shell ?? {}) as {
+      label?: string;
+      mg?: string;
+    };
+    if (shellLabelChanged) {
+      const next = draft.capsule_shell.label.trim();
+      if (next) shellMap.label = next;
+      else delete shellMap.label;
+    }
+    if (shellMgChanged) {
+      const next = draft.capsule_shell.mg.trim();
+      if (next) shellMap.mg = next;
+      else delete shellMap.mg;
+    }
+    if (Object.keys(shellMap).length === 0) {
+      delete payload.capsule_shell;
+    } else {
+      payload.capsule_shell = shellMap;
+    }
+  }
+
+  // Nutrition — nested two-level diff per row.
+  const nutritionSlugs = new Set([
+    ...Object.keys(draft.nutrition),
+    ...Object.keys(initial.nutrition),
+  ]);
+  for (const slug of nutritionSlugs) {
+    const before = initial.nutrition[slug] ?? {
+      amount_per_100g: "",
+      amount_per_serving: "",
+    };
+    const after = draft.nutrition[slug] ?? {
+      amount_per_100g: "",
+      amount_per_serving: "",
+    };
+    const per100Changed =
+      after.amount_per_100g.trim() !== before.amount_per_100g.trim();
+    const perServingChanged =
+      after.amount_per_serving.trim() !== before.amount_per_serving.trim();
+    if (!per100Changed && !perServingChanged) continue;
+    const rowMap = (payload.nutrition?.[slug] ?? {}) as {
+      amount_per_100g?: string;
+      amount_per_serving?: string;
+    };
+    if (per100Changed) {
+      const next = after.amount_per_100g.trim();
+      if (next) rowMap.amount_per_100g = next;
+      else delete rowMap.amount_per_100g;
+    }
+    if (perServingChanged) {
+      const next = after.amount_per_serving.trim();
+      if (next) rowMap.amount_per_serving = next;
+      else delete rowMap.amount_per_serving;
+    }
+    payload.nutrition = payload.nutrition ?? {};
+    if (Object.keys(rowMap).length === 0) {
+      delete payload.nutrition[slug];
+    } else {
+      payload.nutrition[slug] = rowMap;
+    }
+    if (payload.nutrition && Object.keys(payload.nutrition).length === 0) {
+      delete payload.nutrition;
+    }
+  }
+
+  // Amino acids — nested two-level diff per group / acid.
+  const acidGroupSlugs = new Set([
+    ...Object.keys(draft.amino_acids),
+    ...Object.keys(initial.amino_acids),
+  ]);
+  for (const groupSlug of acidGroupSlugs) {
+    const before = initial.amino_acids[groupSlug] ?? {};
+    const after = draft.amino_acids[groupSlug] ?? {};
+    const allAcidKeys = new Set([
+      ...Object.keys(before),
+      ...Object.keys(after),
+    ]);
+    const groupMap = (payload.amino_acids?.[groupSlug] ?? {}) as Record<
+      string,
+      string
+    >;
+    let touched = false;
+    for (const key of allAcidKeys) {
+      const b = (before[key] ?? "").trim();
+      const a = (after[key] ?? "").trim();
+      if (a === b) continue;
+      touched = true;
+      if (a) groupMap[key] = a;
+      else delete groupMap[key];
+    }
+    if (!touched) continue;
+    payload.amino_acids = payload.amino_acids ?? {};
+    if (Object.keys(groupMap).length === 0) {
+      delete payload.amino_acids[groupSlug];
+    } else {
+      payload.amino_acids[groupSlug] = groupMap;
+    }
+    if (
+      payload.amino_acids
+      && Object.keys(payload.amino_acids).length === 0
+    ) {
+      delete payload.amino_acids;
+    }
+  }
+
+  // Limits — flat slug → value diff.
+  const allLimitSlugs = new Set([
+    ...Object.keys(draft.limits),
+    ...Object.keys(initial.limits),
+  ]);
+  for (const slug of allLimitSlugs) {
+    const before = (initial.limits[slug] ?? "").trim();
+    const after = (draft.limits[slug] ?? "").trim();
+    if (after === before) continue;
+    payload.limits = setOrClear(
+      payload.limits,
+      slug,
+      after,
+    ) as Record<string, string> | undefined;
+  }
+
+  // Metadata — fixed-key diff.
+  for (const key of [
+    "filled_total_mg",
+    "total_weight_label",
+    "weight_uniformity",
+    "powder_per_serving_mg",
+    "powder_pack_total_mg",
+  ] as const) {
+    if (draft.metadata[key] !== initial.metadata[key]) {
+      payload.metadata = setOrClear(
+        payload.metadata as Record<string, string> | undefined,
+        key,
+        draft.metadata[key],
+      ) as DraftState["metadata"] | undefined;
+    }
+  }
+
   return payload as SnapshotOverrides;
 }
 
@@ -211,6 +698,12 @@ export function EditOverridesButton({
   const [draft, setDraft] = useState<DraftState>(() =>
     draftFromOverrides(sheet.snapshot_overrides, rendered),
   );
+  // Frozen copy of the draft as the modal opened. Save-time logic
+  // diffs the live ``draft`` against this baseline so unchanged
+  // pre-populated fields don't get persisted as overrides.
+  const [initialDraft, setInitialDraft] = useState<DraftState>(() =>
+    draftFromOverrides(sheet.snapshot_overrides, rendered),
+  );
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useUpdateSpecification(orgId, sheet.id);
@@ -219,7 +712,9 @@ export function EditOverridesButton({
   // any stale draft state from a previous session.
   useEffect(() => {
     if (!isOpen) return;
-    setDraft(draftFromOverrides(sheet.snapshot_overrides, rendered));
+    const fresh = draftFromOverrides(sheet.snapshot_overrides, rendered);
+    setDraft(fresh);
+    setInitialDraft(fresh);
     setError(null);
   }, [isOpen, sheet.snapshot_overrides, rendered]);
 
@@ -251,7 +746,11 @@ export function EditOverridesButton({
     setError(null);
     try {
       await mutation.mutateAsync({
-        snapshot_overrides: draftToPayload(draft),
+        snapshot_overrides: draftToPayload(
+          draft,
+          initialDraft,
+          sheet.snapshot_overrides,
+        ),
       });
       setIsOpen(false);
       router.refresh();
@@ -358,23 +857,26 @@ export function EditOverridesButton({
 
   const setActiveField = (
     itemId: string,
-    field: "label_claim_mg" | "nrv_pct",
+    field: "label_claim_mg" | "nrv_pct" | "ingredient_list_name",
     value: string,
   ) =>
-    setDraft((prev) => ({
-      ...prev,
-      actives: {
-        ...prev.actives,
-        [itemId]: {
-          label_claim_mg:
-            field === "label_claim_mg"
-              ? value
-              : prev.actives[itemId]?.label_claim_mg ?? "",
-          nrv_pct:
-            field === "nrv_pct" ? value : prev.actives[itemId]?.nrv_pct ?? "",
+    setDraft((prev) => {
+      const current = prev.actives[itemId] ?? {
+        label_claim_mg: "",
+        nrv_pct: "",
+        ingredient_list_name: "",
+      };
+      return {
+        ...prev,
+        actives: {
+          ...prev.actives,
+          [itemId]: {
+            ...current,
+            [field]: value,
+          },
         },
-      },
-    }));
+      };
+    });
 
   return (
     <Modal
@@ -541,7 +1043,7 @@ export function EditOverridesButton({
                       <thead className="border-b border-ink-200 text-ink-500">
                         <tr>
                           <th className="px-1 py-1 text-left font-medium">
-                            {tSpecs("overrides.actives_col_name")}
+                            Display name
                           </th>
                           <th className="px-1 py-1 text-right font-medium">
                             {tSpecs("overrides.actives_col_claim")}
@@ -558,12 +1060,27 @@ export function EditOverridesButton({
                           const cur = draft.actives[id] ?? {
                             label_claim_mg: "",
                             nrv_pct: "",
+                            ingredient_list_name: "",
                           };
                           return (
                             <tr key={id} className="border-b border-ink-100">
-                              <td className="px-1 py-1.5 text-ink-1000">
-                                {active.ingredient_list_name ||
-                                  active.item_name}
+                              <td className="px-1 py-1.5">
+                                <input
+                                  type="text"
+                                  value={cur.ingredient_list_name}
+                                  placeholder={
+                                    active.ingredient_list_name
+                                    || active.item_name
+                                  }
+                                  onChange={(e) =>
+                                    setActiveField(
+                                      id,
+                                      "ingredient_list_name",
+                                      e.target.value,
+                                    )
+                                  }
+                                  className="w-full rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                />
                               </td>
                               <td className="px-1 py-1.5 text-right">
                                 <input
@@ -605,7 +1122,7 @@ export function EditOverridesButton({
                   </fieldset>
                 ) : null}
 
-                {/* Per-row excipient mg overrides */}
+                {/* Per-row excipient label + mg overrides */}
                 {editableExcipients.length > 0 ? (
                   <fieldset className="rounded-xl border border-ink-100 p-4">
                     <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
@@ -618,7 +1135,7 @@ export function EditOverridesButton({
                       <thead className="border-b border-ink-200 text-ink-500">
                         <tr>
                           <th className="px-1 py-1 text-left font-medium">
-                            {tSpecs("overrides.excipients_col_name")}
+                            Label
                           </th>
                           <th className="px-1 py-1 text-right font-medium">
                             {tSpecs("overrides.excipients_col_mg")}
@@ -628,8 +1145,24 @@ export function EditOverridesButton({
                       <tbody>
                         {editableExcipients.map((row) => (
                           <tr key={row.slug} className="border-b border-ink-100">
-                            <td className="px-1 py-1.5 text-ink-1000">
-                              {row.label}
+                            <td className="px-1 py-1.5">
+                              <input
+                                type="text"
+                                value={
+                                  draft.excipients_label[row.slug] ?? ""
+                                }
+                                placeholder={row.label}
+                                onChange={(e) =>
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    excipients_label: {
+                                      ...prev.excipients_label,
+                                      [row.slug]: e.target.value,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                              />
                             </td>
                             <td className="px-1 py-1.5 text-right">
                               <input
@@ -649,6 +1182,321 @@ export function EditOverridesButton({
                     </table>
                   </fieldset>
                 ) : null}
+
+                {/* Capsule shell — single row, label + mg. */}
+                {(rendered.declaration?.entries ?? []).some(
+                  (e) => e.category === "shell",
+                ) ? (
+                  <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
+                    <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                      Capsule shell
+                    </legend>
+                    <TextField
+                      label="Label"
+                      value={draft.capsule_shell.label}
+                      placeholder=""
+                      onChange={(v) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          capsule_shell: { ...prev.capsule_shell, label: v },
+                        }))
+                      }
+                    />
+                    <TextField
+                      label="Weight (mg)"
+                      value={draft.capsule_shell.mg}
+                      placeholder=""
+                      onChange={(v) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          capsule_shell: { ...prev.capsule_shell, mg: v },
+                        }))
+                      }
+                    />
+                  </fieldset>
+                ) : null}
+
+                {/* Nutrition rows */}
+                {(rendered.nutrition?.rows ?? []).length > 0 ? (
+                  <fieldset className="rounded-xl border border-ink-100 p-4">
+                    <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                      Nutrition information
+                    </legend>
+                    <table className="w-full text-xs">
+                      <thead className="border-b border-ink-200 text-ink-500">
+                        <tr>
+                          <th className="px-1 py-1 text-left font-medium">Row</th>
+                          <th className="px-1 py-1 text-right font-medium">
+                            Per 100g
+                          </th>
+                          <th className="px-1 py-1 text-right font-medium">
+                            Per serving
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(rendered.nutrition?.rows ?? []).map((row) => {
+                          const r = row as {
+                            slug?: string;
+                            key?: string;
+                            label?: string;
+                            amount_per_100g?: string;
+                            amount_per_serving?: string;
+                          };
+                          const slug = r.slug ?? r.key ?? "";
+                          if (!slug) return null;
+                          const cur = draft.nutrition[slug] ?? {
+                            amount_per_100g: "",
+                            amount_per_serving: "",
+                          };
+                          return (
+                            <tr
+                              key={slug}
+                              className="border-b border-ink-100"
+                            >
+                              <td className="px-1 py-1.5 text-ink-1000">
+                                {r.label ?? slug}
+                              </td>
+                              <td className="px-1 py-1.5 text-right">
+                                <input
+                                  type="text"
+                                  value={cur.amount_per_100g}
+                                  placeholder={r.amount_per_100g ?? ""}
+                                  onChange={(e) =>
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      nutrition: {
+                                        ...prev.nutrition,
+                                        [slug]: {
+                                          amount_per_100g: e.target.value,
+                                          amount_per_serving:
+                                            prev.nutrition[slug]
+                                              ?.amount_per_serving ?? "",
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-24 rounded-md bg-ink-0 px-2 py-1 text-right text-xs tabular-nums text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                />
+                              </td>
+                              <td className="px-1 py-1.5 text-right">
+                                <input
+                                  type="text"
+                                  value={cur.amount_per_serving}
+                                  placeholder={r.amount_per_serving ?? ""}
+                                  onChange={(e) =>
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      nutrition: {
+                                        ...prev.nutrition,
+                                        [slug]: {
+                                          amount_per_100g:
+                                            prev.nutrition[slug]
+                                              ?.amount_per_100g ?? "",
+                                          amount_per_serving: e.target.value,
+                                        },
+                                      },
+                                    }))
+                                  }
+                                  className="w-24 rounded-md bg-ink-0 px-2 py-1 text-right text-xs tabular-nums text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </fieldset>
+                ) : null}
+
+                {/* Amino acids */}
+                {(rendered.amino_acids?.groups ?? []).length > 0 ? (
+                  <fieldset className="rounded-xl border border-ink-100 p-4">
+                    <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                      Amino acids
+                    </legend>
+                    <div className="space-y-3">
+                      {(rendered.amino_acids?.groups ?? []).map((group) => {
+                        const g = group as {
+                          slug?: string;
+                          key?: string;
+                          label?: string;
+                          acids?: ReadonlyArray<{
+                            key?: string;
+                            slug?: string;
+                            label?: string;
+                            amount_per_serving?: string;
+                          }>;
+                        };
+                        const groupSlug = g.slug ?? g.key ?? "";
+                        if (!groupSlug) return null;
+                        return (
+                          <div key={groupSlug}>
+                            <p className="mb-1 text-[11px] font-medium uppercase tracking-wider text-ink-500">
+                              {g.label ?? groupSlug}
+                            </p>
+                            <table className="w-full text-xs">
+                              <tbody>
+                                {(g.acids ?? []).map((acid) => {
+                                  const acidKey = acid.key ?? acid.slug ?? "";
+                                  if (!acidKey) return null;
+                                  const cur =
+                                    draft.amino_acids[groupSlug]?.[acidKey]
+                                    ?? "";
+                                  return (
+                                    <tr
+                                      key={acidKey}
+                                      className="border-b border-ink-100"
+                                    >
+                                      <td className="px-1 py-1.5 text-ink-1000">
+                                        {acid.label ?? acidKey}
+                                      </td>
+                                      <td className="px-1 py-1.5 text-right">
+                                        <input
+                                          type="text"
+                                          value={cur}
+                                          placeholder={
+                                            acid.amount_per_serving ?? ""
+                                          }
+                                          onChange={(e) =>
+                                            setDraft((prev) => ({
+                                              ...prev,
+                                              amino_acids: {
+                                                ...prev.amino_acids,
+                                                [groupSlug]: {
+                                                  ...(prev.amino_acids[
+                                                    groupSlug
+                                                  ] ?? {}),
+                                                  [acidKey]: e.target.value,
+                                                },
+                                              },
+                                            }))
+                                          }
+                                          className="w-24 rounded-md bg-ink-0 px-2 py-1 text-right text-xs tabular-nums text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                                        />
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </fieldset>
+                ) : null}
+
+                {/* Limits */}
+                {(rendered.limits ?? []).length > 0 ? (
+                  <fieldset className="rounded-xl border border-ink-100 p-4">
+                    <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                      Microbiological / heavy metal limits
+                    </legend>
+                    <table className="w-full text-xs">
+                      <tbody>
+                        {(rendered.limits ?? []).map((row) => (
+                          <tr
+                            key={row.slug}
+                            className="border-b border-ink-100"
+                          >
+                            <td className="px-1 py-1.5 text-ink-1000">
+                              {row.name}
+                            </td>
+                            <td className="px-1 py-1.5">
+                              <input
+                                type="text"
+                                value={draft.limits[row.slug] ?? ""}
+                                placeholder={row.value ?? ""}
+                                onChange={(e) =>
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    limits: {
+                                      ...prev.limits,
+                                      [row.slug]: e.target.value,
+                                    },
+                                  }))
+                                }
+                                className="w-full rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                              />
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </fieldset>
+                ) : null}
+
+                {/* Metadata: filled total weight, weight uniformity, etc. */}
+                <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
+                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                    Weight + tolerance
+                  </legend>
+                  <TextField
+                    label="Filled total weight (mg)"
+                    value={draft.metadata.filled_total_mg}
+                    placeholder=""
+                    onChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        metadata: { ...prev.metadata, filled_total_mg: v },
+                      }))
+                    }
+                  />
+                  <TextField
+                    label="Total weight label"
+                    value={draft.metadata.total_weight_label}
+                    placeholder=""
+                    onChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        metadata: {
+                          ...prev.metadata,
+                          total_weight_label: v,
+                        },
+                      }))
+                    }
+                  />
+                  <TextField
+                    label="Weight uniformity tolerance"
+                    value={draft.metadata.weight_uniformity}
+                    placeholder=""
+                    onChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        metadata: { ...prev.metadata, weight_uniformity: v },
+                      }))
+                    }
+                  />
+                  <TextField
+                    label="Powder per serving (mg)"
+                    value={draft.metadata.powder_per_serving_mg}
+                    placeholder=""
+                    onChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        metadata: {
+                          ...prev.metadata,
+                          powder_per_serving_mg: v,
+                        },
+                      }))
+                    }
+                  />
+                  <TextField
+                    label="Powder pack total (mg)"
+                    value={draft.metadata.powder_pack_total_mg}
+                    placeholder=""
+                    onChange={(v) =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        metadata: {
+                          ...prev.metadata,
+                          powder_pack_total_mg: v,
+                        },
+                      }))
+                    }
+                  />
+                </fieldset>
 
                 {error ? (
                   <p

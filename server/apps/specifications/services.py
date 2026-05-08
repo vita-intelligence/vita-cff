@@ -33,7 +33,21 @@ from config.signatures import (
     validate_signature_image,
 )
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
-from apps.formulations.constants import DosageForm, capsule_size_by_key
+from apps.formulations.constants import (
+    DosageForm,
+    EXCIPIENT_LABEL_ANTICAKING,
+    EXCIPIENT_LABEL_DCP,
+    EXCIPIENT_LABEL_GUMMY_BASE,
+    EXCIPIENT_LABEL_MCC,
+    EXCIPIENT_LABEL_WATER,
+    EXCIPIENT_SLUG_ANTICAKING,
+    EXCIPIENT_SLUG_CAPSULE_SHELL,
+    EXCIPIENT_SLUG_DCP,
+    EXCIPIENT_SLUG_GUMMY_BASE,
+    EXCIPIENT_SLUG_MCC,
+    EXCIPIENT_SLUG_WATER,
+    capsule_size_by_key,
+)
 from apps.formulations.models import FormulationVersion
 from apps.formulations.services import instantiate_active_label
 from apps.organizations.models import Organization
@@ -1000,6 +1014,34 @@ def _nrv_percent(
     return f"{(claim / nrv_mg) * 100:.1f}"
 
 
+def _apply_limits_overrides(
+    rows: list[dict[str, str]], overrides: dict[str, str]
+) -> list[dict[str, str]]:
+    """Layer ``snapshot_overrides.limits`` on top of the resolved
+    safety-limit rows. The legacy ``SpecificationSheet.limits_override``
+    field still drives :func:`resolve_limits`, but this newer override
+    section lets a scientist edit individual limit cells through the
+    same modal that gates every other client-facing tweak."""
+
+    if not overrides:
+        return rows
+    patched: list[dict[str, str]] = []
+    for row in rows:
+        slug = row.get("slug") or ""
+        override_value = overrides.get(slug)
+        if isinstance(override_value, str) and override_value:
+            patched.append(
+                {
+                    **row,
+                    "value": override_value,
+                    "value_overridden": True,
+                }
+            )
+        else:
+            patched.append(row)
+    return patched
+
+
 def resolve_limits(sheet: SpecificationSheet) -> list[dict[str, str]]:
     """Compute the Microbiological / PAH / Pesticides / Heavy Metal block.
 
@@ -1145,6 +1187,395 @@ def _augment_declaration_with_bolding(
     return escaped
 
 
+#: Map of declaration-entry ``slug`` → list of override keys that feed
+#: that entry. Anticaking is the only many-to-one mapping (mg_stearate
+#: + silica collapse into one row); every other slug pairs 1:1 with
+#: its override key. Used only to know whether an override is in
+#: scope; the actual mg recomputation happens inline below.
+_EXCIPIENT_SLUG_OVERRIDE_KEYS: dict[str, tuple[str, ...]] = {
+    EXCIPIENT_SLUG_MCC: ("mcc_mg",),
+    EXCIPIENT_SLUG_DCP: ("dcp_mg",),
+    EXCIPIENT_SLUG_GUMMY_BASE: ("gummy_base_mg",),
+    EXCIPIENT_SLUG_WATER: ("water_mg",),
+    EXCIPIENT_SLUG_ANTICAKING: ("mg_stearate_mg", "silica_mg"),
+}
+
+
+#: Label-based fallback so snapshots taken before the per-entry
+#: ``slug`` field landed still respect an excipients_mg override. Each
+#: entry whose label matches one of these (case-insensitive, exact)
+#: gets pinned to the corresponding canonical slug at render time.
+_EXCIPIENT_LABEL_TO_SLUG: dict[str, str] = {
+    EXCIPIENT_LABEL_MCC.lower(): EXCIPIENT_SLUG_MCC,
+    "microcrystalline cellulose": EXCIPIENT_SLUG_MCC,
+    EXCIPIENT_LABEL_DCP.lower(): EXCIPIENT_SLUG_DCP,
+    EXCIPIENT_LABEL_GUMMY_BASE.lower(): EXCIPIENT_SLUG_GUMMY_BASE,
+    EXCIPIENT_LABEL_WATER.lower(): EXCIPIENT_SLUG_WATER,
+    EXCIPIENT_LABEL_ANTICAKING.lower(): EXCIPIENT_SLUG_ANTICAKING,
+}
+
+
+def _resolve_entry_slug(
+    entry: dict[str, Any],
+    *,
+    label_index: dict[str, str] | None = None,
+) -> str:
+    """Return the override slug a declaration entry pairs with.
+
+    Prefers the ``slug`` field stored on the entry (snapshots produced
+    after the per-entry slug rollout) and falls back to a label
+    heuristic so override edits still land on legacy snapshots that
+    pre-date that field. ``label_index`` is an optional per-render
+    map of ``label.lower() → canonical_slug`` populated from
+    ``totals.excipients.mcc_carrier_rows`` / ``dcp_carrier_rows`` /
+    ``gummy_base_rows`` so per-pick entries (e.g. "MCC PH-101") still
+    pair with their typed-cell override key (e.g. ``mcc_mg``) on
+    legacy snapshots. Returns an empty string when the entry is
+    untargetable — actives, capsule shell, and per-pick rows whose
+    label does not match a known synthetic excipient."""
+
+    slug = entry.get("slug")
+    if isinstance(slug, str) and slug:
+        return slug
+    label = (entry.get("label") or "").strip().lower()
+    if not label:
+        return ""
+    if label_index and label in label_index:
+        return label_index[label]
+    return _EXCIPIENT_LABEL_TO_SLUG.get(label, "")
+
+
+def _build_carrier_label_index(
+    excipients: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Map per-pick carrier labels back to their canonical override
+    slug so legacy snapshots — saved after the carrier picker landed
+    but before per-entry slugs — still resolve through to the right
+    ``excipients_mg`` key. Walks the typed-cell row collections that
+    DO carry stable identifiers and pins each row's display label to
+    the slug that drives it."""
+
+    if not excipients:
+        return {}
+    index: dict[str, str] = {}
+    for row in excipients.get("mcc_carrier_rows") or []:
+        label = (row.get("label") if isinstance(row, dict) else None) or ""
+        key = label.strip().lower()
+        if key:
+            index[key] = EXCIPIENT_SLUG_MCC
+    for row in excipients.get("dcp_carrier_rows") or []:
+        label = (row.get("label") if isinstance(row, dict) else None) or ""
+        key = label.strip().lower()
+        if key:
+            index[key] = EXCIPIENT_SLUG_DCP
+    # Gummy-base picks already serialise per-pick override keys
+    # ``gummy_base:<item_id>``; legacy snapshots without entry slugs
+    # still get hit on the label so the typed-cell ``gummy_base_mg``
+    # override drops them too.
+    for row in excipients.get("gummy_base_rows") or []:
+        label = (row.get("label") if isinstance(row, dict) else None) or ""
+        key = label.strip().lower()
+        if key:
+            index[key] = EXCIPIENT_SLUG_GUMMY_BASE
+    return index
+
+
+def _coerce_override_decimal(raw: Any) -> Decimal | None:
+    """Tolerant Decimal parse — empty / unparseable values mean
+    "leave the snapshot mg alone"; ``"0"`` / ``Decimal("0")`` mean
+    "drop the row"; anything positive replaces the mg. ``None`` is
+    returned for unparseable inputs so callers can keep the original
+    value rather than silently zeroing it."""
+
+    if raw is None:
+        return None
+    if isinstance(raw, Decimal):
+        return raw
+    if isinstance(raw, (int, float)):
+        try:
+            return Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if not trimmed:
+            return None
+        try:
+            return Decimal(trimmed)
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _format_grouped_declaration_from_entries(
+    entries: list[dict[str, Any]],
+) -> str:
+    """Render the EU 1169/2011 grouped declaration string from a list
+    of snapshot-shaped entry dicts.
+
+    Mirrors ``apps.formulations.services._format_grouped_declaration``
+    so an entry with a non-empty ``use_as`` joins ``"<Category> (member1,
+    member2)"`` while standalone rows print their own label. The
+    chunked string is sorted by the heaviest member's mg so the
+    grouped phrasing slots in by weight rather than by insertion
+    order. Allergen labels are wrapped in ``<b>…</b>`` to preserve the
+    bolded-allergen contract every downstream renderer expects."""
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    standalone: list[dict[str, Any]] = []
+    for entry in entries:
+        use_as = (entry.get("use_as") or "").strip()
+        if use_as and use_as != "Active":
+            groups.setdefault(use_as, []).append(entry)
+        else:
+            standalone.append(entry)
+
+    def render_label(entry: dict[str, Any]) -> str:
+        escaped = html.escape((entry.get("label") or "").strip())
+        return f"<b>{escaped}</b>" if entry.get("is_allergen") else escaped
+
+    def entry_mg(entry: dict[str, Any]) -> float:
+        try:
+            return float(Decimal(str(entry.get("mg") or "0")))
+        except (InvalidOperation, ValueError):
+            return 0.0
+
+    chunks: list[tuple[float, str]] = []
+    for entry in standalone:
+        chunks.append((entry_mg(entry), render_label(entry)))
+    for category, members in groups.items():
+        members.sort(key=lambda e: (-entry_mg(e), (e.get("label") or "")))
+        leading = entry_mg(members[0])
+        names = ", ".join(render_label(m) for m in members)
+        chunks.append((leading, f"{html.escape(category)} ({names})"))
+
+    chunks.sort(key=lambda c: -c[0])
+    return ", ".join(rendered for _, rendered in chunks)
+
+
+def _apply_excipient_overrides_to_declaration(
+    declaration: dict[str, Any],
+    excipient_mg_overrides: dict[str, str],
+    *,
+    excipients_payload: dict[str, Any] | None = None,
+    excipients_label_overrides: dict[str, str] | None = None,
+    capsule_shell_override: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Filter / rewrite a snapshot's declaration entries based on the
+    sheet's ``excipients_mg`` overrides, then rebuild the joined text
+    so the declaration string and the per-row table stay in sync.
+
+    Rules:
+
+    * An override value that parses to ``0`` (any sign) drops the
+      matching entry from the declaration entirely — the spec sheet
+      stops listing it on both the excipient table and the joined
+      ingredient string. This is what scientists hit when a customer
+      asks for a "no excipients" capsule.
+    * A positive override replaces the entry's mg and tags the entry
+      with ``mg_overridden`` so the UI can badge the edit.
+    * Anticaking is special: a single declaration row collapses two
+      override keys (``mg_stearate_mg`` + ``silica_mg``). The new mg
+      is the sum of (override-or-snapshot mg_stearate) + (override-or-
+      snapshot silica); zero on both keys drops the row.
+    * Per-row overrides keyed by ``gummy_base:<id>`` or by an
+      arbitrary ``excipients.rows`` slug match the entry whose ``slug``
+      field matches that key (or, for legacy snapshots without slugs,
+      a label-based heuristic).
+    * Unmatched entries pass through unchanged.
+
+    Old snapshots taken before the per-entry slug field still respect
+    canonical-slug overrides through ``_resolve_entry_slug``'s label
+    heuristic. Per-row overrides on legacy data are no-ops (no slug,
+    no label match) — re-saving the formulation rebuilds the snapshot
+    with slugs and the override starts taking effect."""
+
+    label_overrides = excipients_label_overrides or {}
+    shell_override = capsule_shell_override or {}
+    has_any_override = bool(
+        excipient_mg_overrides or label_overrides or shell_override
+    )
+    if not has_any_override:
+        return declaration
+
+    raw_entries = declaration.get("entries") or []
+    if not isinstance(raw_entries, list) or not raw_entries:
+        return declaration
+
+    # Build the legacy-snapshot fallback index once per render so per-
+    # pick MCC / DCP / gummy-base entries (saved before the per-entry
+    # slug field landed) still resolve through to their typed-cell
+    # override key.
+    label_index = _build_carrier_label_index(excipients_payload)
+
+    # Pre-resolve the anticaking override since it spans two keys.
+    # ``None`` means "no override touches it"; a Decimal (incl. zero)
+    # means "rewrite to this mg or drop".
+    anticaking_total: Decimal | None = None
+    if (
+        "mg_stearate_mg" in excipient_mg_overrides
+        or "silica_mg" in excipient_mg_overrides
+    ):
+        # Snapshot baseline pulled from the matching declaration entry
+        # rather than ``totals.excipients`` so legacy snapshots that
+        # only stored the entry list still work.
+        snapshot_anticaking_mg = Decimal("0")
+        for entry in raw_entries:
+            if _resolve_entry_slug(entry, label_index=label_index) == EXCIPIENT_SLUG_ANTICAKING:
+                snapshot_total = _coerce_override_decimal(entry.get("mg"))
+                if snapshot_total is not None:
+                    snapshot_anticaking_mg = snapshot_total
+                break
+        # Without explicit per-component snapshot mg numbers in the
+        # entries list we can't split the baseline cleanly. Use the
+        # overrides where given and zero the side that wasn't
+        # overridden — matches scientist expectation that editing one
+        # cell silences the other half.
+        stearate_o = _coerce_override_decimal(
+            excipient_mg_overrides.get("mg_stearate_mg")
+        )
+        silica_o = _coerce_override_decimal(
+            excipient_mg_overrides.get("silica_mg")
+        )
+        if stearate_o is not None or silica_o is not None:
+            stearate_part = (
+                stearate_o
+                if stearate_o is not None
+                else snapshot_anticaking_mg
+            )
+            silica_part = silica_o if silica_o is not None else Decimal("0")
+            # When ONLY silica is overridden the snapshot baseline
+            # already covers the stearate share; flip the picks above
+            # so the unmodified side keeps its baseline weight.
+            if stearate_o is None and silica_o is not None:
+                stearate_part = snapshot_anticaking_mg
+                silica_part = silica_o
+            anticaking_total = stearate_part + silica_part
+
+    new_entries: list[dict[str, Any]] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            new_entries.append(entry)
+            continue
+        slug = _resolve_entry_slug(entry, label_index=label_index)
+
+        # Capsule shell — its own override section with both ``label``
+        # and ``mg`` keys. ``mg = "0"`` drops the row, anything else
+        # rewrites in place. Pre-empts the generic slug pass.
+        if slug == EXCIPIENT_SLUG_CAPSULE_SHELL and shell_override:
+            shell_mg_raw = shell_override.get("mg")
+            if shell_mg_raw is not None and shell_mg_raw != "":
+                shell_mg = _coerce_override_decimal(shell_mg_raw)
+                if shell_mg is not None and shell_mg <= 0:
+                    continue
+                if shell_mg is not None:
+                    entry = {
+                        **entry,
+                        "mg": str(shell_mg),
+                        "mg_overridden": True,
+                    }
+            shell_label = shell_override.get("label")
+            if isinstance(shell_label, str) and shell_label.strip():
+                entry = {
+                    **entry,
+                    "label": shell_label.strip(),
+                    "label_overridden": True,
+                }
+            new_entries.append(entry)
+            continue
+
+        # Anticaking is the only slug that aggregates two override
+        # keys; handle it before the generic per-slug pass so the sum
+        # logic above is the single source of truth for that row.
+        if slug == EXCIPIENT_SLUG_ANTICAKING and anticaking_total is not None:
+            if anticaking_total <= 0:
+                continue
+            new_entries.append(
+                {
+                    **entry,
+                    "mg": str(anticaking_total),
+                    "mg_overridden": True,
+                }
+            )
+            continue
+
+        # Generic 1:1 path: an override key that names the slug
+        # directly drops or rewrites the row.
+        candidate_keys: tuple[str, ...] = (slug,) if slug else ()
+        if slug in _EXCIPIENT_SLUG_OVERRIDE_KEYS:
+            candidate_keys = _EXCIPIENT_SLUG_OVERRIDE_KEYS[slug]
+        override_key = next(
+            (k for k in candidate_keys if k in excipient_mg_overrides),
+            None,
+        )
+        if override_key is None:
+            new_entries.append(entry)
+            continue
+
+        new_mg = _coerce_override_decimal(excipient_mg_overrides[override_key])
+        if new_mg is None:
+            new_entries.append(entry)
+            continue
+        if new_mg <= 0:
+            # Drop the row entirely — disappears from both the
+            # excipient table and the joined declaration text.
+            continue
+        new_entries.append(
+            {
+                **entry,
+                "mg": str(new_mg),
+                "mg_overridden": True,
+            }
+        )
+
+    # Per-row label rewrites. Walk the surviving entries one more
+    # time and apply ``excipients_label_overrides`` by the same slug
+    # the mg overrides used. Empty / whitespace-only overrides leave
+    # the original label alone.
+    if label_overrides:
+        relabelled: list[dict[str, Any]] = []
+        for entry in new_entries:
+            if not isinstance(entry, dict):
+                relabelled.append(entry)
+                continue
+            slug = _resolve_entry_slug(entry, label_index=label_index)
+            override_label = label_overrides.get(slug) if slug else None
+            if isinstance(override_label, str) and override_label.strip():
+                relabelled.append(
+                    {
+                        **entry,
+                        "label": override_label.strip(),
+                        "label_overridden": True,
+                    }
+                )
+            else:
+                relabelled.append(entry)
+        new_entries = relabelled
+
+    # Rebuild the joined string from the filtered entries so the
+    # declaration paragraph never lists a row the table no longer
+    # shows. ``_format_grouped_declaration_from_entries`` mirrors the
+    # snapshot-time formatter so EU 1169/2011 grouping survives the
+    # rewrite.
+    rebuilt_text = _format_grouped_declaration_from_entries(new_entries)
+
+    # Sort by mg desc to match the snapshot-time ordering rule the
+    # frontend assumes when it walks ``rendered.declaration.entries``.
+    def entry_mg(entry: dict[str, Any]) -> float:
+        try:
+            return float(Decimal(str(entry.get("mg") or "0")))
+        except (InvalidOperation, ValueError):
+            return 0.0
+
+    new_entries.sort(key=lambda e: (-entry_mg(e), (e.get("label") or "")))
+
+    return {
+        **declaration,
+        "entries": new_entries,
+        "text": rebuilt_text,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Snapshot override validation + merge (Phase G5a)
 # ---------------------------------------------------------------------------
@@ -1161,6 +1592,31 @@ _OVERRIDE_SECTIONS: frozenset[str] = frozenset(
         "compliance",
         "actives",
         "excipients_mg",
+        # Per-row excipient label rewrites — keyed by the same slug
+        # as ``excipients_mg`` so a row can have either / both edits.
+        "excipients_label",
+        # Single-row capsule shell override (label + mg).
+        "capsule_shell",
+        # Free-form per-row Nutrition Information edits keyed by the
+        # snapshot row's slug (``energy_kj``, ``fat_g``, ...). Each
+        # row carries an ``amount_per_100g`` and ``amount_per_serving``
+        # string so commercial leads can re-state the nutrition panel
+        # against an off-spec serving size without re-saving the
+        # formulation.
+        "nutrition",
+        # Same shape for the amino acid block. Keyed by group slug
+        # (``essential`` / ``non_essential`` / ``conditional``) with
+        # nested ``{<acid_key>: amount_string}`` payloads.
+        "amino_acids",
+        # Microbiological / heavy-metal / pesticide spec limits.
+        # Mirrors the legacy ``SpecificationSheet.limits_override``
+        # JSON field so a single place gates every "client-facing
+        # numbers" edit.
+        "limits",
+        # Top-level metadata / weight rows surfaced on the Product
+        # Specification block: filled total weight, weight uniformity
+        # tolerance, total weight label, etc.
+        "metadata",
     }
 )
 
@@ -1180,11 +1636,32 @@ _OVERRIDE_KEYS_PER_SECTION: dict[str, frozenset[str]] = {
     "declaration": frozenset({"text"}),
     "allergens": frozenset({"sources"}),
     "compliance": frozenset({"vegan", "organic", "halal", "kosher"}),
+    "capsule_shell": frozenset({"label", "mg"}),
+    "metadata": frozenset(
+        {
+            "filled_total_mg",
+            "total_weight_label",
+            "weight_uniformity",
+            "powder_per_serving_mg",
+            "powder_pack_total_mg",
+        }
+    ),
 }
 
-#: Per-line keys allowed inside ``actives.<line_id>``.
+#: Per-line keys allowed inside ``actives.<line_id>``. Three string
+#: fields: the numeric claim, the %NRV badge, and the displayed
+#: ingredient name (which until now was locked to the catalogue
+#: value — now editable so a client-specific spec sheet can rename
+#: an active without forking the formulation).
 _OVERRIDE_ACTIVE_KEYS: frozenset[str] = frozenset(
-    {"label_claim_mg", "nrv_pct"}
+    {"label_claim_mg", "nrv_pct", "ingredient_list_name"}
+)
+
+#: Per-row keys allowed inside ``nutrition.<row_slug>`` and
+#: ``amino_acids.<group_key>``. Free-form numeric strings (the spec
+#: sheet's nutrition panel renders strings verbatim, no quantisation).
+_OVERRIDE_NUTRITION_KEYS: frozenset[str] = frozenset(
+    {"amount_per_100g", "amount_per_serving"}
 )
 
 #: Compliance flag values the validator accepts. Map onto the same
@@ -1225,15 +1702,18 @@ def _validate_snapshot_overrides(value: Any) -> dict[str, Any]:
         if not isinstance(inner, dict):
             raise InvalidSnapshotOverrides()
 
-        if section == "excipients_mg":
-            # ``{row_slug: mg_value_string}`` — keys are the totals
-            # ``excipients.rows`` slugs ("acidity", "flavouring",
-            # "flavouring:<id>", etc.) plus the four typed cells
-            # ("water_mg", "gummy_base_mg", "mg_stearate_mg",
-            # "silica_mg", "mcc_mg", "dcp_mg"). Values are free-text
-            # decimal strings so a scientist can type "200" or
-            # "199.85". Empty / null clears that key.
-            cleaned_excipients: dict[str, str] = {}
+        if section in {"excipients_mg", "excipients_label", "limits"}:
+            # All three accept the same shape: ``{slug: free_text_string}``.
+            # ``excipients_mg`` keys are the totals ``excipients.rows``
+            # slugs ("acidity", "flavouring", "flavouring:<id>", etc.)
+            # plus the four typed cells ("water_mg", "gummy_base_mg",
+            # "mg_stearate_mg", "silica_mg", "mcc_mg", "dcp_mg"); values
+            # are decimal strings ("200", "199.85"). ``excipients_label``
+            # uses the same slugs and value-rewrites the displayed
+            # excipient name. ``limits`` keys are the safety-limit
+            # slugs (``total_aerobic``, ``e_coli``, ...) and accept
+            # any free-form string ("≤10,000 cfu/g", "Comply with EU").
+            cleaned_flat: dict[str, str] = {}
             for row_slug, raw in inner.items():
                 if not isinstance(row_slug, str) or not row_slug:
                     raise InvalidSnapshotOverrides()
@@ -1242,14 +1722,52 @@ def _validate_snapshot_overrides(value: Any) -> dict[str, Any]:
                 if isinstance(raw, bool):
                     raise InvalidSnapshotOverrides()
                 if isinstance(raw, (int, float)):
-                    cleaned_excipients[row_slug] = str(raw)
+                    cleaned_flat[row_slug] = str(raw)
                     continue
                 if isinstance(raw, str):
-                    cleaned_excipients[row_slug] = raw
+                    cleaned_flat[row_slug] = raw
                     continue
                 raise InvalidSnapshotOverrides()
-            if cleaned_excipients:
-                cleaned[section] = cleaned_excipients
+            if cleaned_flat:
+                cleaned[section] = cleaned_flat
+            continue
+
+        if section in {"nutrition", "amino_acids"}:
+            # ``{row_or_group_slug: {sub_key: value_string}}``. Inner
+            # keys are constrained to a fixed vocabulary so the UI
+            # cannot stuff arbitrary structured data here. Nutrition
+            # uses ``amount_per_100g`` / ``amount_per_serving``;
+            # amino_acids uses any string-keyed ``<acid_key>`` value
+            # since acid keys are fluid (catalogue-driven).
+            cleaned_nested: dict[str, dict[str, str]] = {}
+            for outer_key, payload in inner.items():
+                if not isinstance(outer_key, str) or not outer_key:
+                    raise InvalidSnapshotOverrides()
+                if payload is None:
+                    continue
+                if not isinstance(payload, dict):
+                    raise InvalidSnapshotOverrides()
+                cleaned_inner: dict[str, str] = {}
+                for sub_key, raw in payload.items():
+                    if not isinstance(sub_key, str) or not sub_key:
+                        raise InvalidSnapshotOverrides()
+                    if section == "nutrition" and sub_key not in _OVERRIDE_NUTRITION_KEYS:
+                        raise InvalidSnapshotOverrides()
+                    if raw is None or raw == "":
+                        continue
+                    if isinstance(raw, bool):
+                        raise InvalidSnapshotOverrides()
+                    if isinstance(raw, (int, float)):
+                        cleaned_inner[sub_key] = str(raw)
+                        continue
+                    if isinstance(raw, str):
+                        cleaned_inner[sub_key] = raw
+                        continue
+                    raise InvalidSnapshotOverrides()
+                if cleaned_inner:
+                    cleaned_nested[outer_key] = cleaned_inner
+            if cleaned_nested:
+                cleaned[section] = cleaned_nested
             continue
 
         if section == "actives":
@@ -1417,6 +1935,20 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     excipient_mg_overrides: dict[str, str] = (
         overrides.get("excipients_mg") or {}
     )
+    excipients_label_overrides: dict[str, str] = (
+        overrides.get("excipients_label") or {}
+    )
+    capsule_shell_overrides: dict[str, str] = (
+        overrides.get("capsule_shell") or {}
+    )
+    nutrition_overrides: dict[str, dict[str, str]] = (
+        overrides.get("nutrition") or {}
+    )
+    amino_acids_overrides: dict[str, dict[str, str]] = (
+        overrides.get("amino_acids") or {}
+    )
+    limits_overrides: dict[str, str] = overrides.get("limits") or {}
+    metadata_overrides: dict[str, str] = overrides.get("metadata") or {}
 
     # The snapshot stores ``mg_per_serving`` as the raw-powder weight
     # *per unit* (per capsule / per tablet / per scoop) — the variable
@@ -1445,9 +1977,13 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             else None
         )
         # Per-line overrides — sales tweaks "Caffeine 200mg" → "210mg"
-        # for a specific client without forking the formulation.
-        # Lookup is by snapshot line ``item_id`` (the version stores
-        # one line per active and the id is stable across re-renders).
+        # for a specific client without forking the formulation. The
+        # displayed name is also overrideable so a client-facing sheet
+        # can rename ``Maca Extract (From 200mg of 10:1 Extract)`` to
+        # something more marketing-friendly without touching the
+        # catalogue. Lookup is by snapshot line ``item_id`` (the
+        # version stores one line per active and the id is stable
+        # across re-renders).
         line_override = actives_overrides.get(str(line.get("item_id") or ""))
         override_label_claim = (
             line_override.get("label_claim_mg") if line_override else None
@@ -1455,10 +1991,23 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         override_nrv = (
             line_override.get("nrv_pct") if line_override else None
         )
+        override_ingredient_name = (
+            line_override.get("ingredient_list_name")
+            if line_override
+            else None
+        )
         effective_label_claim = (
             override_label_claim
             if override_label_claim
             else (line.get("label_claim_mg") or "")
+        )
+        snapshot_ingredient_name = instantiate_active_label(
+            nutrition_information_name=attrs.get(
+                "nutrition_information_name"
+            ),
+            ingredient_list_name=attrs.get("ingredient_list_name"),
+            item_name=line.get("item_name", ""),
+            raw_mg=raw_per_serving,
         )
         actives.append(
             {
@@ -1467,13 +2016,13 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 # Stable identifier so the UI can target the right
                 # row when patching ``snapshot_overrides.actives``.
                 "item_id": str(line.get("item_id") or ""),
-                "ingredient_list_name": instantiate_active_label(
-                    nutrition_information_name=attrs.get(
-                        "nutrition_information_name"
-                    ),
-                    ingredient_list_name=attrs.get("ingredient_list_name"),
-                    item_name=line.get("item_name", ""),
-                    raw_mg=raw_per_serving,
+                "ingredient_list_name": (
+                    override_ingredient_name
+                    if override_ingredient_name
+                    else snapshot_ingredient_name
+                ),
+                "ingredient_list_name_overridden": bool(
+                    override_ingredient_name
                 ),
                 "label_claim_mg": str(effective_label_claim),
                 "label_claim_overridden": bool(override_label_claim),
@@ -1495,6 +2044,36 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     compliance = totals.get("compliance") or {"flags": []}
     compliance = _apply_compliance_override(compliance, compliance_overrides)
     declaration = totals.get("declaration") or {"text": "", "entries": []}
+    # Apply per-row excipient mg overrides BEFORE the text-override /
+    # bolding pass so a "set MCC to 0" override drops the MCC row from
+    # both the joined declaration string and the per-row entries list
+    # the frontend renders the excipient table from. Without this the
+    # override only touched ``totals.excipients`` (the typed cells)
+    # while ``declaration.entries`` stayed frozen, leading to the spec
+    # sheet showing a row the override modal claimed to have killed.
+    declaration_text_already_bolded = False
+    if (
+        excipient_mg_overrides
+        or excipients_label_overrides
+        or capsule_shell_overrides
+    ):
+        # Pass the raw snapshot ``excipients`` block (NOT the override-
+        # patched payload built later) so the legacy-snapshot label
+        # index reads the original carrier-row labels — which is what
+        # the declaration entries on disk match against.
+        rewritten = _apply_excipient_overrides_to_declaration(
+            declaration,
+            excipient_mg_overrides,
+            excipients_payload=(totals.get("excipients") or {}) or None,
+            excipients_label_overrides=excipients_label_overrides,
+            capsule_shell_override=capsule_shell_overrides,
+        )
+        if rewritten is not declaration:
+            declaration = rewritten
+            # ``_format_grouped_declaration_from_entries`` already
+            # html-escapes labels and wraps allergens in ``<b>``, so
+            # the downstream bolding pass would double-escape. Skip it.
+            declaration_text_already_bolded = True
     # Pre-split / pre-bolding snapshots stored ``declaration.text`` as
     # a plain comma-joined string with no allergen markup. We can't
     # rewrite the frozen blob, but we *can* re-render at view time
@@ -1512,6 +2091,10 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "text": html.escape(declaration_text_override),
             "text_overridden": True,
         }
+    elif declaration_text_already_bolded:
+        # Excipient-override rebuild already produced final HTML —
+        # only attach the ``text_overridden`` flag the frontend reads.
+        declaration = {**declaration, "text_overridden": False}
     else:
         declaration = {
             **declaration,
@@ -1537,7 +2120,69 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 "sources_overridden": True,
             }
     nutrition = totals.get("nutrition") or {"rows": []}
+    if nutrition_overrides:
+        # Per-row Nutrition Information rewrites — patch
+        # ``amount_per_100g`` / ``amount_per_serving`` strings on the
+        # frozen rows by slug. The snapshot stays clean; the override
+        # only flows through to this rendered view-model.
+        patched_rows = []
+        for row in nutrition.get("rows") or []:
+            if not isinstance(row, dict):
+                patched_rows.append(row)
+                continue
+            slug = row.get("slug") or row.get("key") or ""
+            override = nutrition_overrides.get(str(slug))
+            if not override:
+                patched_rows.append(row)
+                continue
+            new_row = {**row}
+            for sub_key in ("amount_per_100g", "amount_per_serving"):
+                if sub_key in override:
+                    new_row[sub_key] = override[sub_key]
+                    new_row[f"{sub_key}_overridden"] = True
+            patched_rows.append(new_row)
+        nutrition = {**nutrition, "rows": patched_rows}
+
     amino_acids = totals.get("amino_acids") or {"groups": []}
+    if amino_acids_overrides:
+        # Amino acid blocks have a two-level shape:
+        # ``groups[i].acids[j].amount_per_100g/serving``. Override
+        # keys are flat ``<group_slug>__<acid_key>`` -- but the
+        # validator stores ``{<group_slug>: {<acid_key>: value}}`` so
+        # we walk the snapshot structure.
+        patched_groups = []
+        for group in amino_acids.get("groups") or []:
+            if not isinstance(group, dict):
+                patched_groups.append(group)
+                continue
+            group_slug = group.get("slug") or group.get("key") or ""
+            group_overrides = amino_acids_overrides.get(str(group_slug)) or {}
+            if not group_overrides:
+                patched_groups.append(group)
+                continue
+            patched_acids = []
+            for acid in group.get("acids") or []:
+                if not isinstance(acid, dict):
+                    patched_acids.append(acid)
+                    continue
+                acid_key = acid.get("key") or acid.get("slug") or ""
+                override_value = group_overrides.get(str(acid_key))
+                if override_value is None or override_value == "":
+                    patched_acids.append(acid)
+                    continue
+                # Amino acid rows surface a single mg-per-serving
+                # number — write the override to the same field the
+                # frontend reads, plus a per-acid ``*_overridden``
+                # marker for badge rendering.
+                patched_acids.append(
+                    {
+                        **acid,
+                        "amount_per_serving": override_value,
+                        "amount_per_serving_overridden": True,
+                    }
+                )
+            patched_groups.append({**group, "acids": patched_acids})
+        amino_acids = {**amino_acids, "groups": patched_groups}
 
     # Phase G5a — apply per-row excipient mg overrides on top of the
     # frozen excipients dict. Keys match either the four typed cells
@@ -1673,7 +2318,10 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 str(sheet.final_price) if sheet.final_price is not None else None
             ),
             "cover_notes": sheet.cover_notes,
-            "total_weight_label": sheet.total_weight_label,
+            "total_weight_label": (
+                metadata_overrides.get("total_weight_label")
+                or sheet.total_weight_label
+            ),
             "unit_quantity": sheet.unit_quantity,
             # Free-text per sheet, falls back to the standing default
             # ("Packaging to be food-grade and fit for purpose.") when
@@ -1773,7 +2421,15 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "total_active_mg": totals.get("total_active_mg"),
             "total_weight_mg": totals.get("total_weight_mg"),
             "filled_total_mg": (
-                str(filled_total_mg) if filled_total_mg is not None else None
+                metadata_overrides.get("filled_total_mg")
+                or (
+                    str(filled_total_mg)
+                    if filled_total_mg is not None
+                    else None
+                )
+            ),
+            "filled_total_mg_overridden": bool(
+                metadata_overrides.get("filled_total_mg")
             ),
             "max_weight_mg": totals.get("max_weight_mg"),
             "size_label": totals.get("size_label"),
@@ -1782,14 +2438,26 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             # Powder-only fields; non-powder sheets leave them null and
             # the template suppresses the corresponding rows.
             "powder_per_serving_mg": (
-                str(powder_per_serving_mg)
-                if powder_per_serving_mg is not None
-                else None
+                metadata_overrides.get("powder_per_serving_mg")
+                or (
+                    str(powder_per_serving_mg)
+                    if powder_per_serving_mg is not None
+                    else None
+                )
+            ),
+            "powder_per_serving_mg_overridden": bool(
+                metadata_overrides.get("powder_per_serving_mg")
             ),
             "powder_pack_total_mg": (
-                str(powder_pack_total_mg)
-                if powder_pack_total_mg is not None
-                else None
+                metadata_overrides.get("powder_pack_total_mg")
+                or (
+                    str(powder_pack_total_mg)
+                    if powder_pack_total_mg is not None
+                    else None
+                )
+            ),
+            "powder_pack_total_mg_overridden": bool(
+                metadata_overrides.get("powder_pack_total_mg")
             ),
         },
         "actives": actives,
@@ -1818,9 +2486,13 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "shelf_life": sheet.shelf_life,
             "storage_conditions": sheet.storage_conditions,
         },
-        "limits": resolve_limits(sheet),
+        "limits": _apply_limits_overrides(
+            resolve_limits(sheet), limits_overrides
+        ),
         "weight_uniformity": (
-            sheet.weight_uniformity or DEFAULT_WEIGHT_UNIFORMITY_PCT
+            metadata_overrides.get("weight_uniformity")
+            or sheet.weight_uniformity
+            or DEFAULT_WEIGHT_UNIFORMITY_PCT
         ),
         "visibility": resolve_visibility(sheet),
         "section_order": resolve_section_order(sheet),
