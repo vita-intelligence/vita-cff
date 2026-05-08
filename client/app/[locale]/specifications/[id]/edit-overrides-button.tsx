@@ -211,18 +211,18 @@ function draftFromOverrides(
   >;
   const nutrition: DraftState["nutrition"] = {};
   for (const row of rendered.nutrition?.rows ?? []) {
-    const slug = (row as { slug?: string; key?: string }).slug
-      ?? (row as { slug?: string; key?: string }).key
-      ?? "";
+    const r = row as {
+      slug?: string;
+      key?: string;
+      per_100g?: string;
+      per_serving?: string;
+    };
+    const slug = r.slug ?? r.key ?? "";
     if (!slug) continue;
     const ov = nutritionOverrides[slug] ?? {};
     nutrition[slug] = {
-      amount_per_100g:
-        ov.amount_per_100g
-        ?? ((row as { amount_per_100g?: string }).amount_per_100g ?? ""),
-      amount_per_serving:
-        ov.amount_per_serving
-        ?? ((row as { amount_per_serving?: string }).amount_per_serving ?? ""),
+      amount_per_100g: ov.amount_per_100g ?? (r.per_100g ?? ""),
+      amount_per_serving: ov.amount_per_serving ?? (r.per_serving ?? ""),
     };
   }
 
@@ -240,11 +240,15 @@ function draftFromOverrides(
     const groupOv = aminoAcidsOverrides[groupSlug] ?? {};
     amino_acids[groupSlug] = {};
     for (const acid of (group as { acids?: ReadonlyArray<unknown> }).acids ?? []) {
-      const a = acid as { key?: string; slug?: string; amount_per_serving?: string };
+      const a = acid as {
+        key?: string;
+        slug?: string;
+        per_serving?: string;
+      };
       const acidKey = a.key ?? a.slug ?? "";
       if (!acidKey) continue;
       amino_acids[groupSlug]![acidKey] =
-        groupOv[acidKey] ?? (a.amount_per_serving ?? "");
+        groupOv[acidKey] ?? (a.per_serving ?? "");
     }
   }
 
@@ -1240,8 +1244,8 @@ export function EditOverridesButton({
                             slug?: string;
                             key?: string;
                             label?: string;
-                            amount_per_100g?: string;
-                            amount_per_serving?: string;
+                            per_100g?: string;
+                            per_serving?: string;
                           };
                           const slug = r.slug ?? r.key ?? "";
                           if (!slug) return null;
@@ -1261,7 +1265,7 @@ export function EditOverridesButton({
                                 <input
                                   type="text"
                                   value={cur.amount_per_100g}
-                                  placeholder={r.amount_per_100g ?? ""}
+                                  placeholder={r.per_100g ?? ""}
                                   onChange={(e) =>
                                     setDraft((prev) => ({
                                       ...prev,
@@ -1283,7 +1287,7 @@ export function EditOverridesButton({
                                 <input
                                   type="text"
                                   value={cur.amount_per_serving}
-                                  placeholder={r.amount_per_serving ?? ""}
+                                  placeholder={r.per_serving ?? ""}
                                   onChange={(e) =>
                                     setDraft((prev) => ({
                                       ...prev,
@@ -1356,7 +1360,8 @@ export function EditOverridesButton({
                                           type="text"
                                           value={cur}
                                           placeholder={
-                                            acid.amount_per_serving ?? ""
+                                            (acid as { per_serving?: string })
+                                              .per_serving ?? ""
                                           }
                                           onChange={(e) =>
                                             setDraft((prev) => ({

@@ -2136,10 +2136,12 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             }
     nutrition = totals.get("nutrition") or {"rows": []}
     if nutrition_overrides:
-        # Per-row Nutrition Information rewrites — patch
-        # ``amount_per_100g`` / ``amount_per_serving`` strings on the
-        # frozen rows by slug. The snapshot stays clean; the override
-        # only flows through to this rendered view-model.
+        # Per-row Nutrition Information rewrites. The snapshot stores
+        # the cells as ``per_100g`` / ``per_serving`` (the frontend
+        # template reads those keys directly), while the override
+        # modal exposes the friendlier ``amount_per_*`` aliases. Map
+        # the override keys to the snapshot keys so a ``"0"`` override
+        # actually shows up in the table.
         patched_rows = []
         for row in nutrition.get("rows") or []:
             if not isinstance(row, dict):
@@ -2151,20 +2153,25 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 patched_rows.append(row)
                 continue
             new_row = {**row}
-            for sub_key in ("amount_per_100g", "amount_per_serving"):
-                if sub_key in override:
-                    new_row[sub_key] = override[sub_key]
-                    new_row[f"{sub_key}_overridden"] = True
+            override_per_100g = override.get("amount_per_100g")
+            override_per_serving = override.get("amount_per_serving")
+            if override_per_100g is not None and override_per_100g != "":
+                new_row["per_100g"] = override_per_100g
+                new_row["per_100g_overridden"] = True
+            if override_per_serving is not None and override_per_serving != "":
+                new_row["per_serving"] = override_per_serving
+                new_row["per_serving_overridden"] = True
             patched_rows.append(new_row)
         nutrition = {**nutrition, "rows": patched_rows}
 
     amino_acids = totals.get("amino_acids") or {"groups": []}
     if amino_acids_overrides:
         # Amino acid blocks have a two-level shape:
-        # ``groups[i].acids[j].amount_per_100g/serving``. Override
-        # keys are flat ``<group_slug>__<acid_key>`` -- but the
-        # validator stores ``{<group_slug>: {<acid_key>: value}}`` so
-        # we walk the snapshot structure.
+        # ``groups[i].acids[j].per_serving / per_100g``. The modal
+        # only exposes a single mg-per-serving cell per acid (matches
+        # what the spec sheet renders), so an override value lands on
+        # ``per_serving``; legacy callers that wrote ``per_100g``
+        # alongside still work.
         patched_groups = []
         for group in amino_acids.get("groups") or []:
             if not isinstance(group, dict):
@@ -2185,15 +2192,11 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 if override_value is None or override_value == "":
                     patched_acids.append(acid)
                     continue
-                # Amino acid rows surface a single mg-per-serving
-                # number — write the override to the same field the
-                # frontend reads, plus a per-acid ``*_overridden``
-                # marker for badge rendering.
                 patched_acids.append(
                     {
                         **acid,
-                        "amount_per_serving": override_value,
-                        "amount_per_serving_overridden": True,
+                        "per_serving": override_value,
+                        "per_serving_overridden": True,
                     }
                 )
             patched_groups.append({**group, "acids": patched_acids})
