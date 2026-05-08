@@ -145,8 +145,18 @@ REST_FRAMEWORK = {
 
 
 # simplejwt
+#
+# ``ACCESS_TOKEN_LIFETIME`` is deliberately long: every navigation
+# from a near-expired access cookie triggers a refresh round-trip
+# through the proxy + backend. With multiple users on the same
+# external IP (shared WiFi) those refreshes pile up and saturate
+# the single-process Daphne worker. A 60-minute window cuts refresh
+# frequency 4× without weakening the security posture — the cookies
+# stay httpOnly + secure, the refresh token still rotates per use,
+# and every authenticated request still re-validates against the
+# backend.
 SIMPLE_JWT = {
-    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
     "BLACKLIST_AFTER_ROTATION": False,

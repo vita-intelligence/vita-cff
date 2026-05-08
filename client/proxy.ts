@@ -67,6 +67,18 @@ interface RefreshResult {
 
 
 /**
+ * Hard ceiling on a single proxy refresh round-trip. The backend
+ * runs single-process Daphne; under shared-WiFi load (multiple users
+ * navigating simultaneously) sync views can queue behind one another
+ * and a refresh that would normally take ~30ms can balloon past the
+ * Edge runtime's overall request budget. Bailing fast lets the
+ * downstream page guard fall back to its server-side refresh /
+ * redirect path instead of stalling the whole navigation.
+ */
+const REFRESH_TIMEOUT_MS = 4_000;
+
+
+/**
  * POST ``/api/auth/refresh/`` using the current refresh cookie. Returns
  * the raw ``Set-Cookie`` headers plus the parsed token values so we can
  * both (a) rewrite the inbound request's cookies (so SSR sees the fresh
@@ -76,6 +88,8 @@ interface RefreshResult {
 async function attemptRefresh(
   refreshToken: string,
 ): Promise<RefreshResult | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REFRESH_TIMEOUT_MS);
   try {
     const res = await fetch(`${BACKEND_URL}/api/auth/refresh/`, {
       method: "POST",
@@ -84,6 +98,7 @@ async function attemptRefresh(
         Accept: "application/json",
       },
       cache: "no-store",
+      signal: controller.signal,
     });
     if (!res.ok) return null;
 
@@ -110,6 +125,8 @@ async function attemptRefresh(
     return { setCookies, accessToken, refreshToken: refreshTokenNext };
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -140,11 +157,23 @@ export default async function proxy(
   // The Edge runtime's ``RequestCookies.set`` side-effects through to
   // ``request.headers["cookie"]``, so next-intl's ``new Headers(...)``
   // pickup at line ``createMiddleware`` captures the rotated value.
+  // We also rebuild the ``cookie`` header explicitly as a belt-and-
+  // braces defence: under load some Edge runtime builds have been
+  // observed to skip the header sync, which would leave server
+  // components reading stale cookies on the same render that just
+  // rotated them.
   if (refreshed?.accessToken) {
     request.cookies.set(ACCESS_COOKIE, refreshed.accessToken);
   }
   if (refreshed?.refreshToken) {
     request.cookies.set(REFRESH_COOKIE, refreshed.refreshToken);
+  }
+  if (refreshed) {
+    const rebuilt = request.cookies
+      .getAll()
+      .map(({ name, value }) => `${name}=${value}`)
+      .join("; ");
+    request.headers.set("cookie", rebuilt);
   }
 
   // Surface the inbound pathname on the *request* headers (not the

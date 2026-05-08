@@ -74,6 +74,12 @@ async function buildCookieHeader(): Promise<string> {
 async function attemptServerRefresh(
   cookieHeader: string,
 ): Promise<string | null> {
+  // Same hard ceiling as the proxy refresh. A hung refresh stalls
+  // the server-component render and the user sees a frozen page;
+  // bailing fast lets the page guard's ``redirectToLogin`` fire so
+  // the user lands somewhere usable instead.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 4_000);
   try {
     const response = await fetch(
       `${env.NEXT_PUBLIC_API_URL}/api/auth/refresh/`,
@@ -84,6 +90,7 @@ async function attemptServerRefresh(
           Cookie: cookieHeader,
         },
         cache: "no-store",
+        signal: controller.signal,
       },
     );
     if (!response.ok) return null;
@@ -121,6 +128,8 @@ async function attemptServerRefresh(
       .join("; ");
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 

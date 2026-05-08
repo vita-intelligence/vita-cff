@@ -150,6 +150,12 @@ class TestIngredientDeclaration:
             type="Others",
             ingredient_list_name="Active Compound",
         )
+        mcc = _item(
+            org,
+            name="MCC PH-101",
+            use_as="Bulking Agent",
+            ingredient_list_name="Microcrystalline Cellulose",
+        )
 
         # Total active 500 mg in Double 00 capsule:
         # MCC fills to 730 − 500 − 5 − 2 = 223 mg.
@@ -159,6 +165,7 @@ class TestIngredientDeclaration:
             lines=[("a", active, Decimal("500"), None)],
             dosage_form="capsule",
             capsule_size_key="double_00",
+            mcc_carrier_items=(mcc,),
         )
         declaration, entries = build_ingredient_declaration(
             items_by_external_id={"a": active},
@@ -171,7 +178,7 @@ class TestIngredientDeclaration:
         # single combined entry to match the workbook's label copy.
         assert labels == [
             "Active Compound",
-            "Microcrystalline Cellulose (Carrier)",
+            "Microcrystalline Cellulose",
             "Capsule Shell (Hypromellose)",
             "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)",
         ]
@@ -190,10 +197,24 @@ class TestIngredientDeclaration:
             type="Others",
             ingredient_list_name="Active Compound",
         )
+        mcc = _item(
+            org,
+            name="MCC",
+            use_as="Bulking Agent",
+            ingredient_list_name="Microcrystalline Cellulose",
+        )
+        dcp = _item(
+            org,
+            name="DCP",
+            use_as="Bulking Agent",
+            ingredient_list_name="Dicalcium Phosphate",
+        )
         totals = compute_totals(
             lines=[("a", active, Decimal("100"), None)],
             dosage_form="tablet",
             tablet_size_key="round_13mm",
+            mcc_carrier_items=(mcc,),
+            dcp_carrier_items=(dcp,),
         )
         declaration, entries = build_ingredient_declaration(
             items_by_external_id={"a": active},
@@ -204,7 +225,7 @@ class TestIngredientDeclaration:
         # No capsule shell on a tablet.
         assert labels == [
             "Active Compound",
-            "Microcrystalline Cellulose (Carrier)",
+            "Microcrystalline Cellulose",
             "Dicalcium Phosphate",
             "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)",
         ]

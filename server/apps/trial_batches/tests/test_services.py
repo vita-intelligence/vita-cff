@@ -16,7 +16,11 @@ from apps.catalogues.tests.factories import (
     ItemFactory,
     raw_materials_catalogue,
 )
-from apps.formulations.services import replace_lines, save_version
+from apps.formulations.services import (
+    replace_lines,
+    save_version,
+    update_formulation,
+)
 from apps.formulations.tests.factories import FormulationFactory
 from apps.organizations.tests.factories import OrganizationFactory
 from apps.trial_batches.services import (
@@ -47,7 +51,8 @@ def _seeded_capsule_version(
     The default raw material is purity=1 / type=Others so the math
     has no overage or extract-ratio complications — tests that care
     about the scale-up multiplication can reason about mg_per_unit
-    directly.
+    directly. An MCC carrier is picked by default so the auto-fill
+    excipient block kicks in (empty pickers now ship pure actives).
     """
 
     catalogue = raw_materials_catalogue(org)
@@ -58,6 +63,14 @@ def _seeded_capsule_version(
     }
     base_attrs.update(attribute_overrides or {})
     item = ItemFactory(catalogue=catalogue, name="Test Raw", attributes=base_attrs)
+    mcc = ItemFactory(
+        catalogue=catalogue,
+        name="MCC PH-101",
+        attributes={
+            "use_as": "Bulking Agent",
+            "ingredient_list_name": "Microcrystalline Cellulose (Carrier)",
+        },
+    )
     formulation = FormulationFactory(
         organization=org,
         dosage_form="capsule",
@@ -68,6 +81,11 @@ def _seeded_capsule_version(
         formulation=formulation,
         actor=org.created_by,
         lines=[{"item_id": str(item.id), "label_claim_mg": label_claim_mg}],
+    )
+    update_formulation(
+        formulation=formulation,
+        actor=org.created_by,
+        mcc_carrier_item_ids=[str(mcc.id)],
     )
     return save_version(formulation=formulation, actor=org.created_by)
 
@@ -83,6 +101,22 @@ def _seeded_tablet_version(org, *, tablet_size: str = "round_13mm"):
             "ingredient_list_name": "Tablet Active",
         },
     )
+    mcc = ItemFactory(
+        catalogue=catalogue,
+        name="MCC PH-101",
+        attributes={
+            "use_as": "Bulking Agent",
+            "ingredient_list_name": "Microcrystalline Cellulose (Carrier)",
+        },
+    )
+    dcp = ItemFactory(
+        catalogue=catalogue,
+        name="DCP Anhydrous",
+        attributes={
+            "use_as": "Bulking Agent",
+            "ingredient_list_name": "Dicalcium Phosphate",
+        },
+    )
     formulation = FormulationFactory(
         organization=org,
         dosage_form="tablet",
@@ -94,6 +128,12 @@ def _seeded_tablet_version(org, *, tablet_size: str = "round_13mm"):
         formulation=formulation,
         actor=org.created_by,
         lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
+    )
+    update_formulation(
+        formulation=formulation,
+        actor=org.created_by,
+        mcc_carrier_item_ids=[str(mcc.id)],
+        dcp_carrier_item_ids=[str(dcp.id)],
     )
     return save_version(formulation=formulation, actor=org.created_by)
 

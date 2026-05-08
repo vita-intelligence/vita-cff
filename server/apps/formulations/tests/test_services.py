@@ -389,12 +389,12 @@ class TestCapsuleCarrierPicker:
             )
         return formulation
 
-    def test_no_picks_emits_warning_and_keeps_aggregate_mcc_mg(
+    def test_no_picks_emits_zero_excipients(
         self,
     ) -> None:
-        """A capsule with active mg but no carrier picks still shows
-        the MCC remainder; the warning lives in ``totals.warnings``
-        so the UI can surface it without blocking the spec sheet."""
+        """A capsule with no carrier picks ships as pure actives — no
+        MCC remainder, no anticaking. Empty picker = the scientist
+        explicitly opted out of any auto-filled excipient."""
 
         org = OrganizationFactory()
         formulation = self._capsule(org)
@@ -402,9 +402,10 @@ class TestCapsuleCarrierPicker:
         totals = compute_formulation_totals(formulation=formulation)
 
         assert totals.excipients is not None
-        assert totals.excipients.mcc_mg > 0
+        assert totals.excipients.mcc_mg == Decimal("0")
+        assert totals.excipients.mg_stearate_mg == Decimal("0")
+        assert totals.excipients.silica_mg == Decimal("0")
         assert totals.excipients.mcc_carrier_rows == ()
-        assert "mcc_carrier_unpicked" in totals.warnings
 
     def test_picks_split_mcc_equally_and_drop_warning(self) -> None:
         """Two MCC picks split the carrier mg in half; the unpicked
@@ -525,7 +526,11 @@ class TestTabletCarrierPicker:
         assert "mcc_carrier_unpicked" not in totals.warnings
         assert "dcp_carrier_unpicked" not in totals.warnings
 
-    def test_no_picks_emits_both_warnings(self) -> None:
+    def test_no_picks_emits_zero_excipients(self) -> None:
+        """Empty MCC and DCP pickers ship the tablet as pure actives —
+        no auto-fill carrier, no anticaking. Either picker on its own
+        re-enables anticaking and fills only the picked carrier."""
+
         org = OrganizationFactory()
         formulation = self._tablet(org)
 
@@ -533,8 +538,10 @@ class TestTabletCarrierPicker:
 
         assert totals.excipients.mcc_carrier_rows == ()
         assert totals.excipients.dcp_carrier_rows == ()
-        assert "mcc_carrier_unpicked" in totals.warnings
-        assert "dcp_carrier_unpicked" in totals.warnings
+        assert totals.excipients.mcc_mg == Decimal("0")
+        assert totals.excipients.dcp_mg == Decimal("0")
+        assert totals.excipients.mg_stearate_mg == Decimal("0")
+        assert totals.excipients.silica_mg == Decimal("0")
 
     def test_dcp_picker_validation_rejects_wrong_use_as(self) -> None:
         org = OrganizationFactory()

@@ -48,6 +48,34 @@ def _item(org, *, name: str, purity=None, extract_ratio=None, overage=None, type
     )
 
 
+def _carrier(org, *, name: str = "MCC PH-101") -> Item:
+    """Build a Bulking-Agent catalogue item suitable for the MCC / DCP
+    carrier picker. Tests that exercise the auto-fill math need at
+    least one pick — empty pickers now suppress the auto-fill entirely
+    so the scientist can ship "pure actives" capsules / tablets when
+    they explicitly want no excipients."""
+
+    return ItemFactory(
+        catalogue=raw_materials_catalogue(org),
+        name=name,
+        attributes={
+            "use_as": "Bulking Agent",
+            "ingredient_list_name": "Microcrystalline Cellulose",
+        },
+    )
+
+
+def _dcp_carrier(org, *, name: str = "DCP Anhydrous") -> Item:
+    return ItemFactory(
+        catalogue=raw_materials_catalogue(org),
+        name=name,
+        attributes={
+            "use_as": "Bulking Agent",
+            "ingredient_list_name": "Dicalcium Phosphate",
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # compute_line — per-ingredient math
 # ---------------------------------------------------------------------------
@@ -176,6 +204,7 @@ class TestCapsuleTotals:
             lines=[("a", item, Decimal("500"), None)],
             dosage_form="capsule",
             capsule_size_key="double_00",
+            mcc_carrier_items=(_carrier(org),),
         )
         assert totals.total_active_mg == Decimal("500.0000")
         assert totals.excipients is not None
@@ -227,6 +256,8 @@ class TestTabletTotals:
             lines=[("a", item, Decimal("100"), None)],
             dosage_form="tablet",
             tablet_size_key="round_13mm",
+            mcc_carrier_items=(_carrier(org),),
+            dcp_carrier_items=(_dcp_carrier(org),),
         )
         # 100 * 1% = 1, 100 * 0.4% = 0.4, 100 * 10% = 10, 100 * 20% = 20
         # total = 100 + 1 + 0.4 + 10 + 20 = 131.4
@@ -243,12 +274,17 @@ class TestTabletTotals:
         # Pick active that produces total just over 112.5 → uncomfortable
         org = OrganizationFactory()
         item = _item(org, name="Thing", purity=1.0)
+        carriers = {
+            "mcc_carrier_items": (_carrier(org),),
+            "dcp_carrier_items": (_dcp_carrier(org),),
+        }
 
         # total = active * 1.314. active = 80 → total = 105.12 (≤ 112.5 = comfort)
         totals_easy = compute_totals(
             lines=[("a", item, Decimal("80"), None)],
             dosage_form="tablet",
             tablet_size_key="round_6mm",
+            **carriers,
         )
         assert totals_easy.viability.comfort_ok is True
 
@@ -257,6 +293,7 @@ class TestTabletTotals:
             lines=[("a", item, Decimal("100"), None)],
             dosage_form="tablet",
             tablet_size_key="round_6mm",
+            **carriers,
         )
         assert totals_tight.viability.fits is True
         assert totals_tight.viability.comfort_ok is False
@@ -407,6 +444,7 @@ class TestValleyLowFatBurner:
             ],
             dosage_form="capsule",
             capsule_size_key="double_00",
+            mcc_carrier_items=(_carrier(org),),
         )
         assert totals.excipients is not None
         # Workbook D32=5.132331661768433, D33=2.052932664707373, D34=209.58156949668103

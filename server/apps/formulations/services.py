@@ -694,6 +694,40 @@ def _compute_capsule(
             tuple(warnings),
         )
 
+    # Empty MCC picker means the scientist explicitly opted out of any
+    # auto-filled carrier — produce a "pure actives" formulation with
+    # no excipients at all (no MCC remainder, no anticaking). Capsule
+    # will be under-filled but that's the deliberate choice.
+    if not mcc_carrier_items:
+        total_weight = float(total_active)
+        fits = size.max_weight_mg >= total_weight
+        codes_no_excipients: list[str] = []
+        if not fits:
+            codes_no_excipients.append("cannot_make")
+        else:
+            codes_no_excipients.extend(
+                ("can_make", "less_challenging", "proceed_to_quote")
+            )
+        excipients_empty = ExcipientBreakdown(
+            mg_stearate_mg=Decimal("0"),
+            silica_mg=Decimal("0"),
+            mcc_mg=Decimal("0"),
+            mcc_carrier_rows=(),
+        )
+        return (
+            size.key,
+            size.label,
+            _quantise(size.max_weight_mg),
+            _quantise(total_weight),
+            excipients_empty,
+            ViabilityResult(
+                fits=fits,
+                comfort_ok=fits,
+                codes=tuple(codes_no_excipients),
+            ),
+            tuple(warnings),
+        )
+
     stearate = float(total_active) * CAPSULE_MG_STEARATE_PCT
     silica = float(total_active) * CAPSULE_SILICA_PCT
     mcc = size.max_weight_mg - float(total_active) - stearate - silica
@@ -717,19 +751,6 @@ def _compute_capsule(
         else:
             codes.extend(("more_challenging_to_make", "consult_r_and_d"))
 
-    # Soft warning when there's structural carrier mg to allocate but
-    # the scientist hasn't picked any specific items. Spec sheet falls
-    # back to the generic "Microcrystalline Cellulose (Carrier)" copy
-    # in that case — keeps legacy formulations rendering, but the
-    # warning surfaces in the viability strip so R&D knows to firm
-    # up the pick before the sheet ships.
-    if mcc > 0 and not mcc_carrier_items:
-        warnings.append("mcc_carrier_unpicked")
-
-    # Build per-pick rows AFTER the warning check so an empty-pick
-    # capsule still emits a coherent excipients block (no rows, just
-    # the aggregate ``mcc_mg``); the declaration falls back to the
-    # generic "Microcrystalline Cellulose (Carrier)" placeholder.
     mcc_carrier_rows = _build_carrier_rows(
         total_mg=max(mcc, 0.0),
         items=mcc_carrier_items,
@@ -763,17 +784,23 @@ def _compute_tablet(
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
 ]:
     active = float(total_active)
-    stearate = active * TABLET_MG_STEARATE_PCT
-    silica = active * TABLET_SILICA_PCT
-    dcp = active * TABLET_DCP_PCT
-    mcc = active * TABLET_MCC_PCT
-    total_weight = active + stearate + silica + dcp + mcc
-
     warnings: list[str] = []
-    if mcc > 0 and not mcc_carrier_items:
-        warnings.append("mcc_carrier_unpicked")
-    if dcp > 0 and not dcp_carrier_items:
-        warnings.append("dcp_carrier_unpicked")
+
+    # Auto-fills are gated on each carrier picker individually. Empty
+    # MCC picker zeros the MCC fill (and same for DCP); when both are
+    # empty the tablet ships as pure actives (no anticaking either).
+    has_any_carrier = bool(mcc_carrier_items or dcp_carrier_items)
+    if has_any_carrier:
+        stearate = active * TABLET_MG_STEARATE_PCT
+        silica = active * TABLET_SILICA_PCT
+    else:
+        stearate = 0.0
+        silica = 0.0
+
+    dcp = active * TABLET_DCP_PCT if dcp_carrier_items else 0.0
+    mcc = active * TABLET_MCC_PCT if mcc_carrier_items else 0.0
+
+    total_weight = active + stearate + silica + dcp + mcc
 
     mcc_carrier_rows = _build_carrier_rows(
         total_mg=mcc, items=mcc_carrier_items
@@ -1237,17 +1264,25 @@ def _compute_fill_target(
 
     if is_gummy and target_fill_weight_mg is not None and target_fill_weight_mg > 0:
         target_float = float(target_fill_weight_mg)
-        water_pct = _resolve_band_pct("water", excipient_overrides)
-        water_mg = _quantise(target_float * water_pct)
-        # Remainder = target − water − actives − flavour. Can go
-        # negative if the scientist has overloaded actives; we clamp
-        # to zero for display but viability handles the shortfall
-        # via the ``fill_overshoot`` / ``gummy_base_below_floor``
-        # codes below.
-        remainder = (
-            target_float - float(water_mg) - float(total_active) - flavour_total
-        )
-        gummy_base_mg = _quantise(max(remainder, 0.0))
+        if not gummy_base_items:
+            # Empty gummy-base picker means the scientist explicitly
+            # opted out of any auto-filled gummy matrix — no water,
+            # no base. The recipe ships as actives + any picked
+            # flavour / sweetener / colour rows only.
+            water_mg = Decimal("0")
+            gummy_base_mg = Decimal("0")
+        else:
+            water_pct = _resolve_band_pct("water", excipient_overrides)
+            water_mg = _quantise(target_float * water_pct)
+            # Remainder = target − water − actives − flavour. Can go
+            # negative if the scientist has overloaded actives; we clamp
+            # to zero for display but viability handles the shortfall
+            # via the ``fill_overshoot`` / ``gummy_base_below_floor``
+            # codes below.
+            remainder = (
+                target_float - float(water_mg) - float(total_active) - flavour_total
+            )
+            gummy_base_mg = _quantise(max(remainder, 0.0))
 
         # Split the total base equally across picked items. Three
         # picks → each carries ``total / 3``; zero picks → the list
