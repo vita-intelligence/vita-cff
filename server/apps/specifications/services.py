@@ -1248,12 +1248,13 @@ def _resolve_entry_slug(
 def _build_carrier_label_index(
     excipients: dict[str, Any] | None,
 ) -> dict[str, str]:
-    """Map per-pick carrier labels back to their canonical override
-    slug so legacy snapshots — saved after the carrier picker landed
-    but before per-entry slugs — still resolve through to the right
-    ``excipients_mg`` key. Walks the typed-cell row collections that
-    DO carry stable identifiers and pins each row's display label to
-    the slug that drives it."""
+    """Map per-pick excipient labels back to their canonical override
+    slug so legacy snapshots — saved before the per-entry slug field
+    landed — still resolve through to the right ``excipients_mg``
+    key. Walks every snapshot row collection that carries a stable
+    identifier (carrier picks, gummy base picks, the open-ended
+    ``rows`` list powder + gummy use) and pins each row's display
+    label to the slug that drives it."""
 
     if not excipients:
         return {}
@@ -1277,6 +1278,20 @@ def _build_carrier_label_index(
         key = label.strip().lower()
         if key:
             index[key] = EXCIPIENT_SLUG_GUMMY_BASE
+    # Powder + gummy flexible ``rows`` — the slug drives the override
+    # key directly (``trisodium_citrate``, ``citric_acid``,
+    # ``flavouring:<id>``, etc.). Pin the label so legacy declaration
+    # entries that still emit only the label resolve to the row's
+    # own slug.
+    for row in excipients.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        slug = row.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        label = (row.get("label") or "").strip().lower()
+        if label and label not in index:
+            index[label] = slug
     return index
 
 
