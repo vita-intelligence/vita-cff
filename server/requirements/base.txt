@@ -11,7 +11,7 @@ djangorestframework-simplejwt>=5.3,<6.0
 dj-database-url>=2.2,<3.0
 lxml>=5.0,<7.0
 openpyxl>=3.1,<4.0
-psycopg[binary]>=3.2,<4.0
+psycopg[binary,pool]>=3.2,<4.0
 PyJWT>=2.8,<3.0
 python-docx>=1.1,<2.0
 sqlparse==0.5.5

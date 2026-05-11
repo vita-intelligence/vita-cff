@@ -67,11 +67,19 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS "http://localhost:${PORT}/healthz/" || exit 1
 
-# ``WEB_CONCURRENCY`` defaults to 4 in-image; Azure App Service config
-# can bump it per plan (Standard S1 ~ 4-6, P1V3 ~ 8-12). Multi-worker
-# uvicorn replaces single-process daphne so a slow PDF render or
-# blocking DB query on one request no longer stalls every other user
-# behind it -- the original failure mode on shared external IPs.
+# ``WEB_CONCURRENCY`` defaults to 2 in-image. The hard cap on how high
+# this can go is the Azure Postgres connection budget: each worker
+# opens its own psycopg connection pool of size ``DB_POOL_MAX_SIZE``
+# (default 5, see settings.py). Total live connections =
+# WEB_CONCURRENCY * DB_POOL_MAX_SIZE; 2 * 5 = 10 stays well under the
+# Burstable-plan ceiling (~48 non-superuser slots). Bump both env
+# vars together when moving to a larger plan.
+#
+# Multi-worker uvicorn replaces single-process daphne so a slow PDF
+# render or blocking DB query on one request no longer stalls every
+# other user behind it -- but the actual prod failure was Postgres
+# slot exhaustion, not Daphne saturation. The pool is the load-
+# bearing fix; multi-worker is the secondary improvement.
 #
 # Notes:
 # - ``--proxy-headers`` + ``--forwarded-allow-ips=*`` honour Azure's
@@ -85,4 +93,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 #   reach clients on the same worker -- harmless for HTTP, degraded
 #   for the comments live channel.
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-4} --proxy-headers --forwarded-allow-ips=* --lifespan off"]
+CMD ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips=* --lifespan off"]

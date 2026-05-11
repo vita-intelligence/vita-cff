@@ -50,6 +50,28 @@ import type {
 const ACCESS_COOKIE = "vita_access";
 const REFRESH_COOKIE = "vita_refresh";
 
+
+/**
+ * Raised by :func:`serverFetch` when the backend is reachable but
+ * responds with a 5xx, or when the request itself fails (network
+ * error, timeout, DNS). Distinct from a ``null`` return so the page
+ * guards can keep the user on their current page and surface an
+ * error boundary instead of bouncing to /login -- the original
+ * failure mode was a Postgres connection slot exhaustion that made
+ * /auth/me/ return 500, which serverFetch was treating as
+ * "unauthenticated" and round-tripping the user back to the
+ * dashboard.
+ */
+export class BackendUnavailableError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number | null,
+  ) {
+    super(message);
+    this.name = "BackendUnavailableError";
+  }
+}
+
 async function buildCookieHeader(): Promise<string> {
   const cookieStore = await cookies();
   return cookieStore
@@ -140,8 +162,9 @@ async function serverFetch<T>(path: string): Promise<T | null> {
   }
 
   const url = `${env.NEXT_PUBLIC_API_URL}${path}`;
+  let initial: Response;
   try {
-    const initial = await fetch(url, {
+    initial = await fetch(url, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -149,24 +172,43 @@ async function serverFetch<T>(path: string): Promise<T | null> {
       },
       cache: "no-store",
     });
+  } catch (cause) {
+    // Network error, DNS failure, or hung request the abort tripped.
+    // Surface as backend-unavailable so the page renders an error
+    // boundary instead of looking unauthenticated and bouncing.
+    throw new BackendUnavailableError(
+      `Backend fetch failed: ${(cause as Error)?.message ?? "unknown"}`,
+      null,
+    );
+  }
 
-    if (initial.ok) {
-      return (await initial.json()) as T;
-    }
+  if (initial.ok) {
+    return (await initial.json()) as T;
+  }
 
-    // Only a 401 is worth a refresh-and-retry. Everything else
-    // (403/404/5xx) is a real outcome the page should reflect as a
-    // missing payload, not an auth issue.
-    if (initial.status !== 401) {
-      return null;
-    }
+  // Backend is reachable but degraded (DB pool exhausted, app worker
+  // crashed, etc.). Don't treat this as "user is unauthenticated".
+  if (initial.status >= 500) {
+    throw new BackendUnavailableError(
+      `Backend returned ${initial.status} for ${path}`,
+      initial.status,
+    );
+  }
 
-    const refreshedCookieHeader = await attemptServerRefresh(cookieHeader);
-    if (!refreshedCookieHeader) {
-      return null;
-    }
+  // Only a 401 is worth a refresh-and-retry. 403/404 are real
+  // outcomes the page should reflect as a missing payload.
+  if (initial.status !== 401) {
+    return null;
+  }
 
-    const replay = await fetch(url, {
+  const refreshedCookieHeader = await attemptServerRefresh(cookieHeader);
+  if (!refreshedCookieHeader) {
+    return null;
+  }
+
+  let replay: Response;
+  try {
+    replay = await fetch(url, {
       method: "GET",
       headers: {
         Accept: "application/json",
@@ -174,13 +216,22 @@ async function serverFetch<T>(path: string): Promise<T | null> {
       },
       cache: "no-store",
     });
-    if (!replay.ok) {
-      return null;
-    }
-    return (await replay.json()) as T;
-  } catch {
+  } catch (cause) {
+    throw new BackendUnavailableError(
+      `Backend fetch failed on replay: ${(cause as Error)?.message ?? "unknown"}`,
+      null,
+    );
+  }
+  if (replay.status >= 500) {
+    throw new BackendUnavailableError(
+      `Backend returned ${replay.status} for ${path} (replay)`,
+      replay.status,
+    );
+  }
+  if (!replay.ok) {
     return null;
   }
+  return (await replay.json()) as T;
 }
 
 /**

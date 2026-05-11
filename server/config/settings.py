@@ -265,18 +265,51 @@ TEMPLATES = [
 #
 # Production sets ``DATABASE_URL`` (Postgres). Dev falls back to a
 # local SQLite file so a fresh checkout boots without a server.
-# ``conn_max_age`` recycles connections every 60s, which suits
-# App Service's container model where idle workers may be reaped.
+#
+# Connection pooling — required, not optional:
+#
+# Azure Postgres Flexible Server caps the total number of non-superuser
+# connections at ``max_connections - superuser_reserved_connections``.
+# On the Burstable plans we run, that ceiling is in the low double
+# digits. Without pooling, every request opens a fresh connection and
+# closes it, and bursty traffic (multiple users on the same WiFi
+# refreshing dashboards) blows the ceiling within seconds. The
+# observed prod failure mode was a 500 with::
+#
+#   FATAL: remaining connection slots are reserved for roles
+#   with the SUPERUSER attribute
+#
+# psycopg3's native ``ConnectionPool`` (shipped via the ``[pool]``
+# extra) keeps a bounded set of live connections per worker process
+# and hands them out per request. Each uvicorn worker gets its own
+# pool, so the total open connection count is
+# ``WEB_CONCURRENCY * DB_POOL_MAX_SIZE``. We size the pool to keep
+# that product comfortably below the Postgres ceiling even under
+# burst: ``DB_POOL_MAX_SIZE=5`` × ``WEB_CONCURRENCY=2`` = 10 max,
+# leaving headroom for the management container (migrate /
+# collectstatic) and any psql-from-portal admin sessions.
+#
+# ``conn_max_age`` is irrelevant once ``pool`` is set -- the pool
+# manages connection lifetime itself.
 _DATABASE_URL = os.environ.get("DATABASE_URL")
 if _DATABASE_URL:
-    DATABASES = {
-        "default": dj_database_url.parse(
-            _DATABASE_URL,
-            conn_max_age=60,
-            conn_health_checks=True,
-            ssl_require=_env_bool("DATABASE_SSL_REQUIRE", default=True),
-        ),
+    _db_config = dj_database_url.parse(
+        _DATABASE_URL,
+        conn_health_checks=True,
+        ssl_require=_env_bool("DATABASE_SSL_REQUIRE", default=True),
+    )
+    _pool_min = int(os.environ.get("DB_POOL_MIN_SIZE", "1"))
+    _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "5"))
+    _db_config.setdefault("OPTIONS", {})
+    _db_config["OPTIONS"]["pool"] = {
+        "min_size": _pool_min,
+        "max_size": _pool_max,
+        # Wait at most this long for a free connection before raising
+        # rather than queueing forever; surfaces saturation as a
+        # bounded 503 instead of a stuck request.
+        "timeout": float(os.environ.get("DB_POOL_TIMEOUT", "10")),
     }
+    DATABASES = {"default": _db_config}
 else:
     DATABASES = {
         "default": {
