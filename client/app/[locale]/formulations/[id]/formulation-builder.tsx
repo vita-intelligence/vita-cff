@@ -440,7 +440,8 @@ export function FormulationBuilder({
     // equally across its picks; empty picks fall back to a generic
     // placeholder row at the full block total.
     const flavouringForMath =
-      metadata.dosage_form === "gummy"
+      metadata.dosage_form === "gummy" ||
+      metadata.dosage_form === "powder"
         ? formulation.flavouring_items.map((pick) => ({
             id: pick.id,
             label: pick.ingredient_list_name || pick.name,
@@ -448,7 +449,8 @@ export function FormulationBuilder({
           }))
         : [];
     const colourForMath =
-      metadata.dosage_form === "gummy"
+      metadata.dosage_form === "gummy" ||
+      metadata.dosage_form === "powder"
         ? formulation.colour_items.map((pick) => ({
             id: pick.id,
             label: pick.ingredient_list_name || pick.name,
@@ -483,7 +485,8 @@ export function FormulationBuilder({
           }))
         : [];
     const acidityForMath =
-      metadata.dosage_form === "gummy"
+      metadata.dosage_form === "gummy" ||
+      metadata.dosage_form === "powder"
         ? formulation.acidity_items.map((pick) => ({
             id: pick.id,
             label: pick.ingredient_list_name || pick.name,

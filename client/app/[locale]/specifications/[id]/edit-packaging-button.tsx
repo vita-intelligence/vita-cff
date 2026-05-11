@@ -270,6 +270,23 @@ function PackagingCombo({
   );
   const [searchTerm, setSearchTerm] = useState<string>("");
   const debouncedSearch = useDebouncedValue(searchTerm, 250);
+  // Every option the user has ever picked in this session stays
+  // cached so the ComboBox can resolve ``selectedKey -> item`` even
+  // after the search term resets and the catalogue query reloads the
+  // top-50 default page (which may not include the picked item).
+  // Without this, picking an item that's outside the alphabetical
+  // top-50 and then clicking anywhere blurs the input, React-Aria
+  // sees ``selectedKey`` pointing at no item in ``items``, treats
+  // that as an invalid selection under ``allowsCustomValue={false}``,
+  // and silently clears the selection -- which manifested as the
+  // "modal closed silently, save didn't apply" bug.
+  const [seenOptions, setSeenOptions] = useState<
+    ReadonlyMap<string, PackagingOption>
+  >(() =>
+    preselectedOption
+      ? new Map([[preselectedOption.id, preselectedOption]])
+      : new Map(),
+  );
 
   // Keep the display value in sync with the preselected option as
   // the modal (re)opens for different sheets or the sheet DTO
@@ -296,19 +313,46 @@ function PackagingCombo({
     limit: 50,
   });
 
-  // Merge the preselected option into the rendered list so the
-  // ComboBox can surface its textValue against ``selectedKey`` even
-  // when the latest search page doesn't include it.
+  // Backfill the per-session cache with every option the server has
+  // returned so the ComboBox can resolve selectedKey lookups even
+  // when the user re-searches and the result set shifts.
+  useEffect(() => {
+    const results = optionsQuery.data?.results ?? [];
+    if (results.length === 0) return;
+    setSeenOptions((prev) => {
+      let changed = false;
+      const next = new Map(prev);
+      for (const opt of results) {
+        if (!next.has(opt.id)) {
+          next.set(opt.id, opt);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [optionsQuery.data]);
+
+  // Visible dropdown = server search results + the currently-
+  // selected item (if it's outside the search page). The wider
+  // ``seenOptions`` cache backs ``selectedKey`` resolution so a
+  // selection survives blur even when the user later searches for
+  // something else, but we don't dump every cached option into the
+  // dropdown -- that hides the actual search hits behind unrelated
+  // history.
   const items = useMemo<readonly PackagingOption[]>(() => {
     const searchResults = optionsQuery.data?.results ?? [];
-    if (
-      preselectedOption &&
-      !searchResults.some((o) => o.id === preselectedOption.id)
-    ) {
-      return [preselectedOption, ...searchResults];
+    const inResults = new Set(searchResults.map((o) => o.id));
+    const pinned: PackagingOption[] = [];
+    const currentlySelected = selectedId
+      ? (seenOptions.get(selectedId) ?? null)
+      : null;
+    if (currentlySelected && !inResults.has(currentlySelected.id)) {
+      pinned.push(currentlySelected);
     }
-    return searchResults;
-  }, [optionsQuery.data, preselectedOption]);
+    return pinned.length > 0
+      ? [...pinned, ...searchResults]
+      : searchResults;
+  }, [optionsQuery.data, seenOptions, selectedId]);
 
   const handleInputChange = useCallback((next: string) => {
     // Treat every keystroke as a search query — the user is
@@ -333,6 +377,18 @@ function PackagingCombo({
         (preselectedOption && preselectedOption.id === id
           ? preselectedOption
           : null);
+      // Pin the picked option into the per-session cache so it
+      // survives the search reset below. Without this the ComboBox
+      // would lose track of selectedKey once the empty-search top-50
+      // page loads and might not include this item.
+      if (picked) {
+        setSeenOptions((prev) => {
+          if (prev.get(picked.id) === picked) return prev;
+          const next = new Map(prev);
+          next.set(picked.id, picked);
+          return next;
+        });
+      }
       setInputValue(picked ? formatOptionLabel(picked) : "");
       // Reset the search term so reopening the popover shows the
       // top-50 list rather than re-filtering on the selected label.
