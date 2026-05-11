@@ -35,6 +35,7 @@ from apps.formulations.services import (
     InvalidCapsuleSize,
     InvalidAntiCakingItem,
     InvalidDcpCarrierItem,
+    InvalidPowderCarrierItem,
     InvalidDosageForm,
     InvalidColourItem,
     InvalidExcipientOverrides,
@@ -318,6 +319,11 @@ class FormulationDetailView(APIView):
         except InvalidAntiCakingItem:
             return Response(
                 {"anti_caking_item_ids": ["invalid_anti_caking_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidPowderCarrierItem:
+            return Response(
+                {"powder_carrier_item_ids": ["invalid_powder_carrier_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidExcipientOverrides:

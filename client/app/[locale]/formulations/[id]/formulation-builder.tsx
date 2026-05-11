@@ -136,11 +136,19 @@ interface MetadataDraft {
   //: "Dicalcium Phosphate" placeholder + ``dcp_carrier_unpicked``
   //: warning.
   dcp_carrier_item_ids: readonly string[];
-  //: Picked anti-caking ids for capsules + tablets. When at least one
-  //: item is picked the combined 1.4% (Stearate 1% + Silica 0.4%)
-  //: auto-fill fires; empty list means the formulation ships with no
-  //: anti-caking band at all and the spec sheet drops the row.
+  //: Picked anti-caking ids for capsules + tablets + powders. When
+  //: at least one item is picked the combined 1.4% (Stearate 1% +
+  //: Silica 0.4%) auto-fill fires; empty list means the formulation
+  //: ships with no anti-caking band at all and the spec sheet drops
+  //: the row. Contribution is name-classified per pick: silica-only
+  //: -> 0.4%, stearate-only -> 1.0%, both -> 1.4% of total active.
   anti_caking_item_ids: readonly string[];
+  //: Picked powder carrier ids (Maltodextrin etc.). Fills the
+  //: remainder of the sachet after actives + other excipient bands;
+  //: empty list means no carrier band on the formulation. Server
+  //: rejects picks whose use_as is not in ('Carrier', 'Bulking
+  //: Agent'). Powder-only.
+  powder_carrier_item_ids: readonly string[];
   //: Per-band % overrides for the gummy excipient system (water,
   //: acidity, flavouring, colour, glazing, gelling, premix_sweetener).
   //: Values are decimal fractions (0.02 = 2%). Missing keys → defaults.
@@ -229,6 +237,8 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     mcc_carrier_item_ids: formulation.mcc_carrier_item_ids ?? [],
     dcp_carrier_item_ids: formulation.dcp_carrier_item_ids ?? [],
     anti_caking_item_ids: formulation.anti_caking_item_ids ?? [],
+    powder_carrier_item_ids:
+      formulation.powder_carrier_item_ids ?? [],
     excipient_overrides: formulation.excipient_overrides ?? {},
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
@@ -526,6 +536,29 @@ export function FormulationBuilder({
           formulation.anti_caking_items.find((i) => i.id === id)?.name ??
           "",
       })),
+      // Powder carrier picks fill the sachet's remainder band. The
+      // label is taken straight from the saved formulation echo
+      // (live-cache for the live brackets is wired on the picker
+      // itself via the existing onPickedItemsChange channel for
+      // anti-caking, but the carrier is rarely toggled in-session
+      // so we read from the echo here).
+      powderCarrierItems: metadata.powder_carrier_item_ids.map((id) => ({
+        id,
+        label:
+          formulation.powder_carrier_items.find((i) => i.id === id)
+            ?.name ?? "",
+      })),
+      // Powder sweetener picker (separate from the gummy sweetener
+      // pool that goes through gummy_base_items).
+      sweetenerItems: metadata.sweetener_item_ids.map((id) => ({
+        id,
+        label:
+          formulation.sweetener_items.find((i) => i.id === id)
+            ?.ingredient_list_name ??
+          formulation.sweetener_items.find((i) => i.id === id)?.name ??
+          "",
+        useAs: "Sweeteners",
+      })),
       excipientOverrides: metadata.excipient_overrides,
     });
   }, [
@@ -541,9 +574,12 @@ export function FormulationBuilder({
     metadata.mcc_carrier_item_ids,
     metadata.dcp_carrier_item_ids,
     metadata.anti_caking_item_ids,
+    metadata.powder_carrier_item_ids,
     mccCarrierNames,
     antiCakingNames,
     formulation.gummy_base_items,
+    formulation.powder_carrier_items,
+    formulation.sweetener_items,
     formulation.flavouring_items,
     formulation.colour_items,
     formulation.glazing_items,
@@ -787,7 +823,8 @@ export function FormulationBuilder({
             ? metadata.premix_sweetener_item_ids
             : [],
         acidity_item_ids:
-          metadata.dosage_form === "gummy"
+          metadata.dosage_form === "gummy" ||
+          metadata.dosage_form === "powder"
             ? metadata.acidity_item_ids
             : [],
         // MCC carrier flows to BOTH capsules and tablets — they
@@ -804,13 +841,22 @@ export function FormulationBuilder({
           metadata.dosage_form === "tablet"
             ? metadata.dcp_carrier_item_ids
             : [],
-        // Anti-caking flows to capsules + tablets. Empty picker on a
-        // dosage form that supports it means the scientist explicitly
-        // wants no lubricant band on the formulation.
+        // Anti-caking flows to capsules + tablets + powders. Empty
+        // picker on a dosage form that supports it means the
+        // scientist explicitly wants no lubricant band on the
+        // formulation.
         anti_caking_item_ids:
           metadata.dosage_form === "capsule" ||
-          metadata.dosage_form === "tablet"
+          metadata.dosage_form === "tablet" ||
+          metadata.dosage_form === "powder"
             ? metadata.anti_caking_item_ids
+            : [],
+        // Powder carrier is powder-only. Other dosage forms clear it
+        // so a one-off swap from powder to capsule doesn't leave
+        // orphaned Maltodextrin picks behind.
+        powder_carrier_item_ids:
+          metadata.dosage_form === "powder"
+            ? metadata.powder_carrier_item_ids
             : [],
         excipient_overrides:
           metadata.dosage_form === "gummy"
@@ -1310,6 +1356,91 @@ export function FormulationBuilder({
               )}
               onChange={(ids) =>
                 setMetadata({ ...metadata, colour_item_ids: ids })
+              }
+            />
+          ) : null}
+          {/* Powder Acidity Regulator picker -- consolidates the
+              historical Trisodium Citrate + Citric Acid auto-rows
+              into one opt-in band. Empty picker = no acidity band. */}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.acidity_item_ids}
+              preselected={formulation.acidity_items}
+              disabled={!canWrite}
+              useAsIn={ACIDITY_USE_CATEGORIES}
+              label={tFormulations("fields.powder_acidity_item")}
+              placeholderText={tFormulations(
+                "fields.powder_acidity_item_placeholder",
+              )}
+              hint={tFormulations("fields.powder_acidity_item_hint")}
+              loadingText={tFormulations(
+                "fields.powder_acidity_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.powder_acidity_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, acidity_item_ids: ids })
+              }
+            />
+          ) : null}
+          {/* Powder Anti-caking picker -- same M2M as capsule/tablet.
+              Empty picker = no Stearate / Silica band. Picks are
+              name-classified (silica-only -> 0.4%, stearate-only ->
+              1.0%, both -> 1.4% of total active). */}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.anti_caking_item_ids}
+              preselected={formulation.anti_caking_items}
+              disabled={!canWrite}
+              useAsIn={ANTI_CAKING_USE_CATEGORIES}
+              label={tFormulations("fields.anti_caking_item")}
+              placeholderText={tFormulations(
+                "fields.anti_caking_item_placeholder",
+              )}
+              hint={tFormulations("fields.anti_caking_item_hint")}
+              loadingText={tFormulations(
+                "fields.anti_caking_item_loading",
+              )}
+              emptyText={tFormulations("fields.anti_caking_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, anti_caking_item_ids: ids })
+              }
+              onPickedItemsChange={(items) => {
+                setAntiCakingNames((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+              }}
+            />
+          ) : null}
+          {/* Powder Carrier picker -- Maltodextrin and similar
+              bulking agents. Fills the remainder of the sachet after
+              actives + other bands. Empty picker = no carrier band
+              (the powder may be under-filled). */}
+          {metadata.dosage_form === "powder" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.powder_carrier_item_ids}
+              preselected={formulation.powder_carrier_items}
+              disabled={!canWrite}
+              useAsIn={MCC_CARRIER_USE_CATEGORIES}
+              label={tFormulations("fields.powder_carrier_item")}
+              placeholderText={tFormulations(
+                "fields.powder_carrier_item_placeholder",
+              )}
+              hint={tFormulations("fields.powder_carrier_item_hint")}
+              loadingText={tFormulations(
+                "fields.powder_carrier_item_loading",
+              )}
+              emptyText={tFormulations(
+                "fields.powder_carrier_item_empty",
+              )}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, powder_carrier_item_ids: ids })
               }
             />
           ) : null}
@@ -4079,6 +4210,11 @@ function groupGummyFlavourRows(
       heading: "Flavouring",
     },
     {
+      prefixes: ["sweetener:"],
+      combinedSlug: "sweetener:__combined",
+      heading: "Sweeteners",
+    },
+    {
       prefixes: ["colour:"],
       combinedSlug: "colour:__combined",
       heading: "Colour",
@@ -4093,6 +4229,16 @@ function groupGummyFlavourRows(
       combinedSlug: "pectin_premix:__combined",
       heading: "Pectin Premix",
       hideComponents: true,
+    },
+    {
+      prefixes: ["anti_caking:"],
+      combinedSlug: "anti_caking:__combined",
+      heading: "Anti-caking Agents",
+    },
+    {
+      prefixes: ["carrier:"],
+      combinedSlug: "carrier:__combined",
+      heading: "Carrier",
     },
   ];
 

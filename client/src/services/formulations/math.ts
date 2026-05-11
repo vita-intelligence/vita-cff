@@ -1225,6 +1225,19 @@ function computeFillTarget(
     readonly label: string;
     readonly useAs: string;
   }> = [],
+  sweetenerItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
+  }> = [],
+  antiCakingItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }> = [],
+  powderCarrierItems: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }> = [],
   excipientOverrides: Readonly<Record<string, number>> | null | undefined =
     null,
   defaultServingSize: number = 1,
@@ -1247,6 +1260,13 @@ function computeFillTarget(
   const flavourRows: ExcipientRow[] =
     dosageForm === "powder"
       ? (() => {
+          // Every powder excipient band is now opt-in via its
+          // picker (flavouring / sweetener / colour / acidity /
+          // anti-caking / carrier). The hardcoded preset mg/g
+          // values still drive each band's mg total so picks fire
+          // at the Excel-derived rate, but empty pickers drop the
+          // band entirely instead of leaving a phantom placeholder.
+          // Mirrors the server gating in _compute_fill_target.
           const preset = powderFlavourSystemFor(powderType);
           const fillWeightMg =
             targetFillWeightMg && targetFillWeightMg > 0
@@ -1257,13 +1277,149 @@ function computeFillTarget(
               ? defaultServingSize
               : 1;
           const powderGPerServing = (fillWeightMg / 1000) * scoops;
-          return preset.map((row) => ({
-            slug: row.slug,
-            label: row.label,
-            mg: row.mgPerGPowder * powderGPerServing,
-            isRemainder: false,
-            concentrationMgPerGPowder: row.mgPerGPowder,
-          }));
+
+          const rows: ExcipientRow[] = [];
+          const emitPowderBand = (
+            blockSlug: string,
+            blockLabel: string,
+            blockTotalMg: number,
+            picks: ReadonlyArray<{
+              readonly id: string;
+              readonly label: string;
+              readonly useAs?: string;
+            }>,
+            mgPerGPowder: number | null,
+          ) => {
+            if (blockTotalMg <= 0 || picks.length === 0) return;
+            const perItem = blockTotalMg / picks.length;
+            const perItemConcentration =
+              mgPerGPowder !== null && picks.length > 0
+                ? mgPerGPowder / picks.length
+                : null;
+            for (const pick of picks) {
+              rows.push({
+                slug: `${blockSlug}:${pick.id}`,
+                label: pick.label,
+                mg: perItem,
+                isRemainder: false,
+                useAs: pick.useAs ?? "",
+                concentrationMgPerGPowder: perItemConcentration,
+              });
+            }
+          };
+
+          // Preset-driven bands tied to their pickers. Acidity rolls
+          // up trisodium_citrate + citric_acid into one combined
+          // band so the picker maps cleanly to a single line.
+          const pickerForSlug: Record<
+            string,
+            ReadonlyArray<{
+              readonly id: string;
+              readonly label: string;
+              readonly useAs: string;
+            }>
+          > = {
+            flavouring: flavouringItems,
+            sweetener: sweetenerItems,
+            colour: colourItems,
+          };
+          let acidityMgPerG = 0;
+          for (const row of preset) {
+            if (
+              row.slug === "trisodium_citrate" ||
+              row.slug === "citric_acid"
+            ) {
+              acidityMgPerG += row.mgPerGPowder;
+              continue;
+            }
+            const picks = pickerForSlug[row.slug];
+            if (!picks) continue;
+            const useAsForBand =
+              row.slug === "flavouring"
+                ? "Flavouring"
+                : row.slug === "sweetener"
+                  ? "Sweeteners"
+                  : row.slug === "colour"
+                    ? "Colour"
+                    : "";
+            emitPowderBand(
+              row.slug,
+              row.label,
+              row.mgPerGPowder * powderGPerServing,
+              picks.map((p) => ({
+                id: p.id,
+                label: p.label,
+                useAs: p.useAs || useAsForBand,
+              })),
+              row.mgPerGPowder,
+            );
+          }
+          if (acidityItems.length > 0 && acidityMgPerG > 0) {
+            emitPowderBand(
+              "acidity",
+              "Acidity Regulator",
+              acidityMgPerG * powderGPerServing,
+              acidityItems.map((p) => ({
+                id: p.id,
+                label: p.label,
+                useAs: p.useAs || "Acidity Regulator",
+              })),
+              acidityMgPerG,
+            );
+          }
+
+          // Anti-caking band -- same name classifier as capsule/
+          // tablet. Silica-only -> 0.4% of actives; stearate-only
+          // -> 1.0%; both -> 1.4%. Empty picker = no band.
+          const { stearate: hasStearate, silica: hasSilica } =
+            classifyAntiCakingPicks(antiCakingItems);
+          if (hasStearate || hasSilica) {
+            const stearateMg = hasStearate
+              ? totalActive * CAPSULE_MG_STEARATE_PCT
+              : 0;
+            const silicaMg = hasSilica
+              ? totalActive * CAPSULE_SILICA_PCT
+              : 0;
+            emitPowderBand(
+              "anti_caking",
+              "Anti-caking Agents",
+              stearateMg + silicaMg,
+              antiCakingItems.map((p) => ({
+                id: p.id,
+                label: p.label,
+                useAs: "Anti-caking Agent",
+              })),
+              null,
+            );
+          }
+
+          // Carrier band -- fills the remainder of the sachet
+          // after actives + other excipient bands. Empty picker =
+          // no carrier (sachet may be under-filled).
+          if (
+            powderCarrierItems.length > 0 &&
+            targetFillWeightMg &&
+            targetFillWeightMg > 0
+          ) {
+            const target = targetFillWeightMg * scoops;
+            const otherBands = rows.reduce((acc, r) => acc + r.mg, 0);
+            const remainder = target - totalActive - otherBands;
+            if (remainder > 0) {
+              emitPowderBand(
+                "carrier",
+                "Carrier",
+                remainder,
+                powderCarrierItems.map((p) => ({
+                  id: p.id,
+                  label: p.label,
+                  useAs: "Carrier",
+                })),
+                null,
+              );
+            }
+          }
+
+          return rows;
         })()
       : (() => {
           // Gummy flavour system — six scaled blocks (gelling +
@@ -1512,6 +1668,8 @@ export function computeTotals({
   mccCarrierItems,
   dcpCarrierItems,
   antiCakingItems,
+  powderCarrierItems,
+  sweetenerItems,
   excipientOverrides,
 }: {
   lines: readonly ComputeLineInput[];
@@ -1602,6 +1760,21 @@ export function computeTotals({
   antiCakingItems?: ReadonlyArray<{
     readonly id: string;
     readonly label: string;
+  }>;
+  /** Powder carrier picks (Maltodextrin etc.). Fills the remainder of
+   *  the sachet after actives + other excipient bands. Empty /
+   *  omitted → no carrier band on the formulation. Powder-only. */
+  powderCarrierItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }>;
+  /** Powder Sweetener picks (Sucralose, Steviol etc.). Powder-only;
+   *  the gummy branch consumes premixSweetenerItems via the gummy
+   *  base instead. Empty / omitted → no sweetener band. */
+  sweetenerItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly useAs: string;
   }>;
   /** Per-band % overrides for the gummy excipient system. Missing
    *  keys fall back to constant defaults. */
@@ -1716,6 +1889,12 @@ export function computeTotals({
       gellingItems ?? [],
       premixSweetenerItems ?? [],
       acidityItems ?? [],
+      // ``sweetenerItems`` powers the powder Sweetener band (gummy
+      // branch ignores it -- its sweetener flow goes through
+      // premixSweetenerItems via the gummy base).
+      sweetenerItems ?? [],
+      antiCakingItems ?? [],
+      powderCarrierItems ?? [],
       excipientOverrides ?? null,
       defaultServingSize,
     );

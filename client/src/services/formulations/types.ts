@@ -217,11 +217,19 @@ export interface FormulationDto {
   /** Tablet DCP carrier picks. Same picker shape as the MCC field. */
   readonly dcp_carrier_item_ids: readonly string[];
   readonly dcp_carrier_items: readonly GummyBaseItemDto[];
-  /** Capsule + tablet anti-caking picks. Items tagged ``use_as =
-   *  "Anti-caking Agent"``. Empty list = no anti-caking band on the
-   *  formulation at all (the spec sheet drops the row). */
+  /** Capsule + tablet + powder anti-caking picks. Items tagged
+   *  ``use_as = "Anti-caking Agent"``. Empty list = no anti-caking
+   *  band on the formulation at all (the spec sheet drops the row).
+   *  Contribution is name-classified: silica-only -> 0.4%, stearate-
+   *  only -> 1.0%, both -> 1.4% of total active. */
   readonly anti_caking_item_ids: readonly string[];
   readonly anti_caking_items: readonly GummyBaseItemDto[];
+  /** Powder carrier picks (Maltodextrin etc.). Items tagged
+   *  ``use_as in ("Carrier", "Bulking Agent")``. Fills the remainder
+   *  of the sachet after actives + other excipient bands. Empty list
+   *  = no carrier band on the formulation. Powder-only. */
+  readonly powder_carrier_item_ids: readonly string[];
+  readonly powder_carrier_items: readonly GummyBaseItemDto[];
   /** Per-band percentage overrides for the gummy excipient system.
    *  Keys: water | acidity | flavouring | colour | glazing | gelling
    *  | premix_sweetener. Values are decimal fractions (0.02 = 2%).
@@ -309,11 +317,15 @@ export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> &
    *  validation as the MCC carrier picker. Ignored on non-tablet
    *  forms. */
   readonly dcp_carrier_item_ids?: readonly string[];
-  /** Array of Item ids for the capsule + tablet anti-caking band.
-   *  Empty array = no Stearate / Silica auto-fill (formulation ships
-   *  without anti-caking). Server rejects items whose ``use_as`` ≠
-   *  'Anti-caking Agent'. Ignored on powder / gummy forms. */
+  /** Array of Item ids for the capsule + tablet + powder anti-caking
+   *  band. Empty array = no Stearate / Silica auto-fill (formulation
+   *  ships without anti-caking). Server rejects items whose
+   *  ``use_as`` ≠ 'Anti-caking Agent'. Ignored on gummy forms. */
   readonly anti_caking_item_ids?: readonly string[];
+  /** Array of Item ids for the powder Carrier band (Maltodextrin
+   *  etc.). Empty array = no carrier band. Server rejects items
+   *  whose ``use_as`` ∉ ('Carrier', 'Bulking Agent'). Powder-only. */
+  readonly powder_carrier_item_ids?: readonly string[];
   /** Per-band % overrides for the gummy excipient system. Pass an
    *  empty object to clear all overrides; ``null`` (or omit) means
    *  no change. Server validates keys against the canonical band

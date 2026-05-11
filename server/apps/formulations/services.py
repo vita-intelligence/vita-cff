@@ -239,10 +239,20 @@ class InvalidDcpCarrierItem(Exception):
 class InvalidAntiCakingItem(Exception):
     """Picked anti-caking item is not in the org's raw_materials
     catalogue or doesn't carry ``use_as == "Anti-caking Agent"``. The
-    capsule + tablet anti-caking picker rejects every other category
-    so a misplaced item never inflates the lubricant slot."""
+    capsule + tablet + powder anti-caking picker rejects every other
+    category so a misplaced item never inflates the lubricant slot."""
 
     code = "invalid_anti_caking_item"
+
+
+class InvalidPowderCarrierItem(Exception):
+    """Picked powder carrier item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as in ("Carrier", "Bulking
+    Agent")``. Powder-only picker -- mirrors the MCC carrier picker
+    on the capsule + tablet path but emits to its own band so the
+    spec sheet reads as 'Carrier (Maltodextrin)' on a powder."""
+
+    code = "invalid_powder_carrier_item"
 
 
 class InvalidExcipientOverrides(Exception):
@@ -1078,6 +1088,8 @@ def _compute_fill_target(
     gelling_items: tuple[Item, ...] = (),
     premix_sweetener_items: tuple[Item, ...] = (),
     acidity_items: tuple[Item, ...] = (),
+    anti_caking_items: tuple[Item, ...] = (),
+    powder_carrier_items: tuple[Item, ...] = (),
     excipient_overrides: dict[str, Any] | None = None,
     default_serving_size: int = 1,
 ) -> tuple[
@@ -1214,50 +1226,124 @@ def _compute_fill_target(
             else 1
         )
         powder_g_per_serving *= float(scoops)
-        # Powder rows fall into two camps:
-        #   * Acidity regulators (trisodium_citrate, citric_acid) —
-        #     auto-resolved by name lookup against the catalogue,
-        #     no picker needed. Render as a single generic row.
-        #   * Flavour-facing rows (flavouring, sweetener, colour) —
-        #     scientist picks specific catalogue items; the per-row
-        #     mg total splits equally across picks just like gummies.
-        #     Empty picks fall back to the generic placeholder so an
-        #     in-flight powder formulation still renders a sensible
-        #     row before the scientist makes their picks.
+        # Every powder excipient band is now opt-in via its picker
+        # (acidity / flavouring / sweetener / colour). An empty picker
+        # means the band drops out -- no more "auto-fired Trisodium
+        # Citrate + Citric Acid + placeholder Sweetener" rows on a
+        # formulation where the scientist hasn't said they want them.
+        # The hardcoded preset mg/g values still drive the band total
+        # so picks at a band fire at the original Excel-derived rate;
+        # they just don't emit at all when nothing is picked.
         powder_pickers: dict[str, tuple[tuple[Item, ...], str]] = {
             "flavouring": (flavouring_items, "Flavouring"),
             "sweetener": (sweetener_items, "Sweeteners"),
             "colour": (colour_items, "Colour"),
+            # The Acidity Regulator band collapses the historical
+            # ``trisodium_citrate`` (25 mg/g) + ``citric_acid``
+            # (10 mg/g) rows into a single opt-in band tied to the
+            # acidity_items picker, mirroring how gummies handle
+            # the same slot. Preset mg/g still applies; see the
+            # slug-resolution block below for the combined total.
+            "acidity": (acidity_items, "Acidity Regulator"),
         }
+        # Pre-compute the combined acidity mg/g from the historical
+        # preset rows so the single emitted band fires at exactly the
+        # same total as Excel used to (25 + 10 = 35 mg/g for the
+        # default flavour system).
+        acidity_mg_per_g = sum(
+            mg_per_g
+            for slug, _, mg_per_g in preset
+            if slug in ("trisodium_citrate", "citric_acid", "acidity")
+        )
+        # Emit each picker-driven band in preset order, skipping the
+        # legacy acidity slugs which are folded into the combined
+        # band below.
         for slug, label, mg_per_g_powder in preset:
-            block_total_mg = mg_per_g_powder * powder_g_per_serving
-            picker = powder_pickers.get(slug)
-            if picker is not None:
-                picks, band_use_as = picker
-                _emit_pick_band(
-                    block_slug=slug,
-                    block_label=label,
-                    block_total_mg=block_total_mg,
-                    picks=picks,
-                    band_use_as=band_use_as,
-                    concentration_mg_per_g_powder=Decimal(
-                        str(mg_per_g_powder)
-                    ),
-                )
+            if slug in ("trisodium_citrate", "citric_acid"):
                 continue
-            # Non-picker row: keep the current generic-row behaviour
-            # so name-resolved excipients (Trisodium Citrate, Citric
-            # Acid) render as before.
-            flavour_rows.append(
-                ExcipientRow(
-                    slug=slug,
-                    label=label,
-                    mg=_quantise(block_total_mg),
-                    concentration_mg_per_g_powder=Decimal(
-                        str(mg_per_g_powder)
-                    ),
-                )
+            picker = powder_pickers.get(slug)
+            if picker is None:
+                # Defensive: any preset row without a picker is
+                # quietly skipped. Future preset additions must wire
+                # a picker before they will surface.
+                continue
+            picks, band_use_as = picker
+            block_total_mg = mg_per_g_powder * powder_g_per_serving
+            _emit_pick_band(
+                block_slug=slug,
+                block_label=label,
+                block_total_mg=block_total_mg,
+                picks=picks,
+                band_use_as=band_use_as,
+                # Empty picker -> band drops out entirely (opt-in
+                # semantics; no more phantom placeholder rows).
+                placeholder_when_empty=False,
+                concentration_mg_per_g_powder=Decimal(
+                    str(mg_per_g_powder)
+                ),
             )
+        # Acidity band -- combined Trisodium Citrate + Citric Acid
+        # rate, only emitted when the acidity picker has items.
+        if acidity_items and acidity_mg_per_g > 0:
+            _emit_pick_band(
+                block_slug="acidity",
+                block_label="Acidity Regulator",
+                block_total_mg=acidity_mg_per_g * powder_g_per_serving,
+                picks=acidity_items,
+                band_use_as="Acidity Regulator",
+                placeholder_when_empty=False,
+                concentration_mg_per_g_powder=Decimal(
+                    str(acidity_mg_per_g)
+                ),
+            )
+        # Anti-caking band -- mirrors the capsule/tablet picker.
+        # Empty picker = no anti-caking on the formulation. Stearate-
+        # only -> 1.0% of total active; silica-only -> 0.4%; both
+        # -> 1.4%. Total mg is independent of powder grams; it scales
+        # with the actives sum so a heavier-active scoop carries
+        # proportionally more lubricant.
+        has_stearate, has_silica = _classify_anti_caking_picks(
+            anti_caking_items
+        )
+        anti_caking_total_mg = 0.0
+        if has_stearate or has_silica:
+            active_f = float(total_active)
+            stearate_mg = (
+                active_f * CAPSULE_MG_STEARATE_PCT if has_stearate else 0.0
+            )
+            silica_mg = (
+                active_f * CAPSULE_SILICA_PCT if has_silica else 0.0
+            )
+            anti_caking_total_mg = stearate_mg + silica_mg
+            _emit_pick_band(
+                block_slug="anti_caking",
+                block_label="Anti-caking Agents",
+                block_total_mg=anti_caking_total_mg,
+                picks=anti_caking_items,
+                band_use_as="Anti-caking Agent",
+                placeholder_when_empty=False,
+            )
+        # Carrier band -- Maltodextrin and similar bulking agents.
+        # Fills the remainder of the sachet after the actives + the
+        # other bands; mirrors how scientists historically added the
+        # carrier as a real catalogue line. When the picker is
+        # empty no carrier row emits and the powder may be under-
+        # filled (which is the scientist's call).
+        if powder_carrier_items and target_fill_weight_mg is not None:
+            target = float(target_fill_weight_mg) * float(scoops)
+            other_bands = sum(float(row.mg) for row in flavour_rows)
+            remainder = (
+                target - float(total_active) - other_bands - anti_caking_total_mg
+            )
+            if remainder > 0:
+                _emit_pick_band(
+                    block_slug="carrier",
+                    block_label="Carrier",
+                    block_total_mg=remainder,
+                    picks=powder_carrier_items,
+                    band_use_as=CARRIER_USE_AS,
+                    placeholder_when_empty=False,
+                )
     else:
         # Gummy flavour system — six scaled blocks, in order:
         #
@@ -1577,6 +1663,7 @@ def compute_totals(
     mcc_carrier_items: tuple[Item, ...] = (),
     dcp_carrier_items: tuple[Item, ...] = (),
     anti_caking_items: tuple[Item, ...] = (),
+    powder_carrier_items: tuple[Item, ...] = (),
     excipient_overrides: dict[str, Any] | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
@@ -1692,6 +1779,8 @@ def compute_totals(
             gelling_items=gelling_items,
             premix_sweetener_items=premix_sweetener_items,
             acidity_items=acidity_items,
+            anti_caking_items=anti_caking_items,
+            powder_carrier_items=powder_carrier_items,
             excipient_overrides=excipient_overrides,
             default_serving_size=default_serving_size,
         )
@@ -1961,6 +2050,12 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("anti_caking_item_ids"),
         )
+    pending_powder_carrier: list[Item] | None = None
+    if "powder_carrier_item_ids" in changes:
+        pending_powder_carrier = _resolve_powder_carrier_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("powder_carrier_item_ids"),
+        )
     # Excipient overrides — validate up front so any malformed
     # payload short-circuits before we touch the M2M setters or the
     # audit row, but defer the actual write until after the audit
@@ -2017,6 +2112,8 @@ def update_formulation(
         formulation.dcp_carrier_items.set(pending_dcp_carrier)
     if pending_anti_caking is not None:
         formulation.anti_caking_items.set(pending_anti_caking)
+    if pending_powder_carrier is not None:
+        formulation.powder_carrier_items.set(pending_powder_carrier)
     record_audit(
         organization=formulation.organization,
         actor=actor,
@@ -2301,14 +2398,32 @@ def _resolve_anti_caking_items(
     raw_ids: Any,
 ) -> list[Item]:
     """Resolve incoming ``anti_caking_item_ids`` — picks must carry
-    ``use_as == "Anti-caking Agent"``. Capsule + tablet picker; empty
-    picker means the formulation ships without any anti-caking band."""
+    ``use_as == "Anti-caking Agent"``. Capsule + tablet + powder
+    picker; empty picker means the formulation ships without any
+    anti-caking band."""
 
     return _resolve_use_as_picks(
         organization=organization,
         raw_ids=raw_ids,
         allowed_categories=ANTI_CAKING_USE_CATEGORIES,
         error_cls=InvalidAntiCakingItem,
+    )
+
+
+def _resolve_powder_carrier_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``powder_carrier_item_ids`` — picks must carry
+    ``use_as in ("Carrier", "Bulking Agent")``. Powder-only picker;
+    fills the remainder of the sachet after actives + other bands."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=MCC_CARRIER_USE_CATEGORIES,
+        error_cls=InvalidPowderCarrierItem,
     )
 
 
@@ -3312,6 +3427,9 @@ def compute_formulation_totals(
         ),
         anti_caking_items=tuple(
             formulation.anti_caking_items.all().order_by("name")
+        ),
+        powder_carrier_items=tuple(
+            formulation.powder_carrier_items.all().order_by("name")
         ),
         excipient_overrides=formulation.excipient_overrides or {},
     )

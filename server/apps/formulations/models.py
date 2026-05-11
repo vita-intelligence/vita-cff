@@ -351,17 +351,33 @@ class Formulation(models.Model):
         related_name="anti_caking_formulations",
         help_text=_(
             "Raw-material items used as the combined anti-caking "
-            "agent on a capsule or tablet (typically Magnesium "
-            "Stearate + Silicon Dioxide, but any item tagged "
-            "use_as = 'Anti-caking Agent' is admissible). The "
-            "combined anti-caking total (1.4% of total active, "
-            "preserving the historical 1% stearate + 0.4% silica "
-            "split as one combined band) is split equally across "
-            "picks; the declaration emits one 'Anti-caking Agents "
-            "(picked names)' row. **Empty list = no anti-caking on "
-            "the formulation at all** -- the spec sheet drops the "
-            "row entirely, supporting scientists who deliberately "
-            "ship without lubricants. Ignored for powders / gummies."
+            "agent on a capsule, tablet, or powder (typically "
+            "Magnesium Stearate + Silicon Dioxide, but any item "
+            "tagged use_as = 'Anti-caking Agent' is admissible). "
+            "Contribution is dynamic per pick: a silica-only pick "
+            "fires the 0.4% silica band, a stearate-only pick the "
+            "1.0% lubricant band, and picking both lights up the "
+            "full 1.4%. **Empty list = no anti-caking on the "
+            "formulation at all** -- the spec sheet drops the row "
+            "entirely, supporting scientists who deliberately ship "
+            "without lubricants. Ignored for gummies."
+        ),
+    )
+    powder_carrier_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("powder carrier items"),
+        blank=True,
+        related_name="powder_carrier_formulations",
+        help_text=_(
+            "Raw-material items used as the structural carrier on a "
+            "powder formulation -- typically Maltodextrin, but any "
+            "item tagged use_as in ('Carrier', 'Bulking Agent') is "
+            "admissible. The carrier total fills the remainder of "
+            "the sachet after the actives and the other excipient "
+            "bands, mirroring the way scientists historically added "
+            "Maltodextrin as a real actives line. Empty list = no "
+            "carrier band on the formulation. Ignored for capsule, "
+            "tablet, gummy, and liquid forms."
         ),
     )
     excipient_overrides: models.JSONField = models.JSONField(
