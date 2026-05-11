@@ -221,6 +221,7 @@
       "max_weight": "Target / max",
       "leftover": "Headroom",
       "overshoot": "Overshoot",
+      "compliant": "Compliant (fills to target)",
       "per_serving": "Per serving ({count, plural, one {# unit} other {# units}})"
     },
     "unsupported_form": "Excipient math for this dosage form is not yet supported. You can still track ingredients and metadata.",

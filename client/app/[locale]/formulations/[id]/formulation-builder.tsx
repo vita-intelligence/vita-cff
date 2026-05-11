@@ -2716,10 +2716,28 @@ function TotalsBlock({
   // Leftover = max - total. Positive ⇒ headroom (can add more);
   // negative ⇒ overshoot (won't fit). Only meaningful when there's
   // both a total and a ceiling to measure against.
-  const leftoverMg =
+  //
+  // ``LEFTOVER_TOLERANCE_MG`` collapses sub-microgram float noise to a
+  // clean zero. ``computeCapsule`` derives the MCC fill as
+  // ``max - active - stearate - silica`` and the total weight then
+  // sums those four numbers back up. In pure math the total equals
+  // ``max`` exactly, but IEEE-754 addition leaves a -1e-13-ish drift
+  // depending on the operand order — without a tolerance band the UI
+  // flips between "Compliant" and "Overshoot" for a formula that
+  // already fills the capsule to its target. 0.005 mg is five orders
+  // of magnitude below what a manufacturing scale can measure, so
+  // collapsing the band has zero downside.
+  const LEFTOVER_TOLERANCE_MG = 0.005;
+  const rawLeftover =
     totals.totalWeightMg !== null && totals.maxWeightMg !== null
       ? totals.maxWeightMg - totals.totalWeightMg
       : null;
+  const leftoverMg =
+    rawLeftover === null
+      ? null
+      : Math.abs(rawLeftover) < LEFTOVER_TOLERANCE_MG
+        ? 0
+        : rawLeftover;
   // Per-unit vocabulary: scientists think "per scoop" for powder,
   // "per capsule" for capsule, etc. Keeps the per-serving math legible
   // at a glance — "10g/scoop × 2 scoops = 20g/serving".
@@ -2959,14 +2977,16 @@ function TotalsBlock({
                 leftoverMg < 0
                   ? "font-medium text-danger"
                   : leftoverMg === 0
-                    ? "text-success"
+                    ? "font-medium text-success"
                     : "text-orange-700"
               }`}
             >
               <span>
                 {leftoverMg < 0
                   ? tFormulations("builder.excipients.overshoot")
-                  : tFormulations("builder.excipients.leftover")}
+                  : leftoverMg === 0
+                    ? tFormulations("builder.excipients.compliant")
+                    : tFormulations("builder.excipients.leftover")}
               </span>
               <CopyableValue
                 mg={Math.abs(leftoverMg)}
