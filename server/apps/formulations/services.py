@@ -30,6 +30,8 @@ from apps.formulations.constants import (
     ACIDITY_USE_CATEGORIES,
     AMINO_ACID_GROUPS,
     AMINO_ACID_KEYS,
+    ANTI_CAKING_TOTAL_PCT,
+    ANTI_CAKING_USE_CATEGORIES,
     CAPSULE_MG_STEARATE_PCT,
     CAPSULE_SHELL_LABEL,
     CAPSULE_SILICA_PCT,
@@ -232,6 +234,15 @@ class InvalidDcpCarrierItem(Exception):
     surfaces the distinct code on the dedicated DCP field."""
 
     code = "invalid_dcp_carrier_item"
+
+
+class InvalidAntiCakingItem(Exception):
+    """Picked anti-caking item is not in the org's raw_materials
+    catalogue or doesn't carry ``use_as == "Anti-caking Agent"``. The
+    capsule + tablet anti-caking picker rejects every other category
+    so a misplaced item never inflates the lubricant slot."""
+
+    code = "invalid_anti_caking_item"
 
 
 class InvalidExcipientOverrides(Exception):
@@ -480,6 +491,17 @@ class ExcipientBreakdown:
     #: same fallback semantics as :attr:`mcc_carrier_rows`. Total mg
     #: always equals :attr:`dcp_mg`.
     dcp_carrier_rows: tuple["CarrierRow", ...] = ()
+    #: Per-pick breakdown of the combined anti-caking band. Empty when
+    #: no anti-caking items were picked -- in that case the formulation
+    #: ships without any anti-caking and the declaration drops the row
+    #: entirely. When picks exist, the 1.4% combined total is split
+    #: equally across them and the declaration renders a single
+    #: "Anti-caking Agents (picked names)" line. Total mg always
+    #: equals ``mg_stearate_mg + silica_mg`` (kept as the combined
+    #: band on the new picker, so ``silica_mg`` mirrors the historical
+    #: 0.4% split and ``mg_stearate_mg`` mirrors the 1% split when
+    #: down-stream code wants the legacy two-field shape).
+    anti_caking_rows: tuple["CarrierRow", ...] = ()
     #: Optional flexible list used for dosage forms that do not fit
     #: the capsule/tablet four-field shape. Powder + gummy populate
     #: this; capsule + tablet leave it empty.
@@ -677,10 +699,57 @@ def _build_carrier_rows(
     return tuple(rows)
 
 
+#: Substring patterns (case-insensitive) used to classify a picked
+#: anti-caking item into the stearate vs silica band so the combined
+#: 1.4% only fires when both chemistries are represented. Built from
+#: the names actually shipping in the supplement-industry catalogue
+#: (Magnesium Stearate, Stearic Acid, Silicon Dioxide, Silica,
+#: Fumed Silica). Items that match neither pattern fall back to the
+#: lubricant band -- it's the dominant anti-caking chemistry and the
+#: scientist can override the breakdown on the spec sheet if needed.
+_STEARATE_NAME_PATTERN = re.compile(r"stear", re.IGNORECASE)
+_SILICA_NAME_PATTERN = re.compile(r"silic", re.IGNORECASE)
+
+
+def _classify_anti_caking_picks(
+    items: tuple[Item, ...],
+) -> tuple[bool, bool]:
+    """Return ``(has_stearate_pick, has_silica_pick)`` for the
+    anti-caking picker. Mirrors what the spec sheet renders: only the
+    bands matched by an actual pick fire, so picking Silicon Dioxide
+    alone produces a 0.4% row and nothing else. Items that match
+    neither rule default into the stearate (lubricant) band so a
+    Talc or Calcium Silicate pick still surfaces a row rather than
+    being silently ignored."""
+
+    if not items:
+        return (False, False)
+    has_stearate = False
+    has_silica = False
+    has_unmatched = False
+    for item in items:
+        name = item.name or ""
+        if _SILICA_NAME_PATTERN.search(name):
+            has_silica = True
+        elif _STEARATE_NAME_PATTERN.search(name):
+            has_stearate = True
+        else:
+            has_unmatched = True
+    # Unmatched picks fall back to lubricant so they still produce a
+    # visible row. We do this only when nothing else matched stearate
+    # so a clear "this is a silica family pick + this is an unknown
+    # third item" composition still classifies the unknown into the
+    # lubricant band, not silently merge it into silica.
+    if has_unmatched and not has_stearate:
+        has_stearate = True
+    return (has_stearate, has_silica)
+
+
 def _compute_capsule(
     total_active: Decimal,
     requested_size_key: str | None,
     mcc_carrier_items: tuple[Item, ...] = (),
+    anti_caking_items: tuple[Item, ...] = (),
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -712,53 +781,78 @@ def _compute_capsule(
             tuple(warnings),
         )
 
-    # Empty MCC picker means the scientist explicitly opted out of any
-    # auto-filled carrier — produce a "pure actives" formulation with
-    # no excipients at all (no MCC remainder, no anticaking). Capsule
-    # will be under-filled but that's the deliberate choice.
+    # Anti-caking is opt-in via its own picker, and the contribution
+    # is now dynamic: a Silicon-Dioxide-only pick should fire only the
+    # 0.4% silica band, a Magnesium-Stearate-only pick only the 1.0%
+    # stearate band, and picking both lights up the full 1.4%
+    # combined. Each picked item is classified by name (case-
+    # insensitive substring match) -- the supplement industry has a
+    # narrow vocabulary here so the heuristic is reliable. Anything
+    # that matches neither rule defaults to the lubricant band so a
+    # stray "talc" or "calcium silicate" pick still produces a row
+    # the scientist can see and override.
+    active_f = float(total_active)
+    has_stearate_pick, has_silica_pick = _classify_anti_caking_picks(
+        anti_caking_items
+    )
+    if has_stearate_pick or has_silica_pick:
+        stearate = active_f * CAPSULE_MG_STEARATE_PCT if has_stearate_pick else 0.0
+        silica = active_f * CAPSULE_SILICA_PCT if has_silica_pick else 0.0
+        anti_caking_total = stearate + silica
+    else:
+        anti_caking_total = 0.0
+        stearate = 0.0
+        silica = 0.0
+
+    # Empty MCC picker means the scientist explicitly opted out of the
+    # carrier — produce a formulation with no carrier remainder.
+    # Anti-caking can still be present (or not) independently.
     if not mcc_carrier_items:
-        total_weight = float(total_active)
+        total_weight = active_f + stearate + silica
         fits = size.max_weight_mg >= total_weight
-        codes_no_excipients: list[str] = []
+        codes_no_carrier: list[str] = []
         if not fits:
-            codes_no_excipients.append("cannot_make")
+            codes_no_carrier.append("cannot_make")
         else:
-            codes_no_excipients.extend(
+            codes_no_carrier.extend(
                 ("can_make", "less_challenging", "proceed_to_quote")
             )
-        excipients_empty = ExcipientBreakdown(
-            mg_stearate_mg=Decimal("0"),
-            silica_mg=Decimal("0"),
+        anti_caking_rows_no_carrier = _build_carrier_rows(
+            total_mg=anti_caking_total,
+            items=anti_caking_items,
+        )
+        excipients_no_carrier = ExcipientBreakdown(
+            mg_stearate_mg=_quantise(stearate),
+            silica_mg=_quantise(silica),
             mcc_mg=Decimal("0"),
             mcc_carrier_rows=(),
+            anti_caking_rows=anti_caking_rows_no_carrier,
         )
         return (
             size.key,
             size.label,
             _quantise(size.max_weight_mg),
             _quantise(total_weight),
-            excipients_empty,
+            excipients_no_carrier,
             ViabilityResult(
                 fits=fits,
                 comfort_ok=fits,
-                codes=tuple(codes_no_excipients),
+                codes=tuple(codes_no_carrier),
             ),
             tuple(warnings),
         )
 
-    stearate = float(total_active) * CAPSULE_MG_STEARATE_PCT
-    silica = float(total_active) * CAPSULE_SILICA_PCT
-    mcc = size.max_weight_mg - float(total_active) - stearate - silica
+    mcc = size.max_weight_mg - active_f - stearate - silica
     # Total weight is defined as sum(active, excipients). When MCC is
     # positive this equals max_weight by construction. When MCC would
     # go negative (active + excipients overshoot max) the totals block
     # still reports the true sum so viability can flag "CANNOT MAKE".
-    total_weight = float(total_active) + stearate + silica + max(mcc, 0.0)
+    total_weight = active_f + stearate + silica + max(mcc, 0.0)
     if mcc < 0:
-        total_weight = float(total_active) + stearate + silica
+        total_weight = active_f + stearate + silica
 
     fits = size.max_weight_mg >= total_weight
-    comfort_ok = fits and mcc >= (float(total_active) * 0.01)
+    comfort_ok = fits and mcc >= (active_f * 0.01)
     codes: list[str] = []
     if not fits:
         codes.append("cannot_make")
@@ -773,12 +867,17 @@ def _compute_capsule(
         total_mg=max(mcc, 0.0),
         items=mcc_carrier_items,
     )
+    anti_caking_rows = _build_carrier_rows(
+        total_mg=anti_caking_total,
+        items=anti_caking_items,
+    )
 
     excipients = ExcipientBreakdown(
         mg_stearate_mg=_quantise(stearate),
         silica_mg=_quantise(silica),
         mcc_mg=_quantise(mcc),
         mcc_carrier_rows=mcc_carrier_rows,
+        anti_caking_rows=anti_caking_rows,
     )
 
     return (
@@ -797,6 +896,7 @@ def _compute_tablet(
     requested_size_key: str | None,
     mcc_carrier_items: tuple[Item, ...] = (),
     dcp_carrier_items: tuple[Item, ...] = (),
+    anti_caking_items: tuple[Item, ...] = (),
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -804,14 +904,22 @@ def _compute_tablet(
     active = float(total_active)
     warnings: list[str] = []
 
-    # Auto-fills are gated on each carrier picker individually. Empty
-    # MCC picker zeros the MCC fill (and same for DCP); when both are
-    # empty the tablet ships as pure actives (no anticaking either).
-    has_any_carrier = bool(mcc_carrier_items or dcp_carrier_items)
-    if has_any_carrier:
-        stearate = active * TABLET_MG_STEARATE_PCT
-        silica = active * TABLET_SILICA_PCT
+    # Each band is gated on its own picker now. Anti-caking is opt-in:
+    # empty picker -> zero stearate + zero silica. Picking silica only
+    # fires the 0.4% silica row; picking stearate only fires the 1.0%
+    # row; picking both lights up the full 1.4%. MCC + DCP carriers
+    # are independent. A scientist can ship pure actives by leaving
+    # all pickers empty; or actives + carrier without anti-caking; or
+    # any other combination they need.
+    has_stearate_pick, has_silica_pick = _classify_anti_caking_picks(
+        anti_caking_items
+    )
+    if has_stearate_pick or has_silica_pick:
+        stearate = active * TABLET_MG_STEARATE_PCT if has_stearate_pick else 0.0
+        silica = active * TABLET_SILICA_PCT if has_silica_pick else 0.0
+        anti_caking_total = stearate + silica
     else:
+        anti_caking_total = 0.0
         stearate = 0.0
         silica = 0.0
 
@@ -826,6 +934,9 @@ def _compute_tablet(
     dcp_carrier_rows = _build_carrier_rows(
         total_mg=dcp, items=dcp_carrier_items
     )
+    anti_caking_rows = _build_carrier_rows(
+        total_mg=anti_caking_total, items=anti_caking_items
+    )
 
     excipients = ExcipientBreakdown(
         mg_stearate_mg=_quantise(stearate),
@@ -834,6 +945,7 @@ def _compute_tablet(
         dcp_mg=_quantise(dcp),
         mcc_carrier_rows=mcc_carrier_rows,
         dcp_carrier_rows=dcp_carrier_rows,
+        anti_caking_rows=anti_caking_rows,
     )
 
     if not requested_size_key:
@@ -1464,6 +1576,7 @@ def compute_totals(
     acidity_items: tuple[Item, ...] = (),
     mcc_carrier_items: tuple[Item, ...] = (),
     dcp_carrier_items: tuple[Item, ...] = (),
+    anti_caking_items: tuple[Item, ...] = (),
     excipient_overrides: dict[str, Any] | None = None,
 ) -> FormulationTotals:
     """Compute the full totals block for a formulation.
@@ -1538,6 +1651,7 @@ def compute_totals(
             total_active,
             capsule_size_key or None,
             mcc_carrier_items=mcc_carrier_items,
+            anti_caking_items=anti_caking_items,
         )
     elif dosage_form == DosageForm.TABLET.value:
         (
@@ -1553,6 +1667,7 @@ def compute_totals(
             tablet_size_key or None,
             mcc_carrier_items=mcc_carrier_items,
             dcp_carrier_items=dcp_carrier_items,
+            anti_caking_items=anti_caking_items,
         )
     elif dosage_form in (DosageForm.POWDER.value, DosageForm.GUMMY.value):
         (
@@ -1840,6 +1955,12 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("dcp_carrier_item_ids"),
         )
+    pending_anti_caking: list[Item] | None = None
+    if "anti_caking_item_ids" in changes:
+        pending_anti_caking = _resolve_anti_caking_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("anti_caking_item_ids"),
+        )
     # Excipient overrides — validate up front so any malformed
     # payload short-circuits before we touch the M2M setters or the
     # audit row, but defer the actual write until after the audit
@@ -1894,6 +2015,8 @@ def update_formulation(
         formulation.mcc_carrier_items.set(pending_mcc_carrier)
     if pending_dcp_carrier is not None:
         formulation.dcp_carrier_items.set(pending_dcp_carrier)
+    if pending_anti_caking is not None:
+        formulation.anti_caking_items.set(pending_anti_caking)
     record_audit(
         organization=formulation.organization,
         actor=actor,
@@ -2169,6 +2292,23 @@ def _resolve_dcp_carrier_items(
         raw_ids=raw_ids,
         allowed_categories=DCP_CARRIER_USE_CATEGORIES,
         error_cls=InvalidDcpCarrierItem,
+    )
+
+
+def _resolve_anti_caking_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``anti_caking_item_ids`` — picks must carry
+    ``use_as == "Anti-caking Agent"``. Capsule + tablet picker; empty
+    picker means the formulation ships without any anti-caking band."""
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=ANTI_CAKING_USE_CATEGORIES,
+        error_cls=InvalidAntiCakingItem,
     )
 
 
@@ -2965,14 +3105,25 @@ def build_ingredient_declaration(
         # ``Anticaking Agents`` entry — matches the workbook's label
         # copy. Combined mg drives the ingredient-list sort order so
         # the merged entry sits at the right rank rather than each
-        # half landing at the bottom on its own tiny weight.
+        # half landing at the bottom on its own tiny weight. When the
+        # scientist picked specific anti-caking items the bracketed
+        # names follow the base label so the spec sheet reads
+        # ``Anticaking Agents (Magnesium Stearate, Silicon Dioxide)``.
         anticaking_mg = (excipients.mg_stearate_mg or Decimal("0")) + (
             excipients.silica_mg or Decimal("0")
         )
         if anticaking_mg > 0:
+            picked_names = [
+                row.label for row in (excipients.anti_caking_rows or ())
+            ]
+            label = (
+                f"{EXCIPIENT_LABEL_ANTICAKING} ({', '.join(picked_names)})"
+                if picked_names
+                else EXCIPIENT_LABEL_ANTICAKING
+            )
             entries.append(
                 IngredientDeclarationEntry(
-                    label=EXCIPIENT_LABEL_ANTICAKING,
+                    label=label,
                     mg=anticaking_mg,
                     category="excipient",
                     slug=EXCIPIENT_SLUG_ANTICAKING,
@@ -3158,6 +3309,9 @@ def compute_formulation_totals(
         ),
         dcp_carrier_items=tuple(
             formulation.dcp_carrier_items.all().order_by("name")
+        ),
+        anti_caking_items=tuple(
+            formulation.anti_caking_items.all().order_by("name")
         ),
         excipient_overrides=formulation.excipient_overrides or {},
     )
@@ -3420,6 +3574,14 @@ def _serialize_totals(totals: FormulationTotals) -> dict[str, Any]:
                         "mg": str(row.mg),
                     }
                     for row in totals.excipients.dcp_carrier_rows
+                ],
+                "anti_caking_rows": [
+                    {
+                        "item_id": row.item_id,
+                        "label": row.label,
+                        "mg": str(row.mg),
+                    }
+                    for row in totals.excipients.anti_caking_rows
                 ],
                 "rows": [
                     {

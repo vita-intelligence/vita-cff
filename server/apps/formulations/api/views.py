@@ -33,6 +33,7 @@ from apps.formulations.services import (
     FormulationVersionNotFound,
     InvalidAcidityItem,
     InvalidCapsuleSize,
+    InvalidAntiCakingItem,
     InvalidDcpCarrierItem,
     InvalidDosageForm,
     InvalidColourItem,
@@ -312,6 +313,11 @@ class FormulationDetailView(APIView):
         except InvalidDcpCarrierItem:
             return Response(
                 {"dcp_carrier_item_ids": ["invalid_dcp_carrier_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidAntiCakingItem:
+            return Response(
+                {"anti_caking_item_ids": ["invalid_anti_caking_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidExcipientOverrides:

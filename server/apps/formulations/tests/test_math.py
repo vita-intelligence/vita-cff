@@ -76,6 +76,44 @@ def _dcp_carrier(org, *, name: str = "DCP Anhydrous") -> Item:
     )
 
 
+def _anti_caking(org, *, name: str = "Magnesium Stearate") -> Item:
+    """Anti-caking picker item -- defaults to the lubricant band (the
+    name classifier reads ``stear`` and routes to the 1.0% row).
+    Tests that exercise both bands should pass an explicit pair via
+    :func:`_anti_caking_pair`."""
+
+    return ItemFactory(
+        catalogue=raw_materials_catalogue(org),
+        name=name,
+        attributes={
+            "use_as": "Anti-caking Agent",
+            "ingredient_list_name": "Magnesium Stearate",
+        },
+    )
+
+
+def _silica(org, *, name: str = "Silicon Dioxide") -> Item:
+    """Silica anti-caking pick. Name classifier matches ``silic`` and
+    routes the contribution to the 0.4% flow-agent row, leaving
+    stearate untouched."""
+
+    return ItemFactory(
+        catalogue=raw_materials_catalogue(org),
+        name=name,
+        attributes={
+            "use_as": "Anti-caking Agent",
+            "ingredient_list_name": "Silicon Dioxide",
+        },
+    )
+
+
+def _anti_caking_pair(org) -> tuple[Item, Item]:
+    """Convenience for tests that expect the full 1.4% combined band
+    to fire (both stearate + silica picks)."""
+
+    return _anti_caking(org), _silica(org)
+
+
 # ---------------------------------------------------------------------------
 # compute_line — per-ingredient math
 # ---------------------------------------------------------------------------
@@ -205,6 +243,7 @@ class TestCapsuleTotals:
             dosage_form="capsule",
             capsule_size_key="double_00",
             mcc_carrier_items=(_carrier(org),),
+            anti_caking_items=_anti_caking_pair(org),
         )
         assert totals.total_active_mg == Decimal("500.0000")
         assert totals.excipients is not None
@@ -212,6 +251,45 @@ class TestCapsuleTotals:
         assert totals.excipients.mg_stearate_mg == Decimal("5.0000")
         assert totals.excipients.silica_mg == Decimal("2.0000")
         assert totals.excipients.mcc_mg == Decimal("223.0000")
+
+    def test_capsule_silica_only_pick_fires_only_silica_band(self) -> None:
+        """Picking only Silicon Dioxide should produce a 0.4% row
+        and zero stearate. Locks the 'dynamic anti-caking' contract."""
+
+        org = OrganizationFactory()
+        item = _item(org, name="Thing", purity=1.0)
+        totals = compute_totals(
+            lines=[("a", item, Decimal("500"), None)],
+            dosage_form="capsule",
+            capsule_size_key="double_00",
+            mcc_carrier_items=(_carrier(org),),
+            anti_caking_items=(_silica(org),),
+        )
+        assert totals.excipients is not None
+        # 500 * 1% = 0 (no stearate), 500 * 0.4% = 2.
+        assert totals.excipients.mg_stearate_mg == Decimal("0")
+        assert totals.excipients.silica_mg == Decimal("2.0000")
+
+    def test_capsule_drops_excipients_when_anti_caking_empty(self) -> None:
+        """No anti-caking picker -> no Stearate / Silica auto-fill. MCC
+        carrier still fills the remainder of the capsule because the
+        carrier picker IS populated. Regression lock for the
+        'excipients showing without picking' bug."""
+
+        org = OrganizationFactory()
+        item = _item(org, name="Thing", purity=1.0)
+        totals = compute_totals(
+            lines=[("a", item, Decimal("500"), None)],
+            dosage_form="capsule",
+            capsule_size_key="double_00",
+            mcc_carrier_items=(_carrier(org),),
+            # No anti_caking_items -> stearate + silica zero out.
+        )
+        assert totals.excipients is not None
+        assert totals.excipients.mg_stearate_mg == Decimal("0")
+        assert totals.excipients.silica_mg == Decimal("0")
+        # MCC now fills the full remainder (730 - 500 = 230).
+        assert totals.excipients.mcc_mg == Decimal("230.0000")
 
     def test_capsule_can_make_flag(self) -> None:
         org = OrganizationFactory()
@@ -258,6 +336,7 @@ class TestTabletTotals:
             tablet_size_key="round_13mm",
             mcc_carrier_items=(_carrier(org),),
             dcp_carrier_items=(_dcp_carrier(org),),
+            anti_caking_items=_anti_caking_pair(org),
         )
         # 100 * 1% = 1, 100 * 0.4% = 0.4, 100 * 10% = 10, 100 * 20% = 20
         # total = 100 + 1 + 0.4 + 10 + 20 = 131.4
@@ -445,6 +524,7 @@ class TestValleyLowFatBurner:
             dosage_form="capsule",
             capsule_size_key="double_00",
             mcc_carrier_items=(_carrier(org),),
+            anti_caking_items=_anti_caking_pair(org),
         )
         assert totals.excipients is not None
         # Workbook D32=5.132331661768433, D33=2.052932664707373, D34=209.58156949668103

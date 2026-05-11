@@ -344,6 +344,26 @@ class Formulation(models.Model):
             "Phosphate' placeholder. Ignored for non-tablet forms."
         ),
     )
+    anti_caking_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("anti-caking items"),
+        blank=True,
+        related_name="anti_caking_formulations",
+        help_text=_(
+            "Raw-material items used as the combined anti-caking "
+            "agent on a capsule or tablet (typically Magnesium "
+            "Stearate + Silicon Dioxide, but any item tagged "
+            "use_as = 'Anti-caking Agent' is admissible). The "
+            "combined anti-caking total (1.4% of total active, "
+            "preserving the historical 1% stearate + 0.4% silica "
+            "split as one combined band) is split equally across "
+            "picks; the declaration emits one 'Anti-caking Agents "
+            "(picked names)' row. **Empty list = no anti-caking on "
+            "the formulation at all** -- the spec sheet drops the "
+            "row entirely, supporting scientists who deliberately "
+            "ship without lubricants. Ignored for powders / gummies."
+        ),
+    )
     excipient_overrides: models.JSONField = models.JSONField(
         _("excipient overrides"),
         default=dict,

@@ -114,6 +114,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     mcc_carrier_items = serializers.SerializerMethodField()
     dcp_carrier_item_ids = serializers.SerializerMethodField()
     dcp_carrier_items = serializers.SerializerMethodField()
+    anti_caking_item_ids = serializers.SerializerMethodField()
+    anti_caking_items = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -150,6 +152,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "mcc_carrier_items",
             "dcp_carrier_item_ids",
             "dcp_carrier_items",
+            "anti_caking_item_ids",
+            "anti_caking_items",
             "excipient_overrides",
             "directions_of_use",
             "suggested_dosage",
@@ -233,6 +237,19 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         """Light echo of picked DCP carrier items."""
 
         return self._echo_picks(obj.dcp_carrier_items)
+
+    def get_anti_caking_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the capsule + tablet anti-caking multi-select.
+        Empty list = the formulation ships with no anti-caking band at
+        all (no Stearate / Silica rows on the spec sheet)."""
+
+        return [str(item.id) for item in obj.anti_caking_items.all()]
+
+    def get_anti_caking_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked anti-caking items so the builder chips
+        render without a second round-trip."""
+
+        return self._echo_picks(obj.anti_caking_items)
 
     def get_glazing_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked glazing items (same shape as the other
@@ -526,6 +543,21 @@ class FormulationWriteSerializer(serializers.Serializer):
             "Phosphate' placeholder and surfaces a "
             "``dcp_carrier_unpicked`` warning. Ignored for non-"
             "tablet forms."
+        ),
+    )
+    anti_caking_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of raw_materials catalogue Items used as the "
+            "anti-caking band on a capsule or tablet. Each pick must "
+            "carry use_as = 'Anti-caking Agent'. The combined total "
+            "(1.4% of total active = 1% stearate + 0.4% silica) is "
+            "split equally across picks; the spec sheet emits one "
+            "row 'Anticaking Agents (picked names)'. **Empty list = "
+            "no anti-caking on the formulation at all** (no Stearate "
+            "or Silica rows). Ignored for powder / gummy forms."
         ),
     )
     excipient_overrides = serializers.DictField(

@@ -399,12 +399,14 @@ GELLING_USE_CATEGORIES: tuple[str, ...] = (
 PREMIX_SWEETENER_USE_CATEGORIES: tuple[str, ...] = GUMMY_BASE_USE_CATEGORIES
 
 
-#: The capsule + tablet MCC-carrier picker. Strict ``Bulking Agent``
-#: filter so accidentally tagging a non-carrier item as MCC is caught
-#: at save time instead of leaking an "Active" or "Sweeteners" row
-#: into the spec sheet's carrier slot. Scientists must re-tag any
-#: legacy MCC rows still carrying ``use_as=None``.
-MCC_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Bulking Agent",)
+#: The capsule + tablet carrier picker (originally branded "MCC" but
+#: the picker is now generic). Accepts both ``Carrier`` (the canonical
+#: EU 1169/2011 category for items used as a structural filler) and
+#: ``Bulking Agent`` (the historical tag scientists used for MCC).
+#: Scientists can keep using the older tag without retagging the
+#: catalogue while still being able to add purpose-built ``Carrier``
+#: items going forward.
+MCC_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Carrier", "Bulking Agent")
 
 
 #: The tablet DCP-carrier picker. Same ``Bulking Agent`` filter as
@@ -412,7 +414,26 @@ MCC_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Bulking Agent",)
 #: and lives under the same canonical category in the catalogue. Held
 #: as a separate constant so a future split (e.g. a dedicated DCP
 #: ``use_as`` value) lands here without touching MCC.
-DCP_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Bulking Agent",)
+DCP_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Carrier", "Bulking Agent")
+
+
+#: Anti-caking picker pool for capsules + tablets. The picker filters
+#: items tagged ``use_as = "Anti-caking Agent"``. When at least one
+#: item is picked, the formulation receives a single combined
+#: anti-caking line at 1.4% of total active (1% Mg Stearate + 0.4%
+#: Silica historically — the combined % preserves the manufacturing
+#: math). Empty picker → no anti-caking added, formulation ships as
+#: just actives + carrier (or pure actives if neither is picked).
+ANTI_CAKING_USE_CATEGORIES: tuple[str, ...] = ("Anti-caking Agent",)
+
+
+#: Combined anti-caking percentage when the picker has at least one
+#: pick. Replaces the historical hard-coded ``CAPSULE_MG_STEARATE_PCT
+#: + CAPSULE_SILICA_PCT`` split. Single percentage so the combined
+#: row reads cleanly on the spec sheet without inventing chemistry
+#: for arbitrary picks (a scientist may pick a single bifunctional
+#: lubricant + flow agent and the row stays well-formed).
+ANTI_CAKING_TOTAL_PCT: float = 0.014
 
 
 #: Powder sweetener picker pool. Pure ``Sweeteners`` only — no
@@ -672,9 +693,12 @@ EXCIPIENT_CATALOGUE_NAME_CANDIDATES: dict[str, tuple[str, ...]] = {
 #: workbook collapses both flow agents into a single ingredient-list
 #: entry; rendering them separately exposes manufacturing detail
 #: customers do not need to see.
-EXCIPIENT_LABEL_ANTICAKING = (
-    "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)"
-)
+#: Base label for the anti-caking row. The picked-item bracket
+#: ("(Magnesium Stearate, Silicon Dioxide)") is appended by the
+#: declaration builder when the anti-caking picker has at least one
+#: pick. Empty picker drops the row entirely (anti-caking is now
+#: opt-in), so no plain-base fallback is needed at render time.
+EXCIPIENT_LABEL_ANTICAKING = "Anticaking Agents"
 
 
 #: Compliance flags tracked by every raw material and aggregated on

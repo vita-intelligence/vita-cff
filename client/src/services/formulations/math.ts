@@ -939,9 +939,43 @@ const EMPTY_VIABILITY: Viability = {
   codes: ["more_info_required"],
 };
 
+/** Substring patterns (case-insensitive) used to classify a picked
+ *  anti-caking item. Mirrors ``_classify_anti_caking_picks`` on the
+ *  server so the builder live preview matches the snapshot the spec
+ *  sheet reads from. Anything that matches neither rule falls back
+ *  to the lubricant band so a stray Talc / Calcium Silicate pick
+ *  still produces a visible row instead of being silently ignored. */
+const STEARATE_NAME_PATTERN = /stear/i;
+const SILICA_NAME_PATTERN = /silic/i;
+
+export function classifyAntiCakingPicks(
+  items: ReadonlyArray<{ readonly label: string }>,
+): { readonly stearate: boolean; readonly silica: boolean } {
+  if (items.length === 0) return { stearate: false, silica: false };
+  let stearate = false;
+  let silica = false;
+  let unmatched = false;
+  for (const item of items) {
+    const label = item.label || "";
+    if (SILICA_NAME_PATTERN.test(label)) {
+      silica = true;
+    } else if (STEARATE_NAME_PATTERN.test(label)) {
+      stearate = true;
+    } else {
+      unmatched = true;
+    }
+  }
+  if (unmatched && !stearate) stearate = true;
+  return { stearate, silica };
+}
+
+
 function computeCapsule(
   totalActive: number,
   requestedSizeKey: string | null,
+  hasMccCarrier: boolean,
+  hasStearateAntiCaking: boolean,
+  hasSilicaAntiCaking: boolean,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -973,16 +1007,40 @@ function computeCapsule(
     };
   }
 
-  const stearate = totalActive * CAPSULE_MG_STEARATE_PCT;
-  const silica = totalActive * CAPSULE_SILICA_PCT;
-  const mcc = size.max_weight_mg - totalActive - stearate - silica;
-  const totalWeight =
-    mcc >= 0
-      ? totalActive + stearate + silica + mcc
-      : totalActive + stearate + silica;
+  // Anti-caking is opt-in AND classified per pick: picking only
+  // Silicon Dioxide fires the 0.4% silica band and nothing else;
+  // picking only Magnesium Stearate fires the 1.0% lubricant band;
+  // picking both lights up the full 1.4% combined. Carrier (MCC) is
+  // also opt-in: empty picker leaves an under-filled capsule of pure
+  // actives instead of inventing a placeholder MCC remainder.
+  // Mirrors the server gating exactly so the builder live preview
+  // matches the snapshot the spec sheet reads from.
+  const stearate = hasStearateAntiCaking
+    ? totalActive * CAPSULE_MG_STEARATE_PCT
+    : 0;
+  const silica = hasSilicaAntiCaking
+    ? totalActive * CAPSULE_SILICA_PCT
+    : 0;
+  const mcc = hasMccCarrier
+    ? size.max_weight_mg - totalActive - stearate - silica
+    : 0;
+
+  let totalWeight: number;
+  if (!hasMccCarrier) {
+    // No carrier picked → pure actives (+ anti-caking, if picked).
+    totalWeight = totalActive + stearate + silica;
+  } else if (mcc >= 0) {
+    totalWeight = totalActive + stearate + silica + mcc;
+  } else {
+    totalWeight = totalActive + stearate + silica;
+  }
 
   const fits = size.max_weight_mg >= totalWeight;
-  const comfortOk = fits && mcc >= totalActive * 0.01;
+  // Comfort criterion only matters when a carrier is present (it's
+  // the carrier headroom we'd be measuring); without a carrier the
+  // formulation is "compact by design" and we just report fits/cant.
+  const comfortOk =
+    fits && (!hasMccCarrier || mcc >= totalActive * 0.01);
   const codes: string[] = [];
   if (!fits) {
     codes.push("cannot_make");
@@ -1018,6 +1076,10 @@ function computeCapsule(
 function computeTablet(
   totalActive: number,
   requestedSizeKey: string | null,
+  hasMccCarrier: boolean,
+  hasDcpCarrier: boolean,
+  hasStearateAntiCaking: boolean,
+  hasSilicaAntiCaking: boolean,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1027,10 +1089,20 @@ function computeTablet(
   viability: Viability;
   warnings: readonly string[];
 } {
-  const stearate = totalActive * TABLET_MG_STEARATE_PCT;
-  const silica = totalActive * TABLET_SILICA_PCT;
-  const dcp = totalActive * TABLET_DCP_PCT;
-  const mcc = totalActive * TABLET_MCC_PCT;
+  // Each band is gated on its own picker. Anti-caking is opt-in AND
+  // classified per pick (silica-only -> 0.4%, stearate-only -> 1.0%,
+  // both -> 1.4%). MCC and DCP carriers opt-in. A scientist can ship
+  // pure actives by leaving all pickers empty, or actives + carriers
+  // without lubricants. Mirrors the server gating so the builder live
+  // preview matches the snapshot the spec sheet renders from.
+  const stearate = hasStearateAntiCaking
+    ? totalActive * TABLET_MG_STEARATE_PCT
+    : 0;
+  const silica = hasSilicaAntiCaking
+    ? totalActive * TABLET_SILICA_PCT
+    : 0;
+  const dcp = hasDcpCarrier ? totalActive * TABLET_DCP_PCT : 0;
+  const mcc = hasMccCarrier ? totalActive * TABLET_MCC_PCT : 0;
   const totalWeight = totalActive + stearate + silica + dcp + mcc;
 
   const excipients: ExcipientBreakdown = {
@@ -1437,6 +1509,9 @@ export function computeTotals({
   gellingItems,
   premixSweetenerItems,
   acidityItems,
+  mccCarrierItems,
+  dcpCarrierItems,
+  antiCakingItems,
   excipientOverrides,
 }: {
   lines: readonly ComputeLineInput[];
@@ -1505,6 +1580,29 @@ export function computeTotals({
     readonly label: string;
     readonly useAs: string;
   }>;
+  /** Picked MCC carrier items for capsule + tablet. Empty / omitted
+   *  → the capsule ships as pure actives (no MCC remainder), the
+   *  tablet skips the 20% MCC fill. */
+  mccCarrierItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }>;
+  /** Picked DCP carrier items for tablet. Empty / omitted → no DCP
+   *  band (skips the 10% DCP fill). Tablet-only. */
+  dcpCarrierItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }>;
+  /** Picked anti-caking items for capsule + tablet (typically Mg
+   *  Stearate + Silicon Dioxide). Empty / omitted → no anti-caking
+   *  band at all. Each item carries its catalogue ``label`` so the
+   *  classifier can sub-divide picks into the stearate (1.0%) and
+   *  silica (0.4%) bands by name — picking Silicon Dioxide alone
+   *  fires only the 0.4% band. */
+  antiCakingItems?: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+  }>;
   /** Per-band % overrides for the gummy excipient system. Missing
    *  keys fall back to constant defaults. */
   excipientOverrides?: Readonly<Record<string, number>> | null;
@@ -1552,8 +1650,19 @@ export function computeTotals({
     };
   }
 
+  const hasMccCarrier = (mccCarrierItems?.length ?? 0) > 0;
+  const hasDcpCarrier = (dcpCarrierItems?.length ?? 0) > 0;
+  const { stearate: hasStearateAntiCaking, silica: hasSilicaAntiCaking } =
+    classifyAntiCakingPicks(antiCakingItems ?? []);
+
   if (dosageForm === "capsule") {
-    const r = computeCapsule(totalActive, capsuleSizeKey);
+    const r = computeCapsule(
+      totalActive,
+      capsuleSizeKey,
+      hasMccCarrier,
+      hasStearateAntiCaking,
+      hasSilicaAntiCaking,
+    );
     return {
       totalActiveMg: totalActive,
       dosageForm,
@@ -1570,7 +1679,14 @@ export function computeTotals({
   }
 
   if (dosageForm === "tablet") {
-    const r = computeTablet(totalActive, tabletSizeKey);
+    const r = computeTablet(
+      totalActive,
+      tabletSizeKey,
+      hasMccCarrier,
+      hasDcpCarrier,
+      hasStearateAntiCaking,
+      hasSilicaAntiCaking,
+    );
     return {
       totalActiveMg: totalActive,
       dosageForm,

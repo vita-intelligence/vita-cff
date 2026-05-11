@@ -156,6 +156,21 @@ class TestIngredientDeclaration:
             use_as="Bulking Agent",
             ingredient_list_name="Microcrystalline Cellulose",
         )
+        # Anti-caking is opt-in now -- pick a stearate + silica item so
+        # the band fires and the combined "Anticaking Agents" row
+        # renders on the declaration with the picked names in brackets.
+        stearate = _item(
+            org,
+            name="Magnesium Stearate",
+            use_as="Anti-caking Agent",
+            ingredient_list_name="Magnesium Stearate",
+        )
+        silica = _item(
+            org,
+            name="Silicon Dioxide",
+            use_as="Anti-caking Agent",
+            ingredient_list_name="Silicon Dioxide",
+        )
 
         # Total active 500 mg in Double 00 capsule:
         # MCC fills to 730 − 500 − 5 − 2 = 223 mg.
@@ -166,6 +181,7 @@ class TestIngredientDeclaration:
             dosage_form="capsule",
             capsule_size_key="double_00",
             mcc_carrier_items=(mcc,),
+            anti_caking_items=(stearate, silica),
         )
         declaration, entries = build_ingredient_declaration(
             items_by_external_id={"a": active},
@@ -175,7 +191,8 @@ class TestIngredientDeclaration:
         labels = [e.label for e in entries]
         # Order: Active (500) > MCC (223) > Capsule Shell (118)
         # > Anticaking Agents (7). Stearate + Silica collapse into a
-        # single combined entry to match the workbook's label copy.
+        # single combined entry that surfaces the picked item names
+        # in brackets so the spec sheet reads cleanly.
         assert labels == [
             "Active Compound",
             "Microcrystalline Cellulose",
@@ -187,6 +204,47 @@ class TestIngredientDeclaration:
             "Anticaking Agents (Magnesium Stearate, Silicon Dioxide)"
             in declaration
         )
+
+    def test_capsule_drops_anticaking_when_picker_empty(self) -> None:
+        """Anti-caking is opt-in: empty picker -> no Stearate/Silica
+        rows on the declaration. Locks the "I didn't select excipients
+        but they showed up" regression."""
+
+        org = OrganizationFactory()
+        active = _item(
+            org,
+            name="Active Raw",
+            purity=1.0,
+            type="Others",
+            ingredient_list_name="Active Compound",
+        )
+        mcc = _item(
+            org,
+            name="MCC PH-101",
+            use_as="Bulking Agent",
+            ingredient_list_name="Microcrystalline Cellulose",
+        )
+
+        totals = compute_totals(
+            lines=[("a", active, Decimal("500"), None)],
+            dosage_form="capsule",
+            capsule_size_key="double_00",
+            mcc_carrier_items=(mcc,),
+            # No anti_caking_items -> zero stearate + zero silica.
+        )
+        declaration, entries = build_ingredient_declaration(
+            items_by_external_id={"a": active},
+            totals=totals,
+        )
+
+        labels = [e.label for e in entries]
+        # MCC + shell still emit; the anticaking row is absent.
+        assert "Anticaking Agents" not in declaration
+        assert all(not lbl.startswith("Anticaking") for lbl in labels)
+        # Stearate / Silica fields on the breakdown both zeroed.
+        assert totals.excipients is not None
+        assert totals.excipients.mg_stearate_mg == Decimal("0")
+        assert totals.excipients.silica_mg == Decimal("0")
 
     def test_tablet_includes_dcp_and_mcc(self) -> None:
         org = OrganizationFactory()
@@ -209,12 +267,25 @@ class TestIngredientDeclaration:
             use_as="Bulking Agent",
             ingredient_list_name="Dicalcium Phosphate",
         )
+        stearate = _item(
+            org,
+            name="Magnesium Stearate",
+            use_as="Anti-caking Agent",
+            ingredient_list_name="Magnesium Stearate",
+        )
+        silica = _item(
+            org,
+            name="Silicon Dioxide",
+            use_as="Anti-caking Agent",
+            ingredient_list_name="Silicon Dioxide",
+        )
         totals = compute_totals(
             lines=[("a", active, Decimal("100"), None)],
             dosage_form="tablet",
             tablet_size_key="round_13mm",
             mcc_carrier_items=(mcc,),
             dcp_carrier_items=(dcp,),
+            anti_caking_items=(stearate, silica),
         )
         declaration, entries = build_ingredient_declaration(
             items_by_external_id={"a": active},

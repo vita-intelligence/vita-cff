@@ -136,6 +136,11 @@ interface MetadataDraft {
   //: "Dicalcium Phosphate" placeholder + ``dcp_carrier_unpicked``
   //: warning.
   dcp_carrier_item_ids: readonly string[];
+  //: Picked anti-caking ids for capsules + tablets. When at least one
+  //: item is picked the combined 1.4% (Stearate 1% + Silica 0.4%)
+  //: auto-fill fires; empty list means the formulation ships with no
+  //: anti-caking band at all and the spec sheet drops the row.
+  anti_caking_item_ids: readonly string[];
   //: Per-band % overrides for the gummy excipient system (water,
   //: acidity, flavouring, colour, glazing, gelling, premix_sweetener).
   //: Values are decimal fractions (0.02 = 2%). Missing keys → defaults.
@@ -223,6 +228,7 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     acidity_item_ids: formulation.acidity_item_ids ?? [],
     mcc_carrier_item_ids: formulation.mcc_carrier_item_ids ?? [],
     dcp_carrier_item_ids: formulation.dcp_carrier_item_ids ?? [],
+    anti_caking_item_ids: formulation.anti_caking_item_ids ?? [],
     excipient_overrides: formulation.excipient_overrides ?? {},
     directions_of_use: formulation.directions_of_use,
     suggested_dosage: formulation.suggested_dosage,
@@ -330,6 +336,27 @@ export function FormulationBuilder({
     mgStringToG(metadataFrom(initialFormulation).target_fill_weight_mg),
   );
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Live caches of picked-item names per excipient picker, keyed by
+  // item id. Hydrated from the server-saved formulation on mount and
+  // refreshed by the picker's ``onPickedItemsChange`` callback so the
+  // totals panel can render brackets like "Carrier (Maltodextrin)"
+  // and "Anti-caking Agents (Silicon Dioxide)" the moment the
+  // scientist toggles a checkbox -- without waiting for a save +
+  // server round-trip to refresh the formulation prop.
+  const [mccCarrierNames, setMccCarrierNames] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      initialFormulation.mcc_carrier_items.map((i) => [i.id, i.name]),
+    ),
+  );
+  const [antiCakingNames, setAntiCakingNames] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      initialFormulation.anti_caking_items.map((i) => [i.id, i.name]),
+    ),
+  );
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
   //: Debounced query that drives the picker cache key. Lags by 200ms.
@@ -473,6 +500,32 @@ export function FormulationBuilder({
       gellingItems: gellingForMath,
       premixSweetenerItems: premixSweetenerForMath,
       acidityItems: acidityForMath,
+      // Pass the picked capsule/tablet carriers + anti-caking through
+      // so the math gates the auto-fills correctly. The anti-caking
+      // labels matter -- the math classifier reads them by name to
+      // decide whether each pick contributes to the stearate (1.0%)
+      // or silica (0.4%) band, so picking only Silicon Dioxide fires
+      // 0.4% rather than the full 1.4%.
+      mccCarrierItems: metadata.mcc_carrier_item_ids.map((id) => ({
+        id,
+        label:
+          mccCarrierNames[id] ??
+          formulation.mcc_carrier_items.find((i) => i.id === id)?.name ??
+          "",
+      })),
+      dcpCarrierItems: metadata.dcp_carrier_item_ids.map((id) => ({
+        id,
+        label:
+          formulation.dcp_carrier_items.find((i) => i.id === id)?.name ??
+          "",
+      })),
+      antiCakingItems: metadata.anti_caking_item_ids.map((id) => ({
+        id,
+        label:
+          antiCakingNames[id] ??
+          formulation.anti_caking_items.find((i) => i.id === id)?.name ??
+          "",
+      })),
       excipientOverrides: metadata.excipient_overrides,
     });
   }, [
@@ -485,6 +538,11 @@ export function FormulationBuilder({
     metadata.powder_type,
     metadata.water_volume_ml,
     metadata.excipient_overrides,
+    metadata.mcc_carrier_item_ids,
+    metadata.dcp_carrier_item_ids,
+    metadata.anti_caking_item_ids,
+    mccCarrierNames,
+    antiCakingNames,
     formulation.gummy_base_items,
     formulation.flavouring_items,
     formulation.colour_items,
@@ -745,6 +803,14 @@ export function FormulationBuilder({
         dcp_carrier_item_ids:
           metadata.dosage_form === "tablet"
             ? metadata.dcp_carrier_item_ids
+            : [],
+        // Anti-caking flows to capsules + tablets. Empty picker on a
+        // dosage form that supports it means the scientist explicitly
+        // wants no lubricant band on the formulation.
+        anti_caking_item_ids:
+          metadata.dosage_form === "capsule" ||
+          metadata.dosage_form === "tablet"
+            ? metadata.anti_caking_item_ids
             : [],
         excipient_overrides:
           metadata.dosage_form === "gummy"
@@ -1071,6 +1137,15 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, mcc_carrier_item_ids: ids })
               }
+              onPickedItemsChange={(items) => {
+                setMccCarrierNames((prev) => {
+                  // Merge so previously-known names survive even when
+                  // the picker page is currently scrolled past them.
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+              }}
             />
           ) : null}
           {/* DCP carrier — tablet-only, since capsules don't have a
@@ -1094,6 +1169,41 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, dcp_carrier_item_ids: ids })
               }
+            />
+          ) : null}
+          {/* Anti-caking picker — capsule + tablet. Optional. Empty
+              picker means the formulation ships without any
+              Stearate / Silica band at all; non-empty fires the
+              combined 1.4% (Stearate 1% + Silica 0.4%) auto-fill,
+              split equally across picks. Filters use_as =
+              "Anti-caking Agent". */}
+          {metadata.dosage_form === "capsule" ||
+          metadata.dosage_form === "tablet" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.anti_caking_item_ids}
+              preselected={formulation.anti_caking_items}
+              disabled={!canWrite}
+              useAsIn={ANTI_CAKING_USE_CATEGORIES}
+              label={tFormulations("fields.anti_caking_item")}
+              placeholderText={tFormulations(
+                "fields.anti_caking_item_placeholder",
+              )}
+              hint={tFormulations("fields.anti_caking_item_hint")}
+              loadingText={tFormulations(
+                "fields.anti_caking_item_loading",
+              )}
+              emptyText={tFormulations("fields.anti_caking_item_empty")}
+              onChange={(ids) =>
+                setMetadata({ ...metadata, anti_caking_item_ids: ids })
+              }
+              onPickedItemsChange={(items) => {
+                setAntiCakingNames((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+              }}
             />
           ) : null}
           {/* Powder fill weight is edited in grams because scientists
@@ -1782,6 +1892,29 @@ export function FormulationBuilder({
             dosageForm={metadata.dosage_form}
             numberFormatter={numberFormatter}
             tFormulations={tFormulations}
+            // Read picked-name labels from the live cache so the
+            // brackets repaint the moment a checkbox toggles, not
+            // only after a save round-trip refreshes the formulation
+            // prop. Falls back to the server echo for any id that
+            // somehow isn't in the cache yet.
+            mccCarrierLabels={metadata.mcc_carrier_item_ids
+              .map(
+                (id) =>
+                  mccCarrierNames[id] ??
+                  formulation.mcc_carrier_items.find((i) => i.id === id)
+                    ?.name ??
+                  "",
+              )
+              .filter((name) => name !== "")}
+            antiCakingLabels={metadata.anti_caking_item_ids
+              .map(
+                (id) =>
+                  antiCakingNames[id] ??
+                  formulation.anti_caking_items.find((i) => i.id === id)
+                    ?.name ??
+                  "",
+              )
+              .filter((name) => name !== "")}
           />
           {metadata.dosage_form === "gummy" ? (
             <GummyOverridesPanel
@@ -2679,12 +2812,23 @@ function TotalsBlock({
   dosageForm,
   numberFormatter,
   tFormulations,
+  mccCarrierLabels = [],
+  antiCakingLabels = [],
 }: {
   totals: FormulationTotals;
   servingSize: number;
   dosageForm: DosageForm;
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+  /** Display labels of the picked MCC-carrier items so the MCC row
+   *  can render "MCC (Pregelatinised Starch, Maltodextrin)". Empty
+   *  array → the row stays as the bare placeholder label. */
+  mccCarrierLabels?: readonly string[];
+  /** Display labels of the picked anti-caking items so the Stearate +
+   *  Silica rows can echo the same picks (the band is a combined 1.4%
+   *  on the new picker, but the two-row display layout preserves the
+   *  workbook's mental model). */
+  antiCakingLabels?: readonly string[];
 }) {
   const format = (value: number | null | undefined) =>
     value === null || value === undefined
@@ -2900,26 +3044,85 @@ function TotalsBlock({
             excipients.waterMg === null &&
             excipients.gummyBaseRows.length === 0 ? (
               <>
-                <li className="flex justify-between">
-                  <span>
-                    {tFormulations("builder.excipients.mg_stearate")}
-                  </span>
-                  <span>{format(excipients.mgStearateMg)} mg</span>
-                </li>
-                <li className="flex justify-between">
-                  <span>{tFormulations("builder.excipients.silica")}</span>
-                  <span>{format(excipients.silicaMg)} mg</span>
-                </li>
-                {excipients.dcpMg !== null ? (
+                {/* Capsule + tablet excipient rows are gated on whether
+                    the corresponding picker has any items. Empty
+                    picker -> the row drops out entirely (matches the
+                    server gating + the spec sheet snapshot). Each
+                    surviving row shows its mg AND its share of the
+                    total fill weight as a percentage. */}
+                {/* Anti-caking collapses into one combined row that
+                    reflects exactly what was picked. The math splits
+                    the 1.4% combined into a 1% Stearate + 0.4% Silica
+                    pair on the breakdown so the spec sheet's two-
+                    field shape keeps working, but on the builder we
+                    surface the band as a single line so picking only
+                    Silicon Dioxide doesn't look like it conjured
+                    Magnesium Stearate too. The total mg = stearate +
+                    silica (1.4% of active). */}
+                {excipients.mgStearateMg + excipients.silicaMg > 0 ? (
                   <li className="flex justify-between">
-                    <span>{tFormulations("builder.excipients.dcp")}</span>
-                    <span>{format(excipients.dcpMg)} mg</span>
+                    <span>
+                      {tFormulations("builder.excipients.anti_caking")}
+                      {antiCakingLabels.length > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          ({antiCakingLabels.join(", ")})
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="tabular-nums">
+                      {format(
+                        excipients.mgStearateMg + excipients.silicaMg,
+                      )}{" "}
+                      mg
+                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          (
+                          {percentOf(
+                            excipients.mgStearateMg + excipients.silicaMg,
+                            totals.totalWeightMg,
+                          )}
+                          %)
+                        </span>
+                      ) : null}
+                    </span>
                   </li>
                 ) : null}
-                <li className="flex justify-between">
-                  <span>{tFormulations("builder.excipients.mcc")}</span>
-                  <span>{format(excipients.mccMg)} mg</span>
-                </li>
+                {excipients.dcpMg !== null && excipients.dcpMg > 0 ? (
+                  <li className="flex justify-between">
+                    <span>{tFormulations("builder.excipients.dcp")}</span>
+                    <span className="tabular-nums">
+                      {format(excipients.dcpMg)} mg
+                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          ({percentOf(excipients.dcpMg, totals.totalWeightMg)}%)
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ) : null}
+                {excipients.mccMg > 0 ? (
+                  <li className="flex justify-between">
+                    <span>
+                      {/* Inline the picked carrier names so the line
+                          reads "MCC (Maltodextrin, Pregelatinised
+                          Starch)" instead of the bare placeholder. */}
+                      {tFormulations("builder.excipients.mcc")}
+                      {mccCarrierLabels.length > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          ({mccCarrierLabels.join(", ")})
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="tabular-nums">
+                      {format(excipients.mccMg)} mg
+                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
+                        <span className="ml-1 text-ink-500">
+                          ({percentOf(excipients.mccMg, totals.totalWeightMg)}%)
+                        </span>
+                      ) : null}
+                    </span>
+                  </li>
+                ) : null}
               </>
             ) : null}
           </ul>
@@ -3242,6 +3445,7 @@ function CatalogueMultiPicker({
   loadingText,
   emptyText,
   onChange,
+  onPickedItemsChange,
 }: {
   orgId: string;
   value: readonly string[];
@@ -3254,6 +3458,14 @@ function CatalogueMultiPicker({
   loadingText: string;
   emptyText: string;
   onChange: (ids: readonly string[]) => void;
+  /** Optional side-channel that emits ``{id, name}`` for the items
+   *  currently checked, sourced from the picker's own merged list
+   *  (fetched + preselected). Lets the parent render picked-name
+   *  brackets in the totals panel without waiting for a save round-
+   *  trip to refresh the server-side ``formulation.*_items`` echo. */
+  onPickedItemsChange?: (
+    items: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+  ) => void;
 }) {
   const query = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
     includeArchived: false,
@@ -3276,6 +3488,36 @@ function CatalogueMultiPicker({
   ];
 
   const selected = new Set(value);
+  // Pin the latest callback in a ref so the sync effect's dep list
+  // depends only on the data, not on the callback's identity. Parent
+  // components typically pass an inline arrow that gets a fresh
+  // identity on every render -- including the identity in the deps
+  // would re-fire the effect, which calls ``setState`` on the parent,
+  // which re-renders, which produces a new arrow, ad infinitum.
+  const onPickedRef = useRef<typeof onPickedItemsChange>(onPickedItemsChange);
+  useEffect(() => {
+    onPickedRef.current = onPickedItemsChange;
+  }, [onPickedItemsChange]);
+  // Keep the parent's picked-name cache in sync with what the picker
+  // shows. Fires whenever ``value`` or ``merged`` changes so the
+  // first paint after the catalogue page resolves still backfills the
+  // bracket copy for already-checked rows.
+  const valueKey = value.join(",");
+  const mergedKey = merged.map((i) => `${i.id}:${i.name}`).join("|");
+  useEffect(() => {
+    const cb = onPickedRef.current;
+    if (!cb) return;
+    const lookup = new Map(merged.map((i) => [i.id, i.name]));
+    const picked = value
+      .map((id) => ({ id, name: lookup.get(id) ?? "" }))
+      .filter((entry) => entry.name !== "");
+    cb(picked);
+    // We intentionally depend on the stringified value + merged
+    // shapes so structural changes drive the effect, not the array
+    // identities (which churn on every render).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [valueKey, mergedKey]);
+
   const toggle = (id: string) => {
     const next = new Set(selected);
     if (next.has(id)) {
@@ -3656,15 +3898,18 @@ const SWEETENER_USE_CATEGORIES = ["Sweeteners"] as const;
 const GLAZING_USE_CATEGORIES = ["Glazing Agent"] as const;
 const GELLING_USE_CATEGORIES = ["Gelling Agent"] as const;
 const ACIDITY_USE_CATEGORIES = ["Acidity Regulator"] as const;
-// Capsule + tablet MCC carrier picker — mirrors
-// ``MCC_CARRIER_USE_CATEGORIES`` on the server. Strict ``Bulking
-// Agent`` filter so a misplaced Active or Sweetener never lands in
-// the structural carrier slot.
-const MCC_CARRIER_USE_CATEGORIES = ["Bulking Agent"] as const;
-// Tablet DCP carrier picker. Same canonical category as the MCC
-// carrier today; held as a separate constant to match the server
-// (``DCP_CARRIER_USE_CATEGORIES``) so a future split lands here too.
-const DCP_CARRIER_USE_CATEGORIES = ["Bulking Agent"] as const;
+// Capsule + tablet carrier picker (originally MCC-branded; the picker
+// is generic now). Accepts both ``Carrier`` (canonical EU 1169/2011)
+// and ``Bulking Agent`` (the historical tag scientists used for MCC)
+// so legacy catalogue rows keep flowing through without retagging.
+const MCC_CARRIER_USE_CATEGORIES = ["Carrier", "Bulking Agent"] as const;
+// Tablet DCP carrier picker. Mirrors the carrier picker on the server
+// today (``DCP_CARRIER_USE_CATEGORIES``); kept as a separate constant
+// so a future split (e.g. a dedicated DCP ``use_as``) lands here too.
+const DCP_CARRIER_USE_CATEGORIES = ["Carrier", "Bulking Agent"] as const;
+// Anti-caking picker for capsules + tablets. Optional: empty picker
+// drops the Stearate + Silica band from the formulation entirely.
+const ANTI_CAKING_USE_CATEGORIES = ["Anti-caking Agent"] as const;
 
 
 function SelectField({
