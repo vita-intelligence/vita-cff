@@ -67,5 +67,22 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
     CMD curl -fsS "http://localhost:${PORT}/healthz/" || exit 1
 
+# ``WEB_CONCURRENCY`` defaults to 4 in-image; Azure App Service config
+# can bump it per plan (Standard S1 ~ 4-6, P1V3 ~ 8-12). Multi-worker
+# uvicorn replaces single-process daphne so a slow PDF render or
+# blocking DB query on one request no longer stalls every other user
+# behind it -- the original failure mode on shared external IPs.
+#
+# Notes:
+# - ``--proxy-headers`` + ``--forwarded-allow-ips=*`` honour Azure's
+#   front-door X-Forwarded-For so request.META carries the real client
+#   IP (the audit log, CSRF, JWT cookie scoping all depend on this).
+# - ``--lifespan off`` skips ASGI lifespan events; Django doesn't
+#   implement them and uvicorn defaults to ``auto`` which warns.
+# - WebSocket fan-out across workers needs ``CHANNEL_LAYER_URL`` set
+#   to a Redis DSN (already wired in settings.py). Without it each
+#   worker has its own ``InMemoryChannelLayer`` and broadcasts only
+#   reach clients on the same worker -- harmless for HTTP, degraded
+#   for the comments live channel.
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "config.asgi:application"]
+CMD ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-4} --proxy-headers --forwarded-allow-ips=* --lifespan off"]
