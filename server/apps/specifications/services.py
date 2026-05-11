@@ -950,23 +950,24 @@ def _coerce_decimal(value: Any) -> Decimal | None:
 
 
 def _packaging_label(item: Item | None) -> str:
-    """Render a packaging slot for the spec sheet.
+    """Render a packaging slot for the customer-facing spec sheet.
 
-    The slot shows the catalogue's internal code followed by the item
-    name (e.g. ``MA203258 · Closure 38mm CT Metal Gold``) when one is
-    picked, and falls back to the TBD placeholder when the slot is
-    still empty. Keeping both the code and the name side by side lets
-    procurement match the row against an SKU without opening the
-    underlying catalogue.
+    Emits only the item name (e.g. ``Closure 38mm CT Metal Gold``).
+    The internal procurement code is intentionally suppressed — the
+    spec sheet is a customer deliverable and internal SKUs leak
+    supplier-level signal that shouldn't ship with the document.
+    Falls back to the TBD placeholder when no slot is picked, and to
+    the code when the catalogue row is missing a name (defensive: a
+    blank cell would otherwise hide the slot entirely).
     """
 
     if item is None:
         return PACKAGING_PLACEHOLDER
-    code = (item.internal_code or "").strip()
     name = (item.name or "").strip()
-    if code and name:
-        return f"{code} · {name}"
-    return name or code or PACKAGING_PLACEHOLDER
+    if name:
+        return name
+    code = (item.internal_code or "").strip()
+    return code or PACKAGING_PLACEHOLDER
 
 
 def _compute_filled_total_mg(

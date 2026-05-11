@@ -490,18 +490,18 @@ export function SpecSheetContent({
             <>
               <SpecRow
                 label={tSpecs("sheet.fields.filling_weight_per_scoop")}
-                value={formatMg(rendered.totals.total_weight_mg)}
+                value={formatGrams(rendered.totals.total_weight_mg)}
               />
               {rendered.totals.powder_per_serving_mg ? (
                 <SpecRow
                   label={tSpecs("sheet.fields.weight_per_serving")}
-                  value={formatMg(rendered.totals.powder_per_serving_mg)}
+                  value={formatGrams(rendered.totals.powder_per_serving_mg)}
                 />
               ) : null}
               {rendered.totals.powder_pack_total_mg ? (
                 <SpecRow
                   label={tSpecs("sheet.fields.total_pack_weight")}
-                  value={formatMg(rendered.totals.powder_pack_total_mg)}
+                  value={formatGrams(rendered.totals.powder_pack_total_mg)}
                 />
               ) : null}
             </>
@@ -509,7 +509,7 @@ export function SpecSheetContent({
             <>
               <SpecRow
                 label={tSpecs("sheet.fields.filling_weight")}
-                value={formatMg(rendered.totals.total_weight_mg)}
+                value={formatGrams(rendered.totals.total_weight_mg)}
               />
               <SpecRow
                 label={tSpecs("sheet.fields.total_weight")}
@@ -1248,7 +1248,19 @@ function formatMg(value: string | null | undefined): string {
 }
 
 
-/** Resolve the Total Weight (mg) cell.
+/** Render a per-unit weight in grams. Client deliverables read more
+ *  naturally in grams (730 mg → 0.730 g) at the unit level. Three
+ *  decimals preserve the resolution of the underlying mg value
+ *  without trailing noise. */
+function formatGrams(value: string | null | undefined): string {
+  if (value === null || value === undefined) return "—";
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return "—";
+  return `${(parsed / 1000).toFixed(3)} g`;
+}
+
+
+/** Resolve the Total Weight cell (grams).
  *
  * Priority: explicit sheet override → computed filled-capsule weight
  * (fill + shell for capsules, fill only for tablets/powder/gummy/
@@ -1259,7 +1271,7 @@ function formatMg(value: string | null | undefined): string {
 function resolveTotalWeight(rendered: RenderedSheetContext): string {
   const override = (rendered.sheet.total_weight_label ?? "").trim();
   if (override !== "") return override;
-  const computed = formatMg(rendered.totals.filled_total_mg);
+  const computed = formatGrams(rendered.totals.filled_total_mg);
   if (computed !== "—") return computed;
   return "TBC";
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { Button, ComboBox, ListBox, Modal } from "@heroui/react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Package } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -13,6 +14,7 @@ import { useDebouncedValue } from "@/lib/utils";
 import {
   PACKAGING_DETAIL_KEYS,
   PACKAGING_SLOTS,
+  specificationsQueryKeys,
   usePackagingOptions,
   useSetSpecificationPackaging,
   type PackagingOption,
@@ -47,6 +49,7 @@ export function EditPackagingButton({
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useSetSpecificationPackaging(orgId, sheet.id);
+  const queryClient = useQueryClient();
 
   // Reset form state whenever the modal opens or the underlying
   // sheet changes so the dropdowns reflect the latest server truth.
@@ -96,6 +99,22 @@ export function EditPackagingButton({
     }
     try {
       await mutation.mutateAsync(diff);
+      // The mutation already updates the detail cache and invalidates
+      // the render cache, but ``invalidate`` only kicks off a refetch
+      // — it doesn't await it. Force the refetch to settle before we
+      // close the modal so the spec sheet repaints with the new
+      // packaging straight away rather than showing the stale (frozen
+      // SSR) render until the next observer tick. Same for the
+      // project overview, which embeds the sheet card with the
+      // packaging summary.
+      await Promise.all([
+        queryClient.refetchQueries({
+          queryKey: specificationsQueryKeys.render(orgId, sheet.id),
+        }),
+        queryClient.refetchQueries({
+          queryKey: specificationsQueryKeys.detail(orgId, sheet.id),
+        }),
+      ]);
       setIsOpen(false);
       router.refresh();
     } catch (err) {

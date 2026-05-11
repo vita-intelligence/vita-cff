@@ -2411,6 +2411,13 @@ function MrpeasyBomCard({
       }
     }
 
+    // Sort by quantity ascending — procurement reads the BOM bottom-
+    // up against the in-house weigh sheet, and ramping smallest-to-
+    // largest means the heaviest line (typically MCC / gummy base /
+    // pectin premix) anchors the bottom of the print where it doubles
+    // as a sanity check against the total.
+    out.sort((a, b) => a.gramsPerKg - b.gramsPerKg);
+
     return out;
   }, [
     totalWeight,
