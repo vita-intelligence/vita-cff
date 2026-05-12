@@ -63,9 +63,24 @@ class OrganizationListCreateView(APIView):
 
     def get(self, request: Request) -> Response:
         organizations = list_user_organizations(request.user)
+        # Pre-load the caller's memberships across the whole org set in
+        # one query so the serializer's ``is_owner`` + ``permissions``
+        # fields don't fan out into 2 × N queries.
+        org_ids = [org.id for org in organizations]
+        caller_memberships = {
+            str(m.organization_id): m
+            for m in Membership.objects.filter(
+                user=request.user, organization_id__in=org_ids
+            )
+        }
         return Response(
             OrganizationReadSerializer(
-                organizations, many=True, context={"request": request}
+                organizations,
+                many=True,
+                context={
+                    "request": request,
+                    "caller_memberships_by_org_id": caller_memberships,
+                },
             ).data,
             status=status.HTTP_200_OK,
         )

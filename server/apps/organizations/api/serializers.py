@@ -46,6 +46,18 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def _get_caller_membership(self, obj: Organization) -> Membership | None:
+        # Prefer a pre-loaded ``caller_memberships_by_org_id`` dict on
+        # the serializer context so list endpoints don't fire two
+        # queries per row (one for ``is_owner``, one for
+        # ``permissions``). The view layer pre-fetches the caller's
+        # memberships in a single ``Membership.objects.filter(user=...,
+        # organization_id__in=org_ids)`` round-trip and drops the
+        # keyed dict here. Falls back to a per-row query only when the
+        # serializer is instantiated outside that flow (admin shell,
+        # ad-hoc renders).
+        cache = self.context.get("caller_memberships_by_org_id")
+        if isinstance(cache, dict):
+            return cache.get(str(obj.id))
         request = self.context.get("request")
         user = getattr(request, "user", None) if request else None
         if user is None or not getattr(user, "is_authenticated", False):

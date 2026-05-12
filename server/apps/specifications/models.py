@@ -408,6 +408,15 @@ class SpecificationSheet(models.Model):
         indexes = [
             models.Index(fields=("organization", "status")),
             models.Index(fields=("organization", "-updated_at")),
+            # Workspace panel + project header both join via
+            # ``formulation_version_id`` to surface a project's
+            # current spec sheets. Postgres can auto-index the FK
+            # column for joins, but the dedicated index keeps the
+            # plan stable across upgrades / config changes.
+            models.Index(
+                fields=("formulation_version",),
+                name="specs_formulation_version_idx",
+            ),
         ]
 
     def __str__(self) -> str:

@@ -413,6 +413,14 @@ class Proposal(models.Model):
         indexes = [
             models.Index(fields=("organization", "status")),
             models.Index(fields=("organization", "-updated_at")),
+            # Director inbox: ``WHERE org=X AND status=Y ORDER BY
+            # -updated_at``. One composite seek covers the whole
+            # predicate; the existing two-column indexes still serve
+            # status-only or recency-only queries from elsewhere.
+            models.Index(
+                fields=("organization", "status", "-updated_at"),
+                name="proposals_org_stat_upd_idx",
+            ),
         ]
 
     def __str__(self) -> str:

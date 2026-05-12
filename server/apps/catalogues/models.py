@@ -180,6 +180,13 @@ class Item(models.Model):
         indexes = [
             models.Index(fields=("catalogue", "name")),
             models.Index(fields=("catalogue", "is_archived")),
+            # Hot list query: paginated items table filters by
+            # catalogue + ``is_archived=False`` and orders by name.
+            # The composite covers the full predicate in one seek.
+            models.Index(
+                fields=("catalogue", "is_archived", "name"),
+                name="catalogues_item_list_idx",
+            ),
         ]
 
     def __str__(self) -> str:

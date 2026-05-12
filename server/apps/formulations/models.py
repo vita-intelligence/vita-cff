@@ -472,6 +472,14 @@ class Formulation(models.Model):
         ]
         indexes = [
             models.Index(fields=("organization", "-updated_at")),
+            # Project status filter is the most-used drill-down on
+            # the formulations list (in-progress / approved / archived
+            # tabs). The composite keeps the org-scoped status query
+            # off a sequential scan.
+            models.Index(
+                fields=("organization", "project_status"),
+                name="formulations_org_status_idx",
+            ),
         ]
 
     def __str__(self) -> str:

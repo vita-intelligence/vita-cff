@@ -38,9 +38,28 @@ export default async function CatalogueItemDetailPage({
   }
   const primaryOrg = organizations[0]!;
 
-  const catalogues = (await getCataloguesServer(primaryOrg.id)) ?? [];
+  // Fan out the four independent fetches. The catalogue list, item,
+  // attribute definitions, and translation bundles all stand alone;
+  // each previously cost a separate round-trip to backend / disk.
+  // The catalogue / item existence checks happen against the
+  // resolved values below.
+  const [catalogues, item, definitions, tItems, tCommon, tNav] =
+    await Promise.all([
+      getCataloguesServer(primaryOrg.id).then((list) => list ?? []),
+      getCatalogueItemServer(primaryOrg.id, slug, id),
+      getAttributeDefinitionsServer(primaryOrg.id, slug).then(
+        (list) => list ?? [],
+      ),
+      getTranslations("items"),
+      getTranslations("common"),
+      getTranslations("navigation"),
+    ]);
+
   const catalogue = catalogues.find((c) => c.slug === slug);
   if (!catalogue) {
+    notFound();
+  }
+  if (!item) {
     notFound();
   }
 
@@ -53,20 +72,8 @@ export default async function CatalogueItemDetailPage({
     redirect({ href: "/home", locale });
   }
 
-  const item = await getCatalogueItemServer(primaryOrg.id, slug, id);
-  if (!item) {
-    notFound();
-  }
-
-  const definitions =
-    (await getAttributeDefinitionsServer(primaryOrg.id, slug)) ?? [];
-
   const canWrite = level === "write" || level === "admin";
   const canAdmin = level === "admin";
-
-  const tItems = await getTranslations("items");
-  const tCommon = await getTranslations("common");
-  const tNav = await getTranslations("navigation");
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">

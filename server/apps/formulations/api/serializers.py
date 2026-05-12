@@ -230,13 +230,15 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             POWDER_WATER_DOSE_ATTRIBUTE_KEY,
         )
 
-        rows = self._echo_picks(obj.acidity_items)
-        # Re-walk the manager rather than mutate ``_echo_picks`` so the
-        # shared shape stays slim for every other picker echo.
+        # Build the per-id lookup from the SAME ``manager.all()`` call
+        # the echo walks. With the prefetch wired upstream this is a
+        # cached iteration -- no extra query -- and avoids the second
+        # walk that previously cost N rows × N picks queries on the
+        # list endpoint.
         items_by_id = {
-            str(item.id): item
-            for item in obj.acidity_items.all()
+            str(item.id): item for item in obj.acidity_items.all()
         }
+        rows = self._echo_picks(obj.acidity_items)
         for row in rows:
             item = items_by_id.get(row["id"])
             attrs = (item.attributes or {}) if item is not None else {}
@@ -304,29 +306,27 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         M2M echoes) so the builder renders chips without a second
         round-trip."""
 
-        rows: list[dict] = []
-        for item in obj.glazing_items.all().order_by("name"):
-            attrs = item.attributes or {}
-            rows.append(
-                {
-                    "id": str(item.id),
-                    "name": item.name,
-                    "internal_code": item.internal_code or "",
-                    "ingredient_list_name": (
-                        attrs.get("ingredient_list_name") or ""
-                    ),
-                    "use_as": attrs.get("use_as") or "",
-                }
-            )
-        return rows
+        return self._echo_picks(obj.glazing_items)
 
     def _echo_picks(self, manager) -> list[dict]:
         """Common shape for the M2M echo blocks (gummy base, flavouring,
         colour, glazing) so the builder can chip-render every pick list
-        from a single round-trip without per-band branching."""
+        from a single round-trip without per-band branching.
+
+        Sorts in Python rather than with ``.order_by("name")`` so the
+        list endpoint's prefetch cache (see ``_FORMULATION_LIST_PREFETCH``
+        on the services side) is reused. ``manager.all().order_by(...)``
+        invalidates the prefetch by appending an ORDER BY and forcing
+        a fresh query per row -- the very N+1 the prefetch exists to
+        avoid. Pick lists are tiny (single-digit items per band), so
+        sorting in Python is essentially free.
+        """
 
         rows: list[dict] = []
-        for item in manager.all().order_by("name"):
+        items = sorted(
+            manager.all(), key=lambda i: (i.name or "").lower()
+        )
+        for item in items:
             attrs = item.attributes or {}
             rows.append(
                 {
@@ -374,25 +374,9 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     def get_gummy_base_items(self, obj: Formulation) -> list[dict]:
         """Light echo of every picked gummy base so the builder can
         render the chip list without a second round-trip. Empty when
-        nothing's been picked yet; attribute lookups are best-effort
-        (a missing ``ingredient_list_name`` falls back to the item's
-        canonical name)."""
+        nothing's been picked yet."""
 
-        rows: list[dict] = []
-        for item in obj.gummy_base_items.all().order_by("name"):
-            attrs = item.attributes or {}
-            rows.append(
-                {
-                    "id": str(item.id),
-                    "name": item.name,
-                    "internal_code": item.internal_code or "",
-                    "ingredient_list_name": (
-                        attrs.get("ingredient_list_name") or ""
-                    ),
-                    "use_as": attrs.get("use_as") or "",
-                }
-            )
-        return rows
+        return self._echo_picks(obj.gummy_base_items)
 
     def get_sales_person(
         self, obj: Formulation

@@ -132,6 +132,17 @@ class Membership(models.Model):
                 name="organizations_membership_unique_user_org",
             ),
         ]
+        indexes = [
+            # Permission checks routinely scan all memberships for an
+            # org (settings page, audit-log filter, owner reassign).
+            # The unique constraint on (user, organization) already
+            # indexes the user-side lookup; this one covers the
+            # org-side scan.
+            models.Index(
+                fields=("organization",),
+                name="orgs_membership_org_idx",
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.user} @ {self.organization}"

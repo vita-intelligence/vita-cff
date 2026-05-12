@@ -352,34 +352,46 @@ def _activity_feed(
     from apps.specifications.models import SpecificationSheet
     from apps.trial_batches.models import TrialBatch
 
-    target_ids: set[str] = {str(formulation.id)}
-
-    version_ids = list(
+    # Collapse the four "find the resource ids that hang off this
+    # formulation" queries into a single ``UNION ALL`` so we make one
+    # DB round-trip instead of four. The previous shape ran a chain of
+    # ``values_list -> list -> filter(id__in=...)`` to materialise each
+    # set in Python before the next; the union version pushes the
+    # whole tree into one statement and lets Postgres plan it.
+    #
+    # ``.order_by()`` is applied (with no args) to every branch because
+    # Postgres rejects ORDER BY inside the operands of a compound
+    # statement and the source models all carry a default ordering.
+    version_qs = (
         FormulationVersion.objects.filter(formulation=formulation)
+        .order_by()
         .values_list("id", flat=True)
     )
-    target_ids.update(str(v) for v in version_ids)
-
-    sheet_ids = list(
+    sheet_qs = (
         SpecificationSheet.objects.filter(
-            formulation_version_id__in=version_ids
-        ).values_list("id", flat=True)
+            formulation_version__formulation=formulation
+        )
+        .order_by()
+        .values_list("id", flat=True)
     )
-    target_ids.update(str(s) for s in sheet_ids)
-
-    batch_ids = list(
+    batch_qs = (
         TrialBatch.objects.filter(
-            formulation_version_id__in=version_ids
-        ).values_list("id", flat=True)
+            formulation_version__formulation=formulation
+        )
+        .order_by()
+        .values_list("id", flat=True)
     )
-    target_ids.update(str(b) for b in batch_ids)
-
-    validation_ids = list(
+    validation_qs = (
         ProductValidation.objects.filter(
-            trial_batch_id__in=batch_ids
-        ).values_list("id", flat=True)
+            trial_batch__formulation_version__formulation=formulation
+        )
+        .order_by()
+        .values_list("id", flat=True)
     )
-    target_ids.update(str(v) for v in validation_ids)
+    related_ids = version_qs.union(sheet_qs, batch_qs, validation_qs, all=True)
+
+    target_ids: set[str] = {str(formulation.id)}
+    target_ids.update(str(row) for row in related_ids)
 
     rows = (
         AuditLog.objects.filter(

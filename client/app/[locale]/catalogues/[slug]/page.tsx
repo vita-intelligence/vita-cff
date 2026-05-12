@@ -43,16 +43,40 @@ export default async function CatalogueDetailPage({
   }
   const primaryOrg = organizations[0]!;
 
-  const catalogues = (await getCataloguesServer(primaryOrg.id)) ?? [];
+  // Fan out the four independent SSR fetches that drive this page.
+  // They previously chained sequentially and added ~4 round-trips
+  // worth of latency (catalogues -> items -> definitions, plus the
+  // translations loader). The catalogue existence check still has
+  // to happen before we render, but it can race against the items +
+  // definitions queries since the failure path is a 404 either way.
+  const [
+    catalogues,
+    initialFirstPage,
+    definitions,
+    tItems,
+    tCommon,
+    tNav,
+    tAttrs,
+  ] = await Promise.all([
+    getCataloguesServer(primaryOrg.id).then((list) => list ?? []),
+    getCatalogueItemsFirstPageServer(primaryOrg.id, slug, {
+      includeArchived: viewArchived,
+      ordering: "name",
+      pageSize: 100,
+    }),
+    getAttributeDefinitionsServer(primaryOrg.id, slug).then(
+      (list) => list ?? [],
+    ),
+    getTranslations("items"),
+    getTranslations("common"),
+    getTranslations("navigation"),
+    getTranslations("attributes"),
+  ]);
+
   const catalogue = catalogues.find((c) => c.slug === slug);
   if (!catalogue) {
     notFound();
   }
-
-  const tItems = await getTranslations("items");
-  const tCommon = await getTranslations("common");
-  const tNav = await getTranslations("navigation");
-  const tAttrs = await getTranslations("attributes");
 
   const level = resolveLegacyRowScopedLevel(
     primaryOrg,
@@ -65,18 +89,6 @@ export default async function CatalogueDetailPage({
 
   const canAdmin = level === "admin";
   const canWrite = level === "write" || level === "admin";
-
-  const initialFirstPage = await getCatalogueItemsFirstPageServer(
-    primaryOrg.id,
-    slug,
-    {
-      includeArchived: viewArchived,
-      ordering: "name",
-      pageSize: 100,
-    },
-  );
-  const definitions =
-    (await getAttributeDefinitionsServer(primaryOrg.id, slug)) ?? [];
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">

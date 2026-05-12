@@ -1908,11 +1908,46 @@ def compute_totals(
 # ---------------------------------------------------------------------------
 
 
+#: M2M relations the read serializer's echo blocks call ``.all()``
+#: on per row. Without prefetching, the formulations list endpoint
+#: fires one extra query per (row × relation) -- 12 relations × 50
+#: rows = 600 queries before the lines + sales_person fields even
+#: start. Listed in one tuple so ``list_formulations`` and any other
+#: list caller stay in lock-step with the serializer's shape.
+_FORMULATION_LIST_PREFETCH: tuple[str, ...] = (
+    "gummy_base_items",
+    "flavouring_items",
+    "colour_items",
+    "sweetener_items",
+    "glazing_items",
+    "gelling_items",
+    "premix_sweetener_items",
+    "acidity_items",
+    "mcc_carrier_items",
+    "dcp_carrier_items",
+    "anti_caking_items",
+    "powder_carrier_items",
+    "lines__item",
+)
+
+
 def list_formulations(
     *, organization: Organization
 ) -> QuerySet[Formulation]:
+    """List formulations for an organisation, prefetched for the read
+    serializer's echo blocks.
+
+    The serializer renders ~12 M2M picks per row plus the formulation
+    lines and the sales_person FK; without the prefetch + select_related
+    list a 50-item page fires ~1,800 queries and stalls the connection
+    pool under modest concurrent load. With the prefetch the page
+    settles to a handful of queries regardless of result-set size.
+    """
+
     return (
         Formulation.objects.filter(organization=organization)
+        .select_related("sales_person", "organization")
+        .prefetch_related(*_FORMULATION_LIST_PREFETCH)
         .order_by("-updated_at")
     )
 

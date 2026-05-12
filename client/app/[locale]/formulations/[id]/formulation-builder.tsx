@@ -5,6 +5,7 @@ import { Check, Copy, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -715,6 +716,55 @@ export function FormulationBuilder({
         totals: liveTotals,
       }),
     [lines, liveTotals],
+  );
+
+  // Stable arrays for the labels in the totals panel's bracket lists
+  // ("Carrier (Maltodextrin)", "Anti-caking Agents (Silicon Dioxide)").
+  // Previously rebuilt inline in JSX on every render which defeated
+  // React.memo on TotalsBlock -- a fresh array identity per render
+  // forced a full repaint even when no picked items had changed.
+  const mccCarrierLabels = useMemo(
+    () =>
+      metadata.mcc_carrier_item_ids
+        .map(
+          (id) =>
+            mccCarrierNames[id] ??
+            formulation.mcc_carrier_items.find((i) => i.id === id)?.name ??
+            "",
+        )
+        .filter((name) => name !== ""),
+    [
+      metadata.mcc_carrier_item_ids,
+      mccCarrierNames,
+      formulation.mcc_carrier_items,
+    ],
+  );
+
+  const antiCakingLabels = useMemo(
+    () =>
+      metadata.anti_caking_item_ids
+        .map(
+          (id) =>
+            antiCakingNames[id] ??
+            formulation.anti_caking_items.find((i) => i.id === id)?.name ??
+            "",
+        )
+        .filter((name) => name !== ""),
+    [
+      metadata.anti_caking_item_ids,
+      antiCakingNames,
+      formulation.anti_caking_items,
+    ],
+  );
+
+  // Stable callback for the excipient overrides panel. Without this
+  // the panel got a fresh closure every render, so React.memo on the
+  // panel couldn't short-circuit. Uses the functional setMetadata
+  // form so we don't depend on a churning ``metadata`` reference.
+  const handleExcipientOverridesChange = useCallback(
+    (next: Record<string, number>) =>
+      setMetadata((prev) => ({ ...prev, excipient_overrides: next })),
+    [],
   );
 
   // ---------------------------------------------------------------------
@@ -2200,29 +2250,10 @@ export function FormulationBuilder({
             dosageForm={metadata.dosage_form}
             numberFormatter={numberFormatter}
             tFormulations={tFormulations}
-            // Read picked-name labels from the live cache so the
-            // brackets repaint the moment a checkbox toggles, not
-            // only after a save round-trip refreshes the formulation
-            // prop. Falls back to the server echo for any id that
-            // somehow isn't in the cache yet.
-            mccCarrierLabels={metadata.mcc_carrier_item_ids
-              .map(
-                (id) =>
-                  mccCarrierNames[id] ??
-                  formulation.mcc_carrier_items.find((i) => i.id === id)
-                    ?.name ??
-                  "",
-              )
-              .filter((name) => name !== "")}
-            antiCakingLabels={metadata.anti_caking_item_ids
-              .map(
-                (id) =>
-                  antiCakingNames[id] ??
-                  formulation.anti_caking_items.find((i) => i.id === id)
-                    ?.name ??
-                  "",
-              )
-              .filter((name) => name !== "")}
+            // Stable refs from the parent's useMemo so the memoised
+            // TotalsBlock can short-circuit when these don't change.
+            mccCarrierLabels={mccCarrierLabels}
+            antiCakingLabels={antiCakingLabels}
           />
           <ExcipientOverridesPanel
             overrides={metadata.excipient_overrides}
@@ -2235,12 +2266,7 @@ export function FormulationBuilder({
             hasColour={metadata.colour_item_ids.length > 0}
             hasGelling={metadata.gelling_item_ids.length > 0}
             disabled={!canWrite}
-            onChange={(next) =>
-              setMetadata({
-                ...metadata,
-                excipient_overrides: next,
-              })
-            }
+            onChange={handleExcipientOverridesChange}
             tFormulations={tFormulations}
           />
         </div>
@@ -2365,7 +2391,10 @@ export function FormulationBuilder({
 }
 
 
-function CompliancePanel({
+// Memoised: re-renders only when compliance, allergens, or hasLines
+// change. Keystrokes in unrelated metadata fields no longer cascade
+// through this panel.
+const CompliancePanel = memo(function CompliancePanel({
   compliance,
   allergens,
   hasLines,
@@ -2421,7 +2450,7 @@ function CompliancePanel({
       )}
     </div>
   );
-}
+});
 
 
 function AllergenChip({
@@ -2496,7 +2525,10 @@ function ComplianceChip({
 }
 
 
-function DeclarationPanel({
+// Memoised: declaration + allergens are already derived via useMemo
+// in the parent, so this panel only re-paints when those inputs
+// actually change.
+const DeclarationPanel = memo(function DeclarationPanel({
   declaration,
   allergens,
   hasLines,
@@ -2594,7 +2626,7 @@ function DeclarationPanel({
       )}
     </div>
   );
-}
+});
 
 
 /**
@@ -2611,7 +2643,10 @@ function DeclarationPanel({
  * Print stylesheet (``print:`` Tailwind variants) hides everything
  * except this card so a Cmd+P emits a clean handoff sheet.
  */
-function MrpeasyBomCard({
+// Memoised: BOM rows recompute only when totals / lines / picker
+// state change. Keystrokes elsewhere (search input, metadata fields)
+// no longer drive a full table re-render.
+const MrpeasyBomCard = memo(function MrpeasyBomCard({
   totals,
   lines,
   gummyBaseItems,
@@ -3093,7 +3128,7 @@ function MrpeasyBomCard({
       ) : null}
     </section>
   );
-}
+});
 
 
 function CategoryBadge({
@@ -3119,7 +3154,13 @@ function CategoryBadge({
 }
 
 
-function TotalsBlock({
+// Memoised so that keystrokes in unrelated state (search input,
+// metadata fields, etc.) don't trigger a full re-render of the
+// excipients table + viability + warnings + override panel tree.
+// React's shallow equality on props is enough here because every
+// expensive prop (``totals``, ``mccCarrierLabels``, ``antiCakingLabels``)
+// is already a stable reference from useMemo in the parent.
+const TotalsBlock = memo(function TotalsBlock({
   totals,
   servingSize,
   dosageForm,
@@ -3643,7 +3684,7 @@ function TotalsBlock({
       </div>
     </div>
   );
-}
+});
 
 
 // ---------------------------------------------------------------------------
@@ -4151,8 +4192,10 @@ function LineOverridesPanel({
  *  totals block and exposes one editable row per band that's
  *  applicable to the current dosage form + picker state. Persists
  *  via ``metadata.excipient_overrides`` so saving the formulation
- *  freezes the overrides into the next version snapshot. */
-function ExcipientOverridesPanel({
+ *  freezes the overrides into the next version snapshot.
+ *
+ *  Memoised so unrelated keystrokes don't redraw the 7-row panel. */
+const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
   overrides,
   dosageForm,
   hasAntiCaking,
@@ -4370,7 +4413,7 @@ function ExcipientOverridesPanel({
       </ul>
     </div>
   );
-}
+});
 
 
 /** Legacy wrapper kept so any in-flight reference still resolves.
