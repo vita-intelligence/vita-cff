@@ -367,6 +367,51 @@ export function FormulationBuilder({
       initialFormulation.anti_caking_items.map((i) => [i.id, i.name]),
     ),
   );
+  // Same live-cache pattern as MCC + anti-caking: powder carrier
+  // brackets ("Carrier (Maltodextrin)") need the picked item names
+  // the moment the scientist toggles a checkbox, not after a save
+  // round-trip refreshes the formulation echo.
+  const [powderCarrierNames, setPowderCarrierNames] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      // Use the item's bare name (e.g. "Maltodextrin"), NOT
+      // ``ingredient_list_name`` -- the row label gets wrapped as
+      // "Carrier (...)" by the totals panel's grouping helper, so a
+      // ``ingredient_list_name`` of "Carrier (Maltodextrin)" would
+      // double-bracket into "Carrier (Carrier (Maltodextrin))". The
+      // EU 1169 declaration uses ``ingredient_list_name`` separately.
+      initialFormulation.powder_carrier_items.map((i) => [i.id, i.name]),
+    ),
+  );
+  // Live cache for acidity picks. Unlike the other live caches this
+  // one carries more than a name -- powder formulations read each
+  // pick's ``powder_water_dose_mg_per_ml`` rate plus ``use_as`` for
+  // the per-item mg math. Hydrated from the server echo on mount;
+  // refreshed by the acidity picker's ``onPickedItemsChange`` so a
+  // freshly-checked item flows into the math the moment the
+  // scientist toggles it, without waiting for a save round-trip.
+  const [acidityLive, setAcidityLive] = useState<
+    Record<
+      string,
+      {
+        readonly label: string;
+        readonly useAs: string;
+        readonly waterDoseMgPerMl: number | null;
+      }
+    >
+  >(() =>
+    Object.fromEntries(
+      initialFormulation.acidity_items.map((i) => [
+        i.id,
+        {
+          label: i.ingredient_list_name || i.name,
+          useAs: i.use_as || "",
+          waterDoseMgPerMl: i.water_dose_mg_per_ml,
+        },
+      ]),
+    ),
+  );
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
   //: Debounced query that drives the picker cache key. Lags by 200ms.
@@ -484,14 +529,58 @@ export function FormulationBuilder({
             useAs: pick.use_as || "",
           }))
         : [];
+    // Drive acidity math off the LIVE ids (``metadata.acidity_item_ids``)
+    // rather than the saved server echo so the totals panel updates
+    // the moment the scientist toggles a pick. Each id is resolved
+    // against the live cache (populated by the picker's
+    // ``onPickedItemsChange``) first, then the server echo as a
+    // fallback so already-saved picks still render before the picker
+    // has had a chance to fire its callback.
+    const echoById = new Map(
+      formulation.acidity_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+          waterDoseMgPerMl: pick.water_dose_mg_per_ml,
+        },
+      ]),
+    );
     const acidityForMath =
       metadata.dosage_form === "gummy" ||
       metadata.dosage_form === "powder"
-        ? formulation.acidity_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.acidity_item_ids
+            .map((id) => {
+              const live = acidityLive[id];
+              const echo = echoById.get(id);
+              if (!live && !echo) return null;
+              return {
+                id,
+                label: live?.label || echo?.label || "",
+                useAs: live?.useAs || echo?.useAs || "",
+                // Powder-only: per-item mg of acid per ml of
+                // reconstitution water. Sourced from the raw
+                // material's ``powder_water_dose_mg_per_ml``
+                // attribute. ``null`` -> the math drops this row
+                // and surfaces a ``powder_acidity_dose_missing``
+                // warning so the scientist knows to set the rate
+                // in the catalogue.
+                waterDoseMgPerMl:
+                  live?.waterDoseMgPerMl ??
+                  echo?.waterDoseMgPerMl ??
+                  null,
+              };
+            })
+            .filter(
+              (
+                entry,
+              ): entry is {
+                id: string;
+                label: string;
+                useAs: string;
+                waterDoseMgPerMl: number | null;
+              } => entry !== null,
+            )
         : [];
     return computeTotals({
       lines: computeInputs,
@@ -541,15 +630,17 @@ export function FormulationBuilder({
       })),
       // Powder carrier picks fill the sachet's remainder band. The
       // label is taken straight from the saved formulation echo
-      // (live-cache for the live brackets is wired on the picker
-      // itself via the existing onPickedItemsChange channel for
-      // anti-caking, but the carrier is rarely toggled in-session
-      // so we read from the echo here).
+      // Bare item names only -- the grouping helper later wraps
+      // them as "Carrier (Maltodextrin, ...)" exactly once. Reading
+      // ``ingredient_list_name`` here would double-bracket entries
+      // whose EU 1169 form already includes a "Carrier" prefix.
       powderCarrierItems: metadata.powder_carrier_item_ids.map((id) => ({
         id,
         label:
+          powderCarrierNames[id] ??
           formulation.powder_carrier_items.find((i) => i.id === id)
-            ?.name ?? "",
+            ?.name ??
+          "",
       })),
       // Powder sweetener picker (separate from the gummy sweetener
       // pool that goes through gummy_base_items).
@@ -578,8 +669,12 @@ export function FormulationBuilder({
     metadata.dcp_carrier_item_ids,
     metadata.anti_caking_item_ids,
     metadata.powder_carrier_item_ids,
+    metadata.acidity_item_ids,
+    metadata.sweetener_item_ids,
     mccCarrierNames,
     antiCakingNames,
+    powderCarrierNames,
+    acidityLive,
     formulation.gummy_base_items,
     formulation.powder_carrier_items,
     formulation.sweetener_items,
@@ -1362,9 +1457,10 @@ export function FormulationBuilder({
               }
             />
           ) : null}
-          {/* Powder Acidity Regulator picker -- consolidates the
-              historical Trisodium Citrate + Citric Acid auto-rows
-              into one opt-in band. Empty picker = no acidity band. */}
+          {/* Powder Acidity Regulator picker -- per-item rows, each
+              dosed at the catalogue item's
+              ``powder_water_dose_mg_per_ml`` × the formulation's
+              water volume. Empty picker = no acidity band. */}
           {metadata.dosage_form === "powder" ? (
             <CatalogueMultiPicker
               orgId={orgId}
@@ -1386,6 +1482,47 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, acidity_item_ids: ids })
               }
+              onPickedItemsChange={(items) => {
+                setAcidityLive((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) {
+                    // Prefer the live picker's attribute map over a
+                    // stale server echo so a just-edited dose rate
+                    // takes effect without a re-save. Falls back to
+                    // the previous entry when the picker emits an
+                    // attribute-less id (preselected-only).
+                    const attrs = it.attributes ?? null;
+                    const rawDose = attrs?.["powder_water_dose_mg_per_ml"];
+                    const dose =
+                      typeof rawDose === "number"
+                        ? rawDose
+                        : typeof rawDose === "string" && rawDose.trim() !== ""
+                          ? Number.parseFloat(rawDose)
+                          : null;
+                    const rawIngredient =
+                      attrs?.["ingredient_list_name"];
+                    const label =
+                      typeof rawIngredient === "string" &&
+                      rawIngredient.trim() !== ""
+                        ? rawIngredient
+                        : it.name;
+                    const rawUseAs = attrs?.["use_as"];
+                    const useAs =
+                      typeof rawUseAs === "string" ? rawUseAs : "";
+                    next[it.id] = {
+                      label,
+                      useAs: useAs || prev[it.id]?.useAs || "",
+                      waterDoseMgPerMl:
+                        attrs !== null
+                          ? Number.isFinite(dose ?? NaN)
+                            ? dose
+                            : null
+                          : (prev[it.id]?.waterDoseMgPerMl ?? null),
+                    };
+                  }
+                  return next;
+                });
+              }}
             />
           ) : null}
           {/* Powder Anti-caking picker -- same M2M as capsule/tablet.
@@ -1445,6 +1582,15 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, powder_carrier_item_ids: ids })
               }
+              onPickedItemsChange={(items) => {
+                // Bare item names only -- the grouping helper wraps
+                // them in "Carrier (...)" outside this cache.
+                setPowderCarrierNames((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+              }}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -1485,6 +1631,34 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, acidity_item_ids: ids })
               }
+              onPickedItemsChange={(items) => {
+                // Gummy doesn't read the dose rate, but it still
+                // benefits from a live label cache so toggling a
+                // pick updates the brackets in the totals panel
+                // without a save round-trip.
+                setAcidityLive((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) {
+                    const attrs = it.attributes ?? null;
+                    const rawIngredient = attrs?.["ingredient_list_name"];
+                    const label =
+                      typeof rawIngredient === "string" &&
+                      rawIngredient.trim() !== ""
+                        ? rawIngredient
+                        : it.name;
+                    const rawUseAs = attrs?.["use_as"];
+                    const useAs =
+                      typeof rawUseAs === "string" ? rawUseAs : "";
+                    next[it.id] = {
+                      label,
+                      useAs: useAs || prev[it.id]?.useAs || "",
+                      waterDoseMgPerMl:
+                        prev[it.id]?.waterDoseMgPerMl ?? null,
+                    };
+                  }
+                  return next;
+                });
+              }}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -2050,20 +2224,25 @@ export function FormulationBuilder({
               )
               .filter((name) => name !== "")}
           />
-          {metadata.dosage_form === "gummy" ? (
-            <GummyOverridesPanel
-              overrides={metadata.excipient_overrides}
-              gellingPicked={metadata.gelling_item_ids.length > 0}
-              disabled={!canWrite}
-              onChange={(next) =>
-                setMetadata({
-                  ...metadata,
-                  excipient_overrides: next,
-                })
-              }
-              tFormulations={tFormulations}
-            />
-          ) : null}
+          <ExcipientOverridesPanel
+            overrides={metadata.excipient_overrides}
+            dosageForm={metadata.dosage_form}
+            hasAntiCaking={metadata.anti_caking_item_ids.length > 0}
+            hasDcpCarrier={metadata.dcp_carrier_item_ids.length > 0}
+            hasMccCarrier={metadata.mcc_carrier_item_ids.length > 0}
+            hasFlavouring={metadata.flavouring_item_ids.length > 0}
+            hasSweetener={metadata.sweetener_item_ids.length > 0}
+            hasColour={metadata.colour_item_ids.length > 0}
+            hasGelling={metadata.gelling_item_ids.length > 0}
+            disabled={!canWrite}
+            onChange={(next) =>
+              setMetadata({
+                ...metadata,
+                excipient_overrides: next,
+              })
+            }
+            tFormulations={tFormulations}
+          />
         </div>
       </section>
 
@@ -3146,23 +3325,34 @@ function TotalsBlock({
               // Turmeric)" rows — EU label convention. Glazing
               // similarly groups under ``glazing:``. Everything else
               // (acidity, powder flavour rows) stays standalone.
-              groupGummyFlavourRows(excipients.rows).map((row) => (
+              groupGummyFlavourRows(excipients.rows, dosageForm).map((row) => (
                 <li
                   key={row.slug}
-                  className={`flex justify-between gap-2 ${
+                  className={`flex items-baseline justify-between gap-3 ${
                     row.isRemainder ? "font-medium text-orange-700" : ""
                   }`}
                 >
-                  <span className="flex min-w-0 items-baseline gap-1.5">
-                    <span>{row.label}</span>
+                  {/* Stack the label + inline rate vertically so a long
+                      bracket list doesn't push the mg value off-line. */}
+                  <span className="flex min-w-0 flex-col">
+                    <span className="break-words">{row.label}</span>
                     {row.concentrationMgPerGPowder !== null &&
                     row.concentrationMgPerGPowder !== undefined ? (
                       <span className="text-[10px] text-ink-500">
-                        ({row.concentrationMgPerGPowder} mg/g)
+                        {row.concentrationMgPerGPowder} mg/g
+                      </span>
+                    ) : null}
+                    {row.concentrationMgPerMlWater !== null &&
+                    row.concentrationMgPerMlWater !== undefined ? (
+                      <span className="text-[10px] text-ink-500">
+                        {row.concentrationMgPerMlWater} mg/ml
                       </span>
                     ) : null}
                   </span>
-                  <span className="tabular-nums">
+                  {/* Right column: mg + (%). ``whitespace-nowrap`` keeps
+                      them on a single line even on narrow viewports
+                      where the label has wrapped beneath. */}
+                  <span className="shrink-0 whitespace-nowrap tabular-nums">
                     {format(row.mg)} mg
                     {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
                       <span className="ml-1 text-ink-500">
@@ -3194,16 +3384,18 @@ function TotalsBlock({
                     Magnesium Stearate too. The total mg = stearate +
                     silica (1.4% of active). */}
                 {excipients.mgStearateMg + excipients.silicaMg > 0 ? (
-                  <li className="flex justify-between">
-                    <span>
-                      {tFormulations("builder.excipients.anti_caking")}
-                      {antiCakingLabels.length > 0 ? (
-                        <span className="ml-1 text-ink-500">
-                          ({antiCakingLabels.join(", ")})
-                        </span>
-                      ) : null}
+                  <li className="flex items-baseline justify-between gap-3">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="break-words">
+                        {tFormulations("builder.excipients.anti_caking")}
+                        {antiCakingLabels.length > 0 ? (
+                          <span className="ml-1 text-ink-500">
+                            ({antiCakingLabels.join(", ")})
+                          </span>
+                        ) : null}
+                      </span>
                     </span>
-                    <span className="tabular-nums">
+                    <span className="shrink-0 whitespace-nowrap tabular-nums">
                       {format(
                         excipients.mgStearateMg + excipients.silicaMg,
                       )}{" "}
@@ -3222,9 +3414,11 @@ function TotalsBlock({
                   </li>
                 ) : null}
                 {excipients.dcpMg !== null && excipients.dcpMg > 0 ? (
-                  <li className="flex justify-between">
-                    <span>{tFormulations("builder.excipients.dcp")}</span>
-                    <span className="tabular-nums">
+                  <li className="flex items-baseline justify-between gap-3">
+                    <span className="break-words">
+                      {tFormulations("builder.excipients.dcp")}
+                    </span>
+                    <span className="shrink-0 whitespace-nowrap tabular-nums">
                       {format(excipients.dcpMg)} mg
                       {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
                         <span className="ml-1 text-ink-500">
@@ -3235,19 +3429,18 @@ function TotalsBlock({
                   </li>
                 ) : null}
                 {excipients.mccMg > 0 ? (
-                  <li className="flex justify-between">
-                    <span>
-                      {/* Inline the picked carrier names so the line
-                          reads "MCC (Maltodextrin, Pregelatinised
-                          Starch)" instead of the bare placeholder. */}
-                      {tFormulations("builder.excipients.mcc")}
-                      {mccCarrierLabels.length > 0 ? (
-                        <span className="ml-1 text-ink-500">
-                          ({mccCarrierLabels.join(", ")})
-                        </span>
-                      ) : null}
+                  <li className="flex items-baseline justify-between gap-3">
+                    <span className="flex min-w-0 flex-col">
+                      <span className="break-words">
+                        {tFormulations("builder.excipients.mcc")}
+                        {mccCarrierLabels.length > 0 ? (
+                          <span className="ml-1 text-ink-500">
+                            ({mccCarrierLabels.join(", ")})
+                          </span>
+                        ) : null}
+                      </span>
                     </span>
-                    <span className="tabular-nums">
+                    <span className="shrink-0 whitespace-nowrap tabular-nums">
                       {format(excipients.mccMg)} mg
                       {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
                         <span className="ml-1 text-ink-500">
@@ -3265,8 +3458,8 @@ function TotalsBlock({
 
       {totals.totalWeightMg !== null ? (
         <div className="border-t border-ink-100 pt-4 text-xs text-ink-700">
-          <div className="flex items-baseline justify-between">
-            <span>
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="min-w-0 break-words">
               {tFormulations(
                 `builder.excipients.total_weight_${perUnitKey}` as "builder.excipients.total_weight_per_scoop",
               )}
@@ -3286,8 +3479,10 @@ function TotalsBlock({
             />
           </div>
           {totals.maxWeightMg !== null ? (
-            <div className="mt-1 flex items-baseline justify-between">
-              <span>{tFormulations("builder.excipients.max_weight")}</span>
+            <div className="mt-1 flex items-baseline justify-between gap-3">
+              <span className="min-w-0 break-words">
+                {tFormulations("builder.excipients.max_weight")}
+              </span>
               <CopyableValue
                 mg={totals.maxWeightMg}
                 display={
@@ -3310,7 +3505,7 @@ function TotalsBlock({
               straight into a new ingredient line or into Excel. */}
           {leftoverMg !== null ? (
             <div
-              className={`mt-1 flex items-baseline justify-between ${
+              className={`mt-1 flex items-baseline justify-between gap-3 ${
                 leftoverMg < 0
                   ? "font-medium text-danger"
                   : leftoverMg === 0
@@ -3318,7 +3513,7 @@ function TotalsBlock({
                     : "text-orange-700"
               }`}
             >
-              <span>
+              <span className="min-w-0 break-words">
                 {leftoverMg < 0
                   ? tFormulations("builder.excipients.overshoot")
                   : leftoverMg === 0
@@ -3405,6 +3600,46 @@ function TotalsBlock({
             );
           })}
         </ul>
+        {totals.warnings.length > 0 ? (
+          // Soft warnings the math accumulated alongside the viability
+          // codes (acidity dose / water-volume gaps for powders). We
+          // render them under their own header rather than mixing into
+          // the codes list so the scientist sees a single can_make
+          // chip without it being swallowed by ambient warnings.
+          <div className="mt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              {tFormulations("builder.viability.warnings_title")}
+            </p>
+            <ul className="mt-2 flex flex-col gap-1">
+              {totals.warnings.map((raw) => {
+                // Warnings may carry a colon-separated payload
+                // (``powder_acidity_dose_missing:<item label>``) for
+                // per-item attribution. Split once and feed the tail
+                // into the translator's ``name`` interpolation slot.
+                const colonAt = raw.indexOf(":");
+                const code = colonAt === -1 ? raw : raw.slice(0, colonAt);
+                const payload =
+                  colonAt === -1 ? "" : raw.slice(colonAt + 1).trim();
+                const message = tFormulations(
+                  `builder.viability.warnings.${code}` as `builder.viability.warnings.powder_acidity_water_volume_missing`,
+                  { name: payload },
+                );
+                return (
+                  <li
+                    key={raw}
+                    className="inline-flex items-start gap-2 rounded-md bg-warning/10 px-2 py-1 text-xs text-warning ring-1 ring-inset ring-warning/20"
+                  >
+                    <span
+                      aria-hidden
+                      className="mt-1 inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-warning"
+                    />
+                    <span>{message}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -3465,7 +3700,7 @@ function CopyableValue({
       onClick={handleCopy}
       title={copied ? copiedLabel : copyLabel}
       aria-label={copied ? copiedLabel : copyLabel}
-      className="group inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 -mx-1.5 -my-0.5 text-left transition-colors hover:bg-ink-100/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
+      className="group inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 py-0.5 -mx-1.5 -my-0.5 text-left transition-colors hover:bg-ink-100/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"
     >
       {display}
       {copied ? (
@@ -3592,13 +3827,22 @@ function CatalogueMultiPicker({
   loadingText: string;
   emptyText: string;
   onChange: (ids: readonly string[]) => void;
-  /** Optional side-channel that emits ``{id, name}`` for the items
-   *  currently checked, sourced from the picker's own merged list
-   *  (fetched + preselected). Lets the parent render picked-name
-   *  brackets in the totals panel without waiting for a save round-
-   *  trip to refresh the server-side ``formulation.*_items`` echo. */
+  /** Optional side-channel that emits ``{id, name, attributes?}`` for
+   *  the items currently checked, sourced from the picker's own
+   *  merged list (fetched + preselected). Lets the parent render
+   *  picked-name brackets in the totals panel without waiting for a
+   *  save round-trip to refresh the server-side ``formulation.*_items``
+   *  echo. ``attributes`` is the catalogue item's full dynamic-field
+   *  map and is populated for picks resolved against the fetched
+   *  page; preselected-only picks (which the picker keeps visible by
+   *  id only when they're outside the search page) emit without
+   *  attributes -- callers can fall back to the server echo for those. */
   onPickedItemsChange?: (
-    items: ReadonlyArray<{ readonly id: string; readonly name: string }>,
+    items: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly attributes?: Readonly<Record<string, unknown>>;
+    }>,
   ) => void;
 }) {
   const query = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
@@ -3641,9 +3885,34 @@ function CatalogueMultiPicker({
   useEffect(() => {
     const cb = onPickedRef.current;
     if (!cb) return;
-    const lookup = new Map(merged.map((i) => [i.id, i.name]));
+    // Build a lookup that carries the full item shape (including the
+    // dynamic ``attributes`` map for items resolved off the fetched
+    // page). Preselected-only entries lack attributes -- consumers
+    // that rely on attribute values for live math fall back to the
+    // server echo for those ids.
+    const lookup = new Map<
+      string,
+      {
+        name: string;
+        attributes?: Readonly<Record<string, unknown>>;
+      }
+    >(
+      merged.map((i) => [
+        i.id,
+        {
+          name: i.name,
+          attributes: (i as { attributes?: Readonly<Record<string, unknown>> })
+            .attributes,
+        },
+      ]),
+    );
     const picked = value
-      .map((id) => ({ id, name: lookup.get(id) ?? "" }))
+      .map((id) => {
+        const hit = lookup.get(id);
+        return hit
+          ? { id, name: hit.name, attributes: hit.attributes }
+          : { id, name: "" };
+      })
       .filter((entry) => entry.name !== "");
     cb(picked);
     // We intentionally depend on the stringified value + merged
@@ -3713,16 +3982,64 @@ function CatalogueMultiPicker({
 
 // Canonical defaults for each gummy excipient band, decimal
 // fractions (0.02 = 2%). Mirrors ``GUMMY_BAND_DEFAULT_PCT`` on
-// the server. Used by ``GummyOverridesPanel`` to show the default
-// next to each editable input.
+// the server. Used by the override panel to show the default next
+// to each editable input. Each band carries its unit (decimal pct in
+// 0..1 or mg-per-gram-of-powder) so the renderer knows how to format
+// the input/suffix without a parallel lookup.
+// ``pct`` is a plain fraction (0..1); the row displays/inputs it as
+// a percentage (0.02 -> "2%"). ``pct_of_powder_weight`` is a special
+// case for the powder flavour-system bands: the math stores the
+// value as mg-per-gram-of-powder (62.5 mg/g), but the UI shows it
+// to scientists as a percent of the total powder weight (6.25%) so
+// every row in the panel reads in the same unit. Conversion factor:
+// ``1 mg/g = 0.1%`` (since 1 g = 1000 mg).
+type BandUnit = "pct" | "pct_of_powder_weight";
+const EXCIPIENT_BAND_DEFAULTS_UI = {
+  // Gummy
+  water: { default: 0.055, unit: "pct" as BandUnit },
+  acidity: { default: 0.02, unit: "pct" as BandUnit },
+  flavouring: { default: 0.004, unit: "pct" as BandUnit },
+  colour: { default: 0.02, unit: "pct" as BandUnit },
+  glazing: { default: 0.001, unit: "pct" as BandUnit },
+  gelling: { default: 0.03, unit: "pct" as BandUnit },
+  premix_sweetener: { default: 0.06, unit: "pct" as BandUnit },
+  // Anti-caking (capsule + tablet + powder)
+  mg_stearate: { default: 0.01, unit: "pct" as BandUnit },
+  silica: { default: 0.004, unit: "pct" as BandUnit },
+  // Tablet carriers
+  dcp: { default: 0.10, unit: "pct" as BandUnit },
+  mcc: { default: 0.20, unit: "pct" as BandUnit },
+  // Powder flavour-system bands. ``default`` is the mg-per-gram-of-
+  // powder rate the math actually uses (and that's persisted on the
+  // server); the UI converts it to "% of powder weight" via the
+  // ``pct_of_powder_weight`` unit so the scientist never has to
+  // think in mg/g. Acidity is omitted -- it's per-item on the
+  // catalogue, not a band override.
+  powder_flavouring: {
+    default: 62.5,
+    unit: "pct_of_powder_weight" as BandUnit,
+  },
+  powder_sweetener: {
+    default: 15,
+    unit: "pct_of_powder_weight" as BandUnit,
+  },
+  powder_colour: {
+    default: 10,
+    unit: "pct_of_powder_weight" as BandUnit,
+  },
+} as const;
+type ExcipientBandKey = keyof typeof EXCIPIENT_BAND_DEFAULTS_UI;
+
+/** Gummy-only band keys retained for the legacy GummyOverridesPanel
+ *  call sites that still reference the type. Same shape, narrower. */
 const GUMMY_BAND_DEFAULTS = {
-  water: 0.055,
-  acidity: 0.02,
-  flavouring: 0.004,
-  colour: 0.02,
-  glazing: 0.001,
-  gelling: 0.03,
-  premix_sweetener: 0.06,
+  water: EXCIPIENT_BAND_DEFAULTS_UI.water.default,
+  acidity: EXCIPIENT_BAND_DEFAULTS_UI.acidity.default,
+  flavouring: EXCIPIENT_BAND_DEFAULTS_UI.flavouring.default,
+  colour: EXCIPIENT_BAND_DEFAULTS_UI.colour.default,
+  glazing: EXCIPIENT_BAND_DEFAULTS_UI.glazing.default,
+  gelling: EXCIPIENT_BAND_DEFAULTS_UI.gelling.default,
+  premix_sweetener: EXCIPIENT_BAND_DEFAULTS_UI.premix_sweetener.default,
 } as const;
 type GummyBandKey = keyof typeof GUMMY_BAND_DEFAULTS;
 
@@ -3830,6 +4147,234 @@ function LineOverridesPanel({
 }
 
 
+/** Cross-dosage-form excipient overrides editor. Sits below the
+ *  totals block and exposes one editable row per band that's
+ *  applicable to the current dosage form + picker state. Persists
+ *  via ``metadata.excipient_overrides`` so saving the formulation
+ *  freezes the overrides into the next version snapshot. */
+function ExcipientOverridesPanel({
+  overrides,
+  dosageForm,
+  hasAntiCaking,
+  hasDcpCarrier,
+  hasMccCarrier,
+  hasFlavouring,
+  hasSweetener,
+  hasColour,
+  hasGelling,
+  disabled,
+  onChange,
+  tFormulations,
+}: {
+  overrides: Readonly<Record<string, number>>;
+  dosageForm: DosageForm;
+  hasAntiCaking: boolean;
+  hasDcpCarrier: boolean;
+  hasMccCarrier: boolean;
+  hasFlavouring: boolean;
+  hasSweetener: boolean;
+  hasColour: boolean;
+  hasGelling: boolean;
+  disabled: boolean;
+  onChange: (next: Record<string, number>) => void;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  // Each entry pairs a band key with the picker-state predicate that
+  // gates its visibility AND the basis copy that prints under the
+  // label. The basis text explains WHAT the percentage / rate is
+  // applied to so a scientist scanning a row knows whether "1%" means
+  // "of actives", "of total weight", or "per gram of powder" without
+  // having to memorise dosage-form conventions.
+  const BAND_VISIBILITY: ReadonlyArray<{
+    readonly key: ExcipientBandKey;
+    readonly labelKey: string;
+    readonly basisKey: string;
+    readonly forms: ReadonlyArray<DosageForm>;
+    readonly visible: boolean;
+  }> = [
+    // Anti-caking. On capsule/tablet the % is taken against total
+    // actives; on powder it's % of total finished powder weight.
+    {
+      key: "mg_stearate",
+      labelKey: "overrides.mg_stearate",
+      basisKey:
+        dosageForm === "powder"
+          ? "overrides.basis.of_powder_weight"
+          : "overrides.basis.of_actives",
+      forms: ["capsule", "tablet", "powder"],
+      visible: hasAntiCaking,
+    },
+    {
+      key: "silica",
+      labelKey: "overrides.silica",
+      basisKey:
+        dosageForm === "powder"
+          ? "overrides.basis.of_powder_weight"
+          : "overrides.basis.of_actives",
+      forms: ["capsule", "tablet", "powder"],
+      visible: hasAntiCaking,
+    },
+    // Tablet-only carrier ratios (% of total actives).
+    {
+      key: "dcp",
+      labelKey: "overrides.dcp",
+      basisKey: "overrides.basis.of_actives",
+      forms: ["tablet"],
+      visible: hasDcpCarrier,
+    },
+    {
+      key: "mcc",
+      labelKey: "overrides.mcc",
+      basisKey: "overrides.basis.of_actives",
+      forms: ["tablet"],
+      visible: hasMccCarrier,
+    },
+    // Powder flavour-system mg-per-gram-of-powder rates.
+    {
+      key: "powder_flavouring",
+      labelKey: "overrides.powder_flavouring",
+      basisKey: "overrides.basis.of_powder_weight",
+      forms: ["powder"],
+      visible: hasFlavouring,
+    },
+    {
+      key: "powder_sweetener",
+      labelKey: "overrides.powder_sweetener",
+      basisKey: "overrides.basis.of_powder_weight",
+      forms: ["powder"],
+      visible: hasSweetener,
+    },
+    {
+      key: "powder_colour",
+      labelKey: "overrides.powder_colour",
+      basisKey: "overrides.basis.of_powder_weight",
+      forms: ["powder"],
+      visible: hasColour,
+    },
+    // Gummy bands (% of target gummy weight).
+    {
+      key: "water",
+      labelKey: "overrides.water",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: true,
+    },
+    {
+      key: "acidity",
+      labelKey: "overrides.acidity",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: true,
+    },
+    {
+      key: "flavouring",
+      labelKey: "overrides.flavouring",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: true,
+    },
+    {
+      key: "colour",
+      labelKey: "overrides.colour",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: true,
+    },
+    {
+      key: "glazing",
+      labelKey: "overrides.glazing",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: true,
+    },
+    {
+      key: "gelling",
+      labelKey: "overrides.gelling",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: hasGelling,
+    },
+    {
+      key: "premix_sweetener",
+      labelKey: "overrides.premix_sweetener",
+      basisKey: "overrides.basis.of_target",
+      forms: ["gummy"],
+      visible: hasGelling,
+    },
+  ];
+
+  const visible = BAND_VISIBILITY.filter(
+    (b) => b.forms.includes(dosageForm) && b.visible,
+  );
+  // Whether this dosage form has ANY override-eligible bands at all.
+  // Liquid / other_solid currently have none -- on those forms the
+  // panel still hides entirely. Solid forms always render even when
+  // every picker is empty so the scientist sees the surface exists.
+  const formHasAnyBands = BAND_VISIBILITY.some((b) =>
+    b.forms.includes(dosageForm),
+  );
+  if (!formHasAnyBands) return null;
+
+  const hasAny = Object.keys(overrides).length > 0;
+
+  return (
+    <div className="mt-4 rounded-2xl border border-dashed border-ink-200 p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+          {tFormulations("overrides.title")}
+        </p>
+        {hasAny && !disabled ? (
+          <button
+            type="button"
+            onClick={() => onChange({})}
+            className="text-[10px] font-medium uppercase tracking-wide text-ink-500 underline-offset-2 hover:text-ink-1000 hover:underline"
+          >
+            {tFormulations("overrides.reset_all")}
+          </button>
+        ) : null}
+      </div>
+      <p className="mt-1 text-[11px] leading-snug text-ink-500">
+        {tFormulations("overrides.hint")}
+      </p>
+      {visible.length === 0 ? (
+        <p className="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
+          {tFormulations("overrides.empty_hint")}
+        </p>
+      ) : null}
+      <ul className="mt-3 flex flex-col gap-2">
+        {visible.map((band) => {
+          const spec = EXCIPIENT_BAND_DEFAULTS_UI[band.key];
+          return (
+            <BandOverrideRow
+              key={band.key}
+              label={tFormulations(band.labelKey as "overrides.water")}
+              basis={tFormulations(
+                band.basisKey as "overrides.basis.of_target",
+              )}
+              defaultValue={spec.default}
+              unit={spec.unit}
+              override={overrides[band.key]}
+              disabled={disabled}
+              onChange={(value) => {
+                const next = { ...overrides };
+                if (value === null) {
+                  delete next[band.key];
+                } else {
+                  next[band.key] = value;
+                }
+                onChange(next);
+              }}
+            />
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+
+/** Legacy wrapper kept so any in-flight reference still resolves.
+ *  New callers should use :func:`ExcipientOverridesPanel`. */
 function GummyOverridesPanel({
   overrides,
   gellingPicked,
@@ -3900,7 +4445,8 @@ function GummyOverridesPanel({
             label={tFormulations(
               band.labelKey as "overrides.water",
             )}
-            defaultPct={GUMMY_BAND_DEFAULTS[band.key]}
+            defaultValue={GUMMY_BAND_DEFAULTS[band.key]}
+            unit="pct"
             override={overrides[band.key]}
             disabled={disabled}
             onChange={(value) => {
@@ -3922,29 +4468,59 @@ function GummyOverridesPanel({
 
 function BandOverrideRow({
   label,
-  defaultPct,
+  basis,
+  defaultValue,
+  unit = "pct",
   override,
   disabled,
   onChange,
 }: {
   label: string;
-  defaultPct: number;
+  /** Short subtitle clarifying what the value is applied to
+   *  ("of total active mg", "for every gram of finished powder",
+   *  etc.). Rendered as a small caption under the label so the
+   *  numeric unit on the right of the input ("%" or "mg/g") is
+   *  unambiguous. Optional -- legacy gummy callers may omit it. */
+  basis?: string;
+  /** Default value in the band's native unit (decimal pct for ``pct``,
+   *  mg/g of powder for ``mg_per_g``). */
+  defaultValue: number;
+  unit?: BandUnit;
   override: number | undefined;
   disabled: boolean;
   onChange: (value: number | null) => void;
 }) {
-  // Show pct as a human-friendly decimal — 0.02 → "2", 0.055 →
-  // "5.5". The scientist types percentages, never decimals.
-  const effective = override ?? defaultPct;
-  const [draft, setDraft] = useState<string>(
-    (effective * 100).toString(),
-  );
+  // All band rows display as a percentage in the UI even though the
+  // underlying storage units differ. Conversion factors:
+  //
+  // * ``pct``                  : storage is a fraction in 0..1, so
+  //                              display = stored × 100 (0.02 -> 2).
+  // * ``pct_of_powder_weight`` : storage is mg-per-gram-of-powder,
+  //                              display = stored / 10 (62.5 mg/g ->
+  //                              6.25%). 1 mg/g = 0.1% of total
+  //                              powder weight (1 g = 1000 mg).
+  const toDisplay = (value: number): string => {
+    if (unit === "pct") return (value * 100).toString();
+    return (value / 10).toString();
+  };
+  const fromDisplay = (typed: number): number => {
+    if (unit === "pct") return typed / 100;
+    return typed * 10;
+  };
+  const effective = override ?? defaultValue;
+  const [draft, setDraft] = useState<string>(toDisplay(effective));
   // Keep ``draft`` synced when ``override`` changes externally
   // (parent reset, version load, etc.). Avoids stale text after
   // ``Reset all``.
   useEffect(() => {
-    setDraft((effective * 100).toString());
-  }, [effective]);
+    setDraft(toDisplay(effective));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effective, unit]);
+
+  // Upper bound (in display units, i.e. %): cap at 100% across the
+  // board. For ``pct_of_powder_weight`` that maps to 1000 mg/g on
+  // the server, well above any chemically sensible loading.
+  const upperBound = 100;
 
   const commit = (raw: string) => {
     const trimmed = raw.replace(",", ".").trim();
@@ -3953,31 +4529,36 @@ function BandOverrideRow({
       return;
     }
     const parsed = Number.parseFloat(trimmed);
-    if (!Number.isFinite(parsed) || parsed < 0 || parsed > 100) {
-      // Reject out-of-range — snap back to current effective
-      setDraft((effective * 100).toString());
+    if (!Number.isFinite(parsed) || parsed < 0 || parsed > upperBound) {
+      setDraft(toDisplay(effective));
       return;
     }
-    const asFraction = parsed / 100;
+    const asStorage = fromDisplay(parsed);
     // No-op when the typed value matches the default — clear the
     // override so the field falls back instead of locking in the
     // baseline value.
-    if (Math.abs(asFraction - defaultPct) < 1e-6) {
+    const tolerance = unit === "pct" ? 1e-6 : 1e-4;
+    if (Math.abs(asStorage - defaultValue) < tolerance) {
       onChange(null);
     } else {
-      onChange(asFraction);
+      onChange(asStorage);
     }
   };
 
   const isOverridden = override !== undefined;
   return (
-    <li className="flex items-center justify-between gap-2 text-xs">
-      <span className="flex items-center gap-1.5 text-ink-700">
-        <span>{label}</span>
-        {isOverridden ? (
-          <span className="rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-orange-700">
-            ●
-          </span>
+    <li className="flex items-center justify-between gap-3 text-xs">
+      <span className="flex min-w-0 flex-col text-ink-700">
+        <span className="flex items-center gap-1.5">
+          <span>{label}</span>
+          {isOverridden ? (
+            <span className="rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-orange-700">
+              ●
+            </span>
+          ) : null}
+        </span>
+        {basis ? (
+          <span className="text-[10px] text-ink-500">{basis}</span>
         ) : null}
       </span>
       <span className="flex items-center gap-1.5">
@@ -4176,13 +4757,16 @@ function groupGummyFlavourRows(
     readonly mg: number;
     readonly isRemainder: boolean;
     readonly concentrationMgPerGPowder?: number | null;
+    readonly concentrationMgPerMlWater?: number | null;
   }[],
+  dosageForm: DosageForm,
 ): readonly {
   readonly slug: string;
   readonly label: string;
   readonly mg: number;
   readonly isRemainder: boolean;
   readonly concentrationMgPerGPowder?: number | null;
+  readonly concentrationMgPerMlWater?: number | null;
 }[] {
   // Each entry collapses every row whose slug starts with one of
   // ``prefixes`` into a single grouped entry. ``gelling:`` and
@@ -4196,17 +4780,29 @@ function groupGummyFlavourRows(
   // inside the brackets would render the same sweetener twice on
   // screen (once under Gummy Base and once inside Pectin Premix
   // (Maltitol)). The premix stays one atomic in-house line.
+  // Powder acidity rows dose per item — Trisodium Citrate at one
+  // rate, Citric / Malic Acid at another — driven by each catalogue
+  // item's ``powder_water_dose_mg_per_ml`` attribute. Collapsing them
+  // into a single "Acidity Regulator" line would hide the per-item
+  // rates from the scientist, so we leave powder acidity rows
+  // ungrouped and only collapse the gummy variant (which still
+  // splits a single mg total across picks).
+  const isPowder = dosageForm === "powder";
   const GROUPINGS: readonly {
     readonly prefixes: readonly string[];
     readonly combinedSlug: string;
     readonly heading: string;
     readonly hideComponents?: boolean;
   }[] = [
-    {
-      prefixes: ["acidity:"],
-      combinedSlug: "acidity:__combined",
-      heading: "Acidity Regulator",
-    },
+    ...(isPowder
+      ? []
+      : [
+          {
+            prefixes: ["acidity:"] as readonly string[],
+            combinedSlug: "acidity:__combined",
+            heading: "Acidity Regulator",
+          },
+        ]),
     {
       prefixes: ["flavouring:"],
       combinedSlug: "flavouring:__combined",

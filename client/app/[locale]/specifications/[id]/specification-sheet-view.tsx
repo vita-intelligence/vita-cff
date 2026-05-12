@@ -1280,8 +1280,13 @@ function resolveTotalWeight(rendered: RenderedSheetContext): string {
 function stripTrailingZeros(value: string): string {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return value;
-  // Trim trailing zeros but keep at most two decimals for readability.
-  return parsed.toFixed(2).replace(/\.?0+$/, "");
+  // Show up to 4 decimals so micronutrient claims like B12 at
+  // 0.0025 mg don't collapse to "0". Matches the server's
+  // ``DecimalField(decimal_places=4)`` precision so the column is
+  // never lossier than the stored value. Trailing zeros are still
+  // stripped (2.5000 -> "2.5"; 1.0000 -> "1"; 0.0025 stays as-is).
+  const padded = parsed.toFixed(4);
+  return padded.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
 }
 
 

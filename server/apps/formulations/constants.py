@@ -159,12 +159,20 @@ GUMMY_BASE_PCT = GUMMY_BASE_MIN_PCT
 
 
 #: Slugs the formulation's ``excipient_overrides`` JSON dict accepts.
-#: Each band has a default percentage (the constants above); the
-#: scientist can override any of them per-formulation by writing a
-#: float into this map. Unknown slugs are silently ignored at compute
-#: time so a stray key from a future band never crashes older
-#: formulations.
-GUMMY_BAND_OVERRIDE_KEYS: tuple[str, ...] = (
+#: Each band has a default percentage / rate (the constants above);
+#: the scientist can override any of them per-formulation by writing a
+#: float into this map, persisted on the formulation and frozen into
+#: every subsequent version snapshot. Unknown slugs are silently
+#: ignored at compute time so a stray key from a future band never
+#: crashes older formulations.
+#:
+#: The first block is gummy bands, the second is anti-caking applied
+#: across capsule / tablet / powder, the third is tablet-only carrier
+#: ratios, the fourth is the powder flavour-system mg-per-gram rates
+#: (which are NOT percentages — see the ``UPPER_BOUND`` map below for
+#: how the validator handles each scale).
+EXCIPIENT_OVERRIDE_KEYS: tuple[str, ...] = (
+    # Gummy bands
     "water",
     "acidity",
     "flavouring",
@@ -172,13 +180,34 @@ GUMMY_BAND_OVERRIDE_KEYS: tuple[str, ...] = (
     "glazing",
     "gelling",
     "premix_sweetener",
+    # Anti-caking (capsule + tablet + powder)
+    "mg_stearate",
+    "silica",
+    # Tablet carrier ratios
+    "dcp",
+    "mcc",
+    # Powder flavour-system mg/g of powder
+    "powder_trisodium_citrate",
+    "powder_citric_acid",
+    "powder_flavouring",
+    "powder_sweetener",
+    "powder_colour",
 )
 
 
-#: Default percentages for each gummy band, keyed by override slug.
-#: ``_compute_fill_target`` reads this map to resolve "default unless
-#: overridden" without a long if/elif ladder.
-GUMMY_BAND_DEFAULT_PCT: dict[str, float] = {
+#: Backwards-compatible alias. Old code paths that pre-dated the
+#: cross-dosage-form override expansion still import this name; keep
+#: it pointed at the same tuple so both names stay in lock-step.
+GUMMY_BAND_OVERRIDE_KEYS: tuple[str, ...] = EXCIPIENT_OVERRIDE_KEYS
+
+
+#: Default values for each override key, keyed by slug. The math
+#: helpers resolve "override-or-default" against this map so neither
+#: side hard-codes the constant twice. Values follow the unit of the
+#: target band (decimal pct for percentage bands, mg-per-gram-of-powder
+#: for the powder flavour-system rows).
+EXCIPIENT_BAND_DEFAULTS: dict[str, float] = {
+    # Gummy
     "water": GUMMY_WATER_PCT,
     "acidity": GUMMY_ACIDITY_PCT,
     "flavouring": GUMMY_FLAVOURING_PCT,
@@ -186,6 +215,51 @@ GUMMY_BAND_DEFAULT_PCT: dict[str, float] = {
     "glazing": GUMMY_GLAZING_PCT,
     "gelling": GUMMY_GELLING_PCT,
     "premix_sweetener": GUMMY_PREMIX_SWEETENER_PCT,
+    # Anti-caking
+    "mg_stearate": CAPSULE_MG_STEARATE_PCT,
+    "silica": CAPSULE_SILICA_PCT,
+    # Tablet carriers
+    "dcp": TABLET_DCP_PCT,
+    "mcc": TABLET_MCC_PCT,
+    # Powder flavour-system mg/g rates -- these match the rows in
+    # ``POWDER_FLAVOUR_SYSTEM`` so changing the constant in one place
+    # auto-flows here.
+    "powder_trisodium_citrate": 25.0,
+    "powder_citric_acid": 75.0,
+    "powder_flavouring": 62.5,
+    "powder_sweetener": 15.0,
+    "powder_colour": 10.0,
+}
+
+
+#: Backwards-compatible alias for the gummy-only defaults consumers.
+GUMMY_BAND_DEFAULT_PCT: dict[str, float] = EXCIPIENT_BAND_DEFAULTS
+
+
+#: Per-key upper bound for the write-side validator. Percentage bands
+#: cap at 1.0 (treat anything > 100% as a typo); mg/g rates can climb
+#: much higher (a 1000 mg/g acidity row would still pass — it'd be a
+#: chemically silly product but not malformed). The ceiling here is a
+#: structural sanity check, not a chemistry constraint.
+EXCIPIENT_OVERRIDE_UPPER_BOUND: dict[str, float] = {
+    # Percentage bands
+    "water": 1.0,
+    "acidity": 1.0,
+    "flavouring": 1.0,
+    "colour": 1.0,
+    "glazing": 1.0,
+    "gelling": 1.0,
+    "premix_sweetener": 1.0,
+    "mg_stearate": 1.0,
+    "silica": 1.0,
+    "dcp": 1.0,
+    "mcc": 1.0,
+    # mg-per-gram-of-powder bands
+    "powder_trisodium_citrate": 1000.0,
+    "powder_citric_acid": 1000.0,
+    "powder_flavouring": 1000.0,
+    "powder_sweetener": 1000.0,
+    "powder_colour": 1000.0,
 }
 
 
@@ -503,6 +577,24 @@ PROTEIN_POWDER_FLAVOUR_SYSTEM: tuple[tuple[str, str, float], ...] = (
 #: the powder's own mass per serving), but still used as the default
 #: drink volume on the spec sheet's directions-of-use copy.
 POWDER_REFERENCE_WATER_ML = 500.0
+
+
+#: ``Item.attributes`` key carrying the per-item dose rate (mg of acid
+#: per ml of reconstitution water) for powder acidity-regulator picks.
+#: The powder math reads this value off every picked acidity item and
+#: multiplies it by the formulation's ``water_volume_ml`` to produce
+#: the per-serving mg. A scientist sets one rate per raw material in
+#: the catalogue, so different acids carry different doses (e.g.
+#: Trisodium Citrate 0.1, Citric / Malic Acid 0.3) without any
+#: code-side classifier. Items with the value unset are skipped at
+#: compute time and surface a soft warning so the scientist knows to
+#: fill in the rate before shipping the spec sheet.
+POWDER_WATER_DOSE_ATTRIBUTE_KEY = "powder_water_dose_mg_per_ml"
+
+#: Human-facing label for :data:`POWDER_WATER_DOSE_ATTRIBUTE_KEY`. Used
+#: when seeding the AttributeDefinition row so the Raw Materials items
+#: table column reads in plain English.
+POWDER_WATER_DOSE_ATTRIBUTE_LABEL = "Powder Water Dose (mg/ml)"
 
 
 #: Default per-scoop fill weight (mg) seeded when the scientist has

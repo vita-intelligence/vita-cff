@@ -178,6 +178,17 @@ export interface GummyBaseItemDto {
 }
 
 
+/** Powder acidity-regulator echo. Extends the shared shape with the
+ *  per-item dose rate (mg of acid per ml of reconstitution water) the
+ *  powder math reads to compute the per-serving mg. Sourced from the
+ *  catalogue item's ``powder_water_dose_mg_per_ml`` attribute on the
+ *  server; ``null`` means the scientist has not set a rate yet, which
+ *  the math surfaces as a soft warning rather than a hard error. */
+export interface AcidityItemDto extends GummyBaseItemDto {
+  readonly water_dose_mg_per_ml: number | null;
+}
+
+
 export interface FormulationDto {
   readonly id: string;
   readonly code: string;
@@ -208,7 +219,7 @@ export interface FormulationDto {
   readonly premix_sweetener_item_ids: readonly string[];
   readonly premix_sweetener_items: readonly GummyBaseItemDto[];
   readonly acidity_item_ids: readonly string[];
-  readonly acidity_items: readonly GummyBaseItemDto[];
+  readonly acidity_items: readonly AcidityItemDto[];
   /** Capsule + tablet MCC carrier picks. Empty array means the spec
    *  sheet renders the generic "Microcrystalline Cellulose (Carrier)"
    *  placeholder and surfaces an ``mcc_carrier_unpicked`` warning. */

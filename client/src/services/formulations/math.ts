@@ -124,11 +124,14 @@ const GUMMY_PREMIX_SWEETENER_PCT = 0.06;
  *  reliably — mirrors :data:`GUMMY_BASE_MIN_PCT` on the server. */
 const GUMMY_BASE_MIN_PCT = 0.65;
 
-/** Default percentages keyed by override slug. ``resolveBandPct``
- *  reads this map to fall back when an override is missing. Must
- *  stay in lock-step with ``GUMMY_BAND_DEFAULT_PCT`` on the Python
- *  side. */
-const GUMMY_BAND_DEFAULT_PCT: Readonly<Record<string, number>> = {
+/** Default values keyed by override slug. ``resolveBandPct`` reads
+ *  this map to fall back when an override is missing. Must stay in
+ *  lock-step with ``EXCIPIENT_BAND_DEFAULTS`` on the Python side.
+ *  Mixes percentage bands (decimal in 0..1) with powder mg/g rates
+ *  (positive floats, often 5+) -- callers know which scale they
+ *  expect from the slug name. */
+export const EXCIPIENT_BAND_DEFAULTS: Readonly<Record<string, number>> = {
+  // Gummy
   water: GUMMY_WATER_PCT,
   acidity: GUMMY_ACIDITY_PCT,
   flavouring: GUMMY_FLAVOURING_PCT,
@@ -136,12 +139,25 @@ const GUMMY_BAND_DEFAULT_PCT: Readonly<Record<string, number>> = {
   glazing: GUMMY_GLAZING_PCT,
   gelling: GUMMY_GELLING_PCT,
   premix_sweetener: GUMMY_PREMIX_SWEETENER_PCT,
+  // Anti-caking
+  mg_stearate: CAPSULE_MG_STEARATE_PCT,
+  silica: CAPSULE_SILICA_PCT,
+  // Tablet carriers
+  dcp: TABLET_DCP_PCT,
+  mcc: TABLET_MCC_PCT,
+  // Powder flavour-system mg/g rates
+  powder_trisodium_citrate: 25,
+  powder_citric_acid: 75,
+  powder_flavouring: 62.5,
+  powder_sweetener: 15,
+  powder_colour: 10,
 };
 
 /** Override slugs the formulation's ``excipient_overrides`` JSON
  *  recognises. Anything else is ignored (server-side validation
- *  rejects unknown slugs at write time). */
-export const GUMMY_BAND_SLUGS = [
+ *  rejects unknown slugs at write time). Mirror of
+ *  :data:`EXCIPIENT_OVERRIDE_KEYS` on the Python side. */
+export const EXCIPIENT_BAND_SLUGS = [
   "water",
   "acidity",
   "flavouring",
@@ -149,12 +165,29 @@ export const GUMMY_BAND_SLUGS = [
   "glazing",
   "gelling",
   "premix_sweetener",
+  "mg_stearate",
+  "silica",
+  "dcp",
+  "mcc",
+  "powder_trisodium_citrate",
+  "powder_citric_acid",
+  "powder_flavouring",
+  "powder_sweetener",
+  "powder_colour",
 ] as const;
-export type GummyBandSlug = (typeof GUMMY_BAND_SLUGS)[number];
+export type ExcipientBandSlug = (typeof EXCIPIENT_BAND_SLUGS)[number];
 
-/** Resolve the effective % for a gummy excipient band: override if
+/** Backwards-compatible alias for the gummy-only consumers that
+ *  imported the original constant by name. */
+export const GUMMY_BAND_SLUGS = EXCIPIENT_BAND_SLUGS;
+export type GummyBandSlug = ExcipientBandSlug;
+
+/** Resolve the effective value for an excipient band: override if
  *  the formulation has one, otherwise the constant default. Mirrors
- *  :func:`_resolve_band_pct` on the server. */
+ *  :func:`_resolve_band_pct` on the server. Unit-agnostic -- callers
+ *  pass a slug name and receive the value in that band's native
+ *  unit (decimal pct for percentage bands, mg-per-gram-of-powder for
+ *  the powder flavour-system bands). */
 function resolveBandPct(
   slug: string,
   overrides: Readonly<Record<string, number>> | null | undefined,
@@ -165,7 +198,7 @@ function resolveBandPct(
       return raw;
     }
   }
-  return GUMMY_BAND_DEFAULT_PCT[slug] ?? 0;
+  return EXCIPIENT_BAND_DEFAULTS[slug] ?? 0;
 }
 
 /**
@@ -252,6 +285,13 @@ export interface ExcipientRow {
    *  serving (per-scoop fill weight × scoops per serving); null for
    *  gummy and static excipients. */
   readonly concentrationMgPerGPowder?: number | null;
+  /** Concentration in mg per ml of reconstitution water. Populated
+   *  for powder acidity-regulator rows, which scale with
+   *  ``water_volume_ml`` and the catalogue item's per-item dose rate
+   *  rather than per gram of powder. Drives the inline ``(0.1 mg/ml)``
+   *  hint next to each acidity row so the scientist can see the
+   *  formula behind the computed mg. ``null`` for every other row. */
+  readonly concentrationMgPerMlWater?: number | null;
   /** Canonical ``use_as`` from the source catalogue item — drives
    *  EU 1169 grouping when this row flows into the ingredient
    *  declaration ("Gelling Agent (Pectin)"). Blank for synthetic
@@ -976,6 +1016,7 @@ function computeCapsule(
   hasMccCarrier: boolean,
   hasStearateAntiCaking: boolean,
   hasSilicaAntiCaking: boolean,
+  excipientOverrides: Readonly<Record<string, number>> | null | undefined,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1015,12 +1056,10 @@ function computeCapsule(
   // actives instead of inventing a placeholder MCC remainder.
   // Mirrors the server gating exactly so the builder live preview
   // matches the snapshot the spec sheet reads from.
-  const stearate = hasStearateAntiCaking
-    ? totalActive * CAPSULE_MG_STEARATE_PCT
-    : 0;
-  const silica = hasSilicaAntiCaking
-    ? totalActive * CAPSULE_SILICA_PCT
-    : 0;
+  const stearatePct = resolveBandPct("mg_stearate", excipientOverrides);
+  const silicaPct = resolveBandPct("silica", excipientOverrides);
+  const stearate = hasStearateAntiCaking ? totalActive * stearatePct : 0;
+  const silica = hasSilicaAntiCaking ? totalActive * silicaPct : 0;
   const mcc = hasMccCarrier
     ? size.max_weight_mg - totalActive - stearate - silica
     : 0;
@@ -1080,6 +1119,7 @@ function computeTablet(
   hasDcpCarrier: boolean,
   hasStearateAntiCaking: boolean,
   hasSilicaAntiCaking: boolean,
+  excipientOverrides: Readonly<Record<string, number>> | null | undefined,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1095,14 +1135,14 @@ function computeTablet(
   // pure actives by leaving all pickers empty, or actives + carriers
   // without lubricants. Mirrors the server gating so the builder live
   // preview matches the snapshot the spec sheet renders from.
-  const stearate = hasStearateAntiCaking
-    ? totalActive * TABLET_MG_STEARATE_PCT
-    : 0;
-  const silica = hasSilicaAntiCaking
-    ? totalActive * TABLET_SILICA_PCT
-    : 0;
-  const dcp = hasDcpCarrier ? totalActive * TABLET_DCP_PCT : 0;
-  const mcc = hasMccCarrier ? totalActive * TABLET_MCC_PCT : 0;
+  const stearatePct = resolveBandPct("mg_stearate", excipientOverrides);
+  const silicaPct = resolveBandPct("silica", excipientOverrides);
+  const dcpPct = resolveBandPct("dcp", excipientOverrides);
+  const mccPct = resolveBandPct("mcc", excipientOverrides);
+  const stearate = hasStearateAntiCaking ? totalActive * stearatePct : 0;
+  const silica = hasSilicaAntiCaking ? totalActive * silicaPct : 0;
+  const dcp = hasDcpCarrier ? totalActive * dcpPct : 0;
+  const mcc = hasMccCarrier ? totalActive * mccPct : 0;
   const totalWeight = totalActive + stearate + silica + dcp + mcc;
 
   const excipients: ExcipientBreakdown = {
@@ -1224,6 +1264,12 @@ function computeFillTarget(
     readonly id: string;
     readonly label: string;
     readonly useAs: string;
+    /** Per-item mg of acid per ml of reconstitution water. Sourced
+     *  from the catalogue item's ``powder_water_dose_mg_per_ml``
+     *  attribute. ``null``/``undefined``/``0`` -> the row is skipped
+     *  and a ``powder_acidity_dose_missing`` warning fires for this
+     *  pick. Powder-only; ignored for gummy formulations. */
+    readonly waterDoseMgPerMl?: number | null;
   }> = [],
   sweetenerItems: ReadonlyArray<{
     readonly id: string;
@@ -1257,6 +1303,14 @@ function computeFillTarget(
   // (per-gram column × Serving Size). Gummy rows scale by percentage
   // of target weight; both forms now respond linearly to changes in
   // the finished product's mass.
+  //
+  // Powder branch may surface soft warnings (e.g. an acidity pick
+  // missing a dose rate, or a powder configured with acidity picks
+  // but no water volume). They are accumulated here and merged into
+  // the final ``warnings`` tuple after the viability check so the
+  // builder shows them alongside fill-weight feedback. Mirrors the
+  // ``pre_warnings`` accumulator on the Python side.
+  const preWarnings: string[] = [];
   const flavourRows: ExcipientRow[] =
     dosageForm === "powder"
       ? (() => {
@@ -1308,9 +1362,10 @@ function computeFillTarget(
             }
           };
 
-          // Preset-driven bands tied to their pickers. Acidity rolls
-          // up trisodium_citrate + citric_acid into one combined
-          // band so the picker maps cleanly to a single line.
+          // Preset-driven bands tied to their pickers. Acidity is
+          // handled separately below because it now scales with
+          // reconstitution water volume and a per-item dose rate
+          // held on the catalogue item, not the legacy mg/g preset.
           const pickerForSlug: Record<
             string,
             ReadonlyArray<{
@@ -1323,13 +1378,11 @@ function computeFillTarget(
             sweetener: sweetenerItems,
             colour: colourItems,
           };
-          let acidityMgPerG = 0;
           for (const row of preset) {
             if (
               row.slug === "trisodium_citrate" ||
               row.slug === "citric_acid"
             ) {
-              acidityMgPerG += row.mgPerGPowder;
               continue;
             }
             const picks = pickerForSlug[row.slug];
@@ -1342,44 +1395,105 @@ function computeFillTarget(
                   : row.slug === "colour"
                     ? "Colour"
                     : "";
+            // Per-row mg/g rate is override-aware: each band has its
+            // own ``excipient_overrides`` key (powder_flavouring,
+            // powder_sweetener, powder_colour) so a scientist can
+            // re-base the loading per formulation without changing
+            // the hardcoded preset. Falls back to the preset value.
+            const overrideKey = `powder_${row.slug}`;
+            const effectiveMgPerG =
+              resolveBandPct(overrideKey, excipientOverrides) ||
+              row.mgPerGPowder;
             emitPowderBand(
               row.slug,
               row.label,
-              row.mgPerGPowder * powderGPerServing,
+              effectiveMgPerG * powderGPerServing,
               picks.map((p) => ({
                 id: p.id,
                 label: p.label,
                 useAs: p.useAs || useAsForBand,
               })),
-              row.mgPerGPowder,
+              effectiveMgPerG,
             );
           }
-          if (acidityItems.length > 0 && acidityMgPerG > 0) {
-            emitPowderBand(
-              "acidity",
-              "Acidity Regulator",
-              acidityMgPerG * powderGPerServing,
-              acidityItems.map((p) => ({
-                id: p.id,
-                label: p.label,
-                useAs: p.useAs || "Acidity Regulator",
-              })),
-              acidityMgPerG,
-            );
+          // Acidity Regulator -- per-item rate driven by each picked
+          // catalogue item's ``powder_water_dose_mg_per_ml`` attribute
+          // multiplied by the formulation's ``water_volume_ml``.
+          // Different acids carry different rates (Trisodium Citrate
+          // ~0.1, Citric / Malic Acid ~0.3) so each row emits at its
+          // own mg total rather than splitting a shared band.
+          //
+          // Items without the rate set are skipped and emit a
+          // ``powder_acidity_dose_missing:<label>`` warning so the
+          // scientist knows which raw material to update. Picking
+          // acidity without entering a water volume surfaces a
+          // single ``powder_acidity_water_volume_missing`` warning.
+          if (acidityItems.length > 0) {
+            const waterMl =
+              waterVolumeMl !== null &&
+              waterVolumeMl !== undefined &&
+              Number.isFinite(waterVolumeMl)
+                ? waterVolumeMl
+                : 0;
+            if (waterMl <= 0) {
+              preWarnings.push("powder_acidity_water_volume_missing");
+            } else {
+              for (const pick of acidityItems) {
+                const rawRate = pick.waterDoseMgPerMl;
+                const rate =
+                  rawRate !== null &&
+                  rawRate !== undefined &&
+                  Number.isFinite(rawRate)
+                    ? rawRate
+                    : 0;
+                if (rate <= 0) {
+                  preWarnings.push(
+                    `powder_acidity_dose_missing:${pick.label}`,
+                  );
+                  continue;
+                }
+                rows.push({
+                  slug: `acidity:${pick.id}`,
+                  label: pick.label,
+                  mg: waterMl * rate,
+                  isRemainder: false,
+                  useAs: pick.useAs || "Acidity Regulator",
+                  // Per-row breakdown for acidity rides on
+                  // water-volume × rate, not per-gram-of-powder.
+                  // Leave the powder column blank and surface the
+                  // rate via ``concentrationMgPerMlWater`` so the
+                  // builder renders an "(0.1 mg/ml)" hint next to
+                  // the row instead of the unrelated "mg/g" copy.
+                  concentrationMgPerGPowder: null,
+                  concentrationMgPerMlWater: rate,
+                });
+              }
+            }
           }
 
           // Anti-caking band -- same name classifier as capsule/
-          // tablet. Silica-only -> 0.4% of actives; stearate-only
-          // -> 1.0%; both -> 1.4%. Empty picker = no band.
+          // tablet. Silica-only -> 0.4% of total powder weight;
+          // stearate-only -> 1.0%; both -> 1.4%. For powders we take
+          // the percentage against the total finished powder mass per
+          // serving (per-scoop fill weight × scoops) rather than the
+          // actives sum, because a 500 g hydration sachet with 100 mg
+          // of actives would otherwise dose anti-caking at 1.4 mg --
+          // chemically meaningless. Capsules + tablets keep the
+          // actives-based math because their fill is mostly actives.
+          // Empty picker = no band.
           const { stearate: hasStearate, silica: hasSilica } =
             classifyAntiCakingPicks(antiCakingItems);
           if (hasStearate || hasSilica) {
+            const powderTotalMg = fillWeightMg * scoops;
+            const stearatePct = resolveBandPct(
+              "mg_stearate",
+              excipientOverrides,
+            );
+            const silicaPct = resolveBandPct("silica", excipientOverrides);
             const stearateMg = hasStearate
-              ? totalActive * CAPSULE_MG_STEARATE_PCT
+              ? powderTotalMg * stearatePct
               : 0;
-            const silicaMg = hasSilica
-              ? totalActive * CAPSULE_SILICA_PCT
-              : 0;
+            const silicaMg = hasSilica ? powderTotalMg * silicaPct : 0;
             emitPowderBand(
               "anti_caking",
               "Anti-caking Agents",
@@ -1590,7 +1704,7 @@ function computeFillTarget(
         comfortOk: false,
         codes: ["fill_weight_required"],
       },
-      warnings: [],
+      warnings: [...preWarnings],
     };
   }
 
@@ -1608,7 +1722,10 @@ function computeFillTarget(
   let fits = recipeTotal <= targetFillWeightMg + tolerance;
   const matches = Math.abs(recipeTotal - targetFillWeightMg) <= tolerance;
   const codes: string[] = [];
-  const warnings: string[] = [];
+  // Seed the warnings list with the soft warnings collected during the
+  // powder branch (acidity dose / water-volume gaps) so the viability
+  // checks below stack on top of them rather than overwriting them.
+  const warnings: string[] = [...preWarnings];
 
   // Gummy floor check — evaluated first so a below-floor bundle
   // always lands on ``cannot_make`` even when total weight looks fine.
@@ -1835,6 +1952,7 @@ export function computeTotals({
       hasMccCarrier,
       hasStearateAntiCaking,
       hasSilicaAntiCaking,
+      excipientOverrides,
     );
     return {
       totalActiveMg: totalActive,
@@ -1859,6 +1977,7 @@ export function computeTotals({
       hasDcpCarrier,
       hasStearateAntiCaking,
       hasSilicaAntiCaking,
+      excipientOverrides,
     );
     return {
       totalActiveMg: totalActive,

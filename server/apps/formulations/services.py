@@ -59,6 +59,9 @@ from apps.formulations.constants import (
     MCC_CARRIER_USE_CATEGORIES,
     EXCIPIENT_LABEL_WATER,
     GUMMY_BAND_DEFAULT_PCT,
+    EXCIPIENT_OVERRIDE_KEYS,
+    EXCIPIENT_OVERRIDE_UPPER_BOUND,
+    EXCIPIENT_BAND_DEFAULTS,
     GUMMY_BAND_OVERRIDE_KEYS,
     GUMMY_BASE_MIN_PCT,
     GUMMY_BASE_USE_CATEGORIES,
@@ -72,6 +75,7 @@ from apps.formulations.constants import (
     NUTRITION_KEYS,
     POWDER_FLAVOUR_SYSTEM,
     POWDER_REFERENCE_FILL_WEIGHT_MG,
+    POWDER_WATER_DOSE_ATTRIBUTE_KEY,
     PREMIX_SWEETENER_USE_CATEGORIES,
     SWEETENER_USE_CATEGORIES,
     PowderType,
@@ -760,6 +764,7 @@ def _compute_capsule(
     requested_size_key: str | None,
     mcc_carrier_items: tuple[Item, ...] = (),
     anti_caking_items: tuple[Item, ...] = (),
+    excipient_overrides: dict[str, Any] | None = None,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -806,8 +811,10 @@ def _compute_capsule(
         anti_caking_items
     )
     if has_stearate_pick or has_silica_pick:
-        stearate = active_f * CAPSULE_MG_STEARATE_PCT if has_stearate_pick else 0.0
-        silica = active_f * CAPSULE_SILICA_PCT if has_silica_pick else 0.0
+        stearate_pct = _resolve_band_pct("mg_stearate", excipient_overrides)
+        silica_pct = _resolve_band_pct("silica", excipient_overrides)
+        stearate = active_f * stearate_pct if has_stearate_pick else 0.0
+        silica = active_f * silica_pct if has_silica_pick else 0.0
         anti_caking_total = stearate + silica
     else:
         anti_caking_total = 0.0
@@ -907,6 +914,7 @@ def _compute_tablet(
     mcc_carrier_items: tuple[Item, ...] = (),
     dcp_carrier_items: tuple[Item, ...] = (),
     anti_caking_items: tuple[Item, ...] = (),
+    excipient_overrides: dict[str, Any] | None = None,
 ) -> tuple[
     str | None, str | None, Decimal | None, Decimal | None,
     ExcipientBreakdown | None, ViabilityResult, tuple[str, ...],
@@ -925,16 +933,20 @@ def _compute_tablet(
         anti_caking_items
     )
     if has_stearate_pick or has_silica_pick:
-        stearate = active * TABLET_MG_STEARATE_PCT if has_stearate_pick else 0.0
-        silica = active * TABLET_SILICA_PCT if has_silica_pick else 0.0
+        stearate_pct = _resolve_band_pct("mg_stearate", excipient_overrides)
+        silica_pct = _resolve_band_pct("silica", excipient_overrides)
+        stearate = active * stearate_pct if has_stearate_pick else 0.0
+        silica = active * silica_pct if has_silica_pick else 0.0
         anti_caking_total = stearate + silica
     else:
         anti_caking_total = 0.0
         stearate = 0.0
         silica = 0.0
 
-    dcp = active * TABLET_DCP_PCT if dcp_carrier_items else 0.0
-    mcc = active * TABLET_MCC_PCT if mcc_carrier_items else 0.0
+    dcp_pct = _resolve_band_pct("dcp", excipient_overrides)
+    mcc_pct = _resolve_band_pct("mcc", excipient_overrides)
+    dcp = active * dcp_pct if dcp_carrier_items else 0.0
+    mcc = active * mcc_pct if mcc_carrier_items else 0.0
 
     total_weight = active + stearate + silica + dcp + mcc
 
@@ -1003,15 +1015,18 @@ def _compute_tablet(
 def _resolve_band_pct(
     slug: str, overrides: dict[str, Any] | None
 ) -> float:
-    """Pick the effective % for a gummy excipient band.
+    """Pick the effective value for an excipient band.
 
     Reads ``overrides[slug]`` if it's a positive-or-zero number,
-    otherwise falls back to :data:`GUMMY_BAND_DEFAULT_PCT[slug]`. We
+    otherwise falls back to :data:`EXCIPIENT_BAND_DEFAULTS[slug]`. We
     treat any non-numeric, negative, or unknown value as "no override"
     so a stray key from a future build never crashes the math — the
     write-side validator (:func:`_validate_excipient_overrides`)
     rejects malformed payloads up front so by the time we reach this
-    helper the data is already known-good.
+    helper the data is already known-good. The helper is unit-agnostic:
+    callers pass it a percentage band slug (water, acidity, ...) or a
+    mg-per-gram-of-powder band slug (powder_trisodium_citrate, ...)
+    and the resolved float is the value in that band's native unit.
     """
 
     if isinstance(overrides, dict):
@@ -1026,7 +1041,7 @@ def _resolve_band_pct(
             parsed = _coerce_float(raw)
             if parsed is not None and parsed >= 0:
                 return parsed
-    return GUMMY_BAND_DEFAULT_PCT.get(slug, 0.0)
+    return EXCIPIENT_BAND_DEFAULTS.get(slug, 0.0)
 
 
 def _validate_excipient_overrides(value: Any) -> dict[str, float]:
@@ -1034,10 +1049,11 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
 
     * Accepts ``None`` / ``{}`` as "no overrides".
     * Rejects non-dict shapes.
-    * Each key must sit in :data:`GUMMY_BAND_OVERRIDE_KEYS`.
-    * Each value must parse to a non-negative float ≤ 1.0 (we treat
-      anything > 100% as a typo — even an aggressive 50% override
-      stays well under that ceiling).
+    * Each key must sit in :data:`EXCIPIENT_OVERRIDE_KEYS`.
+    * Each value must parse to a non-negative float at or below the
+      key's upper bound in :data:`EXCIPIENT_OVERRIDE_UPPER_BOUND`.
+      Percentage bands cap at 1.0; mg-per-gram-of-powder bands cap at
+      1000.0 (a chemical sanity ceiling, not a chemistry constraint).
     * Missing keys aren't required — partial overrides are valid.
 
     Returns a clean ``{slug: float}`` dict ready to persist on the
@@ -1052,7 +1068,7 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
         raise InvalidExcipientOverrides()
     cleaned: dict[str, float] = {}
     for key, raw in value.items():
-        if not isinstance(key, str) or key not in GUMMY_BAND_OVERRIDE_KEYS:
+        if not isinstance(key, str) or key not in EXCIPIENT_OVERRIDE_KEYS:
             raise InvalidExcipientOverrides()
         if isinstance(raw, bool):
             raise InvalidExcipientOverrides()
@@ -1068,7 +1084,8 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
             continue
         else:
             raise InvalidExcipientOverrides()
-        if num < 0 or num > 1.0:
+        upper = EXCIPIENT_OVERRIDE_UPPER_BOUND.get(key, 1.0)
+        if num < 0 or num > upper:
             raise InvalidExcipientOverrides()
         cleaned[key] = num
     return cleaned
@@ -1133,6 +1150,12 @@ def _compute_fill_target(
     # the flavour load on either form.
     is_powder = dosage_form == DosageForm.POWDER.value
     flavour_rows: list[ExcipientRow] = []
+
+    # Soft warnings accumulated during the powder branch (e.g. an
+    # acidity-regulator pick missing its dose-rate attribute). Merged
+    # into the final warnings tuple at the end of the function so they
+    # surface in the builder alongside the fill-weight checks.
+    pre_warnings: list[str] = []
 
     def _emit_pick_band(
         *,
@@ -1238,26 +1261,13 @@ def _compute_fill_target(
             "flavouring": (flavouring_items, "Flavouring"),
             "sweetener": (sweetener_items, "Sweeteners"),
             "colour": (colour_items, "Colour"),
-            # The Acidity Regulator band collapses the historical
-            # ``trisodium_citrate`` (25 mg/g) + ``citric_acid``
-            # (10 mg/g) rows into a single opt-in band tied to the
-            # acidity_items picker, mirroring how gummies handle
-            # the same slot. Preset mg/g still applies; see the
-            # slug-resolution block below for the combined total.
-            "acidity": (acidity_items, "Acidity Regulator"),
         }
-        # Pre-compute the combined acidity mg/g from the historical
-        # preset rows so the single emitted band fires at exactly the
-        # same total as Excel used to (25 + 10 = 35 mg/g for the
-        # default flavour system).
-        acidity_mg_per_g = sum(
-            mg_per_g
-            for slug, _, mg_per_g in preset
-            if slug in ("trisodium_citrate", "citric_acid", "acidity")
-        )
-        # Emit each picker-driven band in preset order, skipping the
-        # legacy acidity slugs which are folded into the combined
-        # band below.
+        # Emit each picker-driven band in preset order. The legacy
+        # ``trisodium_citrate`` + ``citric_acid`` preset rows are no
+        # longer auto-fired here -- powder acidity now scales with the
+        # reconstituted drink's water volume and a per-item dose rate
+        # held on the catalogue item, not a fixed mg-per-gram-of-powder
+        # rate. That branch lives directly below.
         for slug, label, mg_per_g_powder in preset:
             if slug in ("trisodium_citrate", "citric_acid"):
                 continue
@@ -1268,7 +1278,16 @@ def _compute_fill_target(
                 # a picker before they will surface.
                 continue
             picks, band_use_as = picker
-            block_total_mg = mg_per_g_powder * powder_g_per_serving
+            # The mg/g rate is override-aware: each powder flavour-
+            # system row carries an ``excipient_overrides`` key
+            # (powder_flavouring, powder_sweetener, powder_colour) so
+            # scientists can re-base the band per formulation without
+            # editing the hardcoded preset.
+            override_key = f"powder_{slug}"
+            mg_per_g_effective = _resolve_band_pct(
+                override_key, excipient_overrides
+            ) or mg_per_g_powder
+            block_total_mg = mg_per_g_effective * powder_g_per_serving
             _emit_pick_band(
                 block_slug=slug,
                 block_label=label,
@@ -1279,40 +1298,99 @@ def _compute_fill_target(
                 # semantics; no more phantom placeholder rows).
                 placeholder_when_empty=False,
                 concentration_mg_per_g_powder=Decimal(
-                    str(mg_per_g_powder)
+                    str(mg_per_g_effective)
                 ),
             )
-        # Acidity band -- combined Trisodium Citrate + Citric Acid
-        # rate, only emitted when the acidity picker has items.
-        if acidity_items and acidity_mg_per_g > 0:
-            _emit_pick_band(
-                block_slug="acidity",
-                block_label="Acidity Regulator",
-                block_total_mg=acidity_mg_per_g * powder_g_per_serving,
-                picks=acidity_items,
-                band_use_as="Acidity Regulator",
-                placeholder_when_empty=False,
-                concentration_mg_per_g_powder=Decimal(
-                    str(acidity_mg_per_g)
-                ),
+        # Acidity Regulator band -- per-item rate driven by the
+        # catalogue item's ``powder_water_dose_mg_per_ml`` attribute
+        # and the formulation's ``water_volume_ml``. Different acids
+        # carry different rates (Trisodium Citrate ~0.1, Citric / Malic
+        # Acid ~0.3) so the band emits one row per pick at its own
+        # individual dose instead of splitting a shared total.
+        #
+        # Items missing the attribute fall through with a
+        # ``powder_acidity_dose_missing:<name>`` warning so the
+        # scientist knows exactly which raw material needs the rate
+        # set on it before the spec sheet ships. Picking acidity items
+        # without entering ``water_volume_ml`` surfaces a single
+        # ``powder_acidity_water_volume_missing`` warning -- the math
+        # has no per-ml volume to multiply against, so no band emits.
+        if acidity_items:
+            water_ml = (
+                float(water_volume_ml)
+                if water_volume_ml is not None
+                else 0.0
             )
+            if water_ml <= 0:
+                pre_warnings.append("powder_acidity_water_volume_missing")
+            else:
+                for pick in acidity_items:
+                    pick_attrs = pick.attributes or {}
+                    raw_rate = pick_attrs.get(POWDER_WATER_DOSE_ATTRIBUTE_KEY)
+                    try:
+                        rate = (
+                            float(raw_rate)
+                            if raw_rate not in (None, "")
+                            else 0.0
+                        )
+                    except (TypeError, ValueError):
+                        rate = 0.0
+                    if rate <= 0:
+                        pre_warnings.append(
+                            f"powder_acidity_dose_missing:{pick.name}"
+                        )
+                        continue
+                    pick_label = (
+                        pick_attrs.get("ingredient_list_name") or ""
+                    ).strip() or pick.name
+                    flavour_rows.append(
+                        ExcipientRow(
+                            slug=f"acidity:{pick.id}",
+                            label=pick_label,
+                            mg=_quantise(water_ml * rate),
+                            use_as="Acidity Regulator",
+                            is_allergen=_is_item_allergen(pick),
+                            allergen_source=_allergen_source_for_item(pick),
+                            # The per-row breakdown the FRONTEND prints
+                            # next to each acidity line ("0.10 mg/ml ×
+                            # 250 ml") is rendered client-side from the
+                            # raw rate + water volume, so we leave the
+                            # per-gram column blank rather than coercing
+                            # a water-rate value into a per-gram slot
+                            # the other powder bands use.
+                            concentration_mg_per_g_powder=None,
+                        )
+                    )
         # Anti-caking band -- mirrors the capsule/tablet picker.
         # Empty picker = no anti-caking on the formulation. Stearate-
         # only -> 1.0% of total active; silica-only -> 0.4%; both
-        # -> 1.4%. Total mg is independent of powder grams; it scales
-        # with the actives sum so a heavier-active scoop carries
-        # proportionally more lubricant.
+        # -> 1.4%. For powders the percentage is taken against the
+        # total finished powder mass per serving (per-scoop fill weight
+        # × scoops), not the actives sum -- a 500 g hydration sachet
+        # with 100 mg of actives would otherwise dose anti-caking at
+        # 1.4 mg, which is chemically meaningless. Capsules + tablets
+        # retain the actives-based math because their fill *is* mostly
+        # actives.
         has_stearate, has_silica = _classify_anti_caking_picks(
             anti_caking_items
         )
         anti_caking_total_mg = 0.0
         if has_stearate or has_silica:
-            active_f = float(total_active)
+            powder_total_mg = (
+                float(target_fill_weight_mg) * float(scoops)
+                if target_fill_weight_mg is not None
+                and target_fill_weight_mg > 0
+                else POWDER_REFERENCE_FILL_WEIGHT_MG * float(scoops)
+            )
+            stearate_pct = _resolve_band_pct(
+                "mg_stearate", excipient_overrides
+            )
+            silica_pct = _resolve_band_pct("silica", excipient_overrides)
             stearate_mg = (
-                active_f * CAPSULE_MG_STEARATE_PCT if has_stearate else 0.0
+                powder_total_mg * stearate_pct if has_stearate else 0.0
             )
             silica_mg = (
-                active_f * CAPSULE_SILICA_PCT if has_silica else 0.0
+                powder_total_mg * silica_pct if has_silica else 0.0
             )
             anti_caking_total_mg = stearate_mg + silica_mg
             _emit_pick_band(
@@ -1549,7 +1627,7 @@ def _compute_fill_target(
                 comfort_ok=False,
                 codes=("fill_weight_required",),
             ),
-            (),
+            tuple(pre_warnings),
         )
 
     target = float(target_fill_weight_mg)
@@ -1571,7 +1649,12 @@ def _compute_fill_target(
     fits = recipe_total <= target + tolerance
     matches = abs(recipe_total - target) <= tolerance
     codes: list[str] = []
-    warnings: list[str] = []
+    # Seed with the soft warnings accumulated during the powder
+    # branch (e.g. acidity picks missing a dose rate or water volume).
+    # The viability checks below append their own structural warnings
+    # without clearing these, so a powder shortfall still surfaces
+    # alongside any acidity-rate gaps.
+    warnings: list[str] = list(pre_warnings)
 
     # Gummy-specific floor check: the base must stay at
     # ≥ ``GUMMY_BASE_MIN_PCT`` of the target or the gel matrix won't
@@ -1739,6 +1822,7 @@ def compute_totals(
             capsule_size_key or None,
             mcc_carrier_items=mcc_carrier_items,
             anti_caking_items=anti_caking_items,
+            excipient_overrides=excipient_overrides,
         )
     elif dosage_form == DosageForm.TABLET.value:
         (
@@ -1755,6 +1839,7 @@ def compute_totals(
             mcc_carrier_items=mcc_carrier_items,
             dcp_carrier_items=dcp_carrier_items,
             anti_caking_items=anti_caking_items,
+            excipient_overrides=excipient_overrides,
         )
     elif dosage_form in (DosageForm.POWDER.value, DosageForm.GUMMY.value):
         (

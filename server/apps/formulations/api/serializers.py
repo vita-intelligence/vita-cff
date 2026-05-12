@@ -216,9 +216,41 @@ class FormulationReadSerializer(serializers.ModelSerializer):
 
     def get_acidity_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked acidity-regulator items so the
-        builder chips render without a second request."""
+        builder chips render without a second request.
 
-        return self._echo_picks(obj.acidity_items)
+        Adds ``water_dose_mg_per_ml`` on top of the shared echo shape
+        so the client-side formulation math can mirror the server's
+        per-item powder acidity rate (mg per ml of reconstitution
+        water) without a second round-trip to the catalogue API.
+        Empty / unset values surface as ``None`` so the client can
+        emit the same "missing dose rate" warning the server does.
+        """
+
+        from apps.formulations.constants import (
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+        )
+
+        rows = self._echo_picks(obj.acidity_items)
+        # Re-walk the manager rather than mutate ``_echo_picks`` so the
+        # shared shape stays slim for every other picker echo.
+        items_by_id = {
+            str(item.id): item
+            for item in obj.acidity_items.all()
+        }
+        for row in rows:
+            item = items_by_id.get(row["id"])
+            attrs = (item.attributes or {}) if item is not None else {}
+            raw_rate = attrs.get(POWDER_WATER_DOSE_ATTRIBUTE_KEY)
+            try:
+                rate = (
+                    float(raw_rate)
+                    if raw_rate not in (None, "")
+                    else None
+                )
+            except (TypeError, ValueError):
+                rate = None
+            row["water_dose_mg_per_ml"] = rate
+        return rows
 
     def get_mcc_carrier_item_ids(self, obj: Formulation) -> list[str]:
         """Flat id list for the capsule + tablet MCC carrier

@@ -394,6 +394,130 @@ class TestTabletTotals:
 
 
 # ---------------------------------------------------------------------------
+# Powder acidity — per-item dose rate × water volume
+# ---------------------------------------------------------------------------
+
+
+def _acidity_item(
+    org,
+    *,
+    name: str,
+    rate: Decimal | None,
+    label: str | None = None,
+) -> Item:
+    """Build a powder acidity-regulator pick with a per-ml dose rate.
+
+    ``rate`` mirrors the catalogue's ``powder_water_dose_mg_per_ml``
+    attribute. Pass ``None`` to model a raw material the scientist
+    has not configured yet — the math should skip the row and emit a
+    ``powder_acidity_dose_missing`` warning."""
+
+    attributes: dict[str, object] = {
+        "use_as": "Acidity Regulator",
+        "ingredient_list_name": label or name,
+    }
+    if rate is not None:
+        attributes["powder_water_dose_mg_per_ml"] = str(rate)
+    return ItemFactory(
+        catalogue=raw_materials_catalogue(org),
+        name=name,
+        attributes=attributes,
+    )
+
+
+class TestPowderAcidity:
+    """Acidity Regulator band scales with ``water_volume_ml`` and a
+    per-item dose rate held on the catalogue item rather than a fixed
+    mg-per-gram-of-powder preset.
+    """
+
+    def _build_powder(self, org, *, acidity_picks, water_volume_ml):
+        active = _item(org, name="Caffeine", purity="1.0")
+        return compute_totals(
+            lines=[
+                (
+                    "active",
+                    active,
+                    Decimal("200"),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            ],
+            dosage_form="powder",
+            target_fill_weight_mg=Decimal("5000"),
+            water_volume_ml=water_volume_ml,
+            acidity_items=tuple(acidity_picks),
+        )
+
+    def test_per_item_dose_uses_water_volume_and_rate(self) -> None:
+        org = OrganizationFactory()
+        tsc = _acidity_item(
+            org, name="Trisodium Citrate", rate=Decimal("0.1")
+        )
+        citric = _acidity_item(
+            org, name="Citric Acid", rate=Decimal("0.3")
+        )
+        totals = self._build_powder(
+            org,
+            acidity_picks=(tsc, citric),
+            water_volume_ml=Decimal("250"),
+        )
+        assert totals.excipients is not None
+        rows = {row.label: row for row in totals.excipients.rows}
+        # 250 ml × 0.1 mg/ml = 25 mg
+        assert "Trisodium Citrate" in rows
+        assert rows["Trisodium Citrate"].mg == Decimal("25.0000")
+        # 250 ml × 0.3 mg/ml = 75 mg
+        assert "Citric Acid" in rows
+        assert rows["Citric Acid"].mg == Decimal("75.0000")
+        # No combined ``Acidity Regulator`` row — per-item layout
+        assert "Acidity Regulator" not in rows
+
+    def test_missing_rate_skips_row_and_warns(self) -> None:
+        org = OrganizationFactory()
+        unset = _acidity_item(org, name="Malic Acid", rate=None)
+        totals = self._build_powder(
+            org,
+            acidity_picks=(unset,),
+            water_volume_ml=Decimal("250"),
+        )
+        assert totals.excipients is not None
+        labels = {row.label for row in totals.excipients.rows}
+        assert "Malic Acid" not in labels
+        assert any(
+            w.startswith("powder_acidity_dose_missing")
+            and "Malic Acid" in w
+            for w in totals.warnings
+        )
+
+    def test_picks_without_water_volume_warn_and_skip(self) -> None:
+        org = OrganizationFactory()
+        tsc = _acidity_item(
+            org, name="Trisodium Citrate", rate=Decimal("0.1")
+        )
+        totals = self._build_powder(
+            org,
+            acidity_picks=(tsc,),
+            water_volume_ml=None,
+        )
+        assert totals.excipients is not None
+        labels = {row.label for row in totals.excipients.rows}
+        assert "Trisodium Citrate" not in labels
+        assert "powder_acidity_water_volume_missing" in totals.warnings
+
+    def test_no_acidity_picks_emits_no_band(self) -> None:
+        org = OrganizationFactory()
+        totals = self._build_powder(
+            org, acidity_picks=(), water_volume_ml=Decimal("250")
+        )
+        assert totals.excipients is not None
+        for row in totals.excipients.rows:
+            assert not row.slug.startswith("acidity")
+
+
+# ---------------------------------------------------------------------------
 # Empty + edge cases
 # ---------------------------------------------------------------------------
 

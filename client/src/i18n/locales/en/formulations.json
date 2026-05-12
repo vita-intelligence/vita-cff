@@ -212,6 +212,14 @@
         "capsule_too_large": "Too large for any standard capsule",
         "mcc_carrier_unpicked": "MCC carrier not picked — spec sheet will use the generic placeholder",
         "dcp_carrier_unpicked": "DCP carrier not picked — spec sheet will use the generic placeholder"
+      },
+      "warnings_title": "Warnings",
+      "warnings": {
+        "fill_shortfall": "Recipe is below the target fill weight — add a carrier / bulking agent line to make it up.",
+        "fill_overshoot": "Recipe is over the target fill weight — drop actives or raise the target.",
+        "gummy_base_below_floor": "Gummy base would fall below the structural floor — drop actives or raise the target so the gel can set.",
+        "powder_acidity_water_volume_missing": "Acidity items picked but no water volume entered — set the per-serving water volume to compute the acid doses.",
+        "powder_acidity_dose_missing": "Acidity item \"{name}\" has no dose rate set — open the raw material and fill in Powder Water Dose (mg/ml)."
       }
     },
     "copy": {
@@ -277,7 +285,8 @@
   },
   "overrides": {
     "title": "Excipient ratios",
-    "hint": "Per-band percentages of the target gummy weight. Edit any value to override the default; press Enter or tab away to commit. Reset to fall back to the default.",
+    "hint": "Per-band rates that drive the auto-filled excipient mg. Edit any value to override the default; press Enter or tab away to commit. Persists into the next saved version.",
+    "empty_hint": "Pick anti-caking, flavouring, sweetener, colour, or a carrier in the pickers above to expose the editable rates here. Acidity dose rates are set per item on the catalogue's Powder Water Dose column.",
     "reset_all": "Reset all",
     "water": "Water",
     "acidity": "Acidity Regulator",
@@ -285,7 +294,20 @@
     "colour": "Colour",
     "glazing": "Glazing Agent",
     "gelling": "Gelling Agent",
-    "premix_sweetener": "Premix Sweetener"
+    "premix_sweetener": "Premix Sweetener",
+    "mg_stearate": "Mg Stearate",
+    "silica": "Silica",
+    "dcp": "DCP",
+    "mcc": "MCC",
+    "powder_flavouring": "Flavouring",
+    "powder_sweetener": "Sweetener",
+    "powder_colour": "Colour",
+    "basis": {
+      "of_target": "of target weight",
+      "of_actives": "of total active mg",
+      "of_powder_weight": "of total powder weight",
+      "per_g_powder": "for every gram of finished powder"
+    }
   },
   "compliance": {
     "title": "Compliance",

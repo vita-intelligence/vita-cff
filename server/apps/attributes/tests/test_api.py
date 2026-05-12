@@ -72,11 +72,22 @@ def owner_client(api_client: APIClient) -> tuple[APIClient, Any, Any]:
 
 
 class TestListDefinitions:
+    # Tests in this class exercise list behaviour on the ``packaging``
+    # catalogue rather than ``raw_materials`` because the latter is
+    # auto-seeded with the system attribute ``powder_water_dose_mg_per_ml``
+    # the moment an organization is created (see
+    # ``apps.catalogues.signals.seed_system_catalogues``). The intent
+    # of every assertion below is to verify list semantics independent
+    # of system-seed behaviour; the packaging catalogue stays empty by
+    # default and gives us a clean baseline. Tenancy + cross-catalogue
+    # scoping is covered explicitly in
+    # ``test_list_scoped_to_catalogue``.
+
     def test_owner_lists_empty(
         self, owner_client: tuple[APIClient, Any, Any]
     ) -> None:
         client, _, org = owner_client
-        response = client.get(_list_url(str(org.id)))
+        response = client.get(_list_url(str(org.id), slug="packaging"))
         assert response.status_code == status.HTTP_200_OK
         assert response.json() == []
 
@@ -84,12 +95,12 @@ class TestListDefinitions:
         self, owner_client: tuple[APIClient, Any, Any]
     ) -> None:
         client, _, org = owner_client
-        AttributeDefinitionFactory(catalogue=raw_materials_catalogue(org))
-        AttributeDefinitionFactory(catalogue=raw_materials_catalogue(org))
-        # A definition on a *different* catalogue must not leak in.
         AttributeDefinitionFactory(catalogue=packaging_catalogue(org))
+        AttributeDefinitionFactory(catalogue=packaging_catalogue(org))
+        # A definition on a *different* catalogue must not leak in.
+        AttributeDefinitionFactory(catalogue=raw_materials_catalogue(org))
 
-        response = client.get(_list_url(str(org.id)))
+        response = client.get(_list_url(str(org.id), slug="packaging"))
         assert response.status_code == status.HTTP_200_OK
         assert len(response.json()) == 2
 
@@ -97,27 +108,31 @@ class TestListDefinitions:
         self, owner_client: tuple[APIClient, Any, Any]
     ) -> None:
         client, _, org = owner_client
-        catalogue = raw_materials_catalogue(org)
+        catalogue = packaging_catalogue(org)
         AttributeDefinitionFactory(catalogue=catalogue, key="active")
         AttributeDefinitionFactory(
             catalogue=catalogue, key="old", is_archived=True
         )
 
-        keys = [row["key"] for row in client.get(_list_url(str(org.id))).json()]
+        keys = [
+            row["key"]
+            for row in client.get(_list_url(str(org.id), slug="packaging")).json()
+        ]
         assert keys == ["active"]
 
     def test_list_can_include_archived(
         self, owner_client: tuple[APIClient, Any, Any]
     ) -> None:
         client, _, org = owner_client
-        catalogue = raw_materials_catalogue(org)
+        catalogue = packaging_catalogue(org)
         AttributeDefinitionFactory(catalogue=catalogue, key="active")
         AttributeDefinitionFactory(
             catalogue=catalogue, key="old", is_archived=True
         )
 
         response = client.get(
-            _list_url(str(org.id)) + "?include_archived=true"
+            _list_url(str(org.id), slug="packaging")
+            + "?include_archived=true"
         )
         keys = {row["key"] for row in response.json()}
         assert keys == {"active", "old"}
