@@ -5,6 +5,7 @@ import { getMessages, setRequestLocale } from "next-intl/server";
 import { notFound } from "next/navigation";
 import type { ReactNode } from "react";
 
+import { NavigationProgress } from "@/components/layout/navigation-progress";
 import { Providers } from "@/components/providers";
 import { site } from "@/config/site";
 import { routing } from "@/i18n/routing";
@@ -59,7 +60,10 @@ export default async function LocaleLayout({
     >
       <body className="bg-ink-0 text-ink-1000 font-sans antialiased">
         <NextIntlClientProvider messages={messages}>
-          <Providers>{children}</Providers>
+          <Providers>
+            <NavigationProgress />
+            {children}
+          </Providers>
         </NextIntlClientProvider>
       </body>
     </html>
