@@ -1,6 +1,6 @@
 "use client";
 
-import type { ChangeEvent } from "react";
+import type { ChangeEvent, ReactNode } from "react";
 
 import { FormField } from "@/components/ui/form-field";
 import type { AttributeDefinitionDto } from "@/services/attributes/types";
@@ -14,7 +14,30 @@ interface DynamicFieldProps {
   onBlur?: () => void;
   errorMessage?: string;
   name?: string;
+  /** Optional sibling-attribute value the parent form watches. Some
+   *  system attributes ship a single column whose unit / label is
+   *  interpreted by the item's ``use_as`` band -- pass the current
+   *  ``use_as`` here and ``DynamicField`` swaps in the band-specific
+   *  copy so the input reads as "Powder Rate (mg/g)" for a Flavouring
+   *  item but "Powder Water Dose (mg/ml)" for an Acidity Regulator
+   *  item. Unrelated attributes ignore this prop. */
+  siblingUseAs?: string | null;
 }
+
+/** Conditional label / description rules for system attributes whose
+ *  meaning changes by ``use_as``. Empty for now (the unified powder
+ *  water-dose column drives every flavour-system band with the same
+ *  unit so no per-band copy override is needed); the map shape lets
+ *  us add rules later without threading more props through. */
+const USE_AS_LABEL_RULES: Readonly<
+  Record<
+    string,
+    (useAs: string | null) => {
+      label: string | null;
+      description: string | null;
+    }
+  >
+> = {};
 
 /**
  * Render a single typed dynamic attribute as an input control.
@@ -41,13 +64,42 @@ export function DynamicField({
   onBlur,
   errorMessage,
   name,
+  siblingUseAs = null,
 }: DynamicFieldProps) {
-  const label = `${definition.label}${definition.required ? " *" : ""}`;
+  // Derive the effective label / description. The static values from
+  // ``definition`` are the baseline; a matching ``USE_AS_LABEL_RULES``
+  // entry can override either when the sibling ``use_as`` value
+  // changes the band's interpretation. Non-string returns fall
+  // through so the static copy stays in charge.
+  const rule = USE_AS_LABEL_RULES[definition.key];
+  const derived = rule ? rule(siblingUseAs) : { label: null, description: null };
+  const effectiveLabel = derived.label ?? definition.label;
+  const effectiveDescription = derived.description ?? definition.description;
+  const label = `${effectiveLabel}${definition.required ? " *" : ""}`;
   const fieldName = name ?? `attributes.${definition.key}`;
+  // Pulled into its own variable so every branch can wrap its input
+  // with the same help-text affordance without duplicating the
+  // markup. Empty strings collapse the slot.
+  const description =
+    typeof effectiveDescription === "string" &&
+    effectiveDescription.trim() !== ""
+      ? effectiveDescription
+      : null;
+  const wrap = (input: ReactNode): ReactNode =>
+    description ? (
+      <div className="flex flex-col gap-1.5">
+        {input}
+        <p className="text-[11px] leading-snug text-ink-500">
+          {description}
+        </p>
+      </div>
+    ) : (
+      input
+    );
 
   switch (definition.data_type) {
     case "text":
-      return (
+      return wrap(
         <FormField
           name={fieldName}
           value={typeof value === "string" ? value : ""}
@@ -56,11 +108,11 @@ export function DynamicField({
           label={label}
           type="text"
           errorMessage={errorMessage}
-        />
+        />,
       );
 
     case "number":
-      return (
+      return wrap(
         <FormField
           name={fieldName}
           value={
@@ -71,11 +123,11 @@ export function DynamicField({
           label={label}
           type="number"
           errorMessage={errorMessage}
-        />
+        />,
       );
 
     case "date":
-      return (
+      return wrap(
         <FormField
           name={fieldName}
           value={typeof value === "string" ? value : ""}
@@ -84,7 +136,7 @@ export function DynamicField({
           label={label}
           type="date"
           errorMessage={errorMessage}
-        />
+        />,
       );
 
     case "boolean": {
@@ -104,6 +156,11 @@ export function DynamicField({
             />
             {label}
           </label>
+          {description ? (
+            <p className="text-[11px] leading-snug text-ink-500">
+              {description}
+            </p>
+          ) : null}
           {errorMessage ? (
             <p className="text-xs font-medium text-danger">{errorMessage}</p>
           ) : null}
@@ -138,6 +195,11 @@ export function DynamicField({
               </option>
             ))}
           </select>
+          {description ? (
+            <p className="text-[11px] leading-snug text-ink-500">
+              {description}
+            </p>
+          ) : null}
           {errorMessage ? (
             <p className="text-xs font-medium text-danger">{errorMessage}</p>
           ) : null}
@@ -185,6 +247,11 @@ export function DynamicField({
               );
             })}
           </div>
+          {description ? (
+            <p className="text-[11px] leading-snug text-ink-500">
+              {description}
+            </p>
+          ) : null}
           {errorMessage ? (
             <p className="text-xs font-medium text-danger">{errorMessage}</p>
           ) : null}

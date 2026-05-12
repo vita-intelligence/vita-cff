@@ -34,6 +34,7 @@ export default async function ProjectBuilderPage({
             orgId={organization.id}
             initialFormulation={formulation}
             canWrite={canWrite}
+            hasTrialBatches={(overview?.trial_batches?.total ?? 0) > 0}
           />
         </ProjectShell>
 

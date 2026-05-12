@@ -6,7 +6,7 @@ import { Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 
 import { DynamicField } from "@/components/ui/dynamic-field";
@@ -85,6 +85,20 @@ export function NewItemButton({
       attributes: initialAttributesFor(activeDefinitions),
     },
   });
+
+  // Subscribed once at the top of the form so the dynamic-field
+  // rendering loop below can pass it to every ``DynamicField``. The
+  // ``DynamicField`` itself only acts on the value for attributes
+  // whose label / description is interpreted by ``use_as`` (currently
+  // just the unified powder rate column).
+  const useAsRaw = useWatch({
+    control,
+    name: "attributes.use_as" as never,
+  }) as unknown;
+  const siblingUseAs =
+    typeof useAsRaw === "string" && useAsRaw.trim() !== ""
+      ? useAsRaw
+      : null;
 
   const onSubmit = handleSubmit(async (values) => {
     try {
@@ -255,6 +269,7 @@ export function NewItemButton({
                             onChange={(v) => field.onChange(v)}
                             onBlur={field.onBlur}
                             errorMessage={fieldError(fieldState.error?.message)}
+                            siblingUseAs={siblingUseAs}
                           />
                         )}
                       />

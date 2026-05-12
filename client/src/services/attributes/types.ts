@@ -25,6 +25,10 @@ export interface AttributeDefinitionDto {
   readonly id: string;
   readonly key: string;
   readonly label: string;
+  /** Optional help text rendered under the input on the item edit
+   *  form. Used to clarify non-obvious semantics (e.g. a single rate
+   *  whose unit is interpreted per ``use_as`` band). */
+  readonly description: string;
   readonly data_type: DataType;
   readonly required: boolean;
   readonly options: readonly AttributeOption[];

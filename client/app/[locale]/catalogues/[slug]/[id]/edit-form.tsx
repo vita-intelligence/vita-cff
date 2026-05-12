@@ -5,7 +5,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { Archive, RotateCcw, Save, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
-import { Controller, useForm } from "react-hook-form";
+import { Controller, useForm, useWatch } from "react-hook-form";
 import { z } from "zod";
 
 import { DynamicField } from "@/components/ui/dynamic-field";
@@ -268,26 +268,11 @@ export function EditItemForm({
       </div>
 
       {activeDefinitions.length > 0 ? (
-        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
-          <div className="flex flex-col gap-4">
-            {activeDefinitions.map((defn) => (
-              <Controller
-                key={defn.id}
-                control={control}
-                name={`attributes.${defn.key}` as never}
-                render={({ field, fieldState }) => (
-                  <DynamicField
-                    definition={defn}
-                    value={field.value as never}
-                    onChange={(v) => field.onChange(v)}
-                    onBlur={field.onBlur}
-                    errorMessage={fieldError(fieldState.error?.message)}
-                  />
-                )}
-              />
-            ))}
-          </div>
-        </div>
+        <DynamicFieldsSection
+          control={control}
+          definitions={activeDefinitions}
+          fieldError={fieldError}
+        />
       ) : null}
 
       {errors.root?.message ? (
@@ -399,5 +384,61 @@ export function EditItemForm({
         </Button>
       </div>
     </form>
+  );
+}
+
+
+/**
+ * Section wrapper that subscribes to the form's ``attributes.use_as``
+ * value once and feeds it into every :class:`DynamicField` below.
+ *
+ * Pulled out so the parent ``EditItemForm`` doesn't have to call
+ * ``useWatch`` itself and re-render on every keystroke just because
+ * one of the dynamic fields cares about the sibling value. Only
+ * attributes whose key opts into label/description derivation (see
+ * the map in ``DynamicField``) actually read the prop -- everything
+ * else ignores it.
+ */
+function DynamicFieldsSection({
+  control,
+  definitions,
+  fieldError,
+}: {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  control: any;
+  definitions: readonly AttributeDefinitionDto[];
+  fieldError: (message: string | undefined) => string | undefined;
+}) {
+  const useAsValue = useWatch({
+    control,
+    name: "attributes.use_as" as never,
+  }) as unknown;
+  const siblingUseAs =
+    typeof useAsValue === "string" && useAsValue.trim() !== ""
+      ? useAsValue
+      : null;
+
+  return (
+    <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="flex flex-col gap-4">
+        {definitions.map((defn) => (
+          <Controller
+            key={defn.id}
+            control={control}
+            name={`attributes.${defn.key}` as never}
+            render={({ field, fieldState }) => (
+              <DynamicField
+                definition={defn}
+                value={field.value as never}
+                onChange={(v) => field.onChange(v)}
+                onBlur={field.onBlur}
+                errorMessage={fieldError(fieldState.error?.message)}
+                siblingUseAs={siblingUseAs}
+              />
+            )}
+          />
+        ))}
+      </div>
+    </div>
   );
 }

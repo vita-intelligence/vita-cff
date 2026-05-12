@@ -320,10 +320,17 @@ export function FormulationBuilder({
   orgId,
   initialFormulation,
   canWrite,
+  hasTrialBatches = false,
 }: {
   orgId: string;
   initialFormulation: FormulationDto;
   canWrite: boolean;
+  /** True when the project already has at least one trial batch.
+   *  The Excipient Ratios editor is gated on this so scientists
+   *  don't touch override percentages before a trial run has
+   *  established the baseline -- the override values only become
+   *  meaningful once there's a physical batch to compare against. */
+  hasTrialBatches?: boolean;
 }) {
   const tFormulations = useTranslations("formulations");
   const tErrors = useTranslations("errors");
@@ -413,6 +420,47 @@ export function FormulationBuilder({
       ]),
     ),
   );
+  // Same live-cache pattern for the per-item powder bands. Without
+  // these the math reads from ``formulation.<band>_items`` (the
+  // server-saved echo), which lags every fresh pick by a save +
+  // refetch -- the symptom is "I picked a flavouring item but the
+  // Excipients panel still shows 0 mg". The cache is hydrated from
+  // the server echo on mount and refreshed by each picker's
+  // ``onPickedItemsChange`` so a checkbox toggle flows into the
+  // math the same render.
+  type PowderBandLiveEntry = {
+    readonly label: string;
+    readonly useAs: string;
+    readonly powderRateMgPerG: number | null;
+  };
+  const hydrateBand = (
+    picks: ReadonlyArray<{
+      readonly id: string;
+      readonly name: string;
+      readonly ingredient_list_name: string;
+      readonly use_as: string;
+      readonly powder_rate_mg_per_g: number | null;
+    }>,
+  ): Record<string, PowderBandLiveEntry> =>
+    Object.fromEntries(
+      picks.map((i) => [
+        i.id,
+        {
+          label: i.ingredient_list_name || i.name,
+          useAs: i.use_as || "",
+          powderRateMgPerG: i.powder_rate_mg_per_g,
+        },
+      ]),
+    );
+  const [flavouringLive, setFlavouringLive] = useState<
+    Record<string, PowderBandLiveEntry>
+  >(() => hydrateBand(initialFormulation.flavouring_items));
+  const [sweetenerLive, setSweetenerLive] = useState<
+    Record<string, PowderBandLiveEntry>
+  >(() => hydrateBand(initialFormulation.sweetener_items));
+  const [colourLive, setColourLive] = useState<
+    Record<string, PowderBandLiveEntry>
+  >(() => hydrateBand(initialFormulation.colour_items));
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
   //: Debounced query that drives the picker cache key. Lags by 200ms.
@@ -485,23 +533,93 @@ export function FormulationBuilder({
     // (0.4% / 2% of target gummy weight). The math splits each block
     // equally across its picks; empty picks fall back to a generic
     // placeholder row at the full block total.
+    // Powder Flavouring / Colour both carry a per-item mg/g rate
+    // (``powder_rate_mg_per_g`` on the echo, sourced from the
+    // catalogue item's ``powder_<band>_mg_per_g`` attribute). The
+    // math reads the rate off each pick to dose it individually; if
+    // the rate is null the row is dropped + a soft warning fires so
+    // the scientist knows which raw material needs the value set.
+    // Gummy formulations ignore the per-item rate -- the gummy
+    // branch still uses band-level percentages of the target weight.
+    // Mirror the acidity pattern: iterate the LIVE id list from
+    // ``metadata`` and resolve each id through the live cache first
+    // (populated by the picker's ``onPickedItemsChange``), then fall
+    // back to the saved server echo. This is what makes a freshly-
+    // toggled pick show up in the Excipients panel without a save
+    // round-trip.
+    const flavouringEchoById = new Map(
+      formulation.flavouring_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+          powderRateMgPerG: pick.powder_rate_mg_per_g,
+        },
+      ]),
+    );
     const flavouringForMath =
       metadata.dosage_form === "gummy" ||
       metadata.dosage_form === "powder"
-        ? formulation.flavouring_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.flavouring_item_ids
+            .map((id) => {
+              const live = flavouringLive[id];
+              const echo = flavouringEchoById.get(id);
+              if (!live && !echo) return null;
+              return {
+                id,
+                label: live?.label || echo?.label || "",
+                useAs: live?.useAs || echo?.useAs || "",
+                powderRateMgPerG:
+                  live?.powderRateMgPerG ??
+                  echo?.powderRateMgPerG ??
+                  null,
+              };
+            })
+            .filter(
+              (entry): entry is {
+                id: string;
+                label: string;
+                useAs: string;
+                powderRateMgPerG: number | null;
+              } => entry !== null,
+            )
         : [];
+    const colourEchoById = new Map(
+      formulation.colour_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+          powderRateMgPerG: pick.powder_rate_mg_per_g,
+        },
+      ]),
+    );
     const colourForMath =
       metadata.dosage_form === "gummy" ||
       metadata.dosage_form === "powder"
-        ? formulation.colour_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.colour_item_ids
+            .map((id) => {
+              const live = colourLive[id];
+              const echo = colourEchoById.get(id);
+              if (!live && !echo) return null;
+              return {
+                id,
+                label: live?.label || echo?.label || "",
+                useAs: live?.useAs || echo?.useAs || "",
+                powderRateMgPerG:
+                  live?.powderRateMgPerG ??
+                  echo?.powderRateMgPerG ??
+                  null,
+              };
+            })
+            .filter(
+              (entry): entry is {
+                id: string;
+                label: string;
+                useAs: string;
+                powderRateMgPerG: number | null;
+              } => entry !== null,
+            )
         : [];
     const glazingForMath =
       metadata.dosage_form === "gummy"
@@ -644,16 +762,25 @@ export function FormulationBuilder({
           "",
       })),
       // Powder sweetener picker (separate from the gummy sweetener
-      // pool that goes through gummy_base_items).
-      sweetenerItems: metadata.sweetener_item_ids.map((id) => ({
-        id,
-        label:
-          formulation.sweetener_items.find((i) => i.id === id)
-            ?.ingredient_list_name ??
-          formulation.sweetener_items.find((i) => i.id === id)?.name ??
-          "",
-        useAs: "Sweeteners",
-      })),
+      // pool that goes through gummy_base_items). Live cache resolves
+      // each picked id so a freshly-toggled sweetener doses in the
+      // current render without a save round-trip; the server echo
+      // is the fallback.
+      sweetenerItems: metadata.sweetener_item_ids.map((id) => {
+        const live = sweetenerLive[id];
+        const echo = formulation.sweetener_items.find((i) => i.id === id);
+        return {
+          id,
+          label:
+            live?.label ||
+            echo?.ingredient_list_name ||
+            echo?.name ||
+            "",
+          useAs: live?.useAs || "Sweeteners",
+          powderRateMgPerG:
+            live?.powderRateMgPerG ?? echo?.powder_rate_mg_per_g ?? null,
+        };
+      }),
       excipientOverrides: metadata.excipient_overrides,
     });
   }, [
@@ -676,6 +803,9 @@ export function FormulationBuilder({
     antiCakingNames,
     powderCarrierNames,
     acidityLive,
+    flavouringLive,
+    sweetenerLive,
+    colourLive,
     formulation.gummy_base_items,
     formulation.powder_carrier_items,
     formulation.sweetener_items,
@@ -764,6 +894,172 @@ export function FormulationBuilder({
   const handleExcipientOverridesChange = useCallback(
     (next: Record<string, number>) =>
       setMetadata((prev) => ({ ...prev, excipient_overrides: next })),
+    [],
+  );
+
+  // Per-pick rate rows shown in the override panel for powder
+  // formulations. Iterates each band's live id list and resolves the
+  // catalogue rate through the live cache first, falling back to the
+  // formulation's saved echo. The resulting rows let the scientist
+  // override one pick's mg/ml rate per formulation without touching
+  // the shared catalogue value. Empty for non-powder forms.
+  const perItemRateRows = useMemo<readonly PerItemRateOverrideRow[]>(() => {
+    if (metadata.dosage_form !== "powder") return [];
+    type BandSpec = {
+      readonly band: PerItemRateOverrideRow["band"];
+      readonly ids: readonly string[];
+      readonly live: Record<
+        string,
+        { label: string; powderRateMgPerG?: number | null; waterDoseMgPerMl?: number | null }
+      >;
+      readonly echo: ReadonlyArray<{
+        readonly id: string;
+        readonly name: string;
+        readonly ingredient_list_name: string;
+        readonly powder_rate_mg_per_g?: number | null;
+        readonly water_dose_mg_per_ml?: number | null;
+      }>;
+    };
+    const bands: readonly BandSpec[] = [
+      {
+        band: "acidity",
+        ids: metadata.acidity_item_ids,
+        live: Object.fromEntries(
+          Object.entries(acidityLive).map(([id, v]) => [
+            id,
+            { label: v.label, waterDoseMgPerMl: v.waterDoseMgPerMl },
+          ]),
+        ),
+        echo: formulation.acidity_items,
+      },
+      {
+        band: "flavouring",
+        ids: metadata.flavouring_item_ids,
+        live: flavouringLive,
+        echo: formulation.flavouring_items,
+      },
+      {
+        band: "sweetener",
+        ids: metadata.sweetener_item_ids,
+        live: sweetenerLive,
+        echo: formulation.sweetener_items,
+      },
+      {
+        band: "colour",
+        ids: metadata.colour_item_ids,
+        live: colourLive,
+        echo: formulation.colour_items,
+      },
+    ];
+    // Pull water + total weight once so every row hands the same
+    // conversion context to its ``BandOverrideRow``. Falls back to
+    // zero so the row's internal guard switches it into raw-mg/ml
+    // mode (rather than silently dividing by zero).
+    const parsedWater = Number.parseFloat(metadata.water_volume_ml || "0");
+    const waterMl =
+      Number.isFinite(parsedWater) && parsedWater > 0 ? parsedWater : 0;
+    const totalWeightMg =
+      typeof liveTotals.totalWeightMg === "number" &&
+      Number.isFinite(liveTotals.totalWeightMg) &&
+      liveTotals.totalWeightMg > 0
+        ? liveTotals.totalWeightMg
+        : 0;
+    const rows: PerItemRateOverrideRow[] = [];
+    for (const band of bands) {
+      for (const id of band.ids) {
+        const live = band.live[id];
+        const echo = band.echo.find((e) => e.id === id);
+        if (!live && !echo) continue;
+        const liveRate =
+          live?.waterDoseMgPerMl ?? live?.powderRateMgPerG ?? null;
+        const echoRate =
+          echo?.water_dose_mg_per_ml ?? echo?.powder_rate_mg_per_g ?? null;
+        const defaultRate = liveRate ?? echoRate ?? null;
+        const label =
+          live?.label ||
+          echo?.ingredient_list_name ||
+          echo?.name ||
+          "";
+        rows.push({
+          id,
+          label,
+          band: band.band,
+          defaultRate,
+          waterMl,
+          totalWeightMg,
+        });
+      }
+    }
+    return rows;
+  }, [
+    metadata.dosage_form,
+    metadata.water_volume_ml,
+    metadata.acidity_item_ids,
+    metadata.flavouring_item_ids,
+    metadata.sweetener_item_ids,
+    metadata.colour_item_ids,
+    acidityLive,
+    flavouringLive,
+    sweetenerLive,
+    colourLive,
+    formulation.acidity_items,
+    formulation.flavouring_items,
+    formulation.sweetener_items,
+    formulation.colour_items,
+    liveTotals.totalWeightMg,
+  ]);
+
+  // Shared body for the powder Flavouring / Sweetener / Colour
+  // pickers' ``onPickedItemsChange``. Pulls the live attributes off
+  // each just-toggled item, derives the band-aware label + per-item
+  // rate, and merges them into the matching cache. Keeps the three
+  // picker JSX blocks below from duplicating the same shape.
+  const handlePowderBandPickerChange = useCallback(
+    (
+      setter: React.Dispatch<
+        React.SetStateAction<Record<string, PowderBandLiveEntry>>
+      >,
+      defaultUseAs: string,
+      items: ReadonlyArray<{
+        readonly id: string;
+        readonly name: string;
+        readonly attributes?: Readonly<Record<string, unknown>>;
+      }>,
+    ) => {
+      setter((prev) => {
+        const next = { ...prev };
+        for (const it of items) {
+          const attrs = it.attributes ?? null;
+          const rawIngredient = attrs?.["ingredient_list_name"];
+          const label =
+            typeof rawIngredient === "string" &&
+            rawIngredient.trim() !== ""
+              ? rawIngredient
+              : it.name;
+          const rawUseAs = attrs?.["use_as"];
+          const useAs =
+            typeof rawUseAs === "string" ? rawUseAs : "";
+          const rawRate = attrs?.["powder_water_dose_mg_per_ml"];
+          const rate =
+            typeof rawRate === "number"
+              ? rawRate
+              : typeof rawRate === "string" && rawRate.trim() !== ""
+                ? Number.parseFloat(rawRate)
+                : null;
+          next[it.id] = {
+            label,
+            useAs: useAs || prev[it.id]?.useAs || defaultUseAs,
+            powderRateMgPerG:
+              attrs !== null
+                ? Number.isFinite(rate ?? NaN)
+                  ? rate
+                  : null
+                : (prev[it.id]?.powderRateMgPerG ?? null),
+          };
+        }
+        return next;
+      });
+    },
     [],
   );
 
@@ -1459,6 +1755,13 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, flavouring_item_ids: ids })
               }
+              onPickedItemsChange={(items) =>
+                handlePowderBandPickerChange(
+                  setFlavouringLive,
+                  "Flavouring",
+                  items,
+                )
+              }
             />
           ) : null}
           {metadata.dosage_form === "powder" ? (
@@ -1482,6 +1785,13 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, sweetener_item_ids: ids })
               }
+              onPickedItemsChange={(items) =>
+                handlePowderBandPickerChange(
+                  setSweetenerLive,
+                  "Sweeteners",
+                  items,
+                )
+              }
             />
           ) : null}
           {metadata.dosage_form === "powder" ? (
@@ -1504,6 +1814,13 @@ export function FormulationBuilder({
               )}
               onChange={(ids) =>
                 setMetadata({ ...metadata, colour_item_ids: ids })
+              }
+              onPickedItemsChange={(items) =>
+                handlePowderBandPickerChange(
+                  setColourLive,
+                  "Colour",
+                  items,
+                )
               }
             />
           ) : null}
@@ -2255,20 +2572,27 @@ export function FormulationBuilder({
             mccCarrierLabels={mccCarrierLabels}
             antiCakingLabels={antiCakingLabels}
           />
-          <ExcipientOverridesPanel
-            overrides={metadata.excipient_overrides}
-            dosageForm={metadata.dosage_form}
-            hasAntiCaking={metadata.anti_caking_item_ids.length > 0}
-            hasDcpCarrier={metadata.dcp_carrier_item_ids.length > 0}
-            hasMccCarrier={metadata.mcc_carrier_item_ids.length > 0}
-            hasFlavouring={metadata.flavouring_item_ids.length > 0}
-            hasSweetener={metadata.sweetener_item_ids.length > 0}
-            hasColour={metadata.colour_item_ids.length > 0}
-            hasGelling={metadata.gelling_item_ids.length > 0}
-            disabled={!canWrite}
-            onChange={handleExcipientOverridesChange}
-            tFormulations={tFormulations}
-          />
+          {hasTrialBatches ? (
+            // Override editor only surfaces once a trial batch exists
+            // -- before then the lab hasn't measured a real fill, so
+            // the band percentages don't have a physical baseline to
+            // tune against.
+            <ExcipientOverridesPanel
+              overrides={metadata.excipient_overrides}
+              dosageForm={metadata.dosage_form}
+              hasAntiCaking={metadata.anti_caking_item_ids.length > 0}
+              hasDcpCarrier={metadata.dcp_carrier_item_ids.length > 0}
+              hasMccCarrier={metadata.mcc_carrier_item_ids.length > 0}
+              hasFlavouring={metadata.flavouring_item_ids.length > 0}
+              hasSweetener={metadata.sweetener_item_ids.length > 0}
+              hasColour={metadata.colour_item_ids.length > 0}
+              hasGelling={metadata.gelling_item_ids.length > 0}
+              perItemRates={perItemRateRows}
+              disabled={!canWrite}
+              onChange={handleExcipientOverridesChange}
+              tFormulations={tFormulations}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -4034,7 +4358,11 @@ function CatalogueMultiPicker({
 // to scientists as a percent of the total powder weight (6.25%) so
 // every row in the panel reads in the same unit. Conversion factor:
 // ``1 mg/g = 0.1%`` (since 1 g = 1000 mg).
-type BandUnit = "pct" | "pct_of_powder_weight";
+type BandUnit =
+  | "pct"
+  | "pct_of_powder_weight"
+  | "mg_per_ml_water"
+  | "pct_of_total_weight_via_water";
 const EXCIPIENT_BAND_DEFAULTS_UI = {
   // Gummy
   water: { default: 0.055, unit: "pct" as BandUnit },
@@ -4051,23 +4379,10 @@ const EXCIPIENT_BAND_DEFAULTS_UI = {
   dcp: { default: 0.10, unit: "pct" as BandUnit },
   mcc: { default: 0.20, unit: "pct" as BandUnit },
   // Powder flavour-system bands. ``default`` is the mg-per-gram-of-
-  // powder rate the math actually uses (and that's persisted on the
-  // server); the UI converts it to "% of powder weight" via the
-  // ``pct_of_powder_weight`` unit so the scientist never has to
-  // think in mg/g. Acidity is omitted -- it's per-item on the
-  // catalogue, not a band override.
-  powder_flavouring: {
-    default: 62.5,
-    unit: "pct_of_powder_weight" as BandUnit,
-  },
-  powder_sweetener: {
-    default: 15,
-    unit: "pct_of_powder_weight" as BandUnit,
-  },
-  powder_colour: {
-    default: 10,
-    unit: "pct_of_powder_weight" as BandUnit,
-  },
+  // Powder Flavouring / Sweetener / Colour are no longer band-level
+  // overrides. Each picked item carries its own per-gram-of-powder
+  // rate on the catalogue (``powder_<band>_mg_per_g``) so the math
+  // doses per pick. Acidity has always been per-item.
 } as const;
 type ExcipientBandKey = keyof typeof EXCIPIENT_BAND_DEFAULTS_UI;
 
@@ -4195,6 +4510,26 @@ function LineOverridesPanel({
  *  freezes the overrides into the next version snapshot.
  *
  *  Memoised so unrelated keystrokes don't redraw the 7-row panel. */
+/** Per-item rate row presented to the override panel. ``defaultRate``
+ *  is the catalogue value (what the math falls back to when there's
+ *  no per-formulation override); ``band`` drives the row's heading
+ *  copy. The panel resolves the effective value by merging the
+ *  override map -- under the ``powder_rate:<id>`` key -- with this
+ *  catalogue baseline. */
+interface PerItemRateOverrideRow {
+  readonly id: string;
+  readonly label: string;
+  readonly band: "acidity" | "flavouring" | "sweetener" | "colour";
+  readonly defaultRate: number | null;
+  /** Per-serving reconstitution water volume. Used (together with
+   *  ``totalWeightMg``) to translate the stored mg/ml rate into the
+   *  "% of finished powder mass" the override input displays. */
+  readonly waterMl: number;
+  /** Per-serving finished powder mass. Same role as ``waterMl`` --
+   *  drives the percent / mg/ml conversion in the row. */
+  readonly totalWeightMg: number;
+}
+
 const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
   overrides,
   dosageForm,
@@ -4205,6 +4540,7 @@ const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
   hasSweetener,
   hasColour,
   hasGelling,
+  perItemRates = [],
   disabled,
   onChange,
   tFormulations,
@@ -4218,6 +4554,10 @@ const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
   hasSweetener: boolean;
   hasColour: boolean;
   hasGelling: boolean;
+  /** Per-item rate rows to render alongside the band-level overrides.
+   *  Populated for powder formulations from the live picker caches +
+   *  formulation echoes; empty for other dosage forms. */
+  perItemRates?: readonly PerItemRateOverrideRow[];
   disabled: boolean;
   onChange: (next: Record<string, number>) => void;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
@@ -4272,28 +4612,13 @@ const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
       forms: ["tablet"],
       visible: hasMccCarrier,
     },
-    // Powder flavour-system mg-per-gram-of-powder rates.
-    {
-      key: "powder_flavouring",
-      labelKey: "overrides.powder_flavouring",
-      basisKey: "overrides.basis.of_powder_weight",
-      forms: ["powder"],
-      visible: hasFlavouring,
-    },
-    {
-      key: "powder_sweetener",
-      labelKey: "overrides.powder_sweetener",
-      basisKey: "overrides.basis.of_powder_weight",
-      forms: ["powder"],
-      visible: hasSweetener,
-    },
-    {
-      key: "powder_colour",
-      labelKey: "overrides.powder_colour",
-      basisKey: "overrides.basis.of_powder_weight",
-      forms: ["powder"],
-      visible: hasColour,
-    },
+    // Powder Flavouring / Sweetener / Colour no longer surface
+    // here -- their rates moved to per-item catalogue attributes
+    // (``powder_<band>_mg_per_g``) and a per-formulation band
+    // override no longer makes sense when each pick carries its
+    // own loading. Scientists edit the rate on the raw material
+    // row in the Raw Materials catalogue instead.
+
     // Gummy bands (% of target gummy weight).
     {
       key: "water",
@@ -4379,7 +4704,7 @@ const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
       <p className="mt-1 text-[11px] leading-snug text-ink-500">
         {tFormulations("overrides.hint")}
       </p>
-      {visible.length === 0 ? (
+      {visible.length === 0 && perItemRates.length === 0 ? (
         <p className="mt-3 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
           {tFormulations("overrides.empty_hint")}
         </p>
@@ -4411,6 +4736,56 @@ const ExcipientOverridesPanel = memo(function ExcipientOverridesPanel({
           );
         })}
       </ul>
+      {perItemRates.length > 0 ? (
+        // Per-pick rate rows live under their own section so the
+        // band-level percentages above stay visually grouped. Each
+        // row stores its override in mg/ml under
+        // ``powder_rate:<id>`` BUT the input is rendered as a
+        // percent of the finished powder mass so it matches the
+        // "(X%)" column in the Excipients panel. The conversion
+        // context (water_ml + total_weight_mg) is supplied per row
+        // by the parent and threaded through to ``BandOverrideRow``.
+        <div className="mt-4 border-t border-dashed border-ink-200 pt-3">
+          <p className="text-[10px] font-medium uppercase tracking-wide text-ink-500">
+            {tFormulations("overrides.per_item_title")}
+          </p>
+          <ul className="mt-2 flex flex-col gap-2">
+            {perItemRates.map((row) => {
+              const overrideKey = `powder_rate:${row.id}`;
+              return (
+                <BandOverrideRow
+                  key={overrideKey}
+                  label={row.label}
+                  basis={tFormulations(
+                    `overrides.per_item_basis.${row.band}` as "overrides.per_item_basis.acidity",
+                  )}
+                  defaultValue={row.defaultRate ?? 0}
+                  unit="pct_of_total_weight_via_water"
+                  conversion={
+                    row.waterMl > 0 && row.totalWeightMg > 0
+                      ? {
+                          waterMl: row.waterMl,
+                          totalWeightMg: row.totalWeightMg,
+                        }
+                      : undefined
+                  }
+                  override={overrides[overrideKey]}
+                  disabled={disabled}
+                  onChange={(value) => {
+                    const next = { ...overrides };
+                    if (value === null) {
+                      delete next[overrideKey];
+                    } else {
+                      next[overrideKey] = value;
+                    }
+                    onChange(next);
+                  }}
+                />
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -4517,6 +4892,7 @@ function BandOverrideRow({
   override,
   disabled,
   onChange,
+  conversion,
 }: {
   label: string;
   /** Short subtitle clarifying what the value is applied to
@@ -4532,22 +4908,63 @@ function BandOverrideRow({
   override: number | undefined;
   disabled: boolean;
   onChange: (value: number | null) => void;
+  /** Conversion context required for units that depend on
+   *  formulation-level numbers (currently only
+   *  ``pct_of_total_weight_via_water``, which translates between
+   *  stored mg/ml and the % of finished powder weight the
+   *  Excipients column shows). When the context is missing or zero
+   *  the row falls back to mg/ml mode so the scientist can still
+   *  edit the raw rate. */
+  conversion?: {
+    readonly waterMl: number;
+    readonly totalWeightMg: number;
+  };
 }) {
-  // All band rows display as a percentage in the UI even though the
-  // underlying storage units differ. Conversion factors:
+  // Resolve the effective unit: ``pct_of_total_weight_via_water``
+  // requires the conversion context; without it we silently fall
+  // back to mg/ml so the input is never frozen on a formulation
+  // missing water volume / target weight.
+  const conversionUsable =
+    unit === "pct_of_total_weight_via_water" &&
+    !!conversion &&
+    conversion.waterMl > 0 &&
+    conversion.totalWeightMg > 0;
+  const effectiveUnit: BandUnit =
+    unit === "pct_of_total_weight_via_water" && !conversionUsable
+      ? "mg_per_ml_water"
+      : unit;
+  // Display / storage unit conversion. Four shapes:
   //
-  // * ``pct``                  : storage is a fraction in 0..1, so
-  //                              display = stored × 100 (0.02 -> 2).
-  // * ``pct_of_powder_weight`` : storage is mg-per-gram-of-powder,
-  //                              display = stored / 10 (62.5 mg/g ->
-  //                              6.25%). 1 mg/g = 0.1% of total
-  //                              powder weight (1 g = 1000 mg).
+  // * ``pct``                              : storage is a fraction in 0..1;
+  //                                          display is the percentage.
+  // * ``pct_of_powder_weight``             : storage is mg-per-gram-of-powder;
+  //                                          display is % of total powder
+  //                                          weight (1 mg/g = 0.1%).
+  // * ``mg_per_ml_water``                  : storage = display (mg/ml).
+  // * ``pct_of_total_weight_via_water``    : storage is mg/ml of water;
+  //                                          display is % of finished powder
+  //                                          mass per serving. Conversion:
+  //                                          ``pct = (mg_per_ml × water_ml /
+  //                                          total_weight_mg) × 100``.
   const toDisplay = (value: number): string => {
-    if (unit === "pct") return (value * 100).toString();
+    if (effectiveUnit === "pct") return (value * 100).toString();
+    if (effectiveUnit === "mg_per_ml_water") return String(value);
+    if (effectiveUnit === "pct_of_total_weight_via_water" && conversion) {
+      const pct =
+        (value * conversion.waterMl) / conversion.totalWeightMg;
+      return (pct * 100).toString();
+    }
     return (value / 10).toString();
   };
   const fromDisplay = (typed: number): number => {
-    if (unit === "pct") return typed / 100;
+    if (effectiveUnit === "pct") return typed / 100;
+    if (effectiveUnit === "mg_per_ml_water") return typed;
+    if (effectiveUnit === "pct_of_total_weight_via_water" && conversion) {
+      // Inverse: stored mg/ml = (% / 100) × total_weight / water_ml.
+      return (
+        ((typed / 100) * conversion.totalWeightMg) / conversion.waterMl
+      );
+    }
     return typed * 10;
   };
   const effective = override ?? defaultValue;
@@ -4557,13 +4974,22 @@ function BandOverrideRow({
   // ``Reset all``.
   useEffect(() => {
     setDraft(toDisplay(effective));
+    // ``conversion`` is folded into the dep list as its numeric
+    // members so a water-volume edit on the formulation flushes the
+    // displayed percent through the new ratio.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effective, unit]);
+  }, [
+    effective,
+    effectiveUnit,
+    conversion?.waterMl,
+    conversion?.totalWeightMg,
+  ]);
 
-  // Upper bound (in display units, i.e. %): cap at 100% across the
-  // board. For ``pct_of_powder_weight`` that maps to 1000 mg/g on
-  // the server, well above any chemically sensible loading.
-  const upperBound = 100;
+  // Upper bound (in display units). Percentages cap at 100% across
+  // the board. mg-per-ml rates cap at 1000 -- way above any
+  // chemically sensible loading; lets a typo surface as a hard
+  // rejection rather than a silent truncation.
+  const upperBound = effectiveUnit === "mg_per_ml_water" ? 1000 : 100;
 
   const commit = (raw: string) => {
     const trimmed = raw.replace(",", ".").trim();
@@ -4580,7 +5006,7 @@ function BandOverrideRow({
     // No-op when the typed value matches the default — clear the
     // override so the field falls back instead of locking in the
     // baseline value.
-    const tolerance = unit === "pct" ? 1e-6 : 1e-4;
+    const tolerance = effectiveUnit === "pct" ? 1e-6 : 1e-4;
     if (Math.abs(asStorage - defaultValue) < tolerance) {
       onChange(null);
     } else {
@@ -4619,7 +5045,9 @@ function BandOverrideRow({
           }}
           className="w-16 rounded-md bg-ink-0 px-2 py-1 text-right text-xs tabular-nums text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
         />
-        <span className="text-ink-500">%</span>
+        <span className="text-ink-500">
+          {effectiveUnit === "mg_per_ml_water" ? "mg/ml" : "%"}
+        </span>
         {isOverridden && !disabled ? (
           <button
             type="button"

@@ -1068,7 +1068,21 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
         raise InvalidExcipientOverrides()
     cleaned: dict[str, float] = {}
     for key, raw in value.items():
-        if not isinstance(key, str) or key not in EXCIPIENT_OVERRIDE_KEYS:
+        if not isinstance(key, str):
+            raise InvalidExcipientOverrides()
+        # Two shapes accepted: a fixed band slug from
+        # ``EXCIPIENT_OVERRIDE_KEYS`` (gummy bands, anti-caking, tablet
+        # carriers) OR a per-item rate override keyed by the picked
+        # catalogue item's UUID under the ``powder_rate:`` prefix.
+        # Per-item overrides drive the powder flavour-system bands
+        # (acidity, flavouring, sweetener, colour) -- they let the
+        # scientist tune one pick's mg/ml rate on a single formulation
+        # without rewriting the catalogue value the rest of the org
+        # consumes.
+        is_per_item_rate = key.startswith("powder_rate:") and len(key) > len(
+            "powder_rate:"
+        )
+        if not is_per_item_rate and key not in EXCIPIENT_OVERRIDE_KEYS:
             raise InvalidExcipientOverrides()
         if isinstance(raw, bool):
             raise InvalidExcipientOverrides()
@@ -1084,7 +1098,15 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
             continue
         else:
             raise InvalidExcipientOverrides()
-        upper = EXCIPIENT_OVERRIDE_UPPER_BOUND.get(key, 1.0)
+        # Per-item rates cap at 1000 mg/ml -- way above any
+        # chemically sensible loading but high enough that a typo
+        # surfaces as an obvious rejection rather than a silent
+        # truncation.
+        upper = (
+            1000.0
+            if is_per_item_rate
+            else EXCIPIENT_OVERRIDE_UPPER_BOUND.get(key, 1.0)
+        )
         if num < 0 or num > upper:
             raise InvalidExcipientOverrides()
         cleaned[key] = num
@@ -1257,110 +1279,93 @@ def _compute_fill_target(
         # The hardcoded preset mg/g values still drive the band total
         # so picks at a band fire at the original Excel-derived rate;
         # they just don't emit at all when nothing is picked.
-        powder_pickers: dict[str, tuple[tuple[Item, ...], str]] = {
-            "flavouring": (flavouring_items, "Flavouring"),
-            "sweetener": (sweetener_items, "Sweeteners"),
-            "colour": (colour_items, "Colour"),
-        }
-        # Emit each picker-driven band in preset order. The legacy
-        # ``trisodium_citrate`` + ``citric_acid`` preset rows are no
-        # longer auto-fired here -- powder acidity now scales with the
-        # reconstituted drink's water volume and a per-item dose rate
-        # held on the catalogue item, not a fixed mg-per-gram-of-powder
-        # rate. That branch lives directly below.
-        for slug, label, mg_per_g_powder in preset:
-            if slug in ("trisodium_citrate", "citric_acid"):
+        # Unified per-item dosing for every powder flavour-system
+        # band: ACIDITY, FLAVOURING, SWEETENER, COLOUR all scale with
+        # the formulation's ``water_volume_ml`` × the catalogue
+        # item's ``powder_water_dose_mg_per_ml`` rate. The chemistry
+        # is consistent -- the scientist reconstitutes the powder in
+        # water, and the final drink's flavour / sweetness / colour
+        # intensity is set by the concentration in the reconstituted
+        # liquid, not by powder grams. (Anti-caking and Carrier sit
+        # outside this loop -- they're structural, not perceptual,
+        # and stay scaled to powder mass below.)
+        per_item_bands: tuple[
+            tuple[str, tuple[Item, ...], str], ...
+        ] = (
+            ("acidity", acidity_items, "Acidity Regulator"),
+            ("flavouring", flavouring_items, "Flavouring"),
+            ("sweetener", sweetener_items, "Sweeteners"),
+            ("colour", colour_items, "Colour"),
+        )
+        any_per_item_picks = any(picks for _, picks, _ in per_item_bands)
+        water_ml = (
+            float(water_volume_ml)
+            if water_volume_ml is not None
+            else 0.0
+        )
+        if any_per_item_picks and water_ml <= 0:
+            # One shared warning -- the entire flavour system needs a
+            # water volume to dose against. Per-pick item names follow
+            # below for any picks whose rate is also unset, so the
+            # scientist sees both gaps in one pass.
+            pre_warnings.append("powder_flavour_water_volume_missing")
+        for band_slug, picks, band_use_as in per_item_bands:
+            if not picks:
                 continue
-            picker = powder_pickers.get(slug)
-            if picker is None:
-                # Defensive: any preset row without a picker is
-                # quietly skipped. Future preset additions must wire
-                # a picker before they will surface.
-                continue
-            picks, band_use_as = picker
-            # The mg/g rate is override-aware: each powder flavour-
-            # system row carries an ``excipient_overrides`` key
-            # (powder_flavouring, powder_sweetener, powder_colour) so
-            # scientists can re-base the band per formulation without
-            # editing the hardcoded preset.
-            override_key = f"powder_{slug}"
-            mg_per_g_effective = _resolve_band_pct(
-                override_key, excipient_overrides
-            ) or mg_per_g_powder
-            block_total_mg = mg_per_g_effective * powder_g_per_serving
-            _emit_pick_band(
-                block_slug=slug,
-                block_label=label,
-                block_total_mg=block_total_mg,
-                picks=picks,
-                band_use_as=band_use_as,
-                # Empty picker -> band drops out entirely (opt-in
-                # semantics; no more phantom placeholder rows).
-                placeholder_when_empty=False,
-                concentration_mg_per_g_powder=Decimal(
-                    str(mg_per_g_effective)
-                ),
-            )
-        # Acidity Regulator band -- per-item rate driven by the
-        # catalogue item's ``powder_water_dose_mg_per_ml`` attribute
-        # and the formulation's ``water_volume_ml``. Different acids
-        # carry different rates (Trisodium Citrate ~0.1, Citric / Malic
-        # Acid ~0.3) so the band emits one row per pick at its own
-        # individual dose instead of splitting a shared total.
-        #
-        # Items missing the attribute fall through with a
-        # ``powder_acidity_dose_missing:<name>`` warning so the
-        # scientist knows exactly which raw material needs the rate
-        # set on it before the spec sheet ships. Picking acidity items
-        # without entering ``water_volume_ml`` surfaces a single
-        # ``powder_acidity_water_volume_missing`` warning -- the math
-        # has no per-ml volume to multiply against, so no band emits.
-        if acidity_items:
-            water_ml = (
-                float(water_volume_ml)
-                if water_volume_ml is not None
-                else 0.0
-            )
-            if water_ml <= 0:
-                pre_warnings.append("powder_acidity_water_volume_missing")
-            else:
-                for pick in acidity_items:
-                    pick_attrs = pick.attributes or {}
+            for pick in picks:
+                pick_attrs = pick.attributes or {}
+                # Per-formulation override (``excipient_overrides``)
+                # takes precedence over the catalogue's rate so the
+                # scientist can tune one pick on this formulation
+                # without changing the catalogue value the rest of
+                # the org consumes.
+                override_key = f"powder_rate:{pick.id}"
+                override_rate = (
+                    excipient_overrides.get(override_key)
+                    if isinstance(excipient_overrides, dict)
+                    else None
+                )
+                if override_rate is None:
                     raw_rate = pick_attrs.get(POWDER_WATER_DOSE_ATTRIBUTE_KEY)
-                    try:
-                        rate = (
-                            float(raw_rate)
-                            if raw_rate not in (None, "")
-                            else 0.0
-                        )
-                    except (TypeError, ValueError):
-                        rate = 0.0
-                    if rate <= 0:
-                        pre_warnings.append(
-                            f"powder_acidity_dose_missing:{pick.name}"
-                        )
-                        continue
-                    pick_label = (
-                        pick_attrs.get("ingredient_list_name") or ""
-                    ).strip() or pick.name
-                    flavour_rows.append(
-                        ExcipientRow(
-                            slug=f"acidity:{pick.id}",
-                            label=pick_label,
-                            mg=_quantise(water_ml * rate),
-                            use_as="Acidity Regulator",
-                            is_allergen=_is_item_allergen(pick),
-                            allergen_source=_allergen_source_for_item(pick),
-                            # The per-row breakdown the FRONTEND prints
-                            # next to each acidity line ("0.10 mg/ml ×
-                            # 250 ml") is rendered client-side from the
-                            # raw rate + water volume, so we leave the
-                            # per-gram column blank rather than coercing
-                            # a water-rate value into a per-gram slot
-                            # the other powder bands use.
-                            concentration_mg_per_g_powder=None,
-                        )
+                else:
+                    raw_rate = override_rate
+                try:
+                    rate = (
+                        float(raw_rate)
+                        if raw_rate not in (None, "")
+                        else 0.0
                     )
+                except (TypeError, ValueError):
+                    rate = 0.0
+                if rate <= 0:
+                    pre_warnings.append(
+                        f"powder_{band_slug}_rate_missing:{pick.name}"
+                    )
+                    continue
+                if water_ml <= 0:
+                    # No water volume yet -- the math has nothing to
+                    # multiply against. The shared volume warning was
+                    # appended once above, so we just skip the row.
+                    continue
+                pick_label = (
+                    pick_attrs.get("ingredient_list_name") or ""
+                ).strip() or pick.name
+                flavour_rows.append(
+                    ExcipientRow(
+                        slug=f"{band_slug}:{pick.id}",
+                        label=pick_label,
+                        mg=_quantise(water_ml * rate),
+                        use_as=band_use_as,
+                        is_allergen=_is_item_allergen(pick),
+                        allergen_source=_allergen_source_for_item(pick),
+                        # All four bands share the same unit now
+                        # (mg per ml of water), so the per-gram slot
+                        # is unused; the FRONTEND renders the rate
+                        # hint from ``water_dose_mg_per_ml`` on the
+                        # echo instead.
+                        concentration_mg_per_g_powder=None,
+                    )
+                )
         # Anti-caking band -- mirrors the capsule/tablet picker.
         # Empty picker = no anti-caking on the formulation. Stearate-
         # only -> 1.0% of total active; silica-only -> 0.4%; both
@@ -3607,6 +3612,12 @@ _SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
     # version stays internally consistent even if the source catalogue
     # row is later retagged.
     "use_as",
+    # Per-item powder rate -- the math reads this off each picked
+    # item and interprets the unit by ``use_as`` (mg/ml of water for
+    # Acidity, mg/g of powder for Flavouring / Sweetener / Colour).
+    # Frozen into snapshots so versions reproduce identical mg even
+    # if the catalogue value is later retuned.
+    POWDER_WATER_DOSE_ATTRIBUTE_KEY,
     "purity",
     "extract_ratio",
     "overage",

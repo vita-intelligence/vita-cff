@@ -19,6 +19,7 @@ class AttributeDefinitionReadSerializer(serializers.ModelSerializer):
             "id",
             "key",
             "label",
+            "description",
             "data_type",
             "required",
             "options",

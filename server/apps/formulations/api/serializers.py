@@ -230,29 +230,12 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             POWDER_WATER_DOSE_ATTRIBUTE_KEY,
         )
 
-        # Build the per-id lookup from the SAME ``manager.all()`` call
-        # the echo walks. With the prefetch wired upstream this is a
-        # cached iteration -- no extra query -- and avoids the second
-        # walk that previously cost N rows × N picks queries on the
-        # list endpoint.
-        items_by_id = {
-            str(item.id): item for item in obj.acidity_items.all()
-        }
-        rows = self._echo_picks(obj.acidity_items)
-        for row in rows:
-            item = items_by_id.get(row["id"])
-            attrs = (item.attributes or {}) if item is not None else {}
-            raw_rate = attrs.get(POWDER_WATER_DOSE_ATTRIBUTE_KEY)
-            try:
-                rate = (
-                    float(raw_rate)
-                    if raw_rate not in (None, "")
-                    else None
-                )
-            except (TypeError, ValueError):
-                rate = None
-            row["water_dose_mg_per_ml"] = rate
-        return rows
+        return self._attach_per_item_rate(
+            self._echo_picks(obj.acidity_items),
+            obj.acidity_items,
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+            "water_dose_mg_per_ml",
+        )
 
     def get_mcc_carrier_item_ids(self, obj: Formulation) -> list[str]:
         """Flat id list for the capsule + tablet MCC carrier
@@ -341,23 +324,88 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             )
         return rows
 
-    def get_flavouring_items(self, obj: Formulation) -> list[dict]:
-        """Light echo of every picked flavouring item so the builder
-        renders the chip list without a second round-trip."""
+    def _attach_per_item_rate(
+        self,
+        rows: list[dict],
+        manager,
+        attribute_key: str,
+        output_key: str,
+    ) -> list[dict]:
+        """Splice a per-item rate (mg/g of powder, mg/ml of water, etc.)
+        into the echoed rows in-place.
 
-        return self._echo_picks(obj.flavouring_items)
+        Lets each per-item-rated band (acidity / flavouring / sweetener
+        / colour) reuse the standard ``_echo_picks`` output and tack
+        the band-specific rate on the side without duplicating the
+        chip-shaping logic.
+        """
+
+        items_by_id = {str(item.id): item for item in manager.all()}
+        for row in rows:
+            item = items_by_id.get(row["id"])
+            attrs = (item.attributes or {}) if item is not None else {}
+            raw_rate = attrs.get(attribute_key)
+            try:
+                rate = (
+                    float(raw_rate)
+                    if raw_rate not in (None, "")
+                    else None
+                )
+            except (TypeError, ValueError):
+                rate = None
+            row[output_key] = rate
+        return rows
+
+    def get_flavouring_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of every picked flavouring item + the unified
+        ``powder_water_dose_mg_per_ml`` rate from the catalogue. For
+        Flavouring picks the math interprets the value as mg per
+        gram of finished powder; the field name on the catalogue is
+        kept singular ("Powder Water Dose") so scientists set one
+        number per raw material regardless of band."""
+
+        from apps.formulations.constants import (
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+        )
+
+        return self._attach_per_item_rate(
+            self._echo_picks(obj.flavouring_items),
+            obj.flavouring_items,
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+            "powder_rate_mg_per_g",
+        )
 
     def get_colour_items(self, obj: Formulation) -> list[dict]:
-        """Light echo of every picked colour item so the builder
-        renders the chip list without a second round-trip."""
+        """Light echo of every picked colour item + the unified
+        per-item rate. The math interprets the value as mg per gram
+        of finished powder for Colour picks."""
 
-        return self._echo_picks(obj.colour_items)
+        from apps.formulations.constants import (
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+        )
+
+        return self._attach_per_item_rate(
+            self._echo_picks(obj.colour_items),
+            obj.colour_items,
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+            "powder_rate_mg_per_g",
+        )
 
     def get_sweetener_items(self, obj: Formulation) -> list[dict]:
-        """Light echo of every picked sweetener item so the powder
-        builder renders the chip list without a second round-trip."""
+        """Light echo of every picked sweetener item + the unified
+        per-item rate. The math interprets the value as mg per gram
+        of finished powder for Sweetener picks."""
 
-        return self._echo_picks(obj.sweetener_items)
+        from apps.formulations.constants import (
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+        )
+
+        return self._attach_per_item_rate(
+            self._echo_picks(obj.sweetener_items),
+            obj.sweetener_items,
+            POWDER_WATER_DOSE_ATTRIBUTE_KEY,
+            "powder_rate_mg_per_g",
+        )
 
     def get_gelling_items(self, obj: Formulation) -> list[dict]:
         """Light echo of picked gelling items (pectin, gelatin, etc.)

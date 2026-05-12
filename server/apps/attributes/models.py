@@ -62,6 +62,17 @@ class AttributeDefinition(models.Model):
         _("label"),
         max_length=150,
     )
+    description = models.TextField(
+        _("description"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Optional help text rendered under the input on the item "
+            "edit form. Use it to explain non-obvious semantics -- e.g. "
+            "a single rate field whose unit is interpreted differently "
+            "depending on the item's ``use_as`` band."
+        ),
+    )
     data_type = models.CharField(
         _("data type"),
         max_length=32,

@@ -186,12 +186,15 @@ EXCIPIENT_OVERRIDE_KEYS: tuple[str, ...] = (
     # Tablet carrier ratios
     "dcp",
     "mcc",
-    # Powder flavour-system mg/g of powder
+    # Powder flavour-system trisodium_citrate / citric_acid retained
+    # only for backwards-compat with snapshots that still carry the
+    # legacy band-level override; the math no longer reads them.
+    # Flavouring / Sweetener / Colour moved to per-item catalogue
+    # rates (powder_flavouring_mg_per_g etc.) and are intentionally
+    # NOT in this registry -- a per-formulation band override no
+    # longer makes sense when each picked item carries its own rate.
     "powder_trisodium_citrate",
     "powder_citric_acid",
-    "powder_flavouring",
-    "powder_sweetener",
-    "powder_colour",
 )
 
 
@@ -221,14 +224,11 @@ EXCIPIENT_BAND_DEFAULTS: dict[str, float] = {
     # Tablet carriers
     "dcp": TABLET_DCP_PCT,
     "mcc": TABLET_MCC_PCT,
-    # Powder flavour-system mg/g rates -- these match the rows in
-    # ``POWDER_FLAVOUR_SYSTEM`` so changing the constant in one place
-    # auto-flows here.
+    # Legacy powder acidity preset values, kept for compat with any
+    # in-flight snapshot still pointing at them. Powder acidity now
+    # reads ``powder_water_dose_mg_per_ml`` per item.
     "powder_trisodium_citrate": 25.0,
     "powder_citric_acid": 75.0,
-    "powder_flavouring": 62.5,
-    "powder_sweetener": 15.0,
-    "powder_colour": 10.0,
 }
 
 
@@ -254,12 +254,9 @@ EXCIPIENT_OVERRIDE_UPPER_BOUND: dict[str, float] = {
     "silica": 1.0,
     "dcp": 1.0,
     "mcc": 1.0,
-    # mg-per-gram-of-powder bands
+    # Legacy powder acidity bands (kept for snapshot compat).
     "powder_trisodium_citrate": 1000.0,
     "powder_citric_acid": 1000.0,
-    "powder_flavouring": 1000.0,
-    "powder_sweetener": 1000.0,
-    "powder_colour": 1000.0,
 }
 
 
@@ -593,8 +590,26 @@ POWDER_WATER_DOSE_ATTRIBUTE_KEY = "powder_water_dose_mg_per_ml"
 
 #: Human-facing label for :data:`POWDER_WATER_DOSE_ATTRIBUTE_KEY`. Used
 #: when seeding the AttributeDefinition row so the Raw Materials items
-#: table column reads in plain English.
+#: table column reads in plain English. Despite the "Water Dose" name
+#: this single attribute drives the per-item rate for every powder
+#: flavour-system band: the math interprets the number as mg-per-ml
+#: of water for ``use_as = Acidity Regulator`` picks (multiplied by
+#: ``water_volume_ml``) and as mg-per-gram of finished powder for
+#: Flavouring / Sweetener / Colour picks (multiplied by the powder's
+#: per-serving mass). One column on the catalogue, four bands fed.
 POWDER_WATER_DOSE_ATTRIBUTE_LABEL = "Powder Water Dose (mg/ml)"
+
+#: Help text rendered under the input on the Raw Materials edit form
+#: so scientists understand the unified per-band interpretation
+#: without having to memorise the convention.
+POWDER_WATER_DOSE_ATTRIBUTE_DESCRIPTION = (
+    "Milligrams of this ingredient per millilitre of reconstitution "
+    "water. Drives every powder flavour-system band -- Acidity, "
+    "Flavouring, Sweetener, Colour -- so the same rate produces the "
+    "same concentration in the final reconstituted drink. The "
+    "formulation engine multiplies this value by the per-serving "
+    "water volume to compute the mg per serving."
+)
 
 
 #: Default per-scoop fill weight (mg) seeded when the scientist has

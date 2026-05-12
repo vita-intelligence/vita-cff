@@ -189,6 +189,17 @@ export interface AcidityItemDto extends GummyBaseItemDto {
 }
 
 
+/** Powder Flavouring / Sweetener / Colour echo. Carries the picked
+ *  item's per-gram-of-powder rate alongside the shared chip shape so
+ *  the builder math can dose each item at its own loading without a
+ *  second catalogue round-trip. ``null`` -> rate unset on the source
+ *  raw material; the math drops the row and emits a soft warning so
+ *  the scientist knows which catalogue value to populate. */
+export interface PowderBandItemDto extends GummyBaseItemDto {
+  readonly powder_rate_mg_per_g: number | null;
+}
+
+
 export interface FormulationDto {
   readonly id: string;
   readonly code: string;
@@ -205,13 +216,14 @@ export interface FormulationDto {
   readonly gummy_base_item_ids: readonly string[];
   readonly gummy_base_items: readonly GummyBaseItemDto[];
   readonly flavouring_item_ids: readonly string[];
-  //: Echo payload reuses :type:`GummyBaseItemDto` — same fields
-  //: (id / name / internal_code / ingredient_list_name / use_as).
-  readonly flavouring_items: readonly GummyBaseItemDto[];
+  //: Echo payload carries the per-item powder rate (mg/g of finished
+  //: powder) alongside the shared chip shape -- powder math doses
+  //: each pick at its own loading rather than splitting a band total.
+  readonly flavouring_items: readonly PowderBandItemDto[];
   readonly colour_item_ids: readonly string[];
-  readonly colour_items: readonly GummyBaseItemDto[];
+  readonly colour_items: readonly PowderBandItemDto[];
   readonly sweetener_item_ids: readonly string[];
-  readonly sweetener_items: readonly GummyBaseItemDto[];
+  readonly sweetener_items: readonly PowderBandItemDto[];
   readonly glazing_item_ids: readonly string[];
   readonly glazing_items: readonly GummyBaseItemDto[];
   readonly gelling_item_ids: readonly string[];

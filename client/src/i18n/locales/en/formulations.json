@@ -218,8 +218,11 @@
         "fill_shortfall": "Recipe is below the target fill weight — add a carrier / bulking agent line to make it up.",
         "fill_overshoot": "Recipe is over the target fill weight — drop actives or raise the target.",
         "gummy_base_below_floor": "Gummy base would fall below the structural floor — drop actives or raise the target so the gel can set.",
-        "powder_acidity_water_volume_missing": "Acidity items picked but no water volume entered — set the per-serving water volume to compute the acid doses.",
-        "powder_acidity_dose_missing": "Acidity item \"{name}\" has no dose rate set — open the raw material and fill in Powder Water Dose (mg/ml)."
+        "powder_flavour_water_volume_missing": "No water volume entered — set the per-serving water volume so the flavour-system bands can dose.",
+        "powder_acidity_rate_missing": "Acidity item \"{name}\" has no Powder Water Dose set on the raw material.",
+        "powder_flavouring_rate_missing": "Flavouring item \"{name}\" has no Powder Water Dose set on the raw material.",
+        "powder_sweetener_rate_missing": "Sweetener item \"{name}\" has no Powder Water Dose set on the raw material.",
+        "powder_colour_rate_missing": "Colour item \"{name}\" has no Powder Water Dose set on the raw material."
       }
     },
     "copy": {
@@ -299,14 +302,18 @@
     "silica": "Silica",
     "dcp": "DCP",
     "mcc": "MCC",
-    "powder_flavouring": "Flavouring",
-    "powder_sweetener": "Sweetener",
-    "powder_colour": "Colour",
     "basis": {
       "of_target": "of target weight",
       "of_actives": "of total active mg",
       "of_powder_weight": "of total powder weight",
       "per_g_powder": "for every gram of finished powder"
+    },
+    "per_item_title": "Per-item rates (% of finished powder)",
+    "per_item_basis": {
+      "acidity": "Acidity Regulator — % of finished powder",
+      "flavouring": "Flavouring — % of finished powder",
+      "sweetener": "Sweetener — % of finished powder",
+      "colour": "Colour — % of finished powder"
     }
   },
   "compliance": {

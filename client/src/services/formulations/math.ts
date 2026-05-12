@@ -145,12 +145,11 @@ export const EXCIPIENT_BAND_DEFAULTS: Readonly<Record<string, number>> = {
   // Tablet carriers
   dcp: TABLET_DCP_PCT,
   mcc: TABLET_MCC_PCT,
-  // Powder flavour-system mg/g rates
+  // Legacy powder acidity rates -- kept so any pre-existing snapshot
+  // override still resolves to a number rather than throwing. The
+  // math no longer reads them; powder acidity is per-item now.
   powder_trisodium_citrate: 25,
   powder_citric_acid: 75,
-  powder_flavouring: 62.5,
-  powder_sweetener: 15,
-  powder_colour: 10,
 };
 
 /** Override slugs the formulation's ``excipient_overrides`` JSON
@@ -169,11 +168,11 @@ export const EXCIPIENT_BAND_SLUGS = [
   "silica",
   "dcp",
   "mcc",
+  // Legacy slugs kept for snapshot compatibility; the math no longer
+  // reads them. Powder flavouring / sweetener / colour moved to a
+  // per-item rate on the catalogue (powder_<band>_mg_per_g).
   "powder_trisodium_citrate",
   "powder_citric_acid",
-  "powder_flavouring",
-  "powder_sweetener",
-  "powder_colour",
 ] as const;
 export type ExcipientBandSlug = (typeof EXCIPIENT_BAND_SLUGS)[number];
 
@@ -1239,11 +1238,20 @@ function computeFillTarget(
     readonly id: string;
     readonly label: string;
     readonly useAs: string;
+    /** Per-item mg of flavouring per gram of finished powder.
+     *  Sourced from the catalogue item's
+     *  ``powder_flavouring_mg_per_g`` attribute. ``null`` / ``0``
+     *  -> skip + warn (powder-only; gummy ignores this field). */
+    readonly powderRateMgPerG?: number | null;
   }> = [],
   colourItems: ReadonlyArray<{
     readonly id: string;
     readonly label: string;
     readonly useAs: string;
+    /** Per-item mg of colour per gram of finished powder. Sourced
+     *  from ``powder_colour_mg_per_g``. ``null`` / ``0`` -> skip
+     *  + warn. */
+    readonly powderRateMgPerG?: number | null;
   }> = [],
   glazingItems: ReadonlyArray<{
     readonly id: string;
@@ -1275,6 +1283,11 @@ function computeFillTarget(
     readonly id: string;
     readonly label: string;
     readonly useAs: string;
+    /** Per-item mg of sweetener per gram of finished powder. Sourced
+     *  from ``powder_sweetener_mg_per_g``. ``null`` / ``0`` -> skip
+     *  + warn. Gummy formulations consume sweeteners under the
+     *  gummy_base pool and ignore this field. */
+    readonly powderRateMgPerG?: number | null;
   }> = [],
   antiCakingItems: ReadonlyArray<{
     readonly id: string;
@@ -1362,112 +1375,119 @@ function computeFillTarget(
             }
           };
 
-          // Preset-driven bands tied to their pickers. Acidity is
-          // handled separately below because it now scales with
-          // reconstitution water volume and a per-item dose rate
-          // held on the catalogue item, not the legacy mg/g preset.
-          const pickerForSlug: Record<
-            string,
-            ReadonlyArray<{
+          // Powder Flavouring / Sweetener / Colour all use the
+          // per-item rate model: each picked item carries its own
+          // ``mg per g of powder`` loading on the catalogue, so a
+          // Cocoa Powder at 50 mg/g and a Vanilla Extract at 5 mg/g
+          // sit in the same band at their own doses. Items missing
+          // a rate fall out with a ``powder_<band>_rate_missing``
+          // warning -- mirrors the acidity pattern below.
+          const perItemBands: ReadonlyArray<{
+            readonly slug: "flavouring" | "sweetener" | "colour";
+            readonly useAs: string;
+            readonly picks: ReadonlyArray<{
               readonly id: string;
               readonly label: string;
               readonly useAs: string;
-            }>
-          > = {
-            flavouring: flavouringItems,
-            sweetener: sweetenerItems,
-            colour: colourItems,
-          };
-          for (const row of preset) {
-            if (
-              row.slug === "trisodium_citrate" ||
-              row.slug === "citric_acid"
-            ) {
-              continue;
-            }
-            const picks = pickerForSlug[row.slug];
-            if (!picks) continue;
-            const useAsForBand =
-              row.slug === "flavouring"
-                ? "Flavouring"
-                : row.slug === "sweetener"
-                  ? "Sweeteners"
-                  : row.slug === "colour"
-                    ? "Colour"
-                    : "";
-            // Per-row mg/g rate is override-aware: each band has its
-            // own ``excipient_overrides`` key (powder_flavouring,
-            // powder_sweetener, powder_colour) so a scientist can
-            // re-base the loading per formulation without changing
-            // the hardcoded preset. Falls back to the preset value.
-            const overrideKey = `powder_${row.slug}`;
-            const effectiveMgPerG =
-              resolveBandPct(overrideKey, excipientOverrides) ||
-              row.mgPerGPowder;
-            emitPowderBand(
-              row.slug,
-              row.label,
-              effectiveMgPerG * powderGPerServing,
-              picks.map((p) => ({
-                id: p.id,
-                label: p.label,
-                useAs: p.useAs || useAsForBand,
-              })),
-              effectiveMgPerG,
-            );
+              readonly powderRateMgPerG?: number | null;
+            }>;
+          }> = [
+            {
+              slug: "flavouring",
+              useAs: "Flavouring",
+              picks: flavouringItems,
+            },
+            {
+              slug: "sweetener",
+              useAs: "Sweeteners",
+              picks: sweetenerItems,
+            },
+            {
+              slug: "colour",
+              useAs: "Colour",
+              picks: colourItems,
+            },
+          ];
+          // Unified water-volume dosing for every per-item powder
+          // band -- ACIDITY uses ``waterDoseMgPerMl``, the other three
+          // bands carry ``powderRateMgPerG`` (kept for naming, but the
+          // unit semantics are identical now: mg per ml of water).
+          // Same multiplier across the board so the scientist tunes
+          // every band to a target concentration in the reconstituted
+          // drink rather than a per-gram-of-powder loading.
+          const waterMl =
+            waterVolumeMl !== null &&
+            waterVolumeMl !== undefined &&
+            Number.isFinite(waterVolumeMl)
+              ? waterVolumeMl
+              : 0;
+          const anyPerItemPicks =
+            acidityItems.length > 0 ||
+            flavouringItems.length > 0 ||
+            sweetenerItems.length > 0 ||
+            colourItems.length > 0;
+          if (anyPerItemPicks && waterMl <= 0) {
+            preWarnings.push("powder_flavour_water_volume_missing");
           }
-          // Acidity Regulator -- per-item rate driven by each picked
-          // catalogue item's ``powder_water_dose_mg_per_ml`` attribute
-          // multiplied by the formulation's ``water_volume_ml``.
-          // Different acids carry different rates (Trisodium Citrate
-          // ~0.1, Citric / Malic Acid ~0.3) so each row emits at its
-          // own mg total rather than splitting a shared band.
-          //
-          // Items without the rate set are skipped and emit a
-          // ``powder_acidity_dose_missing:<label>`` warning so the
-          // scientist knows which raw material to update. Picking
-          // acidity without entering a water volume surfaces a
-          // single ``powder_acidity_water_volume_missing`` warning.
-          if (acidityItems.length > 0) {
-            const waterMl =
-              waterVolumeMl !== null &&
-              waterVolumeMl !== undefined &&
-              Number.isFinite(waterVolumeMl)
-                ? waterVolumeMl
-                : 0;
-            if (waterMl <= 0) {
-              preWarnings.push("powder_acidity_water_volume_missing");
-            } else {
-              for (const pick of acidityItems) {
-                const rawRate = pick.waterDoseMgPerMl;
-                const rate =
-                  rawRate !== null &&
-                  rawRate !== undefined &&
-                  Number.isFinite(rawRate)
-                    ? rawRate
-                    : 0;
-                if (rate <= 0) {
-                  preWarnings.push(
-                    `powder_acidity_dose_missing:${pick.label}`,
-                  );
-                  continue;
-                }
-                rows.push({
-                  slug: `acidity:${pick.id}`,
-                  label: pick.label,
-                  mg: waterMl * rate,
-                  isRemainder: false,
-                  useAs: pick.useAs || "Acidity Regulator",
-                  // Per-row breakdown for acidity rides on
-                  // water-volume × rate, not per-gram-of-powder.
-                  // Leave the powder column blank and surface the
-                  // rate via ``concentrationMgPerMlWater`` so the
-                  // builder renders an "(0.1 mg/ml)" hint next to
-                  // the row instead of the unrelated "mg/g" copy.
-                  concentrationMgPerGPowder: null,
-                  concentrationMgPerMlWater: rate,
-                });
+          const allPerItemBands: ReadonlyArray<{
+            readonly slug:
+              | "acidity"
+              | "flavouring"
+              | "sweetener"
+              | "colour";
+            readonly useAs: string;
+            readonly picks: ReadonlyArray<{
+              readonly id: string;
+              readonly label: string;
+              readonly useAs: string;
+              readonly powderRateMgPerG?: number | null;
+              readonly waterDoseMgPerMl?: number | null;
+            }>;
+          }> = [
+            {
+              slug: "acidity",
+              useAs: "Acidity Regulator",
+              picks: acidityItems,
+            },
+            ...perItemBands,
+          ];
+          for (const band of allPerItemBands) {
+            for (const pick of band.picks) {
+              // Per-formulation override beats the catalogue rate:
+              // the scientist tweaks one pick's mg/ml here and the
+              // math reflects it without touching the raw material
+              // that other formulations share.
+              const overrideRaw = excipientOverrides?.[
+                `powder_rate:${pick.id}`
+              ];
+              const catalogueRate =
+                pick.waterDoseMgPerMl ?? pick.powderRateMgPerG;
+              const rawRate =
+                overrideRaw !== undefined && overrideRaw !== null
+                  ? overrideRaw
+                  : catalogueRate;
+              const rate =
+                rawRate !== null &&
+                rawRate !== undefined &&
+                Number.isFinite(rawRate)
+                  ? rawRate
+                  : 0;
+              if (rate <= 0) {
+                preWarnings.push(
+                  `powder_${band.slug}_rate_missing:${pick.label}`,
+                );
+                continue;
               }
+              if (waterMl <= 0) continue;
+              rows.push({
+                slug: `${band.slug}:${pick.id}`,
+                label: pick.label,
+                mg: waterMl * rate,
+                isRemainder: false,
+                useAs: pick.useAs || band.useAs,
+                concentrationMgPerGPowder: null,
+                concentrationMgPerMlWater: rate,
+              });
             }
           }
 

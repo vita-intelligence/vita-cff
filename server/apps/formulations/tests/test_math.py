@@ -487,7 +487,7 @@ class TestPowderAcidity:
         labels = {row.label for row in totals.excipients.rows}
         assert "Malic Acid" not in labels
         assert any(
-            w.startswith("powder_acidity_dose_missing")
+            w.startswith("powder_acidity_rate_missing")
             and "Malic Acid" in w
             for w in totals.warnings
         )
@@ -505,7 +505,7 @@ class TestPowderAcidity:
         assert totals.excipients is not None
         labels = {row.label for row in totals.excipients.rows}
         assert "Trisodium Citrate" not in labels
-        assert "powder_acidity_water_volume_missing" in totals.warnings
+        assert "powder_flavour_water_volume_missing" in totals.warnings
 
     def test_no_acidity_picks_emits_no_band(self) -> None:
         org = OrganizationFactory()

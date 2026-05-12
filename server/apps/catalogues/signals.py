@@ -23,6 +23,7 @@ from apps.catalogues.models import (
     Catalogue,
 )
 from apps.formulations.constants import (
+    POWDER_WATER_DOSE_ATTRIBUTE_DESCRIPTION,
     POWDER_WATER_DOSE_ATTRIBUTE_KEY,
     POWDER_WATER_DOSE_ATTRIBUTE_LABEL,
 )
@@ -50,10 +51,17 @@ SYSTEM_CATALOGUE_SPEC: tuple[tuple[str, str, str], ...] = (
 #: ``Item.attributes``), so seeding them on org creation keeps the
 #: math contract honest across every new tenant. Existing orgs are
 #: covered by the parallel data migration.
-RAW_MATERIALS_SYSTEM_ATTRIBUTES: tuple[tuple[str, str, str, bool], ...] = (
+#: Each entry is ``(key, label, description, data_type, required)``.
+#: The ``description`` is rendered as help text under the input on
+#: the item edit form so scientists see the per-band interpretation
+#: rule at the point of use.
+RAW_MATERIALS_SYSTEM_ATTRIBUTES: tuple[
+    tuple[str, str, str, str, bool], ...
+] = (
     (
         POWDER_WATER_DOSE_ATTRIBUTE_KEY,
         POWDER_WATER_DOSE_ATTRIBUTE_LABEL,
+        POWDER_WATER_DOSE_ATTRIBUTE_DESCRIPTION,
         DataType.NUMBER,
         False,
     ),
@@ -99,12 +107,19 @@ def seed_system_catalogues(
         return
 
     actor = instance.created_by
-    for key, label, data_type, required in RAW_MATERIALS_SYSTEM_ATTRIBUTES:
+    for (
+        key,
+        label,
+        description,
+        data_type,
+        required,
+    ) in RAW_MATERIALS_SYSTEM_ATTRIBUTES:
         AttributeDefinition.objects.get_or_create(
             catalogue=raw_materials_catalogue,
             key=key,
             defaults={
                 "label": label,
+                "description": description,
                 "data_type": data_type,
                 "required": required,
                 "options": [],
