@@ -47,6 +47,7 @@ from apps.formulations.constants import (
     EXCIPIENT_SLUG_MCC,
     EXCIPIENT_SLUG_WATER,
     capsule_size_by_key,
+    normalize_use_as_value,
 )
 from apps.formulations.models import FormulationVersion
 from apps.formulations.services import instantiate_active_label
@@ -1983,9 +1984,45 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     if serving_multiplier <= 0:
         serving_multiplier = Decimal("1")
 
+    # Live ``use_as`` lookup for snapshots that pre-date adding the
+    # tag to ``_SNAPSHOT_ATTRIBUTE_KEYS``. Resolves by item_id in a
+    # single round-trip rather than per-line so a long actives list
+    # doesn't fan out into N queries. New snapshots already carry
+    # ``use_as`` in ``item_attributes`` and skip this fallback.
+    line_item_ids = [
+        str(line.get("item_id"))
+        for line in snapshot_lines
+        if line.get("item_id")
+        and not (line.get("item_attributes") or {}).get("use_as")
+    ]
+    live_use_as_by_id: dict[str, str] = {}
+    if line_item_ids:
+        live_use_as_by_id = {
+            str(item.id): (item.attributes or {}).get("use_as") or ""
+            for item in Item.objects.filter(id__in=line_item_ids).only(
+                "id", "attributes"
+            )
+        }
+
     actives = []
     for line in snapshot_lines:
         attrs = line.get("item_attributes") or {}
+        # Only true actives belong in the Active Ingredients table.
+        # Lines tagged with a non-Active ``use_as`` (Bulking Agent,
+        # Sweeteners, Acidity Regulator, etc.) flow into the EU 1169
+        # declaration + Excipient Information section instead. Items
+        # with an empty / missing ``use_as`` default to Active for
+        # backwards compatibility with snapshots written before the
+        # vocabulary was enforced -- mirrors the same fallback used
+        # by ``build_ingredient_declaration``.
+        raw_use_as = attrs.get("use_as") or live_use_as_by_id.get(
+            str(line.get("item_id") or "")
+        )
+        use_as = (
+            normalize_use_as_value(str(raw_use_as)) if raw_use_as else ""
+        )
+        if use_as and use_as != "Active":
+            continue
         raw_per_unit = _coerce_decimal(line.get("mg_per_serving"))
         raw_per_serving = (
             (raw_per_unit * serving_multiplier)

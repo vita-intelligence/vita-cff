@@ -3566,6 +3566,12 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
 #: at save time.
 _SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
     "type",
+    # Functional role (Active, Sweeteners, Bulking Agent, ...). Drives
+    # the spec sheet's actives / excipients split and the EU 1169
+    # declaration grouping. Persisted in the snapshot so a frozen
+    # version stays internally consistent even if the source catalogue
+    # row is later retagged.
+    "use_as",
     "purity",
     "extract_ratio",
     "overage",
