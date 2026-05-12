@@ -88,7 +88,11 @@ export function ImportItemsButton({ orgId, slug }: ImportItemsButtonProps) {
       router.refresh();
     } catch (error) {
       if (error instanceof ApiError) {
-        const code = error.fieldErrors.file?.[0];
+        // ``file`` is always returned as a flat ``string[]`` here --
+        // the import endpoint never nests under it. Narrow the union
+        // away from the nested-shape branch before indexing.
+        const fileErrors = error.fieldErrors.file;
+        const code = Array.isArray(fileErrors) ? fileErrors[0] : undefined;
         if (code) {
           const localeKey = `import_modal.errors.${code}`;
           const translated = tItems(localeKey);

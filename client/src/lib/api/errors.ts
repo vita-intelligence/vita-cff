@@ -9,8 +9,19 @@
 
 import { AxiosError, type AxiosResponse } from "axios";
 
-/** Shape the Django backend returns for validation errors. */
-export type ApiFieldErrors = Record<string, readonly string[]>;
+/** Shape the Django backend returns for validation errors.
+ *
+ * Each top-level key maps either to a list of error codes for that
+ * field (the standard DRF shape: ``{"name": ["blank"]}``) OR to a
+ * nested object when the field carries a dictionary of sub-errors
+ * (DRF nested-serializer shape: ``{"attributes": {"purity":
+ * ["invalid"]}}``). Forms read ``fieldErrors.<field>`` for a flat
+ * array, and ``fieldErrors.<container>.<sub_field>`` for a nested
+ * key -- both paths are populated by :func:`normalizeApiError`. */
+export type ApiFieldErrors = Record<
+  string,
+  readonly string[] | Record<string, readonly string[]>
+>;
 
 export interface ApiErrorPayload {
   readonly detail?: string;
@@ -63,13 +74,41 @@ export class ApiError extends Error {
 
 function extractFieldErrors(data: unknown): ApiFieldErrors {
   if (!data || typeof data !== "object") return {};
-  const result: Record<string, readonly string[]> = {};
+  const result: Record<
+    string,
+    readonly string[] | Record<string, readonly string[]>
+  > = {};
   for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
     if (key === "detail" || key === "code" || key === "errors") continue;
     if (Array.isArray(value) && value.every((v) => typeof v === "string")) {
       result[key] = value as readonly string[];
     } else if (typeof value === "string") {
       result[key] = [value];
+    } else if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      // Nested-serializer shape (e.g. ``attributes`` on the catalogue
+      // item form). Each child key maps to a string array of codes;
+      // anything that isn't a clean array is coerced into one or
+      // skipped so a malformed branch doesn't corrupt the whole map.
+      const nested: Record<string, readonly string[]> = {};
+      for (const [subKey, subValue] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
+        if (
+          Array.isArray(subValue) &&
+          subValue.every((v) => typeof v === "string")
+        ) {
+          nested[subKey] = subValue as readonly string[];
+        } else if (typeof subValue === "string") {
+          nested[subKey] = [subValue];
+        }
+      }
+      if (Object.keys(nested).length > 0) {
+        result[key] = nested;
+      }
     }
   }
   return result;
