@@ -95,6 +95,25 @@
       "director": "Approved by (director)",
       "pending": "Not signed yet"
     },
+    "audit": {
+      "title": "Signature evidence",
+      "subtitle": "Captured at kiosk sign time. Re-verify to check the document hasn't drifted.",
+      "verify_cta": "Re-verify hash",
+      "loading": "Loading audit trail…",
+      "error": "Couldn't load the audit trail. Try again or refresh.",
+      "proposal_title": "Commercial proposal",
+      "spec_title": "Specification sheet — {name}",
+      "spec_title_untitled": "Specification sheet",
+      "not_signed": "Not signed yet.",
+      "signer": "Signed by",
+      "signed_at": "Signed at",
+      "ip": "Source IP",
+      "user_agent": "Browser / device",
+      "stored_hash": "Document hash at sign time (SHA-256)",
+      "current_hash": "Document hash right now (SHA-256)",
+      "hash_match": "Hash matches",
+      "hash_drift": "Document has changed since signing"
+    },
     "sales_person": {
       "label": "Sales person",
       "unassigned": "No sales lead",

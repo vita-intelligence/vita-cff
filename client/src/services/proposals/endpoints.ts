@@ -14,6 +14,8 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/transitions/`,
   render: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/render/`,
+  audit: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/audit/`,
   lines: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/lines/`,
   lineDetail: (orgId: string, proposalId: string, lineId: string) =>

@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.proposals.api.views import (
+    ProposalAuditView,
     ProposalCostPreviewView,
     ProposalDetailView,
     ProposalLineDetailView,
@@ -47,6 +48,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/render/",
         ProposalRenderView.as_view(),
         name="proposal-render",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/audit/",
+        ProposalAuditView.as_view(),
+        name="proposal-audit",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/lines/",

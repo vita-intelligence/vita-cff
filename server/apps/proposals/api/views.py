@@ -748,6 +748,126 @@ class ProposalCostPreviewView(APIView):
         )
 
 
+class ProposalAuditView(APIView):
+    """``GET`` ``/api/organizations/<org>/proposals/<id>/audit/``.
+
+    Staff-side view of the e-signature audit trail captured at kiosk
+    sign time. For the proposal and every attached spec sheet we
+    return:
+
+    * Signer identity (name / email / company)
+    * Signed-at timestamp
+    * Source IP (``X-Forwarded-For``-aware)
+    * Raw User-Agent string
+    * Stored SHA-256 hash of the rendered HTML at sign time
+    * ``current_hash`` — freshly computed from the document **right
+      now**
+    * ``hash_matches`` — ``True`` iff the two hashes agree
+
+    The hash mismatch flag is the load-bearing piece for a legal
+    dispute: if it ever goes red, something in the document or its
+    underlying data has changed since signing, and the contract in
+    the DB no longer matches what the customer agreed to. The
+    backend re-renders both documents on every request rather than
+    caching, so the answer is always live.
+
+    Gated on ``proposals:view_signed`` — same capability that opens
+    the "signed deals" inbox. Customers never hit this; the public
+    kiosk has no audit surface.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW_SIGNED
+
+    def _load(self, proposal_id: str):
+        try:
+            return get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+    def get(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        from apps.proposals.services import _attached_spec_sheets
+        from apps.specifications.services import render_html as _render_spec_html
+
+        proposal = self._load(proposal_id)
+
+        # Proposal block — only meaningful once the customer has
+        # signed. Pre-signature reads return empty strings so the
+        # frontend can show "not signed yet" without crashing on
+        # null fields.
+        proposal_stored_hash = proposal.customer_sign_document_hash or ""
+        if proposal.customer_signed_at is not None:
+            proposal_current_hash = _document_hash(
+                _render_proposal_html(proposal)
+            )
+        else:
+            proposal_current_hash = ""
+        proposal_block = {
+            "signer_name": proposal.customer_signer_name or "",
+            "signer_email": proposal.customer_signer_email or "",
+            "signer_company": proposal.customer_signer_company or "",
+            "signed_at": (
+                proposal.customer_signed_at.isoformat()
+                if proposal.customer_signed_at is not None
+                else None
+            ),
+            "ip": proposal.customer_sign_ip or "",
+            "user_agent": proposal.customer_sign_user_agent or "",
+            "stored_hash": proposal_stored_hash,
+            "current_hash": proposal_current_hash,
+            "hash_matches": (
+                proposal_stored_hash != ""
+                and proposal_current_hash != ""
+                and proposal_stored_hash == proposal_current_hash
+            ),
+        }
+
+        specs_block = []
+        for sheet in _attached_spec_sheets(proposal):
+            sheet_stored_hash = sheet.customer_sign_document_hash or ""
+            if sheet.customer_signed_at is not None:
+                sheet_current_hash = _document_hash(_render_spec_html(sheet))
+            else:
+                sheet_current_hash = ""
+            specs_block.append(
+                {
+                    "id": str(sheet.id),
+                    "code": sheet.code or "",
+                    "formulation_name": (
+                        sheet.formulation_version.formulation.name
+                        if sheet.formulation_version_id
+                        else ""
+                    ),
+                    "signer_name": sheet.customer_name or "",
+                    "signer_email": sheet.customer_email or "",
+                    "signer_company": sheet.customer_company or "",
+                    "signed_at": (
+                        sheet.customer_signed_at.isoformat()
+                        if sheet.customer_signed_at is not None
+                        else None
+                    ),
+                    "ip": sheet.customer_sign_ip or "",
+                    "user_agent": sheet.customer_sign_user_agent or "",
+                    "stored_hash": sheet_stored_hash,
+                    "current_hash": sheet_current_hash,
+                    "hash_matches": (
+                        sheet_stored_hash != ""
+                        and sheet_current_hash != ""
+                        and sheet_stored_hash == sheet_current_hash
+                    ),
+                }
+            )
+
+        return Response(
+            {"proposal": proposal_block, "specs": specs_block},
+            status=status.HTTP_200_OK,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Proposal-centric kiosk (public, token-gated, no org auth)
 #
@@ -1187,11 +1307,6 @@ class PublicProposalSignProposalView(APIView):
 
         payload = request.data or {}
         signature_image = payload.get("signature_image") or ""
-        # ESIGN/UETA evidence captured *before* the write so a sign
-        # call that mutates the proposal can record what the signer
-        # actually saw. Hash is over the HTML version the customer
-        # has been reading in the iframe just above.
-        document_hash = _document_hash(_render_proposal_html(proposal))
         try:
             updated = capture_customer_signature_on_proposal(
                 proposal=proposal,
@@ -1205,7 +1320,11 @@ class PublicProposalSignProposalView(APIView):
                 ack_rd_terms=bool(payload.get("ack_rd_terms")),
                 sign_ip=_client_ip(request),
                 sign_user_agent=_user_agent(request),
-                sign_document_hash=document_hash,
+                # Hash is filled in below from the *post-sign* render
+                # because the rendered HTML embeds the signature image
+                # and timestamp — hashing the pre-sign document would
+                # produce a value that can never match a verifier's
+                # re-render and the audit panel would always go red.
             )
         except InvalidProposalTransition:
             return Response(
@@ -1226,6 +1345,16 @@ class PublicProposalSignProposalView(APIView):
                 {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Post-sign hash: re-render the document *with* the captured
+        # signature + ticked acks baked in, hash it, persist. The
+        # audit endpoint compares its live re-render to this value,
+        # so any later mutation of the proposal's data flips
+        # ``hash_matches`` to ``False``.
+        post_sign_hash = _document_hash(_render_proposal_html(updated))
+        updated.customer_sign_document_hash = post_sign_hash
+        updated.save(update_fields=["customer_sign_document_hash"])
+
         return Response(
             {
                 "customer_signed_at": (
@@ -1270,19 +1399,7 @@ class PublicProposalSignSpecView(APIView):
         session = identity.session
 
         signature_image = (request.data or {}).get("signature_image") or ""
-        # Hash the spec HTML the customer saw inside the iframe. The
-        # render path is the same one ``render_pdf`` feeds WeasyPrint,
-        # so the hash is reproducible from the persisted state.
         from apps.specifications.services import render_html as _render_spec_html
-
-        attached = list(proposal.lines.values_list("specification_sheet_id", flat=True))
-        document_hash = ""
-        if str(sheet_id) in {str(s) for s in attached if s}:
-            from apps.specifications.models import SpecificationSheet
-
-            sheet_obj = SpecificationSheet.objects.filter(id=sheet_id).first()
-            if sheet_obj is not None:
-                document_hash = _document_hash(_render_spec_html(sheet_obj))
 
         try:
             updated = capture_customer_signature_on_attached_spec(
@@ -1294,7 +1411,8 @@ class PublicProposalSignSpecView(APIView):
                 signature_image=signature_image,
                 sign_ip=_client_ip(request),
                 sign_user_agent=_user_agent(request),
-                sign_document_hash=document_hash,
+                # Hash is computed *post-sign* below for the same
+                # reason as the proposal sign endpoint.
             )
         except KioskSpecNotOnProposal:
             # Same 404 shape as an unknown token — don't leak which
@@ -1310,6 +1428,15 @@ class PublicProposalSignSpecView(APIView):
                 {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # Post-sign hash on the spec sheet — mirrors the proposal-sign
+        # path. The rendered spec HTML bakes the customer signature
+        # image + timestamp in, so hashing pre-sign would never match
+        # the audit endpoint's re-render.
+        post_sign_hash = _document_hash(_render_spec_html(updated))
+        updated.customer_sign_document_hash = post_sign_hash
+        updated.save(update_fields=["customer_sign_document_hash"])
+
         return Response(
             {
                 "id": str(updated.id),

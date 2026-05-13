@@ -184,11 +184,10 @@ export function ProposalKioskView({
     acks.terms &&
     (!isCustom || acks.rd_terms);
 
-  // Section-tracking state, surfaced from ``ProposalReadingPanel``
-  // via a callback. The panel mounts an ``IntersectionObserver`` per
-  // numbered section and reports back as each one is dwelt on. We
-  // mirror just the boolean we need for the sign-button gate; the
-  // panel keeps its own progress chip in sync.
+  // Reading-progress gate. ``ScrollTrackingIframe`` polls its
+  // contentWindow's scrollY every 250 ms and flips this once the
+  // customer reaches ``READ_THRESHOLD`` of the document. The sign
+  // button stays disabled until then.
   const [allSectionsRead, setAllSectionsRead] = useState<boolean>(false);
 
   const allSigned = useMemo(() => {

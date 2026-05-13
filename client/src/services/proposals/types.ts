@@ -275,3 +275,35 @@ export interface ProposalKioskDto {
   readonly ack_rd_terms: boolean;
   readonly attached_specs: readonly ProposalKioskSpecDto[];
 }
+
+/**
+ * E-signature audit-trail row for one document on a proposal.
+ * Backed by the columns the kiosk writes at sign time:
+ * IP (X-Forwarded-For-aware), raw User-Agent, and a SHA-256 hash of
+ * the rendered HTML the signer saw. ``current_hash`` is computed
+ * fresh by the backend on every request — if it disagrees with
+ * ``stored_hash``, ``hash_matches`` flips to ``false`` and the
+ * document has drifted since signing.
+ */
+export interface ProposalAuditDocumentDto {
+  readonly signer_name: string;
+  readonly signer_email: string;
+  readonly signer_company: string;
+  readonly signed_at: string | null;
+  readonly ip: string;
+  readonly user_agent: string;
+  readonly stored_hash: string;
+  readonly current_hash: string;
+  readonly hash_matches: boolean;
+}
+
+export interface ProposalAuditSpecDto extends ProposalAuditDocumentDto {
+  readonly id: string;
+  readonly code: string;
+  readonly formulation_name: string;
+}
+
+export interface ProposalAuditDto {
+  readonly proposal: ProposalAuditDocumentDto;
+  readonly specs: readonly ProposalAuditSpecDto[];
+}

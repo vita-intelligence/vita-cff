@@ -20,6 +20,7 @@ import {
   deleteProposalLine,
   fetchCostPreview,
   fetchProposal,
+  fetchProposalAudit,
   fetchProposalLines,
   fetchProposalTransitions,
   fetchProposals,
@@ -31,6 +32,7 @@ import type {
   CostPreviewDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
+  ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
   ProposalStatusRequestDto,
@@ -63,6 +65,14 @@ export const proposalsQueryKeys = {
       orgId,
       proposalId,
       "transitions",
+    ] as const,
+  audit: (orgId: string, proposalId: string) =>
+    [
+      rootQueryKey,
+      "proposals",
+      orgId,
+      proposalId,
+      "audit",
     ] as const,
   costPreview: (orgId: string, versionId: string, margin?: string) =>
     [
@@ -109,6 +119,27 @@ export function useProposalTransitions(
     queryKey: proposalsQueryKeys.transitions(orgId, proposalId),
     queryFn: () => fetchProposalTransitions(orgId, proposalId),
     enabled: Boolean(orgId && proposalId),
+  });
+}
+
+
+/**
+ * Staff-side e-signature audit trail. ``enabled`` is gated on the
+ * caller so the read only fires once the proposal has been signed
+ * (otherwise every detail-page mount would make a render call for
+ * nothing). Refetches on demand to re-verify the hash without
+ * stomping the cached row.
+ */
+export function useProposalAudit(
+  orgId: string,
+  proposalId: string,
+  enabled: boolean = true,
+): UseQueryResult<ProposalAuditDto, ApiError> {
+  return useQuery<ProposalAuditDto, ApiError>({
+    queryKey: proposalsQueryKeys.audit(orgId, proposalId),
+    queryFn: () => fetchProposalAudit(orgId, proposalId),
+    enabled: Boolean(orgId && proposalId && enabled),
+    staleTime: 0,
   });
 }
 

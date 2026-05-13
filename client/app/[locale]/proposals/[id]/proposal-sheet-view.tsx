@@ -7,8 +7,11 @@ import {
   Link2,
   Pencil,
   Plus,
+  RefreshCw,
   Save,
   Send,
+  ShieldAlert,
+  ShieldCheck,
   Sparkles,
   Trash2,
   Undo2,
@@ -33,8 +36,11 @@ import {
   useDeleteProposalLine,
   usePatchProposalLine,
   useProposal,
+  useProposalAudit,
   useTransitionProposalStatus,
   useUpdateProposal,
+  type ProposalAuditDocumentDto,
+  type ProposalAuditSpecDto,
   type ProposalDto,
   type ProposalLineDto,
   type ProposalStatus,
@@ -330,6 +336,13 @@ export function ProposalSheetView({
       />
 
       <InternalApprovalsPanel proposal={proposal} tProposals={tProposals} />
+
+      <SignatureEvidencePanel
+        orgId={orgId}
+        proposalId={proposalId}
+        hasCustomerSignature={Boolean(proposal.customer_signature)}
+        tProposals={tProposals}
+      />
 
       {missingFields ? (
         <MissingFieldsModal
@@ -2067,5 +2080,246 @@ function InternalApprovalsPanel({
         ))}
       </dl>
     </section>
+  );
+}
+
+
+/**
+ * Staff-side e-signature audit trail. Renders one row per signed
+ * document (proposal + each attached spec) with the evidence the
+ * kiosk captures at sign time: IP, User-Agent, signed-at timestamp,
+ * and the SHA-256 of the rendered HTML the signer saw. The backend
+ * recomputes the hash live and we colour the row red when it no
+ * longer matches — that's the load-bearing piece for a court
+ * argument that "this customer agreed to this document".
+ *
+ * Hidden until the proposal has a customer signature so a blank
+ * draft proposal doesn't grow an empty audit section. Permission-
+ * gated server-side (``proposals:view_signed``); the kiosk never
+ * sees this surface.
+ */
+function SignatureEvidencePanel({
+  orgId,
+  proposalId,
+  hasCustomerSignature,
+  tProposals,
+}: {
+  orgId: string;
+  proposalId: string;
+  hasCustomerSignature: boolean;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const format = useFormatter();
+  const auditQuery = useProposalAudit(orgId, proposalId, hasCustomerSignature);
+
+  // No signature yet → no panel. Avoids a "nothing here" placeholder
+  // on every draft proposal page.
+  if (!hasCustomerSignature) return null;
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 pb-3">
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-ink-1000">
+            {tProposals("detail.audit.title")}
+          </h2>
+          <p className="text-[11px] text-ink-500">
+            {tProposals("detail.audit.subtitle")}
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => auditQuery.refetch()}
+          isDisabled={auditQuery.isFetching}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-60"
+        >
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${
+              auditQuery.isFetching ? "animate-spin" : ""
+            }`}
+          />
+          {tProposals("detail.audit.verify_cta")}
+        </Button>
+      </header>
+
+      {auditQuery.isLoading ? (
+        <p className="mt-3 text-xs text-ink-500">
+          {tProposals("detail.audit.loading")}
+        </p>
+      ) : auditQuery.error ? (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger ring-1 ring-inset ring-danger/20"
+        >
+          {tProposals("detail.audit.error")}
+        </p>
+      ) : auditQuery.data ? (
+        <div className="mt-3 flex flex-col gap-3">
+          <AuditRow
+            title={tProposals("detail.audit.proposal_title")}
+            document={auditQuery.data.proposal}
+            format={format}
+            tProposals={tProposals}
+          />
+          {auditQuery.data.specs.map((spec) => (
+            <AuditRow
+              key={spec.id}
+              title={
+                spec.formulation_name || spec.code
+                  ? tProposals("detail.audit.spec_title", {
+                      name: spec.formulation_name || spec.code,
+                    })
+                  : tProposals("detail.audit.spec_title_untitled")
+              }
+              document={spec}
+              format={format}
+              tProposals={tProposals}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+
+/**
+ * One row in the audit panel. Same shape for the proposal and for
+ * each attached spec — ``document`` is typed broadly so the spec
+ * row's extra ``id`` / ``code`` fields can come along without a
+ * second component.
+ */
+function AuditRow({
+  title,
+  document,
+  format,
+  tProposals,
+}: {
+  title: string;
+  document: ProposalAuditDocumentDto | ProposalAuditSpecDto;
+  format: ReturnType<typeof useFormatter>;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const signed = Boolean(document.signed_at);
+  const hashStored = document.stored_hash !== "";
+  // Hash status is one of three:
+  //  - "match"   — stored + current both present and equal (good)
+  //  - "drift"   — stored + current present but unequal (bad — red)
+  //  - "missing" — pre-sign or pre-instrumentation row (neutral)
+  const hashStatus: "match" | "drift" | "missing" = !hashStored
+    ? "missing"
+    : document.hash_matches
+      ? "match"
+      : "drift";
+
+  return (
+    <article className="rounded-xl bg-ink-50 px-4 py-3 ring-1 ring-inset ring-ink-200">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold text-ink-1000">{title}</h3>
+        {signed && hashStatus !== "missing" ? (
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[10px] font-medium ring-1 ring-inset ${
+              hashStatus === "match"
+                ? "bg-success/10 text-success ring-success/30"
+                : "bg-danger/10 text-danger ring-danger/30"
+            }`}
+          >
+            {hashStatus === "match" ? (
+              <ShieldCheck className="h-3 w-3" />
+            ) : (
+              <ShieldAlert className="h-3 w-3" />
+            )}
+            {hashStatus === "match"
+              ? tProposals("detail.audit.hash_match")
+              : tProposals("detail.audit.hash_drift")}
+          </span>
+        ) : null}
+      </header>
+
+      {!signed ? (
+        <p className="mt-2 text-[11px] text-ink-500">
+          {tProposals("detail.audit.not_signed")}
+        </p>
+      ) : (
+        <dl className="mt-2 grid grid-cols-1 gap-x-4 gap-y-2 text-[11px] sm:grid-cols-2">
+          <AuditField
+            label={tProposals("detail.audit.signer")}
+            value={[
+              document.signer_name,
+              document.signer_email
+                ? `<${document.signer_email}>`
+                : "",
+              document.signer_company,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          />
+          <AuditField
+            label={tProposals("detail.audit.signed_at")}
+            value={
+              document.signed_at
+                ? format.dateTime(new Date(document.signed_at), {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })
+                : ""
+            }
+          />
+          <AuditField
+            label={tProposals("detail.audit.ip")}
+            value={document.ip || "—"}
+            mono
+          />
+          <AuditField
+            label={tProposals("detail.audit.user_agent")}
+            value={document.user_agent || "—"}
+            mono
+          />
+          <AuditField
+            label={tProposals("detail.audit.stored_hash")}
+            value={document.stored_hash || "—"}
+            mono
+            wide
+          />
+          <AuditField
+            label={tProposals("detail.audit.current_hash")}
+            value={document.current_hash || "—"}
+            mono
+            wide
+          />
+        </dl>
+      )}
+    </article>
+  );
+}
+
+
+function AuditField({
+  label,
+  value,
+  mono = false,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  mono?: boolean;
+  wide?: boolean;
+}) {
+  return (
+    <div
+      className={`flex flex-col gap-0.5 ${wide ? "sm:col-span-2" : ""}`}
+    >
+      <dt className="text-[9px] font-semibold uppercase tracking-wide text-ink-500">
+        {label}
+      </dt>
+      <dd
+        className={`break-all text-ink-1000 ${
+          mono ? "font-mono text-[10px]" : "text-[11px]"
+        }`}
+      >
+        {value}
+      </dd>
+    </div>
   );
 }

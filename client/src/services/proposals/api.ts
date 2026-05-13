@@ -9,6 +9,7 @@ import type {
   CostPreviewDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
+  ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
   ProposalStatusRequestDto,
@@ -147,6 +148,23 @@ export async function fetchCostPreview(
 ): Promise<CostPreviewDto> {
   const { data } = await apiClient.get<CostPreviewDto>(
     proposalsEndpoints.costPreview(orgId, versionId, marginPercent),
+  );
+  return data;
+}
+
+/**
+ * Fetch the e-signature audit trail for a proposal — staff-side
+ * surface that returns who signed, from where, when, with what
+ * client, plus a live SHA-256 hash check against the document at
+ * sign time. Mismatched hashes mean the contract drifted post-sign;
+ * matched hashes are court-ready evidence.
+ */
+export async function fetchProposalAudit(
+  orgId: string,
+  proposalId: string,
+): Promise<ProposalAuditDto> {
+  const { data } = await apiClient.get<ProposalAuditDto>(
+    proposalsEndpoints.audit(orgId, proposalId),
   );
   return data;
 }
