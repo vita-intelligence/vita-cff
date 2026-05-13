@@ -47,6 +47,23 @@
   "typing": {
     "template": "{count, plural, one {{first} is typing…} =2 {{first} and {second} are typing…} other {{first}, {second}, and {rest, plural, one {# other} other {# others}} are typing…}}"
   },
+  "bubble": {
+    "open": "Open project comments",
+    "close": "Close",
+    "mute": "Mute notification sound",
+    "unmute": "Unmute notification sound",
+    "header_eyebrow": "Project comments",
+    "panel_label": "Project comments panel"
+  },
+  "scroll": {
+    "new_messages": "{count, plural, one {# new message} other {# new messages}}",
+    "new_messages_aria": "{count, plural, one {# new message — scroll to bottom} other {# new messages — scroll to bottom}}"
+  },
+  "reply": {
+    "replying_to": "Replying to {author}",
+    "cancel": "Cancel reply",
+    "jump_hint": "Jump to original message"
+  },
   "kiosk": {
     "title": "Introduce yourself",
     "subtitle": "Share your name so the project team knows who left the comment.",

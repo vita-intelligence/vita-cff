@@ -15,9 +15,6 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
-import { CommentsPanel } from "@/components/comments";
-import { hasFlatCapability } from "@/lib/auth/capabilities";
-import type { OrganizationDto } from "@/services/organizations/types";
 import {
   useProjectOverview,
   type ProjectOverviewDto,
@@ -29,39 +26,24 @@ import {
  * Project Overview block rendered at the top of the formulation
  * detail page. Hydrates from the SSR payload and refetches on mount
  * so freshly-saved versions / batches surface without a reload.
+ *
+ * The project comment thread now lives in the floating bubble
+ * mounted from the route layout, so it follows the user across
+ * every tab. The inline ``CommentsPanel`` that used to live here
+ * was removed to avoid two surfaces showing the same thread.
  */
 export function ProjectOverview({
   orgId,
   formulationId,
   initialData,
-  organization,
-  currentUserId,
 }: {
   orgId: string;
   formulationId: string;
   initialData: ProjectOverviewDto;
-  organization: OrganizationDto;
-  currentUserId: string;
 }) {
   const tProject = useTranslations("project_overview");
   const query = useProjectOverview(orgId, formulationId, { initialData });
   const overview = query.data ?? initialData;
-
-  const canViewComments = hasFlatCapability(
-    organization,
-    "formulations",
-    "comments_view",
-  );
-  const canWriteComments = hasFlatCapability(
-    organization,
-    "formulations",
-    "comments_write",
-  );
-  const canModerateComments = hasFlatCapability(
-    organization,
-    "formulations",
-    "comments_moderate",
-  );
 
   return (
     <article className="flex flex-col gap-6">
@@ -72,15 +54,6 @@ export function ProjectOverview({
         <ComplianceCard overview={overview} tProject={tProject} />
       </section>
       <ActivityCard overview={overview} tProject={tProject} />
-      <CommentsPanel
-        orgId={orgId}
-        entityKind="formulation"
-        entityId={formulationId}
-        canRead={canViewComments}
-        canWrite={canWriteComments}
-        canModerate={canModerateComments}
-        currentUserId={currentUserId}
-      />
     </article>
   );
 }

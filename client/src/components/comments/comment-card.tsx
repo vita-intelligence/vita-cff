@@ -53,6 +53,12 @@ interface Props {
   /** Optional reply-context header shown above the bubble. */
   readonly replyToAuthor?: string | null;
   readonly replyToExcerpt?: string | null;
+  /** When set, the reply-context header becomes a clickable button
+   *  that takes the user to the parent comment. Used so a reply in
+   *  the chat stream can navigate back to whatever it's quoting —
+   *  no different from tapping a reply preview in WhatsApp /
+   *  Telegram. */
+  readonly onJumpToParent?: () => void;
   readonly onEdit: (commentId: string, body: string) => void | Promise<void>;
   readonly onDelete: (commentId: string) => void | Promise<void>;
   readonly onToggleResolve?: (
@@ -77,6 +83,7 @@ export function CommentCard({
   isReply = false,
   replyToAuthor,
   replyToExcerpt,
+  onJumpToParent,
   onEdit,
   onDelete,
   onToggleResolve,
@@ -139,9 +146,11 @@ export function CommentCard({
         isSelf ? "justify-end" : "justify-start"
       } ${comment.is_resolved ? "opacity-70" : ""}`}
     >
-      {/* Avatar — only on the "other" side, matches WA/TG layout.
-          Shows the author's uploaded photo when available, else
-          falls back to the coloured initials pill. */}
+      {/* Avatar on the "other" side. Shows the author's uploaded
+          photo when available, else falls back to the coloured
+          initials pill. The self-side avatar mirrors below so the
+          chat surface doesn't feel anonymous when half the bubbles
+          are yours. */}
       {!isSelf ? (
         <div className="mt-5">
           <UserAvatar
@@ -154,28 +163,58 @@ export function CommentCard({
       ) : null}
 
       <div
-        className={`flex min-w-0 max-w-[72%] flex-col gap-1 ${
+        className={`flex min-w-0 max-w-[78%] flex-col gap-1 ${
           isSelf ? "items-end" : "items-start"
         }`}
       >
-        {/* Reply-context quote header (Telegram-style). */}
+        {/* Reply-context quote header (Telegram-style).
+            Clickable when ``onJumpToParent`` is provided — taps
+            scroll the original message into view and flash it for
+            visual confirmation, same machinery as the pinned-thread
+            preview. The non-clickable variant stays available so
+            kiosk / read-only surfaces don't render a button they
+            can't act on. */}
         {replyToAuthor ? (
-          <div
-            className={`flex max-w-full items-start gap-1 px-1 text-[11px] text-ink-500 ${
-              isSelf ? "flex-row-reverse text-right" : ""
-            }`}
-          >
-            <CornerUpLeft className="mt-[2px] h-3 w-3 shrink-0" />
-            <span className="truncate">
-              <strong className="text-ink-700">{replyToAuthor}</strong>
-              {replyToExcerpt ? (
-                <>
-                  <span className="mx-1">·</span>
-                  <span className="italic">“{replyToExcerpt}”</span>
-                </>
-              ) : null}
-            </span>
-          </div>
+          onJumpToParent ? (
+            <button
+              type="button"
+              onClick={onJumpToParent}
+              title={tComments("reply.jump_hint")}
+              className={`group flex max-w-full items-start gap-1 rounded-md px-1 py-0.5 text-[11px] text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-1000 ${
+                isSelf ? "flex-row-reverse text-right" : ""
+              }`}
+            >
+              <CornerUpLeft className="mt-[2px] h-3 w-3 shrink-0 text-orange-600" />
+              <span className="truncate">
+                <strong className="text-ink-700 group-hover:text-ink-1000">
+                  {replyToAuthor}
+                </strong>
+                {replyToExcerpt ? (
+                  <>
+                    <span className="mx-1">·</span>
+                    <span className="italic">“{replyToExcerpt}”</span>
+                  </>
+                ) : null}
+              </span>
+            </button>
+          ) : (
+            <div
+              className={`flex max-w-full items-start gap-1 px-1 text-[11px] text-ink-500 ${
+                isSelf ? "flex-row-reverse text-right" : ""
+              }`}
+            >
+              <CornerUpLeft className="mt-[2px] h-3 w-3 shrink-0" />
+              <span className="truncate">
+                <strong className="text-ink-700">{replyToAuthor}</strong>
+                {replyToExcerpt ? (
+                  <>
+                    <span className="mx-1">·</span>
+                    <span className="italic">“{replyToExcerpt}”</span>
+                  </>
+                ) : null}
+              </span>
+            </div>
+          )
         ) : null}
 
         {/* Bubble */}
@@ -359,6 +398,21 @@ export function CommentCard({
           </div>
         ) : null}
       </div>
+
+      {/* Mirror avatar on the self-side. Same 28px chip as the
+          opposite layout so the conversation stays visually
+          symmetric — both authors are equally identifiable at a
+          glance. */}
+      {isSelf ? (
+        <div className="mt-5">
+          <UserAvatar
+            name={comment.author.name}
+            email={comment.author.email}
+            imageUrl={comment.author.avatar_url || null}
+            size={28}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }

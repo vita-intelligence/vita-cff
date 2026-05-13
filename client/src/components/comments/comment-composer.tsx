@@ -29,6 +29,14 @@ interface Props {
   readonly onSubmit: (body: string) => void | Promise<void>;
   readonly onCancel?: () => void;
   readonly autoFocus?: boolean;
+  /** Bumping this counter (any monotonic increase works) tells the
+   *  composer to re-focus its textarea. Used by the comments panel
+   *  to hand input focus when the user clicks "Reply" on a thread:
+   *  the same bottom composer accepts the reply, so we need a way
+   *  to drag focus down without remounting the component (which
+   *  would lose whatever the user was already typing). ``undefined``
+   *  / ``0`` is the rest state and never focuses. */
+  readonly focusToken?: number;
   /** Emitted when the user starts / stops typing. The panel forwards
    *  these to the WebSocket so peers see a "X is typing…" line.
    *  Optional so composers mounted outside a WS-enabled surface (e.g.
@@ -48,6 +56,7 @@ export function CommentComposer({
   onCancel,
   autoFocus = false,
   onTypingChange,
+  focusToken,
 }: Props) {
   const [value, setValue] = useState(initialValue);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -102,6 +111,25 @@ export function CommentComposer({
       pulseTyping(false);
     });
   }, [canSubmit, onSubmit, trimmed, pulseTyping]);
+
+  // Imperative focus driven by parent. Skip ``0`` / ``undefined``
+  // so the initial mount only auto-focuses when ``autoFocus`` is set
+  // — without the guard every component using this composer would
+  // grab focus on mount.
+  useEffect(() => {
+    if (!focusToken) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    node.focus();
+    // Park the caret at the end of any existing draft so the user
+    // can type without first reaching for the keyboard arrow keys.
+    const length = node.value.length;
+    try {
+      node.setSelectionRange(length, length);
+    } catch {
+      // Some browsers throw on hidden textareas — non-fatal.
+    }
+  }, [focusToken]);
 
   // Close any lingering typing state when the composer unmounts. A
   // user who closes the tab mid-sentence should not leave a stale

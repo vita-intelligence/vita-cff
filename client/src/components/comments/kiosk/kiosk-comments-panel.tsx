@@ -275,7 +275,6 @@ export function KioskCommentsPanel({ token }: Props) {
                 currentUserEmail={identity?.email ?? null}
                 canWrite={false}
                 canModerate={false}
-                onReply={async () => undefined}
                 onEdit={async () => undefined}
                 onDelete={async () => undefined}
                 onToggleResolve={async () => undefined}
@@ -305,7 +304,6 @@ export function KioskCommentsPanel({ token }: Props) {
                 currentUserEmail={identity?.email ?? null}
                 canWrite={false}
                 canModerate={false}
-                onReply={async () => undefined}
                 onEdit={async () => undefined}
                 onDelete={async () => undefined}
                 onToggleResolve={async () => undefined}

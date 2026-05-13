@@ -1,22 +1,23 @@
 "use client";
 
 /**
- * One root comment + its replies + the inline reply composer.
+ * One root comment + its replies.
  *
  * Rendered as a chat stream — the root bubble comes first, then
  * each reply as a separate bubble that carries a small
  * ``↳ @Name: excerpt`` quote header pointing back at the root.
  * Visually feels like Telegram / WhatsApp threads rather than the
  * old indented-reply card look.
+ *
+ * Replies no longer get their own inline composer here. Clicking
+ * "Reply" announces the intent to the parent panel via
+ * :prop:`onStartReply`, which targets its single bottom composer
+ * at this thread until the user submits or cancels.
  */
-
-import { useState } from "react";
-import { useTranslations } from "next-intl";
 
 import type { CommentDto } from "@/services/comments";
 
 import { CommentCard } from "./comment-card";
-import { CommentComposer } from "./comment-composer";
 
 
 interface Props {
@@ -27,10 +28,22 @@ interface Props {
   readonly currentUserEmail?: string | null;
   readonly canWrite: boolean;
   readonly canModerate: boolean;
-  readonly onReply: (
-    parentId: string,
-    body: string,
-  ) => void | Promise<void>;
+  /** Click handler for the per-card "Reply" action. Receives the
+   *  root comment id plus the metadata the panel needs to render
+   *  its "Replying to {author}: {excerpt}" chip above the shared
+   *  composer. Pass ``undefined`` to disable the reply action
+   *  entirely (e.g. resolved threads). */
+  readonly onStartReply?: (
+    rootId: string,
+    authorLabel: string,
+    excerpt: string,
+  ) => void;
+  /** Click handler for the quote header on each reply card —
+   *  scrolls the parent (root) into view so a reader can jump
+   *  back to whatever the reply was responding to. The panel
+   *  wires this to its existing ``scrollToThread`` helper so the
+   *  highlight/flash behaviour matches a pinned-preview click. */
+  readonly onJumpToParent?: (rootId: string) => void;
   readonly onEdit: (commentId: string, body: string) => void | Promise<void>;
   readonly onDelete: (commentId: string) => void | Promise<void>;
   readonly onToggleResolve: (
@@ -66,15 +79,13 @@ export function CommentThread({
   currentUserEmail,
   canWrite,
   canModerate,
-  onReply,
+  onStartReply,
+  onJumpToParent,
   onEdit,
   onDelete,
   onToggleResolve,
   onToggleFlag,
 }: Props) {
-  const tComments = useTranslations("comments");
-  const [isReplying, setIsReplying] = useState(false);
-
   // The reply quote header points back to the root. Author is the
   // root's display name; excerpt is a short slice of the root body
   // (but only when the root is not itself deleted).
@@ -102,8 +113,9 @@ export function CommentThread({
         onToggleResolve={onToggleResolve}
         onToggleFlag={onToggleFlag}
         onReply={
-          canWrite && !root.is_resolved
-            ? () => setIsReplying(true)
+          canWrite && !root.is_resolved && onStartReply
+            ? () =>
+                onStartReply(root.id, rootAuthorLabel, quoteExcerpt ?? "")
             : undefined
         }
       />
@@ -113,32 +125,21 @@ export function CommentThread({
           comment={reply}
           orgId={orgId}
           currentUserId={currentUserId}
-        currentUserEmail={currentUserEmail}
+          currentUserEmail={currentUserEmail}
           canModerate={canModerate}
           canWrite={canWrite}
           isReply
           replyToAuthor={rootAuthorLabel}
           replyToExcerpt={quoteExcerpt}
+          onJumpToParent={
+            onJumpToParent
+              ? () => onJumpToParent(root.id)
+              : undefined
+          }
           onEdit={onEdit}
           onDelete={onDelete}
         />
       ))}
-      {isReplying ? (
-        <div className="px-3 pb-2 pt-1">
-          <CommentComposer
-            orgId={orgId}
-            placeholder={tComments("composer.reply_placeholder")}
-            submitLabel={tComments("actions.send")}
-            cancelLabel={tComments("actions.cancel")}
-            onSubmit={async (body) => {
-              await onReply(root.id, body);
-              setIsReplying(false);
-            }}
-            onCancel={() => setIsReplying(false)}
-            autoFocus
-          />
-        </div>
-      ) : null}
     </article>
   );
 }
