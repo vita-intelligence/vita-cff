@@ -32,12 +32,26 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # Runtime libraries only:
 #   libpq5                — PostgreSQL client used by psycopg
 #   libpango / harfbuzz   — required by WeasyPrint to render PDFs
+#   libreoffice-writer    — soffice --headless converts the proposal
+#                           .docx templates to PDF; without it the
+#                           proposal renderer silently falls back to
+#                           the HTML preview (apps/proposals/render.py)
+#   fonts-*               — soffice needs system fonts available or
+#                           it substitutes the .docx fonts with
+#                           Liberation defaults; we ship the common
+#                           Microsoft-equivalent set so the rendered
+#                           PDF matches Word's own layout
 #   curl                  — used by the container HEALTHCHECK
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libpq5 \
         libpango-1.0-0 \
         libpangoft2-1.0-0 \
         libharfbuzz-subset0 \
+        libreoffice-writer \
+        libreoffice-core \
+        fonts-liberation \
+        fonts-dejavu-core \
+        fonts-noto-core \
         curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 1000 --create-home --shell /bin/bash app

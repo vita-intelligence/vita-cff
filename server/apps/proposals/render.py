@@ -54,7 +54,11 @@ _RENDER_LOCK = threading.Lock()
 #:   1 → 2: £/€/$ glyph prefix on prices
 #:   2 → 3: drop the "Vita NPD Sales Team" company line from signoff
 #:   3 → 4: proposal-level sales_person override used in signoff
-_RENDER_VERSION = 4
+#:   4 → 5: refreshed Custom + Ready-to-Go templates (May 2026
+#:          revision), LibreOffice now bundled in the runtime image
+#:          so prod renders PDF directly instead of falling back to
+#:          the HTML preview
+_RENDER_VERSION = 5
 
 from django.conf import settings
 from docx import Document
