@@ -348,10 +348,22 @@ class DynamicsCustomerImportView(APIView):
     the existing local Customer with refreshed identity fields.
     Returns the local Customer row so the picker can resolve to its
     Vita id without a follow-up GET.
+
+    Capability is intentionally pinned to ``view`` — same as the
+    search endpoint above. The picker lives on the proposal flow
+    where the typical signed-in user is a commercial / sales role
+    that holds ``proposals:edit`` + ``formulations:view`` but **not**
+    ``formulations:edit``. Demanding ``edit`` here used to surface as
+    a "permission denied" error the moment the user picked a Dynamics
+    row, which broke the whole proposal-create flow for them. The
+    Dataverse contact data is already exposed by the search endpoint
+    so mirroring one of those rows into a local ``Customer`` does not
+    grant any additional privilege — it just gives the picker a Vita
+    id to bind to.
     """
 
     permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.EDIT
+    required_capability = FormulationsCapability.VIEW
 
     def post(self, request: Request, org_id: str) -> Response:
         body = request.data if isinstance(request.data, dict) else {}
