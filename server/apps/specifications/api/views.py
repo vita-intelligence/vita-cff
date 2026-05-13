@@ -59,11 +59,32 @@ class SpecificationListCreateView(APIView):
     permission_classes = (HasSpecificationsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_capability = (
-            FormulationsCapability.EDIT
-            if request.method == "POST"
-            else FormulationsCapability.VIEW
-        )
+        if request.method == "POST":
+            self.required_capability = FormulationsCapability.EDIT
+        else:
+            # Mirror the proposal list-endpoint rule: the org-wide
+            # approval queue (``?status=in_review``) and signed archive
+            # (``?status=sent|accepted``) each unlock with their narrow
+            # caps, while the broad ``view`` cap (project workspace
+            # audience) is always sufficient.
+            from apps.specifications.models import SpecificationStatus
+
+            status_filter = request.query_params.get("status") or None
+            if status_filter == SpecificationStatus.IN_REVIEW:
+                self.required_capability_any = (
+                    FormulationsCapability.VIEW,
+                    FormulationsCapability.VIEW_APPROVALS,
+                )
+            elif status_filter in {
+                SpecificationStatus.SENT,
+                SpecificationStatus.ACCEPTED,
+            }:
+                self.required_capability_any = (
+                    FormulationsCapability.VIEW,
+                    FormulationsCapability.VIEW_SIGNED,
+                )
+            else:
+                self.required_capability = FormulationsCapability.VIEW
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
@@ -140,7 +161,15 @@ class SpecificationDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_capability = FormulationsCapability.VIEW
+            # Reads are reachable from project workspace, approval
+            # queue, and signed archive. Accept any of the three caps
+            # that unlock those surfaces so a card the caller can see
+            # in a list view can also be opened.
+            self.required_capability_any = (
+                FormulationsCapability.VIEW,
+                FormulationsCapability.VIEW_APPROVALS,
+                FormulationsCapability.VIEW_SIGNED,
+            )
         elif request.method == "DELETE":
             self.required_capability = FormulationsCapability.DELETE
         else:

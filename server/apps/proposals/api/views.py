@@ -81,11 +81,38 @@ class ProposalListCreateView(APIView):
     permission_classes = (HasProposalsPermission,)
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
-        self.required_capability = (
-            ProposalsCapability.VIEW
-            if request.method == "GET"
-            else ProposalsCapability.EDIT
-        )
+        if request.method == "GET":
+            # The list endpoint serves three audiences and each unlocks
+            # it with a different cap:
+            #   * project workspace (``?formulation_id=…`` or no filter)
+            #     — broad ``view``;
+            #   * org-wide approval queue (``?status=in_review``) —
+            #     narrow ``view_approvals``;
+            #   * org-wide signed archive (``?status=sent|accepted``) —
+            #     narrow ``view_signed``.
+            # A caller with the broad ``view`` cap is implicitly allowed
+            # to read any list shape, so it always remains in the
+            # accepted set.
+            from apps.proposals.models import ProposalStatus
+
+            status_filter = request.query_params.get("status") or None
+            if status_filter == ProposalStatus.IN_REVIEW:
+                self.required_capability_any = (
+                    ProposalsCapability.VIEW,
+                    ProposalsCapability.VIEW_APPROVALS,
+                )
+            elif status_filter in {
+                ProposalStatus.SENT,
+                ProposalStatus.ACCEPTED,
+            }:
+                self.required_capability_any = (
+                    ProposalsCapability.VIEW,
+                    ProposalsCapability.VIEW_SIGNED,
+                )
+            else:
+                self.required_capability = ProposalsCapability.VIEW
+        else:
+            self.required_capability = ProposalsCapability.EDIT
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
@@ -173,7 +200,16 @@ class ProposalDetailView(APIView):
 
     def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
         if request.method == "GET":
-            self.required_capability = ProposalsCapability.VIEW
+            # Reads are reachable from three surfaces — project
+            # workspace, approvals queue, and signed archive — and
+            # each surface is unlocked by a different cap. Accept any
+            # of them on the detail read so a card the caller could
+            # see on the approvals / signed page can still be opened.
+            self.required_capability_any = (
+                ProposalsCapability.VIEW,
+                ProposalsCapability.VIEW_APPROVALS,
+                ProposalsCapability.VIEW_SIGNED,
+            )
         elif request.method == "DELETE":
             self.required_capability = ProposalsCapability.DELETE
         else:

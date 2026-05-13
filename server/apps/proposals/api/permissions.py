@@ -31,8 +31,20 @@ class HasProposalsPermission(IsAuthenticated):
 
     Flat module (not row-scoped). Same hiding rules as the formulations
     permission class — unknown org id or non-member → ``404``, missing
-    capability → ``403``. Views declare the capability they need via
-    ``required_capability`` (class or instance attribute).
+    capability → ``403``.
+
+    Views declare the capability they need via one of two attributes
+    (class or instance):
+
+    * ``required_capability`` — single capability string for the
+      common one-cap case.
+    * ``required_capability_any`` — iterable of capability strings;
+      the check passes if the caller holds **any** of them. Mirrors
+      the formulations permission class — used by the approval / signed
+      surfaces so the broad ``view`` cap and the narrow
+      ``view_approvals`` / ``view_signed`` caps both unlock them.
+
+    When both are set, ``required_capability_any`` wins.
     """
 
     required_capability: str = ProposalsCapability.VIEW
@@ -53,6 +65,13 @@ class HasProposalsPermission(IsAuthenticated):
 
         if not is_organization_accessible(organization, request.user):
             raise OrganizationInactive()
+
+        capabilities_any = getattr(view, "required_capability_any", None)
+        if capabilities_any:
+            return any(
+                has_capability(membership, PROPOSALS_MODULE, cap)
+                for cap in capabilities_any
+            )
 
         capability: str = getattr(
             view, "required_capability", self.required_capability
