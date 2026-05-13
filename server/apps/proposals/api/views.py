@@ -38,7 +38,6 @@ from apps.proposals.api.serializers import (
 )
 from apps.proposals.services import (
     CustomerNotInOrg,
-    FormulationNotApproved,
     FormulationVersionNotApproved,
     FormulationVersionNotInOrg,
     InvalidProposalTransition,
@@ -178,11 +177,6 @@ class ProposalListCreateView(APIView):
         except FormulationVersionNotInOrg:
             return Response(
                 {"formulation_version_id": ["formulation_version_not_in_org"]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        except FormulationNotApproved:
-            return Response(
-                {"formulation_version_id": ["formulation_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except FormulationVersionNotApproved:

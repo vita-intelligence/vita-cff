@@ -55,7 +55,6 @@
     "kiosk_session_required": "Please identify yourself before signing.",
     "kiosk_rate_limited": "You've sent too many messages in a short time. Please wait a minute.",
     "kiosk_signatures_pending": "Every document must be signed before finishing. Scroll up and sign any that are still pending.",
-    "formulation_not_approved": "Only projects with an Approved roadmap status can have a proposal. Approve the project first.",
-    "formulation_version_not_approved": "Only the version marked as the project's approved snapshot can be quoted. Approve a version first."
+    "formulation_version_not_approved": "Only the version locked in by a director-signed specification sheet can be quoted. Sign off on a draft sheet for this project before creating a proposal."
   }
 }

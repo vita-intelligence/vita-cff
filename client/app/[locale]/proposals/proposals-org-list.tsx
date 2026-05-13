@@ -241,16 +241,21 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   const createMutation = useCreateProposal(orgId);
   const specSheetsQuery = useInfiniteSpecifications(orgId, { pageSize: 100 });
 
-  // Only approved projects can be the source of a quote — same rule
-  // the backend enforces in ``create_proposal``. Filter client-side
-  // so the picker only ever offers a selectable option; the empty
-  // case below the picker explains why the list might look short.
+  // Project status no longer gates the source list — proposals can
+  // be raised during ``in_development`` / ``pilot`` once the recipe
+  // has a director-signed spec sheet. We narrow at the *version*
+  // level instead: only formulations whose
+  // ``approved_version_number`` has been wired (auto-set when a
+  // spec sheet hits ``status=approved``) survive the filter, so the
+  // picker never offers something the backend would reject.
   const formulations = (
     formulationsQuery.data?.pages.flatMap((p) => p.results) ?? []
-  ).filter((f) => f.project_status === "approved");
-  // Track which version of the picked formulation is the scientist-
-  // approved snapshot so the version <select> can be narrowed down
-  // to that one entry (mirrors the per-project picker rule).
+  ).filter((f) => f.approved_version_number !== null);
+  // Track which version of the picked formulation is the
+  // director-approved snapshot so the version <select> can be
+  // narrowed down to that one entry (mirrors the per-project picker
+  // rule). With the auto-wiring above this is the same number as
+  // the spec sheet that last director-signed against the recipe.
   const pickedFormulation = formulations.find((f) => f.id === formulationId);
   const approvedVersionNumber =
     pickedFormulation?.approved_version_number ?? null;

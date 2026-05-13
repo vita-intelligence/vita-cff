@@ -34,7 +34,6 @@ export default async function ProjectProposalsPage({
             orgId={organization.id}
             formulationId={formulation.id}
             projectType={formulation.project_type}
-            projectStatus={formulation.project_status}
             approvedVersionNumber={formulation.approved_version_number}
             canWrite={canWrite}
           />

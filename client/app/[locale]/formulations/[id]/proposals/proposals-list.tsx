@@ -16,7 +16,6 @@ import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useFormulationVersions,
   type FormulationVersionDto,
-  type ProjectStatus,
   type ProjectType,
 } from "@/services/formulations";
 import {
@@ -45,14 +44,12 @@ export function ProposalsList({
   orgId,
   formulationId,
   projectType,
-  projectStatus,
   approvedVersionNumber,
   canWrite,
 }: {
   orgId: string;
   formulationId: string;
   projectType: ProjectType;
-  projectStatus: ProjectStatus;
   approvedVersionNumber: number | null;
   canWrite: boolean;
 }) {
@@ -96,7 +93,6 @@ export function ProposalsList({
             formulationId={formulationId}
             versions={versions}
             projectType={projectType}
-            projectStatus={projectStatus}
             approvedVersionNumber={approvedVersionNumber}
           />
         ) : null}
@@ -224,14 +220,12 @@ function NewProposalButton({
   formulationId,
   versions,
   projectType,
-  projectStatus,
   approvedVersionNumber,
 }: {
   orgId: string;
   formulationId: string;
   versions: readonly FormulationVersionDto[];
   projectType: ProjectType;
-  projectStatus: ProjectStatus;
   approvedVersionNumber: number | null;
 }) {
   const tProposals = useTranslations("proposals");
@@ -377,18 +371,18 @@ function NewProposalButton({
     );
   }
 
-  // Quotes only leave the building once the project roadmap chip is
-  // "Approved" AND a specific version has been marked as the
-  // approved snapshot. Same rules the backend enforces in
-  // ``create_proposal``; reading them off the chip + the pointer
-  // here means we never let the scientist open a modal they can
-  // never submit.
+  // Project status no longer gates the trigger — the customer
+  // pipeline can leave the building while the project is still in
+  // development. We only block the modal when there's no
+  // director-approved version to quote against, since the version
+  // picker would otherwise have nothing to offer. The pointer is
+  // now set automatically when a spec sheet hits ``status=approved``
+  // (director signature), so this state usually clears itself once
+  // R&D has signed off a draft sheet.
   const gateMessage =
-    projectStatus !== "approved"
-      ? tProposals("create.gate_not_approved")
-      : approvedVersionNumber === null
-        ? tProposals("create.gate_no_approved_version")
-        : null;
+    approvedVersionNumber === null
+      ? tProposals("create.gate_no_approved_version")
+      : null;
 
   if (gateMessage !== null) {
     return (

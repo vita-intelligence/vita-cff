@@ -4416,11 +4416,14 @@ def set_approved_version(
     number is provided we verify it corresponds to an existing version
     of *this* formulation so we never point at a sibling's snapshot.
 
-    Also drives the auto-advance to ``approved`` on the project
-    roadmap chip when a non-null version is set — first time the
-    pointer is wired, the project advances from concept / in dev /
-    pilot to approved (forward-only; nothing happens if the project
-    is already approved or has been manually discontinued).
+    Under the customer-pipeline model this is mostly called
+    automatically by the spec sheet flow: every time a sheet hits
+    ``status=approved`` (director signature), the spec service calls
+    this to pin its version as the formulation's quotable snapshot.
+    The function deliberately does **not** advance the project
+    roadmap chip — that's driven by customer-side signatures
+    (``accept_as_customer`` on draft / final sheets), not by the
+    scientist's internal commit.
     """
 
     if version_number is not None:
@@ -4444,18 +4447,6 @@ def set_approved_version(
         before=before,
         after=snapshot(formulation),
     )
-
-    # Clearing the pointer (None) is intentionally a no-op on the
-    # roadmap chip — auto-advance never regresses, so an unapprove
-    # has to be paired with a manual status edit if the operator
-    # wants to demote the project too.
-    if version_number is not None:
-        _maybe_advance_project_status(
-            formulation=formulation,
-            target_status=ProjectStatus.APPROVED.value,
-            actor=actor,
-        )
-
     return formulation
 
 

@@ -1016,7 +1016,11 @@ class TestProjectStatusAutoAdvance:
         # Already past in_development → forward-only rule keeps pilot.
         assert formulation.project_status == ProjectStatus.PILOT.value
 
-    def test_set_approved_version_advances_concept_to_approved(self) -> None:
+    def test_set_approved_version_does_not_advance_project_status(self) -> None:
+        """``set_approved_version`` is now a pure pointer write — the
+        project roadmap chip is driven exclusively by customer-side
+        spec-sheet signatures, so this call must leave the chip
+        alone even when a fresh approved version is wired."""
         org = OrganizationFactory()
         formulation = FormulationFactory(organization=org)
         version = save_version(formulation=formulation, actor=org.created_by)
@@ -1028,49 +1032,28 @@ class TestProjectStatusAutoAdvance:
         )
 
         formulation.refresh_from_db()
-        assert formulation.project_status == ProjectStatus.APPROVED.value
-
-    def test_set_approved_version_none_does_not_advance(self) -> None:
-        org = OrganizationFactory()
-        formulation = FormulationFactory(
-            organization=org,
-            project_status=ProjectStatus.PILOT.value,
+        assert formulation.project_status == ProjectStatus.CONCEPT.value
+        assert (
+            formulation.approved_version_number == version.version_number
         )
 
-        set_approved_version(
-            formulation=formulation,
-            actor=org.created_by,
-            version_number=None,
-        )
-
-        formulation.refresh_from_db()
-        # Clearing the pointer is intentionally a no-op on the chip.
-        assert formulation.project_status == ProjectStatus.PILOT.value
-
-    def test_discontinued_is_never_auto_advanced(self) -> None:
+    def test_discontinued_is_never_auto_advanced_by_line_edits(self) -> None:
         org = OrganizationFactory()
         formulation = FormulationFactory(
             organization=org,
             project_status=ProjectStatus.DISCONTINUED.value,
         )
         item = self._seed_item(org)
-        version = save_version(formulation=formulation, actor=org.created_by)
 
         replace_lines(
             formulation=formulation,
             actor=org.created_by,
             lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
         )
-        set_approved_version(
-            formulation=formulation,
-            actor=org.created_by,
-            version_number=version.version_number,
-        )
 
         formulation.refresh_from_db()
         # Restarting a discontinued project is an explicit operator
-        # decision — neither line edits nor approval pointer touches
-        # should resurrect it automatically.
+        # decision — line edits alone don't resurrect it.
         assert (
             formulation.project_status == ProjectStatus.DISCONTINUED.value
         )

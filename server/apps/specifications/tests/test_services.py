@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from apps.formulations.models import ProjectStatus
 from apps.formulations.services import (
     replace_lines,
     save_version,
@@ -20,6 +21,7 @@ from apps.specifications.services import (
     InvalidStatusTransition,
     SpecificationCodeConflict,
     SpecificationNotFound,
+    accept_as_customer,
     create_sheet,
     get_sheet,
     list_sheets,
@@ -287,6 +289,137 @@ class TestStatusTransitions:
         sheet = SpecificationSheetFactory(organization=org, status="draft")
         transition_status(
             sheet=sheet, actor=org.created_by, next_status="draft"
+        )
+
+
+class TestProjectStatusFromSpecLifecycle:
+    """The project roadmap chip is now driven by the spec sheet
+    lifecycle:
+
+    * **Director approval** (``in_review`` → ``approved``) is the
+      moment we wire the formulation's ``approved_version_number``
+      to whichever version the sheet was drafted against — that
+      becomes the snapshot proposals quote against.
+    * **Customer acceptance** is the only forward trigger past
+      ``in_development``. A signed DRAFT-kind sheet flips the project
+      to ``pilot``; a signed FINAL-kind sheet flips it to ``approved``.
+    """
+
+    def test_director_approval_wires_approved_version_number(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(organization=org, status="draft")
+        # Walk the sheet through the legal transitions:
+        # draft → in_review (prepared-by) → approved (director).
+        transition_status(
+            sheet=sheet,
+            actor=org.created_by,
+            next_status="in_review",
+            signature_image=_SIG_FIXTURE,
+        )
+        transition_status(
+            sheet=sheet,
+            actor=org.created_by,
+            next_status="approved",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation = sheet.formulation_version.formulation
+        formulation.refresh_from_db()
+        assert (
+            formulation.approved_version_number
+            == sheet.formulation_version.version_number
+        )
+        # Internal approval does NOT advance the project chip —
+        # customer-side signatures own that transition.
+        assert formulation.project_status == ProjectStatus.CONCEPT.value
+
+    def test_customer_signed_draft_advances_to_pilot(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="draft",
+        )
+
+        accept_as_customer(
+            sheet=sheet,
+            signer_name="Acme QA",
+            signer_email="qa@acme.test",
+            signer_company="Acme Co.",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation = sheet.formulation_version.formulation
+        formulation.refresh_from_db()
+        assert formulation.project_status == ProjectStatus.PILOT.value
+
+    def test_customer_signed_final_advances_to_approved(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="final",
+        )
+
+        accept_as_customer(
+            sheet=sheet,
+            signer_name="Acme QA",
+            signer_email="qa@acme.test",
+            signer_company="Acme Co.",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation = sheet.formulation_version.formulation
+        formulation.refresh_from_db()
+        # Skip-ahead: concept → approved in one customer signature.
+        assert formulation.project_status == ProjectStatus.APPROVED.value
+
+    def test_customer_signature_never_demotes_higher_status(self) -> None:
+        """Forward-only rule: a draft signature arriving after a
+        final signature must not drag the project back to pilot."""
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="draft",
+        )
+        formulation = sheet.formulation_version.formulation
+        formulation.project_status = ProjectStatus.APPROVED.value
+        formulation.save(update_fields=["project_status"])
+
+        accept_as_customer(
+            sheet=sheet,
+            signer_name="Acme QA",
+            signer_email="qa@acme.test",
+            signer_company="Acme Co.",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation.refresh_from_db()
+        assert formulation.project_status == ProjectStatus.APPROVED.value
+
+    def test_customer_signature_does_not_resurrect_discontinued(self) -> None:
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="final",
+        )
+        formulation = sheet.formulation_version.formulation
+        formulation.project_status = ProjectStatus.DISCONTINUED.value
+        formulation.save(update_fields=["project_status"])
+
+        accept_as_customer(
+            sheet=sheet,
+            signer_name="Acme QA",
+            signer_email="qa@acme.test",
+            signer_company="Acme Co.",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation.refresh_from_db()
+        assert (
+            formulation.project_status == ProjectStatus.DISCONTINUED.value
         )
 
 

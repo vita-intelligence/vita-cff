@@ -49,8 +49,12 @@ from apps.formulations.constants import (
     capsule_size_by_key,
     normalize_use_as_value,
 )
-from apps.formulations.models import FormulationVersion
-from apps.formulations.services import instantiate_active_label
+from apps.formulations.models import FormulationVersion, ProjectStatus
+from apps.formulations.services import (
+    _maybe_advance_project_status,
+    instantiate_active_label,
+    set_approved_version,
+)
 from apps.organizations.models import Organization
 from apps.specifications.constants import (
     DEFAULT_FOOD_CONTACT_STATUS,
@@ -633,6 +637,20 @@ def transition_status(
         before={"status": previous_status},
         after={"status": next_status, "notes": (notes or "").strip()},
     )
+
+    # Director approval is the moment the sheet becomes quotable —
+    # pin the formulation's ``approved_version_number`` to whichever
+    # version this sheet was drafted against so the proposal-creation
+    # version picker auto-selects the right snapshot. Last
+    # director-signed sheet wins; subsequent approvals on later
+    # versions overwrite the pointer, matching scientist intent that
+    # the *latest* internally-blessed iteration is the one to quote.
+    if next_status == SpecificationStatus.APPROVED:
+        set_approved_version(
+            formulation=sheet.formulation_version.formulation,
+            actor=actor,
+            version_number=sheet.formulation_version.version_number,
+        )
     return sheet
 
 
@@ -799,6 +817,30 @@ def accept_as_customer(
         company=sheet.customer_company,
         signature_image=normalised_image,
     )
+
+    # Customer signature is the project roadmap chip's only forward
+    # trigger past ``in_development``:
+    #
+    #   * a signed DRAFT sheet flips ``in_development`` → ``pilot``;
+    #   * a signed FINAL sheet flips any prior status → ``approved``.
+    #
+    # Skip-ahead is fine — if the customer signs a final without
+    # ever signing a draft, the project goes straight to approved.
+    # Forward-only via :func:`_maybe_advance_project_status` so a
+    # later draft signature can never demote an already-approved
+    # project. Actor uses ``sheet.updated_by`` (the kiosk signer
+    # isn't a platform user) so the audit row's FK stays valid.
+    target_status: str | None = None
+    if sheet.document_kind == SpecificationDocumentKind.DRAFT:
+        target_status = ProjectStatus.PILOT.value
+    elif sheet.document_kind == SpecificationDocumentKind.FINAL:
+        target_status = ProjectStatus.APPROVED.value
+    if target_status is not None:
+        _maybe_advance_project_status(
+            formulation=sheet.formulation_version.formulation,
+            target_status=target_status,
+            actor=sheet.updated_by,
+        )
     return sheet
 
 
