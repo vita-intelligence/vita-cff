@@ -251,7 +251,8 @@
         "powder_acidity_rate_missing": "Acidity item \"{name}\" has no Powder Water Dose set on the raw material.",
         "powder_flavouring_rate_missing": "Flavouring item \"{name}\" has no Powder Water Dose set on the raw material.",
         "powder_sweetener_rate_missing": "Sweetener item \"{name}\" has no Powder Water Dose set on the raw material.",
-        "powder_colour_rate_missing": "Colour item \"{name}\" has no Powder Water Dose set on the raw material."
+        "powder_colour_rate_missing": "Colour item \"{name}\" has no Powder Water Dose set on the raw material.",
+        "item_missing_use_as": "Ingredient \"{name}\" has no \"Used As\" classification — set it on the raw material so the spec sheet groups it correctly."
       }
     },
     "copy": {
@@ -289,7 +290,7 @@
   },
   "mrpeasy_bom": {
     "title": "MRPeasy BOM",
-    "hint": "Per-1 kg breakdown for procurement. Pectin Premix collapses the gelling agent + premix sweetener into a single in-house BOM line — the label declaration still lists the components separately.",
+    "hint": "Per-1 kg breakdown for procurement. Pectin Premix collapses the gelling agent + premix sweetener into a single in-house BOM line — the label declaration still lists the components separately. On gummies the actives also collapse into a single 'Active Powder' line; the sub-BOM below breaks the pre-blend down ingredient-by-ingredient.",
     "print": "Print",
     "print_subtitle": "Bill of materials per 1 kg of finished product.",
     "print_printed_on": "Printed {date}",
@@ -304,7 +305,17 @@
     "col_pct": "%",
     "col_actual": "Actual measured",
     "total": "Total per 1 kg",
-    "missing": "Missing"
+    "missing": "Missing",
+    "pre_blend_badge": "Pre-blend",
+    "main_badge": "Finished product",
+    "main_title": "Main BOM (per 1 kg of finished product)",
+    "main_hint": "Final assembly. Rows tagged Pre-blend collapse a separate sub-BOM (e.g. Active Powder above) into one procurement line.",
+    "active_powder": {
+      "title": "Active Powder BOM",
+      "hint": "In-house pre-blend that ships into the main gummy BOM as a single 'Active Powder' line. Quantities below are per 1 kg of the Active Powder itself, not per 1 kg of finished gummy.",
+      "print_subtitle": "Active Powder pre-blend — per 1 kg of the actives blend.",
+      "total": "Total per 1 kg of Active Powder"
+    }
   },
   "line_overrides": {
     "title": "Per-line overrides",

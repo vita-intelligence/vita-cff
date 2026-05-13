@@ -3051,6 +3051,13 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   const totalWeight = totals.totalWeightMg;
+  // For gummies we split the actives into their own pre-blend BOM
+  // ("Active Powder") because that's how procurement actually orders
+  // and how production weighs out the gummy mix — the actives are
+  // pre-blended into a single powder, then dropped into the pectin
+  // matrix as one ingredient. Same model as Pectin Premix (gelling +
+  // premix sweetener collapsing into one BOM line).
+  const isGummy = totals.dosageForm === "gummy";
 
   // BOM rows scaled to per-1kg. Empty / unsupported state surfaces
   // as a hint instead of an empty table.
@@ -3092,17 +3099,37 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     }
 
     // 1) Actives — straight from the line list. Per-kg scaling
-    //    uses each line's cached mg/serving.
-    for (const line of lines) {
-      const mg = totals.lineValues.get(line.key);
-      if (!mg || mg <= 0) continue;
-      out.push({
-        slug: `active:${line.key}`,
-        label: line.item_name,
-        code: line.item_internal_code || "",
-        gramsPerKg: scale(mg),
-        pct: (mg / totalWeight) * 100,
-      });
+    //    uses each line's cached mg/serving. For gummies we collapse
+    //    every active into a single "Active Powder" row (the sub-BOM
+    //    rendered below breaks it back down ingredient-by-ingredient).
+    if (isGummy) {
+      let totalActivesMg = 0;
+      for (const line of lines) {
+        const mg = totals.lineValues.get(line.key);
+        if (!mg || mg <= 0) continue;
+        totalActivesMg += mg;
+      }
+      if (totalActivesMg > 0) {
+        out.push({
+          slug: "active_powder",
+          label: "Active Powder",
+          code: "",
+          gramsPerKg: scale(totalActivesMg),
+          pct: (totalActivesMg / totalWeight) * 100,
+        });
+      }
+    } else {
+      for (const line of lines) {
+        const mg = totals.lineValues.get(line.key);
+        if (!mg || mg <= 0) continue;
+        out.push({
+          slug: `active:${line.key}`,
+          label: line.item_name,
+          code: line.item_internal_code || "",
+          gramsPerKg: scale(mg),
+          pct: (mg / totalWeight) * 100,
+        });
+      }
     }
 
     // 2) Excipient breakdown rows (powder + gummy share this list).
@@ -3247,6 +3274,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     totals.excipients,
     totals.lineValues,
     lines,
+    isGummy,
     gummyBaseItems,
     flavouringItems,
     colourItems,
@@ -3255,6 +3283,45 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     premixSweetenerItems,
     acidityItems,
   ]);
+
+  // Sub-BOM for the Active Powder pre-blend. Only emitted on gummy
+  // formulations — for capsule / tablet / powder the actives are
+  // already broken down ingredient-by-ingredient in the main BOM
+  // above so a separate sub-BOM would be noise.
+  //
+  // Scaled per-1 kg of the Active Powder blend (NOT per-1 kg of the
+  // finished gummy) so production weighs the pre-blend against its
+  // own total. Sum of ``kg per kg`` rows equals 1.0000 / 100 %.
+  const activePowderRows = useMemo(() => {
+    if (!isGummy) return [];
+    let totalActivesMg = 0;
+    const entries: { key: string; mg: number; name: string; code: string }[] =
+      [];
+    for (const line of lines) {
+      const mg = totals.lineValues.get(line.key);
+      if (!mg || mg <= 0) continue;
+      totalActivesMg += mg;
+      entries.push({
+        key: line.key,
+        mg,
+        name: line.item_name,
+        code: line.item_internal_code || "",
+      });
+    }
+    if (totalActivesMg <= 0) return [];
+    const scaleActives = (mg: number) => (mg / totalActivesMg) * 1000;
+    const out = entries.map((entry) => ({
+      slug: `active:${entry.key}`,
+      label: entry.name,
+      code: entry.code,
+      gramsPerKg: scaleActives(entry.mg),
+      pct: (entry.mg / totalActivesMg) * 100,
+    }));
+    // Same smallest-first ordering as the main BOM so the heaviest
+    // active anchors the bottom of the print.
+    out.sort((a, b) => a.gramsPerKg - b.gramsPerKg);
+    return out;
+  }, [isGummy, lines, totals.lineValues]);
 
   const totalGrams = rows.reduce((acc, r) => acc + r.gramsPerKg, 0);
   // Display in kilograms — procurement reads quantities for whole
@@ -3383,79 +3450,231 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
           {tFormulations("mrpeasy_bom.empty_hint")}
         </p>
       ) : (
-        <table className="mt-4 w-full text-xs">
-          <thead className="border-b border-ink-200 text-ink-500">
-            <tr>
-              <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                {tFormulations("mrpeasy_bom.col_code")}
-              </th>
-              <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                {tFormulations("mrpeasy_bom.col_name")}
-              </th>
-              <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                {tFormulations("mrpeasy_bom.col_grams")}
-              </th>
-              <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                {tFormulations("mrpeasy_bom.col_pct")}
-              </th>
-              {/* Print-only Actual column — empty cell with a horizontal
-                  rule so the technician writes the actual measured kg
-                  next to each line in pen. */}
-              <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
-                {tFormulations("mrpeasy_bom.col_actual")}
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => (
-              <tr
-                key={row.slug}
-                className={`border-b border-ink-100 ${
-                  row.missing ? "bg-amber-50" : ""
-                }`}
-              >
-                <td className="px-2 py-1.5 text-ink-700 tabular-nums">
-                  {row.code ? (
-                    row.code
-                  ) : row.missing ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-900">
-                      {tFormulations("mrpeasy_bom.missing")}
-                    </span>
-                  ) : (
-                    "—"
-                  )}
-                </td>
-                <td className="px-2 py-1.5 text-ink-1000">{row.label}</td>
-                <td className="px-2 py-1.5 text-right text-ink-1000 tabular-nums">
-                  {formatKg(row.gramsPerKg)}
-                </td>
-                <td className="px-2 py-1.5 text-right text-ink-700 tabular-nums">
-                  {row.pct.toFixed(2)}
-                </td>
-                <td className="bom-print-only px-2 py-2.5">
-                  <span className="bom-print-handwrite block" />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-          <tfoot>
-            <tr className="border-t-2 border-ink-300 font-medium">
-              <td className="px-2 py-2 text-ink-700"></td>
-              <td className="px-2 py-2 text-ink-1000">
-                {tFormulations("mrpeasy_bom.total")}
-              </td>
-              <td className="px-2 py-2 text-right text-ink-1000 tabular-nums">
-                {totalKg.toFixed(4)}
-              </td>
-              <td className="px-2 py-2 text-right text-ink-700 tabular-nums">
-                {totalWeight ? "100.00" : "—"}
-              </td>
-              <td className="bom-print-only px-2 py-2">
-                <span className="bom-print-handwrite block" />
-              </td>
-            </tr>
-          </tfoot>
-        </table>
+        <>
+          {/* Active Powder pre-blend sub-BOM (gummies only).
+              Rendered ABOVE the main BOM because pre-blends are
+              what production weighs out first; the main BOM then
+              consumes the finished Active Powder as a single line.
+              Wrapped in an orange-tinted card so it reads visually
+              as a distinct sub-document, with a matching highlight
+              on the "Active Powder" row in the main BOM below so
+              the connection is obvious at a glance. */}
+          {activePowderRows.length > 0 ? (
+            <section className="mt-6 rounded-2xl bg-orange-50/60 p-4 ring-1 ring-inset ring-orange-200 print:mt-0 print:rounded-none print:ring-0">
+              <div className="bom-print-hide flex flex-wrap items-baseline justify-between gap-2">
+                <div className="flex flex-col">
+                  <span className="inline-flex items-center gap-1.5 self-start rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-700">
+                    {tFormulations("mrpeasy_bom.pre_blend_badge")}
+                  </span>
+                  <p className="mt-1 text-sm font-semibold text-ink-1000">
+                    {tFormulations("mrpeasy_bom.active_powder.title")}
+                  </p>
+                </div>
+                <p className="max-w-md text-[11px] leading-snug text-ink-500">
+                  {tFormulations("mrpeasy_bom.active_powder.hint")}
+                </p>
+              </div>
+              <div className="bom-print-only border-b border-ink-300 pb-3">
+                <h2 className="text-[12pt] font-semibold text-ink-1000">
+                  {tFormulations("mrpeasy_bom.active_powder.title")}
+                </h2>
+                <p className="mt-1 text-[10pt] text-ink-700">
+                  {tFormulations("mrpeasy_bom.active_powder.print_subtitle")}
+                </p>
+              </div>
+              <table className="mt-4 w-full text-xs">
+                <thead className="border-b border-orange-200 text-ink-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
+                      {tFormulations("mrpeasy_bom.col_code")}
+                    </th>
+                    <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
+                      {tFormulations("mrpeasy_bom.col_name")}
+                    </th>
+                    <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
+                      {tFormulations("mrpeasy_bom.col_grams")}
+                    </th>
+                    <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
+                      {tFormulations("mrpeasy_bom.col_pct")}
+                    </th>
+                    <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
+                      {tFormulations("mrpeasy_bom.col_actual")}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activePowderRows.map((row) => (
+                    <tr
+                      key={row.slug}
+                      className="border-b border-orange-100/70"
+                    >
+                      <td className="px-2 py-1.5 text-ink-700 tabular-nums">
+                        {row.code || "—"}
+                      </td>
+                      <td className="px-2 py-1.5 text-ink-1000">{row.label}</td>
+                      <td className="px-2 py-1.5 text-right text-ink-1000 tabular-nums">
+                        {formatKg(row.gramsPerKg)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-ink-700 tabular-nums">
+                        {row.pct.toFixed(2)}
+                      </td>
+                      <td className="bom-print-only px-2 py-2.5">
+                        <span className="bom-print-handwrite block" />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t-2 border-orange-300 font-medium">
+                    <td className="px-2 py-2 text-ink-700"></td>
+                    <td className="px-2 py-2 text-ink-1000">
+                      {tFormulations("mrpeasy_bom.active_powder.total")}
+                    </td>
+                    <td className="px-2 py-2 text-right text-ink-1000 tabular-nums">
+                      {(
+                        activePowderRows.reduce(
+                          (acc, r) => acc + r.gramsPerKg,
+                          0,
+                        ) / 1000
+                      ).toFixed(4)}
+                    </td>
+                    <td className="px-2 py-2 text-right text-ink-700 tabular-nums">
+                      100.00
+                    </td>
+                    <td className="bom-print-only px-2 py-2">
+                      <span className="bom-print-handwrite block" />
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </section>
+          ) : null}
+
+          {/* Main BOM — the finished product. Always rendered last
+              so the order tracks how production actually builds the
+              gummy: pre-blends first (Active Powder above), final
+              assembly here. Print-break before the main table keeps
+              each BOM on its own page when scientists Cmd+P. */}
+          <section
+            className={`${
+              activePowderRows.length > 0
+                ? "mt-6 print:break-before-page"
+                : "mt-4"
+            }`}
+          >
+            {activePowderRows.length > 0 ? (
+              <div className="bom-print-hide mb-3 flex flex-wrap items-baseline justify-between gap-2">
+                <div className="flex flex-col">
+                  <span className="inline-flex items-center gap-1.5 self-start rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+                    {tFormulations("mrpeasy_bom.main_badge")}
+                  </span>
+                  <p className="mt-1 text-sm font-semibold text-ink-1000">
+                    {tFormulations("mrpeasy_bom.main_title")}
+                  </p>
+                </div>
+                <p className="max-w-md text-[11px] leading-snug text-ink-500">
+                  {tFormulations("mrpeasy_bom.main_hint")}
+                </p>
+              </div>
+            ) : null}
+            <table className="w-full text-xs">
+              <thead className="border-b border-ink-200 text-ink-500">
+                <tr>
+                  <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
+                    {tFormulations("mrpeasy_bom.col_code")}
+                  </th>
+                  <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
+                    {tFormulations("mrpeasy_bom.col_name")}
+                  </th>
+                  <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
+                    {tFormulations("mrpeasy_bom.col_grams")}
+                  </th>
+                  <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
+                    {tFormulations("mrpeasy_bom.col_pct")}
+                  </th>
+                  {/* Print-only Actual column — empty cell with a
+                      horizontal rule so the technician writes the
+                      actual measured kg next to each line in pen. */}
+                  <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
+                    {tFormulations("mrpeasy_bom.col_actual")}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  // Highlight rows that are themselves the
+                  // collapsed output of a sub-BOM (Active Powder
+                  // today; Pectin Premix would fit the same model
+                  // when it grows its own sub-BOM). Orange tint +
+                  // pill badge anchor the visual link back to the
+                  // pre-blend card above so the reader knows where
+                  // the breakdown lives.
+                  const fromSubBom = row.slug === "active_powder";
+                  return (
+                    <tr
+                      key={row.slug}
+                      className={`border-b border-ink-100 ${
+                        fromSubBom
+                          ? "bg-orange-50/70"
+                          : row.missing
+                            ? "bg-amber-50"
+                            : ""
+                      }`}
+                    >
+                      <td className="px-2 py-1.5 text-ink-700 tabular-nums">
+                        {row.code ? (
+                          row.code
+                        ) : row.missing ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-900">
+                            {tFormulations("mrpeasy_bom.missing")}
+                          </span>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
+                      <td className="px-2 py-1.5 text-ink-1000">
+                        <span className="inline-flex items-center gap-2">
+                          {row.label}
+                          {fromSubBom ? (
+                            <span className="inline-flex items-center rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-orange-700">
+                              {tFormulations("mrpeasy_bom.pre_blend_badge")}
+                            </span>
+                          ) : null}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-ink-1000 tabular-nums">
+                        {formatKg(row.gramsPerKg)}
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-ink-700 tabular-nums">
+                        {row.pct.toFixed(2)}
+                      </td>
+                      <td className="bom-print-only px-2 py-2.5">
+                        <span className="bom-print-handwrite block" />
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-ink-300 font-medium">
+                  <td className="px-2 py-2 text-ink-700"></td>
+                  <td className="px-2 py-2 text-ink-1000">
+                    {tFormulations("mrpeasy_bom.total")}
+                  </td>
+                  <td className="px-2 py-2 text-right text-ink-1000 tabular-nums">
+                    {totalKg.toFixed(4)}
+                  </td>
+                  <td className="px-2 py-2 text-right text-ink-700 tabular-nums">
+                    {totalWeight ? "100.00" : "—"}
+                  </td>
+                  <td className="bom-print-only px-2 py-2">
+                    <span className="bom-print-handwrite block" />
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </section>
+        </>
       )}
 
       {/* Print-only signature footer — three short lines at the

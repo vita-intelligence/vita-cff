@@ -139,6 +139,11 @@ export interface LineItemAttributes {
   readonly purity: string | number | null;
   readonly extract_ratio: string | number | null;
   readonly overage: string | number | null;
+  /** ``use_as`` classifier (Active / Acidity Regulator / Sweeteners /
+   *  …). Optional on the wire — older snapshots may omit it. The
+   *  builder's live warning sweep reads it to flag items missing a
+   *  classification before save. */
+  readonly use_as?: string | null;
 }
 
 export interface FormulationLineDto {

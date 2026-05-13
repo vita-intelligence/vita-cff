@@ -229,6 +229,11 @@ export interface ItemAttributesForMath {
   readonly purity?: string | number | null;
   readonly extract_ratio?: string | number | null;
   readonly overage?: string | number | null;
+  //: ``use_as`` classifier. Drives the live "item missing use_as"
+  //: warning the builder surfaces in the viability panel. Empty /
+  //: null = blank classification → warning. Optional so math-only
+  //: callers that don't care can hand in a narrow object.
+  readonly use_as?: string | null;
   //: Label-copy + compliance fields. Optional so math-only callers
   //: can hand in a narrow object; the builder always passes the
   //: full set.
@@ -1944,6 +1949,67 @@ export function computeTotals({
     }
   }
 
+  // Sweep every selected item (line + every M2M picker) and warn
+  // about blank ``use_as`` classifications. A missing value breaks
+  // the spec sheet's active-vs-excipient split silently, so we
+  // surface it as a viability warning that the scientist can fix in
+  // the catalogue. Mirrors the server-side sweep in
+  // ``compute_totals`` so the warning shows live without waiting for
+  // a save round-trip.
+  const useAsWarnings: string[] = [];
+  {
+    const seen = new Set<string>();
+    type ItemLike = {
+      readonly id?: string;
+      readonly label?: string;
+      readonly useAs?: string;
+    };
+    const buckets: ReadonlyArray<readonly ItemLike[]> = [
+      gummyBaseItems ?? [],
+      flavouringItems ?? [],
+      colourItems ?? [],
+      sweetenerItems ?? [],
+      glazingItems ?? [],
+      gellingItems ?? [],
+      premixSweetenerItems ?? [],
+      acidityItems ?? [],
+      mccCarrierItems ?? [],
+      dcpCarrierItems ?? [],
+      antiCakingItems ?? [],
+      powderCarrierItems ?? [],
+    ];
+    for (const bucket of buckets) {
+      for (const pick of bucket) {
+        if (!pick?.id) continue;
+        if (seen.has(pick.id)) continue;
+        seen.add(pick.id);
+        const value = (pick.useAs ?? "").trim();
+        if (!value) {
+          useAsWarnings.push(
+            `item_missing_use_as:${pick.label ?? pick.id}`,
+          );
+        }
+      }
+    }
+    // Lines come from a different shape — the item id isn't on the
+    // input directly, so we key the dedup on the externalId (one
+    // line per row). use_as is on ``line.attributes``.
+    for (const line of lines) {
+      const key = `line:${line.externalId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const raw = line.attributes?.use_as;
+      const value = raw == null ? "" : String(raw).trim();
+      if (!value) {
+        const label =
+          line.attributes?.ingredient_list_name ||
+          line.fallbackName ||
+          line.externalId;
+        useAsWarnings.push(`item_missing_use_as:${label}`);
+      }
+    }
+  }
+
   if (totalActive <= 0) {
     return {
       totalActiveMg: 0,
@@ -1954,7 +2020,7 @@ export function computeTotals({
       totalWeightMg: null,
       excipients: null,
       viability: EMPTY_VIABILITY,
-      warnings: [],
+      warnings: useAsWarnings,
       lineValues,
       lineFailures,
     };
@@ -1983,7 +2049,7 @@ export function computeTotals({
       totalWeightMg: r.totalWeight,
       excipients: r.excipients,
       viability: r.viability,
-      warnings: r.warnings,
+      warnings: [...r.warnings, ...useAsWarnings],
       lineValues,
       lineFailures,
     };
@@ -2008,7 +2074,7 @@ export function computeTotals({
       totalWeightMg: r.totalWeight,
       excipients: r.excipients,
       viability: r.viability,
-      warnings: r.warnings,
+      warnings: [...r.warnings, ...useAsWarnings],
       lineValues,
       lineFailures,
     };
@@ -2046,7 +2112,7 @@ export function computeTotals({
       totalWeightMg: r.totalWeight,
       excipients: r.excipients,
       viability: r.viability,
-      warnings: r.warnings,
+      warnings: [...r.warnings, ...useAsWarnings],
       lineValues,
       lineFailures,
     };
@@ -2067,7 +2133,7 @@ export function computeTotals({
       comfortOk: true,
       codes: ["manual_review_required"],
     },
-    warnings: [],
+    warnings: useAsWarnings,
     lineValues,
     lineFailures,
   };

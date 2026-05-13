@@ -73,6 +73,12 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "nutrition_information_name": attributes.get(
                 "nutrition_information_name"
             ),
+            # ``use_as`` classifier — Active / Acidity Regulator /
+            # Sweeteners / etc. The builder mirrors the server's
+            # ``item_missing_use_as`` warning live (without waiting
+            # for a save round-trip) so blank-use_as items surface in
+            # the viability panel as you add them.
+            "use_as": attributes.get("use_as"),
             "vegan": attributes.get("vegan"),
             "organic": attributes.get("organic"),
             "halal": attributes.get("halal"),

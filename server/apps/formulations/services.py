@@ -1802,6 +1802,12 @@ def compute_totals(
 
     total_active = Decimal("0")
     line_values: dict[str, Decimal] = {}
+    # Captured so the post-math sweep can warn about line items
+    # missing a ``use_as`` classification (the active-vs-excipient
+    # split on the spec sheet silently breaks for blank values, so
+    # surfacing it as a builder warning lets the scientist fix the
+    # catalogue before signing off).
+    line_items: list[Item] = []
 
     for line_tuple in lines:
         # Tolerate the legacy 4-tuple shape so any in-flight caller
@@ -1820,6 +1826,7 @@ def compute_totals(
                 overage_o,
                 extract_o,
             ) = line_tuple
+        line_items.append(item)
         mg = compute_line(
             item=item,
             label_claim_mg=label_claim,
@@ -1834,6 +1841,39 @@ def compute_totals(
 
     total_active = total_active.quantize(Decimal("0.0001"))
 
+    # Compute the use_as-missing warnings up front so every return
+    # path (empty actives, non-math dosage forms, full math) surfaces
+    # them. The sweep dedupes by item id so a raw material that
+    # appears in two pickers warns once.
+    use_as_warnings: list[str] = []
+    seen_item_ids: set[Any] = set()
+    for bucket in (
+        tuple(line_items),
+        gummy_base_items,
+        flavouring_items,
+        colour_items,
+        sweetener_items,
+        glazing_items,
+        gelling_items,
+        premix_sweetener_items,
+        acidity_items,
+        mcc_carrier_items,
+        dcp_carrier_items,
+        anti_caking_items,
+        powder_carrier_items,
+    ):
+        for item in bucket:
+            if item.id in seen_item_ids:
+                continue
+            seen_item_ids.add(item.id)
+            attrs = item.attributes or {}
+            raw_use_as = attrs.get("use_as")
+            value = (
+                str(raw_use_as).strip() if raw_use_as is not None else ""
+            )
+            if not value:
+                use_as_warnings.append(f"item_missing_use_as:{item.name}")
+
     if total_active <= 0:
         return FormulationTotals(
             total_active_mg=total_active,
@@ -1845,6 +1885,7 @@ def compute_totals(
             excipients=None,
             viability=_empty_viability(),
             line_values=line_values,
+            warnings=tuple(use_as_warnings),
         )
 
     if dosage_form == DosageForm.CAPSULE.value:
@@ -1926,6 +1967,7 @@ def compute_totals(
                 codes=("manual_review_required",),
             ),
             line_values=line_values,
+            warnings=tuple(use_as_warnings),
         )
 
     return FormulationTotals(
@@ -1938,7 +1980,7 @@ def compute_totals(
         excipients=excipients,
         viability=viability,
         line_values=line_values,
-        warnings=warnings,
+        warnings=tuple(list(warnings) + use_as_warnings),
     )
 
 
