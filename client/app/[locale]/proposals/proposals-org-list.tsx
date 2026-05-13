@@ -1,6 +1,12 @@
 "use client";
 
-import { ExternalLink, Plus, PoundSterling, Trash2 } from "lucide-react";
+import {
+  ExternalLink,
+  Loader2,
+  Plus,
+  PoundSterling,
+  Trash2,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 
@@ -406,18 +412,19 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       </option>
                     ))}
                   </select>
-                  <span className="text-[11px] text-ink-500">
-                    {formulationsQuery.isLoading
-                      ? tProposals("create.formulation_loading")
-                      : formulations.length === 0
-                        ? formulationSearchDebounced
-                          ? tProposals(
-                              "create.formulation_empty_search",
-                              { query: formulationSearchDebounced },
-                            )
-                          : tProposals("create.formulation_empty_approved")
-                        : tProposals("create.formulation_hint_approved_only")}
-                  </span>
+                  <PickerHint
+                    loading={formulationsQuery.isLoading}
+                    loadingText={tProposals("create.formulation_loading")}
+                  >
+                    {formulations.length === 0
+                      ? formulationSearchDebounced
+                        ? tProposals(
+                            "create.formulation_empty_search",
+                            { query: formulationSearchDebounced },
+                          )
+                        : tProposals("create.formulation_empty_approved")
+                      : tProposals("create.formulation_hint_approved_only")}
+                  </PickerHint>
                 </label>
 
                 <label className="flex flex-col gap-1.5">
@@ -427,7 +434,11 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    disabled={!formulationId || sellableVersions.length === 0}
+                    disabled={
+                      !formulationId ||
+                      versionsQuery.isLoading ||
+                      sellableVersions.length === 0
+                    }
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     <option value="">—</option>
@@ -438,13 +449,18 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       </option>
                     ))}
                   </select>
-                  <span className="text-[11px] text-ink-500">
+                  <PickerHint
+                    loading={
+                      Boolean(formulationId) && versionsQuery.isLoading
+                    }
+                    loadingText={tProposals("create.version_loading")}
+                  >
                     {!formulationId
                       ? null
                       : sellableVersions.length === 0
                         ? tProposals("create.version_empty_approved")
                         : tProposals("create.version_hint_approved_only")}
-                  </span>
+                  </PickerHint>
                 </label>
 
                 <fieldset className="flex flex-col gap-1.5">
@@ -490,7 +506,7 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   <select
                     value={specSheetId}
                     onChange={(e) => setSpecSheetId(e.target.value)}
-                    disabled={!formulationId}
+                    disabled={!formulationId || specSheetsQuery.isLoading}
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     <option value="">
@@ -529,13 +545,20 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       })
                     }
                   </select>
-                  <span className="text-[11px] text-ink-500">
+                  <PickerHint
+                    loading={
+                      Boolean(formulationId) && specSheetsQuery.isLoading
+                    }
+                    loadingText={tProposals(
+                      "create.specification_sheet_loading",
+                    )}
+                  >
                     {formulationId
                       ? tProposals("create.specification_sheet_hint")
                       : tProposals(
                           "create.specification_sheet_hint_pick_formulation",
                         )}
-                  </span>
+                  </PickerHint>
                 </label>
 
                 <CustomerPicker
@@ -643,5 +666,36 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
         onCreated={(c) => setCustomer(c)}
       />
     </Modal>
+  );
+}
+
+
+/**
+ * Tiny shared subhint under a picker dropdown. Shows a spinning
+ * Loader2 + ``loadingText`` while the underlying query is in flight,
+ * otherwise falls through to the static ``children`` hint. Lets
+ * users tell "the list is loading" apart from "the list really is
+ * empty" — pickers without this look identical in either state.
+ */
+function PickerHint({
+  loading,
+  loadingText,
+  children,
+}: {
+  loading: boolean;
+  loadingText: string;
+  children: React.ReactNode;
+}) {
+  if (loading) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-ink-500">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        {loadingText}
+      </span>
+    );
+  }
+  if (children === null || children === false) return null;
+  return (
+    <span className="text-[11px] text-ink-500">{children}</span>
   );
 }

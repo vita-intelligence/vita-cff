@@ -39,6 +39,8 @@
     "version": "Formulation version",
     "version_hint_approved_only": "Only the project's approved version appears here.",
     "version_empty_approved": "This project doesn't have an approved version yet. Approve a version first.",
+    "version_loading": "Loading versions…",
+    "specification_sheet_loading": "Loading specification sheets…",
     "template_type": "Template",
     "customer_name": "Customer name",
     "customer_company": "Company",

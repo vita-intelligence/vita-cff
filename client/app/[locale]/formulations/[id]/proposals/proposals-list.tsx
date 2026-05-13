@@ -2,6 +2,7 @@
 
 import {
   ExternalLink,
+  Loader2,
   Plus,
   PoundSterling,
   Trash2,
@@ -92,6 +93,7 @@ export function ProposalsList({
             orgId={orgId}
             formulationId={formulationId}
             versions={versions}
+            versionsLoading={versionsQuery.isLoading}
             projectType={projectType}
             approvedVersionNumber={approvedVersionNumber}
           />
@@ -219,12 +221,14 @@ function NewProposalButton({
   orgId,
   formulationId,
   versions,
+  versionsLoading,
   projectType,
   approvedVersionNumber,
 }: {
   orgId: string;
   formulationId: string;
   versions: readonly FormulationVersionDto[];
+  versionsLoading: boolean;
   projectType: ProjectType;
   approvedVersionNumber: number | null;
 }) {
@@ -438,7 +442,9 @@ function NewProposalButton({
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    disabled={sellableVersions.length === 0}
+                    disabled={
+                      versionsLoading || sellableVersions.length === 0
+                    }
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     {sellableVersions.map((v) => (
@@ -448,9 +454,16 @@ function NewProposalButton({
                       </option>
                     ))}
                   </select>
-                  <span className="text-[11px] text-ink-500">
-                    {tProposals("create.version_hint_approved_only")}
-                  </span>
+                  {versionsLoading ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] text-ink-500">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {tProposals("create.version_loading")}
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-ink-500">
+                      {tProposals("create.version_hint_approved_only")}
+                    </span>
+                  )}
                 </label>
 
                 <fieldset className="flex flex-col gap-1.5">
