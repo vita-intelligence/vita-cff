@@ -176,12 +176,18 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 #: Foreign-key paths that every sheet-fetching query needs to pre-fetch
 #: so the render path can dereference the four packaging slots without
 #: an extra round-trip per slot per sheet.
+#:
+#: ``proposal`` is the reverse side of ``Proposal.specification_sheet``
+#: (OneToOne, related_name="proposal") — fetched here so the
+#: ``linked_proposal`` field on the read serializer stays O(1) per
+#: row even on the org-wide /signed list.
 _SHEET_RELATED: tuple[str, ...] = (
     "formulation_version__formulation",
     "packaging_lid",
     "packaging_container",
     "packaging_label",
     "packaging_antitemper",
+    "proposal",
 )
 
 

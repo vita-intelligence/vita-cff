@@ -1,11 +1,14 @@
 "use client";
 
 import {
+  AlertCircle,
   CheckCircle2,
   ClipboardCheck,
   ExternalLink,
   FileSignature,
   Inbox,
+  Paperclip,
+  Plus,
   Send,
   Stamp,
 } from "lucide-react";
@@ -563,6 +566,14 @@ function SpecCard({
     time: format.relativeTime(new Date(stampSource), now),
   });
 
+  // ``approved`` mode is the "Ready to send" surface, where partners
+  // are deciding whether each sheet still needs a quote — surface the
+  // linked proposal chip there. We intentionally suppress it on the
+  // ``sent`` / ``signed`` modes: by the time a sheet is out for kiosk
+  // signature or already signed, the existence of a proposal is no
+  // longer the relevant question.
+  const showProposalChip = mode === "approved";
+
   return (
     <li className="rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -575,6 +586,9 @@ function SpecCard({
             {t("card.version", { version: sheet.formulation_version_number })}
           </span>
           <span className="text-[11px] text-ink-400">{stampLabel}</span>
+          {showProposalChip ? (
+            <ProposalLinkageChip sheet={sheet} />
+          ) : null}
         </div>
         <Link
           href={`/specifications/${sheet.id}`}
@@ -585,5 +599,52 @@ function SpecCard({
         </Link>
       </div>
     </li>
+  );
+}
+
+
+/**
+ * Inline chip that answers "has a proposal been raised against this
+ * sheet yet?" on the Ready-to-send Pipeline view. Two states:
+ *
+ *   * **Linked** — clickable chip with the proposal code + status.
+ *     Clicking jumps to the proposal detail page.
+ *   * **Unlinked** — warning chip + a secondary "Create proposal"
+ *     button that deep-links to the project workspace's proposals
+ *     tab. The workspace's New Proposal modal already pre-selects
+ *     the formulation's approved version, so the operator only has
+ *     to fill in customer + price.
+ */
+function ProposalLinkageChip({ sheet }: { sheet: SpecificationSheetDto }) {
+  const t = useTranslations("signed");
+  const linked = sheet.linked_proposal;
+  if (linked) {
+    return (
+      <Link
+        href={`/proposals/${linked.id}`}
+        className="mt-1 inline-flex items-center gap-1.5 self-start rounded-full bg-orange-500/10 px-2 py-0.5 text-[11px] font-medium text-orange-700 ring-1 ring-inset ring-orange-500/30 hover:bg-orange-500/20"
+      >
+        <Paperclip className="h-3 w-3" />
+        {t("card.proposal_linked", {
+          code: linked.code,
+          status: linked.status,
+        })}
+      </Link>
+    );
+  }
+  return (
+    <span className="mt-1 inline-flex flex-wrap items-center gap-2">
+      <span className="inline-flex items-center gap-1.5 rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning ring-1 ring-inset ring-warning/30">
+        <AlertCircle className="h-3 w-3" />
+        {t("card.proposal_missing")}
+      </span>
+      <Link
+        href={`/formulations/${sheet.formulation_id}/proposals`}
+        className="inline-flex items-center gap-1 text-[11px] font-medium text-orange-700 hover:text-orange-800"
+      >
+        <Plus className="h-3 w-3" />
+        {t("card.proposal_create")}
+      </Link>
+    </span>
   );
 }

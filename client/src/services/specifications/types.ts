@@ -72,6 +72,16 @@ export interface SpecificationSheetDto {
   readonly formulation_id: string;
   readonly formulation_name: string;
   readonly formulation_version_number: number;
+  /** Compact summary of the proposal linked to this sheet via
+   *  ``Proposal.specification_sheet`` (OneToOne). ``null`` when no
+   *  proposal exists yet — drives the "has a proposal been created?"
+   *  chip on the customer-pipeline view so commercial roles don't
+   *  accidentally double-quote a sheet. */
+  readonly linked_proposal: {
+    readonly id: string;
+    readonly code: string;
+    readonly status: string;
+  } | null;
   /** Set on render payloads when a :class:`Proposal` is attached to
    *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
   readonly has_proposal?: boolean;

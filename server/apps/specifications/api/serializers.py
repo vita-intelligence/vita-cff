@@ -47,6 +47,14 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     # round-trip, even when the item is outside the search page the
     # ComboBox most recently loaded.
     packaging_details = serializers.SerializerMethodField()
+    #: Compact summary of the proposal linked to this sheet (via the
+    #: ``Proposal.specification_sheet`` OneToOne) or ``None`` when no
+    #: proposal exists yet. Drives the "has a proposal been created?"
+    #: chip on the customer-pipeline surfaces so commercial roles
+    #: don't accidentally double-quote a sheet that's already been
+    #: quoted. ``list_sheets`` prefetches the relation so this stays
+    #: O(1) per row regardless of page size.
+    linked_proposal = serializers.SerializerMethodField()
 
     def get_packaging_details(self, obj) -> dict:
         return {
@@ -54,6 +62,16 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "container": _packaging_summary(obj.packaging_container),
             "label": _packaging_summary(obj.packaging_label),
             "antitemper": _packaging_summary(obj.packaging_antitemper),
+        }
+
+    def get_linked_proposal(self, obj) -> dict | None:
+        proposal = getattr(obj, "proposal", None)
+        if proposal is None:
+            return None
+        return {
+            "id": str(proposal.id),
+            "code": proposal.code,
+            "status": proposal.status,
         }
 
     class Meta:
@@ -95,6 +113,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_id",
             "formulation_name",
             "formulation_version_number",
+            "linked_proposal",
             "created_at",
             "updated_at",
         )

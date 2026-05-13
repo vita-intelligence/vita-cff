@@ -41,6 +41,9 @@
     "approved_at": "Approved {time}",
     "sent_at": "Sent {time}",
     "signed_at": "Signed {time}",
-    "signed_by": "by {name}"
+    "signed_by": "by {name}",
+    "proposal_linked": "Proposal {code} · {status}",
+    "proposal_missing": "No proposal yet",
+    "proposal_create": "Create proposal"
   }
 }
