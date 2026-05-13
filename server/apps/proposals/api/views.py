@@ -1412,6 +1412,7 @@ class PublicProposalKioskView(APIView):
     def get(self, request: Request, token: str) -> Response:
         from apps.proposals.services import (
             ProposalStatus,
+            _ensure_attached_spec_tokens,
             _promote_attached_specs_to_sent,
         )
 
@@ -1419,6 +1420,17 @@ class PublicProposalKioskView(APIView):
             proposal = get_proposal_by_public_token(token)
         except ProposalPublicLinkNotEnabled as exc:
             raise NotFound() from exc
+
+        # Always make sure every bundled spec carries a ``public_token``
+        # so the kiosk preview iframes can load. Token minting used to
+        # be coupled to the ``approved → sent`` promotion below, which
+        # meant a proposal sitting at ``approved`` rendered the spec
+        # card without its preview (the iframe URL needed a token the
+        # spec didn't have). Now we mint up-front; the status
+        # promotion is a separate concern.
+        _ensure_attached_spec_tokens(
+            proposal=proposal, actor=proposal.updated_by
+        )
 
         if proposal.status == ProposalStatus.SENT.value:
             _promote_attached_specs_to_sent(

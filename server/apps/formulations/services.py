@@ -1873,7 +1873,16 @@ def compute_totals(
                 str(raw_use_as).strip() if raw_use_as is not None else ""
             )
             if not value:
-                use_as_warnings.append(f"item_missing_use_as:{item.name}")
+                # Include the internal code so a scientist with two
+                # items of the same display name (e.g. the duplicate
+                # row created when an attribute is corrected on a
+                # cloned record) can tell from the warning *which*
+                # one needs the classification.
+                code = (item.internal_code or "").strip()
+                label = (
+                    f"{item.name} ({code})" if code else item.name
+                )
+                use_as_warnings.append(f"item_missing_use_as:{label}")
 
     if total_active <= 0:
         return FormulationTotals(

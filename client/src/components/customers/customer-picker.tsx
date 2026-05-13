@@ -103,18 +103,39 @@ export function CustomerPicker({
   );
 
   const importMutation = useImportCustomerFromDynamics(orgId);
+  const [importError, setImportError] = useState<string | null>(null);
+
+  // Coarse "is anything pending" guard — used to lock the whole
+  // dropdown while an import is in flight so a slow connection
+  // doesn't tempt the user into rage-clicking other rows. The
+  // per-row ``importingId`` is kept for the targeted spinner.
+  const importPending = importingId !== null;
 
   const handlePickDynamics = async (contact: DynamicsContactSuggestion) => {
+    // Guard against re-entry: a second click while an import is
+    // still resolving used to spawn a parallel mutation, which on
+    // slow internet meant several import POSTs racing for the same
+    // contact and confusing the eventual outcome. Now only the
+    // first click counts; subsequent clicks no-op.
+    if (importPending) return;
     setImportingId(contact.dynamics_id);
+    setImportError(null);
     try {
       const customer = await importMutation.mutateAsync(contact);
       onChange(customer);
       setOpen(false);
-    } catch {
-      // Silently swallow — the picker still shows local results;
-      // surfacing a toast here would be confusing when the user
-      // can just pick a local row instead. The settings page is
-      // the place to diagnose integration health.
+    } catch (err) {
+      // Surface the failure inline rather than silently swallowing.
+      // The previous "swallow and let them pick a local row" rule
+      // assumed users with healthy connections; on flaky networks
+      // the silent path turned into a rage-click loop with no
+      // signal that anything went wrong. The dropdown stays open
+      // so the user can retry or pick a local match.
+      setImportError(
+        err instanceof Error && err.message
+          ? err.message
+          : tCustomers("picker.dynamics_import_failed"),
+      );
     } finally {
       setImportingId(null);
     }
@@ -153,6 +174,35 @@ export function CustomerPicker({
         ) : null}
         {open ? (
           <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-72 overflow-y-auto rounded-lg bg-ink-0 shadow-lg ring-1 ring-ink-200">
+            {/* Prominent inline banner the moment a Dynamics import
+                starts. On a slow connection this is the only thing
+                visible between click and resolved customer; without
+                it users assumed their click hadn't registered and
+                rage-clicked every row in turn. */}
+            {importPending ? (
+              <div className="flex items-center gap-2 border-b border-blue-200 bg-blue-50 px-3 py-2 text-xs font-medium text-blue-700">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                {tCustomers("picker.importing")}
+              </div>
+            ) : null}
+            {importError ? (
+              <div
+                role="alert"
+                className="flex items-center justify-between gap-2 border-b border-danger/30 bg-danger/10 px-3 py-2 text-xs font-medium text-danger"
+              >
+                <span>{importError}</span>
+                <button
+                  type="button"
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    setImportError(null);
+                  }}
+                  className="text-[10px] uppercase tracking-wide hover:underline"
+                >
+                  {tCustomers("picker.dismiss")}
+                </button>
+              </div>
+            ) : null}
             {matches.length === 0 &&
             visibleDynamicsSuggestions.length === 0 ? (
               <div className="flex flex-col gap-2 px-3 py-3 text-xs text-ink-500">
@@ -175,12 +225,14 @@ export function CustomerPicker({
                   <button
                     key={match.id}
                     type="button"
+                    disabled={importPending}
                     onMouseDown={(e) => {
                       e.preventDefault();
+                      if (importPending) return;
                       onChange(match);
                       setOpen(false);
                     }}
-                    className="flex w-full flex-col items-start gap-0.5 border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-ink-50"
+                    className="flex w-full flex-col items-start gap-0.5 border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-ink-0"
                   >
                     <span className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-1000">
                       {match.company || match.name || "—"}
@@ -206,16 +258,21 @@ export function CustomerPicker({
                     {visibleDynamicsSuggestions.map((suggestion) => {
                       const isImporting =
                         importingId === suggestion.dynamics_id;
+                      // ``importPending`` greys every Dynamics row
+                      // (including the unclicked ones) so the user
+                      // can see the dropdown is busy, not unresponsive.
+                      // The clicked row still keeps its own spinner via
+                      // ``isImporting``.
                       return (
                         <button
                           key={`dyn-${suggestion.dynamics_id}`}
                           type="button"
-                          disabled={isImporting}
+                          disabled={importPending}
                           onMouseDown={(e) => {
                             e.preventDefault();
                             void handlePickDynamics(suggestion);
                           }}
-                          className="flex w-full flex-col items-start gap-0.5 border-b border-blue-100 px-3 py-2 text-left last:border-b-0 hover:bg-blue-50 disabled:opacity-60"
+                          className="flex w-full flex-col items-start gap-0.5 border-b border-blue-100 px-3 py-2 text-left last:border-b-0 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-blue-50/30"
                         >
                           <span className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-1000">
                             {suggestion.company ||

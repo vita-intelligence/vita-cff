@@ -1177,6 +1177,31 @@ def _attached_spec_sheets(proposal: Proposal) -> list[SpecificationSheet]:
     return [by_id[sid] for sid in sheet_ids if sid in by_id]
 
 
+def _ensure_attached_spec_tokens(
+    *, proposal: Proposal, actor: Any
+) -> None:
+    """Mint a ``public_token`` on every attached spec that lacks one.
+
+    Separated from :func:`_promote_attached_specs_to_sent` because the
+    token is what makes the kiosk preview iframe load — and the
+    customer should be able to *preview* the bundled spec sheets the
+    moment the proposal kiosk URL goes live (i.e. as soon as the
+    proposal is approved), not only once the proposal is flipped from
+    ``approved`` → ``sent``.
+
+    Idempotent: specs that already carry a token are untouched.
+    """
+
+    for sheet in _attached_spec_sheets(proposal):
+        if sheet.public_token is not None:
+            continue
+        sheet.public_token = uuid.uuid4()
+        sheet.updated_by = actor
+        sheet.save(
+            update_fields=["public_token", "updated_by", "updated_at"]
+        )
+
+
 def _promote_attached_specs_to_sent(
     *, proposal: Proposal, actor: Any
 ) -> list[SpecificationSheet]:

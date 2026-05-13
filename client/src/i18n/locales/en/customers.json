@@ -38,6 +38,9 @@
     "clear": "Clear",
     "dynamics_chip": "Dynamics",
     "dynamics_section": "From Microsoft Dynamics",
-    "dynamics_no_matches": "No Dynamics matches."
+    "dynamics_no_matches": "No Dynamics matches.",
+    "importing": "Importing customer from Dynamics…",
+    "dynamics_import_failed": "Couldn't import that contact. Check your connection and try again.",
+    "dismiss": "Dismiss"
   }
 }
