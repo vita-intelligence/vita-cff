@@ -5,124 +5,295 @@
   <title>{{ proposal.code }} · {{ proposal.customer_company|default:proposal.customer_name }}</title>
   <style>
     :root {
-      --ink: #0d1117;
-      --muted: #4a5568;
-      --line: #d7dce1;
+      --ink: #1a1a1a;
+      --muted: #555;
+      --line: #cfd4d9;
       --accent: #ea580c;
       --bg: #ffffff;
     }
+    *, *::before, *::after { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif;
       color: var(--ink);
       background: var(--bg);
       margin: 0;
-      padding: 40px;
+      padding: 32px 40px;
       max-width: 820px;
       margin-left: auto;
       margin-right: auto;
       line-height: 1.55;
-      font-size: 14px;
+      font-size: 12.5px;
     }
-    h1 { font-size: 22px; margin-bottom: 4px; }
-    h2 { font-size: 15px; margin-top: 28px; margin-bottom: 8px; color: var(--ink); }
-    p { margin: 8px 0; }
+    h1 { font-size: 22px; margin: 0 0 14px; }
+    h2 { font-size: 14px; margin: 22px 0 8px; }
+    h3 { font-size: 12.5px; margin: 14px 0 6px; }
+    p { margin: 6px 0; }
+    ul { margin: 4px 0 8px; padding-left: 22px; }
+    ul li { margin: 1px 0; }
     .muted { color: var(--muted); }
-    .small { font-size: 12px; }
+    .small { font-size: 11px; }
     .tag {
       display: inline-block;
-      background: rgba(234, 88, 12, 0.08);
+      background: rgba(234, 88, 12, 0.10);
       color: var(--accent);
       padding: 2px 10px;
       border-radius: 9999px;
-      font-size: 11px;
+      font-size: 10.5px;
       text-transform: uppercase;
       letter-spacing: 0.04em;
       font-weight: 600;
-      margin-bottom: 12px;
+      margin-bottom: 10px;
     }
     table {
       width: 100%;
       border-collapse: collapse;
-      margin-top: 12px;
-      font-size: 13px;
+      margin: 8px 0;
+      font-size: 12px;
     }
     th, td {
       border: 1px solid var(--line);
-      padding: 8px 10px;
+      padding: 6px 9px;
       text-align: left;
       vertical-align: top;
     }
-    th { background: #f6f7f9; font-weight: 600; }
+    th { background: #f3f5f7; font-weight: 600; }
     .right { text-align: right; }
     .center { text-align: center; }
+    .checklist .check {
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 8px;
+      padding: 6px 0;
+      align-items: start;
+      border-bottom: 1px dashed var(--line);
+    }
+    .checklist .check:last-child { border-bottom: 0; }
+    .checklist .box {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px; height: 16px;
+      border: 1.5px solid var(--ink);
+      margin-top: 1px;
+      font-size: 13px;
+      line-height: 1;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .checklist .box.checked::before {
+      content: "✓";
+    }
     .signature-row {
-      margin-top: 40px;
-      padding-top: 16px;
+      margin-top: 28px;
+      padding-top: 14px;
       border-top: 2px solid var(--ink);
     }
-    .signature-pair {
-      display: flex;
-      gap: 32px;
-      margin-top: 16px;
+    .signature-line {
+      margin: 14px 0;
+      font-size: 12.5px;
     }
-    .signature-box {
-      flex: 1;
-      padding: 16px;
-      border: 1px dashed var(--line);
-      border-radius: 8px;
-      min-height: 120px;
+    .signature-line .dots {
+      letter-spacing: 0.5px;
     }
-    .signature-box img {
-      max-width: 240px;
-      max-height: 80px;
+    .stamp { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .customer-address {
+      margin: 18px 0;
+      line-height: 1.5;
     }
-    .stamp {
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 4px;
-    }
+    .page-break-before { page-break-before: always; }
     @media print {
       body { padding: 0; }
-      .signature-box { page-break-inside: avoid; }
+      .page-break-before { page-break-before: always; }
     }
   </style>
 </head>
 <body>
+
+  {# ---------- PAGE 1 : Acceptance Form ---------- #}
   <header>
     <span class="tag">
       {% if proposal.template_type == "custom" %}Custom Formulation{% else %}Ready to Go{% endif %}
     </span>
     <h1>Acceptance Form</h1>
-    <p class="muted">
+    <p>
       Please fill out this form to confirm the details of your order.
       Please find the products that you have requested listed in the
       table below along with relevant prices.
     </p>
   </header>
 
-  <h2>Customer Information</h2>
-  <table class="customer">
-    <tr><th>Name</th><td>{{ proposal.customer_name|default:"—" }}</td></tr>
-    <tr><th>Email</th><td>{{ proposal.customer_email|default:"—" }}</td></tr>
-    <tr><th>Phone</th><td>{{ proposal.customer_phone|default:"—" }}</td></tr>
-    <tr><th>Company Name</th><td>{{ proposal.customer_company|default:"—" }}</td></tr>
-    <tr><th>Invoice Address</th><td>{{ proposal.invoice_address|linebreaksbr|default:"—" }}</td></tr>
-    <tr><th>Delivery Address</th><td>{{ proposal.delivery_address|linebreaksbr|default:"—" }}</td></tr>
+  <table>
+    <thead>
+      <tr>
+        <th>Product Code</th>
+        <th>Description</th>
+        <th class="right">Quantity</th>
+        <th class="right">Unit Price ({{ proposal.currency }})</th>
+        <th class="right">
+          {% if proposal.template_type == "custom" %}Amount (VAT ex){% else %}Amount{% endif %}
+        </th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if lines %}
+        {% for line in lines %}
+          <tr>
+            <td>{{ line.product_code|default:"—" }}</td>
+            <td>{{ line.description|default:"—" }}</td>
+            <td class="right">{{ line.quantity }}</td>
+            <td class="right">
+              {% if line.unit_price is None %}TBC{% else %}{{ line.unit_price }}{% endif %}
+            </td>
+            <td class="right">
+              {% if line.subtotal is None %}TBC{% else %}{{ line.subtotal }}{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      {% else %}
+        <tr>
+          <td>{{ formulation.code|default:"—" }}</td>
+          <td>{{ formulation.name|default:"—" }}</td>
+          <td class="right">{{ proposal.quantity }}</td>
+          <td class="right">
+            {% if proposal.unit_price is None %}TBC{% else %}{{ proposal.unit_price }}{% endif %}
+          </td>
+          <td class="right">
+            {% if subtotal is None %}TBC{% else %}{{ subtotal }}{% endif %}
+          </td>
+        </tr>
+      {% endif %}
+    </tbody>
   </table>
 
-  <h2>Ref: {{ proposal.reference|default:proposal.code }}</h2>
+  <p class="small muted">
+    ±10% variation may apply to the final manufactured quantity due
+    to normal production and filling tolerances.
+  </p>
+
+  <h2>Customer Information</h2>
+  <table>
+    <tr>
+      <th style="width: 32%;">Name:</th>
+      <td>{{ proposal.customer_name|default:"—" }}</td>
+    </tr>
+    <tr>
+      <th>Email:</th>
+      <td>{{ proposal.customer_email|default:"—" }}</td>
+    </tr>
+    <tr>
+      <th>Phone:</th>
+      <td>{{ proposal.customer_phone|default:"—" }}</td>
+    </tr>
+    <tr>
+      <th>Company Name:</th>
+      <td>{{ proposal.customer_company|default:"—" }}</td>
+    </tr>
+    <tr>
+      <th>Invoice Address:</th>
+      <td>{{ proposal.invoice_address|linebreaksbr|default:"—" }}</td>
+    </tr>
+    <tr>
+      <th>Delivery Address:</th>
+      <td>{{ proposal.delivery_address|linebreaksbr|default:"—" }}</td>
+    </tr>
+  </table>
+
+  {% comment %}
+    The four (Custom) / three (Ready-to-Go) consent rows the
+    customer ticks in the kiosk. Each box renders empty by default
+    and turns into a ☑ once the matching ``ack_*`` flag on the
+    proposal is true — the kiosk sets every flag in one write at
+    the moment the customer signs, so this single template handles
+    both the unsigned and signed view of the acceptance form.
+  {% endcomment %}
+  <div class="checklist" style="margin-top: 14px;">
+    <div class="check">
+      <span class="box{% if proposal.ack_spec_signing %} checked{% endif %}" aria-hidden="true"></span>
+      <span>
+        I understand that before label printing, Production
+        Specification Sheets must be signed, and label designs must
+        be reviewed and approved. Placing an order initiates the
+        development phase, during which Product Specification
+        Sheets are finalized, and label guidelines are provided to
+        facilitate label design, review, and approval.
+      </span>
+    </div>
+    <div class="check">
+      <span class="box{% if proposal.ack_lead_times %} checked{% endif %}" aria-hidden="true"></span>
+      <span>
+        I understand that manufacturing lead times commence once the
+        Product Specification Sheet(s) are signed
+        {% if proposal.template_type == "custom" %}with packaging approved {% endif %}and not before.
+      </span>
+    </div>
+    {% if proposal.template_type == "custom" %}
+      <div class="check">
+        <span class="box{% if proposal.ack_rd_terms %} checked{% endif %}" aria-hidden="true"></span>
+        <span>
+          I understand that R&amp;D, sample preparation, flavour
+          development, reformulation, and additional iterations are
+          governed by Vita Manufacture's Research &amp; Development,
+          Sampling and Formulation Terms. I understand that
+          complimentary R&amp;D is limited to the stated allowance,
+          and that additional R&amp;D samples, reformulations,
+          flavour trials, or iterations may be chargeable.
+        </span>
+      </div>
+    {% endif %}
+    <div class="check">
+      <span class="box{% if proposal.ack_terms %} checked{% endif %}" aria-hidden="true"></span>
+      <span>
+        I have read the terms and Conditions which can be found below.
+      </span>
+    </div>
+  </div>
+
+  <p class="small muted" style="margin-top: 16px;">
+    Please complete this form to agree to the Terms &amp; Conditions
+    and confirm the above:
+  </p>
+
+  {% if proposal.customer_signature_image %}
+    <div class="signature-line">
+      <span>Date:</span>
+      <strong>{{ proposal.customer_signed_at|date:"d M Y" }}</strong>
+    </div>
+    <div class="signature-line" style="margin-top: 10px;">
+      <div>Signature:</div>
+      <img src="{{ proposal.customer_signature_image }}" alt="Customer signature" style="max-width: 220px; max-height: 70px; display: block; margin-top: 4px;" />
+      <div class="muted small" style="margin-top: 4px;">
+        Signed by {{ proposal.customer_name }}{% if proposal.customer_company %} ({{ proposal.customer_company }}){% endif %}
+      </div>
+    </div>
+  {% else %}
+    <p class="muted small" style="margin-top: 10px;">
+      The customer signs at the bottom of the kiosk page once they've
+      reviewed the document.
+    </p>
+  {% endif %}
+
+  <div class="customer-address small muted">
+    {{ proposal.customer_company|default:"" }}<br />
+    {{ proposal.invoice_address|linebreaksbr }}
+  </div>
+
+
+  {# ---------- PAGE 2 : Commercial offer letter ---------- #}
+  <div class="page-break-before"></div>
+
+  <h2>Ref: – {{ proposal.reference|default:proposal.code }} - {{ proposal.customer_company|default:proposal.customer_name }}</h2>
   <p>Dear {{ proposal.dear_name|default:proposal.customer_name|default:"Customer" }},</p>
   <p>
-    We hereby confirm receipt of your request regarding your supplement
-    contract manufacture, and we would like to thank you for your
-    confidence in us.
+    We hereby confirm receipt of your request regarding your
+    supplement contract manufacture, and we would like to thank
+    you for your confidence in us.
   </p>
 
   {% if proposal.template_type == "custom" %}
     <p>
-      This formula would require a laboratory development phase, and its
-      manufacturing process validated. Nevertheless, a lead time of
-      around 2–3 weeks will be needed to:
+      This formula would require a laboratory development phase, and
+      its manufacturing process validated. Nevertheless, a lead time
+      of around 2-3 weeks will be needed to:
     </p>
     <ul>
       <li>Reserve relevant raw material(s) needed to manufacture your product</li>
@@ -132,43 +303,58 @@
       <li>Register your product in our production database</li>
       <li>Validate and regulatory review of your label(s)</li>
     </ul>
-    <p><strong>A deposit of at least 30% is required to commence this process.</strong></p>
+    <p>
+      <strong>A deposit of at least more than 30% is required to
+      commence this process.</strong>
+    </p>
+
     <h2>Timelines</h2>
     <p>
-      The first industrial batch lead-time will be confirmed at the end
-      of the above steps. An additional lead time of around 6–12 weeks
-      has to be taken into account.
+      The first industrial batch lead-time will be confirmed at the
+      end of the above steps. An additional lead time of around 6 - 12
+      weeks has to be taken into account.
     </p>
     <table>
-      <tr><th>Phase</th><th>Duration</th></tr>
-      <tr><td>Development (as stated above)</td><td>2–3 weeks</td></tr>
-      <tr><td>Production Material Reception and Validation</td><td>2–4 weeks</td></tr>
-      <tr><td>Manufacturing</td><td>3–6 weeks</td></tr>
-      <tr><td>Quality Assurance Checks</td><td>1–2 weeks</td></tr>
-      <tr><td>Delivery</td><td>Based on UK location</td></tr>
+      <thead>
+        <tr><th>Phase</th><th>Duration</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Development (as stated above)</td><td>2-3 weeks</td></tr>
+        <tr><td>Production Material Reception and Validation</td><td>2-4 weeks</td></tr>
+        <tr><td>Manufacturing</td><td>6-8 weeks</td></tr>
+        <tr><td>Quality Assurance Checks</td><td>1-2 weeks</td></tr>
+        <tr><td>Delivery</td><td>Based on UK location</td></tr>
+      </tbody>
     </table>
   {% else %}
     <p>
-      This formula does not require a laboratory development phase, as
-      its manufacturing process has been validated.
+      This formula does not require a laboratory development phase,
+      as its manufacturing process validated has been validated.
     </p>
+
     <h2>Timelines</h2>
-    <p>A lead time of around 2–6 weeks has to be taken into account.</p>
+    <p>
+      A lead time of around 2 - 6 weeks has to be taken into account.
+    </p>
     <table>
-      <tr><th>Phase</th><th>Duration</th></tr>
-      <tr><td>Production Material Reception and Validation</td><td>1–2 weeks</td></tr>
-      <tr><td>Manufacturing</td><td>1–3 weeks</td></tr>
-      <tr><td>Quality Assurance Checks</td><td>1 day – 1 week</td></tr>
-      <tr><td>Delivery</td><td>Based on UK location</td></tr>
+      <thead>
+        <tr><th>Phase</th><th>Duration</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Production Material Reception and Validation</td><td>1-2 weeks</td></tr>
+        <tr><td>Manufacturing</td><td>1-3 weeks</td></tr>
+        <tr><td>Quality Assurance Checks</td><td>1 day - 1 weeks</td></tr>
+        <tr><td>Delivery</td><td>Based on UK location</td></tr>
+      </tbody>
     </table>
   {% endif %}
 
-  <h2>Commercial Offer</h2>
   <p>
-    Please find below our commercial price for the manufacture of your
-    product(s) according to the formula agreement enclosed or attached
-    as Product Technical Document:
+    Please find below our commercial price for the manufacture of
+    your product(s) according to the formula agreement enclosed or
+    attached as Product Technical Document:
   </p>
+
   <table>
     <thead>
       <tr>
@@ -176,153 +362,758 @@
         <th>Description</th>
         <th class="right">Quantity</th>
         <th class="right">Unit Price ({{ proposal.currency }})</th>
-        <th class="right">Amount (VAT ex.)</th>
+        <th class="right">
+          {% if proposal.template_type == "custom" %}Amount (VAT ex){% else %}Amount{% endif %}
+        </th>
       </tr>
     </thead>
     <tbody>
-      <tr>
-        <td>{{ formulation.code|default:"—" }}</td>
-        <td>{{ formulation.name|default:"—" }}</td>
-        <td class="right">{{ proposal.quantity }}</td>
-        <td class="right">
-          {% if proposal.unit_price is None %}TBC{% else %}{{ proposal.unit_price }}{% endif %}
-        </td>
-        <td class="right">
-          {% if subtotal is None %}TBC{% else %}{{ subtotal }}{% endif %}
-        </td>
-      </tr>
-      {% if proposal.freight_amount is not None and proposal.template_type == "ready_to_go" %}
+      {% if lines %}
+        {% for line in lines %}
+          <tr>
+            <td>{{ line.product_code|default:"—" }}</td>
+            <td>{{ line.description|default:"—" }}</td>
+            <td class="right">{{ line.quantity }}</td>
+            <td class="right">
+              {% if line.unit_price is None %}TBC{% else %}{{ line.unit_price }}{% endif %}
+            </td>
+            <td class="right">
+              {% if line.subtotal is None %}TBC{% else %}{{ line.subtotal }}{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      {% else %}
         <tr>
-          <td colspan="4" class="right"><strong>Freight (UK only):</strong></td>
-          <td class="right">{{ proposal.freight_amount }}</td>
+          <td>{{ formulation.code|default:"—" }}</td>
+          <td>{{ formulation.name|default:"—" }}</td>
+          <td class="right">{{ proposal.quantity }}</td>
+          <td class="right">
+            {% if proposal.unit_price is None %}TBC{% else %}{{ proposal.unit_price }}{% endif %}
+          </td>
+          <td class="right">
+            {% if subtotal is None %}TBC{% else %}{{ subtotal }}{% endif %}
+          </td>
         </tr>
       {% endif %}
-      <tr>
-        <td colspan="4" class="right"><strong>Total (VAT excluded):</strong></td>
-        <td class="right">
-          <strong>
-            {% if total_excl_vat is None %}TBC{% else %}{{ total_excl_vat }} {{ proposal.currency }}{% endif %}
-          </strong>
-        </td>
-      </tr>
+      {% if proposal.template_type == "ready_to_go" %}
+        <tr>
+          <td colspan="4" class="right"><strong>Freight (UK only):</strong></td>
+          <td class="right">
+            {% if proposal.freight_amount is None %}—{% else %}{{ proposal.freight_amount }}{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td colspan="4" class="right"><strong>Total (VAT excluded):</strong></td>
+          <td class="right">
+            <strong>
+              {% if total_excl_vat is None %}TBC{% else %}{{ total_excl_vat }} {{ proposal.currency }}{% endif %}
+            </strong>
+          </td>
+        </tr>
+      {% endif %}
     </tbody>
   </table>
 
-  <h2>Conditions</h2>
-  <p class="small">
-    Delivery: DAP UK location only, EXW International<br />
-    Payment:
-    {% if proposal.template_type == "custom" %}
-      Prepayment for the 1st order, then 30 days net, date of invoice
-      (submitted for acceptance by our Accounting Department)
-    {% else %}
-      Prepayment
-    {% endif %}<br />
-    No other services or analytical services
-  </p>
+  <h2>Conditions:</h2>
+  <ul>
+    <li>Delivery: DAP UK location only, EXW International</li>
+    <li>
+      Payment:
+      {% if proposal.template_type == "custom" %}
+        Prepayment for the 1st order, then 30 days net, date of
+        invoice (submitted for acceptance by our Accounting
+        Department)
+      {% else %}
+        Prepayment
+      {% endif %}
+    </li>
+  </ul>
+
+  <h3>Description</h3>
+  <p>No other services or analytical services</p>
 
   <h2>Offer Validity and Pricing</h2>
-  <p class="small">
+  <p>
     This offer is valid
     {% if proposal.valid_until %}until <strong>{{ proposal.valid_until|date:"d M Y" }}</strong>{% else %}for 14 days{% endif %}.
     Prices are subject to change due to fluctuations in raw material
-    costs, which are beyond our control. If raw material costs increase,
-    prices will be recalculated accordingly.
+    costs, which are beyond our control. If raw material costs
+    increase, prices will be recalculated accordingly.
   </p>
 
   <h2>Raw Materials and Product Quality</h2>
-  <p class="small">
+  <p>
     Made from natural components, some products may exhibit slight
-    colour variations between batches. These variations are a natural
-    characteristic of the materials used and do not affect the quality
-    of our products. Each product is assigned a unique Batch Number
-    that is tracked through all stages of manufacturing and delivery.
+    colour variations between batches. These variations are a
+    natural characteristic of the materials used and do not affect
+    the quality of our products.
+  </p>
+  <p>
+    Each product is assigned a unique Batch Number that is tracked
+    through all stages of manufacturing and delivery. This ensures
+    accuracy during production and at Quality Control checks.
   </p>
 
   <h2>Formulation and Product Stability</h2>
-  <p class="small">
-    Vita NPD can provide advice concerning formulation stability. If
-    full stability testing is required, additional charges will apply.
-    You are legally responsible for your product's formulation and
-    stability. A "best before" date will be provided after the
-    development stage as part of the label guidelines and approval
-    process.
+  <p>
+    Vita Manufacture can provide advice concerning formulation
+    stability. If full stability testing is required, additional
+    charges will apply. You are legally responsible for your
+    product's formulation and stability. A "best before" date will
+    be provided after the development stage as part of the label
+    guidelines and approval process.
   </p>
+
+  {% if proposal.template_type == "custom" %}
+    <h2>Research &amp; Development and Sampling</h2>
+    <p>
+      Where a product requires formulation development, flavour
+      development, sample preparation, reformulation, technical
+      review, dossier preparation, or manufacturing validation, Vita
+      Manufacture's R&amp;D terms shall apply.
+    </p>
+    <p>
+      Complimentary Basic R&amp;D (Free) may be included with a
+      confirmed production order and is limited to two (2) R&amp;D
+      iterations per product and a maximum of two flavour options
+      per product, where flavour development is relevant.
+    </p>
+    <p>
+      The Full R&amp;D Package (optional) is charged at £1,750 + VAT
+      per product and includes up to seven (7) R&amp;D iterations,
+      product dossier preparation, Commercial playbook, Extensive
+      label guidance, and Vita Manufacture expert list on client
+      website where applicable and approved by Vita Manufacture.
+    </p>
+    <p>
+      The Diamond R&amp;D Package (optional) is charged at £3,500 +
+      VAT per product and includes reasonable sample support within
+      the agreed project scope, up to twelve R&amp;D iterations, up
+      to four flavour options, product dossier preparation, draft
+      Product Specification Sheet, basic label guidance, expert
+      website listing where applicable, and priority R&amp;D
+      scheduling where capacity allows.
+    </p>
+    <p>
+      Additional R&amp;D samples, reformulations, flavour options,
+      or iterations outside the agreed allowance may be charged at
+      £250 + VAT per additional R&amp;D sample or iteration per
+      product.
+    </p>
+    <p>
+      "Reasonable sample support" means a commercially reasonable
+      level of sampling and development support within the agreed
+      product concept, formula direction, dosage format, target
+      market, and product brief. It does not mean unlimited
+      reformulation, unlimited flavour development, unlimited
+      ingredient changes, unlimited dosage format changes, unlimited
+      courier dispatches, unlimited product concepts, or unlimited
+      SKUs.
+    </p>
+    <p>
+      Only the R&amp;D scope, sample allowance, pricing, timelines,
+      and deliverables stated in the written quotation, signed
+      proposal, invoice, Product Specification Sheet, or written
+      agreement shall be binding. Verbal discussions, informal
+      assurances, or sales representations shall not amend the
+      R&amp;D scope unless confirmed in writing by an authorised
+      representative of Vita Manufacture.
+    </p>
+    <p>
+      Manufacturing lead times shall not begin until the final
+      Product Specification Sheet has been approved and signed,
+      label requirements have been satisfied, required payments
+      have been received, and all production-critical matters have
+      been finalised.
+    </p>
+  {% endif %}
 
   <h2>Responsibilities for Product Legality and Labelling</h2>
-  <p class="small">
-    Vita NPD Ltd, as the manufacturer, assumes no responsibility for
-    the legality of your product's formulation, labelling, presentation,
-    promotion, or marketing. We strongly recommend seeking professional
-    guidance from relevant regulatory authorities, such as: Health
-    Food Manufacturers Association, Medicines and Healthcare
-    Regulatory Agency, Food Standards Agency and Trading Standards.
+  <p>
+    Vita Manufacture Ltd, as the manufacturer, assumes no
+    responsibility for the legality of your product's formulation,
+    labelling, presentation, promotion, or marketing. Your product
+    label must not include Vita Manufacture's name or address. We
+    strongly recommend seeking professional guidance from relevant
+    regulatory authorities, such as: Health Food Manufacturers
+    Association, Medicines and Healthcare Regulatory Agency, Food
+    Standards Agency and Trading Standards.
   </p>
 
-  <h2>Terms and Conditions</h2>
-  <p class="small">
-    Vita NPD terms and conditions apply for all orders. In the event
+  <h2>Terms and conditions</h2>
+  <p>
+    Vita Manufacture terms and conditions apply for all orders.
+    Vita Manufacture General Terms and Conditions (T&amp;C's) are
+    available on
+    <a href="https://www.vitamanufacture.co.uk/termsandcondition">https://www.vitamanufacture.co.uk/termsandcondition</a>.
+    Extract of T&amp;C's is included in this document. In the event
     of a conflict between this offer and the T&amp;C's, the T&amp;C's
     will prevail and control.
   </p>
-  <p class="small">
-    If you decide to contract with us, please return this offer and
-    the formula agreement (Draft Product Specification Sheet)
-    countersigned and dated to us. Upon receipt of these documents,
-    planning for preparation of the samples will be confirmed.
+  <p>
+    If you decide to contract with us, we kindly ask you to return
+    this offer, and the formula agreement (Draft Product
+    Specification Sheet) countersigned and dated to us. Upon receipt
+    of these documents, planning for preparation of the samples will
+    be confirmed.
+  </p>
+  <p>
+    The information included in this document is established
+    according to the current European Regulation. It's our
+    customer's responsibility to check that the use and conditions
+    of use of their product are conforming to their activities
+    segment and geographical sales areas. Vita Manufacture
+    manufactures and releases batches for further operations. The
+    batches are produced according to ISO 22000:2018 standards,
+    Good Manufacturing Practice (GMP) standards, the European
+    legislation for Food Supplements and Food Safety Agency UK.
+    For one year, as of the date of your first order, Vita
+    Manufacture shall be the exclusive manufacturer of the products
+    and references mentioned in this offer.
+  </p>
+  <p>
+    Vita Manufacture will apply VAT to all commercial products
+    delivered to any UK address where VAT is applicable.
+  </p>
+  <p>
+    We will be pleased to assist you with any additional questions
+    or queries.
   </p>
 
   <div class="signature-row">
-    <h2>Confirmation</h2>
-    <p class="small muted">
-      Please complete this section to agree to the Terms &amp;
-      Conditions and confirm the above.
-    </p>
-
-    <div class="signature-pair">
-      <div class="signature-box">
-        <p class="small muted">Prepared by</p>
-        {% if proposal.prepared_by_signature_image %}
-          <img src="{{ proposal.prepared_by_signature_image }}" alt="Prepared-by signature" />
-          <div class="stamp">
-            Signed {{ proposal.prepared_by_signed_at|date:"d M Y H:i" }}
-          </div>
-        {% else %}
-          <p class="muted small">Not yet signed.</p>
-        {% endif %}
-      </div>
-      <div class="signature-box">
-        <p class="small muted">Approved by (Director)</p>
-        {% if proposal.director_signature_image %}
-          <img src="{{ proposal.director_signature_image }}" alt="Director signature" />
-          <div class="stamp">
-            Signed {{ proposal.director_signed_at|date:"d M Y H:i" }}
-          </div>
-        {% else %}
-          <p class="muted small">Not yet signed.</p>
-        {% endif %}
-      </div>
-    </div>
-
-    <div class="signature-box" style="margin-top: 16px;">
-      <p class="small muted">Customer Signature</p>
-      {% if proposal.customer_signature_image %}
-        <img src="{{ proposal.customer_signature_image }}" alt="Customer signature" />
-        <div class="stamp">
-          Signed by {{ proposal.customer_signer_name }}
-          {% if proposal.customer_signer_company %}
-            ({{ proposal.customer_signer_company }})
-          {% endif %}
-          on {{ proposal.customer_signed_at|date:"d M Y H:i" }}
-        </div>
-      {% else %}
-        <p class="muted small">Customer has not signed yet.</p>
-      {% endif %}
-    </div>
+    <p>Yours sincerely,</p>
+    <p><strong>{{ sales_person_name|default:"Vita Manufacture Sales Team" }}</strong></p>
+    {% if sales_person_name %}
+      <p class="muted small">Vita Manufacture Sales Team</p>
+    {% endif %}
   </div>
 
-  <p class="small muted" style="margin-top: 32px;">
-    Yours sincerely,
-  </p>
+  {% comment %}
+    The customer signature is rendered inline in the Acceptance
+    Form block above (replacing the Date / Signature dotted lines).
+    No second copy here — duplicating it visually muddies the
+    "signed once" intent of the legal block.
+  {% endcomment %}
+
+
+  {# ---------- APPENDIX 1 : Custom only ---------- #}
+  {% if proposal.template_type == "custom" %}
+    <div class="page-break-before"></div>
+    <h1>Appendix 1 - Research &amp; Development, Sampling and Formulation Terms</h1>
+    <p>
+      Where a product requires formulation development, flavour
+      development, sample preparation, reformulation, technical
+      review, dossier preparation, or manufacturing validation, the
+      following Research &amp; Development, Sampling and Formulation
+      Terms shall apply unless otherwise agreed in writing by Vita
+      Manufacture Limited.
+    </p>
+    <p>
+      These terms are intended to ensure that the customer, Sales
+      team, R&amp;D team, Production team, and Quality team are
+      fully aligned before development, or manufacturing work
+      begins.
+    </p>
+
+    <h2>1. Purpose of the R&amp;D Phase</h2>
+    <p>
+      The purpose of the R&amp;D phase is to develop a commercially
+      viable product formulation that can be manufactured within
+      Vita Manufacture's production capabilities.
+    </p>
+    <p>R&amp;D work may include, where applicable:</p>
+    <ul>
+      <li>formulation development;</li>
+      <li>formulation adjustment;</li>
+      <li>flavour development;</li>
+      <li>taste, texture, colour, aroma, and mouthfeel optimisation;</li>
+      <li>ingredient compatibility review;</li>
+      <li>technical feasibility review;</li>
+      <li>manufacturing feasibility review;</li>
+      <li>sample preparation;</li>
+      <li>review of active ingredient levels;</li>
+      <li>review of dosage format and serving size;</li>
+      <li>draft Product Specification Sheet preparation;</li>
+      <li>basic label guidance based on the agreed formulation;</li>
+      <li>product dossier preparation, where included in the agreed package.</li>
+    </ul>
+    <p>
+      R&amp;D is a development process and does not guarantee that
+      every requested taste, texture, colour, cost target, active
+      level, claim, ingredient combination, or dosage format will
+      be achievable.
+    </p>
+    <p>
+      Some formulations may require compromise due to regulatory,
+      technical, stability, solubility, palatability, manufacturing,
+      raw material, capsule size, powder density, cost, or
+      commercial limitations.
+    </p>
+
+    <h2>2. R&amp;D Packages</h2>
+    <p>
+      Unless otherwise stated in the quotation, Vita Manufacture
+      offers the following R&amp;D options.
+    </p>
+
+    <h3>A. Complimentary R&amp;D with Confirmed Production Order</h3>
+    <p>
+      Complimentary R&amp;D may be offered where the customer places
+      a confirmed production order and pays the required deposit.
+    </p>
+    <p>Complimentary R&amp;D includes:</p>
+    <ul>
+      <li>formulation support for one agreed product concept;</li>
+      <li>up to two R&amp;D iterations per product;</li>
+      <li>a maximum of two flavour options per product, where flavour development is relevant;</li>
+      <li>sample preparation within the agreed product brief;</li>
+      <li>reasonable technical input required to finalise the Product Specification Sheet for production.</li>
+    </ul>
+    <p>
+      Complimentary R&amp;D is provided on a goodwill and
+      production-linked basis. It is only available where the
+      customer proceeds with a confirmed production order.
+    </p>
+    <p>
+      If the customer cancels, delays, materially changes, or does
+      not proceed to production after R&amp;D work has started,
+      Vita Manufacture reserves the right to charge for R&amp;D work
+      already completed, including sample preparation, technical
+      time, raw materials, courier costs, supplier costs, and
+      administrative costs.
+    </p>
+    <p>
+      Additional samples, reformulations, flavour options, or
+      iterations outside the complimentary allowance shall be
+      charged at £250 + VAT per additional R&amp;D sample or
+      iteration per product, unless otherwise agreed in writing.
+    </p>
+
+    <h3>B. Full R&amp;D Package</h3>
+    <p>
+      Where the customer purchases Vita Manufacture's Full R&amp;D
+      Package, the fee shall be £1,750 + VAT per product, unless
+      otherwise stated in the quotation.
+    </p>
+    <p>
+      The Full R&amp;D Package is suitable for customers who
+      require structured product development before committing to
+      production.
+    </p>
+    <p>The Full R&amp;D Package includes:</p>
+    <ul>
+      <li>formulation development for one product concept;</li>
+      <li>up to seven R&amp;D iterations;</li>
+      <li>sample preparation within the agreed development scope;</li>
+      <li>technical formulation review;</li>
+      <li>ingredient compatibility review;</li>
+      <li>manufacturing feasibility review;</li>
+      <li>product dossier preparation;</li>
+      <li>draft Product Specification Sheet;</li>
+      <li>basic label guidance based on the agreed formulation;</li>
+      <li>expert product listing on Vita Manufacture's website, where applicable and approved by Vita Manufacture.</li>
+    </ul>
+    <p>
+      For clarity, one product means one product type, one dosage
+      format, one primary formula direction, and one primary
+      product concept.
+    </p>
+    <p>
+      Different dosage formats, substantially different ingredient
+      profiles, different flavour families, different target
+      markets, or separate SKUs may be treated as separate products
+      and may require separate R&amp;D fees.
+    </p>
+    <p>
+      Additional samples, reformulations, flavour options, or
+      iterations outside the Full R&amp;D Package shall be charged
+      at £250 + VAT per additional R&amp;D sample or iteration per
+      product, unless otherwise agreed in writing.
+    </p>
+
+    <h3>C. Diamond R&amp;D Package</h3>
+    <p>
+      Where the customer requires a more flexible development
+      process, Vita Manufacture may offer the Diamond R&amp;D
+      Package at £3,500 + VAT per product, unless otherwise stated
+      in the quotation.
+    </p>
+    <p>
+      The Diamond R&amp;D Package is designed for premium, complex,
+      investor-ready, flavour-sensitive, or highly customised
+      products where additional development flexibility may be
+      required before production.
+    </p>
+    <p>The Diamond R&amp;D Package includes:</p>
+    <ul>
+      <li>formulation development for one product concept;</li>
+      <li>reasonable sample support within the agreed project scope;</li>
+      <li>up to twelve R&amp;D iterations;</li>
+      <li>up to four flavour options per product, where flavour development is relevant;</li>
+      <li>technical formulation review;</li>
+      <li>ingredient compatibility review;</li>
+      <li>manufacturing feasibility review;</li>
+      <li>sample preparation within the agreed development scope;</li>
+      <li>product dossier preparation;</li>
+      <li>material specification sheet;</li>
+      <li>basic label guidance based on the agreed formulation;</li>
+      <li>Vita Manufacture expert list on client website where applicable and approved by Vita Manufacture;</li>
+      <li>priority R&amp;D scheduling where capacity allows.</li>
+    </ul>
+    <p>
+      For clarity, "reasonable sample support" means a commercially
+      reasonable level of sampling and development support within
+      the agreed product concept, formula direction, dosage format,
+      target market, and product brief.
+    </p>
+    <p>
+      Reasonable sample support does not mean unlimited
+      reformulation, unlimited flavour families, unlimited
+      ingredient changes, unlimited dosage format changes,
+      unlimited courier dispatches, unlimited product concepts, or
+      unlimited SKUs.
+    </p>
+    <p>
+      Additional samples, reformulations, flavour options, or
+      iterations outside the Diamond R&amp;D Package may be charged
+      at £250 + VAT per additional R&amp;D sample or iteration per
+      product, unless otherwise agreed in writing.
+    </p>
+
+    <h2>3. R&amp;D Package Summary</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>R&amp;D Option</th>
+          <th>Price</th>
+          <th>Included Support</th>
+          <th>Best For</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Complimentary R&amp;D with Production Order</td>
+          <td>Included with confirmed production order</td>
+          <td>Up to 2 iterations and max 2 flavour options per product</td>
+          <td>Simple products proceeding directly to production</td>
+        </tr>
+        <tr>
+          <td>Full R&amp;D Package</td>
+          <td>£1,750 + VAT per product</td>
+          <td>Up to 7 iterations, product dossier, draft Product Specification Sheet, expert website listing where approved</td>
+          <td>Standard custom product development</td>
+        </tr>
+        <tr>
+          <td>Diamond R&amp;D Package</td>
+          <td>£3,500 + VAT per product</td>
+          <td>Reasonable sample support, up to 12 iterations, up to 4 flavour options, dossier, expert listing, priority R&amp;D scheduling where capacity allows</td>
+          <td>Premium, complex, investor-ready, or flavour-sensitive products</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>4. Additional Samples and Extra Iterations</h2>
+    <p>
+      Any R&amp;D sample, reformulation, flavour option, technical
+      adjustment, or iteration outside the included allowance shall
+      be charged at £250 + VAT per additional R&amp;D sample or
+      iteration per product, unless otherwise agreed in writing.
+    </p>
+    <ul>
+      <li>Additional charges may apply where the customer requests:</li>
+      <li>further flavour trials beyond the included allowance;</li>
+      <li>changes to the active ingredient profile;</li>
+      <li>changes to the dosage format;</li>
+      <li>changes to the serving size;</li>
+      <li>replacement of key ingredients;</li>
+      <li>reformulation due to customer preference rather than technical failure;</li>
+      <li>reformulation due to new claims, target markets, or regulatory requirements;</li>
+      <li>repeat samples due to delayed, unclear, or inconsistent feedback;</li>
+      <li>samples requiring specialist, premium, rare, custom, or high-cost raw materials;</li>
+      <li>courier or international delivery of samples;</li>
+      <li>third-party laboratory analysis;</li>
+      <li>full stability testing;</li>
+      <li>specialist regulatory submissions;</li>
+      <li>additional dossier work outside the agreed scope.</li>
+    </ul>
+    <p>
+      Vita Manufacture may pause R&amp;D work until any additional
+      R&amp;D fees, sample charges, raw material charges, or courier
+      charges are paid.
+    </p>
+
+    <h2>5. Customer Feedback and Approval</h2>
+    <p>
+      The customer must provide clear, consolidated feedback after
+      each sample round.
+    </p>
+    <p>
+      Feedback should be specific and commercially actionable,
+      including comments on taste, sweetness, texture, colour,
+      aroma, mouthfeel, dosage format, serving size, and any
+      desired changes.
+    </p>
+    <p>
+      Where feedback is unclear, contradictory, subjective, or
+      provided in stages by multiple people, Vita Manufacture may
+      request clarification before continuing development.
+    </p>
+    <p>
+      Where additional samples are required because of unclear,
+      delayed, contradictory, or changing customer feedback, the
+      next sample may be treated as an additional iteration and may
+      be chargeable.
+    </p>
+    <p>
+      The customer is responsible for ensuring that all relevant
+      internal stakeholders review the sample before feedback is
+      submitted.
+    </p>
+    <p>
+      Once Vita Manufacture proceeds based on customer feedback,
+      any later change of direction may be treated as a new
+      iteration and may be chargeable.
+    </p>
+
+    <h2>6. Meaning of "Reasonable Sample Support"</h2>
+    <p>
+      Where reasonable sample support is included, it means Vita
+      Manufacture will provide a commercially reasonable level of
+      sample development support within the agreed product brief.
+    </p>
+    <p>Reasonable sample support is limited by:</p>
+    <ul>
+      <li>the agreed product concept;</li>
+      <li>the agreed dosage format;</li>
+      <li>the agreed formula direction;</li>
+      <li>the agreed target market;</li>
+      <li>the agreed flavour direction;</li>
+      <li>the agreed commercial brief;</li>
+      <li>technical feasibility;</li>
+      <li>manufacturing feasibility;</li>
+      <li>raw material availability;</li>
+      <li>R&amp;D capacity;</li>
+      <li>regulatory suitability;</li>
+      <li>cost parameters.</li>
+    </ul>
+    <p>Reasonable sample support does not include:</p>
+    <ul>
+      <li>unlimited reformulation;</li>
+      <li>unlimited flavour development;</li>
+      <li>unlimited flavour families;</li>
+      <li>unlimited ingredient changes;</li>
+      <li>unlimited dosage format changes;</li>
+      <li>unlimited active level changes;</li>
+      <li>unlimited courier dispatches;</li>
+      <li>unlimited third-party testing;</li>
+      <li>unlimited product concepts;</li>
+      <li>unlimited SKUs;</li>
+      <li>repeated changes in customer direction;</li>
+      <li>work outside the agreed product brief.</li>
+    </ul>
+    <p>
+      Any sample support outside the agreed scope may be quoted
+      separately or charged at the additional R&amp;D sample rate.
+    </p>
+
+    <h2>7. Material Formula Changes</h2>
+    <p>
+      A material formula change may be treated as a new R&amp;D
+      project and may require a new quotation.
+    </p>
+    <p>Material formula changes include, but are not limited to:</p>
+    <ul>
+      <li>changing the dosage format, for example from capsules to powder, gummies, liquids, tablets, sachets, or softgels;</li>
+      <li>changing the main active ingredients;</li>
+      <li>changing the intended product function;</li>
+      <li>changing the product's target market;</li>
+      <li>changing the regulatory market or sales territory;</li>
+      <li>changing from one flavour family to another after development has started;</li>
+      <li>changing the product from standard to vegan, allergen-free, organic, halal, sugar-free, natural-only, clean-label, or similar positioning where this affects formulation;</li>
+      <li>changing the required claims or active ingredient levels;</li>
+      <li>changing the target cost after ingredients have been sourced or samples prepared;</li>
+      <li>creating additional SKUs, variants, strengths, pack sizes, or flavour families.</li>
+    </ul>
+
+    <h2>8. Technical, Regulatory and Manufacturing Limitations</h2>
+    <p>
+      All formulations are subject to technical, regulatory,
+      quality, manufacturing, and raw material feasibility checks.
+    </p>
+    <p>
+      Vita Manufacture may refuse, amend, or recommend alternatives
+      to any ingredient, claim, dosage, flavour, colour, capsule
+      size, serving size, excipient, sweetener, dosage format, or
+      product format where Vita Manufacture considers the request
+      unsuitable, impractical, non-compliant, unstable, unsafe,
+      commercially unrealistic, or incompatible with its
+      manufacturing processes.
+    </p>
+    <p>
+      The customer acknowledges that some ingredients may not be
+      suitable for the requested dosage format, serving size,
+      flavour profile, target market, claim, or manufacturing
+      process.
+    </p>
+    <p>
+      The customer remains responsible for confirming that the
+      final product, formulation, label, claims, presentation,
+      marketing, advertising, and sale are suitable and lawful for
+      the customer's intended sales channels, customer base, and
+      sales territories.
+    </p>
+
+    <h2>9. R&amp;D Timelines</h2>
+    <p>Any R&amp;D timelines provided are estimates only.</p>
+    <p>R&amp;D timelines may vary depending on:</p>
+    <ul>
+      <li>complexity of the formulation;</li>
+      <li>number of products;</li>
+      <li>dosage format;</li>
+      <li>flavour complexity;</li>
+      <li>raw material availability;</li>
+      <li>supplier lead times;</li>
+      <li>flavour house lead times;</li>
+      <li>speed and clarity of customer feedback;</li>
+      <li>number of iterations required;</li>
+      <li>regulatory review requirements;</li>
+      <li>courier timelines;</li>
+      <li>internal R&amp;D capacity;</li>
+      <li>whether additional samples or reformulations are required.</li>
+    </ul>
+    <p>Manufacturing lead times shall not begin until:</p>
+    <ul>
+      <li>the final Product Specification Sheet has been approved and signed;</li>
+      <li>label requirements have been satisfied;</li>
+      <li>required payments have been received;</li>
+      <li>production-critical materials have been confirmed;</li>
+      <li>all production-critical matters have been finalised.</li>
+    </ul>
+
+    <h2>10. Sample Approval and Production Scale-Up</h2>
+    <p>
+      Samples are prepared for evaluation purposes only and may not
+      be sold, distributed, marketed, supplied to third parties, or
+      used for consumer testing unless Vita Manufacture gives
+      written approval.
+    </p>
+    <p>
+      Sample approval by the customer confirms approval of the
+      product's general taste, appearance, format, and development
+      direction.
+    </p>
+    <p>
+      The customer acknowledges that small-scale R&amp;D samples
+      and full-scale production batches may not be identical.
+    </p>
+    <p>Minor differences may occur in:</p>
+    <ul>
+      <li>taste;</li>
+      <li>colour;</li>
+      <li>texture;</li>
+      <li>aroma;</li>
+      <li>density;</li>
+      <li>solubility;</li>
+      <li>mouthfeel;</li>
+      <li>fill weight;</li>
+      <li>capsule appearance;</li>
+      <li>powder flow;</li>
+      <li>finished product appearance.</li>
+    </ul>
+    <p>
+      Such differences may occur due to scale-up, raw material
+      variation, manufacturing tolerances, processing conditions,
+      and natural ingredient variation.
+    </p>
+    <p>
+      These differences shall not constitute a defect where the
+      product remains within agreed specification and normal
+      manufacturing tolerances.
+    </p>
+
+    <h2>11. Ownership of Formulations and R&amp;D Work</h2>
+    <p>
+      Unless otherwise agreed in writing, all technical know-how,
+      manufacturing methods, supplier knowledge, production
+      processes, process knowledge, and formulation development
+      work created by Vita Manufacture remain the intellectual
+      property and confidential know-how of Vita Manufacture.
+    </p>
+    <p>
+      Where a customer provides its own pre-existing formulation,
+      the customer remains responsible for its ownership,
+      suitability, legality, safety, and right to use that
+      formulation.
+    </p>
+    <p>
+      Where Vita Manufacture develops a formulation for the
+      customer, the customer receives the right to purchase
+      finished goods manufactured by Vita Manufacture using the
+      approved formulation.
+    </p>
+    <p>
+      The customer does not automatically receive ownership of
+      Vita Manufacture's manufacturing know-how, supplier
+      information, technical process methods, internal R&amp;D
+      records, or confidential development documentation unless
+      this is separately agreed in writing.
+    </p>
+
+    <h2>12. Cancellation, Delay or Non-Proceeding After R&amp;D</h2>
+    <p>
+      If the customer cancels the project, delays the project,
+      fails to provide feedback, fails to pay the required deposit
+      or balance, materially changes the project, or chooses not
+      to proceed to production after R&amp;D work has started,
+      Vita Manufacture reserves the right to charge for work and
+      costs already incurred.
+    </p>
+    <ul>
+      <li>This may include:</li>
+      <li>R&amp;D time;</li>
+      <li>sample preparation;</li>
+      <li>raw materials;</li>
+      <li>supplier costs;</li>
+      <li>courier costs;</li>
+      <li>technical review;</li>
+      <li>administrative work;</li>
+      <li>formulation work;</li>
+      <li>dossier work;</li>
+      <li>third-party costs;</li>
+      <li>any other project-specific costs incurred.</li>
+    </ul>
+    <p>
+      Where complimentary R&amp;D was offered on the basis of a
+      confirmed production order, but the customer does not proceed
+      to production, Vita Manufacture may charge the customer the
+      standard R&amp;D rate or a reasonable proportion of the
+      R&amp;D work completed.
+    </p>
+
+    <h2>13. Sales Representations and Written Agreement</h2>
+    <p>
+      Only the R&amp;D scope, sample allowance, pricing, timelines,
+      and deliverables stated in the written quotation, signed
+      proposal, invoice, Product Specification Sheet, or written
+      agreement shall be binding.
+    </p>
+    <p>
+      No verbal statement, sales discussion, call note, meeting
+      note, email comment, WhatsApp message, or informal assurance
+      shall amend the R&amp;D scope unless confirmed in writing by
+      an authorised representative of Vita Manufacture.
+    </p>
+    <p>
+      Where there is any conflict between a verbal discussion and
+      the written proposal, the written proposal shall prevail.
+    </p>
+    <p>
+      This clause is intended to ensure that customer expectations,
+      Sales commitments, R&amp;D deliverables, Production
+      requirements, and Quality obligations remain aligned before
+      work begins.
+    </p>
+  {% endif %}
+
 </body>
 </html>

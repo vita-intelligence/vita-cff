@@ -5,13 +5,13 @@ from django.urls import path
 from apps.proposals.api.views import (
     ProposalCostPreviewView,
     ProposalDetailView,
-    ProposalDocxView,
     ProposalLineDetailView,
     ProposalLineListCreateView,
     ProposalListCreateView,
     ProposalRenderView,
     ProposalStatusView,
     ProposalTransitionsView,
+    PublicProposalDownloadView,
     PublicProposalFinalizeView,
     PublicProposalIdentifyView,
     PublicProposalKioskView,
@@ -49,11 +49,6 @@ urlpatterns = [
         name="proposal-render",
     ),
     path(
-        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/docx/",
-        ProposalDocxView.as_view(),
-        name="proposal-docx",
-    ),
-    path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/lines/",
         ProposalLineListCreateView.as_view(),
         name="proposal-line-list",
@@ -83,6 +78,11 @@ urlpatterns = [
         "public/proposals/<uuid:token>/pdf/",
         PublicProposalPdfView.as_view(),
         name="proposal-public-pdf",
+    ),
+    path(
+        "public/proposals/<uuid:token>/download/",
+        PublicProposalDownloadView.as_view(),
+        name="proposal-public-download",
     ),
     path(
         "public/proposals/<uuid:token>/sign/",

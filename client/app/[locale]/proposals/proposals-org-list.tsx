@@ -130,6 +130,12 @@ function OrgProposalRow({
 }) {
   const tProposals = useTranslations("proposals");
   const total = proposal.total_excl_vat ?? proposal.subtotal ?? null;
+  // ``accepted`` and ``rejected`` are terminal — the row stays visible
+  // but the destructive action is hidden so a signed/closed record
+  // can't be wiped out by an accidental click. Backend enforces the
+  // same guard via :class:`ProposalNotMutable`.
+  const isTerminal =
+    proposal.status === "accepted" || proposal.status === "rejected";
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -163,15 +169,17 @@ function OrgProposalRow({
           <ExternalLink className="h-3.5 w-3.5" />
           {tProposals("list.view")}
         </Link>
-        <button
-          type="button"
-          aria-label={tProposals("list.delete")}
-          onClick={() => onDelete(proposal.id)}
-          disabled={deletePending}
-          className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
-        >
-          <Trash2 className="h-4 w-4" />
-        </button>
+        {isTerminal ? null : (
+          <button
+            type="button"
+            aria-label={tProposals("list.delete")}
+            onClick={() => onDelete(proposal.id)}
+            disabled={deletePending}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+          </button>
+        )}
       </div>
     </li>
   );

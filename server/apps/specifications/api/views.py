@@ -675,7 +675,7 @@ class PublicProposalRenderView(APIView):
         # Lazy import — the proposals app is imported only when this
         # endpoint fires so the specifications module stays load-clean
         # in environments that don't serve proposals yet.
-        from apps.proposals.render import render_pdf_bytes
+        from apps.proposals.api.views import _render_proposal_html
 
         try:
             sheet = get_by_public_token(token)
@@ -686,28 +686,10 @@ class PublicProposalRenderView(APIView):
         if proposal is None:
             raise NotFound()
 
-        pdf_bytes = render_pdf_bytes(proposal)
-        if pdf_bytes is not None:
-            response = HttpResponse(pdf_bytes, content_type="application/pdf")
-            filename = f"{proposal.code or 'proposal'}.pdf"
-            response["Content-Disposition"] = f'inline; filename="{filename}"'
-            return response
-
-        version = proposal.formulation_version
-        metadata = version.snapshot_metadata or {}
-        html = render_to_string(
-            "proposals/sheet.html",
-            {
-                "proposal": proposal,
-                "formulation": {
-                    "code": metadata.get("code") or version.formulation.code,
-                    "name": metadata.get("name") or version.formulation.name,
-                },
-                "subtotal": proposal.subtotal,
-                "total_excl_vat": proposal.total_excl_vat,
-            },
-        )
-        return HttpResponse(html)
+        # Proposals are served as HTML on every surface (in-app
+        # preview + customer kiosk) so the layout is identical
+        # everywhere — same Django template, same browser engine.
+        return HttpResponse(_render_proposal_html(proposal))
 
 
 class PublicSpecificationAcceptView(APIView):

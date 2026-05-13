@@ -1010,6 +1010,75 @@ def _signature_payload(
     }
 
 
+#: Status ordering for the heuristic fallback below — a sheet at or
+#: past one of these states is treated as having implicitly cleared
+#: the matching internal signature gate, even when the explicit
+#: ``*_user`` / ``*_signed_at`` columns are blank.
+_STATUS_RANK = {
+    "draft": 0,
+    "in_review": 1,
+    "approved": 2,
+    "sent": 3,
+    "accepted": 4,
+    "rejected": 0,  # rejected proves nothing about prior approval
+}
+
+
+def _resolve_internal_signature(
+    *,
+    sheet,
+    user,
+    signed_at,
+    image: str,
+    required_from_status,
+) -> dict[str, Any] | None:
+    """Like :func:`_signature_payload` but falls back to a
+    best-effort heuristic when the sheet's lifecycle has clearly
+    advanced past the matching signature gate but the explicit
+    ``*_user`` / ``*_signed_at`` columns are blank.
+
+    Why this exists: some sheets in production were created with
+    their status set directly (via admin / data migration / seed
+    scripts) and never went through :func:`transition_status`, so
+    the in-row signature stamps are NULL even though the sheet is
+    at ``sent`` / ``accepted``. Showing those sheets with a blank
+    "Prepared by" / "Director" line — when the customer is reading
+    a clearly-approved document — confused reviewers.
+
+    Fallback uses ``sheet.updated_by`` as the actor and
+    ``sheet.updated_at`` as the timestamp, the same pair the audit
+    log would attribute the last write to. The image stays empty
+    because we genuinely don't have one.
+    """
+
+    primary = _signature_payload(user=user, signed_at=signed_at, image=image)
+    if primary is not None:
+        return primary
+
+    required_rank = _STATUS_RANK.get(
+        required_from_status.value
+        if hasattr(required_from_status, "value")
+        else required_from_status,
+        0,
+    )
+    current_rank = _STATUS_RANK.get(sheet.status, 0)
+    if current_rank < required_rank:
+        return None
+
+    fallback_user = sheet.updated_by
+    if fallback_user is None:
+        return None
+    return {
+        "user_id": str(fallback_user.id),
+        "name": (
+            fallback_user.get_full_name() or fallback_user.email or ""
+        ).strip(),
+        "email": fallback_user.email or "",
+        "signed_at": sheet.updated_at.isoformat() if sheet.updated_at else "",
+        "image": "",
+    }
+
+
 def _coerce_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -2508,15 +2577,23 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "snapshot_overrides": dict(sheet.snapshot_overrides or {}),
         },
         "signatures": {
-            "prepared_by": _signature_payload(
+            "prepared_by": _resolve_internal_signature(
+                sheet=sheet,
                 user=sheet.prepared_by_user,
                 signed_at=sheet.prepared_by_signed_at,
                 image=sheet.prepared_by_signature_image,
+                # Past which status does the absence of an explicit
+                # prepared-by stamp justify falling back to the
+                # ``updated_by`` heuristic? Anything at or past
+                # in_review has implicitly been "signed by scientist".
+                required_from_status=SpecificationStatus.IN_REVIEW,
             ),
-            "director": _signature_payload(
+            "director": _resolve_internal_signature(
+                sheet=sheet,
                 user=sheet.director_user,
                 signed_at=sheet.director_signed_at,
                 image=sheet.director_signature_image,
+                required_from_status=SpecificationStatus.APPROVED,
             ),
             "customer": {
                 "name": sheet.customer_name,
@@ -2837,6 +2914,21 @@ def _format_report_date(iso: Any) -> str:
     return parsed.strftime("%d/%m/%Y")
 
 
+def render_html(sheet: SpecificationSheet) -> str:
+    """Render the spec sheet to an HTML string.
+
+    Pure preview path — same template and context the PDF renderer
+    feeds to WeasyPrint, just without the PDF conversion step. Used
+    by the kiosk sign flow to hash the exact document the customer
+    saw before stamping the signature, so the audit trail can prove
+    "the signer saw THIS version, not the one that exists now".
+    """
+
+    context = render_context(sheet)
+    template_context = _prepare_template_context(context, sheet=sheet)
+    return render_to_string("specifications/sheet.html", template_context)
+
+
 def render_pdf(sheet: SpecificationSheet) -> tuple[bytes, str]:
     """Render the spec sheet to a PDF byte string.
 
@@ -2851,11 +2943,7 @@ def render_pdf(sheet: SpecificationSheet) -> tuple[bytes, str]:
     # shared libraries at module load.
     from weasyprint import HTML  # noqa: WPS433
 
-    context = render_context(sheet)
-    template_context = _prepare_template_context(context, sheet=sheet)
-    html_string = render_to_string(
-        "specifications/sheet.html", template_context
-    )
+    html_string = render_html(sheet)
     pdf_bytes = HTML(string=html_string).write_pdf()
 
     code = (sheet.code or str(sheet.id)[:8]).strip().replace(" ", "-")

@@ -209,6 +209,35 @@ class SpecificationSheet(models.Model):
         _("customer signature image"), blank=True, default=""
     )
 
+    # Electronic-signature audit trail captured at kiosk sign time.
+    # Mirror of the proposal-side columns so a kiosk signature on a
+    # bundled spec is just as defensible in court as the proposal
+    # signature itself. ESIGN/UETA evidence: who (UA + IP), against
+    # what (SHA-256 of rendered HTML).
+    customer_sign_ip = models.CharField(
+        _("customer sign ip"),
+        max_length=45,
+        blank=True,
+        default="",
+        help_text=_("Source IP recorded at kiosk sign time. IPv6 fits in 45 chars."),
+    )
+    customer_sign_user_agent = models.TextField(
+        _("customer sign user agent"),
+        blank=True,
+        default="",
+        help_text=_("Raw User-Agent header recorded at kiosk sign time."),
+    )
+    customer_sign_document_hash = models.CharField(
+        _("customer sign document hash"),
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_(
+            "SHA-256 hex digest of the rendered HTML the customer "
+            "saw at sign time. Lets us detect post-sign drift."
+        ),
+    )
+
     limits_override = models.JSONField(
         _("limits override"),
         default=dict,

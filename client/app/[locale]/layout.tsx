@@ -57,6 +57,15 @@ export default async function LocaleLayout({
     <html
       lang={locale}
       className={`${archivo.variable} ${jetbrainsMono.variable}`}
+      // Browser extensions (Grammarly, Dark Reader, LastPass, etc.)
+      // mutate <html> attributes between SSR and client hydration,
+      // which surfaces as a React "tree hydrated but some attributes
+      // didn't match" warning that the user can do nothing about.
+      // suppressHydrationWarning only silences the warning on this
+      // element's own attributes — every child is still checked
+      // normally, so real hydration bugs deeper in the tree still
+      // bubble up loudly.
+      suppressHydrationWarning
     >
       <body className="bg-ink-0 text-ink-1000 font-sans antialiased">
         <NextIntlClientProvider messages={messages}>

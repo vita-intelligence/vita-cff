@@ -10,6 +10,7 @@ do not lose access on upgrade.
 
 from __future__ import annotations
 
+import hashlib
 from decimal import Decimal
 from typing import Any
 
@@ -23,7 +24,116 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.proposals.render import render_docx_bytes, render_pdf_bytes
+
+def _client_ip(request: Request) -> str:
+    """Return the caller's IP, honouring App Service's reverse proxy.
+
+    Azure App Service rewrites ``REMOTE_ADDR`` to the front-door IP;
+    the real client IP lands in ``X-Forwarded-For`` as a comma-separated
+    chain (the left-most entry is the original client). We trust the
+    left-most hop because in our hosting topology nothing untrusted
+    sits in front of App Service. Strip a possible ``:port`` suffix
+    that some proxies append for IPv4 entries.
+
+    Falls back to ``REMOTE_ADDR`` for direct hits (local dev, health
+    probes). Caps at 45 chars to match the DB column width (IPv6).
+    """
+
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            # Trim ``:port`` for IPv4-with-port (``a.b.c.d:1234``);
+            # don't touch IPv6 which contains its own colons.
+            if first.count(":") == 1:
+                first = first.rsplit(":", 1)[0]
+            return first[:45]
+    remote = request.META.get("REMOTE_ADDR", "") or ""
+    return remote[:45]
+
+
+def _user_agent(request: Request) -> str:
+    """Return the raw ``User-Agent`` header (empty string if absent)."""
+
+    return request.META.get("HTTP_USER_AGENT", "") or ""
+
+
+def _document_hash(html: str) -> str:
+    """Return the SHA-256 hex digest of the rendered HTML.
+
+    Stored on the signature record so a later edit to the proposal
+    (or its underlying formulation snapshot) is detectable: re-render
+    the document, re-hash, compare. Any divergence means the contract
+    in the DB no longer matches what the signer saw.
+    """
+
+    return hashlib.sha256(html.encode("utf-8")).hexdigest()
+
+def _render_proposal_html(proposal) -> str:
+    """Render the proposal as a plain HTML document.
+
+    Single source of truth for both the authenticated in-app
+    preview endpoint and the public kiosk endpoint. Reused by
+    :func:`_render_proposal_pdf` as the input to WeasyPrint, so any
+    layout tweak applied to ``proposals/sheet.html`` flows through
+    to both the HTML view and the PDF view.
+
+    The signature pad is rendered as a separate React component
+    above this iframe on the kiosk page, so a customer's sign-flow
+    doesn't depend on anything in here.
+    """
+
+    version = proposal.formulation_version
+    metadata = version.snapshot_metadata or {}
+    # Effective sales-person name for the cover-letter signoff (same
+    # fallback chain the read serializer + kiosk payload use).
+    sales_person_user = (
+        proposal.sales_person
+        if proposal.sales_person_id
+        else getattr(version.formulation, "sales_person", None)
+    )
+    sales_person_name = ""
+    if sales_person_user is not None:
+        sales_person_name = (
+            sales_person_user.get_full_name() or sales_person_user.email or ""
+        ).strip()
+    return render_to_string(
+        "proposals/sheet.html",
+        {
+            "proposal": proposal,
+            "lines": list(proposal.lines.all()),
+            "formulation": {
+                "code": metadata.get("code") or version.formulation.code,
+                "name": metadata.get("name") or version.formulation.name,
+            },
+            "subtotal": proposal.subtotal,
+            "total_excl_vat": proposal.total_excl_vat,
+            "sales_person_name": sales_person_name,
+        },
+    )
+
+
+def _render_proposal_pdf(proposal) -> bytes:
+    """Render the proposal to a PDF via WeasyPrint.
+
+    Same HTML body as :func:`_render_proposal_html`, just fed
+    through WeasyPrint's HTML→PDF engine. Critically, this is a
+    pure-Python pipeline (cairo / pango / harfbuzz under the hood)
+    that runs in-process — no subprocess, no LibreOffice, no risk
+    of the OOM-kill loop the docx2pdf path used to cause. Same
+    pipeline the spec-sheet renderer uses (``apps.specifications.
+    services.render_pdf``), so the ops profile is identical:
+    ~30-50 MB transient, ~500 ms typical.
+
+    Lazy import on the WeasyPrint module so app collection stays
+    clean on machines where libcairo/libpango aren't installed
+    (e.g. some test runners).
+    """
+
+    from weasyprint import HTML  # noqa: WPS433
+
+    html_string = _render_proposal_html(proposal)
+    return HTML(string=html_string).write_pdf()
 
 from apps.organizations.modules import ProposalsCapability
 from apps.proposals.api.permissions import HasProposalsPermission
@@ -48,9 +158,11 @@ from apps.proposals.services import (
     ProposalCodeConflict,
     ProposalLineNotFound,
     ProposalNotFound,
+    ProposalNotMutable,
     ProposalPublicLinkNotEnabled,
     ProposalSalesPersonNotMember,
     SignatureRequired,
+    SpecificationSheetNotApproved,
     SpecificationSheetNotInOrg,
     add_proposal_line,
     capture_customer_signature_on_attached_spec,
@@ -189,6 +301,11 @@ class ProposalListCreateView(APIView):
                 {"specification_sheet_id": ["specification_sheet_not_in_org"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except SpecificationSheetNotApproved:
+            return Response(
+                {"specification_sheet_id": ["specification_sheet_not_approved"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except CustomerNotInOrg:
             return Response(
                 {"customer_id": ["customer_not_in_org"]},
@@ -252,9 +369,19 @@ class ProposalDetailView(APIView):
                 actor=request.user,
                 **serializer.validated_data,
             )
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
+            )
         except SpecificationSheetNotInOrg:
             return Response(
                 {"specification_sheet_id": ["specification_sheet_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationSheetNotApproved:
+            return Response(
+                {"specification_sheet_id": ["specification_sheet_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except CustomerNotInOrg:
@@ -273,7 +400,13 @@ class ProposalDetailView(APIView):
         self, request: Request, org_id: str, proposal_id: str
     ) -> Response:
         proposal = self._load(proposal_id)
-        delete_proposal(proposal=proposal, actor=request.user)
+        try:
+            delete_proposal(proposal=proposal, actor=request.user)
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -381,67 +514,12 @@ class ProposalRenderView(APIView):
         except ProposalNotFound as exc:
             raise NotFound() from exc
 
-        pdf_bytes = render_pdf_bytes(proposal)
-        if pdf_bytes is not None:
-            response = HttpResponse(pdf_bytes, content_type="application/pdf")
-            filename = f"{proposal.code or 'proposal'}.pdf"
-            disposition = (
-                "attachment"
-                if request.query_params.get("download") in {"1", "true"}
-                else "inline"
-            )
-            response["Content-Disposition"] = (
-                f'{disposition}; filename="{filename}"'
-            )
-            return response
-
-        # Fallback HTML render — kept deliberately simple; scientists
-        # on a Word-less box still see *something* legible.
-        version = proposal.formulation_version
-        metadata = version.snapshot_metadata or {}
-        html = render_to_string(
-            "proposals/sheet.html",
-            {
-                "proposal": proposal,
-                "formulation": {
-                    "code": metadata.get("code") or version.formulation.code,
-                    "name": metadata.get("name") or version.formulation.name,
-                },
-                "subtotal": proposal.subtotal,
-                "total_excl_vat": proposal.total_excl_vat,
-            },
-        )
-        return HttpResponse(html)
-
-
-class ProposalDocxView(APIView):
-    """``GET`` ``/.../proposals/<id>/docx/`` — download the filled
-    .docx so sales can email it or tweak the copy manually before
-    sending."""
-
-    permission_classes = (HasProposalsPermission,)
-    required_capability = ProposalsCapability.VIEW
-
-    def get(
-        self, request: Request, org_id: str, proposal_id: str
-    ) -> HttpResponse:
-        try:
-            proposal = get_proposal(
-                organization=self.organization, proposal_id=proposal_id
-            )
-        except ProposalNotFound as exc:
-            raise NotFound() from exc
-        docx_bytes = render_docx_bytes(proposal)
-        response = HttpResponse(
-            docx_bytes,
-            content_type=(
-                "application/vnd.openxmlformats-officedocument"
-                ".wordprocessingml.document"
-            ),
-        )
-        filename = f"{proposal.code or 'proposal'}.docx"
-        response["Content-Disposition"] = f'attachment; filename="{filename}"'
-        return response
+        # Serve the rendered HTML directly (no PDF conversion). The
+        # same template feeds the customer-facing kiosk iframe, so
+        # both surfaces show pixel-identical output and the kiosk
+        # can attach a scroll listener to the iframe contentWindow
+        # (same-origin) to gate the Sign button on "read to bottom".
+        return HttpResponse(_render_proposal_html(proposal))
 
 
 class ProposalLineListCreateView(APIView):
@@ -505,14 +583,29 @@ class ProposalLineListCreateView(APIView):
                 unit_price=data.get("unit_price"),
                 display_order=data.get("display_order"),
             )
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
+            )
         except FormulationVersionNotInOrg:
             return Response(
                 {"formulation_version_id": ["formulation_version_not_in_org"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except FormulationVersionNotApproved:
+            return Response(
+                {"formulation_version_id": ["formulation_version_not_approved"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except SpecificationSheetNotInOrg:
             return Response(
                 {"specification_sheet_id": ["specification_sheet_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationSheetNotApproved:
+            return Response(
+                {"specification_sheet_id": ["specification_sheet_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except CustomerNotInOrg:
@@ -560,11 +653,21 @@ class ProposalLineDetailView(APIView):
                 actor=request.user,
                 **serializer.validated_data,
             )
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
+            )
         except ProposalLineNotFound as exc:
             raise NotFound() from exc
         except SpecificationSheetNotInOrg:
             return Response(
                 {"specification_sheet_id": ["specification_sheet_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationSheetNotApproved:
+            return Response(
+                {"specification_sheet_id": ["specification_sheet_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except CustomerNotInOrg:
@@ -590,6 +693,11 @@ class ProposalLineDetailView(APIView):
                 proposal=proposal,
                 line_id=line_id,
                 actor=request.user,
+            )
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
             )
         except ProposalLineNotFound as exc:
             raise NotFound() from exc
@@ -725,20 +833,92 @@ def _render_public_proposal_payload(proposal) -> dict:
         for sheet in attached
     ]
 
+    # Customer-facing line rows — same data the printable proposal
+    # iterates over in the pricing table, plus a per-line subtotal
+    # for the React reading panel that replaces the PDF iframe on
+    # the kiosk. ``str(...)`` on every Decimal so the wire payload
+    # stays JSON-safe.
+    lines_payload = []
+    for line in proposal.lines.order_by("display_order", "id"):
+        subtotal = line.subtotal
+        lines_payload.append(
+            {
+                "id": str(line.id),
+                "product_code": line.product_code or "",
+                "description": line.description or "",
+                "quantity": line.quantity,
+                "unit_price": (
+                    str(line.unit_price) if line.unit_price is not None else None
+                ),
+                "subtotal": str(subtotal) if subtotal is not None else None,
+            }
+        )
+
+    # Effective sales-person name for the cover-letter signoff —
+    # same fallback chain the proposal read serializer uses: a
+    # proposal-level override wins, otherwise the project's
+    # ``sales_person`` is inherited. Empty string when neither slot
+    # is filled; the reading panel falls back to a generic label.
+    sales_person_user = (
+        proposal.sales_person
+        if proposal.sales_person_id
+        else getattr(
+            getattr(proposal.formulation_version, "formulation", None),
+            "sales_person",
+            None,
+        )
+    )
+    sales_person_name = ""
+    if sales_person_user is not None:
+        sales_person_name = (
+            sales_person_user.get_full_name() or sales_person_user.email or ""
+        ).strip()
+
     return {
         "id": str(proposal.id),
         "code": proposal.code,
         "status": proposal.status,
+        "template_type": proposal.template_type,
+        "sales_person_name": sales_person_name,
         "customer_company": proposal.customer_company,
         "customer_name": proposal.customer_name,
+        # Full customer-info block — used to drive the "Customer
+        # Information" table on the React reading panel so the
+        # signer can confirm the details before agreeing.
+        "customer_email": proposal.customer_email,
+        "customer_phone": proposal.customer_phone,
+        "invoice_address": proposal.invoice_address,
+        "delivery_address": proposal.delivery_address,
         "reference": proposal.reference,
         "dear_name": proposal.dear_name,
         "currency": proposal.currency,
+        "quantity": proposal.quantity,
+        "unit_price": (
+            str(proposal.unit_price)
+            if proposal.unit_price is not None
+            else None
+        ),
+        "freight_amount": (
+            str(proposal.freight_amount)
+            if proposal.freight_amount is not None
+            else None
+        ),
+        "subtotal": (
+            str(proposal.subtotal)
+            if proposal.subtotal is not None
+            else None
+        ),
         "total_excl_vat": (
             str(proposal.total_excl_vat)
             if proposal.total_excl_vat is not None
             else None
         ),
+        "valid_until": (
+            proposal.valid_until.isoformat()
+            if proposal.valid_until is not None
+            else None
+        ),
+        "lines": lines_payload,
         "customer_signed_at": (
             proposal.customer_signed_at.isoformat()
             if proposal.customer_signed_at is not None
@@ -752,6 +932,11 @@ def _render_public_proposal_payload(proposal) -> dict:
         "ack_spec_signing": bool(proposal.ack_spec_signing),
         "ack_lead_times": bool(proposal.ack_lead_times),
         "ack_terms": bool(proposal.ack_terms),
+        # Custom-template-only R&D ack. Ready-to-Go proposals skip
+        # this tickbox (no R&D phase), so the frontend hides the row
+        # unconditionally on those — but we still send the boolean so
+        # a refresh after signing keeps the rendered HTML's ☑ in sync.
+        "ack_rd_terms": bool(proposal.ack_rd_terms),
         "attached_specs": specs_payload,
     }
 
@@ -760,12 +945,12 @@ def _render_public_proposal_payload(proposal) -> dict:
 class PublicProposalPdfView(APIView):
     """``GET`` ``/api/public/proposals/<token>/pdf/``.
 
-    Token-gated render of the proposal as PDF — the kiosk iframes
-    this so the signer sees the exact commercial terms they're about
-    to sign. Falls back to the HTML approximation when the server
-    has no DOCX→PDF converter, matching the authenticated
-    :class:`ProposalRenderView` contract byte-for-byte so the kiosk
-    and the internal preview stay visually identical.
+    Token-gated proposal preview the kiosk iframes so the signer can
+    read the commercial terms before signing. Despite the historical
+    ``/pdf/`` URL the response body is now **HTML**, not a PDF —
+    LibreOffice was OOMing prod workers, and the team chose
+    view-in-browser as the cleanest fix. Customers who specifically
+    want a PDF copy use the browser's Print to PDF.
 
     Public access is intentional: no kiosk session required on the
     preview GET, only on the sign POSTs. A shareable link must be
@@ -775,8 +960,8 @@ class PublicProposalPdfView(APIView):
     The ``xframe_options_sameorigin`` decorator overrides Django's
     default ``X-Frame-Options: DENY`` so the kiosk iframe (which
     runs on the same origin as the API thanks to the Next.js
-    ``/api/*`` rewrite) can embed the PDF. Without it the browser
-    blocks the iframe content and the kiosk shows a broken-file
+    ``/api/*`` rewrite) can embed the HTML. Without it the browser
+    blocks the iframe content and the kiosk shows a broken-content
     placeholder in place of the proposal preview.
     """
 
@@ -789,35 +974,46 @@ class PublicProposalPdfView(APIView):
         except ProposalPublicLinkNotEnabled as exc:
             raise NotFound() from exc
 
-        pdf_bytes = render_pdf_bytes(proposal)
-        if pdf_bytes is not None:
-            response = HttpResponse(pdf_bytes, content_type="application/pdf")
-            filename = f"{proposal.code or 'proposal'}.pdf"
-            disposition = (
-                "attachment"
-                if request.query_params.get("download") in {"1", "true"}
-                else "inline"
-            )
-            response["Content-Disposition"] = (
-                f'{disposition}; filename="{filename}"'
-            )
-            return response
+        # Kiosk iframes this same endpoint. Returning HTML (instead
+        # of WeasyPrint PDF) means the in-app preview and the
+        # customer kiosk show pixel-identical output — both render
+        # the same Django template via the same browser engine.
+        return HttpResponse(_render_proposal_html(proposal))
 
-        version = proposal.formulation_version
-        metadata = version.snapshot_metadata or {}
-        html = render_to_string(
-            "proposals/sheet.html",
-            {
-                "proposal": proposal,
-                "formulation": {
-                    "code": metadata.get("code") or version.formulation.code,
-                    "name": metadata.get("name") or version.formulation.name,
-                },
-                "subtotal": proposal.subtotal,
-                "total_excl_vat": proposal.total_excl_vat,
-            },
-        )
-        return HttpResponse(html)
+
+class PublicProposalDownloadView(APIView):
+    """``GET`` ``/api/public/proposals/<token>/download/``.
+
+    Token-gated PDF download. Unlike :class:`PublicProposalPdfView`
+    (which streams HTML for the kiosk iframe), this endpoint runs the
+    HTML through WeasyPrint and streams a real ``application/pdf``
+    blob with ``Content-Disposition: attachment`` so the customer's
+    browser saves a file instead of rendering it inline. Mirrors the
+    spec-sheet PDF download pattern.
+
+    Public on purpose — same token that gates the preview gates the
+    download, so anyone who can read the proposal can also save a
+    portable copy for their records (matches the on-paper workflow
+    sales teams expect).
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request, token: str) -> HttpResponse:
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        pdf_bytes = _render_proposal_pdf(proposal)
+        # Mirror the spec sheet's filename pattern (``<code>.pdf``).
+        # Strip spaces so the suggested filename survives intact
+        # through Content-Disposition's quoting rules.
+        filename = f"{(proposal.code or 'proposal').strip().replace(' ', '-')}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 class PublicProposalIdentifyView(APIView):
@@ -991,6 +1187,11 @@ class PublicProposalSignProposalView(APIView):
 
         payload = request.data or {}
         signature_image = payload.get("signature_image") or ""
+        # ESIGN/UETA evidence captured *before* the write so a sign
+        # call that mutates the proposal can record what the signer
+        # actually saw. Hash is over the HTML version the customer
+        # has been reading in the iframe just above.
+        document_hash = _document_hash(_render_proposal_html(proposal))
         try:
             updated = capture_customer_signature_on_proposal(
                 proposal=proposal,
@@ -1001,6 +1202,10 @@ class PublicProposalSignProposalView(APIView):
                 ack_spec_signing=bool(payload.get("ack_spec_signing")),
                 ack_lead_times=bool(payload.get("ack_lead_times")),
                 ack_terms=bool(payload.get("ack_terms")),
+                ack_rd_terms=bool(payload.get("ack_rd_terms")),
+                sign_ip=_client_ip(request),
+                sign_user_agent=_user_agent(request),
+                sign_document_hash=document_hash,
             )
         except InvalidProposalTransition:
             return Response(
@@ -1065,6 +1270,20 @@ class PublicProposalSignSpecView(APIView):
         session = identity.session
 
         signature_image = (request.data or {}).get("signature_image") or ""
+        # Hash the spec HTML the customer saw inside the iframe. The
+        # render path is the same one ``render_pdf`` feeds WeasyPrint,
+        # so the hash is reproducible from the persisted state.
+        from apps.specifications.services import render_html as _render_spec_html
+
+        attached = list(proposal.lines.values_list("specification_sheet_id", flat=True))
+        document_hash = ""
+        if str(sheet_id) in {str(s) for s in attached if s}:
+            from apps.specifications.models import SpecificationSheet
+
+            sheet_obj = SpecificationSheet.objects.filter(id=sheet_id).first()
+            if sheet_obj is not None:
+                document_hash = _document_hash(_render_spec_html(sheet_obj))
+
         try:
             updated = capture_customer_signature_on_attached_spec(
                 proposal=proposal,
@@ -1073,6 +1292,9 @@ class PublicProposalSignSpecView(APIView):
                 signer_email=session.guest_email or "",
                 signer_company=session.guest_org_label or "",
                 signature_image=signature_image,
+                sign_ip=_client_ip(request),
+                sign_user_agent=_user_agent(request),
+                sign_document_hash=document_hash,
             )
         except KioskSpecNotOnProposal:
             # Same 404 shape as an unknown token — don't leak which

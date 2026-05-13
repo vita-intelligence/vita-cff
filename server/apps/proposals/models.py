@@ -307,6 +307,39 @@ class Proposal(models.Model):
         _("customer signature image"), blank=True, default=""
     )
 
+    # Electronic-signature audit trail captured at kiosk sign time.
+    # ESIGN/UETA-style evidence: who, from where, with what client,
+    # against what version of the document. ``customer_sign_ip`` is the
+    # caller's IP after honouring ``X-Forwarded-For`` (the proxy hop in
+    # App Service rewrites the source address), ``customer_sign_user_agent``
+    # is the raw UA string for browser/device fingerprinting, and
+    # ``customer_sign_document_hash`` is the SHA-256 hex digest of the
+    # rendered HTML at sign time so a later edit can be flagged via
+    # hash mismatch.
+    customer_sign_ip = models.CharField(
+        _("customer sign ip"),
+        max_length=45,
+        blank=True,
+        default="",
+        help_text=_("Source IP recorded at kiosk sign time. IPv6 fits in 45 chars."),
+    )
+    customer_sign_user_agent = models.TextField(
+        _("customer sign user agent"),
+        blank=True,
+        default="",
+        help_text=_("Raw User-Agent header recorded at kiosk sign time."),
+    )
+    customer_sign_document_hash = models.CharField(
+        _("customer sign document hash"),
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_(
+            "SHA-256 hex digest of the rendered HTML the customer "
+            "saw at sign time. Lets us detect post-sign drift."
+        ),
+    )
+
     # Acknowledgement tickboxes from the proposal's docx template.
     # Three required boxes the customer ticks in the kiosk before
     # signing; the render layer swaps ☐ → ☑ in the docx so the PDF
@@ -338,6 +371,18 @@ class Proposal(models.Model):
             "Customer ticked: 'I have read the Terms and "
             "Conditions which can be found below.' Required "
             "before signing the proposal."
+        ),
+    )
+    ack_rd_terms = models.BooleanField(
+        _("acknowledged R&D terms"),
+        default=False,
+        help_text=_(
+            "Customer ticked: 'I understand that R&D, sample "
+            "preparation, flavour development, reformulation, and "
+            "additional iterations are governed by Vita Manufacture's "
+            "Research & Development, Sampling and Formulation Terms…' "
+            "Custom-template proposals only — Ready-to-Go skips it "
+            "since no R&D phase applies."
         ),
     )
 

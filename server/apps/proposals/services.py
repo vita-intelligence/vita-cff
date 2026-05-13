@@ -38,7 +38,44 @@ from apps.proposals.models import (
     ProposalStatusTransition,
     ProposalTemplateType,
 )
-from apps.specifications.models import SpecificationSheet
+from apps.specifications.models import (
+    SpecificationSheet,
+    SpecificationStatus,
+)
+
+
+#: Spec-sheet statuses that mean "director has signed off." Only
+#: these sheets are bindable to a proposal — draft / in_review are
+#: still being iterated on; rejected proves nothing about whether a
+#: director ever signed (could have been rejected before review).
+_QUOTABLE_SHEET_STATUSES: frozenset[str] = frozenset(
+    {
+        SpecificationStatus.APPROVED,
+        SpecificationStatus.SENT,
+        SpecificationStatus.ACCEPTED,
+    }
+)
+
+
+def _resolve_quotable_sheet(
+    sheet_id: Any, organization
+) -> "SpecificationSheet":
+    """Load a spec sheet by id, refusing it unless it lives in
+    ``organization`` AND has already been director-signed.
+
+    Centralises the two guards that every bind-a-sheet-to-a-proposal
+    code path (``create_proposal``, ``update_proposal``,
+    ``add_proposal_line``, ``update_proposal_line``) has to enforce
+    so a stale client cannot smuggle a draft sheet into a customer-
+    facing quote.
+    """
+
+    sheet = SpecificationSheet.objects.filter(id=sheet_id).first()
+    if sheet is None or sheet.organization_id != organization.id:
+        raise SpecificationSheetNotInOrg()
+    if sheet.status not in _QUOTABLE_SHEET_STATUSES:
+        raise SpecificationSheetNotApproved()
+    return sheet
 from config.signatures import SignatureImageInvalid, validate_signature_image
 
 
@@ -49,6 +86,19 @@ from config.signatures import SignatureImageInvalid, validate_signature_image
 
 class ProposalNotFound(Exception):
     code = "proposal_not_found"
+
+
+class ProposalNotMutable(Exception):
+    """Raised when a write targets a terminal-state proposal.
+
+    Once a proposal reaches ``accepted`` or ``rejected`` the document
+    is legally frozen: ``accepted`` is the signed contract the client
+    received, ``rejected`` is the closed-loss record. Allowing further
+    edits would let the database drift away from what the customer
+    actually signed, invalidating the audit trail and the contract.
+    """
+
+    code = "proposal_not_mutable"
 
 
 class FormulationVersionNotInOrg(Exception):
@@ -72,6 +122,22 @@ class FormulationVersionNotApproved(Exception):
 
 class SpecificationSheetNotInOrg(Exception):
     code = "specification_sheet_not_in_org"
+
+
+class SpecificationSheetNotApproved(Exception):
+    """Raised when a caller tries to bind a spec sheet to a proposal
+    (or proposal line) before a director has signed it.
+
+    Only sheets that have already moved past the internal-review
+    lane (``approved`` / ``sent`` / ``accepted``) are quotable; a
+    ``draft`` or ``in_review`` sheet is still being iterated on
+    and could change, so bundling it with a customer-facing offer
+    would risk the customer seeing a sheet that doesn't match what
+    they signed. Frontend filters the picker to the same set;
+    this guard catches stale clients / direct API callers.
+    """
+
+    code = "specification_sheet_not_approved"
 
 
 class CustomerNotInOrg(Exception):
@@ -380,11 +446,7 @@ def create_proposal(
 
     sheet: SpecificationSheet | None = None
     if specification_sheet_id is not None:
-        sheet = (
-            SpecificationSheet.objects.filter(id=specification_sheet_id).first()
-        )
-        if sheet is None or sheet.organization_id != organization.id:
-            raise SpecificationSheetNotInOrg()
+        sheet = _resolve_quotable_sheet(specification_sheet_id, organization)
 
     # Pull the customer address-book entry if one was picked. Seed
     # any blank customer_* fields on the proposal from the linked
@@ -523,6 +585,7 @@ _UPDATABLE_FIELDS: tuple[str, ...] = (
 def update_proposal(
     *, proposal: Proposal, actor: Any, **changes: Any
 ) -> Proposal:
+    _guard_mutable(proposal)
     before = snapshot(proposal)
 
     # ``specification_sheet_id`` / ``customer_id`` are FKs, not free
@@ -533,10 +596,9 @@ def update_proposal(
         if sheet_id is None:
             proposal.specification_sheet = None
         else:
-            sheet = SpecificationSheet.objects.filter(id=sheet_id).first()
-            if sheet is None or sheet.organization_id != proposal.organization_id:
-                raise SpecificationSheetNotInOrg()
-            proposal.specification_sheet = sheet
+            proposal.specification_sheet = _resolve_quotable_sheet(
+                sheet_id, proposal.organization
+            )
     if "customer_id" in changes:
         from apps.customers.models import Customer
 
@@ -600,6 +662,7 @@ def update_proposal(
 
 @transaction.atomic
 def delete_proposal(*, proposal: Proposal, actor: Any) -> None:
+    _guard_mutable(proposal)
     before = snapshot(proposal)
     target_id = str(proposal.pk)
     organization = proposal.organization
@@ -646,6 +709,19 @@ _LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     ProposalStatus.ACCEPTED.value: frozenset(),
     ProposalStatus.REJECTED.value: frozenset(),
 }
+
+
+#: States that freeze the proposal — no edits, no line CRUD, no
+#: deletion. Mirrors the spec sheet's terminal lock so a signed
+#: bundle stays byte-identical to the version the client accepted.
+_TERMINAL_STATES: frozenset[str] = frozenset(
+    {ProposalStatus.ACCEPTED.value, ProposalStatus.REJECTED.value}
+)
+
+
+def _guard_mutable(proposal: Proposal) -> None:
+    if proposal.status in _TERMINAL_STATES:
+        raise ProposalNotMutable()
 
 
 @dataclass
@@ -709,6 +785,8 @@ def add_proposal_line(
     quote an ad-hoc SKU (e.g. ``"Shipping crate"``).
     """
 
+    _guard_mutable(proposal)
+
     from apps.formulations.models import FormulationVersion
 
     version = None
@@ -723,6 +801,14 @@ def add_proposal_line(
             or version.formulation.organization_id != proposal.organization_id
         ):
             raise FormulationVersionNotInOrg()
+        # Mirror the ``create_proposal`` gate: a line can only be
+        # added against the version a scientist (or a director-
+        # approved spec sheet) has marked as the formulation's
+        # current approved snapshot. Otherwise the proposal could
+        # quote a draft / un-finalised recipe even after the initial
+        # create surface filtered correctly.
+        if version.version_number != version.formulation.approved_version_number:
+            raise FormulationVersionNotApproved()
         metadata = version.snapshot_metadata or {}
         if not product_code:
             product_code = (
@@ -735,11 +821,9 @@ def add_proposal_line(
 
     sheet = None
     if specification_sheet_id is not None:
-        sheet = SpecificationSheet.objects.filter(
-            id=specification_sheet_id
-        ).first()
-        if sheet is None or sheet.organization_id != proposal.organization_id:
-            raise SpecificationSheetNotInOrg()
+        sheet = _resolve_quotable_sheet(
+            specification_sheet_id, proposal.organization
+        )
 
     if display_order is None:
         display_order = proposal.lines.count()
@@ -775,21 +859,21 @@ def update_proposal_line(
     actor: Any,
     **changes: Any,
 ) -> ProposalLine:
+    _guard_mutable(proposal)
     line = proposal.lines.filter(id=line_id).first()
     if line is None:
         raise ProposalLineNotFound()
 
-    # ``specification_sheet_id`` needs the cross-tenant FK check; the
-    # rest is a flat setattr loop over the model's writable columns.
+    # ``specification_sheet_id`` needs the cross-tenant FK check + the
+    # director-signed guard. ``_resolve_quotable_sheet`` covers both.
     if "specification_sheet_id" in changes:
         sheet_id = changes.pop("specification_sheet_id")
         if sheet_id is None:
             line.specification_sheet = None
         else:
-            sheet = SpecificationSheet.objects.filter(id=sheet_id).first()
-            if sheet is None or sheet.organization_id != proposal.organization_id:
-                raise SpecificationSheetNotInOrg()
-            line.specification_sheet = sheet
+            line.specification_sheet = _resolve_quotable_sheet(
+                sheet_id, proposal.organization
+            )
 
     updatable = {
         "product_code",
@@ -820,6 +904,7 @@ def update_proposal_line(
 def delete_proposal_line(
     *, proposal: Proposal, line_id: Any, actor: Any
 ) -> None:
+    _guard_mutable(proposal)
     line = proposal.lines.filter(id=line_id).first()
     if line is None:
         raise ProposalLineNotFound()
@@ -1188,6 +1273,10 @@ def capture_customer_signature_on_proposal(
     ack_spec_signing: bool = False,
     ack_lead_times: bool = False,
     ack_terms: bool = False,
+    ack_rd_terms: bool = False,
+    sign_ip: str = "",
+    sign_user_agent: str = "",
+    sign_document_hash: str = "",
 ) -> Proposal:
     """Record a customer signature on the proposal without moving it
     to ``accepted``. Used by the proposal-centric kiosk where many
@@ -1198,17 +1287,25 @@ def capture_customer_signature_on_proposal(
     a client who scribbled the first time can redraw without us
     needing a separate "reset signature" endpoint.
 
-    The three acknowledgement tickboxes (``ack_spec_signing`` /
-    ``ack_lead_times`` / ``ack_terms``) must all be true — they
-    correspond to the consent ☐ boxes on the docx template, and the
-    rendered PDF flips each ticked box to ☑ so the customer + sales
-    team see what was confirmed.
+    Acknowledgement tickboxes the rendered HTML flips ☐ → ☑ once
+    the customer signs:
+
+    * ``ack_spec_signing`` — always required (every template).
+    * ``ack_lead_times`` — always required.
+    * ``ack_terms`` — always required.
+    * ``ack_rd_terms`` — required ONLY for ``custom`` proposals; the
+      Ready-to-Go template has no R&D phase and skips this row.
+
+    Any required ack missing raises :class:`ProposalAcknowledgementsRequired`.
     """
 
     if proposal.status != ProposalStatus.SENT.value:
         raise InvalidProposalTransition()
 
-    if not (ack_spec_signing and ack_lead_times and ack_terms):
+    required_acks = ack_spec_signing and ack_lead_times and ack_terms
+    if proposal.template_type == ProposalTemplateType.CUSTOM.value:
+        required_acks = required_acks and ack_rd_terms
+    if not required_acks:
         raise ProposalAcknowledgementsRequired()
 
     normalised_image = validate_signature_image(signature_image)
@@ -1221,9 +1318,13 @@ def capture_customer_signature_on_proposal(
     proposal.customer_signer_company = (signer_company or "").strip()
     proposal.customer_signature_image = normalised_image
     proposal.customer_signed_at = timezone.now()
+    proposal.customer_sign_ip = (sign_ip or "")[:45]
+    proposal.customer_sign_user_agent = sign_user_agent or ""
+    proposal.customer_sign_document_hash = (sign_document_hash or "")[:64]
     proposal.ack_spec_signing = bool(ack_spec_signing)
     proposal.ack_lead_times = bool(ack_lead_times)
     proposal.ack_terms = bool(ack_terms)
+    proposal.ack_rd_terms = bool(ack_rd_terms)
     proposal.save(
         update_fields=[
             "customer_signer_name",
@@ -1231,9 +1332,13 @@ def capture_customer_signature_on_proposal(
             "customer_signer_company",
             "customer_signature_image",
             "customer_signed_at",
+            "customer_sign_ip",
+            "customer_sign_user_agent",
+            "customer_sign_document_hash",
             "ack_spec_signing",
             "ack_lead_times",
             "ack_terms",
+            "ack_rd_terms",
             "updated_at",
         ]
     )
@@ -1242,7 +1347,12 @@ def capture_customer_signature_on_proposal(
         actor=proposal.updated_by,
         action="proposal.kiosk_sign",
         target=proposal,
-        after={"signer_name": name},
+        after={
+            "signer_name": name,
+            "sign_ip": proposal.customer_sign_ip,
+            "sign_user_agent": proposal.customer_sign_user_agent,
+            "sign_document_hash": proposal.customer_sign_document_hash,
+        },
     )
     return proposal
 
@@ -1256,6 +1366,9 @@ def capture_customer_signature_on_attached_spec(
     signer_email: str,
     signer_company: str,
     signature_image: str,
+    sign_ip: str = "",
+    sign_user_agent: str = "",
+    sign_document_hash: str = "",
 ) -> SpecificationSheet:
     """Record a customer signature on one spec sheet attached to this
     proposal. Same semantics as
@@ -1305,6 +1418,9 @@ def capture_customer_signature_on_attached_spec(
     sheet.customer_company = (signer_company or "").strip()
     sheet.customer_signature_image = normalised_image
     sheet.customer_signed_at = timezone.now()
+    sheet.customer_sign_ip = (sign_ip or "")[:45]
+    sheet.customer_sign_user_agent = sign_user_agent or ""
+    sheet.customer_sign_document_hash = (sign_document_hash or "")[:64]
     sheet.save(
         update_fields=[
             "customer_name",
@@ -1312,6 +1428,9 @@ def capture_customer_signature_on_attached_spec(
             "customer_company",
             "customer_signature_image",
             "customer_signed_at",
+            "customer_sign_ip",
+            "customer_sign_user_agent",
+            "customer_sign_document_hash",
             "updated_at",
         ]
     )
@@ -1320,7 +1439,13 @@ def capture_customer_signature_on_attached_spec(
         actor=sheet.updated_by,
         action="spec_sheet.kiosk_sign",
         target=sheet,
-        after={"signer_name": name, "proposal_id": str(proposal.id)},
+        after={
+            "signer_name": name,
+            "proposal_id": str(proposal.id),
+            "sign_ip": sheet.customer_sign_ip,
+            "sign_user_agent": sheet.customer_sign_user_agent,
+            "sign_document_hash": sheet.customer_sign_document_hash,
+        },
     )
     return sheet
 
@@ -1360,7 +1485,10 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
     if pending:
         raise KioskSignaturesPending(pending)
 
+    from apps.formulations.models import ProjectStatus
+    from apps.formulations.services import _maybe_advance_project_status
     from apps.specifications.models import (
+        SpecificationDocumentKind,
         SpecificationStatus,
         SpecificationTransition,
     )
@@ -1405,6 +1533,25 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
             before={"status": previous_sheet_status},
             after={"status": sheet.status, "proposal_id": str(proposal.id)},
         )
+
+        # Mirror the spec-only kiosk path's roadmap-chip rule (see
+        # ``accept_as_customer`` in apps.specifications.services): a
+        # customer-signed draft moves the formulation chip from
+        # ``in_development`` → ``pilot``; a customer-signed final goes
+        # all the way to ``approved``. Forward-only via
+        # :func:`_maybe_advance_project_status` so a previously-
+        # approved project can never slip back.
+        target_status: str | None = None
+        if sheet.document_kind == SpecificationDocumentKind.DRAFT:
+            target_status = ProjectStatus.PILOT.value
+        elif sheet.document_kind == SpecificationDocumentKind.FINAL:
+            target_status = ProjectStatus.APPROVED.value
+        if target_status is not None:
+            _maybe_advance_project_status(
+                formulation=sheet.formulation_version.formulation,
+                target_status=target_status,
+                actor=sheet.updated_by,
+            )
 
     return {
         "status": proposal.status,

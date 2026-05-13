@@ -58,7 +58,19 @@ _RENDER_LOCK = threading.Lock()
 #:          revision), LibreOffice now bundled in the runtime image
 #:          so prod renders PDF directly instead of falling back to
 #:          the HTML preview
-_RENDER_VERSION = 5
+#:   5 → 6: internal-approvals signature table — explicit column
+#:          widths + smaller picture budget so the captured ink
+#:          stays inside its cell
+#:   6 → 7: internal-approvals signature picture shrunk further
+#:          (1.0 in × 0.45 in max) per partner feedback
+#:   7 → 8: drop the captured signature image entirely from the
+#:          internal-approvals block — keep the role + name + date
+#:          textual record so the customer can still see who
+#:          approved without the awkward picture sizing
+#:   8 → 9: remove the entire internal-approvals block from the
+#:          customer-facing PDF. Sign-off record now lives only on
+#:          the in-app proposal detail page (InternalApprovalsPanel)
+_RENDER_VERSION = 9
 
 from django.conf import settings
 from docx import Document
@@ -634,41 +646,42 @@ def _append_internal_signatures(
     run = heading.add_run("Internal approvals")
     run.bold = True
 
+    # Drop the captured signature images entirely — they were sized
+    # awkwardly against the table cells and partners flagged them as
+    # noisy on the customer-facing PDF. The textual record (role +
+    # name + signed date) still lands here so anyone reading the
+    # proposal can see who approved it and when.
+    column_width = Inches(3.0)
+
     table = doc.add_table(rows=1, cols=2)
     table.style = "Table Grid"
+    # Pin the table to explicit column widths instead of letting Word
+    # auto-fit to the cell content — a long name otherwise stretches
+    # one column over the divider.
+    table.autofit = False
     slots = (
-        (
-            "Prepared by",
-            ctx.prepared_by_name,
-            ctx.prepared_by_date,
-            ctx.prepared_by_signature_image_png,
-        ),
-        (
-            "Approved by (Director)",
-            ctx.director_name,
-            ctx.director_date,
-            ctx.director_signature_image_png,
-        ),
+        ("Prepared by", ctx.prepared_by_name, ctx.prepared_by_date),
+        ("Approved by", ctx.director_name, ctx.director_date),
     )
     # Start with one row of headers, then add one row per slot so the
-    # table fills evenly even when only one slot has a signature.
+    # table fills evenly even when only one slot is signed off.
     header_cells = table.rows[0].cells
-    for cell, title in zip(header_cells, ("Prepared by", "Approved by (Director)")):
+    for cell, (title, *_rest) in zip(header_cells, slots):
         _set_cell_text(cell, title)
+        cell.width = column_width
 
     body_row = table.add_row()
-    for cell, (_, name, date, image_png) in zip(body_row.cells, slots):
+    for cell, (_, name, date) in zip(body_row.cells, slots):
+        cell.width = column_width
         paragraphs = list(cell.paragraphs)
         for extra in paragraphs[1:]:
             extra._element.getparent().remove(extra._element)
         target = cell.paragraphs[0] if paragraphs else cell.add_paragraph()
         target.clear()
-        if image_png:
-            target.add_run().add_picture(io.BytesIO(image_png), width=Inches(2.0))
-        # Name + date under the image (or as the primary content when
-        # no signature is captured). Mirrors the DOCX template's
-        # ``Name\nDate`` convention below the customer signature.
-        cell.add_paragraph(name or "—")
+        # Name first (primary identifier), date below in muted text —
+        # matches the convention from the customer-signature block
+        # higher up the document.
+        target.add_run(name or "—")
         if date:
             cell.add_paragraph(date)
 
@@ -1171,9 +1184,14 @@ def render_docx_bytes(proposal: Proposal) -> bytes:
             # consent the customer gave at sign time.
             _paint_acknowledgement_table(table, ctx)
 
-    # Append the Prepared-by / Director block so the customer PDF
-    # shows who inside Vita NPD already approved the offer.
-    _append_internal_signatures(doc, ctx)
+    # Internal approvals are intentionally NOT rendered into the
+    # customer-facing PDF — that block is for staff use only. The
+    # ``prepared_by_*`` / ``director_*`` fields stay on the Proposal
+    # row so the in-app proposal detail page can surface who signed
+    # off internally, but the customer's download / kiosk view stays
+    # clean. ``_append_internal_signatures`` remains in the module
+    # so a future flow that does want the block (e.g. internal copy)
+    # can call it directly.
 
     buffer = io.BytesIO()
     doc.save(buffer)

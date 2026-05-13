@@ -30,6 +30,7 @@
 import { Button } from "@heroui/react";
 import {
   CheckCircle2,
+  Download,
   FileText,
   MessageCircle,
   PenLine,
@@ -37,7 +38,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
 import { KioskIdentityModal } from "@/components/comments/kiosk/kiosk-identity-modal";
@@ -50,6 +51,7 @@ import {
   type ProposalKioskDto,
   type ProposalKioskSpecDto,
 } from "@/services/proposals";
+
 
 
 interface KioskMarker {
@@ -152,19 +154,42 @@ export function ProposalKioskView({
     spec_signing: boolean;
     lead_times: boolean;
     terms: boolean;
+    rd_terms: boolean;
   }>(() => ({
     spec_signing: kiosk.ack_spec_signing,
     lead_times: kiosk.ack_lead_times,
     terms: kiosk.ack_terms,
+    rd_terms: kiosk.ack_rd_terms,
   }));
   useEffect(() => {
     setAcks({
       spec_signing: kiosk.ack_spec_signing,
       lead_times: kiosk.ack_lead_times,
       terms: kiosk.ack_terms,
+      rd_terms: kiosk.ack_rd_terms,
     });
-  }, [kiosk.ack_spec_signing, kiosk.ack_lead_times, kiosk.ack_terms]);
-  const allAcksTicked = acks.spec_signing && acks.lead_times && acks.terms;
+  }, [
+    kiosk.ack_spec_signing,
+    kiosk.ack_lead_times,
+    kiosk.ack_terms,
+    kiosk.ack_rd_terms,
+  ]);
+  // R&D Terms tick only required on Custom proposals — Ready-to-Go
+  // has no R&D phase so the row is hidden and the gate ignores the
+  // value. Backend mirrors this conditional check.
+  const isCustom = kiosk.template_type === "custom";
+  const allAcksTicked =
+    acks.spec_signing &&
+    acks.lead_times &&
+    acks.terms &&
+    (!isCustom || acks.rd_terms);
+
+  // Section-tracking state, surfaced from ``ProposalReadingPanel``
+  // via a callback. The panel mounts an ``IntersectionObserver`` per
+  // numbered section and reports back as each one is dwelt on. We
+  // mirror just the boolean we need for the sign-button gate; the
+  // panel keeps its own progress chip in sync.
+  const [allSectionsRead, setAllSectionsRead] = useState<boolean>(false);
 
   const allSigned = useMemo(() => {
     if (!kiosk.has_signature) return false;
@@ -191,6 +216,10 @@ export function ProposalKioskView({
               ack_spec_signing: acks.spec_signing,
               ack_lead_times: acks.lead_times,
               ack_terms: acks.terms,
+              // R&D ack is only meaningful on Custom proposals;
+              // Ready-to-Go always sends ``false`` and the backend
+              // ignores it on that template.
+              ack_rd_terms: isCustom ? acks.rd_terms : false,
             }
           : { signature_image: dataUrl };
       await apiClient.post(url, payload);
@@ -270,20 +299,59 @@ export function ProposalKioskView({
           icon={<FileText className="h-4 w-4 text-orange-600" />}
           title={tProposals("public.doc.proposal_title")}
           subtitle={tProposals("public.doc.proposal_subtitle")}
-          previewSrc={`/api/public/proposals/${token}/pdf/`}
+          // Proposal preview is the same HTML the in-app proposal
+          // page iframes — single template, single rendering
+          // engine, so kiosk and in-app are pixel-identical. The
+          // scroll-tracking iframe wrapper attaches a scroll
+          // listener to the same-origin contentWindow and gates
+          // the Sign button on "scrolled to the bottom".
+          previewSrc={null}
+          previewContent={
+            <ScrollTrackingIframe
+              // Cache-bust the iframe URL on every state change that
+              // affects the rendered HTML (sign timestamp, ack flags).
+              // Without this the browser serves the stale HTML after
+              // ``router.refresh()`` and the customer doesn't see
+              // their ticked boxes / signature image right after
+              // signing.
+              src={`/api/public/proposals/${token}/pdf/?v=${encodeURIComponent(
+                [
+                  kiosk.customer_signed_at ?? "",
+                  String(kiosk.ack_spec_signing),
+                  String(kiosk.ack_lead_times),
+                  String(kiosk.ack_terms),
+                  String(kiosk.ack_rd_terms),
+                ].join("|"),
+              )}`}
+              title={tProposals("public.doc.preview_label")}
+              onAllReadChange={setAllSectionsRead}
+              tProposals={tProposals}
+            />
+          }
           previewLabel={tProposals("public.doc.preview_label")}
           signedAt={kiosk.customer_signed_at}
           hasSignature={kiosk.has_signature}
           locked={isAccepted}
-          // Block the Sign button unless every consent is ticked —
-          // the API enforces this server-side too, but disabling the
-          // button gives the customer immediate feedback rather than
-          // a 400 after drawing their signature.
-          signDisabled={!allAcksTicked}
+          // Server-rendered WeasyPrint PDF, same content the iframe
+          // shows but as a downloadable file the customer can keep
+          // for their records.
+          downloadHref={proposalsEndpoints.publicDownload(token)}
+          downloadLabel={tProposals("public.doc.download_cta")}
+          // Two independent gates on the Sign button — both must
+          // pass before the signature pad opens:
+          //   1. all three acknowledgement tickboxes ticked;
+          //   2. every required reading section dwelt-on long
+          //      enough that the panel marked it read.
+          // The API also enforces (1) server-side. Section tracking
+          // is client-side only for now (server-side audit is a
+          // follow-up).
+          signDisabled={!allAcksTicked || !allSectionsRead}
           signDisabledHint={
-            !allAcksTicked
-              ? tProposals("public.doc.sign_disabled_hint")
-              : undefined
+            !allSectionsRead
+              ? tProposals("public.doc.sign_disabled_sections_hint")
+              : !allAcksTicked
+                ? tProposals("public.doc.sign_disabled_hint")
+                : undefined
           }
           // Pre-sign consent block — three required tickboxes that
           // mirror the ☐ rows on the docx proposal. Toggling them
@@ -295,6 +363,7 @@ export function ProposalKioskView({
               <AcknowledgementBlock
                 acks={acks}
                 onChange={(next) => setAcks(next)}
+                isCustom={isCustom}
                 tProposals={tProposals}
               />
             ) : null
@@ -304,7 +373,7 @@ export function ProposalKioskView({
               setIdentifying(true);
               return;
             }
-            if (!allAcksTicked) return;
+            if (!allAcksTicked || !allSectionsRead) return;
             setError(null);
             setPending({ kind: "proposal" });
           }}
@@ -335,7 +404,14 @@ export function ProposalKioskView({
               .join(" · ")}
             previewSrc={
               sheet.public_token
-                ? `/api/public/specifications/${sheet.public_token}/pdf/`
+                ? // Cache-bust the spec iframe on every customer-sign
+                  // — without this the browser keeps serving the
+                  // previous PDF after ``router.refresh()`` and the
+                  // signer doesn't see their own signature appear on
+                  // the spec sheet next to the proposal.
+                  `/api/public/specifications/${sheet.public_token}/pdf/?v=${encodeURIComponent(
+                    sheet.customer_signed_at ?? "",
+                  )}`
                 : null
             }
             previewLabel={tProposals("public.doc.preview_label")}
@@ -424,6 +500,7 @@ function DocumentCard({
   title,
   subtitle,
   previewSrc,
+  previewContent,
   previewLabel,
   signedAt,
   hasSignature,
@@ -434,12 +511,21 @@ function DocumentCard({
   extraBody,
   commentsHref,
   commentsLabel,
+  downloadHref,
+  downloadLabel,
   tProposals,
 }: {
   icon: React.ReactNode;
   title: string;
   subtitle: string;
+  /** Iframe source URL — used for documents that still render as
+   *  PDF (spec sheets via WeasyPrint). Mutually exclusive with
+   *  ``previewContent``: when ``previewContent`` is set it wins. */
   previewSrc: string | null;
+  /** Native React content to render in place of the iframe. Used by
+   *  the proposal card so we can render every section as a real DOM
+   *  block (and track "read" state with IntersectionObserver). */
+  previewContent?: React.ReactNode;
   previewLabel: string;
   signedAt: string | null;
   hasSignature: boolean;
@@ -463,6 +549,11 @@ function DocumentCard({
    *  already lives one step down. */
   commentsHref?: string | null;
   commentsLabel?: string;
+  /** PDF-download endpoint (token-gated, server-rendered via
+   *  WeasyPrint). When set, a "Download PDF" anchor renders next to
+   *  Sign so the customer can save the document for their records. */
+  downloadHref?: string | null;
+  downloadLabel?: string;
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
   return (
@@ -502,6 +593,21 @@ function DocumentCard({
               {commentsLabel}
             </Link>
           ) : null}
+          {downloadHref ? (
+            // Anchor tag with ``download`` attribute so the browser
+            // saves the file instead of streaming it inline. The
+            // backend already sets ``Content-Disposition: attachment``
+            // — the attribute is belt-and-braces for browsers that
+            // ignore it (mobile Safari).
+            <a
+              href={downloadHref}
+              download
+              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+            >
+              <Download className="h-4 w-4" />
+              {downloadLabel}
+            </a>
+          ) : null}
           {!locked ? (
             <span title={signDisabled ? signDisabledHint : undefined}>
               <Button
@@ -525,7 +631,9 @@ function DocumentCard({
         </div>
       </div>
       {extraBody}
-      {previewSrc ? (
+      {previewContent ? (
+        previewContent
+      ) : previewSrc ? (
         <div className="overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
           <iframe
             src={previewSrc}
@@ -540,32 +648,67 @@ function DocumentCard({
 
 
 /**
- * Three required consent tickboxes shown above the proposal preview
- * in the kiosk. Mirrors the ☐ rows on the docx template — ticking
- * them flips the matching boxes to ☑ on the rendered PDF + the
- * downloaded docx. The Sign button stays disabled until all three
- * are true; the API also enforces it server-side.
+ * Required consent tickboxes shown above the proposal preview in
+ * the kiosk. Mirrors the ☐ rows on the proposal HTML — ticking
+ * them flips the matching boxes to ☑ on the rendered acceptance
+ * form once the customer signs. The Sign button stays disabled
+ * until every visible box is true; the API also enforces it.
+ *
+ * Custom proposals show 4 rows (the long lead-times wording + the
+ * R&D / Sampling acknowledgement). Ready-to-Go proposals show 3
+ * (a shorter lead-times wording, no R&D row).
  */
 function AcknowledgementBlock({
   acks,
   onChange,
+  isCustom,
   tProposals,
 }: {
-  acks: { spec_signing: boolean; lead_times: boolean; terms: boolean };
+  acks: {
+    spec_signing: boolean;
+    lead_times: boolean;
+    terms: boolean;
+    rd_terms: boolean;
+  };
   onChange: (next: typeof acks) => void;
+  isCustom: boolean;
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
+  type AckKey = keyof typeof acks;
+  type AckTranslationKey =
+    | "public.doc.ack_spec_signing"
+    | "public.doc.ack_lead_times_custom"
+    | "public.doc.ack_lead_times_ready"
+    | "public.doc.ack_rd_terms"
+    | "public.doc.ack_terms";
+
   const ROWS: ReadonlyArray<{
-    readonly key: keyof typeof acks;
-    readonly translationKey:
-      | "public.doc.ack_spec_signing"
-      | "public.doc.ack_lead_times"
-      | "public.doc.ack_terms";
-  }> = [
-    { key: "spec_signing", translationKey: "public.doc.ack_spec_signing" },
-    { key: "lead_times", translationKey: "public.doc.ack_lead_times" },
-    { key: "terms", translationKey: "public.doc.ack_terms" },
-  ];
+    readonly key: AckKey;
+    readonly translationKey: AckTranslationKey;
+  }> = isCustom
+    ? [
+        {
+          key: "spec_signing",
+          translationKey: "public.doc.ack_spec_signing",
+        },
+        {
+          key: "lead_times",
+          translationKey: "public.doc.ack_lead_times_custom",
+        },
+        { key: "rd_terms", translationKey: "public.doc.ack_rd_terms" },
+        { key: "terms", translationKey: "public.doc.ack_terms" },
+      ]
+    : [
+        {
+          key: "spec_signing",
+          translationKey: "public.doc.ack_spec_signing",
+        },
+        {
+          key: "lead_times",
+          translationKey: "public.doc.ack_lead_times_ready",
+        },
+        { key: "terms", translationKey: "public.doc.ack_terms" },
+      ];
 
   return (
     <div className="rounded-xl bg-amber-50 px-4 py-3 ring-1 ring-inset ring-amber-200">
@@ -591,6 +734,163 @@ function AcknowledgementBlock({
           </li>
         ))}
       </ul>
+    </div>
+  );
+}
+
+
+/**
+ * Same-origin iframe wrapper that tracks how far the customer has
+ * scrolled through the embedded proposal HTML, and exposes a
+ * "scrolled to bottom" signal upward via ``onAllReadChange``.
+ *
+ * The iframe loads ``/api/public/proposals/<token>/pdf/`` — same
+ * HTML the in-app proposal page iframes, so the kiosk and the
+ * internal preview are pixel-identical. Because the iframe is
+ * served from the same origin (Next.js ``/api/*`` rewrite proxies
+ * Django on the same host), we can attach a ``scroll`` listener
+ * to its ``contentWindow`` from the parent page; no cross-origin
+ * permission games.
+ *
+ * Progress is monotone — scrolling back up doesn't drop the gate.
+ * 98% is the "fully read" threshold to forgive sub-pixel rounding
+ * at the bottom of the document.
+ */
+const READ_THRESHOLD = 0.98;
+
+function ScrollTrackingIframe({
+  src,
+  title,
+  onAllReadChange,
+  tProposals,
+}: {
+  src: string;
+  title: string;
+  onAllReadChange: (allRead: boolean) => void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const [progress, setProgress] = useState<number>(0);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const allDone = progress >= READ_THRESHOLD;
+
+  useEffect(() => {
+    onAllReadChange(allDone);
+  }, [allDone, onAllReadChange]);
+
+  useEffect(() => {
+    // Poll-based progress tracking. Previous implementation listened
+    // for the iframe's ``load`` event and bound a ``scroll`` listener
+    // inside; that's brittle for two reasons:
+    //
+    // 1. If the iframe was cached or rendered quickly, the ``load``
+    //    event fired before useEffect could attach — the listener
+    //    was registered too late, and no scroll signal ever
+    //    propagated. Symptom: ticking a consent box before scrolling
+    //    "broke" progress because the user had just enough time for
+    //    the underlying race to manifest.
+    // 2. Even when the listener attached, parent re-renders driven by
+    //    other state (consent ticks, signed timestamp cache-busts)
+    //    could replace the iframe document, dropping the listener
+    //    silently.
+    //
+    // Polling sidesteps both: every 250 ms we read
+    // ``contentWindow.scrollY`` / ``documentElement.scrollHeight``
+    // and feed the same monotone setter the old listener used. No
+    // listener lifecycle, no race. The cost is one cheap closure
+    // call four times a second — unmeasurable.
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const iframe = iframeRef.current;
+      if (iframe === null) return;
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument;
+      if (win === null || doc === null) return;
+
+      // Three guards on "is the iframe document actually ready to
+      // measure":
+      //
+      // 1. ``readyState === "complete"`` — DOMContentLoaded + every
+      //    subresource has loaded. Before this, the document's
+      //    ``scrollHeight`` reflects whatever fragment has been
+      //    parsed so far, not the real height.
+      // 2. URL is not ``about:blank`` — the placeholder document a
+      //    fresh iframe shows before the real ``src`` finishes
+      //    loading. Its ``scrollHeight`` matches ``clientHeight``,
+      //    which our "scrollable <= 0 → fully read" branch would
+      //    otherwise misread as "already done".
+      // 3. URL is not empty string — same reasoning, alternate UA.
+      //
+      // Without these three, the first poll fires on the placeholder
+      // doc, ``setProgress(1)`` runs, and the consent gate unlocks
+      // before the customer has seen any of the actual proposal.
+      if (doc.readyState !== "complete") return;
+      const docUrl = doc.URL || "";
+      if (docUrl === "" || docUrl === "about:blank") return;
+
+      const root = doc.documentElement;
+      if (root === null) return;
+
+      const scrollTop = win.scrollY;
+      const clientHeight = win.innerHeight;
+      const scrollHeight = root.scrollHeight;
+      if (scrollHeight <= 0 || clientHeight <= 0) return;
+      const scrollable = Math.max(0, scrollHeight - clientHeight);
+      if (scrollable <= 0) {
+        // Document fits in the iframe — counts as fully read on
+        // first measurement.
+        setProgress(1);
+        return;
+      }
+      const fraction = (scrollTop + clientHeight) / scrollHeight;
+      setProgress((prev) =>
+        fraction > prev ? Math.min(1, fraction) : prev,
+      );
+    };
+
+    // First tick fires immediately so a fast-loading document
+    // doesn't have to wait 250 ms for the initial measurement.
+    tick();
+    const interval = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [src]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-2 text-xs ${
+          allDone
+            ? "border-success/30 bg-success/10 text-success"
+            : "border-ink-200 bg-ink-50 text-ink-700"
+        }`}
+      >
+        <span className="font-medium">
+          {allDone
+            ? tProposals("public.reading.progress.all_done")
+            : tProposals("public.reading.progress.percent", {
+                percent: Math.round(progress * 100),
+              })}
+        </span>
+        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-ink-200">
+          <div
+            className={`h-full transition-all ${
+              allDone ? "bg-success" : "bg-orange-500"
+            }`}
+            style={{ width: `${Math.round(progress * 100)}%` }}
+          />
+        </div>
+      </div>
+      <div className="overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
+        <iframe
+          ref={iframeRef}
+          src={src}
+          title={title}
+          className="h-[70vh] w-full border-0 md:h-[780px]"
+        />
+      </div>
     </div>
   );
 }

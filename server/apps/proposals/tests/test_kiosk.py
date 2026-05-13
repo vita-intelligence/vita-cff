@@ -87,6 +87,7 @@ class TestProposalKioskSigning:
             ack_spec_signing=True,
             ack_lead_times=True,
             ack_terms=True,
+            ack_rd_terms=True,
         )
 
         assert updated.customer_signed_at is not None
@@ -177,6 +178,7 @@ class TestProposalKioskFinalize:
             ack_spec_signing=True,
             ack_lead_times=True,
             ack_terms=True,
+            ack_rd_terms=True,
         )
         with pytest.raises(KioskSignaturesPending) as exc:
             finalize_proposal_kiosk(proposal=proposal)
@@ -194,6 +196,7 @@ class TestProposalKioskFinalize:
             ack_spec_signing=True,
             ack_lead_times=True,
             ack_terms=True,
+            ack_rd_terms=True,
         )
         capture_customer_signature_on_attached_spec(
             proposal=proposal,
@@ -227,6 +230,7 @@ class TestProposalKioskFinalize:
             ack_spec_signing=True,
             ack_lead_times=True,
             ack_terms=True,
+            ack_rd_terms=True,
         )
         capture_customer_signature_on_attached_spec(
             proposal=proposal,

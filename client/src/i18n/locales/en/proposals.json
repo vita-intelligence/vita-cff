@@ -88,6 +88,13 @@
       "submit": "Sign",
       "cancel": "Cancel"
     },
+    "internal_approvals": {
+      "title": "Internal approvals",
+      "hint": "Staff-only — not shown on the customer PDF",
+      "prepared_by": "Prepared by (scientist)",
+      "director": "Approved by (director)",
+      "pending": "Not signed yet"
+    },
     "sales_person": {
       "label": "Sales person",
       "unassigned": "No sales lead",
@@ -141,7 +148,12 @@
     "delete": "Delete line",
     "delete_confirm": "Remove this product from the proposal?",
     "add_formulation": "Formulation",
+    "add_formulation_hint_approved_only": "Only projects with a director-signed specification sheet appear here.",
+    "add_formulation_empty_approved": "No projects have a director-signed specification sheet yet.",
+    "add_formulation_loading": "Loading projects…",
     "add_version": "Version",
+    "add_version_hint_approved_only": "Only the project's approved version can be quoted.",
+    "add_version_loading": "Loading versions…",
     "add_quantity": "Quantity",
     "add_cost": "Unit cost",
     "add_margin": "Margin %",
@@ -290,16 +302,20 @@
       "spec_final": "Final",
       "spec_draft": "Draft",
       "preview_label": "Document preview",
+      "download_cta": "Download PDF",
       "sign_cta": "Sign this",
       "sign_disabled_hint": "Tick every consent below before signing.",
+      "sign_disabled_sections_hint": "Scroll through every section above before signing — the progress chip turns green once you're done.",
       "resign": "Resign",
       "signed_badge": "Signed",
       "signed_on": "Signed on {date}",
       "spec_comments_cta": "Chat about this spec",
       "ack_heading": "Please confirm before signing",
-      "ack_spec_signing": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved.",
-      "ack_lead_times": "I understand that manufacturing lead times depend on raw-material availability, packaging supply, and approval timing of the spec sheets and labels.",
-      "ack_terms": "I have read the Terms and Conditions which can be found below."
+      "ack_spec_signing": "I understand that before label printing, Production Specification Sheets must be signed, and label designs must be reviewed and approved. Placing an order initiates the development phase, during which Product Specification Sheets are finalized, and label guidelines are provided to facilitate label design, review, and approval.",
+      "ack_lead_times_custom": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed with packaging approved and not before.",
+      "ack_lead_times_ready": "I understand that manufacturing lead times commence once the Product Specification Sheet(s) are signed and not before.",
+      "ack_rd_terms": "I understand that R&D, sample preparation, flavour development, reformulation, and additional iterations are governed by Vita Manufacture's Research & Development, Sampling and Formulation Terms. I understand that complimentary R&D is limited to the stated allowance, and that additional R&D samples, reformulations, flavour trials, or iterations may be chargeable.",
+      "ack_terms": "I have read the terms and Conditions which can be found below."
     },
     "sign_dialog": {
       "proposal_title": "Sign the commercial proposal",
@@ -307,6 +323,130 @@
       "subtitle": "Draw your signature to confirm you've reviewed this document. You'll sign each document separately.",
       "confirm": "Sign this document",
       "cancel": "Cancel"
+    },
+    "reading": {
+      "progress": {
+        "percent": "{percent}% read — keep scrolling",
+        "all_done": "Document read — you can sign"
+      },
+      "section": {
+        "acceptance_form": "Acceptance Form",
+        "commercial_offer": "Commercial offer letter",
+        "timelines": "Timelines",
+        "pricing": "Commercial price",
+        "conditions": "Conditions",
+        "validity_pricing": "Offer validity and pricing",
+        "raw_materials": "Raw materials and product quality",
+        "stability": "Formulation and product stability",
+        "research_development": "Research & Development and Sampling",
+        "responsibilities": "Responsibilities for product legality and labelling",
+        "terms_conditions": "Terms and conditions",
+        "appendix_one": "Appendix 1 — Research & Development, Sampling and Formulation Terms"
+      },
+      "intro": {
+        "acceptance_form": "Please review the details of your order and the prices below.",
+        "variation_note": "±10% variation may apply to the final manufactured quantity due to normal production and filling tolerances."
+      },
+      "customer": {
+        "heading": "Customer information",
+        "name": "Name",
+        "email": "Email",
+        "phone": "Phone",
+        "company": "Company name",
+        "invoice": "Invoice address",
+        "delivery": "Delivery address"
+      },
+      "offer": {
+        "ref": "Ref: – {ref} - {company}",
+        "dear": "Dear {name},",
+        "welcome": "We hereby confirm receipt of your request regarding your supplement contract manufacture, and we would like to thank you for your confidence in us.",
+        "custom_dev": "This formula would require a laboratory development phase, and its manufacturing process validated. Nevertheless, a lead time of around 2-3 weeks will be needed to:",
+        "custom_step": {
+          "materials": "Reserve relevant raw material(s) needed to manufacture your product",
+          "formulate": "Develop formulation(s) to meet required specification",
+          "validate": "Validate your formulation and its manufacturing process",
+          "samples": "Prepare some samples for your visual approval",
+          "register": "Register your product in our production database",
+          "labels": "Validate and regulatory review of your label(s)"
+        },
+        "custom_deposit": "A deposit of at least more than 30% is required to commence this process.",
+        "ready_no_dev": "This formula does not require a laboratory development phase, as its manufacturing process has been validated."
+      },
+      "timelines": {
+        "custom_intro": "The first industrial batch lead-time will be confirmed at the end of the above steps. An additional lead time of around 6 - 12 weeks has to be taken into account.",
+        "ready_intro": "A lead time of around 2 - 6 weeks has to be taken into account.",
+        "col": {
+          "phase": "Phase",
+          "duration": "Duration"
+        },
+        "phase": {
+          "development": "Development (as stated above)",
+          "materials": "Production material reception and validation",
+          "manufacturing": "Manufacturing",
+          "qa": "Quality assurance checks",
+          "delivery": "Delivery"
+        },
+        "based_on_uk": "Based on UK location"
+      },
+      "pricing": {
+        "intro": "Please find below our commercial price for the manufacture of your product(s) according to the formula agreement enclosed or attached as Product Technical Document:",
+        "col": {
+          "code": "Product code",
+          "description": "Description",
+          "quantity": "Quantity",
+          "unit_price": "Unit price ({currency})",
+          "amount_vatex": "Amount (VAT ex)",
+          "amount": "Amount"
+        },
+        "freight": "Freight (UK only):",
+        "total": "Total (VAT excluded):",
+        "tbc": "TBC"
+      },
+      "conditions": {
+        "delivery": "Delivery: DAP UK location only, EXW International",
+        "payment_label": "Payment:",
+        "payment_custom": "Prepayment for the 1st order, then 30 days net, date of invoice (submitted for acceptance by our Accounting Department)",
+        "payment_ready": "Prepayment",
+        "no_other_services": "No other services or analytical services."
+      },
+      "validity": {
+        "until": "This offer is valid until {date}.",
+        "default": "This offer is valid for 14 days.",
+        "price_changes": "Prices are subject to change due to fluctuations in raw material costs, which are beyond our control. If raw material costs increase, prices will be recalculated accordingly."
+      },
+      "raw_materials": {
+        "natural": "Made from natural components, some products may exhibit slight colour variations between batches. These variations are a natural characteristic of the materials used and do not affect the quality of our products.",
+        "batch": "Each product is assigned a unique Batch Number that is tracked through all stages of manufacturing and delivery. This ensures accuracy during production and at Quality Control checks."
+      },
+      "stability": {
+        "body": "Vita Manufacture can provide advice concerning formulation stability. If full stability testing is required, additional charges will apply. You are legally responsible for your product's formulation and stability. A \"best before\" date will be provided after the development stage as part of the label guidelines and approval process."
+      },
+      "rd": {
+        "intro": "Where a product requires formulation development, flavour development, sample preparation, reformulation, technical review, dossier preparation, or manufacturing validation, Vita Manufacture's R&D terms shall apply.",
+        "complimentary": "Complimentary Basic R&D (Free) may be included with a confirmed production order and is limited to two (2) R&D iterations per product and a maximum of two flavour options per product, where flavour development is relevant.",
+        "full": "The Full R&D Package (optional) is charged at £1,750 + VAT per product and includes up to seven (7) R&D iterations, product dossier preparation, Commercial playbook, Extensive label guidance, and Vita Manufacture expert list on client website where applicable and approved by Vita Manufacture.",
+        "diamond": "The Diamond R&D Package (optional) is charged at £3,500 + VAT per product and includes reasonable sample support within the agreed project scope, up to twelve R&D iterations, up to four flavour options, product dossier preparation, draft Product Specification Sheet, basic label guidance, expert website listing where applicable, and priority R&D scheduling where capacity allows.",
+        "additional": "Additional R&D samples, reformulations, flavour options, or iterations outside the agreed allowance may be charged at £250 + VAT per additional R&D sample or iteration per product.",
+        "reasonable": "\"Reasonable sample support\" means a commercially reasonable level of sampling and development support within the agreed product concept, formula direction, dosage format, target market, and product brief. It does not mean unlimited reformulation, unlimited flavour development, unlimited ingredient changes, unlimited dosage format changes, unlimited courier dispatches, unlimited product concepts, or unlimited SKUs.",
+        "binding": "Only the R&D scope, sample allowance, pricing, timelines, and deliverables stated in the written quotation, signed proposal, invoice, Product Specification Sheet, or written agreement shall be binding. Verbal discussions, informal assurances, or sales representations shall not amend the R&D scope unless confirmed in writing by an authorised representative of Vita Manufacture.",
+        "lead_times": "Manufacturing lead times shall not begin until the final Product Specification Sheet has been approved and signed, label requirements have been satisfied, required payments have been received, and all production-critical matters have been finalised."
+      },
+      "responsibilities": {
+        "body": "Vita Manufacture Ltd, as the manufacturer, assumes no responsibility for the legality of your product's formulation, labelling, presentation, promotion, or marketing. Your product label must not include Vita Manufacture's name or address. We strongly recommend seeking professional guidance from relevant regulatory authorities, such as: Health Food Manufacturers Association, Medicines and Healthcare Regulatory Agency, Food Standards Agency and Trading Standards."
+      },
+      "terms": {
+        "apply": "Vita Manufacture terms and conditions apply for all orders. Vita Manufacture General Terms and Conditions (T&C's) are available on",
+        "return_offer": "If you decide to contract with us, we kindly ask you to return this offer, and the formula agreement (Draft Product Specification Sheet) countersigned and dated to us. Upon receipt of these documents, planning for preparation of the samples will be confirmed.",
+        "european_regulation": "The information included in this document is established according to the current European Regulation. It's our customer's responsibility to check that the use and conditions of use of their product are conforming to their activities segment and geographical sales areas. Vita Manufacture manufactures and releases batches for further operations. The batches are produced according to ISO 22000:2018 standards, Good Manufacturing Practice (GMP) standards, the European legislation for Food Supplements and Food Safety Agency UK. For one year, as of the date of your first order, Vita Manufacture shall be the exclusive manufacturer of the products and references mentioned in this offer.",
+        "vat": "Vita Manufacture will apply VAT to all commercial products delivered to any UK address where VAT is applicable.",
+        "signoff_named": "Yours sincerely, {name} — Vita Manufacture Sales Team",
+        "signoff_fallback": "Yours sincerely, Vita Manufacture Sales Team"
+      },
+      "appendix": {
+        "intro": "Where a product requires formulation development, flavour development, sample preparation, reformulation, technical review, dossier preparation, or manufacturing validation, the Research & Development, Sampling and Formulation Terms shall apply unless otherwise agreed in writing by Vita Manufacture Limited.",
+        "alignment": "These terms are intended to ensure that the customer, Sales team, R&D team, Production team, and Quality team are fully aligned before development or manufacturing work begins.",
+        "full_terms_note": "Full R&D, Sampling and Formulation Terms are recorded against this proposal and apply once the proposal is signed. Sections include: Purpose of the R&D Phase, R&D Packages, Additional Samples and Extra Iterations, Customer Feedback and Approval, Reasonable Sample Support, Material Formula Changes, Technical / Regulatory / Manufacturing Limitations, R&D Timelines, Sample Approval and Production Scale-Up, Ownership of Formulations and R&D Work, Cancellation / Delay / Non-Proceeding, and Sales Representations."
+      }
     }
   }
 }

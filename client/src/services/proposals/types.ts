@@ -219,16 +219,47 @@ export interface ProposalKioskSpecDto {
  *  signature state. The client renders one signature pad per
  *  document and the finalize button flips the whole set atomically
  *  once every ``has_signature`` is true. */
+export interface ProposalKioskLineDto {
+  readonly id: string;
+  readonly product_code: string;
+  readonly description: string;
+  readonly quantity: number;
+  readonly unit_price: string | null;
+  readonly subtotal: string | null;
+}
+
 export interface ProposalKioskDto {
   readonly id: string;
   readonly code: string;
   readonly status: string;
+  /** ``custom`` triggers the lab-dev letter + Appendix 1; ``ready_to_go``
+   *  uses the shorter terms block + adds the Freight / Total rows. */
+  readonly template_type: "custom" | "ready_to_go";
+  /** Effective sales-person name (proposal-level override wins,
+   *  otherwise inherited from the parent project's ``sales_person``).
+   *  Empty string when neither slot is set — the kiosk falls back
+   *  to a generic team label in that case. */
+  readonly sales_person_name: string;
   readonly customer_company: string;
   readonly customer_name: string;
+  readonly customer_email: string;
+  readonly customer_phone: string;
+  readonly invoice_address: string;
+  readonly delivery_address: string;
   readonly reference: string;
   readonly dear_name: string;
   readonly currency: string;
+  readonly quantity: number;
+  readonly unit_price: string | null;
+  readonly freight_amount: string | null;
+  readonly subtotal: string | null;
   readonly total_excl_vat: string | null;
+  readonly valid_until: string | null;
+  /** Per-line pricing rows — driven by ``ProposalLine`` rows on the
+   *  proposal, ordered by ``display_order``. Empty when the proposal
+   *  was created before the multi-line refactor; the kiosk reading
+   *  panel falls back to a single header-level row in that case. */
+  readonly lines: readonly ProposalKioskLineDto[];
   readonly customer_signed_at: string | null;
   readonly has_signature: boolean;
   /** Customer-facing acknowledgement tickboxes — three required
@@ -238,5 +269,9 @@ export interface ProposalKioskDto {
   readonly ack_spec_signing: boolean;
   readonly ack_lead_times: boolean;
   readonly ack_terms: boolean;
+  /** Custom-template-only — the R&D / Sampling Terms acknowledgement.
+   *  Ready-to-Go proposals don't show this row and the value stays
+   *  ``false`` for them; the backend only enforces it on Custom. */
+  readonly ack_rd_terms: boolean;
   readonly attached_specs: readonly ProposalKioskSpecDto[];
 }

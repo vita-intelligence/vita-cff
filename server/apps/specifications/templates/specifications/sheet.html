@@ -254,7 +254,9 @@
           <div class="sign-row">
             <span class="role">Prepared By:</span>
             {% if signatures.prepared_by %}
-              <img src="{{ signatures.prepared_by.image }}" alt="Prepared-by signature" style="max-height: 20mm;">
+              {% if signatures.prepared_by.image %}
+                <img src="{{ signatures.prepared_by.image }}" alt="Prepared-by signature" style="max-height: 20mm;">
+              {% endif %}
               <div style="font-size: 9pt;">{{ signatures.prepared_by.name|default:"" }} · {{ signatures.prepared_by.signed_at|slice:":10" }}</div>
             {% else %}
               <div class="image-slot"></div>
@@ -263,7 +265,9 @@
           <div class="sign-row">
             <span class="role">Director/Commercial Director:</span>
             {% if signatures.director %}
-              <img src="{{ signatures.director.image }}" alt="Director signature" style="max-height: 20mm;">
+              {% if signatures.director.image %}
+                <img src="{{ signatures.director.image }}" alt="Director signature" style="max-height: 20mm;">
+              {% endif %}
               <div style="font-size: 9pt;">{{ signatures.director.name|default:"" }} · {{ signatures.director.signed_at|slice:":10" }}</div>
             {% else %}
               <div class="image-slot"></div>

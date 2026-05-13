@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
-  Download,
   Link2,
   Pencil,
   Plus,
@@ -16,7 +15,7 @@ import {
   UserRound,
   X,
 } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -146,6 +145,13 @@ export function ProposalSheetView({
 
   const proposal = proposalQuery.data;
 
+  // ``accepted`` and ``rejected`` are terminal: the proposal is the
+  // signed record (accepted) or the closed-loss audit (rejected). No
+  // edits, no line CRUD, no deletion — the backend enforces the same
+  // guard so a crafted request can't bypass the UI.
+  const isTerminal =
+    proposal.status === "accepted" || proposal.status === "rejected";
+
   const handleTransition = async (
     nextStatus: ProposalStatus,
     signatureImage?: string,
@@ -270,58 +276,37 @@ export function ProposalSheetView({
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-2">
-        <ProposalSalesPersonMenu
-          orgId={orgId}
-          proposal={proposal}
-          onError={setError}
-          tProposals={tProposals}
-          tErrors={tErrors}
-        />
+        {isTerminal ? null : (
+          <ProposalSalesPersonMenu
+            orgId={orgId}
+            proposal={proposal}
+            onError={setError}
+            tProposals={tProposals}
+            tErrors={tErrors}
+          />
+        )}
         {proposal.public_token ? (
           <ShareKioskLinkButton
             token={proposal.public_token}
             tProposals={tProposals}
           />
         ) : null}
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => setEditOpen(true)}
-          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
-        >
-          <Pencil className="h-4 w-4" />
-          {tProposals("detail.edit")}
-        </Button>
-        <Button
-          type="button"
-          onClick={async () => {
-            // Fetch the PDF through apiClient (cookies attached)
-            // instead of a cross-origin <a href download>, which
-            // silently fails when the browser refuses to send the
-            // auth cookie to the API origin.
-            try {
-              const response = await apiClient.get<Blob>(
-                proposalsEndpoints.pdf(orgId, proposalId),
-                { responseType: "blob" },
-              );
-              const blob = response.data;
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement("a");
-              a.href = url;
-              a.download = `${proposal.code || "proposal"}.pdf`;
-              document.body.appendChild(a);
-              a.click();
-              a.remove();
-              URL.revokeObjectURL(url);
-            } catch {
-              setError("download_failed");
-            }
-          }}
-          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 transition-colors hover:bg-orange-600"
-        >
-          <Download className="h-4 w-4" />
-          {tProposals("detail.download_pdf")}
-        </Button>
+        {isTerminal ? null : (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setEditOpen(true)}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+          >
+            <Pencil className="h-4 w-4" />
+            {tProposals("detail.edit")}
+          </Button>
+        )}
+        {/* PDF / docx download buttons removed — proposals are
+            view-only in the browser now. Customers who need a PDF
+            copy can save the rendered page via the browser's
+            Print to PDF, which produces a cleaner export than
+            docx2pdf ever did. */}
       </div>
 
       {editOpen ? (
@@ -341,7 +326,10 @@ export function ProposalSheetView({
         orgId={orgId}
         proposalId={proposalId}
         lines={proposal.lines}
+        locked={isTerminal}
       />
+
+      <InternalApprovalsPanel proposal={proposal} tProposals={tProposals} />
 
       {missingFields ? (
         <MissingFieldsModal
@@ -409,6 +397,22 @@ export function ProposalSheetView({
  * here so the rendered PDF matches what sales normally types by hand
  * into the Word file.
  */
+
+//: Spec-sheet lifecycle states that mean "director has signed off"
+//: at some point — the only sheets that should ever be bindable to a
+//: proposal (either as the proposal-level bundled sheet, or as a
+//: per-line attachment). ``rejected`` is deliberately omitted: a
+//: rejection can land before any director signature, so the status
+//: alone doesn't prove the sheet was ever approved. Backend mirrors
+//: this set in ``apps.proposals.services`` so a stale client cannot
+//: bypass the filter by submitting an unapproved sheet id directly.
+const SHEET_DIRECTOR_SIGNED: ReadonlySet<string> = new Set([
+  "approved",
+  "sent",
+  "accepted",
+]);
+
+
 function EditProposalPanel({
   orgId,
   proposal,
@@ -708,14 +712,20 @@ function EditProposalPanel({
             {
               // Legacy OneToOne bundled-spec slot. Scope strictly to
               // sheets attached to the proposal's primary formulation
-              // so scientists never see sheets from unrelated projects
-              // bleed in. The currently-bound sheet stays visible even
-              // if its formulation changed after binding — avoids the
-              // optics of silent data loss.
+              // AND already director-signed (status >= approved) so
+              // a draft sheet still being iterated on can never be
+              // bundled into a customer-facing quote. The currently-
+              // bound sheet stays visible even if its formulation
+              // changed after binding — avoids the optics of silent
+              // data loss.
               (() => {
                 const primary = proposal.formulation_id;
                 const scoped = primary
-                  ? specSheets.filter((s) => s.formulation_id === primary)
+                  ? specSheets.filter(
+                      (s) =>
+                        s.formulation_id === primary &&
+                        SHEET_DIRECTOR_SIGNED.has(s.status),
+                    )
                   : [];
                 const bound = form.specification_sheet_id
                   ? specSheets.find(
@@ -884,10 +894,16 @@ function ProposalLinesPanel({
   orgId,
   proposalId,
   lines,
+  locked = false,
 }: {
   orgId: string;
   proposalId: string;
   lines: readonly ProposalLineDto[];
+  /** Terminal-state lock: hide Add / Trash / inline-edit affordances
+   *  on accepted or rejected proposals so the signed bundle stays
+   *  byte-identical to what the customer received. The backend
+   *  enforces the same rule. */
+  locked?: boolean;
 }) {
   const tProposals = useTranslations("proposals");
   const addMutation = useAddProposalLine(orgId, proposalId);
@@ -971,18 +987,20 @@ function ProposalLinesPanel({
             {tProposals("lines.subtitle")}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={() => setAddOpen((v) => !v)}
-          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-        >
-          <Plus className="h-4 w-4" />
-          {tProposals("lines.add")}
-        </Button>
+        {locked ? null : (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setAddOpen((v) => !v)}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+          >
+            <Plus className="h-4 w-4" />
+            {tProposals("lines.add")}
+          </Button>
+        )}
       </header>
 
-      {addOpen ? (
+      {addOpen && !locked ? (
         <AddLineForm
           orgId={orgId}
           onCancel={() => setAddOpen(false)}
@@ -1035,6 +1053,7 @@ function ProposalLinesPanel({
                       onCommit={(v) =>
                         handleField(line, "product_code", v)
                       }
+                      readOnly={locked}
                     />
                   </td>
                   <td className="px-2 py-2">
@@ -1043,6 +1062,7 @@ function ProposalLinesPanel({
                       onCommit={(v) =>
                         handleField(line, "description", v)
                       }
+                      readOnly={locked}
                     />
                   </td>
                   <td className="px-2 py-2 text-right">
@@ -1052,6 +1072,7 @@ function ProposalLinesPanel({
                       min={1}
                       onCommit={(v) => handleField(line, "quantity", v)}
                       align="right"
+                      readOnly={locked}
                     />
                   </td>
                   <td className="px-2 py-2 text-right">
@@ -1061,6 +1082,7 @@ function ProposalLinesPanel({
                       step="0.0001"
                       onCommit={(v) => handleField(line, "unit_cost", v)}
                       align="right"
+                      readOnly={locked}
                     />
                   </td>
                   <td className="px-2 py-2 text-right">
@@ -1075,6 +1097,7 @@ function ProposalLinesPanel({
                         handleField(line, "margin_percent", v)
                       }
                       align="right"
+                      readOnly={locked}
                     />
                   </td>
                   <td className="px-2 py-2 text-right tabular-nums text-ink-700">
@@ -1105,24 +1128,27 @@ function ProposalLinesPanel({
                         }
                       }}
                       tProposals={tProposals}
+                      disabled={locked}
                     />
                   </td>
                   <td className="px-2 py-2 text-right">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!confirm(tProposals("lines.delete_confirm"))) return;
-                        try {
-                          await deleteMutation.mutateAsync(line.id);
-                        } catch {
-                          setRowError("delete_failed");
-                        }
-                      }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
-                      aria-label={tProposals("lines.delete")}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    {locked ? null : (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!confirm(tProposals("lines.delete_confirm"))) return;
+                          try {
+                            await deleteMutation.mutateAsync(line.id);
+                          } catch {
+                            setRowError("delete_failed");
+                          }
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
+                        aria-label={tProposals("lines.delete")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1170,11 +1196,13 @@ function LineSpecPicker({
   specs,
   onChange,
   tProposals,
+  disabled = false,
 }: {
   line: ProposalLineDto;
   specs: readonly SpecificationSheetDto[];
   onChange: (sheetId: string | null) => void;
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
+  disabled?: boolean;
 }) {
   // Strict scoping: only sheets pinned to the same formulation as
   // this line's snapshot. No fallback to the full list — scientists
@@ -1189,8 +1217,16 @@ function LineSpecPicker({
   // and can deliberately clear or change it — silently hiding it
   // would look like data loss.
   const relevant = useMemo(() => {
+    // Only director-signed sheets are quotable — a draft spec still
+    // being iterated on shouldn't be bindable to a customer-facing
+    // proposal line. The backend mirrors this rule and refuses
+    // unapproved sheet bindings.
     const scoped = line.formulation_id
-      ? specs.filter((s) => s.formulation_id === line.formulation_id)
+      ? specs.filter(
+          (s) =>
+            s.formulation_id === line.formulation_id &&
+            SHEET_DIRECTOR_SIGNED.has(s.status),
+        )
       : [];
     const boundId = line.specification_sheet_id;
     if (boundId && !scoped.some((s) => s.id === boundId)) {
@@ -1204,7 +1240,12 @@ function LineSpecPicker({
     <select
       value={line.specification_sheet_id ?? ""}
       onChange={(e) => onChange(e.target.value || null)}
-      className="w-full min-w-[180px] cursor-pointer rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+      disabled={disabled}
+      className={`w-full min-w-[180px] rounded-md px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none ${
+        disabled
+          ? "cursor-default bg-ink-50 text-ink-700"
+          : "cursor-pointer bg-ink-0 focus:ring-2 focus:ring-orange-400"
+      }`}
     >
       <option value="">{tProposals("lines.no_spec")}</option>
       {relevant.map((sheet) => {
@@ -1234,6 +1275,7 @@ function LineInput({
   step,
   min,
   align = "left",
+  readOnly = false,
 }: {
   defaultValue: string;
   onCommit: (value: string) => void;
@@ -1241,6 +1283,7 @@ function LineInput({
   step?: string;
   min?: number;
   align?: "left" | "right";
+  readOnly?: boolean;
 }) {
   const [value, setValue] = useState(defaultValue);
   useEffect(() => {
@@ -1252,13 +1295,16 @@ function LineInput({
       step={step}
       min={min}
       value={value}
+      readOnly={readOnly}
       onChange={(e) => setValue(e.target.value)}
       onBlur={() => {
-        if (value !== defaultValue) onCommit(value);
+        if (!readOnly && value !== defaultValue) onCommit(value);
       }}
-      className={`w-full rounded-md bg-ink-0 px-2 py-1 text-sm ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 ${
-        align === "right" ? "text-right tabular-nums" : ""
-      }`}
+      className={`w-full rounded-md px-2 py-1 text-sm ring-1 ring-inset ring-ink-200 outline-none ${
+        readOnly
+          ? "cursor-default bg-ink-50 text-ink-700"
+          : "bg-ink-0 focus:ring-2 focus:ring-orange-400"
+      } ${align === "right" ? "text-right tabular-nums" : ""}`}
     />
   );
 }
@@ -1303,18 +1349,34 @@ function AddLineForm({
   // creators land on a plausible quote without extra typing.
   const [margin, setMargin] = useState<string>("30");
 
+  // Only projects with a director-signed spec sheet (which sets
+  // ``approved_version_number``) are sellable. Mirrors the gate the
+  // backend enforces in ``add_proposal_line``; filtering here means
+  // the dropdown never offers an option the server would refuse.
   const formulations = useMemo(
-    () => formulationsQuery.data?.pages.flatMap((p) => p.results) ?? [],
+    () =>
+      (formulationsQuery.data?.pages.flatMap((p) => p.results) ?? []).filter(
+        (f) => f.approved_version_number !== null,
+      ),
     [formulationsQuery.data],
   );
-  const versions: readonly FormulationVersionDto[] =
-    versionsQuery.data ?? [];
+  const pickedFormulation = formulations.find((f) => f.id === formulationId);
+  const approvedVersionNumber =
+    pickedFormulation?.approved_version_number ?? null;
+  const versions: readonly FormulationVersionDto[] = (
+    versionsQuery.data ?? []
+  ).filter((v) => v.version_number === approvedVersionNumber);
 
+  // Auto-select the single approved version once it lands — there's
+  // only ever one entry in ``versions`` under the new model, so the
+  // user shouldn't have to click the version dropdown manually.
   useEffect(() => {
-    if (versions.length > 0 && !versions.some((v) => v.id === versionId)) {
+    if (versions.length === 0) {
+      if (versionId !== "") setVersionId("");
+      return;
+    }
+    if (!versions.some((v) => v.id === versionId)) {
       setVersionId(versions[0]!.id);
-    } else if (versions.length === 0 && versionId !== "") {
-      setVersionId("");
     }
   }, [versions, versionId]);
 
@@ -1327,7 +1389,8 @@ function AddLineForm({
           <select
             value={formulationId}
             onChange={(e) => setFormulationId(e.target.value)}
-            className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            disabled={formulationsQuery.isLoading || formulations.length === 0}
+            className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
           >
             <option value="">—</option>
             {formulations.map((f) => (
@@ -1336,12 +1399,23 @@ function AddLineForm({
               </option>
             ))}
           </select>
+          <span className="mt-1 text-[11px] text-ink-500">
+            {formulationsQuery.isLoading
+              ? tProposals("lines.add_formulation_loading")
+              : formulations.length === 0
+                ? tProposals("lines.add_formulation_empty_approved")
+                : tProposals("lines.add_formulation_hint_approved_only")}
+          </span>
         </Field>
         <Field label={tProposals("lines.add_version")}>
           <select
             value={versionId}
             onChange={(e) => setVersionId(e.target.value)}
-            disabled={!formulationId || versions.length === 0}
+            disabled={
+              !formulationId ||
+              versionsQuery.isLoading ||
+              versions.length === 0
+            }
             className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
           >
             {versions.map((v) => (
@@ -1351,6 +1425,11 @@ function AddLineForm({
               </option>
             ))}
           </select>
+          <span className="mt-1 text-[11px] text-ink-500">
+            {formulationId && versionsQuery.isLoading
+              ? tProposals("lines.add_version_loading")
+              : tProposals("lines.add_version_hint_approved_only")}
+          </span>
         </Field>
         <Field label={tProposals("lines.add_quantity")}>
           <input
@@ -1900,5 +1979,93 @@ function ProposalSalesPersonMenu({
         </div>
       ) : null}
     </div>
+  );
+}
+
+
+/**
+ * Internal-only sign-off summary. Surfaces who pressed the
+ * scientist + director signature buttons on this proposal and when
+ * they did so — strictly for staff browsing the proposal in-app.
+ *
+ * The same data is intentionally NOT rendered into the customer-
+ * facing PDF (the kiosk preview / download stream): the "Internal
+ * approvals" block used to live at the foot of every generated PDF
+ * but partners flagged it as noise — the customer doesn't need to
+ * see internal approval chops. Keeping the panel on the web view
+ * means commercial reviewers can still glance at it without
+ * leaking the signatures into the document the customer sees.
+ *
+ * Renders nothing when neither slot has been signed off — keeps
+ * fresh draft proposals from growing an empty panel.
+ */
+function InternalApprovalsPanel({
+  proposal,
+  tProposals,
+}: {
+  proposal: ProposalDto;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const format = useFormatter();
+  const { prepared_by: preparedBy, director } = proposal;
+  if (!preparedBy && !director) return null;
+
+  const slots: ReadonlyArray<{
+    readonly key: "prepared_by" | "director";
+    readonly label: string;
+    readonly entry: { name: string; signed_at: string } | null;
+  }> = [
+    {
+      key: "prepared_by",
+      label: tProposals("detail.internal_approvals.prepared_by"),
+      entry: preparedBy,
+    },
+    {
+      key: "director",
+      label: tProposals("detail.internal_approvals.director"),
+      entry: director,
+    },
+  ];
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center justify-between gap-3 border-b border-ink-100 pb-3">
+        <h2 className="text-sm font-semibold text-ink-1000">
+          {tProposals("detail.internal_approvals.title")}
+        </h2>
+        <span className="text-[11px] text-ink-500">
+          {tProposals("detail.internal_approvals.hint")}
+        </span>
+      </header>
+      <dl className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {slots.map(({ key, label, entry }) => (
+          <div
+            key={key}
+            className="rounded-xl bg-ink-50 px-3 py-2 ring-1 ring-inset ring-ink-200"
+          >
+            <dt className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              {label}
+            </dt>
+            {entry ? (
+              <dd className="mt-1 flex flex-col gap-0.5">
+                <span className="text-sm font-medium text-ink-1000">
+                  {entry.name}
+                </span>
+                <span className="text-[11px] text-ink-500">
+                  {format.dateTime(new Date(entry.signed_at), {
+                    dateStyle: "medium",
+                    timeStyle: "short",
+                  })}
+                </span>
+              </dd>
+            ) : (
+              <dd className="mt-1 text-xs text-ink-400">
+                {tProposals("detail.internal_approvals.pending")}
+              </dd>
+            )}
+          </div>
+        ))}
+      </dl>
+    </section>
   );
 }
