@@ -28,7 +28,8 @@ from apps.formulations.constants import (
     EXCIPIENT_LABEL_SILICA,
     capsule_size_by_key,
 )
-from apps.formulations.models import FormulationVersion
+from apps.formulations.models import FormulationVersion, ProjectStatus
+from apps.formulations.services import _maybe_advance_project_status
 from apps.organizations.models import Organization
 from apps.trial_batches.models import BatchSizeMode, TrialBatch
 
@@ -153,6 +154,14 @@ def create_batch(
         action="trial_batch.create",
         target=batch,
         after=snapshot(batch),
+    )
+    # First trial batch on a concept / in-development project moves
+    # the roadmap chip to ``pilot``. Forward-only; never demotes from
+    # approved and never touches discontinued.
+    _maybe_advance_project_status(
+        formulation=version.formulation,
+        target_status=ProjectStatus.PILOT.value,
+        actor=actor,
     )
     return batch
 

@@ -16,6 +16,7 @@ from apps.catalogues.tests.factories import (
     ItemFactory,
     raw_materials_catalogue,
 )
+from apps.formulations.models import ProjectStatus
 from apps.formulations.services import (
     replace_lines,
     save_version,
@@ -191,6 +192,52 @@ class TestCreateBatch:
                 formulation_version_id=foreign.id,
                 batch_size_units=500,
             )
+
+    def test_first_batch_advances_project_to_pilot(self) -> None:
+        """First trial batch flips the parent formulation's roadmap
+        chip to ``pilot``. Skip-ahead is fine: this fixture's project
+        sits at ``in_development`` after lines were added, so we
+        cover both single-step and forward-only behaviour."""
+
+        org = OrganizationFactory()
+        version = _seeded_capsule_version(org)
+        # Lines + save_version already pushed the chip off ``concept``.
+        version.formulation.refresh_from_db()
+        assert (
+            version.formulation.project_status
+            == ProjectStatus.IN_DEVELOPMENT.value
+        )
+
+        create_batch(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+            batch_size_units=500,
+        )
+
+        version.formulation.refresh_from_db()
+        assert (
+            version.formulation.project_status == ProjectStatus.PILOT.value
+        )
+
+    def test_batch_on_approved_project_does_not_demote(self) -> None:
+        org = OrganizationFactory()
+        version = _seeded_capsule_version(org)
+        formulation = version.formulation
+        formulation.project_status = ProjectStatus.APPROVED.value
+        formulation.save(update_fields=["project_status"])
+
+        create_batch(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+            batch_size_units=500,
+        )
+
+        formulation.refresh_from_db()
+        # Forward-only: a later trial batch must not regress an
+        # already-approved project.
+        assert formulation.project_status == ProjectStatus.APPROVED.value
 
     def test_rejects_zero_batch_size(self) -> None:
         org = OrganizationFactory()

@@ -95,6 +95,7 @@ from apps.formulations.models import (
     Formulation,
     FormulationLine,
     FormulationVersion,
+    ProjectStatus,
 )
 from apps.organizations.models import Membership, Organization
 
@@ -3091,6 +3092,15 @@ def replace_lines(
         before={"lines": before_lines},
         after={"lines": _lines_snapshot(formulation)},
     )
+    # Recipe work has begun: first non-empty line set auto-advances
+    # ``concept`` → ``in_development``. Wiping the line list later
+    # leaves the chip alone (forward-only).
+    if created:
+        _maybe_advance_project_status(
+            formulation=formulation,
+            target_status=ProjectStatus.IN_DEVELOPMENT.value,
+            actor=actor,
+        )
     return created
 
 
@@ -3714,6 +3724,23 @@ def build_ingredient_declaration(
         for row in excipients.rows:
             if row.mg is None or row.mg <= 0:
                 continue
+            # Suppress placeholder rows that emit when the scientist
+            # hasn't picked specific items for a band — the math
+            # layer reserves the mass in ``flavour_total`` for the
+            # gummy-base remainder calc, but a bare "Glazing Agent"
+            # / "Premix Sweetener" line on the customer-facing label
+            # is just internal terminology with no real ingredient
+            # behind it. Per-pick rows (``<band>:<item_id>``) keep
+            # flowing through — they render as the picked ingredient
+            # names and merge under their EU ``use_as`` group.
+            if row.slug in {
+                "premix_sweetener",
+                "glazing",
+                "acidity",
+                "flavouring",
+                "colour",
+            }:
+                continue
             entries.append(
                 IngredientDeclarationEntry(
                     label=row.label,
@@ -4304,6 +4331,77 @@ def get_version(
     return version
 
 
+#: Forward-only ranking for the project roadmap chip. Statuses not in
+#: this map (``discontinued``) are excluded from auto-advance: that
+#: state has to be a deliberate operator decision, never an
+#: implicit side effect.
+_PROJECT_STATUS_RANK: dict[str, int] = {
+    ProjectStatus.CONCEPT.value: 0,
+    ProjectStatus.IN_DEVELOPMENT.value: 1,
+    ProjectStatus.PILOT.value: 2,
+    ProjectStatus.APPROVED.value: 3,
+}
+
+
+def _maybe_advance_project_status(
+    *,
+    formulation: Formulation,
+    target_status: str,
+    actor: Any,
+) -> bool:
+    """Forward-only auto-advance for the project roadmap chip.
+
+    Pushes ``formulation.project_status`` to ``target_status`` only
+    when both the current and target sit in
+    :data:`_PROJECT_STATUS_RANK` and the target ranks strictly higher
+    than the current value. Returns ``True`` when an advance fired
+    (so callers can short-circuit a second audit row if they want).
+
+    The auto layer is intentionally narrow:
+
+    * **Forward only.** Never demotes. A scientist who manually
+      bumped a project to ``approved`` for testing won't see it slip
+      back to ``pilot`` because a trial batch was created later.
+    * **Skips discontinued.** A discontinued project ignores every
+      auto-advance call — restarting it is an explicit re-status
+      decision, not a side effect of someone touching a line.
+    * **Skip-ahead allowed.** First trial batch on a ``concept``
+      project jumps straight to ``pilot`` (target is what matters,
+      not the intervening steps). Same rule for
+      ``set_approved_version`` going ``concept`` → ``approved``.
+
+    Audit row uses the ``formulation.auto_advance_status`` action so
+    operators can filter / suppress it separately from manual
+    transitions in the audit log.
+    """
+
+    current = formulation.project_status
+    if current == ProjectStatus.DISCONTINUED.value:
+        return False
+    if target_status not in _PROJECT_STATUS_RANK:
+        return False
+    if current not in _PROJECT_STATUS_RANK:
+        return False
+    if _PROJECT_STATUS_RANK[target_status] <= _PROJECT_STATUS_RANK[current]:
+        return False
+
+    before = snapshot(formulation)
+    formulation.project_status = target_status
+    formulation.updated_by = actor
+    formulation.save(
+        update_fields=["project_status", "updated_by", "updated_at"]
+    )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.auto_advance_status",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return True
+
+
 @transaction.atomic
 def set_approved_version(
     *,
@@ -4317,6 +4415,12 @@ def set_approved_version(
     want to un-approve without replacing with a new number. When a
     number is provided we verify it corresponds to an existing version
     of *this* formulation so we never point at a sibling's snapshot.
+
+    Also drives the auto-advance to ``approved`` on the project
+    roadmap chip when a non-null version is set — first time the
+    pointer is wired, the project advances from concept / in dev /
+    pilot to approved (forward-only; nothing happens if the project
+    is already approved or has been manually discontinued).
     """
 
     if version_number is not None:
@@ -4340,6 +4444,18 @@ def set_approved_version(
         before=before,
         after=snapshot(formulation),
     )
+
+    # Clearing the pointer (None) is intentionally a no-op on the
+    # roadmap chip — auto-advance never regresses, so an unapprove
+    # has to be paired with a manual status edit if the operator
+    # wants to demote the project too.
+    if version_number is not None:
+        _maybe_advance_project_status(
+            formulation=formulation,
+            target_status=ProjectStatus.APPROVED.value,
+            actor=actor,
+        )
+
     return formulation
 
 

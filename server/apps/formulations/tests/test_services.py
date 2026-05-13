@@ -11,6 +11,7 @@ from apps.catalogues.tests.factories import (
     raw_materials_catalogue,
 )
 from apps.formulations.models import FormulationLine
+from apps.formulations.models import ProjectStatus
 from apps.formulations.services import (
     CloneTargetIsSource,
     CloneTargetNotFound,
@@ -34,6 +35,7 @@ from apps.formulations.services import (
     replace_lines,
     rollback_to_version,
     save_version,
+    set_approved_version,
     update_formulation,
 )
 from apps.formulations.tests.factories import FormulationFactory
@@ -950,4 +952,126 @@ class TestCloneFormulation:
                 actor=org.created_by,
                 mode='nope',
             )
+
+
+class TestProjectStatusAutoAdvance:
+    """Auto-advance rules for the project roadmap chip.
+
+    Forward-only: every test pinpoints one trigger and verifies that
+    the status only moves when the rule says it should — never
+    backwards, never to ``discontinued``, never from ``discontinued``.
+    """
+
+    def _seed_item(self, org):
+        return ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": 1.0, "type": "Vitamin"},
+        )
+
+    def test_first_line_advances_concept_to_in_development(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        item = self._seed_item(org)
+        assert formulation.project_status == ProjectStatus.CONCEPT.value
+
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
+        )
+
+        formulation.refresh_from_db()
+        assert (
+            formulation.project_status == ProjectStatus.IN_DEVELOPMENT.value
+        )
+
+    def test_replace_lines_with_empty_list_does_not_advance(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[],
+        )
+
+        formulation.refresh_from_db()
+        assert formulation.project_status == ProjectStatus.CONCEPT.value
+
+    def test_replace_lines_never_demotes_from_higher_status(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(
+            organization=org,
+            project_status=ProjectStatus.PILOT.value,
+        )
+        item = self._seed_item(org)
+
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
+        )
+
+        formulation.refresh_from_db()
+        # Already past in_development → forward-only rule keeps pilot.
+        assert formulation.project_status == ProjectStatus.PILOT.value
+
+    def test_set_approved_version_advances_concept_to_approved(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        version = save_version(formulation=formulation, actor=org.created_by)
+
+        set_approved_version(
+            formulation=formulation,
+            actor=org.created_by,
+            version_number=version.version_number,
+        )
+
+        formulation.refresh_from_db()
+        assert formulation.project_status == ProjectStatus.APPROVED.value
+
+    def test_set_approved_version_none_does_not_advance(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(
+            organization=org,
+            project_status=ProjectStatus.PILOT.value,
+        )
+
+        set_approved_version(
+            formulation=formulation,
+            actor=org.created_by,
+            version_number=None,
+        )
+
+        formulation.refresh_from_db()
+        # Clearing the pointer is intentionally a no-op on the chip.
+        assert formulation.project_status == ProjectStatus.PILOT.value
+
+    def test_discontinued_is_never_auto_advanced(self) -> None:
+        org = OrganizationFactory()
+        formulation = FormulationFactory(
+            organization=org,
+            project_status=ProjectStatus.DISCONTINUED.value,
+        )
+        item = self._seed_item(org)
+        version = save_version(formulation=formulation, actor=org.created_by)
+
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(item.id), "label_claim_mg": "100"}],
+        )
+        set_approved_version(
+            formulation=formulation,
+            actor=org.created_by,
+            version_number=version.version_number,
+        )
+
+        formulation.refresh_from_db()
+        # Restarting a discontinued project is an explicit operator
+        # decision — neither line edits nor approval pointer touches
+        # should resurrect it automatically.
+        assert (
+            formulation.project_status == ProjectStatus.DISCONTINUED.value
+        )
 
