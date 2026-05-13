@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
 from django.db import transaction
-from django.db.models import Max, QuerySet
+from django.db.models import Max, Q, QuerySet
 
 from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
@@ -1937,7 +1937,7 @@ _FORMULATION_LIST_PREFETCH: tuple[str, ...] = (
 
 
 def list_formulations(
-    *, organization: Organization
+    *, organization: Organization, search: str | None = None
 ) -> QuerySet[Formulation]:
     """List formulations for an organisation, prefetched for the read
     serializer's echo blocks.
@@ -1947,14 +1947,25 @@ def list_formulations(
     list a 50-item page fires ~1,800 queries and stalls the connection
     pool under modest concurrent load. With the prefetch the page
     settles to a handful of queries regardless of result-set size.
+
+    ``search`` is an optional, whitespace-trimmed substring matched
+    case-insensitively against both ``name`` and ``code``. Empty / blank
+    values are ignored so the caller can forward the query parameter
+    unconditionally.
     """
 
-    return (
+    queryset = (
         Formulation.objects.filter(organization=organization)
         .select_related("sales_person", "organization")
         .prefetch_related(*_FORMULATION_LIST_PREFETCH)
-        .order_by("-updated_at")
     )
+    if search:
+        needle = search.strip()
+        if needle:
+            queryset = queryset.filter(
+                Q(name__icontains=needle) | Q(code__icontains=needle)
+            )
+    return queryset.order_by("-updated_at")
 
 
 def get_formulation(

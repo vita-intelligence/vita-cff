@@ -134,6 +134,36 @@ class TestListFormulations:
         names = {f.name for f in results}
         assert names == {"A one", "A two"}
 
+    def test_search_matches_name_case_insensitive(self) -> None:
+        org = OrganizationFactory()
+        FormulationFactory(organization=org, name="Valley Fat Burner", code="MA-1")
+        FormulationFactory(organization=org, name="Mountain Vitality", code="MA-2")
+
+        names = {
+            f.name
+            for f in list_formulations(organization=org, search="valley")
+        }
+        assert names == {"Valley Fat Burner"}
+
+    def test_search_matches_code(self) -> None:
+        org = OrganizationFactory()
+        FormulationFactory(organization=org, name="Alpha", code="MA-200724")
+        FormulationFactory(organization=org, name="Beta", code="MB-100999")
+
+        codes = {
+            f.code
+            for f in list_formulations(organization=org, search="200724")
+        }
+        assert codes == {"MA-200724"}
+
+    def test_blank_search_is_ignored(self) -> None:
+        org = OrganizationFactory()
+        FormulationFactory(organization=org, name="One")
+        FormulationFactory(organization=org, name="Two")
+
+        results = list(list_formulations(organization=org, search="   "))
+        assert {f.name for f in results} == {"One", "Two"}
+
 
 class TestGetFormulation:
     def test_raises_when_in_other_org(self) -> None:

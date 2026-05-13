@@ -40,6 +40,7 @@ export async function fetchFormulationsPage(
   const params: Record<string, string> = {};
   if (args.ordering) params.ordering = args.ordering;
   if (args.pageSize) params.page_size = String(args.pageSize);
+  if (args.search && args.search.trim()) params.search = args.search.trim();
   const { data } = await apiClient.get<PaginatedFormulationsDto>(
     formulationsEndpoints.list(orgId),
     { params },

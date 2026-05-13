@@ -126,6 +126,7 @@ export interface PaginatedFormulationsDto {
 export interface FormulationsListQuery {
   readonly ordering?: string;
   readonly pageSize?: number;
+  readonly search?: string;
 }
 
 /**

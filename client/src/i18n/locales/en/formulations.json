@@ -4,6 +4,10 @@
   "new_formulation": "New formulation",
   "no_formulations": "No formulations yet",
   "no_formulations_hint": "Every product starts here. Click New formulation to create the first one.",
+  "search_placeholder": "Search by name or code…",
+  "search_clear": "Clear search",
+  "no_matches": "No projects match \"{query}\"",
+  "no_matches_hint": "Adjust the search or clear it to see every project.",
   "columns": {
     "name": "Name",
     "code": "Code",

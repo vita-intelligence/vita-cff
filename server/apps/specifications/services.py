@@ -2094,6 +2094,20 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             }
         )
 
+    # Sort the active-ingredients table by per-serving mg, descending.
+    # The customer-facing spec sheet reads top-down; lining the heaviest
+    # ingredient against the lead also matches the EU 1169/2011 grouped
+    # declaration string below, so the two sections agree on ranking.
+    # Missing ``mg_per_serving`` (legacy snapshots) sinks to the bottom
+    # by treating the key as zero, and we fall back to label_claim_mg
+    # then item_name to keep the order deterministic for ties.
+    def _active_sort_key(row: dict[str, Any]) -> tuple[Decimal, Decimal, str]:
+        raw_mg = _coerce_decimal(row.get("mg_per_serving")) or Decimal("0")
+        raw_claim = _coerce_decimal(row.get("label_claim_mg")) or Decimal("0")
+        return (-raw_mg, -raw_claim, row.get("item_name", "").lower())
+
+    actives.sort(key=_active_sort_key)
+
     compliance = totals.get("compliance") or {"flags": []}
     compliance = _apply_compliance_override(compliance, compliance_overrides)
     declaration = totals.get("declaration") or {"text": "", "entries": []}

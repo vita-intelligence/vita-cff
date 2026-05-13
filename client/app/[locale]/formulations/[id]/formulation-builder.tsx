@@ -3243,7 +3243,22 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   // batches in kg; grams turn into awkward four-digit numbers for
   // higher-volume excipients. Conversion is just a /1000 — the
   // underlying math stays in grams per kg of finished product.
-  const formatKg = (g: number) => (g / 1000).toFixed(4);
+  //
+  // Trace ingredients (e.g. Chromium Picolinate dosed at micrograms
+  // per kg) would round to "0.0000" at the standard four-decimal
+  // precision and hide the magnitude from the procurement print.
+  // When that happens we expand the precision until two significant
+  // digits are visible, capped so the column never grows wider than
+  // the print template tolerates.
+  const formatKg = (g: number): string => {
+    const kg = g / 1000;
+    if (!Number.isFinite(kg) || kg === 0) return "0.0000";
+    const standard = kg.toFixed(4);
+    if (Number.parseFloat(standard) !== 0) return standard;
+    const magnitude = Math.floor(Math.log10(Math.abs(kg)));
+    const decimals = Math.min(10, Math.max(4, -magnitude + 1));
+    return kg.toFixed(decimals);
+  };
   const totalKg = totalGrams / 1000;
 
   // Localised "DD Mon YYYY" used in the print header. Deterministic

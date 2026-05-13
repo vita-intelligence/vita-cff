@@ -337,6 +337,60 @@ class TestRenderContext:
         # 5mg claim against NRV of 10mg → 50.0
         assert active["nrv_percent"] == "50.0"
 
+    def test_actives_sorted_by_mg_per_serving_descending(self) -> None:
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        # Insertion order is deliberately small → large → mid so the
+        # snapshot's natural order doesn't accidentally match the sort.
+        small = ItemFactory(
+            catalogue=catalogue,
+            name="Trace Mineral",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Trace Mineral",
+            },
+        )
+        large = ItemFactory(
+            catalogue=catalogue,
+            name="Bulk Active",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Bulk Active",
+            },
+        )
+        mid = ItemFactory(
+            catalogue=catalogue,
+            name="Mid Active",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Mid Active",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org, dosage_form="capsule", capsule_size="double_00"
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {"item_id": str(small.id), "label_claim_mg": "1"},
+                {"item_id": str(large.id), "label_claim_mg": "500"},
+                {"item_id": str(mid.id), "label_claim_mg": "50"},
+            ],
+        )
+        version = save_version(formulation=formulation, actor=org.created_by)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        ctx = render_context(sheet)
+        labels = [active["ingredient_list_name"] for active in ctx["actives"]]
+        assert labels == ["Bulk Active", "Mid Active", "Trace Mineral"]
+
     def test_nrv_absent_when_catalogue_lacks_value(self) -> None:
         org = OrganizationFactory()
         catalogue = raw_materials_catalogue(org)

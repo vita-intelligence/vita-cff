@@ -128,7 +128,10 @@ class FormulationListCreateView(APIView):
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, org_id: str) -> Response:
-        queryset = list_formulations(organization=self.organization)
+        search = request.query_params.get("search")
+        queryset = list_formulations(
+            organization=self.organization, search=search
+        )
         paginator = FormulationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         serializer = FormulationReadSerializer(page, many=True)

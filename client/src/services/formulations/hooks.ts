@@ -50,12 +50,16 @@ export const formulationsQueryKeys = {
   all: [...rootQueryKey, "formulations"] as const,
   list: (orgId: string) =>
     [...formulationsQueryKeys.all, orgId, "list"] as const,
-  infinite: (orgId: string, opts: { ordering: string }) =>
+  infinite: (
+    orgId: string,
+    opts: { ordering: string; search?: string },
+  ) =>
     [
       ...formulationsQueryKeys.all,
       orgId,
       "infinite",
       opts.ordering,
+      opts.search ?? "",
     ] as const,
   detail: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "detail", formulationId] as const,
@@ -90,13 +94,15 @@ export function useInfiniteFormulations(
   options: {
     ordering: string;
     pageSize?: number;
+    search?: string;
     initialFirstPage?: PaginatedFormulationsDto | null;
   },
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedFormulationsDto, string | null>,
   ApiError
 > {
-  const { ordering, pageSize, initialFirstPage } = options;
+  const { ordering, pageSize, search, initialFirstPage } = options;
+  const normalisedSearch = search?.trim() ?? "";
   return useInfiniteQuery<
     PaginatedFormulationsDto,
     ApiError,
@@ -104,22 +110,31 @@ export function useInfiniteFormulations(
     readonly unknown[],
     string | null
   >({
-    queryKey: formulationsQueryKeys.infinite(orgId, { ordering }),
+    queryKey: formulationsQueryKeys.infinite(orgId, {
+      ordering,
+      search: normalisedSearch,
+    }),
     queryFn: ({ pageParam }) =>
       fetchFormulationsPage(orgId, {
         ordering,
         pageSize,
+        search: normalisedSearch || undefined,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
-    initialData: initialFirstPage
-      ? {
-          pages: [initialFirstPage],
-          pageParams: [null],
-        }
-      : undefined,
+    // SSR hydration is unfiltered, so only seed the cache when no
+    // search term is active — otherwise the first page would echo
+    // every project, then snap to the filtered set after the
+    // client-side fetch resolves.
+    initialData:
+      initialFirstPage && !normalisedSearch
+        ? {
+            pages: [initialFirstPage],
+            pageParams: [null],
+          }
+        : undefined,
   });
 }
 
