@@ -76,9 +76,14 @@ class SpecificationListCreateView(APIView):
                     FormulationsCapability.VIEW_APPROVALS,
                 )
             elif status_filter in {
+                SpecificationStatus.APPROVED,
                 SpecificationStatus.SENT,
                 SpecificationStatus.ACCEPTED,
             }:
+                # ``approved`` is the post-director / pre-customer
+                # window — surfaces on /signed under "Ready to send"
+                # so commercial roles can sweep what still needs
+                # mailing out.
                 self.required_capability_any = (
                     FormulationsCapability.VIEW,
                     FormulationsCapability.VIEW_SIGNED,

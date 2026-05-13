@@ -7,6 +7,7 @@ import {
   FileSignature,
   Inbox,
   Send,
+  Stamp,
 } from "lucide-react";
 import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
@@ -19,16 +20,31 @@ import {
 } from "@/services/specifications";
 
 
-type Tab = "proposals" | "specifications";
+type TopTab = "proposals" | "specifications";
+type SubTab = "pipeline" | "signed";
+type CardMode = "approved" | "sent" | "signed";
 
 
 /**
- * Two-tab archive view. Each tab fires two queries — one for
- * ``status=sent`` and one for ``status=accepted`` — so the user
- * sees both halves of the customer-facing flow on a single screen
- * without a sub-tab click. The list endpoints already support the
- * ``status`` filter (added when the approvals inbox was wired in),
- * so no new backend surface is needed here.
+ * Two-axis archive view.
+ *
+ * Top tabs select the document type (proposals vs specification
+ * sheets); sub-tabs split each type by where the document sits in
+ * its customer-facing lifecycle:
+ *
+ *   * ``Pipeline`` (default) — documents still moving toward a
+ *     customer signature. Split into two sections:
+ *       * **Ready to send** (``status=approved``) — director has
+ *         signed off, waiting for someone to mail it out.
+ *       * **Awaiting customer signature** (``status=sent``) — out
+ *         with the client, kiosk link live.
+ *   * ``Signed`` — terminal state (``status=accepted``). The kiosk
+ *     signature is already on the document.
+ *
+ * Three queries fire per document type (one per status) regardless
+ * of the active sub-tab. They're cheap (filtered by status on a
+ * single org column) and firing them eagerly means switching tabs
+ * is instant rather than flashing a spinner on every click.
  */
 export function SignedDocuments({
   orgId,
@@ -40,18 +56,26 @@ export function SignedDocuments({
   canViewSpecs: boolean;
 }) {
   const t = useTranslations("signed");
-  const [tab, setTab] = useState<Tab>(
+  const [topTab, setTopTab] = useState<TopTab>(
     canViewProposals ? "proposals" : "specifications",
   );
+  const [subTab, setSubTab] = useState<SubTab>("pipeline");
 
   // Empty orgId disables the underlying hook (see the
   // ``enabled: Boolean(orgId)`` guard) so we don't fire a fetch the
   // caller would only get back as 403.
+  const approvedProposals = useProposals(canViewProposals ? orgId : "", {
+    status: "approved",
+  });
   const sentProposals = useProposals(canViewProposals ? orgId : "", {
     status: "sent",
   });
   const signedProposals = useProposals(canViewProposals ? orgId : "", {
     status: "accepted",
+  });
+  const approvedSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
+    status: "approved",
+    pageSize: 100,
   });
   const sentSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "sent",
@@ -62,10 +86,20 @@ export function SignedDocuments({
     pageSize: 100,
   });
 
+  const proposalsApproved = canViewProposals
+    ? approvedProposals.data ?? []
+    : [];
   const proposalsSent = canViewProposals ? sentProposals.data ?? [] : [];
   const proposalsSigned = canViewProposals
     ? signedProposals.data ?? []
     : [];
+  const specsApproved = useMemo(
+    () =>
+      canViewSpecs
+        ? approvedSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [approvedSpecs.data, canViewSpecs],
+  );
   const specsSent = useMemo(
     () =>
       canViewSpecs
@@ -81,8 +115,22 @@ export function SignedDocuments({
     [signedSpecs.data, canViewSpecs],
   );
 
-  const proposalsTotal = proposalsSent.length + proposalsSigned.length;
-  const specsTotal = specsSent.length + specsSigned.length;
+  // Top-tab counters: every document in any of the lifecycle states
+  // tracked on this page. Lets the user see the full volume of
+  // customer-facing work in one glance before picking which type.
+  const proposalsTotal =
+    proposalsApproved.length + proposalsSent.length + proposalsSigned.length;
+  const specsTotal =
+    specsApproved.length + specsSent.length + specsSigned.length;
+
+  // Sub-tab counters. Per top tab so the badge reflects only the
+  // currently-selected document type.
+  const pipelineCount =
+    topTab === "proposals"
+      ? proposalsApproved.length + proposalsSent.length
+      : specsApproved.length + specsSent.length;
+  const signedCount =
+    topTab === "proposals" ? proposalsSigned.length : specsSigned.length;
 
   return (
     <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
@@ -97,18 +145,18 @@ export function SignedDocuments({
 
       <div className="mt-4 flex flex-wrap gap-2">
         {canViewProposals ? (
-          <TabButton
-            active={tab === "proposals"}
-            onClick={() => setTab("proposals")}
+          <TopTabButton
+            active={topTab === "proposals"}
+            onClick={() => setTopTab("proposals")}
             icon={<FileSignature className="h-4 w-4" />}
             label={t("tabs.proposals")}
             count={proposalsTotal}
           />
         ) : null}
         {canViewSpecs ? (
-          <TabButton
-            active={tab === "specifications"}
-            onClick={() => setTab("specifications")}
+          <TopTabButton
+            active={topTab === "specifications"}
+            onClick={() => setTopTab("specifications")}
             icon={<ClipboardCheck className="h-4 w-4" />}
             label={t("tabs.specifications")}
             count={specsTotal}
@@ -116,56 +164,105 @@ export function SignedDocuments({
         ) : null}
       </div>
 
-      {tab === "proposals" && canViewProposals ? (
-        <div className="mt-6 flex flex-col gap-8">
-          <ProposalsSection
-            heading={t("sections.awaiting")}
-            icon={<Send className="h-4 w-4" />}
-            emptyMessage={t("empty.awaiting_proposals")}
-            proposals={proposalsSent}
-            loading={sentProposals.isLoading}
-            errored={sentProposals.isError}
-            mode="sent"
-          />
-          <ProposalsSection
-            heading={t("sections.signed")}
-            icon={<CheckCircle2 className="h-4 w-4" />}
-            emptyMessage={t("empty.signed_proposals")}
-            proposals={proposalsSigned}
-            loading={signedProposals.isLoading}
-            errored={signedProposals.isError}
-            mode="signed"
-          />
-        </div>
+      <div className="mt-4 flex flex-wrap gap-2 border-t border-ink-100 pt-4">
+        <SubTabButton
+          active={subTab === "pipeline"}
+          onClick={() => setSubTab("pipeline")}
+          label={t("sub_tabs.pipeline")}
+          hint={t("sub_tabs.pipeline_hint")}
+          count={pipelineCount}
+        />
+        <SubTabButton
+          active={subTab === "signed"}
+          onClick={() => setSubTab("signed")}
+          label={t("sub_tabs.signed")}
+          hint={t("sub_tabs.signed_hint")}
+          count={signedCount}
+        />
+      </div>
+
+      {topTab === "proposals" && canViewProposals ? (
+        subTab === "pipeline" ? (
+          <div className="mt-6 flex flex-col gap-8">
+            <ProposalsSection
+              heading={t("sections.ready_to_send")}
+              hint={t("sections.ready_to_send_hint")}
+              icon={<Stamp className="h-4 w-4" />}
+              emptyMessage={t("empty.ready_to_send_proposals")}
+              proposals={proposalsApproved}
+              loading={approvedProposals.isLoading}
+              errored={approvedProposals.isError}
+              mode="approved"
+            />
+            <ProposalsSection
+              heading={t("sections.awaiting")}
+              hint={t("sections.awaiting_hint")}
+              icon={<Send className="h-4 w-4" />}
+              emptyMessage={t("empty.awaiting_proposals")}
+              proposals={proposalsSent}
+              loading={sentProposals.isLoading}
+              errored={sentProposals.isError}
+              mode="sent"
+            />
+          </div>
+        ) : (
+          <div className="mt-6 flex flex-col gap-8">
+            <ProposalsSection
+              heading={t("sections.signed")}
+              icon={<CheckCircle2 className="h-4 w-4" />}
+              emptyMessage={t("empty.signed_proposals")}
+              proposals={proposalsSigned}
+              loading={signedProposals.isLoading}
+              errored={signedProposals.isError}
+              mode="signed"
+            />
+          </div>
+        )
       ) : null}
-      {tab === "specifications" && canViewSpecs ? (
-        <div className="mt-6 flex flex-col gap-8">
-          <SpecsSection
-            heading={t("sections.awaiting")}
-            icon={<Send className="h-4 w-4" />}
-            emptyMessage={t("empty.awaiting_specs")}
-            specs={specsSent}
-            loading={sentSpecs.isLoading}
-            errored={sentSpecs.isError}
-            mode="sent"
-          />
-          <SpecsSection
-            heading={t("sections.signed")}
-            icon={<CheckCircle2 className="h-4 w-4" />}
-            emptyMessage={t("empty.signed_specs")}
-            specs={specsSigned}
-            loading={signedSpecs.isLoading}
-            errored={signedSpecs.isError}
-            mode="signed"
-          />
-        </div>
+      {topTab === "specifications" && canViewSpecs ? (
+        subTab === "pipeline" ? (
+          <div className="mt-6 flex flex-col gap-8">
+            <SpecsSection
+              heading={t("sections.ready_to_send")}
+              hint={t("sections.ready_to_send_hint")}
+              icon={<Stamp className="h-4 w-4" />}
+              emptyMessage={t("empty.ready_to_send_specs")}
+              specs={specsApproved}
+              loading={approvedSpecs.isLoading}
+              errored={approvedSpecs.isError}
+              mode="approved"
+            />
+            <SpecsSection
+              heading={t("sections.awaiting")}
+              hint={t("sections.awaiting_hint")}
+              icon={<Send className="h-4 w-4" />}
+              emptyMessage={t("empty.awaiting_specs")}
+              specs={specsSent}
+              loading={sentSpecs.isLoading}
+              errored={sentSpecs.isError}
+              mode="sent"
+            />
+          </div>
+        ) : (
+          <div className="mt-6 flex flex-col gap-8">
+            <SpecsSection
+              heading={t("sections.signed")}
+              icon={<CheckCircle2 className="h-4 w-4" />}
+              emptyMessage={t("empty.signed_specs")}
+              specs={specsSigned}
+              loading={signedSpecs.isLoading}
+              errored={signedSpecs.isError}
+              mode="signed"
+            />
+          </div>
+        )
       ) : null}
     </section>
   );
 }
 
 
-function TabButton({
+function TopTabButton({
   active,
   onClick,
   icon,
@@ -204,8 +301,46 @@ function TabButton({
 }
 
 
+function SubTabButton({
+  active,
+  onClick,
+  label,
+  hint,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  hint: string;
+  count: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={hint}
+      className={`inline-flex h-8 items-center gap-2 rounded-full px-3 text-xs font-medium ring-1 ring-inset transition-colors ${
+        active
+          ? "bg-ink-1000 text-ink-0 ring-ink-1000"
+          : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-50"
+      }`}
+    >
+      <span>{label}</span>
+      <span
+        className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
+          active ? "bg-ink-0/20 text-ink-0" : "bg-ink-100 text-ink-700"
+        }`}
+      >
+        {count}
+      </span>
+    </button>
+  );
+}
+
+
 function ProposalsSection({
   heading,
+  hint,
   icon,
   emptyMessage,
   proposals,
@@ -214,12 +349,13 @@ function ProposalsSection({
   mode,
 }: {
   heading: string;
+  hint?: string;
   icon: React.ReactNode;
   emptyMessage: string;
   proposals: readonly ProposalDto[];
   loading: boolean;
   errored: boolean;
-  mode: "sent" | "signed";
+  mode: CardMode;
 }) {
   const t = useTranslations("signed");
   return (
@@ -231,6 +367,9 @@ function ProposalsSection({
           {proposals.length}
         </span>
       </h2>
+      {hint ? (
+        <p className="mt-1 text-xs text-ink-500">{hint}</p>
+      ) : null}
       {loading ? (
         <p className="mt-3 text-sm text-ink-500">{t("loading")}</p>
       ) : errored ? (
@@ -256,6 +395,7 @@ function ProposalsSection({
 
 function SpecsSection({
   heading,
+  hint,
   icon,
   emptyMessage,
   specs,
@@ -264,12 +404,13 @@ function SpecsSection({
   mode,
 }: {
   heading: string;
+  hint?: string;
   icon: React.ReactNode;
   emptyMessage: string;
   specs: readonly SpecificationSheetDto[];
   loading: boolean;
   errored: boolean;
-  mode: "sent" | "signed";
+  mode: CardMode;
 }) {
   const t = useTranslations("signed");
   return (
@@ -281,6 +422,9 @@ function SpecsSection({
           {specs.length}
         </span>
       </h2>
+      {hint ? (
+        <p className="mt-1 text-xs text-ink-500">{hint}</p>
+      ) : null}
       {loading ? (
         <p className="mt-3 text-sm text-ink-500">{t("loading")}</p>
       ) : errored ? (
@@ -319,7 +463,7 @@ function ProposalCard({
   mode,
 }: {
   proposal: ProposalDto;
-  mode: "sent" | "signed";
+  mode: CardMode;
 }) {
   const t = useTranslations("signed");
   const format = useFormatter();
@@ -336,17 +480,27 @@ function ProposalCard({
     { count: proposal.lines.length },
   );
 
-  // Signed cards prefer the kiosk acceptance timestamp; sent cards
-  // fall back to ``updated_at`` since that's the moment the
-  // proposal flipped into ``sent`` and got the public link.
+  // Pick the timestamp that matches the lifecycle stage being shown.
+  // ``approved`` prefers the director-signature timestamp (the
+  // moment the doc became sendable); ``signed`` prefers the customer
+  // signature; both fall back to ``updated_at`` if the signature
+  // stamp is missing — which can happen for legacy data signed
+  // before the timestamped flow was wired in.
   const stampSource =
-    mode === "signed" && proposal.customer_signed_at
-      ? proposal.customer_signed_at
-      : proposal.updated_at;
-  const stampLabel = t(
-    mode === "signed" ? "card.signed_at" : "card.sent_at",
-    { time: format.relativeTime(new Date(stampSource), now) },
-  );
+    mode === "approved"
+      ? proposal.director_signed_at ?? proposal.updated_at
+      : mode === "signed" && proposal.customer_signed_at
+        ? proposal.customer_signed_at
+        : proposal.updated_at;
+  const stampKey =
+    mode === "approved"
+      ? "card.approved_at"
+      : mode === "signed"
+        ? "card.signed_at"
+        : "card.sent_at";
+  const stampLabel = t(stampKey, {
+    time: format.relativeTime(new Date(stampSource), now),
+  });
 
   return (
     <li className="rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50">
@@ -378,7 +532,7 @@ function SpecCard({
   mode,
 }: {
   sheet: SpecificationSheetDto;
-  mode: "sent" | "signed";
+  mode: CardMode;
 }) {
   const t = useTranslations("signed");
   const format = useFormatter();
@@ -391,14 +545,23 @@ function SpecCard({
     sheet.customer_name ||
     t("card.no_client");
 
+  // Spec sheets don't carry a director-signature timestamp on the
+  // list DTO (only the render view-model has it), so the
+  // ``approved`` mode falls back to ``updated_at`` — the moment
+  // the status flipped is the cheapest proxy.
   const stampSource =
     mode === "signed" && sheet.customer_signed_at
       ? sheet.customer_signed_at
       : sheet.updated_at;
-  const stampLabel = t(
-    mode === "signed" ? "card.signed_at" : "card.sent_at",
-    { time: format.relativeTime(new Date(stampSource), now) },
-  );
+  const stampKey =
+    mode === "approved"
+      ? "card.approved_at"
+      : mode === "signed"
+        ? "card.signed_at"
+        : "card.sent_at";
+  const stampLabel = t(stampKey, {
+    time: format.relativeTime(new Date(stampSource), now),
+  });
 
   return (
     <li className="rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50">

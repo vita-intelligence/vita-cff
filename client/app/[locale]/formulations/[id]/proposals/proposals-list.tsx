@@ -16,6 +16,7 @@ import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useFormulationVersions,
   type FormulationVersionDto,
+  type ProjectStatus,
   type ProjectType,
 } from "@/services/formulations";
 import {
@@ -44,11 +45,15 @@ export function ProposalsList({
   orgId,
   formulationId,
   projectType,
+  projectStatus,
+  approvedVersionNumber,
   canWrite,
 }: {
   orgId: string;
   formulationId: string;
   projectType: ProjectType;
+  projectStatus: ProjectStatus;
+  approvedVersionNumber: number | null;
   canWrite: boolean;
 }) {
   const tProposals = useTranslations("proposals");
@@ -91,6 +96,8 @@ export function ProposalsList({
             formulationId={formulationId}
             versions={versions}
             projectType={projectType}
+            projectStatus={projectStatus}
+            approvedVersionNumber={approvedVersionNumber}
           />
         ) : null}
       </header>
@@ -217,11 +224,15 @@ function NewProposalButton({
   formulationId,
   versions,
   projectType,
+  projectStatus,
+  approvedVersionNumber,
 }: {
   orgId: string;
   formulationId: string;
   versions: readonly FormulationVersionDto[];
   projectType: ProjectType;
+  projectStatus: ProjectStatus;
+  approvedVersionNumber: number | null;
 }) {
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
@@ -260,12 +271,23 @@ function NewProposalButton({
     return cost / (1 - pct / 100);
   })();
 
+  // Only the scientist-approved snapshot is sellable, so the picker
+  // never offers any other version. Pre-filter once here so the
+  // dropdown, auto-select effect, and submit handler all see the
+  // same shape.
+  const sellableVersions = versions.filter(
+    (v) => v.version_number === approvedVersionNumber,
+  );
+
   useEffect(() => {
-    if (versions.length === 0) return;
-    if (!versions.some((v) => v.id === versionId)) {
-      setVersionId(versions[0]!.id);
+    if (sellableVersions.length === 0) {
+      if (versionId !== "") setVersionId("");
+      return;
     }
-  }, [versions, versionId]);
+    if (!sellableVersions.some((v) => v.id === versionId)) {
+      setVersionId(sellableVersions[0]!.id);
+    }
+  }, [sellableVersions, versionId]);
 
   // Seed the unit cost from the raw-material roll-up the first time
   // the scientist picks a version. Never overwrites a value they
@@ -355,6 +377,36 @@ function NewProposalButton({
     );
   }
 
+  // Quotes only leave the building once the project roadmap chip is
+  // "Approved" AND a specific version has been marked as the
+  // approved snapshot. Same rules the backend enforces in
+  // ``create_proposal``; reading them off the chip + the pointer
+  // here means we never let the scientist open a modal they can
+  // never submit.
+  const gateMessage =
+    projectStatus !== "approved"
+      ? tProposals("create.gate_not_approved")
+      : approvedVersionNumber === null
+        ? tProposals("create.gate_no_approved_version")
+        : null;
+
+  if (gateMessage !== null) {
+    return (
+      <span title={gateMessage}>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
+          isDisabled
+        >
+          <Plus className="h-4 w-4" />
+          {tProposals("create.trigger")}
+        </Button>
+      </span>
+    );
+  }
+
   return (
     <Modal
       isOpen={isOpen}
@@ -392,15 +444,19 @@ function NewProposalButton({
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    disabled={sellableVersions.length === 0}
+                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
-                    {versions.map((v) => (
+                    {sellableVersions.map((v) => (
                       <option key={v.id} value={v.id}>
                         v{v.version_number}
                         {v.label ? ` — ${v.label}` : ""}
                       </option>
                     ))}
                   </select>
+                  <span className="text-[11px] text-ink-500">
+                    {tProposals("create.version_hint_approved_only")}
+                  </span>
                 </label>
 
                 <fieldset className="flex flex-col gap-1.5">

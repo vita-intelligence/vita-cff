@@ -1,15 +1,26 @@
 {
   "title": "Customer documents",
-  "subtitle": "Sent to the client and signed on the kiosk",
+  "subtitle": "Documents moving through the customer pipeline and what's already been signed",
   "tabs": {
     "proposals": "Proposals",
     "specifications": "Specification sheets"
   },
+  "sub_tabs": {
+    "pipeline": "Pipeline",
+    "pipeline_hint": "Approved and out for signature",
+    "signed": "Signed by customer",
+    "signed_hint": "Already signed on the kiosk"
+  },
   "sections": {
+    "ready_to_send": "Approved — ready to send",
+    "ready_to_send_hint": "Director-signed; waiting to be sent to the client",
     "awaiting": "Awaiting customer signature",
+    "awaiting_hint": "Sent to the client; awaiting their kiosk signature",
     "signed": "Signed by customer"
   },
   "empty": {
+    "ready_to_send_proposals": "No proposals are waiting to be sent.",
+    "ready_to_send_specs": "No specification sheets are waiting to be sent.",
     "awaiting_proposals": "No proposals are out for signature.",
     "awaiting_specs": "No specification sheets are out for signature.",
     "signed_proposals": "No proposals signed by customers yet.",
@@ -27,6 +38,7 @@
     "version": "v{version}",
     "products_one": "{count} product",
     "products_other": "{count} products",
+    "approved_at": "Approved {time}",
     "sent_at": "Sent {time}",
     "signed_at": "Signed {time}",
     "signed_by": "by {name}"

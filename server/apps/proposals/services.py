@@ -26,7 +26,11 @@ from django.db.models import QuerySet
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
-from apps.formulations.models import Formulation, FormulationVersion
+from apps.formulations.models import (
+    Formulation,
+    FormulationVersion,
+    ProjectStatus,
+)
 from apps.organizations.models import Organization
 from apps.proposals.models import (
     Proposal,
@@ -50,6 +54,35 @@ class ProposalNotFound(Exception):
 
 class FormulationVersionNotInOrg(Exception):
     code = "formulation_version_not_in_org"
+
+
+class FormulationNotApproved(Exception):
+    """Raised when ``create_proposal`` is called against a version
+    whose parent project is not in the ``approved`` roadmap status.
+
+    The commercial pipeline is gated on the project roadmap chip:
+    a proposal is a customer-facing offer, and offers should only
+    leave the building once the recipe is locked. Concept / pilot /
+    in-development projects can still be priced internally, but they
+    don't earn a quote.
+    """
+
+    code = "formulation_not_approved"
+
+
+class FormulationVersionNotApproved(Exception):
+    """Raised when ``create_proposal`` is given a version other than
+    the one a scientist has marked as the formulation's approved
+    snapshot.
+
+    Only the version pointed to by
+    :attr:`Formulation.approved_version_number` is sellable. Earlier
+    drafts and unapproved iterations stay internal — a proposal must
+    price the locked recipe, not whichever version a stale client
+    happened to send.
+    """
+
+    code = "formulation_version_not_approved"
 
 
 class SpecificationSheetNotInOrg(Exception):
@@ -345,6 +378,20 @@ def create_proposal(
     )
     if version is None or version.formulation.organization_id != organization.id:
         raise FormulationVersionNotInOrg()
+    # Quotes only leave the building once the recipe is locked. Any
+    # other roadmap status — concept, in development, pilot,
+    # discontinued — is not a sellable state. The UI hides the action
+    # but a stale client or a direct API call still has to be refused
+    # here.
+    if version.formulation.project_status != ProjectStatus.APPROVED:
+        raise FormulationNotApproved()
+    # Only the version a scientist has explicitly marked as approved
+    # is sellable — every other draft is internal R&D state. ``!=``
+    # also catches the "no approved version yet" case
+    # (``approved_version_number is None``) because Python ints never
+    # equal None.
+    if version.version_number != version.formulation.approved_version_number:
+        raise FormulationVersionNotApproved()
 
     sheet: SpecificationSheet | None = None
     if specification_sheet_id is not None:

@@ -38,6 +38,8 @@ from apps.proposals.api.serializers import (
 )
 from apps.proposals.services import (
     CustomerNotInOrg,
+    FormulationNotApproved,
+    FormulationVersionNotApproved,
     FormulationVersionNotInOrg,
     InvalidProposalTransition,
     KioskSignaturesPending,
@@ -102,9 +104,15 @@ class ProposalListCreateView(APIView):
                     ProposalsCapability.VIEW_APPROVALS,
                 )
             elif status_filter in {
+                ProposalStatus.APPROVED,
                 ProposalStatus.SENT,
                 ProposalStatus.ACCEPTED,
             }:
+                # ``approved`` is the post-director / pre-customer
+                # window — surfaces on /signed under "Ready to send"
+                # so commercial roles can sweep what still needs
+                # mailing out. Same cap as the rest of the signed
+                # archive surface.
                 self.required_capability_any = (
                     ProposalsCapability.VIEW,
                     ProposalsCapability.VIEW_SIGNED,
@@ -170,6 +178,16 @@ class ProposalListCreateView(APIView):
         except FormulationVersionNotInOrg:
             return Response(
                 {"formulation_version_id": ["formulation_version_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FormulationNotApproved:
+            return Response(
+                {"formulation_version_id": ["formulation_not_approved"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FormulationVersionNotApproved:
+            return Response(
+                {"formulation_version_id": ["formulation_version_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except SpecificationSheetNotInOrg:

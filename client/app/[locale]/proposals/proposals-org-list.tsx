@@ -205,9 +205,24 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   const [isOpen, setIsOpen] = useState(false);
   const [template, setTemplate] = useState<ProposalTemplateType>("custom");
   const [formulationId, setFormulationId] = useState<string>("");
+  // ``formulationSearch`` is what the user is typing right now;
+  // ``formulationSearchDebounced`` is what we forward to the backend
+  // — staggered by 200 ms so each keystroke doesn't fire its own
+  // request. Both feed the same filtered list under the picker.
+  const [formulationSearch, setFormulationSearch] = useState<string>("");
+  const [formulationSearchDebounced, setFormulationSearchDebounced] =
+    useState<string>("");
+  useEffect(() => {
+    const handle = setTimeout(
+      () => setFormulationSearchDebounced(formulationSearch.trim()),
+      200,
+    );
+    return () => clearTimeout(handle);
+  }, [formulationSearch]);
   const formulationsQuery = useInfiniteFormulations(orgId, {
     ordering: "name",
     pageSize: 50,
+    search: formulationSearchDebounced || undefined,
   });
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const [versionId, setVersionId] = useState<string>("");
@@ -226,10 +241,36 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   const createMutation = useCreateProposal(orgId);
   const specSheetsQuery = useInfiniteSpecifications(orgId, { pageSize: 100 });
 
-  const formulations =
-    formulationsQuery.data?.pages.flatMap((p) => p.results) ?? [];
-  const versions: readonly FormulationVersionDto[] =
-    versionsQuery.data ?? [];
+  // Only approved projects can be the source of a quote — same rule
+  // the backend enforces in ``create_proposal``. Filter client-side
+  // so the picker only ever offers a selectable option; the empty
+  // case below the picker explains why the list might look short.
+  const formulations = (
+    formulationsQuery.data?.pages.flatMap((p) => p.results) ?? []
+  ).filter((f) => f.project_status === "approved");
+  // Track which version of the picked formulation is the scientist-
+  // approved snapshot so the version <select> can be narrowed down
+  // to that one entry (mirrors the per-project picker rule).
+  const pickedFormulation = formulations.find((f) => f.id === formulationId);
+  const approvedVersionNumber =
+    pickedFormulation?.approved_version_number ?? null;
+  const sellableVersions: readonly FormulationVersionDto[] = (
+    versionsQuery.data ?? []
+  ).filter((v) => v.version_number === approvedVersionNumber);
+
+  // Auto-select the single approved version once the picked
+  // formulation's versions have loaded — saves the user a click
+  // since the version dropdown only ever has one valid option.
+  useEffect(() => {
+    if (sellableVersions.length === 0) {
+      if (versionId !== "") setVersionId("");
+      return;
+    }
+    if (!sellableVersions.some((v) => v.id === versionId)) {
+      setVersionId(sellableVersions[0]!.id);
+    }
+  }, [sellableVersions, versionId]);
+
   // Flatten the infinite pages into a single list. 100/page is enough
   // that most orgs will never paginate here; the picker is a simple
   // <select> so we don't need infinite-scroll UX inside it.
@@ -250,6 +291,8 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
     setIsOpen(false);
     setFormulationId("");
     setVersionId("");
+    setFormulationSearch("");
+    setFormulationSearchDebounced("");
     setCustomer(null);
     setQuantity("1");
     setUnitCost("");
@@ -329,6 +372,15 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   <span className="text-xs font-medium text-ink-700">
                     {tProposals("create.formulation")}
                   </span>
+                  <input
+                    type="search"
+                    value={formulationSearch}
+                    onChange={(e) => setFormulationSearch(e.target.value)}
+                    placeholder={tProposals(
+                      "create.formulation_search_placeholder",
+                    )}
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                  />
                   <select
                     value={formulationId}
                     onChange={(e) => {
@@ -339,7 +391,8 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       // a specific formulation, so drop it.
                       setSpecSheetId("");
                     }}
-                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    disabled={formulations.length === 0}
+                    className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     <option value="">—</option>
                     {formulations.map((f) => (
@@ -348,6 +401,18 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       </option>
                     ))}
                   </select>
+                  <span className="text-[11px] text-ink-500">
+                    {formulationsQuery.isLoading
+                      ? tProposals("create.formulation_loading")
+                      : formulations.length === 0
+                        ? formulationSearchDebounced
+                          ? tProposals(
+                              "create.formulation_empty_search",
+                              { query: formulationSearchDebounced },
+                            )
+                          : tProposals("create.formulation_empty_approved")
+                        : tProposals("create.formulation_hint_approved_only")}
+                  </span>
                 </label>
 
                 <label className="flex flex-col gap-1.5">
@@ -357,17 +422,24 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   <select
                     value={versionId}
                     onChange={(e) => setVersionId(e.target.value)}
-                    disabled={!formulationId || versions.length === 0}
+                    disabled={!formulationId || sellableVersions.length === 0}
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
                     <option value="">—</option>
-                    {versions.map((v) => (
+                    {sellableVersions.map((v) => (
                       <option key={v.id} value={v.id}>
                         v{v.version_number}
                         {v.label ? ` — ${v.label}` : ""}
                       </option>
                     ))}
                   </select>
+                  <span className="text-[11px] text-ink-500">
+                    {!formulationId
+                      ? null
+                      : sellableVersions.length === 0
+                        ? tProposals("create.version_empty_approved")
+                        : tProposals("create.version_hint_approved_only")}
+                  </span>
                 </label>
 
                 <fieldset className="flex flex-col gap-1.5">

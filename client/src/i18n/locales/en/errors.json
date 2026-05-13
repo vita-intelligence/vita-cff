@@ -26,6 +26,8 @@
     "internal_code_conflict": "Another item already uses this internal code.",
     "formulation_code_required": "Pick a project code (e.g. MA210367 or FB-001) before creating the project.",
     "formulation_code_conflict": "Another project in this organisation already uses this code.",
+    "specification_code_conflict": "Another specification sheet in this project already uses this code.",
+    "proposal_code_conflict": "Another proposal in this organisation already uses this code.",
     "clone_target_required": "Pick a target project to replace before duplicating.",
     "clone_target_not_found": "Couldn't find that target project in this organisation.",
     "clone_target_is_source": "You can't replace a project with itself. Pick a different target or switch to 'New project'.",
@@ -52,6 +54,8 @@
     "kiosk_session_revoked": "Your session was revoked. Please identify yourself again.",
     "kiosk_session_required": "Please identify yourself before signing.",
     "kiosk_rate_limited": "You've sent too many messages in a short time. Please wait a minute.",
-    "kiosk_signatures_pending": "Every document must be signed before finishing. Scroll up and sign any that are still pending."
+    "kiosk_signatures_pending": "Every document must be signed before finishing. Scroll up and sign any that are still pending.",
+    "formulation_not_approved": "Only projects with an Approved roadmap status can have a proposal. Approve the project first.",
+    "formulation_version_not_approved": "Only the version marked as the project's approved snapshot can be quoted. Approve a version first."
   }
 }
