@@ -2250,17 +2250,22 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             }
         )
 
-    # Sort the active-ingredients table by per-serving mg, descending.
-    # The customer-facing spec sheet reads top-down; lining the heaviest
-    # ingredient against the lead also matches the EU 1169/2011 grouped
-    # declaration string below, so the two sections agree on ranking.
-    # Missing ``mg_per_serving`` (legacy snapshots) sinks to the bottom
-    # by treating the key as zero, and we fall back to label_claim_mg
-    # then item_name to keep the order deterministic for ties.
+    # Sort the active-ingredients table by ``label_claim_mg``,
+    # descending — i.e. the number the customer actually reads in the
+    # "Claim per Serving" column. Sorting by the raw-powder weight
+    # (``mg_per_serving``) used to be the rule because it lines up
+    # with the EU 1169/2011 declaration ordering below; but extracts
+    # diverge wildly — a 5:1 extract with a 100 mg label claim has
+    # 500 mg of raw powder, so it floats above a 200 mg caffeine row
+    # and the customer reads the column as randomly ordered.
+    # ``label_claim_mg`` keeps the visible column monotonic.
+    # ``mg_per_serving`` survives as the tiebreaker for actives that
+    # share a claim, and ``item_name`` makes the order deterministic
+    # for ties on both.
     def _active_sort_key(row: dict[str, Any]) -> tuple[Decimal, Decimal, str]:
-        raw_mg = _coerce_decimal(row.get("mg_per_serving")) or Decimal("0")
         raw_claim = _coerce_decimal(row.get("label_claim_mg")) or Decimal("0")
-        return (-raw_mg, -raw_claim, row.get("item_name", "").lower())
+        raw_mg = _coerce_decimal(row.get("mg_per_serving")) or Decimal("0")
+        return (-raw_claim, -raw_mg, row.get("item_name", "").lower())
 
     actives.sort(key=_active_sort_key)
 

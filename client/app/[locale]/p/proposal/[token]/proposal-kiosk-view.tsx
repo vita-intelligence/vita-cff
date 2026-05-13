@@ -264,11 +264,11 @@ export function ProposalKioskView({
       {/* -------------------------------------------------------------- */}
       {/* Header                                                          */}
       {/* -------------------------------------------------------------- */}
-      <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
+      <section className="mt-6 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200 sm:p-6 md:p-8">
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {kiosk.code}
         </p>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
+        <h1 className="mt-1 break-words text-xl font-semibold tracking-tight text-ink-1000 sm:text-2xl md:text-3xl">
           {kiosk.customer_company ||
             kiosk.customer_name ||
             tProposals("public.header_fallback")}
@@ -443,7 +443,7 @@ export function ProposalKioskView({
       {/* Finalize                                                        */}
       {/* -------------------------------------------------------------- */}
       {!isAccepted ? (
-        <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
+        <section className="mt-6 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200 sm:p-6 md:p-8">
           <p className="text-sm text-ink-600">
             {allSigned
               ? tProposals("public.finalize_ready")
@@ -454,7 +454,7 @@ export function ProposalKioskView({
               type="button"
               onClick={handleFinalize}
               isDisabled={!allSigned || finalizing}
-              className="inline-flex h-11 items-center gap-1.5 rounded-lg bg-orange-500 px-5 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-5 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
             >
               <CheckCircle2 className="h-4 w-4" />
               {tProposals("public.finalize_cta")}
@@ -556,8 +556,8 @@ function DocumentCard({
   tProposals: ReturnType<typeof useTranslations<"proposals">>;
 }) {
   return (
-    <article className="flex flex-col gap-4 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
-      <div className="flex flex-wrap items-start gap-4">
+    <article className="flex flex-col gap-4 rounded-2xl bg-ink-0 p-4 shadow-sm ring-1 ring-ink-200 sm:p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-4">
         <div className="flex flex-1 min-w-0 flex-col gap-0.5">
           <div className="flex items-center gap-2">
             {icon}
@@ -574,7 +574,10 @@ function DocumentCard({
             </p>
           ) : null}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        {/* Action row. On mobile this drops below the title and
+            stretches full-width so the Sign button is a thumb-sized
+            target; on ≥sm it floats to the right of the title. */}
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           {hasSignature ? (
             <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
               <CheckCircle2 className="h-3.5 w-3.5" />
@@ -586,7 +589,7 @@ function DocumentCard({
               href={commentsHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:flex-initial sm:justify-start"
             >
               <MessageCircle className="h-4 w-4" />
               {commentsLabel}
@@ -601,14 +604,17 @@ function DocumentCard({
             <a
               href={downloadHref}
               download
-              className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:flex-initial sm:justify-start"
             >
               <Download className="h-4 w-4" />
               {downloadLabel}
             </a>
           ) : null}
           {!locked ? (
-            <span title={signDisabled ? signDisabledHint : undefined}>
+            <span
+              title={signDisabled ? signDisabledHint : undefined}
+              className="flex-1 sm:flex-initial"
+            >
               <Button
                 type="button"
                 variant={hasSignature ? "outline" : "primary"}
@@ -616,8 +622,8 @@ function DocumentCard({
                 isDisabled={signDisabled}
                 className={
                   hasSignature
-                    ? "inline-flex h-10 items-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    : "inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    ? "inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
+                    : "inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
                 }
               >
                 <PenLine className="h-4 w-4" />

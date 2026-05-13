@@ -357,20 +357,25 @@
       {% elif slug == "excipients" %}
         {% with excipient_rows=declaration.entries|non_active_entries %}
           {% if excipient_rows %}
-            <h2 class="section-title">Excipient Information</h2>
-            <table class="data">
-              <thead>
-                <tr><th>Excipients</th><th class="center">mg / unit</th></tr>
-              </thead>
-              <tbody>
-                {% for entry in excipient_rows %}
+            {% with numbers_visible=visibility|get_item:"excipients_numbers" %}
+              <h2 class="section-title">Excipient Information</h2>
+              <table class="data">
+                <thead>
                   <tr>
-                    <td class="name">{{ entry.label }}</td>
-                    <td class="center">{{ entry.mg|default:"—" }}</td>
+                    <th>Excipients</th>
+                    {% if numbers_visible %}<th class="center">mg / unit</th>{% endif %}
                   </tr>
-                {% endfor %}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {% for entry in excipient_rows %}
+                    <tr>
+                      <td class="name">{{ entry.label }}</td>
+                      {% if numbers_visible %}<td class="center">{{ entry.mg|default:"—" }}</td>{% endif %}
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% endwith %}
           {% endif %}
         {% endwith %}
 

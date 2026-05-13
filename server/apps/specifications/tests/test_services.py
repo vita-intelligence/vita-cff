@@ -27,6 +27,7 @@ from apps.specifications.services import (
     get_sheet,
     list_sheets,
     render_context,
+    render_html,
     resolve_limits,
     set_section_visibility,
     show_watermark_for,
@@ -570,7 +571,7 @@ class TestRenderContext:
         # 5mg claim against NRV of 10mg → 50.0
         assert active["nrv_percent"] == "50.0"
 
-    def test_actives_sorted_by_mg_per_serving_descending(self) -> None:
+    def test_actives_sorted_by_label_claim_descending(self) -> None:
         org = OrganizationFactory()
         catalogue = raw_materials_catalogue(org)
         # Insertion order is deliberately small → large → mid so the
@@ -623,6 +624,62 @@ class TestRenderContext:
         ctx = render_context(sheet)
         labels = [active["ingredient_list_name"] for active in ctx["actives"]]
         assert labels == ["Bulk Active", "Mid Active", "Trace Mineral"]
+
+    def test_actives_sort_by_label_claim_not_raw_powder(self) -> None:
+        # An extract with a small label claim has a large raw-powder
+        # weight (a 5:1 extract delivers 100 mg label claim from
+        # 500 mg powder). The customer sees the *label claim*, so the
+        # table has to be monotonically descending on that column —
+        # NOT on the raw-powder weight, which used to be the sort key
+        # and made the visible column look random whenever the
+        # formulation mixed extracts with pure actives.
+        org = OrganizationFactory()
+        catalogue = raw_materials_catalogue(org)
+        # Maca 5:1 extract: 20% purity (1 / 5) → label_claim_mg=100,
+        # mg_per_serving=500 (raw powder needed to deliver the claim).
+        extract = ItemFactory(
+            catalogue=catalogue,
+            name="Maca 5:1 Extract",
+            attributes={
+                "type": "Others",
+                "purity": "0.2",
+                "ingredient_list_name": "Maca Extract",
+            },
+        )
+        # Caffeine 90% pure: label_claim_mg=200, mg_per_serving≈222.
+        # Customer sees "200 mg" so this must beat Maca's "100 mg".
+        caffeine = ItemFactory(
+            catalogue=catalogue,
+            name="Caffeine Anhydrous",
+            attributes={
+                "type": "Others",
+                "purity": "0.9",
+                "ingredient_list_name": "Caffeine",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org, dosage_form="capsule", capsule_size="double_00"
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {"item_id": str(extract.id), "label_claim_mg": "100"},
+                {"item_id": str(caffeine.id), "label_claim_mg": "200"},
+            ],
+        )
+        version = save_version(formulation=formulation, actor=org.created_by)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        ctx = render_context(sheet)
+        labels = [active["ingredient_list_name"] for active in ctx["actives"]]
+        # Caffeine (200 mg claim) sits above Maca (100 mg claim) even
+        # though Maca outweighs it 500:222 in raw powder. Under the
+        # previous mg_per_serving sort, Maca would have led.
+        assert labels == ["Caffeine", "Maca Extract"]
 
     def test_nrv_absent_when_catalogue_lacks_value(self) -> None:
         org = OrganizationFactory()
@@ -1360,3 +1417,90 @@ class TestWatermarkDecision:
         # Safety net — unknown kinds treated as "not explicitly final"
         # so we never accidentally ship a clean PDF on a corrupted row.
         assert show_watermark_for("bogus") is True
+
+
+class TestExcipientsNumbersColumnToggle:
+    """``excipients_numbers`` is the column-level toggle that hides
+    the mg cells inside the Excipient Information section without
+    hiding the section itself. The React in-app view honours it; the
+    Django template (used by both the WeasyPrint PDF render and the
+    proposal-kiosk preview iframe) used to render the column
+    unconditionally — a real-world bug where a sheet hidden in the
+    in-app editor still leaked the numbers via the kiosk."""
+
+    def _seed_capsule(self, org):
+        catalogue = raw_materials_catalogue(org)
+        active = ItemFactory(
+            catalogue=catalogue,
+            name="Test Active",
+            attributes={
+                "type": "Others",
+                "purity": "1",
+                "ingredient_list_name": "Test Active",
+            },
+        )
+        formulation = FormulationFactory(
+            organization=org,
+            dosage_form="capsule",
+            capsule_size="double_00",
+        )
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[{"item_id": str(active.id), "label_claim_mg": "500"}],
+        )
+        return save_version(formulation=formulation, actor=org.created_by)
+
+    def test_template_omits_mg_column_when_numbers_toggle_off(
+        self,
+    ) -> None:
+        try:
+            import weasyprint  # noqa: F401
+        except Exception:
+            import pytest as _pytest
+
+            _pytest.skip("WeasyPrint not installed")
+
+        org = OrganizationFactory()
+        version = self._seed_capsule(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        set_section_visibility(
+            sheet=sheet,
+            actor=org.created_by,
+            visibility={"excipients_numbers": False},
+        )
+        sheet.refresh_from_db()
+
+        html = render_html(sheet)
+        # Section title still rendered so the customer knows what
+        # excipients are in the product…
+        assert "Excipient Information" in html
+        # …but the "mg / unit" column header is gone. The previous
+        # bug rendered this column even when the toggle was off,
+        # leaking the exact quantities through the kiosk preview.
+        assert "mg / unit" not in html
+
+    def test_template_renders_mg_column_by_default(self) -> None:
+        try:
+            import weasyprint  # noqa: F401
+        except Exception:
+            import pytest as _pytest
+
+            _pytest.skip("WeasyPrint not installed")
+
+        org = OrganizationFactory()
+        version = self._seed_capsule(org)
+        sheet = create_sheet(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        # Default visibility — toggle never written. Numbers should
+        # render because absence-of-key is treated as visible.
+        html = render_html(sheet)
+        assert "Excipient Information" in html
+        assert "mg / unit" in html
