@@ -82,6 +82,17 @@ export interface SpecificationSheetDto {
     readonly code: string;
     readonly status: string;
   } | null;
+  /** Sibling sheet currently sitting in ``in_review`` on the same
+   *  formulation + document_kind. ``null`` when the kind's review
+   *  slot is free. UI uses this to disable the "Send for review"
+   *  action with an explainer that links out to the blocking sheet —
+   *  the backend would refuse the transition anyway via
+   *  ``specification_review_slot_taken``. Always ``null`` for sheets
+   *  that are themselves in_review (no self-block). */
+  readonly review_slot_blocker: {
+    readonly id: string;
+    readonly code: string;
+  } | null;
   /** Set on render payloads when a :class:`Proposal` is attached to
    *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
   readonly has_proposal?: boolean;

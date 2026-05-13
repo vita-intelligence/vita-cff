@@ -273,20 +273,38 @@ export function SpecificationSheetView({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite
-            ? allowedNext.map((next) => (
-                <Button
-                  key={next}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                  isDisabled={isBusy}
-                  onClick={() => handleTransition(next)}
-                >
-                  {tSpecs("detail.advance_to")}{" "}
-                  {tSpecs(`status.${next}` as `status.draft`)}
-                </Button>
-              ))
+            ? allowedNext.map((next) => {
+                // Block the ``draft → in_review`` action when another
+                // sheet of the same kind is already pending the
+                // director's signature on this formulation. The
+                // backend would refuse the transition anyway
+                // (specification_review_slot_taken); disabling here
+                // makes the rule visible up front instead of after
+                // a round-trip.
+                const slotBlocked =
+                  next === "in_review" &&
+                  sheet.review_slot_blocker !== null;
+                const tooltip = slotBlocked
+                  ? tSpecs("detail.review_slot_taken_tooltip", {
+                      code: sheet.review_slot_blocker!.code,
+                    })
+                  : undefined;
+                return (
+                  <span key={next} title={tooltip}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                      isDisabled={isBusy || slotBlocked}
+                      onClick={() => handleTransition(next)}
+                    >
+                      {tSpecs("detail.advance_to")}{" "}
+                      {tSpecs(`status.${next}` as `status.draft`)}
+                    </Button>
+                  </span>
+                );
+              })
             : null}
           {/*
             Renders an anchor styled as a button so the browser handles

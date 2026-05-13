@@ -27,6 +27,7 @@
     "formulation_code_required": "Pick a project code (e.g. MA210367 or FB-001) before creating the project.",
     "formulation_code_conflict": "Another project in this organisation already uses this code.",
     "specification_code_conflict": "Another specification sheet in this project already uses this code.",
+    "specification_review_slot_taken": "Another sheet of the same kind is already waiting for the director's approval. Approve or revert that one first before sending this one for review.",
     "proposal_code_conflict": "Another proposal in this organisation already uses this code.",
     "clone_target_required": "Pick a target project to replace before duplicating.",
     "clone_target_not_found": "Couldn't find that target project in this organisation.",

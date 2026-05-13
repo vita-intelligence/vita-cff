@@ -96,6 +96,24 @@ class InvalidStatusTransition(Exception):
     code = "invalid_status_transition"
 
 
+class SpecificationReviewSlotTaken(Exception):
+    """Raised when a scientist tries to send a spec sheet for director
+    approval while another sheet of the same ``document_kind`` on the
+    same formulation is already sitting in ``in_review``.
+
+    The director has at most one of each kind awaiting their
+    signature per project — sending a second one of the same kind
+    would queue two near-identical approval requests against the
+    same recipe and is almost always an accidental double-submit.
+    The pending one must transition out (back to draft, or forward
+    to approved) before the slot frees up. The draft and final
+    slots are independent: one draft in_review + one final in_review
+    is allowed.
+    """
+
+    code = "specification_review_slot_taken"
+
+
 class InvalidSpecificationDocumentKind(Exception):
     """Payload carried a ``document_kind`` value outside the allowed set
     (``draft`` / ``final``). Rare in practice — the serializer's
@@ -592,6 +610,27 @@ def transition_status(
         # Block the internal path to ``accepted`` entirely — that
         # state is reserved for the kiosk sign-off flow.
         raise InvalidStatusTransition()
+
+    # Slot uniqueness on the ``in_review`` lane: the director has at
+    # most one sheet of each ``document_kind`` queued for their
+    # signature per project. Two drafts (or two finals) in_review on
+    # the same formulation is almost always an accidental
+    # double-submit, so we refuse and surface a dedicated error code
+    # the UI can translate into "approve / revert the pending one
+    # first." Draft and final slots are independent — one of each is
+    # allowed at the same time.
+    if next_status == SpecificationStatus.IN_REVIEW:
+        clash = (
+            SpecificationSheet.objects.filter(
+                formulation_version__formulation_id=sheet.formulation_version.formulation_id,
+                document_kind=sheet.document_kind,
+                status=SpecificationStatus.IN_REVIEW,
+            )
+            .exclude(pk=sheet.pk)
+            .exists()
+        )
+        if clash:
+            raise SpecificationReviewSlotTaken()
 
     previous_status = sheet.status
     slot = _INTERNAL_SIGNATURE_SLOT.get((previous_status, next_status))

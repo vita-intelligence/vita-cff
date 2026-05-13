@@ -21,10 +21,10 @@
   },
   "status": {
     "draft": "Draft",
-    "in_review": "In review",
-    "approved": "Approved",
-    "sent": "Sent",
-    "accepted": "Accepted",
+    "in_review": "Approved by scientist",
+    "approved": "Approved by director",
+    "sent": "Sent to customer",
+    "accepted": "Signed by customer",
     "rejected": "Rejected"
   },
   "document_kind": {
@@ -97,6 +97,7 @@
     "back": "Back to specifications",
     "status_label": "Status",
     "advance_to": "Advance to",
+    "review_slot_taken_tooltip": "Sheet {code} of the same kind is already waiting for the director's approval. Approve or revert that one before sending this one for review.",
     "download_pdf": "Download PDF",
     "share_link": "Share link",
     "edit_details": "Edit details",

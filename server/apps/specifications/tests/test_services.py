@@ -21,6 +21,7 @@ from apps.specifications.services import (
     InvalidStatusTransition,
     SpecificationCodeConflict,
     SpecificationNotFound,
+    SpecificationReviewSlotTaken,
     accept_as_customer,
     create_sheet,
     get_sheet,
@@ -290,6 +291,105 @@ class TestStatusTransitions:
         transition_status(
             sheet=sheet, actor=org.created_by, next_status="draft"
         )
+
+
+class TestReviewSlotUniqueness:
+    """Per ``(formulation, document_kind)`` the director has at most
+    one sheet sitting in ``in_review`` at a time — sending another
+    draft (or another final) of the same recipe for approval queues
+    near-identical sign-offs and is almost always an accidental
+    double-submit. Draft and final slots are independent."""
+
+    def test_blocks_second_draft_of_same_formulation(self) -> None:
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        formulation = version.formulation
+        # First draft sheet already pending director approval.
+        SpecificationSheetFactory(
+            organization=org,
+            formulation_version=version,
+            document_kind="draft",
+            status="in_review",
+        )
+        # Second draft sheet on a fresh version of the same project —
+        # different snapshot, still the same recipe family. Should be
+        # blocked.
+        second_version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        contender = SpecificationSheetFactory(
+            organization=org,
+            formulation_version=second_version,
+            document_kind="draft",
+            status="draft",
+        )
+
+        with pytest.raises(SpecificationReviewSlotTaken):
+            transition_status(
+                sheet=contender,
+                actor=org.created_by,
+                next_status="in_review",
+                signature_image=_SIG_FIXTURE,
+            )
+
+    def test_draft_and_final_slots_are_independent(self) -> None:
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        # Draft sheet pending director approval.
+        SpecificationSheetFactory(
+            organization=org,
+            formulation_version=version,
+            document_kind="draft",
+            status="in_review",
+        )
+        # Final sheet of the same recipe — different slot, allowed
+        # in parallel.
+        final = SpecificationSheetFactory(
+            organization=org,
+            formulation_version=version,
+            document_kind="final",
+            status="draft",
+        )
+
+        updated = transition_status(
+            sheet=final,
+            actor=org.created_by,
+            next_status="in_review",
+            signature_image=_SIG_FIXTURE,
+        )
+        assert updated.status == "in_review"
+
+    def test_slot_frees_up_after_director_approval(self) -> None:
+        """Customer rejection workflow: the previous draft was
+        approved by the director (and presumably sent + rejected),
+        so a fresh draft for the next revision must be queueable."""
+        org = OrganizationFactory()
+        version = _seeded_version(org)
+        formulation = version.formulation
+        # Old sheet has moved past in_review — slot is empty.
+        SpecificationSheetFactory(
+            organization=org,
+            formulation_version=version,
+            document_kind="draft",
+            status="approved",
+        )
+        revision_version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        revision = SpecificationSheetFactory(
+            organization=org,
+            formulation_version=revision_version,
+            document_kind="draft",
+            status="draft",
+        )
+
+        updated = transition_status(
+            sheet=revision,
+            actor=org.created_by,
+            next_status="in_review",
+            signature_image=_SIG_FIXTURE,
+        )
+        assert updated.status == "in_review"
 
 
 class TestProjectStatusFromSpecLifecycle:

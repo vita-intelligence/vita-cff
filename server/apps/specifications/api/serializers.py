@@ -55,6 +55,16 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     #: quoted. ``list_sheets`` prefetches the relation so this stays
     #: O(1) per row regardless of page size.
     linked_proposal = serializers.SerializerMethodField()
+    #: Compact pointer to a *sibling* sheet that's already sitting in
+    #: ``in_review`` on the same formulation + document_kind, or
+    #: ``None`` when the review slot for this kind is free. Drives
+    #: the disabled state of the "Send for review" action on the spec
+    #: sheet detail page: the backend refuses the transition (see
+    #: :class:`SpecificationReviewSlotTaken`) and this field tells
+    #: the UI which sibling is occupying the slot so the tooltip can
+    #: link out instead of just disabling silently. Empty for sheets
+    #: that are already in_review (a sheet doesn't block itself).
+    review_slot_blocker = serializers.SerializerMethodField()
 
     def get_packaging_details(self, obj) -> dict:
         return {
@@ -73,6 +83,26 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "code": proposal.code,
             "status": proposal.status,
         }
+
+    def get_review_slot_blocker(self, obj) -> dict | None:
+        # A sheet already in_review never blocks itself, so the gate
+        # only matters for sheets sitting outside the review lane
+        # that the scientist might want to push into it.
+        if obj.status == SpecificationStatus.IN_REVIEW.value:
+            return None
+        blocker = (
+            SpecificationSheet.objects.filter(
+                formulation_version__formulation_id=obj.formulation_version.formulation_id,
+                document_kind=obj.document_kind,
+                status=SpecificationStatus.IN_REVIEW,
+            )
+            .exclude(pk=obj.pk)
+            .only("id", "code")
+            .first()
+        )
+        if blocker is None:
+            return None
+        return {"id": str(blocker.id), "code": blocker.code}
 
     class Meta:
         model = SpecificationSheet
@@ -114,6 +144,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_name",
             "formulation_version_number",
             "linked_proposal",
+            "review_slot_blocker",
             "created_at",
             "updated_at",
         )

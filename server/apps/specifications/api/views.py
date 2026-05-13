@@ -35,6 +35,7 @@ from apps.specifications.services import (
     PublicLinkNotEnabled,
     SpecificationCodeConflict,
     SpecificationNotFound,
+    SpecificationReviewSlotTaken,
     create_sheet,
     get_by_public_token,
     get_sheet,
@@ -285,6 +286,11 @@ class SpecificationStatusView(APIView):
         except InvalidStatusTransition:
             return Response(
                 {"status": ["invalid_status_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationReviewSlotTaken:
+            return Response(
+                {"status": ["specification_review_slot_taken"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except SignatureRequired:

@@ -22,6 +22,8 @@ import {
   type SpecificationSheetDto,
 } from "@/services/specifications";
 
+import { SpecCreateProposalModal } from "./spec-create-proposal-modal";
+
 
 type TopTab = "proposals" | "specifications";
 type SubTab = "pipeline" | "signed";
@@ -226,6 +228,7 @@ export function SignedDocuments({
         subTab === "pipeline" ? (
           <div className="mt-6 flex flex-col gap-8">
             <SpecsSection
+              orgId={orgId}
               heading={t("sections.ready_to_send")}
               hint={t("sections.ready_to_send_hint")}
               icon={<Stamp className="h-4 w-4" />}
@@ -236,6 +239,7 @@ export function SignedDocuments({
               mode="approved"
             />
             <SpecsSection
+              orgId={orgId}
               heading={t("sections.awaiting")}
               hint={t("sections.awaiting_hint")}
               icon={<Send className="h-4 w-4" />}
@@ -249,6 +253,7 @@ export function SignedDocuments({
         ) : (
           <div className="mt-6 flex flex-col gap-8">
             <SpecsSection
+              orgId={orgId}
               heading={t("sections.signed")}
               icon={<CheckCircle2 className="h-4 w-4" />}
               emptyMessage={t("empty.signed_specs")}
@@ -397,6 +402,7 @@ function ProposalsSection({
 
 
 function SpecsSection({
+  orgId,
   heading,
   hint,
   icon,
@@ -406,6 +412,7 @@ function SpecsSection({
   errored,
   mode,
 }: {
+  orgId: string;
   heading: string;
   hint?: string;
   icon: React.ReactNode;
@@ -442,7 +449,7 @@ function SpecsSection({
       ) : (
         <ul className="mt-3 flex flex-col gap-3">
           {specs.map((s) => (
-            <SpecCard key={s.id} sheet={s} mode={mode} />
+            <SpecCard key={s.id} orgId={orgId} sheet={s} mode={mode} />
           ))}
         </ul>
       )}
@@ -531,15 +538,18 @@ function ProposalCard({
 
 
 function SpecCard({
+  orgId,
   sheet,
   mode,
 }: {
+  orgId: string;
   sheet: SpecificationSheetDto;
   mode: CardMode;
 }) {
   const t = useTranslations("signed");
   const format = useFormatter();
   const now = useNow({ updateInterval: 60_000 });
+  const [createOpen, setCreateOpen] = useState(false);
 
   const client =
     sheet.client_company ||
@@ -587,7 +597,10 @@ function SpecCard({
           </span>
           <span className="text-[11px] text-ink-400">{stampLabel}</span>
           {showProposalChip ? (
-            <ProposalLinkageChip sheet={sheet} />
+            <ProposalLinkageChip
+              sheet={sheet}
+              onCreate={() => setCreateOpen(true)}
+            />
           ) : null}
         </div>
         <Link
@@ -598,6 +611,14 @@ function SpecCard({
           {t("card.open")}
         </Link>
       </div>
+      {showProposalChip && sheet.linked_proposal === null ? (
+        <SpecCreateProposalModal
+          orgId={orgId}
+          sheet={sheet}
+          isOpen={createOpen}
+          onClose={() => setCreateOpen(false)}
+        />
+      ) : null}
     </li>
   );
 }
@@ -615,7 +636,13 @@ function SpecCard({
  *     the formulation's approved version, so the operator only has
  *     to fill in customer + price.
  */
-function ProposalLinkageChip({ sheet }: { sheet: SpecificationSheetDto }) {
+function ProposalLinkageChip({
+  sheet,
+  onCreate,
+}: {
+  sheet: SpecificationSheetDto;
+  onCreate: () => void;
+}) {
   const t = useTranslations("signed");
   const linked = sheet.linked_proposal;
   if (linked) {
@@ -638,13 +665,14 @@ function ProposalLinkageChip({ sheet }: { sheet: SpecificationSheetDto }) {
         <AlertCircle className="h-3 w-3" />
         {t("card.proposal_missing")}
       </span>
-      <Link
-        href={`/formulations/${sheet.formulation_id}/proposals`}
+      <button
+        type="button"
+        onClick={onCreate}
         className="inline-flex items-center gap-1 text-[11px] font-medium text-orange-700 hover:text-orange-800"
       >
         <Plus className="h-3 w-3" />
         {t("card.proposal_create")}
-      </Link>
+      </button>
     </span>
   );
 }
