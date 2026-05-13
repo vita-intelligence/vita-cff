@@ -375,6 +375,25 @@ export interface ReplaceLinesRequestDto {
   readonly lines: readonly FormulationLineInput[];
 }
 
+/**
+ * Payload for the ``Duplicate`` button on the builder.
+ *
+ * ``mode === "new"`` clones the source's recipe into a brand-new
+ * Formulation row using the supplied ``code`` + ``name``. Project
+ * identity (status, owner, version history, child surfaces) is fresh.
+ *
+ * ``mode === "replace"`` overwrites ``target_formulation_id``'s recipe
+ * with the source's. The target's identity stays intact; the backend
+ * auto-snapshots the target into a new version before the overwrite so
+ * the user can roll back from the version drawer if they regret it.
+ */
+export type CloneFormulationRequestDto =
+  | { readonly mode: "new"; readonly code: string; readonly name: string }
+  | {
+      readonly mode: "replace";
+      readonly target_formulation_id: string;
+    };
+
 export interface ExcipientRowDto {
   readonly slug: string;
   readonly label: string;

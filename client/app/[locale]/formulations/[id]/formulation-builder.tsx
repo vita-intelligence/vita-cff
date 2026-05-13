@@ -1,7 +1,9 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { Check, Copy, CopyPlus, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+
+import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Fragment,
@@ -1455,6 +1457,22 @@ export function FormulationBuilder({
               </span>
             ) : null}
             <div className="flex flex-wrap gap-3">
+              <DuplicateFormulationModal
+                orgId={orgId}
+                source={formulation}
+                trigger={
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="md"
+                    className="gap-1.5 rounded-lg bg-ink-0 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                    isDisabled={isBusy}
+                  >
+                    <CopyPlus className="h-4 w-4" />
+                    {tFormulations("duplicate.trigger")}
+                  </Button>
+                }
+              />
               <Button
                 type="button"
                 variant="outline"

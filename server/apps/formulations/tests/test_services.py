@@ -12,15 +12,20 @@ from apps.catalogues.tests.factories import (
 )
 from apps.formulations.models import FormulationLine
 from apps.formulations.services import (
+    CloneTargetIsSource,
+    CloneTargetNotFound,
+    CloneTargetRequired,
     FormulationCodeConflict,
     FormulationCodeRequired,
     FormulationNotFound,
     FormulationVersionNotFound,
     InvalidCapsuleSize,
+    InvalidCloneMode,
     InvalidDcpCarrierItem,
     InvalidDosageForm,
     InvalidMccCarrierItem,
     RawMaterialNotInOrg,
+    clone_formulation,
     compute_formulation_totals,
     create_formulation,
     get_formulation,
@@ -631,3 +636,318 @@ class TestCarrierSnapshot:
         assert len(rows) == 1
         assert rows[0]["item_id"] == str(carrier.id)
         assert rows[0]["label"] == "Microcrystalline Cellulose"
+
+
+class TestCloneFormulation:
+    """End-to-end coverage of the duplicate-formulation flow.
+
+    The clone service is the only entry point for the builder's
+    'Duplicate' button — it has two modes (new project / replace
+    existing) and the replace mode auto-snapshots the target before
+    overwriting. These tests cover the happy paths plus the cross-
+    tenant / self-target / mode-validation guardrails so a malicious
+    or buggy client cannot end up with a half-cloned project.
+    """
+
+    def _seed_recipe_source(self, org):
+        catalogue = raw_materials_catalogue(org)
+        active_one = ItemFactory(
+            catalogue=catalogue,
+            name='Caffeine Anhydrous',
+            attributes={
+                'use_as': 'Active',
+                'purity': '0.99',
+                'ingredient_list_name': 'Caffeine',
+            },
+        )
+        active_two = ItemFactory(
+            catalogue=catalogue,
+            name='L-Theanine',
+            attributes={
+                'use_as': 'Active',
+                'purity': '0.99',
+                'ingredient_list_name': 'L-Theanine',
+            },
+        )
+        carrier = ItemFactory(
+            catalogue=catalogue,
+            name='MCC PH-101',
+            attributes={
+                'use_as': 'Bulking Agent',
+                'ingredient_list_name': 'Microcrystalline Cellulose',
+            },
+        )
+        source = FormulationFactory(
+            organization=org,
+            name='Source Project',
+            code='SRC-1',
+            dosage_form='capsule',
+            capsule_size='double_00',
+            servings_per_pack=90,
+            serving_size=2,
+            directions_of_use='Take 2 with breakfast.',
+            suggested_dosage='2 per day',
+        )
+        replace_lines(
+            formulation=source,
+            actor=org.created_by,
+            lines=[
+                {'item_id': str(active_one.id), 'label_claim_mg': '200'},
+                {'item_id': str(active_two.id), 'label_claim_mg': '100'},
+            ],
+        )
+        update_formulation(
+            formulation=source,
+            actor=org.created_by,
+            mcc_carrier_item_ids=[str(carrier.id)],
+        )
+        source.refresh_from_db()
+        return source, [active_one, active_two], carrier
+
+    def test_new_creates_separate_formulation(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        cloned = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='new',
+            new_code='COPY-1',
+            new_name='Copy of source',
+        )
+
+        assert cloned.pk != source.pk
+        assert cloned.code == 'COPY-1'
+        assert cloned.name == 'Copy of source'
+        assert cloned.organization_id == org.id
+
+    def test_new_copies_recipe_metadata(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        cloned = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='new',
+            new_code='COPY-META',
+            new_name='Copy meta',
+        )
+
+        assert cloned.dosage_form == source.dosage_form
+        assert cloned.capsule_size == source.capsule_size
+        assert cloned.servings_per_pack == source.servings_per_pack
+        assert cloned.serving_size == source.serving_size
+        assert cloned.directions_of_use == source.directions_of_use
+        assert cloned.suggested_dosage == source.suggested_dosage
+
+    def test_new_copies_lines_in_display_order(self) -> None:
+        org = OrganizationFactory()
+        source, actives, _ = self._seed_recipe_source(org)
+
+        cloned = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='new',
+            new_code='COPY-LINES',
+            new_name='Copy lines',
+        )
+
+        cloned_lines = list(cloned.lines.order_by('display_order'))
+        assert [line.item_id for line in cloned_lines] == [
+            actives[0].id,
+            actives[1].id,
+        ]
+        assert [str(line.label_claim_mg) for line in cloned_lines] == [
+            '200.0000',
+            '100.0000',
+        ]
+
+    def test_new_copies_m2m_picks(self) -> None:
+        org = OrganizationFactory()
+        source, _, carrier = self._seed_recipe_source(org)
+
+        cloned = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='new',
+            new_code='COPY-M2M',
+            new_name='Copy m2m',
+        )
+
+        assert list(cloned.mcc_carrier_items.all()) == [carrier]
+
+    def test_new_does_not_carry_project_identity(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+        # Save a version + mark approved so we can prove they don't
+        # bleed into the clone.
+        version = save_version(formulation=source, actor=org.created_by)
+        source.approved_version_number = version.version_number
+        source.save(update_fields=['approved_version_number'])
+
+        cloned = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='new',
+            new_code='COPY-ID',
+            new_name='Copy id',
+        )
+
+        assert cloned.versions.count() == 0
+        assert cloned.approved_version_number is None
+        assert cloned.sales_person_id is None
+
+    def test_new_rejects_duplicate_code(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        with pytest.raises(FormulationCodeConflict):
+            clone_formulation(
+                source=source,
+                actor=org.created_by,
+                mode='new',
+                new_code=source.code,
+                new_name='Dup',
+            )
+
+    def test_new_rejects_blank_code(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        with pytest.raises(FormulationCodeRequired):
+            clone_formulation(
+                source=source,
+                actor=org.created_by,
+                mode='new',
+                new_code='',
+                new_name='No code',
+            )
+
+    def test_replace_overwrites_target_recipe(self) -> None:
+        org = OrganizationFactory()
+        source, actives, _ = self._seed_recipe_source(org)
+        target = FormulationFactory(
+            organization=org,
+            name='Target Project',
+            code='TGT-1',
+            dosage_form='powder',
+        )
+
+        result = clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='replace',
+            target_formulation=target,
+        )
+
+        assert result.pk == target.pk
+        result.refresh_from_db()
+        assert result.dosage_form == source.dosage_form
+        assert result.capsule_size == source.capsule_size
+        result_lines = list(result.lines.order_by('display_order'))
+        assert [line.item_id for line in result_lines] == [
+            actives[0].id,
+            actives[1].id,
+        ]
+
+    def test_replace_preserves_target_identity(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+        target = FormulationFactory(
+            organization=org,
+            name='Target Project',
+            code='TGT-2',
+            dosage_form='powder',
+        )
+
+        clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='replace',
+            target_formulation=target,
+        )
+
+        target.refresh_from_db()
+        assert target.code == 'TGT-2'
+        assert target.name == 'Target Project'
+
+    def test_replace_auto_snapshots_target_before_overwrite(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+        target = FormulationFactory(
+            organization=org,
+            name='Target Project',
+            code='TGT-3',
+            dosage_form='powder',
+        )
+
+        clone_formulation(
+            source=source,
+            actor=org.created_by,
+            mode='replace',
+            target_formulation=target,
+        )
+
+        target.refresh_from_db()
+        versions = list(target.versions.order_by('version_number'))
+        assert len(versions) == 1
+        # Snapshot captures the powder dosage form the target had
+        # before the capsule recipe overwrote it.
+        assert (
+            versions[0].snapshot_metadata['dosage_form'] == 'powder'
+        )
+
+    def test_replace_rejects_cross_org_target(self) -> None:
+        org_a = OrganizationFactory()
+        org_b = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org_a)
+        foreign_target = FormulationFactory(
+            organization=org_b,
+            name='Foreign',
+            code='FGN-1',
+            dosage_form='capsule',
+        )
+
+        with pytest.raises(CloneTargetNotFound):
+            clone_formulation(
+                source=source,
+                actor=org_a.created_by,
+                mode='replace',
+                target_formulation=foreign_target,
+            )
+
+    def test_replace_rejects_self_target(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        with pytest.raises(CloneTargetIsSource):
+            clone_formulation(
+                source=source,
+                actor=org.created_by,
+                mode='replace',
+                target_formulation=source,
+            )
+
+    def test_replace_requires_target(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        with pytest.raises(CloneTargetRequired):
+            clone_formulation(
+                source=source,
+                actor=org.created_by,
+                mode='replace',
+                target_formulation=None,
+            )
+
+    def test_invalid_mode_raises(self) -> None:
+        org = OrganizationFactory()
+        source, _, _ = self._seed_recipe_source(org)
+
+        with pytest.raises(InvalidCloneMode):
+            clone_formulation(
+                source=source,
+                actor=org.created_by,
+                mode='nope',
+            )
+

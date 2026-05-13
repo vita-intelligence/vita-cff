@@ -4,6 +4,7 @@ from django.urls import path
 
 from apps.formulations.api.views import (
     FormulationApprovedVersionView,
+    FormulationCloneView,
     FormulationComputeView,
     FormulationDetailView,
     FormulationLinesView,
@@ -61,5 +62,10 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/approved-version/",
         FormulationApprovedVersionView.as_view(),
         name="formulation-approved-version",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/clone/",
+        FormulationCloneView.as_view(),
+        name="formulation-clone",
     ),
 ]

@@ -27,6 +27,9 @@ from apps.formulations.api.serializers import (
 )
 from apps.formulations.overview import compute_project_overview
 from apps.formulations.services import (
+    CloneTargetIsSource,
+    CloneTargetNotFound,
+    CloneTargetRequired,
     FormulationCodeConflict,
     FormulationCodeRequired,
     FormulationNotFound,
@@ -34,6 +37,7 @@ from apps.formulations.services import (
     InvalidAcidityItem,
     InvalidCapsuleSize,
     InvalidAntiCakingItem,
+    InvalidCloneMode,
     InvalidDcpCarrierItem,
     InvalidPowderCarrierItem,
     InvalidDosageForm,
@@ -51,6 +55,7 @@ from apps.formulations.services import (
     RawMaterialNotInOrg,
     SalesPersonNotMember,
     assign_sales_person,
+    clone_formulation,
     compute_formulation_totals,
     create_formulation,
     get_formulation,
@@ -658,3 +663,97 @@ class FormulationOverviewView(APIView):
             raise NotFound() from exc
         overview = compute_project_overview(formulation)
         return Response(asdict(overview), status=status.HTTP_200_OK)
+
+
+class FormulationCloneView(APIView):
+    """``POST`` ``/.../formulations/<id>/clone/``.
+
+    Duplicates the source formulation's recipe into either a brand-new
+    project (``mode="new"``) or an existing project that gets its
+    recipe overwritten (``mode="replace"``). The replace path auto-
+    snapshots the target's current state into a new version BEFORE
+    overwriting so the action is reversible from the version history
+    drawer.
+
+    Permission: the standard formulations EDIT capability — anyone who
+    can save a draft on the source can clone from it.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            source = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        body = request.data if isinstance(request.data, dict) else {}
+        mode = str(body.get("mode") or "").strip()
+        new_code = body.get("code")
+        new_name = body.get("name")
+        target_id = body.get("target_formulation_id")
+        target_formulation = None
+        if mode == "replace" and target_id:
+            try:
+                target_formulation = get_formulation(
+                    organization=self.organization, formulation_id=target_id
+                )
+            except FormulationNotFound:
+                return Response(
+                    {"target_formulation_id": ["clone_target_not_found"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            result = clone_formulation(
+                source=source,
+                actor=request.user,
+                mode=mode,
+                new_code=new_code,
+                new_name=new_name,
+                target_formulation=target_formulation,
+            )
+        except InvalidCloneMode:
+            return Response(
+                {"mode": ["invalid_clone_mode"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FormulationCodeRequired:
+            # Re-used for blank name on the "new" path too, so we map
+            # it to a non-field key — the frontend surfaces the
+            # validation by disabling the submit button on empty
+            # inputs, but a malicious client bypassing that should
+            # still get a sane 400.
+            return Response(
+                {"detail": ["formulation_code_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FormulationCodeConflict:
+            return Response(
+                {"code": ["formulation_code_conflict"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except CloneTargetRequired:
+            return Response(
+                {"target_formulation_id": ["clone_target_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except CloneTargetNotFound:
+            return Response(
+                {"target_formulation_id": ["clone_target_not_found"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except CloneTargetIsSource:
+            return Response(
+                {"target_formulation_id": ["clone_target_is_source"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            FormulationReadSerializer(result).data,
+            status=status.HTTP_201_CREATED,
+        )

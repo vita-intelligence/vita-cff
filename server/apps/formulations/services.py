@@ -287,6 +287,40 @@ class SalesPersonNotMember(Exception):
     code = "sales_person_not_member"
 
 
+class InvalidCloneMode(Exception):
+    """The ``mode`` argument to :func:`clone_formulation` is neither
+    ``new`` nor ``replace``. Service-level guard so a bad caller
+    surfaces as a 400 rather than a silent fall-through."""
+
+    code = "invalid_clone_mode"
+
+
+class CloneTargetRequired(Exception):
+    """Replace mode invoked without a target formulation. The API
+    layer maps this to a 400 with a field-specific code so the
+    duplicate modal can surface a focused validation error."""
+
+    code = "clone_target_required"
+
+
+class CloneTargetNotFound(Exception):
+    """The requested target formulation does not exist within the
+    source's organization. Same cross-tenant guardrail as the rest of
+    the formulation endpoints — we do not differentiate "missing" from
+    "in another org" to avoid leaking existence."""
+
+    code = "clone_target_not_found"
+
+
+class CloneTargetIsSource(Exception):
+    """Replace mode cannot point at the source itself — a no-op that
+    would otherwise destroy the source's history via the auto-snapshot
+    then-overwrite cycle. Caller must pick a different project or
+    switch to the ``new`` mode."""
+
+    code = "clone_target_is_source"
+
+
 # ---------------------------------------------------------------------------
 # Line math — ``Table3[mg/serving]`` in Excel
 # ---------------------------------------------------------------------------
@@ -2259,6 +2293,251 @@ def update_formulation(
         after=snapshot(formulation),
     )
     return formulation
+
+
+#: Recipe fields the duplicate flow copies from one formulation to
+#: another. Project identity (``code``, ``name``, ``project_status``,
+#: ``project_type``, ``sales_person``, ``approved_version_number``,
+#: timestamps, audit history, versions, trial batches, spec sheets,
+#: proposals) is deliberately excluded so duplicating into an existing
+#: project preserves what the project IS while overwriting only what
+#: it CONTAINS.
+_CLONE_RECIPE_FIELDS: tuple[str, ...] = (
+    "description",
+    "dosage_form",
+    "capsule_size",
+    "tablet_size",
+    "serving_size",
+    "servings_per_pack",
+    "directions_of_use",
+    "suggested_dosage",
+    "appearance",
+    "disintegration_spec",
+    "target_fill_weight_mg",
+    "powder_type",
+    "water_volume_ml",
+)
+
+
+#: M2M pickers copied alongside the scalar recipe fields. Order is not
+#: significant — each ``.set()`` call replaces the destination's
+#: membership wholesale with the source's, so empty source pickers
+#: clear the destination too.
+_CLONE_M2M_FIELDS: tuple[str, ...] = (
+    "gummy_base_items",
+    "flavouring_items",
+    "colour_items",
+    "sweetener_items",
+    "glazing_items",
+    "gelling_items",
+    "premix_sweetener_items",
+    "acidity_items",
+    "mcc_carrier_items",
+    "dcp_carrier_items",
+    "anti_caking_items",
+    "powder_carrier_items",
+)
+
+
+def _source_line_inputs(source: "Formulation") -> list[dict[str, Any]]:
+    """Project the source formulation's lines into the dict shape
+    :func:`replace_lines` accepts. Preserves ``display_order`` so the
+    clone renders rows in the same sequence the scientist arranged
+    them on the source."""
+
+    rows: list[dict[str, Any]] = []
+    for line in source.lines.select_related("item").order_by("display_order", "created_at"):
+        rows.append(
+            {
+                "item_id": str(line.item_id),
+                "label_claim_mg": str(line.label_claim_mg),
+                "display_order": line.display_order,
+                "serving_size_override": line.serving_size_override,
+                "purity_override": (
+                    str(line.purity_override)
+                    if line.purity_override is not None
+                    else None
+                ),
+                "overage_override": (
+                    str(line.overage_override)
+                    if line.overage_override is not None
+                    else None
+                ),
+                "extract_ratio_override": (
+                    str(line.extract_ratio_override)
+                    if line.extract_ratio_override is not None
+                    else None
+                ),
+                "notes": line.notes or "",
+            }
+        )
+    return rows
+
+
+def _apply_recipe_to_target(
+    *, source: "Formulation", target: "Formulation"
+) -> None:
+    """Copy every recipe field from ``source`` onto ``target`` in
+    memory. Caller is responsible for saving and replacing the M2M /
+    line collections separately so the entire clone runs inside a
+    single transaction."""
+
+    for field in _CLONE_RECIPE_FIELDS:
+        setattr(target, field, getattr(source, field))
+    target.excipient_overrides = dict(source.excipient_overrides or {})
+
+
+def _copy_m2m_picks(
+    *, source: "Formulation", target: "Formulation"
+) -> None:
+    """Replace each M2M picker on ``target`` with the source's
+    membership. Empty source picker clears the target."""
+
+    for field in _CLONE_M2M_FIELDS:
+        target_manager = getattr(target, field)
+        source_manager = getattr(source, field)
+        target_manager.set(list(source_manager.all()))
+
+
+@transaction.atomic
+def clone_formulation(
+    *,
+    source: Formulation,
+    actor: Any,
+    mode: str,
+    new_code: str | None = None,
+    new_name: str | None = None,
+    target_formulation: Formulation | None = None,
+) -> Formulation:
+    """Duplicate the source formulation's recipe.
+
+    Two modes:
+
+    * ``mode == "new"`` — create a brand-new ``Formulation`` row in the
+      source's organisation with the supplied ``new_code`` /
+      ``new_name``. Every recipe field, M2M picker, and ingredient
+      line is copied. Project identity (``project_status``,
+      ``sales_person``, version history, trial batches, spec sheets,
+      proposals) is NOT carried — those belong to a project, not a
+      recipe.
+
+    * ``mode == "replace"`` — overwrite ``target_formulation``'s recipe
+      with the source's. The target's identity (code, name, status,
+      owner, history) stays intact; only the recipe payload changes.
+      The target's current state is **auto-snapshotted** into a new
+      :class:`FormulationVersion` BEFORE the overwrite so the user can
+      roll back if they regret the replace.
+
+    Both modes run in a single transaction — partial failures roll
+    back so the database never ends up with a half-cloned project."""
+
+    if mode == "new":
+        code_value = (new_code or "").strip()
+        name_value = (new_name or "").strip()
+        if not name_value:
+            # Re-use the code-required error semantics for a blank
+            # name — surfaces the same field-level validation flow on
+            # the frontend rather than a generic exception.
+            raise FormulationCodeRequired()
+        # ``create_formulation`` handles code blank/duplicate validation
+        # and the dosage-form + capsule/tablet size sanity checks.
+        new_formulation = create_formulation(
+            organization=source.organization,
+            actor=actor,
+            name=name_value,
+            code=code_value,
+            description=source.description,
+            dosage_form=source.dosage_form,
+            capsule_size=source.capsule_size,
+            tablet_size=source.tablet_size,
+            serving_size=source.serving_size,
+            servings_per_pack=source.servings_per_pack,
+            directions_of_use=source.directions_of_use,
+            suggested_dosage=source.suggested_dosage,
+            appearance=source.appearance,
+            disintegration_spec=source.disintegration_spec,
+            target_fill_weight_mg=source.target_fill_weight_mg,
+            powder_type=source.powder_type,
+            water_volume_ml=source.water_volume_ml,
+        )
+        new_formulation.excipient_overrides = dict(
+            source.excipient_overrides or {}
+        )
+        new_formulation.save(update_fields=["excipient_overrides"])
+        _copy_m2m_picks(source=source, target=new_formulation)
+        line_inputs = _source_line_inputs(source)
+        if line_inputs:
+            replace_lines(
+                formulation=new_formulation, actor=actor, lines=line_inputs
+            )
+        record_audit(
+            organization=source.organization,
+            actor=actor,
+            action="formulation.clone",
+            target=new_formulation,
+            after={
+                "mode": "new",
+                "source_id": str(source.pk),
+                "source_code": source.code,
+            },
+        )
+        return new_formulation
+
+    if mode == "replace":
+        if target_formulation is None:
+            raise CloneTargetRequired()
+        if target_formulation.organization_id != source.organization_id:
+            # Same cross-tenant guardrail as the rest of the
+            # formulations API — never reveal whether the id exists
+            # in another org.
+            raise CloneTargetNotFound()
+        if target_formulation.pk == source.pk:
+            raise CloneTargetIsSource()
+
+        # Auto-snapshot the target's current state so the scientist
+        # can roll back if they regret the replace. Failing this
+        # would dead-end the user; let any underlying exception
+        # propagate and roll back the whole transaction.
+        save_version(
+            formulation=target_formulation,
+            actor=actor,
+            label="Auto-snapshot before duplicate",
+        )
+
+        before = snapshot(target_formulation)
+        _apply_recipe_to_target(source=source, target=target_formulation)
+        target_formulation.updated_by = actor
+        target_formulation.save(
+            update_fields=(
+                *_CLONE_RECIPE_FIELDS,
+                "excipient_overrides",
+                "updated_by",
+                "updated_at",
+            )
+        )
+        _copy_m2m_picks(source=source, target=target_formulation)
+        line_inputs = _source_line_inputs(source)
+        # Always call ``replace_lines`` — even an empty list clears
+        # the target's existing lines, which is the correct outcome
+        # when cloning from a source that has no actives yet.
+        replace_lines(
+            formulation=target_formulation, actor=actor, lines=line_inputs
+        )
+        record_audit(
+            organization=source.organization,
+            actor=actor,
+            action="formulation.clone",
+            target=target_formulation,
+            before=before,
+            after={
+                "mode": "replace",
+                "source_id": str(source.pk),
+                "source_code": source.code,
+            },
+        )
+        return target_formulation
+
+    raise InvalidCloneMode()
 
 
 def _validate_dosage_form(value: str) -> None:

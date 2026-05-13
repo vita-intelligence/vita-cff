@@ -1,6 +1,7 @@
 export { formulationsEndpoints } from "./endpoints";
 export {
   assignFormulationSalesPerson,
+  cloneFormulation,
   computeFormulationTotals,
   createFormulation,
   deleteFormulation,
@@ -18,6 +19,7 @@ export {
 export {
   formulationsQueryKeys,
   useAssignSalesPerson,
+  useCloneFormulation,
   useCreateFormulation,
   useDeleteFormulation,
   useFormulation,
@@ -97,6 +99,7 @@ export {
   type FormulationsListQuery,
   type LineItemAttributes,
   type AssignSalesPersonRequestDto,
+  type CloneFormulationRequestDto,
   type PaginatedFormulationsDto,
   type ReplaceLinesRequestDto,
   type RollbackRequestDto,

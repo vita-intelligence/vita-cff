@@ -7,6 +7,7 @@ import { apiClient } from "@/lib/api";
 import { formulationsEndpoints } from "./endpoints";
 import type {
   AssignSalesPersonRequestDto,
+  CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
   FormulationTotalsDto,
@@ -194,6 +195,24 @@ export async function assignFormulationSalesPerson(
 ): Promise<FormulationDto> {
   const { data } = await apiClient.put<FormulationDto>(
     formulationsEndpoints.salesPerson(orgId, formulationId),
+    payload,
+  );
+  return data;
+}
+
+/**
+ * Duplicate a formulation's recipe into either a brand-new project
+ * ("new" mode) or an existing project ("replace" mode). The backend
+ * snapshots the target into a new version before any overwrite so
+ * "replace" stays reversible from the version drawer.
+ */
+export async function cloneFormulation(
+  orgId: string,
+  sourceFormulationId: string,
+  payload: CloneFormulationRequestDto,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.post<FormulationDto>(
+    formulationsEndpoints.clone(orgId, sourceFormulationId),
     payload,
   );
   return data;

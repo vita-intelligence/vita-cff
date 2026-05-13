@@ -18,6 +18,7 @@ import { rootQueryKey } from "@/lib/query";
 
 import {
   assignFormulationSalesPerson,
+  cloneFormulation,
   computeFormulationTotals,
   createFormulation,
   deleteFormulation,
@@ -34,6 +35,7 @@ import {
 } from "./api";
 import type {
   AssignSalesPersonRequestDto,
+  CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
   FormulationTotalsDto,
@@ -330,6 +332,46 @@ export function useRollbackFormulation(
       });
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.versions(orgId, formulationId),
+      });
+    },
+  });
+}
+
+/**
+ * Duplicate a formulation's recipe — either into a brand-new project
+ * or onto an existing one. The mutation invalidates the list (so a
+ * "new" mode result appears in /formulations) and, for a "replace"
+ * result, also kicks the target's detail / overview / totals /
+ * versions caches so the builder repaints with the cloned recipe
+ * without a hard refresh.
+ */
+export function useCloneFormulation(
+  orgId: string,
+  sourceFormulationId: string,
+): UseMutationResult<FormulationDto, ApiError, CloneFormulationRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, CloneFormulationRequestDto>({
+    mutationFn: (payload) =>
+      cloneFormulation(orgId, sourceFormulationId, payload),
+    onSuccess: (result) => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.list(orgId),
+      });
+      // ``result`` is the new (mode=new) or updated (mode=replace)
+      // formulation. Either way, kicking its caches ensures the
+      // builder we redirect to renders the fresh recipe rather than
+      // any stale per-id cache.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, result.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.totals(orgId, result.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.versions(orgId, result.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, result.id),
       });
     },
   });
