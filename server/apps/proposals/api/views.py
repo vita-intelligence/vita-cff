@@ -11,6 +11,7 @@ do not lose access on upgrade.
 from __future__ import annotations
 
 import hashlib
+import json
 from decimal import Decimal
 from typing import Any
 
@@ -58,16 +59,170 @@ def _user_agent(request: Request) -> str:
     return request.META.get("HTTP_USER_AGENT", "") or ""
 
 
-def _document_hash(html: str) -> str:
-    """Return the SHA-256 hex digest of the rendered HTML.
+def _document_hash(payload: str) -> str:
+    """Return the SHA-256 hex digest of a canonical payload string.
 
-    Stored on the signature record so a later edit to the proposal
-    (or its underlying formulation snapshot) is detectable: re-render
-    the document, re-hash, compare. Any divergence means the contract
-    in the DB no longer matches what the signer saw.
+    Callers should pass the output of :func:`_canonical_proposal_payload`
+    or :func:`_canonical_spec_payload` — a deterministic JSON
+    serialisation of the **contract data** the signer agreed to (not
+    the rendered HTML). Hashing structured data instead of rendered
+    HTML means template / CSS / wording fixes ship through deploys
+    without triggering false-positive "Document has changed since
+    signing" badges on every prior signature.
     """
 
-    return hashlib.sha256(html.encode("utf-8")).hexdigest()
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _canonical_proposal_payload(proposal) -> str:
+    """Serialise the proposal's contract-bearing fields as canonical
+    JSON for hashing.
+
+    Includes only the things that legally constitute "what the
+    customer agreed to": their contact info, the pricing, the line
+    items, the acknowledgement boxes they ticked, and the signature
+    block (signer identity + image + signed-at + source IP / UA).
+    Excludes anything presentational (template_type-driven copy,
+    rendered HTML, dates we display but don't store, etc.) so the
+    digest is stable across template revisions.
+
+    Decimals and dates are coerced to strings via Django's natural
+    ``str()`` representation. ``sort_keys=True`` pins the field
+    order so two equivalent dicts always serialise identically.
+    """
+
+    payload: dict[str, Any] = {
+        "code": proposal.code or "",
+        "template_type": proposal.template_type or "",
+        "currency": proposal.currency or "",
+        "customer_name": proposal.customer_name or "",
+        "customer_company": proposal.customer_company or "",
+        "customer_email": proposal.customer_email or "",
+        "customer_phone": proposal.customer_phone or "",
+        "invoice_address": proposal.invoice_address or "",
+        "delivery_address": proposal.delivery_address or "",
+        "reference": proposal.reference or "",
+        "dear_name": proposal.dear_name or "",
+        "quantity": proposal.quantity,
+        "unit_price": (
+            str(proposal.unit_price) if proposal.unit_price is not None else None
+        ),
+        "freight_amount": (
+            str(proposal.freight_amount)
+            if proposal.freight_amount is not None
+            else None
+        ),
+        "subtotal": (
+            str(proposal.subtotal) if proposal.subtotal is not None else None
+        ),
+        "total_excl_vat": (
+            str(proposal.total_excl_vat)
+            if proposal.total_excl_vat is not None
+            else None
+        ),
+        "valid_until": (
+            proposal.valid_until.isoformat()
+            if proposal.valid_until is not None
+            else None
+        ),
+        # Line ordering matches the template's ``display_order,
+        # created_at`` rule so the hash matches the order the customer
+        # saw on the kiosk.
+        "lines": [
+            {
+                "product_code": line.product_code or "",
+                "description": line.description or "",
+                "quantity": line.quantity,
+                "unit_cost": (
+                    str(line.unit_cost) if line.unit_cost is not None else None
+                ),
+                "unit_price": (
+                    str(line.unit_price) if line.unit_price is not None else None
+                ),
+                "subtotal": (
+                    str(line.subtotal) if line.subtotal is not None else None
+                ),
+                "specification_sheet_id": (
+                    str(line.specification_sheet_id)
+                    if line.specification_sheet_id is not None
+                    else None
+                ),
+                "formulation_version_id": (
+                    str(line.formulation_version_id)
+                    if line.formulation_version_id is not None
+                    else None
+                ),
+            }
+            for line in proposal.lines.all().order_by(
+                "display_order", "created_at"
+            )
+        ],
+        "acks": {
+            "spec_signing": bool(proposal.ack_spec_signing),
+            "lead_times": bool(proposal.ack_lead_times),
+            "terms": bool(proposal.ack_terms),
+            "rd_terms": bool(proposal.ack_rd_terms),
+        },
+        # Signature block — the signature itself is part of what the
+        # audit attests to, so it goes into the hash. IP / UA are
+        # captured at sign time and shouldn't change after; including
+        # them in the hash flags tampering of the audit metadata too.
+        "signature": {
+            "signer_name": proposal.customer_signer_name or "",
+            "signer_email": proposal.customer_signer_email or "",
+            "signer_company": proposal.customer_signer_company or "",
+            "signed_at": (
+                proposal.customer_signed_at.isoformat()
+                if proposal.customer_signed_at is not None
+                else None
+            ),
+            "image": proposal.customer_signature_image or "",
+            "ip": proposal.customer_sign_ip or "",
+            "user_agent": proposal.customer_sign_user_agent or "",
+        },
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _canonical_spec_payload(sheet) -> str:
+    """Serialise a spec sheet's contract-bearing fields as canonical
+    JSON for hashing.
+
+    Same philosophy as :func:`_canonical_proposal_payload`. The
+    formulation version is captured by ``formulation_version_id``,
+    which is immutable on the version model — including the id is
+    enough to fingerprint the entire recipe + nutrition + compliance
+    payload without serialising the snapshot itself.
+    """
+
+    payload: dict[str, Any] = {
+        "code": sheet.code or "",
+        "document_kind": getattr(sheet, "document_kind", "") or "",
+        "formulation_version_id": (
+            str(sheet.formulation_version_id)
+            if sheet.formulation_version_id is not None
+            else None
+        ),
+        "customer_name": sheet.customer_name or "",
+        "customer_email": sheet.customer_email or "",
+        "customer_company": sheet.customer_company or "",
+        "limits_override": sheet.limits_override or {},
+        # Two staff-driven render overrides — included because they
+        # change *what* the customer saw, not just *how* it looked.
+        "section_visibility": sheet.section_visibility or {},
+        "section_order": sheet.section_order or [],
+        "signature": {
+            "signed_at": (
+                sheet.customer_signed_at.isoformat()
+                if sheet.customer_signed_at is not None
+                else None
+            ),
+            "image": sheet.customer_signature_image or "",
+            "ip": sheet.customer_sign_ip or "",
+            "user_agent": sheet.customer_sign_user_agent or "",
+        },
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 def _render_proposal_html(proposal) -> str:
     """Render the proposal as a plain HTML document.
@@ -791,7 +946,6 @@ class ProposalAuditView(APIView):
         self, request: Request, org_id: str, proposal_id: str
     ) -> Response:
         from apps.proposals.services import _attached_spec_sheets
-        from apps.specifications.services import render_html as _render_spec_html
 
         proposal = self._load(proposal_id)
 
@@ -802,7 +956,7 @@ class ProposalAuditView(APIView):
         proposal_stored_hash = proposal.customer_sign_document_hash or ""
         if proposal.customer_signed_at is not None:
             proposal_current_hash = _document_hash(
-                _render_proposal_html(proposal)
+                _canonical_proposal_payload(proposal)
             )
         else:
             proposal_current_hash = ""
@@ -830,7 +984,9 @@ class ProposalAuditView(APIView):
         for sheet in _attached_spec_sheets(proposal):
             sheet_stored_hash = sheet.customer_sign_document_hash or ""
             if sheet.customer_signed_at is not None:
-                sheet_current_hash = _document_hash(_render_spec_html(sheet))
+                sheet_current_hash = _document_hash(
+                    _canonical_spec_payload(sheet)
+                )
             else:
                 sheet_current_hash = ""
             specs_block.append(
@@ -1346,12 +1502,11 @@ class PublicProposalSignProposalView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Post-sign hash: re-render the document *with* the captured
-        # signature + ticked acks baked in, hash it, persist. The
-        # audit endpoint compares its live re-render to this value,
-        # so any later mutation of the proposal's data flips
-        # ``hash_matches`` to ``False``.
-        post_sign_hash = _document_hash(_render_proposal_html(updated))
+        # Hash the canonical contract payload (customer info, pricing,
+        # lines, acks, signature). Stable across deploys — only
+        # business-data edits move the digest. See
+        # :func:`_canonical_proposal_payload` for the field list.
+        post_sign_hash = _document_hash(_canonical_proposal_payload(updated))
         updated.customer_sign_document_hash = post_sign_hash
         updated.save(update_fields=["customer_sign_document_hash"])
 
@@ -1399,8 +1554,6 @@ class PublicProposalSignSpecView(APIView):
         session = identity.session
 
         signature_image = (request.data or {}).get("signature_image") or ""
-        from apps.specifications.services import render_html as _render_spec_html
-
         try:
             updated = capture_customer_signature_on_attached_spec(
                 proposal=proposal,
@@ -1429,11 +1582,10 @@ class PublicProposalSignSpecView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Post-sign hash on the spec sheet — mirrors the proposal-sign
-        # path. The rendered spec HTML bakes the customer signature
-        # image + timestamp in, so hashing pre-sign would never match
-        # the audit endpoint's re-render.
-        post_sign_hash = _document_hash(_render_spec_html(updated))
+        # Canonical-payload hash on the spec sheet — mirrors the
+        # proposal-sign path. See :func:`_canonical_spec_payload` for
+        # field selection.
+        post_sign_hash = _document_hash(_canonical_spec_payload(updated))
         updated.customer_sign_document_hash = post_sign_hash
         updated.save(update_fields=["customer_sign_document_hash"])
 

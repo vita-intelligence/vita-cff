@@ -149,16 +149,16 @@ class TestProposalAuditEndpoint:
         assert len(spec["current_hash"]) == 64
         assert spec["hash_matches"] is False
 
-    def test_hash_matches_when_stored_equals_post_sign_render(
+    def test_hash_matches_when_stored_equals_canonical_payload(
         self, api_client: APIClient
     ) -> None:
-        # Signing baked-in: stamp the post-sign hash the same way the
-        # public sign endpoint does (sign → re-render → hash → save).
-        # Reading the audit endpoint right after should report a
-        # match because the document hasn't drifted.
+        # End-to-end: sign, stamp the canonical-payload hash the same
+        # way the public sign endpoint does, then read the audit
+        # endpoint and assert ``hash_matches=True`` — the document
+        # hasn't drifted.
         from apps.proposals.api.views import (
+            _canonical_proposal_payload,
             _document_hash,
-            _render_proposal_html,
         )
 
         owner = UserFactory(password=DEFAULT_TEST_PASSWORD)
@@ -170,8 +170,6 @@ class TestProposalAuditEndpoint:
             status=ProposalStatus.SENT.value,
         )
 
-        # Step 1: sign (this mutates the proposal — adds signature
-        # image + signed_at, which become part of the rendered HTML).
         updated = capture_customer_signature_on_proposal(
             proposal=proposal,
             signer_name="Alex",
@@ -185,11 +183,8 @@ class TestProposalAuditEndpoint:
             sign_ip="203.0.113.42",
             sign_user_agent="UA",
         )
-        # Step 2: hash the post-sign render and persist — mirrors
-        # what ``PublicProposalSignProposalView`` does after the
-        # service returns.
         updated.customer_sign_document_hash = _document_hash(
-            _render_proposal_html(updated)
+            _canonical_proposal_payload(updated)
         )
         updated.save(update_fields=["customer_sign_document_hash"])
 
@@ -211,8 +206,8 @@ class TestProposalAuditEndpoint:
         # the audit endpoint immediately flips ``hash_matches`` to
         # ``False`` so staff can spot post-sign drift.
         from apps.proposals.api.views import (
+            _canonical_proposal_payload,
             _document_hash,
-            _render_proposal_html,
         )
 
         owner = UserFactory(password=DEFAULT_TEST_PASSWORD)
@@ -235,13 +230,13 @@ class TestProposalAuditEndpoint:
             ack_rd_terms=True,
         )
         updated.customer_sign_document_hash = _document_hash(
-            _render_proposal_html(updated)
+            _canonical_proposal_payload(updated)
         )
         updated.save(update_fields=["customer_sign_document_hash"])
 
-        # Mutate the proposal *after* the hash was captured. Saving
-        # ``customer_name`` directly bypasses the terminal-state guard
-        # so the test stays focused on hash-drift detection.
+        # Mutate the proposal *after* the hash was captured. ``update``
+        # bypasses the terminal-state guard so the test stays focused
+        # on hash-drift detection rather than the mutation gate.
         from apps.proposals.models import Proposal
 
         Proposal.objects.filter(id=proposal.id).update(
@@ -253,6 +248,48 @@ class TestProposalAuditEndpoint:
 
         assert response.status_code == status.HTTP_200_OK
         assert response.data["proposal"]["hash_matches"] is False
+
+    def test_canonical_hash_is_deterministic(self) -> None:
+        # Same inputs → same hash, every time. Pins the
+        # ``sort_keys=True`` + ``separators=(",", ":")`` contract that
+        # makes the digest reproducible across processes and deploys.
+        from apps.proposals.api.views import (
+            _canonical_proposal_payload,
+            _document_hash,
+        )
+
+        owner = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="Deterministic Co")
+        proposal = ProposalFactory(
+            organization=org,
+            created_by=owner,
+            updated_by=owner,
+            status=ProposalStatus.SENT.value,
+        )
+        capture_customer_signature_on_proposal(
+            proposal=proposal,
+            signer_name="Alex",
+            signer_email="alex@buyer.test",
+            signer_company="Buyer",
+            signature_image=_TINY_PNG,
+            ack_spec_signing=True,
+            ack_lead_times=True,
+            ack_terms=True,
+            ack_rd_terms=True,
+        )
+        proposal.refresh_from_db()
+
+        first = _document_hash(_canonical_proposal_payload(proposal))
+        # Re-fetch the row from scratch — same effect a fresh worker
+        # process (or a re-deploy) would have. The payload helper
+        # must not rely on Python object identity or ordering side
+        # effects to produce its digest.
+        from apps.proposals.models import Proposal
+
+        reloaded = Proposal.objects.get(id=proposal.id)
+        second = _document_hash(_canonical_proposal_payload(reloaded))
+
+        assert first == second
 
     def test_anonymous_caller_blocked(self, api_client: APIClient) -> None:
         # The endpoint requires ``proposals:view_signed``; anonymous
