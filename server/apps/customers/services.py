@@ -3,6 +3,10 @@
 The address-book is deliberately thin: CRUD plus a search helper the
 proposal picker hits to populate its typeahead. Keeping this module
 tiny lets us evolve ``Customer`` without touching proposal code.
+
+The Microsoft Dynamics integration (config CRUD + on-demand import)
+also lives here so the customer surface stays the single source of
+truth for what a "customer" means inside the app.
 """
 
 from __future__ import annotations
@@ -11,14 +15,43 @@ from typing import Any
 
 from django.db import transaction
 from django.db.models import Q, QuerySet
+from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
+from apps.customers.dynamics import (
+    DataverseError,
+    DynamicsConfig,
+    DynamicsContact,
+    get_client,
+)
 from apps.customers.models import Customer
+from apps.organizations.encryption import (
+    DecryptionFailed,
+    decrypt_secret,
+    encrypt_secret,
+)
 from apps.organizations.models import Organization
 
 
 class CustomerNotFound(Exception):
     code = "customer_not_found"
+
+
+class DynamicsNotConfigured(Exception):
+    """The org has no usable Dynamics config (missing fields, or the
+    integration was disabled). The API layer maps this to a 400 so
+    the picker can surface a "set up Dynamics first" hint."""
+
+    code = "dynamics_not_configured"
+
+
+class DynamicsConfigInvalid(Exception):
+    """A required field was missing in the config payload. Caller
+    is expected to pass a dict from the trusted API serializer, so
+    this is a developer error rather than a user-facing validation
+    failure."""
+
+    code = "dynamics_config_invalid"
 
 
 def list_customers(
@@ -139,3 +172,298 @@ def delete_customer(*, customer: Customer, actor: Any) -> None:
         target_id=target_id,
         before=before,
     )
+
+
+# ---------------------------------------------------------------------------
+# Microsoft Dynamics integration — config + on-demand contact import
+# ---------------------------------------------------------------------------
+
+
+def _decode_dynamics_config(raw: dict[str, Any] | None) -> DynamicsConfig:
+    """Decode the JSON-on-disk shape into the typed
+    :class:`DynamicsConfig` the client + service layers consume.
+
+    Decryption failures bubble up as :class:`DecryptionFailed` —
+    handled at the API boundary by surfacing a "re-enter credentials"
+    error rather than crashing the request.
+    """
+
+    data = raw or {}
+    ciphertext = str(data.get("client_secret_ciphertext") or "")
+    return DynamicsConfig(
+        enabled=bool(data.get("enabled")),
+        dataverse_url=str(data.get("dataverse_url") or "").strip(),
+        tenant_id=str(data.get("tenant_id") or "").strip(),
+        client_id=str(data.get("client_id") or "").strip(),
+        client_secret=decrypt_secret(ciphertext) if ciphertext else "",
+    )
+
+
+def get_dynamics_config(*, organization: Organization) -> DynamicsConfig:
+    """Decode and return the org's Dynamics config — secret in
+    plaintext. Used internally for picker / import calls. Do NOT
+    return this directly from an API endpoint — the wire shape
+    uses :func:`serialize_dynamics_config_for_api` which redacts
+    the secret."""
+
+    return _decode_dynamics_config(organization.dynamics_config or {})
+
+
+def serialize_dynamics_config_for_api(
+    organization: Organization,
+) -> dict[str, Any]:
+    """Wire shape for ``GET /integrations/dynamics/``. Surfaces
+    every field EXCEPT the plaintext client secret — that field
+    becomes a boolean ``has_secret`` so the form can render a
+    "●●●●●●●" placeholder without leaking the value."""
+
+    raw = organization.dynamics_config or {}
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "dataverse_url": str(raw.get("dataverse_url") or ""),
+        "tenant_id": str(raw.get("tenant_id") or ""),
+        "client_id": str(raw.get("client_id") or ""),
+        "has_secret": bool(raw.get("client_secret_ciphertext")),
+        "last_tested_at": raw.get("last_tested_at") or None,
+    }
+
+
+@transaction.atomic
+def set_dynamics_config(
+    *,
+    organization: Organization,
+    actor: Any,
+    enabled: bool,
+    dataverse_url: str,
+    tenant_id: str,
+    client_id: str,
+    client_secret: str | None,
+) -> dict[str, Any]:
+    """Persist a new Dynamics integration config.
+
+    ``client_secret=None`` (or empty string) means "keep the
+    previously stored secret". Passing a non-empty string rotates
+    the secret; passing the literal empty string AFTER explicitly
+    clearing (``enabled=False``) wipes it.
+
+    Returns the API-serialized config so the caller can echo
+    immediately without a second query.
+    """
+
+    existing = organization.dynamics_config or {}
+    existing_cipher = str(existing.get("client_secret_ciphertext") or "")
+
+    if client_secret is None or client_secret == "":
+        # No new secret provided — keep whatever's already on disk.
+        # Lets the admin edit the dataverse_url / tenant_id without
+        # re-pasting the secret every time.
+        ciphertext = existing_cipher
+    else:
+        ciphertext = encrypt_secret(client_secret)
+
+    payload: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "dataverse_url": dataverse_url.strip(),
+        "tenant_id": tenant_id.strip(),
+        "client_id": client_id.strip(),
+        "client_secret_ciphertext": ciphertext,
+        # Reset the test timestamp on every save — admin must re-run
+        # "Test Connection" to confirm the new values work.
+        "last_tested_at": None,
+    }
+    organization.dynamics_config = payload
+    organization.save(update_fields=["dynamics_config", "updated_at"])
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="organization.dynamics_config.update",
+        target=organization,
+        # NEVER include the secret (cipher or plain) in audit logs.
+        after={
+            "enabled": payload["enabled"],
+            "dataverse_url": payload["dataverse_url"],
+            "tenant_id": payload["tenant_id"],
+            "client_id": payload["client_id"],
+            "has_secret": bool(ciphertext),
+        },
+    )
+    return serialize_dynamics_config_for_api(organization)
+
+
+@transaction.atomic
+def clear_dynamics_config(
+    *, organization: Organization, actor: Any
+) -> dict[str, Any]:
+    """Wipe the org's Dynamics config — turns the integration off
+    and forgets the credentials. Does NOT delete imported
+    customers; they stay (with ``dynamics_id`` still set) so
+    historical proposals keep working."""
+
+    organization.dynamics_config = {}
+    organization.save(update_fields=["dynamics_config", "updated_at"])
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="organization.dynamics_config.clear",
+        target=organization,
+    )
+    return serialize_dynamics_config_for_api(organization)
+
+
+def test_dynamics_connection(*, organization: Organization, actor: Any) -> None:
+    """Round-trip the org's Dynamics config through a single low-
+    cost API call (``WhoAmI``) to confirm auth + reachability.
+
+    Raises :class:`DynamicsNotConfigured` if the config is missing
+    or incomplete, or a :class:`DataverseError` subclass on any
+    Dynamics-side failure. On success persists ``last_tested_at``
+    and returns silently — the caller renders a "✓ Connected" badge
+    in the settings UI.
+    """
+
+    config = get_dynamics_config(organization=organization)
+    if not config.is_complete:
+        raise DynamicsNotConfigured()
+    client = get_client(config)
+    client.test_connection()  # raises DataverseError on failure
+
+    # Mark the timestamp so the settings page can render "Tested 2
+    # minutes ago" — gives the admin confidence that the saved
+    # config still works without re-clicking.
+    raw = dict(organization.dynamics_config or {})
+    raw["last_tested_at"] = timezone.now().isoformat()
+    organization.dynamics_config = raw
+    organization.save(update_fields=["dynamics_config", "updated_at"])
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="organization.dynamics_config.tested",
+        target=organization,
+        after={"ok": True},
+    )
+
+
+def search_dynamics_contacts(
+    *, organization: Organization, query: str, limit: int = 10
+) -> list[DynamicsContact]:
+    """Search the org's Dynamics tenant for contacts matching
+    ``query``.
+
+    Raises :class:`DynamicsNotConfigured` when the integration is
+    off / incomplete, or a :class:`DataverseError` subclass on any
+    Dynamics-side failure. Picker callers catch the base
+    :class:`DataverseError` and silently return an empty list so a
+    Dynamics outage never blocks the local search.
+    """
+
+    config = get_dynamics_config(organization=organization)
+    if not config.is_complete:
+        raise DynamicsNotConfigured()
+    client = get_client(config)
+    return client.search_contacts(query=query, limit=limit)
+
+
+#: Fields the import service overwrites with the freshest Dynamics
+#: data on every re-import. Everything else (notably ``notes``,
+#: which scientists / sales edit locally) stays untouched so we
+#: never silently overwrite human-curated context.
+_DYNAMICS_OVERWRITABLE_FIELDS = (
+    "name",
+    "company",
+    "email",
+    "phone",
+    "invoice_address",
+    "delivery_address",
+)
+
+
+@transaction.atomic
+def import_customer_from_dynamics(
+    *,
+    organization: Organization,
+    actor: Any,
+    contact: DynamicsContact,
+) -> Customer:
+    """Idempotent import: get-or-create a local :class:`Customer`
+    keyed on the Dynamics GUID.
+
+    * If the org already has a Customer with this ``dynamics_id``:
+      refresh the identity fields from the Dynamics payload (so a
+      renamed contact updates), bump ``dynamics_synced_at``, and
+      return that row. Never overwrites ``notes`` or any
+      locally-edited field outside :data:`_DYNAMICS_OVERWRITABLE_FIELDS`.
+
+    * Otherwise: create a new Customer with ``dynamics_id`` set
+      and identity fields populated from Dynamics.
+
+    Atomic. Audit-logged in both branches so a 1-row rollback is
+    one query (``DELETE WHERE id = X``).
+    """
+
+    if not contact.dynamics_id:
+        raise DynamicsConfigInvalid(
+            "Dynamics contact payload is missing the source id."
+        )
+
+    existing = (
+        Customer.objects.select_for_update()
+        .filter(organization=organization, dynamics_id=contact.dynamics_id)
+        .first()
+    )
+    if existing is not None:
+        before = snapshot(existing)
+        existing.name = contact.name
+        existing.company = contact.company
+        existing.email = contact.email
+        existing.phone = contact.phone
+        existing.invoice_address = contact.address
+        existing.delivery_address = contact.address
+        existing.dynamics_synced_at = timezone.now()
+        existing.updated_by = actor
+        existing.save(
+            update_fields=(
+                *_DYNAMICS_OVERWRITABLE_FIELDS,
+                "dynamics_synced_at",
+                "updated_by",
+                "updated_at",
+            )
+        )
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="customer.dynamics_refreshed",
+            target=existing,
+            before=before,
+            after=snapshot(existing),
+        )
+        return existing
+
+    customer = Customer.objects.create(
+        organization=organization,
+        name=contact.name,
+        company=contact.company,
+        email=contact.email,
+        phone=contact.phone,
+        invoice_address=contact.address,
+        delivery_address=contact.address,
+        notes="",
+        dynamics_id=contact.dynamics_id,
+        dynamics_synced_at=timezone.now(),
+        created_by=actor,
+        updated_by=actor,
+    )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="customer.dynamics_imported",
+        target=customer,
+        after=snapshot(customer),
+    )
+    return customer
+
+
+# Re-export decryption error so the API layer can map it without
+# importing from the org app directly — keeps the customer-side
+# error vocabulary self-contained.
+DynamicsDecryptionFailed = DecryptionFailed
+DataverseFailure = DataverseError

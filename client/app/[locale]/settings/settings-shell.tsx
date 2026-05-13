@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   Building2,
+  Plug,
   ScrollText,
   User2,
   Users,
@@ -17,6 +18,7 @@ export type SettingsTabKey =
   | "profile"
   | "organization"
   | "members"
+  | "integrations"
   | "audit-log";
 
 
@@ -24,6 +26,7 @@ const ALL_TABS: readonly SettingsTabKey[] = [
   "profile",
   "organization",
   "members",
+  "integrations",
   "audit-log",
 ] as const;
 
@@ -77,6 +80,12 @@ export function SettingsShell({
         label: tSettings("tabs.members"),
         href: "/settings/members",
         icon: <Users className="h-4 w-4" />,
+      },
+      {
+        key: "integrations" as const,
+        label: tSettings("tabs.integrations"),
+        href: "/settings/integrations",
+        icon: <Plug className="h-4 w-4" />,
       },
       {
         key: "audit-log" as const,

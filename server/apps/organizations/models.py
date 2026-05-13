@@ -71,6 +71,36 @@ class Organization(models.Model):
             "override via :attr:`SpecificationSheet.limits_override`."
         ),
     )
+    #: Per-org Microsoft Dynamics 365 (Sales / CE) integration config.
+    #: When ``enabled`` is True the customer picker surfaces
+    #: Dynamics contacts alongside local customers. The Fernet-
+    #: encrypted ``client_secret_ciphertext`` is stored here too so
+    #: every Dynamics request reads the current secret from a single
+    #: source. Schema:
+    #:
+    #: .. code-block:: json
+    #:
+    #:    {
+    #:      "enabled": true,
+    #:      "dataverse_url": "https://contoso.crm.dynamics.com",
+    #:      "tenant_id": "<azure ad tenant uuid>",
+    #:      "client_id": "<azure ad app uuid>",
+    #:      "client_secret_ciphertext": "<fernet ciphertext>",
+    #:      "last_tested_at": "2026-05-13T07:00:00Z"
+    #:    }
+    #:
+    #: Empty dict means "no integration configured" — every Dynamics
+    #: code path treats that as off and the rest of the app behaves
+    #: exactly as today.
+    dynamics_config = models.JSONField(
+        _("dynamics integration config"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Microsoft Dynamics 365 connection settings for this "
+            "workspace. Empty dict = integration disabled."
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

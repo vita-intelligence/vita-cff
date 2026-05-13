@@ -35,6 +35,9 @@
     "empty_results": "No customer matches. Create a new one?",
     "create_new": "+ Create new customer",
     "placeholder": "Search existing customers…",
-    "clear": "Clear"
+    "clear": "Clear",
+    "dynamics_chip": "Dynamics",
+    "dynamics_section": "From Microsoft Dynamics",
+    "dynamics_no_matches": "No Dynamics matches."
   }
 }

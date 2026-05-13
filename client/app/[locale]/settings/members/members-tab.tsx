@@ -568,7 +568,7 @@ function EditPermissionsDrawer({
   return (
     <Modal isOpen onOpenChange={(open) => (!open ? onClose() : undefined)}>
       <Modal.Backdrop>
-        <Modal.Container size="md">
+        <Modal.Container size="xl">
           <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
               <div className="flex min-w-0 items-center gap-3">
@@ -783,7 +783,7 @@ function InviteMemberDialog({
   return (
     <Modal isOpen onOpenChange={(open) => (!open ? onClose() : undefined)}>
       <Modal.Backdrop>
-        <Modal.Container size="md">
+        <Modal.Container size="xl">
           <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
             <Modal.Header className="flex items-center justify-between border-b border-ink-200 px-6 py-4">
               <Modal.Heading className="text-base font-semibold text-ink-1000">

@@ -118,6 +118,23 @@ class ProposalsCapability:
     rights. The membership backfill migration mirrors any existing
     ``formulations.*`` grants onto matching ``proposals.*`` keys so
     no member loses access on upgrade.
+
+    Several caps here are MIRRORS of the matching ``formulations.*``
+    cap and must always be granted together for the day-to-day UI to
+    line up (a member with only one half sees a partial Approvals or
+    Signed tab). The members admin grid pairs them so toggling either
+    half sets both atomically; migration
+    ``0009_rbac_pair_normalisation`` backfills any pre-existing
+    half-granted memberships.
+
+    ``assign_sales_person`` USED to live here too as a mirror of
+    :attr:`FormulationsCapability.ASSIGN_SALES_PERSON`, but the
+    only endpoint that enforces the cap (the project-level
+    ``FormulationSalesPersonView``) reads the ``formulations.*``
+    half, so the proposals mirror was dead code. It was removed in
+    migration ``0009_rbac_pair_normalisation``; any remaining
+    grants get silently dropped by
+    :func:`validate_permissions_payload` on the next round-trip.
     """
 
     VIEW = "view"
@@ -127,13 +144,14 @@ class ProposalsCapability:
     #: Sign a proposal in any internal slot (Scientist, R&D Manager,
     #: Product Manager, Director). The customer signature on the
     #: public kiosk is gated by token only, not by this capability.
+    #: Paired with :attr:`FormulationsCapability.SIGN_SPEC`.
     SIGN = "sign"
     #: Read the proposals tab of the org-wide approvals inbox.
+    #: Paired with :attr:`FormulationsCapability.VIEW_APPROVALS`.
     VIEW_APPROVALS = "view_approvals"
     #: Read the proposals tab of the customer-signed archive.
+    #: Paired with :attr:`FormulationsCapability.VIEW_SIGNED`.
     VIEW_SIGNED = "view_signed"
-    #: Assign / clear the sales person on a proposal's parent project.
-    ASSIGN_SALES_PERSON = "assign_sales_person"
 
 
 class AuditCapability:
@@ -229,7 +247,6 @@ MODULE_REGISTRY: dict[str, Module] = {
             ProposalsCapability.SIGN,
             ProposalsCapability.VIEW_APPROVALS,
             ProposalsCapability.VIEW_SIGNED,
-            ProposalsCapability.ASSIGN_SALES_PERSON,
         ),
     ),
     AUDIT_MODULE: Module(

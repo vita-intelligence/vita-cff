@@ -6,7 +6,38 @@
     "profile": "Profile",
     "organization": "Organization",
     "members": "Members",
+    "integrations": "Integrations",
     "audit_log": "Audit log"
+  },
+  "integrations": {
+    "no_org": "Join or create an organization to manage integrations.",
+    "dynamics": {
+      "title": "Microsoft Dynamics 365 (Sales / CE)",
+      "subtitle": "Pull contacts from your Dataverse tenant into the customer picker on demand. Imports are operator-driven — picking a contact creates or refreshes a local customer record.",
+      "status_connected": "Connected",
+      "status_untested": "Credentials saved — test the connection",
+      "status_not_connected": "Not connected",
+      "enabled_label": "Enable the Dynamics customer picker for this organization",
+      "dataverse_url_label": "Dataverse URL",
+      "dataverse_url_hint": "e.g. https://your-tenant.crm.dynamics.com — no trailing slash needed.",
+      "tenant_id_label": "Azure AD tenant ID",
+      "tenant_id_hint": "Directory ID from Azure portal → Microsoft Entra ID → Overview.",
+      "client_id_label": "Application (client) ID",
+      "client_id_hint": "From the app registration you created for Vita NPD.",
+      "client_secret_label": "Client secret",
+      "client_secret_placeholder": "Paste the client secret value here",
+      "client_secret_hint": "Encrypted at rest. Leave blank when editing other fields to keep the stored value.",
+      "test_button": "Test connection",
+      "test_button_hint": "Sends a single WhoAmI request to confirm auth + reachability.",
+      "test_button_disabled_hint": "Save the configuration first, then test.",
+      "save_button": "Save",
+      "saved": "Saved. Test the connection to verify the credentials work.",
+      "test_ok": "Connection successful. The customer picker will now suggest Dynamics contacts.",
+      "disable": "Disable integration",
+      "disable_confirm": "Disable the Dynamics integration? The stored credentials are erased. Customers already imported keep working.",
+      "disabled": "Integration disabled. The customer picker will fall back to local results only.",
+      "footer_note": "The picker only calls Dynamics after a user types at least two characters. Outages and rate-limit hits degrade silently to local-only results so a Dynamics issue never blocks the proposal flow."
+    }
   },
   "profile": {
     "section_title": "Your profile",
@@ -118,8 +149,7 @@
       "delete": "Delete",
       "sign": "Sign proposal",
       "view_approvals": "View approvals queue",
-      "view_signed": "View signed documents",
-      "assign_sales_person": "Assign sales person"
+      "view_signed": "View signed documents"
     },
     "audit": {
       "view": "View audit log"
@@ -160,11 +190,51 @@
       "delete": "Permanently remove a proposal.",
       "sign": "Apply your signature to a proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). The customer signature on the public kiosk is gated by the link, not by this capability.",
       "view_approvals": "Open the proposals tab of the org-wide approvals inbox showing every proposal waiting for a signature.",
-      "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed.",
-      "assign_sales_person": "Pick or change the commercial owner (sales rep) on a proposal's parent project. Split out so sales managers can reassign accounts without proposal-edit rights."
+      "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed."
     },
     "audit": {
       "view": "Read the org-wide log of every write across catalogues, projects, spec sheets, trial batches, and QC."
+    }
+  },
+  "capability_pages": {
+    "members": {
+      "view": "Settings → Members (team roster + pending invitations).",
+      "invite": "Settings → Members → Invite member button + pending invitation actions (Resend, Revoke).",
+      "edit_permissions": "Settings → Members → Edit permissions drawer. Also gates access to Settings → Integrations (Dynamics / future third-party config).",
+      "remove": "Settings → Members → Remove member action on each row."
+    },
+    "catalogues": {
+      "view": "Catalogues → [catalogue] table (read-only access to rows + attribute definitions).",
+      "edit": "Catalogues → [catalogue] → Edit / New row buttons + inline cell editing + archive toggle.",
+      "import": "Catalogues → [catalogue] → Import button (bulk Excel upload).",
+      "manage_fields": "Catalogues → [catalogue] → Fields tab (add / edit / archive attribute definitions).",
+      "delete": "Catalogues → [catalogue] → Hard-delete row action (permanent)."
+    },
+    "formulations": {
+      "view": "Projects list (/formulations). Every Project tab — Overview, Builder, Spec sheets, Proposals, Trial batches, QC. Spec sheet read view. Trial batch + QC validation read views.",
+      "edit": "Save / Edit / New buttons on every Project tab. Duplicate project flow. Builder line + picker edits. Spec sheet & trial batch creation. QC validation entry.",
+      "approve": "Approve action on Spec sheet detail. Sets status → approved → sent. Required before a spec sheet can be shared with a customer.",
+      "delete": "Delete buttons on Projects list, Spec sheets list, Trial batches list, QC list, and Proposals list (proposals delete is the paired half — granting either covers both).",
+      "view_approvals": "Approvals page (/approvals) — surfaces BOTH the Spec sheets tab AND the Proposals tab. Paired with Proposals → View approvals queue (granting either covers both).",
+      "view_signed": "Signed documents page (/signed) — surfaces BOTH the Spec sheets tab AND the Proposals tab. Paired with Proposals → View signed documents.",
+      "assign_sales_person": "Assign sales person dropdown on every Project header. Covers both project and proposal-level assignment (proposals reuse the project's sales person).",
+      "manage_spec_visibility": "Spec sheet detail → Section visibility editor (toggles client-facing sections like Nutrition / Microbiology).",
+      "sign_spec": "Internal signature slots on Spec sheet detail (Scientist / R&D Manager / Product Manager / Director). Paired with Proposals → Sign proposal — same toggle covers both.",
+      "comments_view": "Floating chat bubble on every Project page (Overview, Builder, Spec sheets, Proposals, Trial batches, QC). Spec sheet → comments thread.",
+      "comments_write": "Compose + reply in the project chat bubble and the spec sheet thread. Authors always retain edit / delete / resolve on their own posts regardless of this grant.",
+      "comments_moderate": "Edit / delete / resolve OTHER users' comments anywhere a thread appears. The moderator role — typically team leads + owners only."
+    },
+    "proposals": {
+      "view": "Proposals list (/proposals). Proposal detail page. Customers list (/customers) and customer create/edit modals. Customer picker on Spec sheet + Proposal forms.",
+      "edit": "New proposal button on Project → Proposals tab. Edit proposal lines, pricing, customer info, acknowledgements. Render / re-render the customer-facing PDF.",
+      "approve": "Approve & send button on Proposal detail. Sets status → sent and emits the customer signing link.",
+      "delete": "Delete button on the Proposals list. Paired with Projects → Delete.",
+      "sign": "Internal signature slot on Proposal detail (Scientist / R&D Manager / Product Manager / Director). Paired with Projects → Sign spec sheet.",
+      "view_approvals": "Paired with Projects → View approvals queue. Granting either covers the full /approvals page (both tabs).",
+      "view_signed": "Paired with Projects → View signed documents. Granting either covers the full /signed page (both tabs)."
+    },
+    "audit": {
+      "view": "Settings → Audit log (org-wide immutable trail of every write across catalogues, projects, spec sheets, trial batches, QC, comments, and integration changes)."
     }
   },
   "role_presets": {
@@ -175,7 +245,7 @@
     "formulations_label": "Common roles",
     "formulations": "Scientist: View, Edit, Sign spec sheet, Comments view + write. R&D Manager / Director: everything above + Approve & send + Comments moderate. Read-only stakeholder: View only. (Sales typically does not need any Projects capability — they live in the Proposals module instead.)",
     "proposals_label": "Common roles",
-    "proposals": "Sales: View, Edit, View approvals queue, View signed, Assign sales person. Sales lead: everything above + Approve & send. Director: all of the above + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only.",
+    "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Approve & send. Director: all of the above + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
     "audit_label": "Common roles",
     "audit": "Compliance and QA leads. Owners get it implicitly."
   }

@@ -19,6 +19,12 @@ class CustomerReadSerializer(serializers.ModelSerializer):
             "invoice_address",
             "delivery_address",
             "notes",
+            # ``dynamics_id`` exposed (no secret data) so the
+            # customer picker can render a "From Dynamics" chip on
+            # rows that mirror a Dataverse record. ``None`` for
+            # locally-created customers.
+            "dynamics_id",
+            "dynamics_synced_at",
             "created_at",
             "updated_at",
         )

@@ -81,6 +81,31 @@ class Customer(models.Model):
         ),
     )
 
+    #: Microsoft Dynamics 365 source-of-truth identifier (Dataverse
+    #: GUID of the underlying ``contact`` or ``account`` row). NULL
+    #: for customers entered manually on Vita; set when an operator
+    #: imports a customer from the Dynamics picker. Lets ongoing
+    #: imports dedupe — the same Dynamics record always resolves to
+    #: the same local Customer row — and gives us a clean filter
+    #: (``WHERE dynamics_id IS NOT NULL``) for one-shot rollback.
+    dynamics_id = models.UUIDField(
+        _("dynamics id"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "Dataverse contact / account GUID this customer mirrors. "
+            "Blank for locally-created customers."
+        ),
+    )
+    #: Timestamp of the last successful pull from Dynamics. Updated
+    #: on every import that refreshes the local copy from Dataverse.
+    dynamics_synced_at = models.DateTimeField(
+        _("dynamics synced at"),
+        null=True,
+        blank=True,
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
@@ -102,6 +127,16 @@ class Customer(models.Model):
             models.Index(fields=("organization", "company")),
             models.Index(fields=("organization", "name")),
             models.Index(fields=("organization", "-updated_at")),
+        ]
+        constraints = [
+            # One local Customer per Dynamics record per org. Lets
+            # the import service do an atomic get-or-create keyed on
+            # ``dynamics_id`` without racing.
+            models.UniqueConstraint(
+                fields=("organization", "dynamics_id"),
+                condition=~models.Q(dynamics_id=None),
+                name="customers_unique_dynamics_per_org",
+            ),
         ]
 
     def __str__(self) -> str:

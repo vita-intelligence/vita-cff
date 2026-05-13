@@ -26,6 +26,13 @@ export function computeAllowedSettingsTabs(
   if (hasFlatCapability(primaryOrg, "members", "view")) {
     tabs.push("members");
   }
+  // Integrations tab holds credential-handling surfaces (Dynamics
+  // tenant secret, etc.) — owner-equivalent access only. The page
+  // re-checks server-side, but hiding the tab from non-owners
+  // keeps the chrome tidy.
+  if (hasFlatCapability(primaryOrg, "members", "edit_permissions")) {
+    tabs.push("integrations");
+  }
   if (hasFlatCapability(primaryOrg, "audit", "view")) {
     tabs.push("audit-log");
   }

@@ -1,10 +1,16 @@
 "use client";
 
-import { Plus } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
-import { useCustomers, type CustomerDto } from "@/services/customers";
+import {
+  useCustomers,
+  useDynamicsContactSearch,
+  useImportCustomerFromDynamics,
+  type CustomerDto,
+  type DynamicsContactSuggestion,
+} from "@/services/customers";
 
 
 /**
@@ -13,6 +19,15 @@ import { useCustomers, type CustomerDto } from "@/services/customers";
  * string; the caller is responsible for the "create new" escape
  * hatch (we emit ``onCreateNew`` so the host can mount its own
  * ``CustomerFormModal`` inside whatever dialog stack it's in).
+ *
+ * When the org has a Microsoft Dynamics integration configured, the
+ * picker also queries Dataverse in parallel and surfaces contacts
+ * tagged with a small "Dynamics" chip. Picking one fires the import
+ * endpoint, which either reuses an existing local row keyed on
+ * ``dynamics_id`` or creates a new local Customer mirroring the
+ * Dataverse record — the host always sees a resolved local
+ * :class:`CustomerDto`. Dynamics failures degrade silently to local-
+ * only results so the picker never blocks the proposal flow.
  *
  * Why this lives here instead of inside the first page that used it:
  * the proposal and spec create modals need the same behaviour
@@ -51,6 +66,7 @@ export function CustomerPicker({
   );
   const [debounced, setDebounced] = useState("");
   const [open, setOpen] = useState(false);
+  const [importingId, setImportingId] = useState<string | null>(null);
   useEffect(() => {
     const h = setTimeout(() => setDebounced(searchInput.trim()), 200);
     return () => clearTimeout(h);
@@ -65,6 +81,44 @@ export function CustomerPicker({
 
   const customersQuery = useCustomers(orgId, debounced);
   const matches = customersQuery.data ?? [];
+
+  // Dynamics fetch fires whenever the picker is open so the user
+  // sees Dataverse suggestions on first focus as well as while
+  // typing. Empty query returns the most recently modified
+  // contacts (real client) or the canned mock list — both useful
+  // for "is the integration working" feedback. The hook caches
+  // per-query so re-opening the picker on the same input is free.
+  const dynamicsQuery = useDynamicsContactSearch(orgId, debounced, {
+    enabled: open,
+  });
+  const dynamicsConfigured = Boolean(dynamicsQuery.data?.configured);
+  const dynamicsSuggestions = dynamicsQuery.data?.results ?? [];
+  // Hide Dynamics rows the user already has locally — every local
+  // row carries its ``dynamics_id`` so the dedup is exact.
+  const localDynamicsIds = new Set(
+    matches.map((m) => m.dynamics_id).filter((id): id is string => Boolean(id)),
+  );
+  const visibleDynamicsSuggestions = dynamicsSuggestions.filter(
+    (s) => !localDynamicsIds.has(s.dynamics_id),
+  );
+
+  const importMutation = useImportCustomerFromDynamics(orgId);
+
+  const handlePickDynamics = async (contact: DynamicsContactSuggestion) => {
+    setImportingId(contact.dynamics_id);
+    try {
+      const customer = await importMutation.mutateAsync(contact);
+      onChange(customer);
+      setOpen(false);
+    } catch {
+      // Silently swallow — the picker still shows local results;
+      // surfacing a toast here would be confusing when the user
+      // can just pick a local row instead. The settings page is
+      // the place to diagnose integration health.
+    } finally {
+      setImportingId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -98,8 +152,9 @@ export function CustomerPicker({
           </button>
         ) : null}
         {open ? (
-          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-64 overflow-y-auto rounded-lg bg-ink-0 shadow-lg ring-1 ring-ink-200">
-            {matches.length === 0 ? (
+          <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-72 overflow-y-auto rounded-lg bg-ink-0 shadow-lg ring-1 ring-ink-200">
+            {matches.length === 0 &&
+            visibleDynamicsSuggestions.length === 0 ? (
               <div className="flex flex-col gap-2 px-3 py-3 text-xs text-ink-500">
                 <span>{tCustomers("picker.empty_results")}</span>
                 <button
@@ -127,8 +182,13 @@ export function CustomerPicker({
                     }}
                     className="flex w-full flex-col items-start gap-0.5 border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-ink-50"
                   >
-                    <span className="text-sm font-medium text-ink-1000">
+                    <span className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-1000">
                       {match.company || match.name || "—"}
+                      {match.dynamics_id ? (
+                        <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-blue-700">
+                          {tCustomers("picker.dynamics_chip")}
+                        </span>
+                      ) : null}
                     </span>
                     <span className="text-xs text-ink-500">
                       {[match.name, match.email]
@@ -137,6 +197,56 @@ export function CustomerPicker({
                     </span>
                   </button>
                 ))}
+
+                {visibleDynamicsSuggestions.length > 0 ? (
+                  <div className="border-t border-ink-200 bg-blue-50/30">
+                    <div className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-blue-700">
+                      {tCustomers("picker.dynamics_section")}
+                    </div>
+                    {visibleDynamicsSuggestions.map((suggestion) => {
+                      const isImporting =
+                        importingId === suggestion.dynamics_id;
+                      return (
+                        <button
+                          key={`dyn-${suggestion.dynamics_id}`}
+                          type="button"
+                          disabled={isImporting}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            void handlePickDynamics(suggestion);
+                          }}
+                          className="flex w-full flex-col items-start gap-0.5 border-b border-blue-100 px-3 py-2 text-left last:border-b-0 hover:bg-blue-50 disabled:opacity-60"
+                        >
+                          <span className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-1000">
+                            {suggestion.company ||
+                              suggestion.name ||
+                              "—"}
+                            <span className="rounded-full bg-blue-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-blue-700">
+                              {tCustomers("picker.dynamics_chip")}
+                            </span>
+                            {isImporting ? (
+                              <Loader2 className="h-3 w-3 animate-spin text-blue-700" />
+                            ) : null}
+                          </span>
+                          <span className="text-xs text-ink-500">
+                            {[suggestion.name, suggestion.email]
+                              .filter((s) => s)
+                              .join(" · ")}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+
+                {dynamicsConfigured &&
+                visibleDynamicsSuggestions.length === 0 &&
+                !dynamicsQuery.isFetching ? (
+                  <p className="border-t border-ink-100 px-3 py-1.5 text-[10px] text-ink-500">
+                    {tCustomers("picker.dynamics_no_matches")}
+                  </p>
+                ) : null}
+
                 <button
                   type="button"
                   onMouseDown={(e) => {
