@@ -3,24 +3,38 @@
 /**
  * Public-visitor comment panel mounted on ``/p/<token>``.
  *
- * Differences from the authed :class:`CommentsPanel`:
- *   - No mentions, no moderation, no resolve toggle. A guest can
- *     only post top-level comments (and, in a later commit, reply
- *     to an org member's comment).
+ * Visual + interaction parity with the authed
+ * :class:`CommentsPanel` so a client opening their spec sheet sees
+ * the same chat layout the team uses on the project workspace:
+ *
+ *   - Linear chronological stream (newest at the bottom).
+ *   - Compact pinned-preview rows at the top with click-to-scroll.
+ *   - Sticky header / typing indicator / composer with only the
+ *     message list scrolling between them.
+ *   - Auto-scroll to the latest on first load and on new arrivals,
+ *     with a floating "↓ N new messages" pill when the visitor is
+ *     scrolled up reading history.
+ *   - Avatars on both sides (mine vs theirs) for visual symmetry.
+ *
+ * Behavioural differences from the authed panel preserved:
+ *   - No mentions, no moderation, no resolve toggle — the visitor
+ *     can only post top-level comments.
  *   - Identity is captured once per browser session via the
- *     :class:`KioskIdentityModal`. We do not persist the raw
- *     credentials in ``localStorage`` — the signed cookie is the
- *     single source of truth, ``sessionStorage`` only tracks the
- *     "already identified" flag so the modal does not re-pop on
- *     every reload.
- *   - Polling is 20 s because kiosk visitors have no WebSocket
- *     layer today — we'll wire a public-WS variant in a later
- *     commit if demand materialises.
+ *     :class:`KioskIdentityModal`.
+ *   - Comments live in local component state (no TanStack Query)
+ *     — refreshed via the public WebSocket or an on-focus refetch.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { MessageSquare, Pin } from "lucide-react";
+import { MessageSquare, ArrowDown, Pin } from "lucide-react";
 import { useTranslations } from "next-intl";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 
 import { buttonClass } from "@/components/ui/button-styles";
 import {
@@ -36,12 +50,14 @@ import {
   type KioskIdentityEcho,
 } from "@/services/comments/kiosk-api";
 
-import { KioskIdentityModal } from "./kiosk-identity-modal";
-import { CommentThread } from "../comment-thread";
+import { CommentCard } from "../comment-card";
 import { InfiniteLoader } from "../infinite-loader";
+import { PinnedThreadPreview } from "../pinned-thread-preview";
 import { PresenceAvatars } from "../presence-avatars";
 import { TypingIndicator } from "../typing-indicator";
 import { groupIntoThreads } from "../utils";
+
+import { KioskIdentityModal } from "./kiosk-identity-modal";
 
 
 interface Props {
@@ -50,12 +66,21 @@ interface Props {
 
 
 //: localStorage marker keyed per token so a visitor stays
-//: "signed in" across refreshes / tab closes (the signed cookie
-//: lives for 30 days; the marker just tells the panel to skip the
-//: identity modal on re-open rather than re-prompting every time).
-//: Two different shares in the same browser each keep their own
-//: marker so identities don't cross-contaminate.
+//: "signed in" across refreshes / tab closes.
 const identifiedKey = (token: string) => `vita_kiosk_${token}_identified`;
+
+
+// Soft cap on the body excerpt shown in a reply card's quote
+// header. Same as the authed panel — keeps the kiosk's reply-back-
+// to-original navigation visually consistent.
+const QUOTE_EXCERPT_CHARS = 90;
+
+
+function excerptForQuote(body: string): string {
+  const trimmed = (body || "").replace(/\s+/g, " ").trim();
+  if (trimmed.length <= QUOTE_EXCERPT_CHARS) return trimmed;
+  return trimmed.slice(0, QUOTE_EXCERPT_CHARS).trimEnd() + "…";
+}
 
 
 export function KioskCommentsPanel({ token }: Props) {
@@ -71,18 +96,38 @@ export function KioskCommentsPanel({ token }: Props) {
   const [body, setBody] = useState("");
   const [error, setError] = useState<string | null>(null);
 
-  const { pinnedThreads, regularThreads } = useMemo(() => {
-    const grouped = groupIntoThreads(comments);
-    const pinned = grouped.filter(
-      (t) => t.root.needs_resolution && !t.root.is_resolved,
-    );
-    const rest = grouped.filter(
-      (t) => !(t.root.needs_resolution && !t.root.is_resolved),
-    );
-    return { pinnedThreads: pinned, regularThreads: rest };
+  // Lookup map for reply quote headers — finds the parent comment
+  // by id so a reply card can render "↳ Replying to X" pointing
+  // back at the original. Mirrors the authed panel.
+  const commentById = useMemo(() => {
+    const map = new Map<string, CommentDto>();
+    for (const comment of comments) {
+      map.set(comment.id, comment);
+    }
+    return map;
   }, [comments]);
 
-  // Presence store key — mirrors the one :func:`openKioskCommentsSocket`
+  // Pinned strip — only flagged-but-unresolved root comments. Drawn
+  // from the grouped view because "needs resolution" is a root-level
+  // state. Replies never appear in the strip.
+  const pinnedRoots = useMemo(() => {
+    const grouped = groupIntoThreads(comments);
+    return grouped
+      .filter((t) => t.root.needs_resolution && !t.root.is_resolved)
+      .map((t) => ({ root: t.root, replyCount: t.replies.length }));
+  }, [comments]);
+
+  // Linear stream — every comment in chronological order. Replies
+  // whose parent is resolved drop out for symmetry with the parent.
+  const linearComments = useMemo(() => {
+    return comments.filter((comment) => {
+      if (comment.parent_id == null) return !comment.is_resolved;
+      const parent = commentById.get(comment.parent_id);
+      return parent != null && !parent.is_resolved;
+    });
+  }, [comments, commentById]);
+
+  // Presence store key — mirrors the one ``openKioskCommentsSocket``
   // uses so the avatars / typing indicator read the right roster.
   const entityKey = useMemo(
     () => ({
@@ -118,9 +163,9 @@ export function KioskCommentsPanel({ token }: Props) {
     }
   }, [nextUrl, token]);
 
-  // Seed from sessionStorage on mount. If the marker is missing the
-  // modal pops; otherwise we carry on and the cookie (still in the
-  // browser jar) authorises the next write.
+  // -------------------------------------------------------------------
+  // Identity bootstrap + WebSocket sync
+  // -------------------------------------------------------------------
   useEffect(() => {
     if (typeof window === "undefined") return;
     const marker = window.localStorage.getItem(identifiedKey(token));
@@ -135,17 +180,9 @@ export function KioskCommentsPanel({ token }: Props) {
     void refresh();
   }, [refresh, token]);
 
-  // Real-time sync via the public WebSocket route. The consumer
-  // joins the same ``comments.specification.<id>`` group the authed
-  // panel uses, so org-side replies appear instantly and vice-versa.
-  // If the socket drops we fall back to an on-focus refetch — no
-  // polling loop.
   const socketRef = useRef<CommentsSocketHandle | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
-    // The modal seed step writes the sessionStorage marker after
-    // ``identify``; without identity we skip the WS open because the
-    // consumer requires the signed kiosk cookie.
     if (!identity) return;
     const handle = openKioskCommentsSocket(token, {
       onCommentEvent: () => {
@@ -159,8 +196,6 @@ export function KioskCommentsPanel({ token }: Props) {
     };
   }, [identity, refresh, token]);
 
-  // Belt-and-braces refetch when the tab regains focus in case a WS
-  // blip dropped an event while the window was hidden.
   useEffect(() => {
     if (typeof window === "undefined") return;
     const onFocus = () => {
@@ -169,6 +204,112 @@ export function KioskCommentsPanel({ token }: Props) {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refresh]);
+
+  // -------------------------------------------------------------------
+  // Per-thread refs + scroll-to-thread helper (pinned-preview click +
+  // reply quote-header click). Reuses the exact pattern from the
+  // authed panel.
+  // -------------------------------------------------------------------
+  const threadRefsRef = useRef<Map<string, HTMLElement>>(new Map());
+  const setThreadRef = useCallback(
+    (rootId: string) => (node: HTMLElement | null) => {
+      if (node) {
+        threadRefsRef.current.set(rootId, node);
+      } else {
+        threadRefsRef.current.delete(rootId);
+      }
+    },
+    [],
+  );
+  const [highlightedRootId, setHighlightedRootId] = useState<string | null>(
+    null,
+  );
+  const highlightTimer = useRef<number | null>(null);
+  const scrollToThread = useCallback((rootId: string) => {
+    const node = threadRefsRef.current.get(rootId);
+    if (!node) return;
+    node.scrollIntoView({ behavior: "smooth", block: "center" });
+    setHighlightedRootId(rootId);
+    if (highlightTimer.current !== null) {
+      window.clearTimeout(highlightTimer.current);
+    }
+    highlightTimer.current = window.setTimeout(() => {
+      setHighlightedRootId(null);
+      highlightTimer.current = null;
+    }, 1600);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (highlightTimer.current !== null) {
+        window.clearTimeout(highlightTimer.current);
+      }
+    };
+  }, []);
+
+  // -------------------------------------------------------------------
+  // Auto-scroll + "new message" pill
+  // -------------------------------------------------------------------
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const lastCommentCountRef = useRef<number>(0);
+  const lastLatestIdRef = useRef<string | null>(null);
+  const didInitialScrollRef = useRef<boolean>(false);
+  const isAtBottomRef = useRef<boolean>(true);
+  const [newMessageCount, setNewMessageCount] = useState(0);
+
+  const scrollToBottom = useCallback(
+    (behavior: ScrollBehavior = "smooth") => {
+      const node = scrollContainerRef.current;
+      if (!node) return;
+      node.scrollTo({ top: node.scrollHeight, behavior });
+      isAtBottomRef.current = true;
+      setNewMessageCount(0);
+    },
+    [],
+  );
+
+  const handleScroll = useCallback(() => {
+    const node = scrollContainerRef.current;
+    if (!node) return;
+    const distance =
+      node.scrollHeight - node.scrollTop - node.clientHeight;
+    const wasAtBottom = isAtBottomRef.current;
+    const nowAtBottom = distance < 80;
+    isAtBottomRef.current = nowAtBottom;
+    if (!wasAtBottom && nowAtBottom && newMessageCount > 0) {
+      setNewMessageCount(0);
+    }
+  }, [newMessageCount]);
+
+  useEffect(() => {
+    if (didInitialScrollRef.current) return;
+    if (comments.length === 0) return;
+    didInitialScrollRef.current = true;
+    lastCommentCountRef.current = comments.length;
+    lastLatestIdRef.current = comments[comments.length - 1]?.id ?? null;
+    requestAnimationFrame(() => scrollToBottom("auto"));
+  }, [comments, scrollToBottom]);
+
+  useEffect(() => {
+    if (!didInitialScrollRef.current) return;
+    const prevCount = lastCommentCountRef.current;
+    const nextCount = comments.length;
+    if (nextCount <= prevCount) {
+      lastCommentCountRef.current = nextCount;
+      lastLatestIdRef.current = comments[nextCount - 1]?.id ?? null;
+      return;
+    }
+    const prevLatestId = lastLatestIdRef.current;
+    const nextLatestId = comments[nextCount - 1]?.id ?? null;
+    lastCommentCountRef.current = nextCount;
+    lastLatestIdRef.current = nextLatestId;
+    if (prevLatestId === nextLatestId) return;
+    const added = nextCount - prevCount;
+    if (isAtBottomRef.current) {
+      requestAnimationFrame(() => scrollToBottom("smooth"));
+    } else {
+      setNewMessageCount((prev) => prev + added);
+    }
+  }, [comments, scrollToBottom]);
 
   const handleIdentified = (echo: KioskIdentityEcho) => {
     if (typeof window !== "undefined") {
@@ -193,7 +334,7 @@ export function KioskCommentsPanel({ token }: Props) {
     setIdentity(null);
   };
 
-  const handlePost = async (e: React.FormEvent) => {
+  const handlePost = async (e: FormEvent) => {
     e.preventDefault();
     if (!body.trim()) return;
     setPosting(true);
@@ -202,14 +343,12 @@ export function KioskCommentsPanel({ token }: Props) {
       const created = await createKioskComment(token, { body: body.trim() });
       setComments((prev) => [...prev, created]);
       setBody("");
-      // Close the "X is typing…" indicator on org side now that the
-      // message has been sent.
       socketRef.current?.sendTyping(false);
+      // Land the visitor on their own freshly-posted message.
+      requestAnimationFrame(() => scrollToBottom("smooth"));
     } catch (err) {
       const status = (err as { status?: number } | null)?.status;
       if (status === 403) {
-        // Session revoked or rate-limited — either way we need to
-        // re-identify the visitor rather than silently dropping.
         setError(tKiosk("error_session_expired"));
         if (typeof window !== "undefined") {
           window.localStorage.removeItem(identifiedKey(token));
@@ -224,20 +363,16 @@ export function KioskCommentsPanel({ token }: Props) {
   };
 
   return (
-    <section className="rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
-      <header className="flex flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-3">
+    <section className="flex max-h-[80vh] min-h-[28rem] flex-col overflow-hidden rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-ink-100 px-4 py-3">
         <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-ink-500">
           <MessageSquare className="h-3.5 w-3.5" />
           {tComments("title")}
         </div>
         <div className="flex items-center gap-3">
-          {/*
-            Presence strip — shows org members AND other clients
-            watching the same sheet. The kiosk viewer sees their own
-            avatar too (stable "you're here" cue); hiding self would
-            require the server to hand back the session id, which we
-            don't surface today.
-          */}
+          {/* Presence strip — org members + other clients watching
+              the same sheet. The visitor's own avatar shows too so
+              they have a stable "you're here" cue. */}
           <PresenceAvatars entityKey={entityKey} />
           {identity ? (
             <div className="flex items-center gap-2 text-xs text-ink-600">
@@ -258,70 +393,129 @@ export function KioskCommentsPanel({ token }: Props) {
         </div>
       </header>
 
-      <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto py-3">
-        {pinnedThreads.length > 0 ? (
-          <div className="sticky top-0 z-10 flex flex-col gap-2 border-b border-warning/30 bg-warning/5 px-4 py-2 backdrop-blur">
-            <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-warning">
-              <Pin className="h-2.5 w-2.5" />
-              {tComments("states.pinned")} · {pinnedThreads.length}
-            </p>
-            {pinnedThreads.map((thread) => (
-              <CommentThread
-                key={`pin-${thread.root.id}`}
-                root={thread.root}
-                replies={thread.replies}
-                orgId=""
-                currentUserId={null}
-                currentUserEmail={identity?.email ?? null}
-                canWrite={false}
-                canModerate={false}
-                onEdit={async () => undefined}
-                onDelete={async () => undefined}
-                onToggleResolve={async () => undefined}
-              />
-            ))}
-          </div>
-        ) : null}
-
-        <div className="flex flex-col gap-3 px-4">
-          {loading && regularThreads.length === 0 ? (
-            <p className="text-xs text-ink-500">
-              {tComments("states.loading")}
-            </p>
-          ) : regularThreads.length === 0 &&
-            pinnedThreads.length === 0 ? (
-            <p className="text-xs text-ink-500">
-              {tComments("states.empty")}
-            </p>
-          ) : (
-            regularThreads.map((thread) => (
-              <CommentThread
-                key={thread.root.id}
-                root={thread.root}
-                replies={thread.replies}
-                orgId=""
-                currentUserId={null}
-                currentUserEmail={identity?.email ?? null}
-                canWrite={false}
-                canModerate={false}
-                onEdit={async () => undefined}
-                onDelete={async () => undefined}
-                onToggleResolve={async () => undefined}
-              />
-            ))
-          )}
-          {nextUrl ? (
-            <InfiniteLoader
-              onVisible={() => void loadMore()}
-              label={tComments("actions.load_more")}
-            />
+      {/* Scroll viewport — wrapped in a relative container so the
+          floating "↓ N new messages" pill can anchor to the bottom-
+          right of the scrollport rather than the page. */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto py-3"
+        >
+          {pinnedRoots.length > 0 ? (
+            <div className="sticky top-0 z-10 flex flex-col gap-1.5 border-b border-warning/30 bg-warning/5 px-4 py-2 backdrop-blur">
+              <p className="flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-warning">
+                <Pin className="h-2.5 w-2.5" />
+                {tComments("states.pinned")} · {pinnedRoots.length}
+              </p>
+              <ul className="flex flex-col gap-1">
+                {pinnedRoots.map((entry) => (
+                  <li key={`pin-${entry.root.id}`}>
+                    <PinnedThreadPreview
+                      root={entry.root}
+                      replyCount={entry.replyCount}
+                      onSelect={() => scrollToThread(entry.root.id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
+
+          <div className="flex flex-col gap-2 px-4">
+            {loading && linearComments.length === 0 ? (
+              <p className="text-xs text-ink-500">
+                {tComments("states.loading")}
+              </p>
+            ) : linearComments.length === 0 && pinnedRoots.length === 0 ? (
+              <p className="text-xs text-ink-500">
+                {tComments("states.empty")}
+              </p>
+            ) : (
+              linearComments.map((comment) => {
+                const isRoot = comment.parent_id == null;
+                const parent =
+                  !isRoot && comment.parent_id
+                    ? commentById.get(comment.parent_id) ?? null
+                    : null;
+                const replyToAuthor = parent
+                  ? parent.author.name || parent.author.email || "—"
+                  : null;
+                const replyToExcerpt =
+                  parent && !parent.is_deleted
+                    ? excerptForQuote(parent.body)
+                    : null;
+                const isHighlighted =
+                  isRoot && highlightedRootId === comment.id;
+                return (
+                  <div
+                    key={comment.id}
+                    ref={isRoot ? setThreadRef(comment.id) : undefined}
+                    className={`scroll-mt-2 rounded-2xl transition-shadow ${
+                      isHighlighted ? "ring-2 ring-orange-400/70" : ""
+                    } ${
+                      isRoot &&
+                      comment.needs_resolution &&
+                      !comment.is_resolved
+                        ? "bg-warning/5 ring-1 ring-inset ring-warning/30"
+                        : ""
+                    } ${
+                      isRoot && comment.is_resolved ? "bg-ink-50/60" : ""
+                    }`}
+                  >
+                    <CommentCard
+                      comment={comment}
+                      orgId=""
+                      currentUserId={null}
+                      currentUserEmail={identity?.email ?? null}
+                      canModerate={false}
+                      canWrite={false}
+                      isReply={!isRoot}
+                      replyToAuthor={replyToAuthor}
+                      replyToExcerpt={replyToExcerpt}
+                      onJumpToParent={
+                        parent
+                          ? () => scrollToThread(parent.id)
+                          : undefined
+                      }
+                      onEdit={async () => undefined}
+                      onDelete={async () => undefined}
+                    />
+                  </div>
+                );
+              })
+            )}
+            {nextUrl ? (
+              <InfiniteLoader
+                onVisible={() => void loadMore()}
+                label={tComments("actions.load_more")}
+              />
+            ) : null}
+          </div>
         </div>
+
+        {newMessageCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => scrollToBottom("smooth")}
+            aria-label={tComments("scroll.new_messages_aria", {
+              count: newMessageCount,
+            })}
+            className="absolute bottom-3 right-3 z-20 inline-flex items-center gap-1.5 rounded-full bg-orange-500 px-3 py-1.5 text-xs font-medium text-ink-0 shadow-lg ring-1 ring-orange-600/40 transition-transform hover:scale-105 hover:bg-orange-600"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            {tComments("scroll.new_messages", {
+              count: newMessageCount,
+            })}
+          </button>
+        ) : null}
       </div>
 
-      <TypingIndicator entityKey={entityKey} />
+      <div className="shrink-0">
+        <TypingIndicator entityKey={entityKey} />
+      </div>
 
-      <div className="border-t border-ink-100 px-4 py-3">
+      <div className="shrink-0 border-t border-ink-100 px-4 py-3">
         {identity ? (
           <form onSubmit={handlePost} className="flex flex-col gap-2">
             <textarea
@@ -329,10 +523,6 @@ export function KioskCommentsPanel({ token }: Props) {
               onChange={(e) => {
                 const next = e.target.value;
                 setBody(next);
-                // Edge-triggered typing signal — let peers see a
-                // "X is typing…" line. The socket handle tolerates
-                // being called when the WS is still connecting or
-                // disconnected (it no-ops until OPEN).
                 socketRef.current?.sendTyping(next.trim().length > 0);
               }}
               onBlur={() => socketRef.current?.sendTyping(false)}
