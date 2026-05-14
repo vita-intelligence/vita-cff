@@ -216,6 +216,14 @@ export interface ProposalKioskSpecDto {
   readonly status: string;
   readonly customer_signed_at: string | null;
   readonly has_signature: boolean;
+  /** Inline render data — same payload the standalone spec kiosk
+   *  consumes. Driven through the ``SpecSheetContent`` React
+   *  component so the proposal kiosk renders each attached spec
+   *  client-side from JSON rather than iframing a heavyweight PDF
+   *  render. Typed as ``unknown`` here to avoid pulling the
+   *  specifications-domain types into the proposals type module
+   *  (circular concern) — consumers cast at the import site. */
+  readonly render_context: unknown;
 }
 
 

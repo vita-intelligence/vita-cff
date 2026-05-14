@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.organizations.modules import FormulationsCapability
+from config.pdf_cache import cached_render
 from apps.specifications.api.pagination import SpecificationCursorPagination
 from apps.specifications.api.permissions import HasSpecificationsPermission
 from apps.specifications.api.serializers import (
@@ -416,7 +417,14 @@ class SpecificationPdfView(APIView):
         except SpecificationNotFound as exc:
             raise NotFound() from exc
 
-        pdf_bytes, filename = render_pdf(sheet)
+        # Cached + serialized — repeat clicks within ``ttl`` reuse
+        # the bytes, concurrent clicks queue on the render lock so
+        # only one WeasyPrint call runs at a time per worker. See
+        # :mod:`config.pdf_cache` for the rationale.
+        pdf_bytes, filename = cached_render(
+            f"spec-pdf:{sheet.id}:{int(sheet.updated_at.timestamp())}",
+            lambda: render_pdf(sheet),
+        )
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         # ``inline`` lets the browser preview in-tab; the frontend
         # adds ?download=1 when it wants to force a save-as dialog.
@@ -723,7 +731,15 @@ class PublicSpecificationPdfView(APIView):
         except PublicLinkNotEnabled as exc:
             raise NotFound() from exc
 
-        pdf_bytes, filename = render_pdf(sheet)
+        # Cached + render-locked — see :mod:`config.pdf_cache`.
+        # Public endpoint, so the cache + lock matter most here:
+        # a customer email blast that drops everyone on the kiosk
+        # at the same time would otherwise OOM the worker on the
+        # very first batch of Download clicks.
+        pdf_bytes, filename = cached_render(
+            f"spec-pdf:{sheet.id}:{int(sheet.updated_at.timestamp())}",
+            lambda: render_pdf(sheet),
+        )
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         disposition = (
             "attachment"

@@ -52,6 +52,11 @@ import {
   type ProposalKioskDto,
   type ProposalKioskSpecDto,
 } from "@/services/proposals";
+import {
+  specificationsEndpoints,
+  type RenderedSheetContext,
+} from "@/services/specifications";
+import { SpecSheetContent } from "../../../specifications/[id]/specification-sheet-view";
 
 
 
@@ -186,10 +191,17 @@ export function ProposalKioskView({
     (!isCustom || acks.rd_terms);
 
   // Reading-progress gate. ``ScrollTrackingIframe`` polls its
-  // contentWindow's scrollY every 250 ms and flips this once the
-  // customer reaches ``READ_THRESHOLD`` of the document. The sign
-  // button stays disabled until then.
+  // contentWindow's scrollY every 250 ms and flips these once the
+  // customer reaches ``READ_THRESHOLD`` of the document. Sign
+  // buttons stay disabled until the matching flag is true:
+  //
+  // * ``allSectionsRead`` gates the proposal's own Sign button.
+  // * ``specsRead[<sheet-id>]`` gates each spec card independently —
+  //   each spec has its own iframe + its own scroll-to-bottom gate
+  //   (mirrors the proposal's UX so the customer can't sign a spec
+  //   they haven't actually skimmed).
   const [allSectionsRead, setAllSectionsRead] = useState<boolean>(false);
+  const [specsRead, setSpecsRead] = useState<Record<string, boolean>>({});
 
   const allSigned = useMemo(() => {
     if (!kiosk.has_signature) return false;
@@ -441,19 +453,46 @@ export function ProposalKioskView({
             ]
               .filter(Boolean)
               .join(" · ")}
-            previewSrc={
-              sheet.public_token
-                ? // Cache-bust the spec iframe on every customer-sign
-                  // — without this the browser keeps serving the
-                  // previous PDF after ``router.refresh()`` and the
-                  // signer doesn't see their own signature appear on
-                  // the spec sheet next to the proposal.
-                  `/api/public/specifications/${sheet.public_token}/pdf/?v=${encodeURIComponent(
-                    sheet.customer_signed_at ?? "",
-                  )}`
-                : null
+            // Spec preview renders the spec inline as React from
+            // the JSON ``render_context`` the server sent in the
+            // kiosk payload — same component the standalone spec
+            // kiosk uses at ``/p/<token>``. No iframe, no PDF
+            // render, no extra round-trip when the page opens. A
+            // sentinel ``<div>`` at the bottom of the content
+            // hooks into ``IntersectionObserver`` and flips
+            // ``specsRead[sheet.id]`` once it scrolls into view —
+            // that's the per-spec "you've reached the end" gate
+            // for the Sign button.
+            previewSrc={null}
+            previewContent={
+              <InlineSpecPreview
+                sheetId={sheet.id}
+                rendered={sheet.render_context as RenderedSheetContext}
+                onReadChange={(read) =>
+                  setSpecsRead((prev) =>
+                    prev[sheet.id] === read
+                      ? prev
+                      : { ...prev, [sheet.id]: read },
+                  )
+                }
+                tProposals={tProposals}
+              />
             }
             previewLabel={tProposals("public.doc.preview_label")}
+            downloadHref={
+              sheet.public_token
+                ? specificationsEndpoints.publicPdf(sheet.public_token, {
+                    download: true,
+                  })
+                : null
+            }
+            downloadLabel={tProposals("public.doc.download_cta")}
+            signDisabled={!specsRead[sheet.id]}
+            signDisabledHint={
+              !specsRead[sheet.id]
+                ? tProposals("public.doc.sign_disabled_sections_hint")
+                : undefined
+            }
             signedAt={sheet.customer_signed_at}
             hasSignature={sheet.has_signature}
             locked={isAccepted}
@@ -870,6 +909,128 @@ function AcknowledgementBlock({
 
 
 /**
+ * Inline-render variant for spec previews on the proposal kiosk.
+ *
+ * Instead of iframing the WeasyPrint PDF render (heavy on the
+ * server, occasionally fails to load, blows worker memory on
+ * multi-spec proposals), we feed the spec's ``render_context``
+ * JSON into :component:`SpecSheetContent` and render it as React.
+ *
+ * The "you've scrolled to the end" gate that the proposal's
+ * iframe-based version uses is reproduced here via an
+ * ``IntersectionObserver`` watching a sentinel ``<div>`` placed
+ * after the content. When that sentinel becomes visible, the
+ * customer has reached the bottom and the parent flips its
+ * per-spec ``specsRead`` flag, which unlocks the Sign button.
+ */
+function InlineSpecPreview({
+  sheetId,
+  rendered,
+  onReadChange,
+  tProposals,
+}: {
+  sheetId: string;
+  rendered: RenderedSheetContext;
+  onReadChange: (read: boolean) => void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [progress, setProgress] = useState<number>(0);
+  const allDone = progress >= READ_THRESHOLD;
+
+  useEffect(() => {
+    onReadChange(allDone);
+  }, [allDone, onReadChange]);
+
+  useEffect(() => {
+    // Mirror the ``ScrollTrackingIframe`` polling pattern — same
+    // monotone-progress contract, same 98% threshold, same "fits
+    // in the window = counts as read" branch. Polling instead of
+    // a ``scroll`` listener so a parent re-render that replaces
+    // the container ref doesn't drop the listener silently.
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const root = scrollContainerRef.current;
+      if (root === null) return;
+      const scrollTop = root.scrollTop;
+      const clientHeight = root.clientHeight;
+      const scrollHeight = root.scrollHeight;
+      if (scrollHeight <= 0 || clientHeight <= 0) return;
+      const scrollable = Math.max(0, scrollHeight - clientHeight);
+      if (scrollable <= 0) {
+        // Content fits the window — short specs count as fully
+        // read on the first measurement. Without this branch a
+        // one-section spec would never unlock the Sign button.
+        setProgress(1);
+        return;
+      }
+      // Pure scroll-position fraction: 0 at the top, 1 when
+      // scrolled to the very bottom. The earlier formula
+      // ``(scrollTop + clientHeight) / scrollHeight`` showed the
+      // initial reading at ~35% on a tall doc because the visible
+      // window already covered the first third of the content —
+      // mathematically right but unintuitive ("progress" should
+      // start at zero when you haven't done anything yet).
+      const fraction = scrollTop / scrollable;
+      setProgress((prev) =>
+        fraction > prev ? Math.min(1, fraction) : prev,
+      );
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [sheetId]);
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Progress strip — mirrors the proposal's reading-progress
+       *  pill so the customer sees a consistent "you've reached
+       *  the end" signal across all documents on the page. */}
+      <div
+        className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-2 text-xs ${
+          allDone
+            ? "border-success/30 bg-success/10 text-success"
+            : "border-ink-200 bg-ink-50 text-ink-700"
+        }`}
+      >
+        <span className="font-medium">
+          {allDone
+            ? tProposals("public.reading.progress.all_done")
+            : tProposals("public.reading.progress.percent", {
+                percent: Math.round(progress * 100),
+              })}
+        </span>
+        <div className="h-1.5 w-32 overflow-hidden rounded-full bg-ink-200">
+          <div
+            className={`h-full transition-all ${
+              allDone ? "bg-success" : "bg-orange-500"
+            }`}
+            style={{ width: `${Math.round(progress * 100)}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Fixed-height window with internal scroll — same footprint
+       *  as the proposal iframe. The customer scrolls inside the
+       *  window; the polling loop above tracks how far they got
+       *  through the spec content. */}
+      <div
+        ref={scrollContainerRef}
+        className="h-[70vh] w-full overflow-y-auto rounded-xl bg-ink-50 px-4 py-6 ring-1 ring-inset ring-ink-200 sm:px-6 md:h-[780px]"
+      >
+        <SpecSheetContent rendered={rendered} />
+      </div>
+    </div>
+  );
+}
+
+
+/**
  * Same-origin iframe wrapper that tracks how far the customer has
  * scrolled through the embedded proposal HTML, and exposes a
  * "scrolled to bottom" signal upward via ``onAllReadChange``.
@@ -972,7 +1133,12 @@ function ScrollTrackingIframe({
         setProgress(1);
         return;
       }
-      const fraction = (scrollTop + clientHeight) / scrollHeight;
+      // Pure scroll-position fraction (0 → 1) to match the spec
+      // preview's progress strip. The previous formula counted the
+      // visible window as "read", which made progress start at
+      // ~35% on tall documents before the customer had actually
+      // scrolled anywhere.
+      const fraction = scrollTop / scrollable;
       setProgress((prev) =>
         fraction > prev ? Math.min(1, fraction) : prev,
       );

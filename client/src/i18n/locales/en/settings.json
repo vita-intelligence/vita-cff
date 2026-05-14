@@ -80,6 +80,8 @@
       "scientist": "Scientist",
       "sales": "Sales"
     },
+    "permissions_locked_owner": "The organization owner has full access by design — only their group tags can be edited here.",
+    "permissions_locked_self": "You can't edit your own permissions, only your group tags. Ask another admin if you need an access change.",
     "action_edit": "Edit",
     "action_remove": "Remove",
     "action_resend": "Resend",

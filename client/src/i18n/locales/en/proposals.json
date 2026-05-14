@@ -88,7 +88,8 @@
     "attached_specs": {
       "title": "Bundled specification sheets",
       "subtitle": "Exactly what the client will see alongside the proposal on their kiosk link.",
-      "failed": "We couldn't load this specification preview. Open the spec directly to retry."
+      "failed": "We couldn't load this specification preview. Open the spec directly to retry.",
+      "download_pdf": "Download PDF"
     },
     "edit_heading": "Edit proposal",
     "edit_subtitle": "Fill the customer details and commercial terms the template needs. The preview above re-renders after you save.",

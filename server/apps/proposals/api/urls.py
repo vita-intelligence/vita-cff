@@ -9,6 +9,7 @@ from apps.proposals.api.views import (
     ProposalLineDetailView,
     ProposalLineListCreateView,
     ProposalListCreateView,
+    ProposalPdfDownloadView,
     ProposalRenderView,
     ProposalSendTestEmailView,
     ProposalSendToClientView,
@@ -61,6 +62,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/render/",
         ProposalRenderView.as_view(),
         name="proposal-render",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/download/",
+        ProposalPdfDownloadView.as_view(),
+        name="proposal-pdf-download",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/audit/",

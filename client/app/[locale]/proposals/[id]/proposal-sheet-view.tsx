@@ -4,6 +4,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
+  Download,
   ExternalLink,
   FlaskConical,
   Link2,
@@ -61,8 +62,10 @@ import { useMemberships } from "@/services/members";
 import {
   specificationsEndpoints,
   useInfiniteSpecifications,
+  useRenderedSpecification,
   type SpecificationSheetDto,
 } from "@/services/specifications";
+import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
 
 
 /**
@@ -384,6 +387,22 @@ export function ProposalSheetView({
             tProposals={tProposals}
           />
         ) : null}
+        {/* Anchor tag with ``download`` so the browser saves the
+            PDF instead of streaming inline. The backend sets
+            ``Content-Disposition: attachment``; the attribute is
+            belt-and-braces for clients that ignore the header
+            (mobile Safari). Available in every status — staff often
+            grab a copy of a signed proposal for their records, but
+            it's just as useful pre-send for an internal review
+            handoff or as a draft-state proof. */}
+        <a
+          href={proposalsEndpoints.download(orgId, proposalId)}
+          download
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+        >
+          <Download className="h-4 w-4" />
+          {tProposals("detail.download_pdf")}
+        </a>
         {isTerminal ? null : (
           <Button
             type="button"
@@ -1735,11 +1754,14 @@ function AttachedSpecPreviews({
 
 
 /**
- * Single bundled-spec preview. Fetches the sheet's PDF through
- * ``apiClient`` (cookies attached) and binds the bytes to an iframe
- * via a ``blob:`` URL — same mechanism the proposal-level preview
- * uses, for the same reason: cross-origin iframes drop cookies, so
- * we can't point the iframe at the API origin directly.
+ * Single bundled-spec preview. Renders the spec inline as React
+ * from JSON (``useRenderedSpecification`` → ``SpecSheetContent``)
+ * rather than iframing a WeasyPrint PDF render. Same approach the
+ * customer kiosk uses for its bundled specs — cheaper on the
+ * server (no PDF render on every proposal-page load), more
+ * reliable (no iframe failure modes), and lets the staff scroll
+ * through the spec inside a fixed-height window instead of
+ * stretching the whole page.
  */
 function AttachedSpecPreviewCard({
   orgId,
@@ -1753,54 +1775,39 @@ function AttachedSpecPreviewCard({
   subtitle: string;
 }) {
   const tProposals = useTranslations("proposals");
-  const [blobUrl, setBlobUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    (async () => {
-      try {
-        const response = await apiClient.get<Blob>(
-          specificationsEndpoints.pdf(orgId, sheetId),
-          { responseType: "blob" },
-        );
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(response.data);
-        setBlobUrl(objectUrl);
-        setFailed(false);
-      } catch {
-        if (!cancelled) setFailed(true);
-      }
-    })();
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [orgId, sheetId]);
+  const renderedQuery = useRenderedSpecification(orgId, sheetId);
 
   return (
     <article className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
-      <header className="flex flex-wrap items-center gap-2">
-        <Sparkles className="h-4 w-4 text-orange-600" />
-        <h3 className="text-sm font-semibold text-ink-1000">
-          {title || tProposals("public.doc.spec_title_untitled")}
-        </h3>
-        {subtitle ? (
-          <span className="text-xs text-ink-500">{subtitle}</span>
-        ) : null}
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Sparkles className="h-4 w-4 text-orange-600" />
+          <h3 className="text-sm font-semibold text-ink-1000">
+            {title || tProposals("public.doc.spec_title_untitled")}
+          </h3>
+          {subtitle ? (
+            <span className="text-xs text-ink-500">{subtitle}</span>
+          ) : null}
+        </div>
+        <a
+          href={specificationsEndpoints.pdf(orgId, sheetId, { download: true })}
+          download
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
+        >
+          <Download className="h-3.5 w-3.5" />
+          {tProposals("detail.attached_specs.download_pdf")}
+        </a>
       </header>
-      <div className="mt-3 overflow-hidden rounded-xl bg-ink-50 ring-1 ring-inset ring-ink-200">
-        {blobUrl ? (
-          <iframe
-            src={blobUrl}
-            title={title || tProposals("public.doc.spec_title_untitled")}
-            className="h-[780px] w-full border-0"
-          />
+      <div className="mt-3 h-[780px] overflow-y-auto rounded-xl bg-ink-50 px-4 py-6 ring-1 ring-inset ring-ink-200 sm:px-6">
+        {renderedQuery.data ? (
+          <SpecSheetContent rendered={renderedQuery.data} />
+        ) : renderedQuery.isError ? (
+          <div className="flex h-full items-center justify-center text-sm text-ink-500">
+            {tProposals("detail.attached_specs.failed")}
+          </div>
         ) : (
-          <div className="flex h-64 items-center justify-center text-sm text-ink-500">
-            {failed
-              ? tProposals("detail.attached_specs.failed")
-              : tProposals("detail.preview_loading")}
+          <div className="flex h-full items-center justify-center text-sm text-ink-500">
+            {tProposals("detail.preview_loading")}
           </div>
         )}
       </div>

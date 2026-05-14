@@ -69,19 +69,23 @@
     }
     .checklist .check:last-child { border-bottom: 0; }
     .checklist .box {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 16px; height: 16px;
+      /* ``inline-block`` + ``text-align: center`` instead of flex —
+         WeasyPrint's flex implementation wraps pseudo-element /
+         single-glyph content in an anonymous box that visibly
+         inherits the parent's border, producing a phantom "box
+         inside the box" in the rendered PDF. The inline-block
+         layout sidesteps it entirely. */
+      display: inline-block;
+      width: 16px;
+      height: 16px;
       border: 1.5px solid var(--ink);
       margin-top: 1px;
       font-size: 13px;
-      line-height: 1;
+      line-height: 13px;
+      text-align: center;
       color: var(--accent);
       font-weight: 700;
-    }
-    .checklist .box.checked::before {
-      content: "✓";
+      vertical-align: middle;
     }
     .signature-row {
       margin-top: 28px;
@@ -208,7 +212,7 @@
   {% endcomment %}
   <div class="checklist" style="margin-top: 14px;">
     <div class="check">
-      <span class="box{% if proposal.ack_spec_signing %} checked{% endif %}" aria-hidden="true"></span>
+      <span class="box" aria-hidden="true">{% if proposal.ack_spec_signing %}✓{% endif %}</span>
       <span>
         I understand that before label printing, Production
         Specification Sheets must be signed, and label designs must
@@ -219,7 +223,7 @@
       </span>
     </div>
     <div class="check">
-      <span class="box{% if proposal.ack_lead_times %} checked{% endif %}" aria-hidden="true"></span>
+      <span class="box" aria-hidden="true">{% if proposal.ack_lead_times %}✓{% endif %}</span>
       <span>
         I understand that manufacturing lead times commence once the
         Product Specification Sheet(s) are signed
@@ -228,7 +232,7 @@
     </div>
     {% if proposal.template_type == "custom" %}
       <div class="check">
-        <span class="box{% if proposal.ack_rd_terms %} checked{% endif %}" aria-hidden="true"></span>
+        <span class="box" aria-hidden="true">{% if proposal.ack_rd_terms %}✓{% endif %}</span>
         <span>
           I understand that R&amp;D, sample preparation, flavour
           development, reformulation, and additional iterations are
@@ -241,7 +245,7 @@
       </div>
     {% endif %}
     <div class="check">
-      <span class="box{% if proposal.ack_terms %} checked{% endif %}" aria-hidden="true"></span>
+      <span class="box" aria-hidden="true">{% if proposal.ack_terms %}✓{% endif %}</span>
       <span>
         I have read the terms and Conditions which can be found below.
       </span>

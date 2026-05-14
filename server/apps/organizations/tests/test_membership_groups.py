@@ -113,10 +113,13 @@ class TestListMembershipsGroupFilter:
         result = list(list_memberships(organization=org))
         assert len(result) == 3
 
-    def test_sales_filter_narrows_to_tagged_plus_owner(self) -> None:
-        # Owners always surface in directory dropdowns — they're the
-        # admins running the org and shouldn't disappear from a sales
-        # picker just because nobody tagged them.
+    def test_sales_filter_narrows_to_tagged_only(self) -> None:
+        # Tag-driven uniform filter — owners are no longer force-
+        # included. Earlier the service auto-added owners on every
+        # group-scoped query and admins couldn't take them out of
+        # the sales picker without revoking ownership. Now if the
+        # owner needs to appear, the admin tags them; if they
+        # shouldn't appear, they stay untagged.
         org = OrganizationFactory()
         sales_user = UserFactory(email="sales1@vita.test")
         sci_user = UserFactory(email="sci1@vita.test")
@@ -131,12 +134,33 @@ class TestListMembershipsGroupFilter:
 
         results = list(list_memberships(organization=org, group="sales"))
         emails = {m.user.email for m in results}
-        assert sales_user.email in emails
-        assert sci_user.email not in emails
-        assert other.email not in emails
-        # Owner is always included regardless of tags.
-        owner_email = org.created_by.email
-        assert owner_email in emails
+        assert emails == {sales_user.email}
+        # Owner is NOT auto-included when not tagged — must be
+        # explicitly opted in via :func:`update_membership_groups`.
+        assert org.created_by.email not in emails
+
+    def test_owner_appears_in_filter_only_when_tagged(self) -> None:
+        # Inverse of the previous test: when the admin tags the
+        # owner with ``sales``, they DO surface in the sales picker.
+        # Confirms there's no special hidden filtering for owners.
+        from apps.organizations.models import Membership
+
+        org = OrganizationFactory()
+        owner_membership = Membership.objects.get(
+            user=org.created_by, organization=org
+        )
+        owner_membership.groups = ["sales"]
+        owner_membership.save(update_fields=["groups"])
+        MembershipFactory(
+            user=UserFactory(email="rep@vita.test"),
+            organization=org,
+            groups=["sales"],
+        )
+
+        results = list(list_memberships(organization=org, group="sales"))
+        emails = {m.user.email for m in results}
+        assert org.created_by.email in emails
+        assert "rep@vita.test" in emails
 
     def test_unknown_group_filter_falls_through(self) -> None:
         # A stale URL with an unrecognised group value should return

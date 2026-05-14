@@ -134,6 +134,7 @@ export function MembersTab({
           membership={editingMembership}
           modules={modules}
           catalogueSlugs={catalogueSlugs}
+          currentUserId={currentUserId}
           onClose={() => setEditingMembership(null)}
         />
       ) : null}
@@ -257,7 +258,14 @@ function MemberRow({
   const tSettings = useTranslations("settings");
   const isSelf = membership.user.id === currentUserId;
   const isOwner = membership.is_owner;
-  const disableEdit = !canEditPermissions || isOwner || isSelf;
+  // Edit gate is just the cap now — owner and self are still
+  // blocked from changing *permissions* inside the modal (the
+  // permissions grid hides for those targets) but *groups* are
+  // benign tags that any admin should be able to flip on anyone,
+  // including the owner and themselves. Without this relaxation,
+  // an admin can't put the owner into the sales picker even when
+  // the owner explicitly handles commercial work.
+  const disableEdit = !canEditPermissions;
   const disableRemove = !canRemove || isOwner || isSelf;
 
   return (
@@ -549,16 +557,27 @@ function EditPermissionsDrawer({
   membership,
   modules,
   catalogueSlugs,
+  currentUserId,
   onClose,
 }: {
   orgId: string;
   membership: MembershipDto;
   modules: readonly ModuleDefinitionDto[];
   catalogueSlugs: readonly string[];
+  currentUserId: string;
   onClose: () => void;
 }) {
   const tSettings = useTranslations("settings");
   const tErrors = useTranslations("errors");
+
+  // Permissions grid is hidden for owner targets (their grants are
+  // unconditional, no field is editable) and for self-targeting
+  // (no admin can elevate their own access). Groups stay editable
+  // in both cases since tags are benign and don't affect what the
+  // target can actually do — they only drive picker scoping.
+  const isOwner = membership.is_owner;
+  const isSelf = membership.user.id === currentUserId;
+  const showPermissions = !isOwner && !isSelf;
 
   const [draft, setDraft] = useState<PermissionsDict>(
     membership.permissions ?? {},
@@ -578,7 +597,11 @@ function EditPermissionsDrawer({
     setError(null);
   }, [membership.id, membership.permissions, membership.groups]);
 
+  // ``permsDirty`` only matters when the grid is visible — for
+  // owner / self targets we don't render it, so any diff in the
+  // draft (which can't have been edited anyway) is ignored.
   const permsDirty =
+    showPermissions &&
     JSON.stringify(draft) !== JSON.stringify(membership.permissions ?? {});
   const groupsDirty =
     [...groupsDraft].sort().join(",") !==
@@ -592,8 +615,10 @@ function EditPermissionsDrawer({
       // Permissions + groups are independent fields stored on the
       // same row but exposed as two endpoints. We fire only the
       // patches that actually changed so an admin tweaking just one
-      // axis doesn't roundtrip the whole snapshot.
-      if (permsDirty) {
+      // axis doesn't roundtrip the whole snapshot. Permissions
+      // patch is also gated on ``showPermissions`` so the owner /
+      // self case never sends a permissions payload at all.
+      if (showPermissions && permsDirty) {
         await permissionsMutation.mutateAsync({
           membershipId: membership.id,
           payload: { permissions: draft },
@@ -695,13 +720,21 @@ function EditPermissionsDrawer({
                 </div>
               </fieldset>
 
-              <CapabilityGrid
-                modules={modules}
-                catalogueSlugs={catalogueSlugs}
-                value={draft}
-                onChange={setDraft}
-                disabled={isPending}
-              />
+              {showPermissions ? (
+                <CapabilityGrid
+                  modules={modules}
+                  catalogueSlugs={catalogueSlugs}
+                  value={draft}
+                  onChange={setDraft}
+                  disabled={isPending}
+                />
+              ) : (
+                <p className="rounded-xl bg-ink-50 px-4 py-3 text-xs text-ink-600 ring-1 ring-inset ring-ink-200">
+                  {isOwner
+                    ? tSettings("members.permissions_locked_owner")
+                    : tSettings("members.permissions_locked_self")}
+                </p>
+              )}
               {error ? (
                 <p
                   role="alert"

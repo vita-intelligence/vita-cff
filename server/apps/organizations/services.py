@@ -460,9 +460,15 @@ def list_memberships(
     on their :attr:`Membership.groups` list. Used by picker endpoints
     (sales-person dropdown, future scientist picker) so a directory
     of 1k+ people doesn't load when a 6-person sales team is all the
-    UI actually needs. Owners are always included regardless of
-    ``groups``: they're the admin overseeing the org and need to
-    appear in every directory dropdown by default.
+    UI actually needs.
+
+    **Owners are filtered like everyone else.** Earlier this service
+    force-included owners in every group-scoped result, but admins
+    found it surprising: an owner who isn't actually on the sales
+    team still showed up in the sales picker with no way to remove
+    them. The current behavior is tag-driven and uniform — tag the
+    owner ``sales`` and they appear in the sales picker, untag and
+    they vanish. Same rules for everyone.
 
     The group filter runs in Python after the DB fetch. JSON
     ``contains`` is Postgres-only — testing on SQLite would break,
@@ -485,7 +491,7 @@ def list_memberships(
     return [
         m
         for m in queryset
-        if m.is_owner or (m.groups and cleaned in m.groups)
+        if m.groups and cleaned in m.groups
     ]
 
 

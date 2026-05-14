@@ -18,6 +18,12 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/transitions/`,
   render: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/render/`,
+  //: WeasyPrint PDF download for authenticated staff. Mirror of the
+  //: public token-gated ``publicDownload`` but gated by the standard
+  //: org-scoped capability check so internal users can grab a signed
+  //: copy without sharing a customer link.
+  download: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/download/`,
   audit: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/audit/`,
   lines: (orgId: string, proposalId: string) =>

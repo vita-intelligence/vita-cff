@@ -292,6 +292,7 @@ def _render_proposal_pdf(proposal) -> bytes:
 
 from apps.organizations.modules import ProposalsCapability
 from apps.proposals.api.permissions import HasProposalsPermission
+from config.pdf_cache import cached_render
 from apps.proposals.api.serializers import (
     ProposalCreateSerializer,
     ProposalLineReadSerializer,
@@ -890,6 +891,42 @@ class ProposalTransitionsView(APIView):
         )
 
 
+class ProposalPdfDownloadView(APIView):
+    """``GET`` ``/.../proposals/<id>/download/`` — authenticated PDF
+    download of the proposal for staff.
+
+    Mirror of :class:`PublicProposalDownloadView` but gated on the
+    standard staff capability check rather than a public token, so
+    sales / scientists can grab a signed copy for their records
+    without sharing a customer-facing link. Same WeasyPrint
+    pipeline + same cache/render-lock plumbing — repeat clicks
+    within the cache window reuse the bytes, concurrent clicks
+    queue on the process-wide render lock.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
+
+    def get(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> HttpResponse:
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        pdf_bytes = cached_render(
+            f"proposal-pdf:{proposal.id}:{int(proposal.updated_at.timestamp())}",
+            lambda: _render_proposal_pdf(proposal),
+        )
+        filename = f"{(proposal.code or 'proposal').strip().replace(' ', '-')}.pdf"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
+
+
 class ProposalRenderView(APIView):
     """``GET`` ``/.../proposals/<id>/render/`` — inline preview of the
     proposal as PDF (converted from the original .docx template).
@@ -1319,9 +1356,15 @@ def _render_public_proposal_payload(proposal) -> dict:
     status. The client uses this to know which signature pads to
     render and which ones are already complete."""
 
-    # Local import avoids pulling proposals.services at module load —
-    # keeps Django's app-ready order simple.
+    # Local imports avoid pulling proposals.services at module load —
+    # keeps Django's app-ready order simple. The
+    # ``spec_render_context`` builds the same JSON the standalone
+    # spec kiosk receives so the proposal kiosk can render each
+    # attached spec inline (React component, not iframe) — keeps
+    # the WeasyPrint PDF render off the hot path of opening the
+    # proposal page.
     from apps.proposals.services import _attached_spec_sheets
+    from apps.specifications.services import render_context as spec_render_context
 
     attached = _attached_spec_sheets(proposal)
     specs_payload = [
@@ -1349,6 +1392,13 @@ def _render_public_proposal_payload(proposal) -> dict:
                 else None
             ),
             "has_signature": bool(sheet.customer_signature_image),
+            # Inline render data — drives the React ``SpecSheetContent``
+            # component on the proposal kiosk. Same payload the
+            # standalone spec kiosk uses at ``/p/<token>``. Cheap
+            # JSON serialization (no WeasyPrint), so opening the
+            # proposal kiosk no longer fans out N parallel PDF
+            # renders just to paint the page.
+            "render_context": spec_render_context(sheet),
         }
         for sheet in attached
     ]
@@ -1526,7 +1576,15 @@ class PublicProposalDownloadView(APIView):
         except ProposalPublicLinkNotEnabled as exc:
             raise NotFound() from exc
 
-        pdf_bytes = _render_proposal_pdf(proposal)
+        # Cached + render-locked. Repeat clicks within ``ttl``
+        # return cached bytes; concurrent clicks queue on the
+        # process-wide render lock so peak memory stays bounded
+        # to one WeasyPrint call at a time per worker. See
+        # :mod:`config.pdf_cache`.
+        pdf_bytes = cached_render(
+            f"proposal-pdf:{proposal.id}:{int(proposal.updated_at.timestamp())}",
+            lambda: _render_proposal_pdf(proposal),
+        )
         # Mirror the spec sheet's filename pattern (``<code>.pdf``).
         # Strip spaces so the suggested filename survives intact
         # through Content-Disposition's quoting rules.
