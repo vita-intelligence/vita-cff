@@ -729,15 +729,28 @@ _LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
 
 
 #: States that freeze the proposal — no edits, no line CRUD, no
-#: deletion. Mirrors the spec sheet's terminal lock so a signed
-#: bundle stays byte-identical to the version the client accepted.
-_TERMINAL_STATES: frozenset[str] = frozenset(
-    {ProposalStatus.ACCEPTED.value, ProposalStatus.REJECTED.value}
+#: deletion. Once a director has approved the proposal the offer
+#: is locked: any further mutation would invalidate the
+#: prepared-by + director signature evidence and (if it's reached
+#: ``sent``) potentially diverge from what the customer is reading
+#: on the kiosk. The two terminal states (``accepted`` /
+#: ``rejected``) are included for the same reason — the audit
+#: trail of "what the customer agreed to / declined" must match
+#: the document.
+#:
+#: Only ``draft`` and ``in_review`` remain editable.
+_LOCKED_STATES: frozenset[str] = frozenset(
+    {
+        ProposalStatus.APPROVED.value,
+        ProposalStatus.SENT.value,
+        ProposalStatus.ACCEPTED.value,
+        ProposalStatus.REJECTED.value,
+    }
 )
 
 
 def _guard_mutable(proposal: Proposal) -> None:
-    if proposal.status in _TERMINAL_STATES:
+    if proposal.status in _LOCKED_STATES:
         raise ProposalNotMutable()
 
 
@@ -1217,6 +1230,97 @@ def _render_and_send_proposal_email(
         raise ProposalEmailSendFailed(str(exc)) from exc
 
     return final_subject, cc_clean, bcc_clean
+
+
+def _send_proposal_rejection_notification(*, proposal_id: Any) -> None:
+    """Email the sales person that the customer declined a proposal.
+
+    Called from :func:`transaction.on_commit` inside
+    :func:`capture_customer_rejection_on_proposal` so we don't dispatch
+    a notification for a rejection that ended up rolled back. The
+    proposal is re-fetched fresh from the DB by id — passing the
+    instance through the closure can produce a stale state when the
+    surrounding atomic block touches related rows.
+
+    Best-effort delivery: logs and swallows SMTP failures so a flaky
+    relay doesn't surface as an error to the kiosk after the
+    rejection has otherwise committed. The audit row already proves
+    the rejection happened — the email is a convenience nudge for
+    the sales team.
+    """
+
+    import logging
+
+    from django.conf import settings
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+
+    logger = logging.getLogger(__name__)
+
+    proposal = Proposal.objects.filter(id=proposal_id).first()
+    if proposal is None:
+        return
+
+    sales_person = (
+        proposal.sales_person
+        or getattr(
+            proposal.formulation_version.formulation, "sales_person", None
+        )
+    )
+    recipient = getattr(sales_person, "email", "") if sales_person else ""
+    if not recipient:
+        # No-one to email — log a breadcrumb so an admin reviewing the
+        # audit trail can see why the team wasn't notified. The
+        # rejection itself stays recorded.
+        logger.warning(
+            "Customer rejected proposal %s but no sales-person email is wired",
+            proposal.id,
+        )
+        return
+
+    from_email = getattr(
+        settings, "DEFAULT_FROM_EMAIL", "no-reply@localhost"
+    )
+    app_base = getattr(
+        settings, "APP_BASE_URL", "http://localhost:3000"
+    ).rstrip("/")
+    proposal_url = f"{app_base}/proposals/{proposal.id}"
+
+    sales_person_name = ""
+    if sales_person is not None:
+        sales_person_name = (
+            sales_person.get_full_name() or sales_person.email or ""
+        ).strip()
+
+    context = {
+        "proposal": proposal,
+        "proposal_url": proposal_url,
+        "sales_person_name": sales_person_name,
+        "reason": proposal.customer_rejection_reason or "",
+    }
+    subject = f"Proposal {proposal.code} declined by the customer"
+    text_body = render_to_string(
+        "proposals/email/customer_rejection.txt", context
+    )
+    html_body = render_to_string(
+        "proposals/email/customer_rejection.html", context
+    )
+
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=from_email,
+        to=[recipient],
+    )
+    message.attach_alternative(html_body, "text/html")
+    try:
+        message.send(fail_silently=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to send rejection notification for proposal %s: %s",
+            proposal.id,
+            exc,
+        )
 
 
 def send_proposal_test_email(
@@ -1731,6 +1835,88 @@ def capture_customer_signature_on_attached_spec(
         },
     )
     return sheet
+
+
+@transaction.atomic
+def capture_customer_rejection_on_proposal(
+    *,
+    proposal: Proposal,
+    reason: str = "",
+) -> Proposal:
+    """Mark a proposal as ``rejected`` because the customer declined
+    via the kiosk's "Decline" button.
+
+    The action is one-way: a rejected proposal is terminal and the
+    state machine refuses any further edge. Only callable when the
+    proposal is currently at ``sent`` — declining a draft or an
+    already-accepted proposal is nonsense and would corrupt the
+    audit trail.
+
+    The optional ``reason`` is the free-text the customer typed in
+    the modal. Empty when they declined without explaining.
+
+    Fires an email notification to the sales person *after* the
+    transaction commits (via :func:`transaction.on_commit`) so a
+    later assertion in the same atomic block that rolls everything
+    back doesn't email the team about a rejection that didn't
+    actually land. Mirrors the comment-notifications pattern.
+    """
+
+    if proposal.status != ProposalStatus.SENT.value:
+        raise InvalidProposalTransition()
+
+    cleaned_reason = (reason or "").strip()
+    before = snapshot(proposal)
+    from_status = proposal.status
+
+    proposal.status = ProposalStatus.REJECTED.value
+    proposal.customer_rejected_at = timezone.now()
+    proposal.customer_rejection_reason = cleaned_reason
+    proposal.save(
+        update_fields=[
+            "status",
+            "customer_rejected_at",
+            "customer_rejection_reason",
+            "updated_at",
+        ]
+    )
+
+    ProposalStatusTransition.objects.create(
+        proposal=proposal,
+        from_status=from_status,
+        to_status=ProposalStatus.REJECTED.value,
+        actor=proposal.updated_by,
+        notes=(
+            f"Customer declined via kiosk: {cleaned_reason[:200]}"
+            if cleaned_reason
+            else "Customer declined via kiosk"
+        ),
+    )
+    record_audit(
+        organization=proposal.organization,
+        actor=proposal.updated_by,
+        action="proposal.kiosk_rejected",
+        target=proposal,
+        before=before,
+        after=snapshot(proposal),
+    )
+
+    # Notify the sales person *after* the transaction commits — the
+    # email layer is best-effort (SMTP failures must not undo a
+    # genuine customer rejection) and ``on_commit`` keeps the two
+    # concerns decoupled.
+    proposal_id = proposal.id
+
+    def _dispatch_rejection_email() -> None:
+        try:
+            _send_proposal_rejection_notification(proposal_id=proposal_id)
+        except Exception:  # noqa: BLE001
+            # Logged inside the helper; swallow here so an SMTP blip
+            # doesn't bubble up as an unhandled error to the kiosk.
+            pass
+
+    transaction.on_commit(_dispatch_rejection_email)
+    return proposal
 
 
 @transaction.atomic

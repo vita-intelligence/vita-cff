@@ -28,9 +28,24 @@ from apps.proposals.tests.factories import ProposalFactory
 pytestmark = pytest.mark.django_db
 
 
-@pytest.fixture(params=[ProposalStatus.ACCEPTED.value, ProposalStatus.REJECTED.value])
+@pytest.fixture(
+    params=[
+        ProposalStatus.APPROVED.value,
+        ProposalStatus.SENT.value,
+        ProposalStatus.ACCEPTED.value,
+        ProposalStatus.REJECTED.value,
+    ]
+)
 def terminal_proposal(request):
-    """One fixture, two parametrised states — both lock identically."""
+    """One fixture, four parametrised states — all lock identically.
+
+    The four "locked" states are everything from ``approved`` onward:
+    a director-signed proposal can't be edited because it would
+    invalidate the signature evidence; ``sent`` would diverge from
+    what the customer is reading on the kiosk; ``accepted`` /
+    ``rejected`` are part of the audit trail.
+    """
+
     return ProposalFactory(status=request.param)
 
 

@@ -2023,7 +2023,10 @@ _FORMULATION_LIST_PREFETCH: tuple[str, ...] = (
 
 
 def list_formulations(
-    *, organization: Organization, search: str | None = None
+    *,
+    organization: Organization,
+    search: str | None = None,
+    has_open_proposal: bool | None = None,
 ) -> QuerySet[Formulation]:
     """List formulations for an organisation, prefetched for the read
     serializer's echo blocks.
@@ -2038,6 +2041,30 @@ def list_formulations(
     case-insensitively against both ``name`` and ``code``. Empty / blank
     values are ignored so the caller can forward the query parameter
     unconditionally.
+
+    ``has_open_proposal`` filters on whether the formulation already
+    carries any non-rejected :class:`apps.proposals.models.Proposal`.
+    The "open" set is everything except ``rejected``:
+
+    * ``draft`` / ``in_review`` / ``approved`` / ``sent`` — live deal
+      in flight; another quote would race the first one.
+    * ``accepted`` — deal already closed and signed by the client;
+      if they want to re-order, the team clones the project rather
+      than send a duplicate proposal against the same recipe.
+
+    ``rejected`` is *not* part of the "open" set — those projects
+    return to the picker so the team can try again with adjusted
+    terms.
+
+    * ``True``  — only formulations with at least one open proposal.
+    * ``False`` — only formulations with no open proposal (i.e.
+      eligible for a fresh quote — used by the New Proposal modal).
+    * ``None``  — no filter (default).
+
+    The check runs as an ``Exists`` subquery so pagination remains
+    correct and the work stays at the SQL layer; the alternative
+    "fetch all proposals into a Python set" approach made the
+    50/page limit lie about how many usable rows the page held.
     """
 
     queryset = (
@@ -2051,6 +2078,26 @@ def list_formulations(
             queryset = queryset.filter(
                 Q(name__icontains=needle) | Q(code__icontains=needle)
             )
+
+    if has_open_proposal is not None:
+        # Lazy import — the Proposal model lives in a sibling app and
+        # we don't want :func:`list_formulations` to fan out an
+        # import-time cycle.
+        from django.db.models import Exists, OuterRef
+
+        from apps.proposals.models import Proposal, ProposalStatus
+
+        # ``open`` = anything except ``rejected``. Accepted proposals
+        # are deliberately included so a closed-and-signed deal
+        # keeps its project out of the new-quote picker.
+        open_proposals = Proposal.objects.filter(
+            formulation_version__formulation=OuterRef("pk"),
+        ).exclude(status=ProposalStatus.REJECTED.value)
+        if has_open_proposal:
+            queryset = queryset.filter(Exists(open_proposals))
+        else:
+            queryset = queryset.filter(~Exists(open_proposals))
+
     return queryset.order_by("-updated_at")
 
 

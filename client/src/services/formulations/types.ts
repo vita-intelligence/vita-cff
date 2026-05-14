@@ -127,6 +127,11 @@ export interface FormulationsListQuery {
   readonly ordering?: string;
   readonly pageSize?: number;
   readonly search?: string;
+  /** When ``false``, the backend excludes formulations that already
+   *  carry a proposal in a non-terminal status. Used by the
+   *  ``New proposal`` modal so the picker only surfaces projects
+   *  eligible for a fresh quote. */
+  readonly hasOpenProposal?: boolean;
 }
 
 /**

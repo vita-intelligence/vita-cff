@@ -1,0 +1,14 @@
+{% if sales_person_name %}Hi {{ sales_person_name }},{% else %}Hi,{% endif %}
+
+The customer just declined proposal {{ proposal.code }}{% if proposal.customer_company %} ({{ proposal.customer_company }}){% endif %} via the kiosk.
+
+{% if reason %}They left the following reason:
+
+  {{ reason }}
+
+{% else %}They declined without leaving a reason.
+
+{% endif %}You can review the proposal in the app:
+{{ proposal_url }}
+
+— Vita NPD

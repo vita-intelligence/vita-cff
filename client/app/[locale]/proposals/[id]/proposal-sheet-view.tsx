@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
+  ExternalLink,
+  FlaskConical,
   Link2,
   Pencil,
   Plus,
@@ -17,6 +19,7 @@ import {
   Undo2,
   UserRound,
   X,
+  XCircle,
 } from "lucide-react";
 import { useFormatter, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
@@ -154,12 +157,22 @@ export function ProposalSheetView({
 
   const proposal = proposalQuery.data;
 
-  // ``accepted`` and ``rejected`` are terminal: the proposal is the
-  // signed record (accepted) or the closed-loss audit (rejected). No
-  // edits, no line CRUD, no deletion — the backend enforces the same
-  // guard so a crafted request can't bypass the UI.
-  const isTerminal =
-    proposal.status === "accepted" || proposal.status === "rejected";
+  // Proposals lock to read-only once the director has approved them
+  // (and stay locked through ``sent``, ``accepted``, ``rejected``).
+  // Editing an approved proposal would invalidate the signatures we
+  // already have on file; editing a ``sent`` one would diverge from
+  // what the customer is reading on the kiosk. Only ``draft`` and
+  // ``in_review`` remain mutable. The backend enforces the same
+  // guard via :class:`ProposalNotMutable` so a crafted request can't
+  // bypass the UI.
+  const isLocked =
+    proposal.status === "approved" ||
+    proposal.status === "sent" ||
+    proposal.status === "accepted" ||
+    proposal.status === "rejected";
+  // Legacy alias used by code that read this variable as
+  // ``isTerminal``. Kept until every reference is renamed.
+  const isTerminal = isLocked;
 
   const handleTransition = async (
     nextStatus: ProposalStatus,
@@ -265,7 +278,7 @@ export function ProposalSheetView({
   return (
     <div className="mt-6 flex flex-col gap-5">
       <Link
-        href={`/formulations/${proposal.formulation_id}/proposals`}
+        href="/proposals"
         className="inline-flex w-fit items-center gap-1 text-xs font-medium text-ink-500 transition-colors hover:text-ink-1000"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
@@ -348,6 +361,16 @@ export function ProposalSheetView({
           busy={updateMutation.isPending}
         />
       ) : null}
+
+      {/* Rejection panel — only renders when the customer has
+          declined via the kiosk. Shown high on the page (above the
+          lines, the iframe, everything else) because "we just lost
+          this deal" is what the sales team needs to see first. */}
+      {proposal.customer_rejected_at ? (
+        <RejectionPanel proposal={proposal} tProposals={tProposals} />
+      ) : null}
+
+      <LinkedResourcesPanel proposal={proposal} tProposals={tProposals} />
 
       <ProposalLinesPanel
         orgId={orgId}
@@ -2355,5 +2378,183 @@ function AuditField({
         {value}
       </dd>
     </div>
+  );
+}
+
+
+/**
+ * Red banner shown at the top of a rejected proposal. Renders only
+ * when the customer declined via the kiosk (``customer_rejected_at``
+ * is non-null) — a manual operator-driven status change to
+ * ``rejected`` won't populate the timestamp and the banner stays
+ * collapsed in that case.
+ *
+ * The reason can be empty when the customer declined without
+ * explaining; we still show the panel with a fallback sentence so
+ * the sales team sees the decline event acknowledged on the page.
+ */
+function RejectionPanel({
+  proposal,
+  tProposals,
+}: {
+  proposal: ProposalDto;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const format = useFormatter();
+  const declinedAt = proposal.customer_rejected_at;
+  if (!declinedAt) return null;
+  const reason = (proposal.customer_rejection_reason || "").trim();
+  return (
+    <section
+      role="alert"
+      className="rounded-2xl border border-danger/30 bg-danger/5 p-5 shadow-sm md:p-6"
+    >
+      <header className="flex items-center gap-2 border-b border-danger/20 pb-3">
+        <XCircle className="h-5 w-5 text-danger" />
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-danger">
+            {tProposals("detail.rejection.title")}
+          </h2>
+          <p className="text-[11px] text-danger/80">
+            {tProposals("detail.rejection.subtitle", {
+              when: format.dateTime(new Date(declinedAt), {
+                dateStyle: "medium",
+                timeStyle: "short",
+              }),
+            })}
+          </p>
+        </div>
+      </header>
+      <div className="mt-3 text-sm text-ink-1000">
+        {reason ? (
+          <blockquote className="whitespace-pre-wrap border-l-2 border-danger/40 bg-ink-0 px-3 py-2 italic text-ink-700 ring-1 ring-inset ring-danger/10">
+            {reason}
+          </blockquote>
+        ) : (
+          <p className="text-ink-500">
+            {tProposals("detail.rejection.no_reason")}
+          </p>
+        )}
+      </div>
+    </section>
+  );
+}
+
+
+/**
+ * Quick-links panel on the proposal page. Surfaces the
+ * project (formulation) the proposal quotes against plus every
+ * unique specification sheet bundled into it, so the sales /
+ * scientist who opens a proposal can jump straight to the source
+ * documents without poking around the nav. De-dupes spec sheets
+ * referenced by multiple lines + the legacy proposal-level
+ * OneToOne — same de-dup the kiosk uses.
+ *
+ * Hidden entirely when there's nothing linkable (no formulation +
+ * no specs) so a fresh empty proposal doesn't grow a pointless
+ * empty card.
+ */
+function LinkedResourcesPanel({
+  proposal,
+  tProposals,
+}: {
+  proposal: ProposalDto;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  // Collect unique attached spec sheets. ``Set`` keyed on the sheet
+  // id; we walk the lines first (canonical path) then fall back to
+  // the legacy proposal-level OneToOne for older rows.
+  const specs = useMemo(() => {
+    const seen = new Set<string>();
+    const out: {
+      readonly sheetId: string;
+      readonly label: string;
+      readonly subLabel: string;
+    }[] = [];
+    for (const line of proposal.lines) {
+      const sheetId = line.specification_sheet_id;
+      if (!sheetId || seen.has(sheetId)) continue;
+      seen.add(sheetId);
+      out.push({
+        sheetId,
+        label:
+          line.formulation_name ||
+          line.description ||
+          line.product_code ||
+          tProposals("detail.linked.spec_fallback"),
+        subLabel: line.formulation_version_number
+          ? `v${line.formulation_version_number}`
+          : "",
+      });
+    }
+    const legacy = proposal.specification_sheet_id;
+    if (legacy && !seen.has(legacy)) {
+      seen.add(legacy);
+      out.push({
+        sheetId: legacy,
+        label:
+          proposal.formulation_name ||
+          tProposals("detail.linked.spec_fallback"),
+        subLabel: proposal.formulation_version_number
+          ? `v${proposal.formulation_version_number}`
+          : "",
+      });
+    }
+    return out;
+  }, [proposal, tProposals]);
+
+  // Project link only renders when the proposal carries a
+  // ``formulation_id`` — should always be true under the current
+  // schema, but the field is nullable on the DTO for older rows
+  // so we guard.
+  const hasProject = Boolean(proposal.formulation_id);
+  if (!hasProject && specs.length === 0) return null;
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex items-center justify-between gap-3 border-b border-ink-100 pb-3">
+        <h2 className="text-sm font-semibold text-ink-1000">
+          {tProposals("detail.linked.title")}
+        </h2>
+        <span className="text-[11px] text-ink-500">
+          {tProposals("detail.linked.hint")}
+        </span>
+      </header>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {hasProject ? (
+          <Link
+            href={`/formulations/${proposal.formulation_id}`}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-ink-50 px-3 py-2 text-xs font-medium text-ink-1000 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-100"
+          >
+            <FlaskConical className="h-3.5 w-3.5 text-orange-600" />
+            <span className="text-ink-1000">
+              {proposal.formulation_name ||
+                tProposals("detail.linked.project_fallback")}
+            </span>
+            {proposal.formulation_version_number ? (
+              <span className="text-ink-500">
+                v{proposal.formulation_version_number}
+              </span>
+            ) : null}
+            <ExternalLink className="h-3 w-3 text-ink-400" />
+          </Link>
+        ) : null}
+
+        {specs.map((spec) => (
+          <Link
+            key={spec.sheetId}
+            href={`/specifications/${spec.sheetId}`}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-ink-50 px-3 py-2 text-xs font-medium text-ink-1000 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-100"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-orange-600" />
+            <span className="text-ink-1000">{spec.label}</span>
+            {spec.subLabel ? (
+              <span className="text-ink-500">{spec.subLabel}</span>
+            ) : null}
+            <ExternalLink className="h-3 w-3 text-ink-400" />
+          </Link>
+        ))}
+      </div>
+    </section>
   );
 }

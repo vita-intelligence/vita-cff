@@ -171,6 +171,84 @@ class TestListFormulations:
         results = list(list_formulations(organization=org, search="   "))
         assert {f.name for f in results} == {"One", "Two"}
 
+    def test_has_open_proposal_false_hides_busy_and_accepted(self) -> None:
+        # The New-proposal modal uses ``has_open_proposal=False`` so
+        # the picker never offers a project that already carries a
+        # proposal in a non-rejected status. Accepted proposals
+        # count as "open" (closed-and-signed = no new quote against
+        # the same recipe; the team clones the project to re-order).
+        # Only ``rejected`` returns the project to the picker.
+        from apps.formulations.services import save_version
+        from apps.proposals.models import ProposalStatus
+        from apps.proposals.tests.factories import ProposalFactory
+
+        org = OrganizationFactory()
+        free = FormulationFactory(organization=org, name="Free")
+        busy = FormulationFactory(organization=org, name="Busy")
+        # Accepted: deal closed, project should be hidden so we
+        # don't send a duplicate.
+        accepted = FormulationFactory(organization=org, name="Accepted")
+        # Rejected: deal lost, project returns to the picker.
+        rejected = FormulationFactory(organization=org, name="Rejected")
+
+        seed = (
+            (busy, ProposalStatus.SENT.value),
+            (accepted, ProposalStatus.ACCEPTED.value),
+            (rejected, ProposalStatus.REJECTED.value),
+        )
+        for f, status_value in seed:
+            version = save_version(formulation=f, actor=org.created_by)
+            ProposalFactory(
+                organization=org,
+                formulation_version=version,
+                status=status_value,
+            )
+
+        eligible = {
+            f.name
+            for f in list_formulations(
+                organization=org, has_open_proposal=False
+            )
+        }
+        assert eligible == {"Free", "Rejected"}
+        assert "Busy" not in eligible
+        assert "Accepted" not in eligible
+
+    def test_has_open_proposal_true_includes_accepted(self) -> None:
+        # Inverse of the above. Anything not rejected counts as
+        # "open" so a dashboard listing live + closed deals would
+        # surface both.
+        from apps.formulations.services import save_version
+        from apps.proposals.models import ProposalStatus
+        from apps.proposals.tests.factories import ProposalFactory
+
+        org = OrganizationFactory()
+        FormulationFactory(organization=org, name="Idle")
+        busy = FormulationFactory(organization=org, name="Busy")
+        accepted = FormulationFactory(organization=org, name="Accepted")
+        rejected = FormulationFactory(organization=org, name="Rejected")
+        for f, status_value in (
+            (busy, ProposalStatus.IN_REVIEW.value),
+            (accepted, ProposalStatus.ACCEPTED.value),
+            (rejected, ProposalStatus.REJECTED.value),
+        ):
+            version = save_version(formulation=f, actor=org.created_by)
+            ProposalFactory(
+                organization=org,
+                formulation_version=version,
+                status=status_value,
+            )
+
+        names = {
+            f.name
+            for f in list_formulations(
+                organization=org, has_open_proposal=True
+            )
+        }
+        assert names == {"Busy", "Accepted"}
+        assert "Rejected" not in names
+        assert "Idle" not in names
+
 
 class TestGetFormulation:
     def test_raises_when_in_other_org(self) -> None:

@@ -41,6 +41,8 @@ export const proposalsEndpoints = {
     `/api/public/proposals/${token}/specs/${sheetId}/sign/`,
   publicFinalize: (token: string) =>
     `/api/public/proposals/${token}/finalize/`,
+  publicReject: (token: string) =>
+    `/api/public/proposals/${token}/reject/`,
   //: WeasyPrint-rendered PDF of the proposal, served with
   //: ``Content-Disposition: attachment`` so the browser saves a file
   //: instead of streaming inline. Token-gated like the preview.

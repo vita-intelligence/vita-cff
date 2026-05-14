@@ -62,6 +62,15 @@ export function ProposalsList({
   const deleteMutation = useDeleteProposal(orgId);
 
   const proposals = proposalsQuery.data ?? [];
+  // A project carries at most one "open" proposal — defined as
+  // anything except ``rejected``. ``accepted`` counts because the
+  // deal is closed: if the client wants to re-order, the team
+  // clones the project rather than sending a duplicate quote
+  // against the same recipe. Only ``rejected`` returns the project
+  // to the picker so the team can try again with adjusted terms.
+  const hasOpenProposal = proposals.some(
+    (p) => p.status !== "rejected",
+  );
   const versions: readonly FormulationVersionDto[] =
     versionsQuery.data ?? [];
 
@@ -96,6 +105,7 @@ export function ProposalsList({
             versionsLoading={versionsQuery.isLoading}
             projectType={projectType}
             approvedVersionNumber={approvedVersionNumber}
+            hasOpenProposal={hasOpenProposal}
           />
         ) : null}
       </header>
@@ -224,6 +234,7 @@ function NewProposalButton({
   versionsLoading,
   projectType,
   approvedVersionNumber,
+  hasOpenProposal,
 }: {
   orgId: string;
   formulationId: string;
@@ -231,6 +242,11 @@ function NewProposalButton({
   versionsLoading: boolean;
   projectType: ProjectType;
   approvedVersionNumber: number | null;
+  /** ``true`` when this project already has a non-terminal proposal.
+   *  The trigger button is disabled with a tooltip in that case so
+   *  the scientist closes / archives the open quote before raising
+   *  a fresh one. */
+  hasOpenProposal: boolean;
 }) {
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
@@ -397,6 +413,27 @@ function NewProposalButton({
           size="sm"
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
           isDisabled
+        >
+          <Plus className="h-4 w-4" />
+          {tProposals("create.trigger")}
+        </Button>
+      </span>
+    );
+  }
+
+  if (hasOpenProposal) {
+    // A project can only carry one open proposal at a time. Show the
+    // trigger as a disabled hint instead of letting the modal open
+    // — the scientist needs to close (accept or reject) the existing
+    // quote before raising a fresh one.
+    return (
+      <span title={tProposals("create.disabled_open_proposal")}>
+        <Button
+          type="button"
+          variant="primary"
+          size="sm"
+          isDisabled
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 disabled:cursor-not-allowed disabled:opacity-50"
         >
           <Plus className="h-4 w-4" />
           {tProposals("create.trigger")}

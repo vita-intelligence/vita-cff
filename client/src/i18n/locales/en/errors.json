@@ -50,7 +50,7 @@
     "formulation_has_dependencies": "This project still has trial batches attached. Delete the batches (and any linked QC validations) first, then try again.",
     "invalid_status_transition": "This document can't move to that state from where it is now. Refresh and try again.",
     "invalid_proposal_transition": "This proposal can't move to that state from where it is now. Refresh and try again.",
-    "proposal_not_mutable": "This proposal is finalised and can no longer be edited or deleted.",
+    "proposal_not_mutable": "This proposal has been approved and can no longer be edited or deleted.",
     "proposal_email_recipient_required": "Add a customer email before sending.",
     "proposal_email_send_failed": "The email server rejected the message. Check the recipient address and try again.",
     "signature_required": "Draw a signature before continuing.",

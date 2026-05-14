@@ -130,12 +130,16 @@ function OrgProposalRow({
 }) {
   const tProposals = useTranslations("proposals");
   const total = proposal.total_excl_vat ?? proposal.subtotal ?? null;
-  // ``accepted`` and ``rejected`` are terminal — the row stays visible
-  // but the destructive action is hidden so a signed/closed record
-  // can't be wiped out by an accidental click. Backend enforces the
-  // same guard via :class:`ProposalNotMutable`.
+  // Once the director has approved a proposal the trash button
+  // disappears: an approved record carries internal signatures that
+  // would orphan on delete, and ``sent`` / ``accepted`` / ``rejected``
+  // are part of the audit trail. The backend mirrors this lock via
+  // :class:`ProposalNotMutable` so a crafted DELETE can't bypass.
   const isTerminal =
-    proposal.status === "accepted" || proposal.status === "rejected";
+    proposal.status === "approved" ||
+    proposal.status === "sent" ||
+    proposal.status === "accepted" ||
+    proposal.status === "rejected";
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 flex-col gap-0.5">
@@ -149,6 +153,20 @@ function OrgProposalRow({
             tProposals("list.no_customer")}
         </Link>
         <span className="text-xs text-ink-500">
+          {/* Project (formulation) name surfaces the recipe the
+              proposal is quoting against. Listed first so a scientist
+              scanning the page can match a proposal to "what is this
+              actually selling" without clicking through. Falls back
+              gracefully if the formulation link is missing on a
+              legacy row. */}
+          {proposal.formulation_name ? (
+            <>
+              <span className="font-medium text-ink-700">
+                {proposal.formulation_name}
+              </span>
+              {" · "}
+            </>
+          ) : null}
           {tProposals(
             `template_type.${proposal.template_type}` as "template_type.custom",
           )}
@@ -233,10 +251,19 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
     );
     return () => clearTimeout(handle);
   }, [formulationSearch]);
+  // ``has_open_proposal=false`` excludes formulations that already
+  // carry a proposal in a non-terminal status (``draft`` /
+  // ``in_review`` / ``approved`` / ``sent``). The filter runs at SQL
+  // level via an EXISTS subquery on the backend — that keeps
+  // pagination honest (50/page = 50 *eligible* projects, not 50
+  // minus whatever the client later filtered out) and avoids a
+  // second round-trip to fetch every proposal just to compute the
+  // busy set client-side.
   const formulationsQuery = useInfiniteFormulations(orgId, {
     ordering: "name",
     pageSize: 50,
     search: formulationSearchDebounced || undefined,
+    hasOpenProposal: false,
   });
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const [versionId, setVersionId] = useState<string>("");
@@ -262,6 +289,11 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   // ``approved_version_number`` has been wired (auto-set when a
   // spec sheet hits ``status=approved``) survive the filter, so the
   // picker never offers something the backend would reject.
+  //
+  // Projects with an open proposal are filtered out *server-side*
+  // via ``has_open_proposal=false`` (see ``hasOpenProposal`` above);
+  // the only filter that stays on the client is the approved-version
+  // gate because that field is already on the row.
   const formulations = (
     formulationsQuery.data?.pages.flatMap((p) => p.results) ?? []
   ).filter((f) => f.approved_version_number !== null);

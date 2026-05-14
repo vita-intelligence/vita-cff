@@ -148,6 +148,8 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "customer_signer_email",
             "customer_signer_company",
             "customer_signed_at",
+            "customer_rejected_at",
+            "customer_rejection_reason",
             "created_at",
             "updated_at",
         )

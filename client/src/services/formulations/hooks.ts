@@ -54,7 +54,11 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "list"] as const,
   infinite: (
     orgId: string,
-    opts: { ordering: string; search?: string },
+    opts: {
+      ordering: string;
+      search?: string;
+      hasOpenProposal?: boolean;
+    },
   ) =>
     [
       ...formulationsQueryKeys.all,
@@ -62,6 +66,14 @@ export const formulationsQueryKeys = {
       "infinite",
       opts.ordering,
       opts.search ?? "",
+      // Encode the tri-state explicitly so ``undefined`` (no filter)
+      // and ``false`` (filter applied, only eligible projects) live
+      // in different cache slots.
+      opts.hasOpenProposal === undefined
+        ? "any"
+        : opts.hasOpenProposal
+          ? "open"
+          : "free",
     ] as const,
   detail: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "detail", formulationId] as const,
@@ -97,13 +109,20 @@ export function useInfiniteFormulations(
     ordering: string;
     pageSize?: number;
     search?: string;
+    /** When set, the backend filters on whether the formulation has
+     *  at least one non-terminal proposal attached. ``false`` =
+     *  "only formulations free of open proposals" (used by the new-
+     *  proposal modal); ``true`` = the inverse; omitted = no
+     *  filter. */
+    hasOpenProposal?: boolean;
     initialFirstPage?: PaginatedFormulationsDto | null;
   },
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedFormulationsDto, string | null>,
   ApiError
 > {
-  const { ordering, pageSize, search, initialFirstPage } = options;
+  const { ordering, pageSize, search, hasOpenProposal, initialFirstPage } =
+    options;
   const normalisedSearch = search?.trim() ?? "";
   return useInfiniteQuery<
     PaginatedFormulationsDto,
@@ -112,15 +131,20 @@ export function useInfiniteFormulations(
     readonly unknown[],
     string | null
   >({
+    // ``hasOpenProposal`` is part of the cache key so switching
+    // filters (e.g. opening the proposal modal vs. the projects list)
+    // doesn't reuse the wrong cached page.
     queryKey: formulationsQueryKeys.infinite(orgId, {
       ordering,
       search: normalisedSearch,
+      hasOpenProposal,
     }),
     queryFn: ({ pageParam }) =>
       fetchFormulationsPage(orgId, {
         ordering,
         pageSize,
         search: normalisedSearch || undefined,
+        hasOpenProposal,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,

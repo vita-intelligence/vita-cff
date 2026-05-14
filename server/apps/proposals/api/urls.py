@@ -19,6 +19,7 @@ from apps.proposals.api.views import (
     PublicProposalIdentifyView,
     PublicProposalKioskView,
     PublicProposalPdfView,
+    PublicProposalRejectView,
     PublicProposalSignProposalView,
     PublicProposalSignSpecView,
 )
@@ -111,6 +112,11 @@ urlpatterns = [
         "public/proposals/<uuid:token>/specs/<uuid:sheet_id>/sign/",
         PublicProposalSignSpecView.as_view(),
         name="proposal-public-sign-spec",
+    ),
+    path(
+        "public/proposals/<uuid:token>/reject/",
+        PublicProposalRejectView.as_view(),
+        name="proposal-public-reject",
     ),
     path(
         "public/proposals/<uuid:token>/finalize/",

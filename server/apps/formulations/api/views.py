@@ -134,8 +134,28 @@ class FormulationListCreateView(APIView):
 
     def get(self, request: Request, org_id: str) -> Response:
         search = request.query_params.get("search")
+        # ``has_open_proposal`` is tri-state: absent (no filter),
+        # ``true`` (only formulations with open proposals), or
+        # ``false`` (only formulations free of open proposals — used
+        # by the new-proposal modal so the picker pages stay full of
+        # eligible projects). Anything else is coerced to ``None``
+        # rather than a 400 so a typo in a manual query param falls
+        # back to the unfiltered list instead of failing the request.
+        raw_has_open = request.query_params.get("has_open_proposal")
+        if raw_has_open is None:
+            has_open_proposal: bool | None = None
+        else:
+            lowered = raw_has_open.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                has_open_proposal = True
+            elif lowered in {"false", "0", "no"}:
+                has_open_proposal = False
+            else:
+                has_open_proposal = None
         queryset = list_formulations(
-            organization=self.organization, search=search
+            organization=self.organization,
+            search=search,
+            has_open_proposal=has_open_proposal,
         )
         paginator = FormulationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)

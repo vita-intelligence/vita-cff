@@ -340,6 +340,28 @@ class Proposal(models.Model):
         ),
     )
 
+    # Self-service rejection capture. Filled when the customer hits
+    # the kiosk's "Decline this proposal" button — the status flips
+    # to ``rejected`` and the sales person receives an email
+    # notification carrying the optional reason. Pre-rejection rows
+    # leave these blank; populated only by the kiosk path so an
+    # operator-driven status change to ``rejected`` (via the
+    # internal status endpoint) doesn't forge a customer-facing
+    # decline.
+    customer_rejected_at = models.DateTimeField(
+        _("customer rejected at"), null=True, blank=True
+    )
+    customer_rejection_reason = models.TextField(
+        _("customer rejection reason"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Optional free-text reason the customer typed when "
+            "declining via the kiosk. May be empty if they declined "
+            "without explaining."
+        ),
+    )
+
     # Acknowledgement tickboxes from the proposal's docx template.
     # Three required boxes the customer ticks in the kiosk before
     # signing; the render layer swaps ☐ → ☑ in the docx so the PDF

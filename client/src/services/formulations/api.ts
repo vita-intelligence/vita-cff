@@ -42,6 +42,13 @@ export async function fetchFormulationsPage(
   if (args.ordering) params.ordering = args.ordering;
   if (args.pageSize) params.page_size = String(args.pageSize);
   if (args.search && args.search.trim()) params.search = args.search.trim();
+  // ``has_open_proposal`` is a tri-state — leaving the param off means
+  // "don't filter on it", explicitly sending ``true`` / ``false``
+  // narrows the list. Serialise booleans as ``"true"`` / ``"false"``
+  // for Django's ``BooleanField`` query lookup.
+  if (typeof args.hasOpenProposal === "boolean") {
+    params.has_open_proposal = args.hasOpenProposal ? "true" : "false";
+  }
   const { data } = await apiClient.get<PaginatedFormulationsDto>(
     formulationsEndpoints.list(orgId),
     { params },

@@ -1781,6 +1781,67 @@ class PublicProposalSignSpecView(APIView):
         )
 
 
+class PublicProposalRejectView(APIView):
+    """``POST`` ``/api/public/proposals/<token>/reject/``.
+
+    Customer-side "Decline this proposal" trigger. Flips the
+    proposal from ``sent`` to ``rejected`` and stamps the optional
+    free-text reason. A kiosk session is required so a bot can't
+    walk through every public token and burn deals; the identity
+    payload behind the cookie is the same one the sign endpoints
+    enforce.
+
+    The sales person is notified by email after the transaction
+    commits — see :func:`_send_proposal_rejection_notification`.
+    Best-effort delivery: SMTP failures do not roll back the
+    rejection (the audit row + status are the source of truth).
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request, token: str) -> Response:
+        from apps.proposals.services import (
+            capture_customer_rejection_on_proposal,
+        )
+
+        try:
+            proposal = get_proposal_by_public_token(token)
+        except ProposalPublicLinkNotEnabled as exc:
+            raise NotFound() from exc
+
+        identity = _public_kiosk_identity(request, str(token))
+        if identity is None:
+            return Response(
+                {"detail": ["kiosk_session_required"]},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        data = request.data if isinstance(request.data, dict) else {}
+        reason = str(data.get("reason") or "")
+
+        try:
+            updated = capture_customer_rejection_on_proposal(
+                proposal=proposal, reason=reason
+            )
+        except InvalidProposalTransition:
+            return Response(
+                {"status": ["invalid_proposal_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            {
+                "status": updated.status,
+                "customer_rejected_at": (
+                    updated.customer_rejected_at.isoformat()
+                    if updated.customer_rejected_at is not None
+                    else None
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class PublicProposalFinalizeView(APIView):
     """``POST`` ``/api/public/proposals/<token>/finalize/``.
 

@@ -27,7 +27,7 @@
  * document at ``sent`` until the whole set is complete.
  */
 
-import { Button } from "@heroui/react";
+import { Button, Modal } from "@heroui/react";
 import {
   CheckCircle2,
   Download,
@@ -35,6 +35,7 @@ import {
   MessageCircle,
   PenLine,
   Sparkles,
+  XCircle,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
@@ -196,6 +197,14 @@ export function ProposalKioskView({
   }, [kiosk]);
 
   const isAccepted = kiosk.status === "accepted";
+  // The customer can decline a proposal from the kiosk via the
+  // "Decline this proposal" button. Once rejected, the page renders
+  // a terminal "Declined" banner and hides every sign / finalize
+  // affordance — the deal is closed from the customer's side.
+  const isRejected = kiosk.status === "rejected";
+  const [declineOpen, setDeclineOpen] = useState(false);
+  const [declineReason, setDeclineReason] = useState("");
+  const [declining, setDeclining] = useState(false);
 
   const handleSign = async (dataUrl: string) => {
     if (!pending) return;
@@ -244,6 +253,31 @@ export function ProposalKioskView({
     }
   };
 
+  const handleDecline = async () => {
+    if (!identified) {
+      // Identity is also required for the decline path so the audit
+      // log captures *who* declined, not just that someone with the
+      // public token did. The modal stays open until they finish
+      // the identify step.
+      setIdentifying(true);
+      return;
+    }
+    setDeclining(true);
+    setError(null);
+    try {
+      await apiClient.post(proposalsEndpoints.publicReject(token), {
+        reason: declineReason,
+      });
+      setDeclineOpen(false);
+      setDeclineReason("");
+      router.refresh();
+    } catch (err) {
+      setError(extractApiErrorMessage(err, tErrors));
+    } finally {
+      setDeclining(false);
+    }
+  };
+
   return (
     <>
       {identifying ? (
@@ -285,6 +319,12 @@ export function ProposalKioskView({
           <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
             <CheckCircle2 className="h-3.5 w-3.5" />
             {tProposals("public.status_accepted")}
+          </div>
+        ) : null}
+        {isRejected ? (
+          <div className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-danger/10 px-3 py-1 text-xs font-medium text-danger ring-1 ring-inset ring-danger/30">
+            <XCircle className="h-3.5 w-3.5" />
+            {tProposals("public.status_rejected")}
           </div>
         ) : null}
       </section>
@@ -442,7 +482,7 @@ export function ProposalKioskView({
       {/* -------------------------------------------------------------- */}
       {/* Finalize                                                        */}
       {/* -------------------------------------------------------------- */}
-      {!isAccepted ? (
+      {!isAccepted && !isRejected ? (
         <section className="mt-6 rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200 sm:p-6 md:p-8">
           <p className="text-sm text-ink-600">
             {allSigned
@@ -450,6 +490,14 @@ export function ProposalKioskView({
               : tProposals("public.finalize_hint")}
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-3">
+            {/* Accept (primary) + Decline (secondary outline) sit
+                in the same row so the customer sees both choices at
+                the moment they're considering the deal. Decline
+                stays accessible even before every document is signed
+                — they may know it's a "no" up-front and we don't
+                want to force them through the sign flow to reach
+                the no button. The confirm modal still gates the
+                destructive action. */}
             <Button
               type="button"
               onClick={handleFinalize}
@@ -458,6 +506,16 @@ export function ProposalKioskView({
             >
               <CheckCircle2 className="h-4 w-4" />
               {tProposals("public.finalize_cta")}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setDeclineOpen(true)}
+              isDisabled={finalizing || declining}
+              className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-ink-0 px-5 text-sm font-medium text-danger ring-1 ring-inset ring-danger/30 hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
+            >
+              <XCircle className="h-4 w-4" />
+              {tProposals("public.decline_cta")}
             </Button>
           </div>
         </section>
@@ -489,6 +547,73 @@ export function ProposalKioskView({
         errorMessage={error}
         onConfirm={handleSign}
       />
+
+      {/* Decline confirmation modal. Kept inline (rather than a
+          separate file) because it's small, only used here, and
+          sharing state with the kiosk view (the reason textarea
+          + busy flag) is simpler with co-located components. */}
+      <Modal
+        isOpen={declineOpen}
+        onOpenChange={(open) => {
+          if (declining) return;
+          setDeclineOpen(open);
+        }}
+      >
+        <Modal.Backdrop>
+          <Modal.Container size="md">
+            <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+              <Modal.Header className="border-b border-ink-200 px-6 py-4">
+                <Modal.Heading className="text-base font-semibold text-ink-1000">
+                  {tProposals("public.decline_dialog.title")}
+                </Modal.Heading>
+              </Modal.Header>
+              <Modal.Body className="flex flex-col gap-4 px-6 py-5">
+                <p className="text-sm text-ink-600">
+                  {tProposals("public.decline_dialog.subtitle")}
+                </p>
+                <label className="flex flex-col gap-1.5">
+                  <span className="text-xs font-medium text-ink-700">
+                    {tProposals("public.decline_dialog.reason_label")}
+                  </span>
+                  <textarea
+                    value={declineReason}
+                    onChange={(e) => setDeclineReason(e.target.value)}
+                    disabled={declining}
+                    rows={4}
+                    placeholder={tProposals(
+                      "public.decline_dialog.reason_placeholder",
+                    )}
+                    className="w-full resize-y rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:bg-ink-50"
+                  />
+                </label>
+              </Modal.Body>
+              <Modal.Footer className="flex items-center justify-end gap-3 border-t border-ink-200 px-6 py-4">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDeclineOpen(false)}
+                  isDisabled={declining}
+                  className="rounded-lg px-4 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+                >
+                  {tProposals("public.decline_dialog.cancel")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="primary"
+                  onClick={handleDecline}
+                  isDisabled={declining}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-danger px-4 py-2 text-sm font-medium text-ink-0 hover:bg-danger/90 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <XCircle className="h-4 w-4" />
+                  {declining
+                    ? tProposals("public.decline_dialog.declining")
+                    : tProposals("public.decline_dialog.confirm")}
+                </Button>
+              </Modal.Footer>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
+      </Modal>
     </>
   );
 }

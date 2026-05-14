@@ -108,6 +108,11 @@ export interface ProposalDto {
   readonly customer_signer_email: string;
   readonly customer_signer_company: string;
   readonly customer_signed_at: string | null;
+  //: Set when the customer declines via the kiosk's Decline button.
+  //: ``customer_rejection_reason`` is whatever they typed in the
+  //: modal (empty string if they declined without explaining).
+  readonly customer_rejected_at: string | null;
+  readonly customer_rejection_reason: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
