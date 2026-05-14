@@ -12,6 +12,9 @@ import {
   type SpecificationSheetDto,
   type UpdateSpecificationRequestDto,
 } from "@/services/specifications";
+import { CustomerPicker } from "@/components/customers/customer-picker";
+import { type CustomerDto } from "@/services/customers";
+import { CustomerFormModal } from "../../customers/customers-list";
 
 
 const INPUT_CLASS =
@@ -41,6 +44,14 @@ export function EditDetailsButton({
 
   const [isOpen, setIsOpen] = useState(false);
   const [form, setForm] = useState<UpdateSpecificationRequestDto>({});
+  //: Optional FK-style picker so sales can reassign the client by
+  //: swapping the address-book record instead of retyping the three
+  //: text fields. The spec model doesn't store ``customer_id`` — it
+  //: keeps name/email/company denormalised — so picking here just
+  //: snaps those three values into the form state. Empty = "no
+  //: address-book pick yet" (legacy sheets land in this state too).
+  const [customer, setCustomer] = useState<CustomerDto | null>(null);
+  const [customerCreating, setCustomerCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useUpdateSpecification(orgId, sheet.id);
@@ -91,6 +102,21 @@ export function EditDetailsButton({
     value: UpdateSpecificationRequestDto[K],
   ) => setForm((prev) => ({ ...prev, [key]: value }));
 
+  // When the picker fires, snap the three denormalised fields onto
+  // the form so the rest of the modal reflects the new client. The
+  // scientist can still tweak any individual field afterwards — the
+  // picker is a convenience, not a hard binding.
+  const handleCustomerChange = (next: CustomerDto | null) => {
+    setCustomer(next);
+    if (next === null) return;
+    setForm((prev) => ({
+      ...prev,
+      client_name: next.name ?? "",
+      client_email: next.email ?? "",
+      client_company: next.company ?? "",
+    }));
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
@@ -108,7 +134,14 @@ export function EditDetailsButton({
       isOpen={isOpen}
       onOpenChange={(open) => {
         setIsOpen(open);
-        if (!open) setError(null);
+        if (!open) {
+          setError(null);
+          // Clear the picker so a re-open starts fresh — the spec
+          // doesn't store ``customer_id``, so there's no canonical
+          // "current customer" to re-seed from. Picking is purely a
+          // convenience overlay on top of the denormalised fields.
+          setCustomer(null);
+        }
       }}
     >
       <Modal.Trigger>
@@ -139,40 +172,51 @@ export function EditDetailsButton({
                 </p>
 
                 {/* Client context — identity the customer will see on
-                    their copy of the sheet. The create modal uses the
-                    address-book picker; here we surface the raw fields
-                    so a scientist can override a single value (e.g. a
-                    different contact for this specific sheet) without
-                    mutating the address-book record. */}
-                <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
+                    their copy of the sheet. The picker reassigns by
+                    snapping the address-book record onto the three
+                    text inputs; the inputs stay editable so a
+                    scientist can override a single value (e.g. a
+                    different contact for this specific sheet)
+                    without mutating the address-book record. */}
+                <fieldset className="flex flex-col gap-4 rounded-xl border border-ink-100 p-4">
                   <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
                     {tSpecs("edit_details.group.client")}
                   </legend>
-                  <TextField
-                    label={tSpecs("create.code")}
-                    value={form.code ?? ""}
-                    onChange={(v) => set("code", v)}
-                    hint={tSpecs("edit_details.code_hint")}
+                  <CustomerPicker
+                    orgId={orgId}
+                    value={customer}
+                    onChange={handleCustomerChange}
+                    onCreateNew={() => setCustomerCreating(true)}
+                    label={tSpecs("create.client")}
+                    hint={tSpecs("create.client_picker_hint")}
                   />
-                  <TextField
-                    label={tSpecs("create.client_company")}
-                    value={form.client_company ?? ""}
-                    onChange={(v) => set("client_company", v)}
-                    hint={tSpecs("edit_details.client_company_hint")}
-                  />
-                  <TextField
-                    label={tSpecs("create.client_name")}
-                    value={form.client_name ?? ""}
-                    onChange={(v) => set("client_name", v)}
-                    hint={tSpecs("edit_details.client_name_hint")}
-                  />
-                  <TextField
-                    label={tSpecs("create.client_email")}
-                    value={form.client_email ?? ""}
-                    onChange={(v) => set("client_email", v)}
-                    type="email"
-                    hint={tSpecs("edit_details.client_email_hint")}
-                  />
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <TextField
+                      label={tSpecs("create.code")}
+                      value={form.code ?? ""}
+                      onChange={(v) => set("code", v)}
+                      hint={tSpecs("edit_details.code_hint")}
+                    />
+                    <TextField
+                      label={tSpecs("create.client_company")}
+                      value={form.client_company ?? ""}
+                      onChange={(v) => set("client_company", v)}
+                      hint={tSpecs("edit_details.client_company_hint")}
+                    />
+                    <TextField
+                      label={tSpecs("create.client_name")}
+                      value={form.client_name ?? ""}
+                      onChange={(v) => set("client_name", v)}
+                      hint={tSpecs("edit_details.client_name_hint")}
+                    />
+                    <TextField
+                      label={tSpecs("create.client_email")}
+                      value={form.client_email ?? ""}
+                      onChange={(v) => set("client_email", v)}
+                      type="email"
+                      hint={tSpecs("edit_details.client_email_hint")}
+                    />
+                  </div>
                 </fieldset>
 
                 {/* Commercial numbers the customer sees on the sheet.
@@ -355,6 +399,20 @@ export function EditDetailsButton({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
+
+      {/* Mount inside the outer Modal so the create-customer dialog
+          stacks above the edit dialog instead of dismissing it. On
+          create we snap the new customer into the picker so the
+          scientist doesn't have to re-find it — mirrors the spec
+          and proposal create flows. */}
+      <CustomerFormModal
+        orgId={orgId}
+        mode="create"
+        isOpen={customerCreating}
+        onClose={() => setCustomerCreating(false)}
+        initial={null}
+        onCreated={(c) => handleCustomerChange(c)}
+      />
     </Modal>
   );
 }

@@ -337,6 +337,7 @@ def update_sheet(
     actor: Any,
     **changes: Any,
 ) -> SpecificationSheet:
+    _guard_editable(sheet)
     mutable = {
         "code",
         "client_name",
@@ -441,6 +442,24 @@ class SpecificationPricingLocked(Exception):
     code = "specification_pricing_locked"
 
 
+class SpecificationNotMutable(Exception):
+    """Raised when any edit service is called on a sheet that has
+    already been director-approved. ``approved`` / ``sent`` /
+    ``accepted`` / ``rejected`` all carry a director signature (and,
+    in the customer-actioned states, a customer signature too); any
+    field write at that point would orphan those signatures.
+
+    ``in_review`` is intentionally *not* locked — the director needs
+    to be able to tweak the sheet before stamping their signature on
+    it. The prepared-by signature stays as the scientist's "I drafted
+    this" marker; the director's signature is the legally binding
+    one, and it lands on whatever state the sheet is in at approval
+    time. Reverting to draft is the way to unlock an approved sheet.
+    """
+
+    code = "specification_not_mutable"
+
+
 #: Statuses that freeze the spec's pricing. Mirrors the snapshot
 #: lock — once a director has signed off, the per-unit cost,
 #: margin, and price are part of what they attested to.
@@ -451,6 +470,32 @@ _PRICING_LOCKED_STATUSES: frozenset = frozenset(
         SpecificationStatus.ACCEPTED,
     }
 )
+
+
+#: Statuses that freeze the entire spec snapshot. The director's
+#: signature is the legally binding one — once it lands, every field
+#: on the sheet is part of what they attested to. ``in_review`` is
+#: deliberately excluded so the director can fine-tune the sheet
+#: before signing; the prepared-by stamp is internal-only and
+#: tolerates pre-approval edits.
+_EDIT_LOCKED_STATUSES: frozenset = frozenset(
+    {
+        SpecificationStatus.APPROVED,
+        SpecificationStatus.SENT,
+        SpecificationStatus.ACCEPTED,
+        SpecificationStatus.REJECTED,
+    }
+)
+
+
+def _guard_editable(sheet: SpecificationSheet) -> None:
+    """Refuse the call when the sheet's status freezes its snapshot.
+    Use at the top of every edit-style service so each entry point
+    enforces the lock consistently — status transitions stay
+    available since they don't mutate snapshot fields directly."""
+
+    if sheet.status in _EDIT_LOCKED_STATUSES:
+        raise SpecificationNotMutable()
 
 
 @transaction.atomic
@@ -583,6 +628,7 @@ def set_packaging(
     code so the API layer can translate them uniformly.
     """
 
+    _guard_editable(sheet)
     before = snapshot(sheet)
     catalogue: Catalogue | None = None
 
@@ -642,6 +688,7 @@ def set_section_order(
     backfill at render time so newly-added sections still appear.
     """
 
+    _guard_editable(sheet)
     before = snapshot(sheet)
     seen: set[str] = set()
     cleaned: list[str] = []
@@ -685,6 +732,7 @@ def set_section_visibility(
     request that is otherwise valid.
     """
 
+    _guard_editable(sheet)
     before = snapshot(sheet)
     stored = dict(sheet.section_visibility or {})
     for slug, value in visibility.items():

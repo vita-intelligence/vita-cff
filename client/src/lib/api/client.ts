@@ -22,6 +22,13 @@ function createApiClient(): AxiosInstance {
     headers: {
       Accept: "application/json",
     },
+    // Repeat-format array serialization: ``?status=a&status=b``
+    // instead of the default ``?status[]=a&status[]=b``. DRF's
+    // ``request.query_params.getlist("status")`` reads the repeat
+    // form, and using the same serialization for every endpoint
+    // keeps the filter-bar contract obvious from one shared spot
+    // rather than per-call ``paramsSerializer`` overrides.
+    paramsSerializer: { indexes: null },
   });
   attachRequestInterceptors(instance);
   attachResponseInterceptors(instance);

@@ -50,6 +50,13 @@ export const proposalsQueryKeys = {
     orgId: string,
     formulationId?: string,
     status?: string,
+    filters?: {
+      statuses?: readonly string[];
+      search?: string;
+      salesPersonId?: string;
+      validUntilFrom?: string;
+      validUntilTo?: string;
+    },
   ) =>
     [
       rootQueryKey,
@@ -57,6 +64,12 @@ export const proposalsQueryKeys = {
       orgId,
       formulationId ?? "__all__",
       status ?? "__any__",
+      // Sorted+joined so chip-toggle order doesn't fragment the cache.
+      [...(filters?.statuses ?? [])].sort().join(","),
+      filters?.search ?? "",
+      filters?.salesPersonId ?? "",
+      filters?.validUntilFrom ?? "",
+      filters?.validUntilTo ?? "",
     ] as const,
   detail: (orgId: string, proposalId: string) =>
     [rootQueryKey, "proposals", orgId, proposalId] as const,
@@ -90,12 +103,45 @@ export const proposalsQueryKeys = {
 
 export function useProposals(
   orgId: string,
-  args: { formulationId?: string; status?: string } = {},
+  args: {
+    formulationId?: string;
+    /** Director approval inbox uses the single-value form. */
+    status?: string;
+    /** Multi-select status (list bar). */
+    statuses?: readonly string[];
+    search?: string;
+    salesPersonId?: string;
+    validUntilFrom?: string;
+    validUntilTo?: string;
+  } = {},
 ): UseQueryResult<ProposalDto[], ApiError> {
-  const { formulationId, status } = args;
+  const {
+    formulationId,
+    status,
+    statuses,
+    search,
+    salesPersonId,
+    validUntilFrom,
+    validUntilTo,
+  } = args;
   return useQuery<ProposalDto[], ApiError>({
-    queryKey: proposalsQueryKeys.list(orgId, formulationId, status),
-    queryFn: () => fetchProposals(orgId, { formulationId, status }),
+    queryKey: proposalsQueryKeys.list(orgId, formulationId, status, {
+      statuses,
+      search,
+      salesPersonId,
+      validUntilFrom,
+      validUntilTo,
+    }),
+    queryFn: () =>
+      fetchProposals(orgId, {
+        formulationId,
+        status,
+        statuses,
+        search,
+        salesPersonId,
+        validUntilFrom,
+        validUntilTo,
+      }),
     enabled: Boolean(orgId),
   });
 }

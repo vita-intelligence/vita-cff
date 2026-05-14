@@ -249,6 +249,143 @@ class TestListFormulations:
         assert "Rejected" not in names
         assert "Idle" not in names
 
+    def test_status_filter_keeps_listed_states(self) -> None:
+        # Multi-select chip behaviour: passing two statuses returns
+        # rows in either bucket; the union, not intersection.
+        org = OrganizationFactory()
+        FormulationFactory(
+            organization=org, name="In dev", project_status="in_development"
+        )
+        FormulationFactory(
+            organization=org, name="Concept", project_status="concept"
+        )
+        FormulationFactory(
+            organization=org, name="Done", project_status="approved"
+        )
+
+        names = {
+            f.name
+            for f in list_formulations(
+                organization=org,
+                statuses=["concept", "in_development"],
+            )
+        }
+        assert names == {"Concept", "In dev"}
+
+    def test_empty_status_list_is_ignored(self) -> None:
+        # The frontend strips empty filters before sending, but a
+        # stale URL with ``?status=`` would otherwise produce an
+        # empty IN clause and hide everything. Treat falsy lists
+        # as "no filter" to keep the URL forgiving.
+        org = OrganizationFactory()
+        FormulationFactory(organization=org, name="A")
+        FormulationFactory(organization=org, name="B")
+
+        names = {
+            f.name
+            for f in list_formulations(organization=org, statuses=[])
+        }
+        assert names == {"A", "B"}
+
+    def test_sales_person_filter_matches_assignment(self) -> None:
+        # Sales person dropdown filters to one assignee. The
+        # special ``"unassigned"`` token returns rows with no
+        # sales person — a discoverable way to surface the bucket
+        # in the UI without a magic null value.
+        from apps.accounts.tests.factories import UserFactory
+
+        org = OrganizationFactory()
+        alice = UserFactory(email="alice@vita.test")
+        bob = UserFactory(email="bob@vita.test")
+        FormulationFactory(organization=org, name="Alice 1", sales_person=alice)
+        FormulationFactory(organization=org, name="Alice 2", sales_person=alice)
+        FormulationFactory(organization=org, name="Bob", sales_person=bob)
+        FormulationFactory(organization=org, name="None", sales_person=None)
+
+        alice_names = {
+            f.name
+            for f in list_formulations(
+                organization=org, sales_person_id=alice.id
+            )
+        }
+        assert alice_names == {"Alice 1", "Alice 2"}
+
+        unassigned = {
+            f.name
+            for f in list_formulations(
+                organization=org, sales_person_id="unassigned"
+            )
+        }
+        assert unassigned == {"None"}
+
+    def test_project_type_filter(self) -> None:
+        org = OrganizationFactory()
+        FormulationFactory(
+            organization=org, name="Custom A", project_type="custom"
+        )
+        FormulationFactory(
+            organization=org, name="Custom B", project_type="custom"
+        )
+        FormulationFactory(
+            organization=org,
+            name="Ready",
+            project_type="ready_to_go",
+        )
+
+        names = {
+            f.name
+            for f in list_formulations(
+                organization=org, project_type="custom"
+            )
+        }
+        assert names == {"Custom A", "Custom B"}
+
+    def test_filters_compose(self) -> None:
+        # The four filters layer multiplicatively — narrowing by
+        # status AND project_type AND sales person AND search must
+        # all match. Sanity-check that no filter accidentally
+        # short-circuits when another is in play.
+        from apps.accounts.tests.factories import UserFactory
+
+        org = OrganizationFactory()
+        alice = UserFactory(email="combo@vita.test")
+        match = FormulationFactory(
+            organization=org,
+            name="Burner Plus",
+            code="MA-700",
+            project_status="in_development",
+            project_type="custom",
+            sales_person=alice,
+        )
+        # Same sales person but wrong status:
+        FormulationFactory(
+            organization=org,
+            name="Burner Lite",
+            project_status="approved",
+            project_type="custom",
+            sales_person=alice,
+        )
+        # Wrong sales person:
+        FormulationFactory(
+            organization=org,
+            name="Burner Pro",
+            project_status="in_development",
+            project_type="custom",
+            sales_person=None,
+        )
+
+        names = {
+            f.name
+            for f in list_formulations(
+                organization=org,
+                search="burner",
+                statuses=["in_development"],
+                sales_person_id=alice.id,
+                project_type="custom",
+            )
+        }
+        assert names == {match.name}
+
 
 class TestGetFormulation:
     def test_raises_when_in_other_org(self) -> None:

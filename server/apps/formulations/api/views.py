@@ -152,10 +152,21 @@ class FormulationListCreateView(APIView):
                 has_open_proposal = False
             else:
                 has_open_proposal = None
+        # ``status`` arrives as ``?status=a&status=b`` (repeated key).
+        # ``getlist`` returns ``[]`` when absent, which we treat as "no
+        # status filter" via the truthy check in the service. Trim +
+        # de-dupe happens server-side too, so a stale client repeating
+        # the same value doesn't bloat the IN clause.
+        statuses = request.query_params.getlist("status") or None
+        sales_person_id = request.query_params.get("sales_person_id")
+        project_type = request.query_params.get("project_type")
         queryset = list_formulations(
             organization=self.organization,
             search=search,
             has_open_proposal=has_open_proposal,
+            statuses=statuses,
+            sales_person_id=sales_person_id,
+            project_type=project_type,
         )
         paginator = FormulationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)

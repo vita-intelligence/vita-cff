@@ -2027,6 +2027,9 @@ def list_formulations(
     organization: Organization,
     search: str | None = None,
     has_open_proposal: bool | None = None,
+    statuses: list[str] | None = None,
+    sales_person_id: Any = None,
+    project_type: str | None = None,
 ) -> QuerySet[Formulation]:
     """List formulations for an organisation, prefetched for the read
     serializer's echo blocks.
@@ -2078,6 +2081,31 @@ def list_formulations(
             queryset = queryset.filter(
                 Q(name__icontains=needle) | Q(code__icontains=needle)
             )
+
+    # Status / sales-person / project-type filters layer onto whatever
+    # ``search`` and ``has_open_proposal`` already narrowed. Unknown
+    # values fall through as no-ops so a typo in a manual URL doesn't
+    # 400 — same defensive policy as ``has_open_proposal``.
+    if statuses:
+        # De-dupe + drop blanks; an empty list after cleaning skips
+        # the filter entirely (same as not passing it).
+        cleaned = [s.strip() for s in statuses if s and s.strip()]
+        if cleaned:
+            queryset = queryset.filter(project_status__in=cleaned)
+
+    if sales_person_id:
+        # Single FK value. Treat the special string ``"unassigned"`` as
+        # "rows with no sales person" so the UI can offer that bucket
+        # as a discoverable filter without a magic null token.
+        if str(sales_person_id).strip().lower() == "unassigned":
+            queryset = queryset.filter(sales_person__isnull=True)
+        else:
+            queryset = queryset.filter(sales_person_id=sales_person_id)
+
+    if project_type:
+        cleaned_type = project_type.strip()
+        if cleaned_type:
+            queryset = queryset.filter(project_type=cleaned_type)
 
     if has_open_proposal is not None:
         # Lazy import — the Proposal model lives in a sibling app and

@@ -7,7 +7,27 @@
   "search_placeholder": "Search by name or code…",
   "search_clear": "Clear search",
   "no_matches": "No projects match \"{query}\"",
-  "no_matches_hint": "Adjust the search or clear it to see every project.",
+  "no_matches_filtered": "No projects match the current filters",
+  "no_matches_hint": "Adjust the filters or clear them to see every project.",
+  "filters": {
+    "status_legend": "Status",
+    "project_type_legend": "Type",
+    "all": "All",
+    "sales_person_label": "Sales person",
+    "sales_person_all": "All sales",
+    "sales_person_unassigned": "Unassigned",
+    "sales_person_search_placeholder": "Search teammates…",
+    "sales_person_no_matches": "No teammates match that name",
+    "clear_all": "{count, plural, one {Clear # filter} other {Clear # filters}}",
+    "clear_all_tooltip": "Reset every active filter",
+    "clear_dimension": "Clear this filter",
+    "apply": "Apply",
+    "reset": "Reset"
+  },
+  "project_type": {
+    "custom": "Custom",
+    "ready_to_go": "Ready to go"
+  },
   "columns": {
     "name": "Name",
     "code": "Code",

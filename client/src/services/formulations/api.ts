@@ -38,7 +38,10 @@ export async function fetchFormulationsPage(
     return data;
   }
 
-  const params: Record<string, string> = {};
+  // Axios serialises array values as ``key=v1&key=v2&...`` by
+  // default, which matches what DRF's ``request.query_params.getlist``
+  // expects on the backend. Other scalars go through unchanged.
+  const params: Record<string, string | readonly string[]> = {};
   if (args.ordering) params.ordering = args.ordering;
   if (args.pageSize) params.page_size = String(args.pageSize);
   if (args.search && args.search.trim()) params.search = args.search.trim();
@@ -49,6 +52,12 @@ export async function fetchFormulationsPage(
   if (typeof args.hasOpenProposal === "boolean") {
     params.has_open_proposal = args.hasOpenProposal ? "true" : "false";
   }
+  if (args.statuses && args.statuses.length > 0) {
+    // Repeated ``?status=a&status=b`` keys.
+    params.status = args.statuses;
+  }
+  if (args.salesPersonId) params.sales_person_id = args.salesPersonId;
+  if (args.projectType) params.project_type = args.projectType;
   const { data } = await apiClient.get<PaginatedFormulationsDto>(
     formulationsEndpoints.list(orgId),
     { params },

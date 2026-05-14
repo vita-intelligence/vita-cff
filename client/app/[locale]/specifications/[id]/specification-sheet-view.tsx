@@ -101,6 +101,7 @@ export function SpecificationSheetView({
   sheet: initialSheet,
   rendered: initialRendered,
   canWrite,
+  canApprove,
   canAdmin,
   canManageVisibility,
   organization,
@@ -110,6 +111,7 @@ export function SpecificationSheetView({
   sheet: SpecificationSheetDto;
   rendered: RenderedSheetContext;
   canWrite: boolean;
+  canApprove: boolean;
   canAdmin: boolean;
   canManageVisibility: boolean;
   organization: OrganizationDto;
@@ -147,6 +149,16 @@ export function SpecificationSheetView({
   const deleteMutation = useDeleteSpecification(orgId);
 
   const allowedNext = ALLOWED_TRANSITIONS[sheet.status] ?? [];
+
+  // Editable while the spec is pre-approval: ``draft`` (scientist
+  // iterating) and ``in_review`` (director reviewing — may tweak
+  // before signing). Once the director signs (``approved`` and
+  // later), the snapshot is locked because every field becomes part
+  // of what was attested to. Backend enforces the same rule via
+  // ``SpecificationNotMutable``; we hide the edit buttons here so
+  // the UI doesn't dangle affordances the API would reject.
+  const isEditableStatus =
+    sheet.status === "draft" || sheet.status === "in_review";
 
   const [signaturePending, setSignaturePending] =
     useState<SpecificationStatus | null>(null);
@@ -355,7 +367,7 @@ export function SpecificationSheetView({
           <DocumentKindToggle
             orgId={orgId}
             sheet={sheet}
-            canWrite={canWrite}
+            canWrite={canWrite && isEditableStatus}
             tSpecs={tSpecs}
           />
           {/* Yellow "no price set" badge. Surfaces whenever the
@@ -378,38 +390,55 @@ export function SpecificationSheetView({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite
-            ? allowedNext.map((next) => {
-                // Block the ``draft → in_review`` action when another
-                // sheet of the same kind is already pending the
-                // director's signature on this formulation. The
-                // backend would refuse the transition anyway
-                // (specification_review_slot_taken); disabling here
-                // makes the rule visible up front instead of after
-                // a round-trip.
-                const slotBlocked =
-                  next === "in_review" &&
-                  sheet.review_slot_blocker !== null;
-                const tooltip = slotBlocked
-                  ? tSpecs("detail.review_slot_taken_tooltip", {
-                      code: sheet.review_slot_blocker!.code,
-                    })
-                  : undefined;
-                return (
-                  <span key={next} title={tooltip}>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                      isDisabled={isBusy || slotBlocked}
-                      onClick={() => handleTransition(next)}
-                    >
-                      {tSpecs("detail.advance_to")}{" "}
-                      {tSpecs(`status.${next}` as `status.draft`)}
-                    </Button>
-                  </span>
-                );
-              })
+            ? allowedNext
+                .filter((next) => {
+                  // Mirror the backend's per-transition gate so the
+                  // UI doesn't dangle buttons that would 403. EDIT
+                  // covers ``in_review`` and ``sent``; APPROVE is
+                  // required for director-grade transitions —
+                  // ``approved`` (sign-off), ``rejected`` (manual
+                  // terminal close), and ``draft`` if we're reverting
+                  // from ``approved`` (un-signing the director).
+                  if (next === "approved" || next === "rejected") {
+                    return canApprove;
+                  }
+                  if (next === "draft" && sheet.status === "approved") {
+                    return canApprove;
+                  }
+                  return true;
+                })
+                .map((next) => {
+                  // Block the ``draft → in_review`` action when another
+                  // sheet of the same kind is already pending the
+                  // director's signature on this formulation. The
+                  // backend would refuse the transition anyway
+                  // (specification_review_slot_taken); disabling here
+                  // makes the rule visible up front instead of after
+                  // a round-trip.
+                  const slotBlocked =
+                    next === "in_review" &&
+                    sheet.review_slot_blocker !== null;
+                  const tooltip = slotBlocked
+                    ? tSpecs("detail.review_slot_taken_tooltip", {
+                        code: sheet.review_slot_blocker!.code,
+                      })
+                    : undefined;
+                  return (
+                    <span key={next} title={tooltip}>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                        isDisabled={isBusy || slotBlocked}
+                        onClick={() => handleTransition(next)}
+                      >
+                        {tSpecs("detail.advance_to")}{" "}
+                        {tSpecs(`status.${next}` as `status.draft`)}
+                      </Button>
+                    </span>
+                  );
+                })
             : null}
           {/*
             Renders an anchor styled as a button so the browser handles
@@ -426,20 +455,20 @@ export function SpecificationSheetView({
             <Download className="h-4 w-4" />
             {tSpecs("detail.download_pdf")}
           </a>
-          {canWrite ? (
+          {canWrite && isEditableStatus ? (
             <EditDetailsButton orgId={orgId} sheet={sheet} />
           ) : null}
-          {canWrite ? (
+          {canWrite && isEditableStatus ? (
             <EditOverridesButton
               orgId={orgId}
               sheet={sheet}
               rendered={rendered}
             />
           ) : null}
-          {canWrite ? (
+          {canWrite && isEditableStatus ? (
             <EditPackagingButton orgId={orgId} sheet={sheet} />
           ) : null}
-          {canManageVisibility ? (
+          {canManageVisibility && isEditableStatus ? (
             <VisibilityMenu
               orgId={orgId}
               sheetId={sheet.id}

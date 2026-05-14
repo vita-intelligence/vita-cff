@@ -19,19 +19,22 @@ import {
   Plus,
   Search,
   Sparkles,
-  X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { useDebouncedValue } from "@/lib/utils";
 import {
   useInfiniteFormulations,
   type FormulationDto,
   type PaginatedFormulationsDto,
   type ProjectStatus,
 } from "@/services/formulations";
+
+import {
+  ProjectsFilterBar,
+  useProjectsFiltersState,
+} from "./projects-filter-bar";
 
 
 const ROW_HEIGHT_ESTIMATE = 56;
@@ -69,12 +72,14 @@ export function FormulationsTable({
     return first.desc ? `-${first.id}` : first.id;
   }, [sorting]);
 
-  // Debounced search — drives a new query key so the cursor pages
-  // reset to the filtered first page rather than appending matches
-  // to whatever was already fetched.
-  const [searchInput, setSearchInput] = useState("");
-  const debouncedSearch = useDebouncedValue(searchInput.trim(), 250);
-  const isSearching = debouncedSearch.length > 0;
+  // ``applied`` is what the backend is actually filtered by (lives
+  // in the URL); ``pending`` is what the user is editing in the bar
+  // and only flushes on Apply. Reading applied here means each
+  // backend hit is intentional, not driven by every chip click.
+  const filters = useProjectsFiltersState();
+  const applied = filters.applied;
+  const isSearching = applied.search.length > 0;
+  const filtersActive = filters.appliedAnyActive;
 
   const {
     data,
@@ -85,7 +90,10 @@ export function FormulationsTable({
   } = useInfiniteFormulations(orgId, {
     ordering,
     pageSize: 50,
-    search: debouncedSearch,
+    search: applied.search,
+    statuses: applied.statuses,
+    salesPersonId: applied.salesPersonId || undefined,
+    projectType: applied.projectType || undefined,
     initialFirstPage,
   });
 
@@ -213,44 +221,23 @@ export function FormulationsTable({
 
   const headerGroups = table.getHeaderGroups();
 
-  const searchField = (
-    <div className="relative">
-      <Search
-        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-        aria-hidden
-      />
-      <input
-        type="search"
-        value={searchInput}
-        onChange={(event) => setSearchInput(event.target.value)}
-        placeholder={tFormulations("search_placeholder")}
-        aria-label={tFormulations("search_placeholder")}
-        className="h-10 w-full rounded-xl bg-ink-0 pl-9 pr-9 text-sm text-ink-1000 shadow-sm ring-1 ring-ink-200 placeholder:text-ink-400 focus:outline-none focus:ring-2 focus:ring-orange-300"
-      />
-      {searchInput ? (
-        <button
-          type="button"
-          onClick={() => setSearchInput("")}
-          aria-label={tFormulations("search_clear")}
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-1000"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      ) : null}
-    </div>
+  const filterBar = (
+    <ProjectsFilterBar orgId={orgId} filters={filters} />
   );
 
   if (!isFetching && rows.length === 0) {
-    if (isSearching) {
+    if (isSearching || filtersActive) {
       return (
         <div className="flex flex-col gap-3">
-          {searchField}
+          {filterBar}
           <div className="flex flex-col items-center gap-3 rounded-2xl bg-ink-0 p-12 text-center shadow-sm ring-1 ring-ink-200">
             <div className="flex h-12 w-12 items-center justify-center rounded-full bg-ink-100 text-ink-500 ring-1 ring-ink-200">
               <Search className="h-6 w-6" />
             </div>
             <h2 className="text-lg font-semibold text-ink-1000">
-              {tFormulations("no_matches", { query: debouncedSearch })}
+              {applied.search
+                ? tFormulations("no_matches", { query: applied.search })
+                : tFormulations("no_matches_filtered")}
             </h2>
             <p className="max-w-md text-sm text-ink-500">
               {tFormulations("no_matches_hint")}
@@ -272,7 +259,7 @@ export function FormulationsTable({
 
   return (
     <div className="flex flex-col gap-3">
-      {searchField}
+      {filterBar}
       <div className="overflow-hidden rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
         <div ref={scrollRef} className={`overflow-auto ${VIEWPORT_HEIGHT_CLASS}`}>
           <table className="w-full border-collapse">

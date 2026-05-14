@@ -10,7 +10,17 @@
     "bundled_spec": "Bundled with spec sheet",
     "view": "Open",
     "delete": "Delete",
-    "delete_confirm": "Delete this proposal? This cannot be undone."
+    "delete_confirm": "Delete this proposal? This cannot be undone.",
+    "no_matches_filtered": "No proposals match the current filters",
+    "no_matches_hint": "Adjust the filters or clear them to see every proposal."
+  },
+  "filters": {
+    "search_placeholder": "Search by code, customer, or company…",
+    "search_clear": "Clear search",
+    "valid_until_legend": "Valid until",
+    "valid_until_from": "From",
+    "valid_until_to": "To",
+    "valid_until_separator": "→"
   },
   "template_type": {
     "custom": "Custom",

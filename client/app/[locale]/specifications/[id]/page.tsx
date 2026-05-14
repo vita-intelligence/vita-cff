@@ -64,6 +64,15 @@ export default async function SpecificationDetailPage({
     "formulations",
     "manage_spec_visibility",
   );
+  // Director-grade transitions (in_review → approved, manual close
+  // to rejected, revert from approved) require the ``approve`` cap.
+  // Split from ``canWrite`` so a scientist with EDIT can draft and
+  // send for review but can't flip their own work to approved.
+  const canApprove = hasFlatCapability(
+    primaryOrg,
+    "formulations",
+    "approve",
+  );
 
   const tCommon = await getTranslations("common");
 
@@ -79,6 +88,7 @@ export default async function SpecificationDetailPage({
           sheet={sheet}
           rendered={rendered}
           canWrite={canWrite}
+          canApprove={canApprove}
           canAdmin={canAdmin}
           canManageVisibility={canManageVisibility}
           organization={primaryOrg}

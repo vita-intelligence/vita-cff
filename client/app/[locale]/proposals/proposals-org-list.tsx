@@ -36,6 +36,10 @@ import {
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { CustomerFormModal } from "../customers/customers-list";
+import {
+  ProposalsFilterBar,
+  useProposalsFiltersState,
+} from "./proposals-filter-bar";
 
 
 /**
@@ -52,7 +56,17 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
 
-  const proposalsQuery = useProposals(orgId);
+  const filters = useProposalsFiltersState();
+  // Backend queries on ``applied`` only — the pending state stays
+  // local to the bar until the user hits Apply.
+  const applied = filters.applied;
+  const proposalsQuery = useProposals(orgId, {
+    statuses: applied.statuses,
+    search: applied.search || undefined,
+    salesPersonId: applied.salesPersonId || undefined,
+    validUntilFrom: applied.validUntilFrom || undefined,
+    validUntilTo: applied.validUntilTo || undefined,
+  });
   const deleteMutation = useDeleteProposal(orgId);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -82,6 +96,10 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         <OrgNewProposalButton orgId={orgId} />
       </header>
 
+      <div className="mt-4">
+        <ProposalsFilterBar orgId={orgId} filters={filters} />
+      </div>
+
       {deleteError ? (
         <p
           role="alert"
@@ -99,11 +117,18 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         <div className="mt-6 rounded-xl bg-ink-50 px-4 py-8 text-center ring-1 ring-inset ring-ink-200">
           <PoundSterling className="mx-auto h-6 w-6 text-ink-400" />
           <p className="mt-2 text-sm text-ink-500">
-            {tProposals("list.empty")}
+            {filters.appliedAnyActive
+              ? tProposals("list.no_matches_filtered")
+              : tProposals("list.empty")}
           </p>
+          {filters.appliedAnyActive ? (
+            <p className="mt-1 text-xs text-ink-400">
+              {tProposals("list.no_matches_hint")}
+            </p>
+          ) : null}
         </div>
       ) : (
-        <ul className="mt-2 divide-y divide-ink-100">
+        <ul className="mt-4 divide-y divide-ink-100">
           {proposals.map((proposal) => (
             <OrgProposalRow
               key={proposal.id}

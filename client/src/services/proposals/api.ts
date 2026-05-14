@@ -21,11 +21,32 @@ import type {
 
 export async function fetchProposals(
   orgId: string,
-  args: { formulationId?: string; status?: string } = {},
+  args: {
+    formulationId?: string;
+    /** Single-value status (used by the director approval inbox). */
+    status?: string;
+    /** Multi-select status for the org-wide list bar. */
+    statuses?: readonly string[];
+    search?: string;
+    /** UUID, or ``"unassigned"`` for the no-owner bucket. */
+    salesPersonId?: string;
+    /** ISO ``YYYY-MM-DD``. Inclusive bound. */
+    validUntilFrom?: string;
+    /** ISO ``YYYY-MM-DD``. Inclusive bound. */
+    validUntilTo?: string;
+  } = {},
 ): Promise<ProposalDto[]> {
   const params = new URLSearchParams();
   if (args.formulationId) params.set("formulation_id", args.formulationId);
   if (args.status) params.set("status", args.status);
+  if (args.statuses) {
+    for (const s of args.statuses) params.append("statuses", s);
+  }
+  if (args.search && args.search.trim())
+    params.set("search", args.search.trim());
+  if (args.salesPersonId) params.set("sales_person_id", args.salesPersonId);
+  if (args.validUntilFrom) params.set("valid_until_from", args.validUntilFrom);
+  if (args.validUntilTo) params.set("valid_until_to", args.validUntilTo);
   const qs = params.toString();
   const url = qs
     ? `${proposalsEndpoints.list(orgId)}?${qs}`

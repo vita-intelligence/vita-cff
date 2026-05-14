@@ -22,7 +22,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
@@ -381,14 +381,32 @@ def list_proposals(
     organization: Organization,
     formulation_id: Any = None,
     status: str | None = None,
+    search: str | None = None,
+    statuses: list[str] | None = None,
+    sales_person_id: Any = None,
+    valid_until_from: Any = None,
+    valid_until_to: Any = None,
 ) -> QuerySet[Proposal]:
     """Return the org's proposals, newest first.
 
     ``formulation_id`` scopes down to one project's proposals so the
     project workspace's panel can render without a second query.
-    ``status`` (e.g. ``"in_review"``) filters by lifecycle stage so
-    the director's approval inbox can pull "things waiting on me"
-    without re-implementing the queryset client-side.
+    ``status`` (single-value, e.g. ``"in_review"``) is kept for the
+    director's approval inbox which only ever asks for one lifecycle
+    state. ``statuses`` (plural) is the multi-select replacement
+    used by the org-wide list filter bar.
+
+    ``search`` matches case-insensitively against the proposal code,
+    customer_name, and customer_company.
+
+    ``sales_person_id`` filters by the assigned commercial owner.
+    The special string ``"unassigned"`` surfaces rows with no
+    sales person.
+
+    ``valid_until_from`` / ``valid_until_to`` are inclusive date
+    bounds on the proposal expiry — sales hunts proposals about to
+    lapse via this filter. Either bound may be ``None`` to leave
+    that side open.
     """
 
     queryset = Proposal.objects.filter(organization=organization)
@@ -398,6 +416,27 @@ def list_proposals(
         )
     if status:
         queryset = queryset.filter(status=status)
+    if statuses:
+        cleaned = [s.strip() for s in statuses if s and s.strip()]
+        if cleaned:
+            queryset = queryset.filter(status__in=cleaned)
+    if search:
+        needle = search.strip()
+        if needle:
+            queryset = queryset.filter(
+                Q(code__icontains=needle)
+                | Q(customer_name__icontains=needle)
+                | Q(customer_company__icontains=needle)
+            )
+    if sales_person_id:
+        if str(sales_person_id).strip().lower() == "unassigned":
+            queryset = queryset.filter(sales_person__isnull=True)
+        else:
+            queryset = queryset.filter(sales_person_id=sales_person_id)
+    if valid_until_from is not None:
+        queryset = queryset.filter(valid_until__gte=valid_until_from)
+    if valid_until_to is not None:
+        queryset = queryset.filter(valid_until__lte=valid_until_to)
     return queryset.select_related(
         "formulation_version__formulation",
         "specification_sheet",

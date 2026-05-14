@@ -58,6 +58,9 @@ export const formulationsQueryKeys = {
       ordering: string;
       search?: string;
       hasOpenProposal?: boolean;
+      statuses?: readonly string[];
+      salesPersonId?: string;
+      projectType?: string;
     },
   ) =>
     [
@@ -74,6 +77,12 @@ export const formulationsQueryKeys = {
         : opts.hasOpenProposal
           ? "open"
           : "free",
+      // Sort the statuses array so cache hits are insensitive to the
+      // chip-toggle order. Empty array collapses to "" so the cache
+      // key stays the same as "no filter applied".
+      [...(opts.statuses ?? [])].sort().join(","),
+      opts.salesPersonId ?? "",
+      opts.projectType ?? "",
     ] as const,
   detail: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "detail", formulationId] as const,
@@ -115,15 +124,37 @@ export function useInfiniteFormulations(
      *  proposal modal); ``true`` = the inverse; omitted = no
      *  filter. */
     hasOpenProposal?: boolean;
+    /** Multi-select project_status filter for the list bar. */
+    statuses?: readonly string[];
+    /** UUID of the assigned sales person, or ``"unassigned"`` for
+     *  the no-owner bucket. */
+    salesPersonId?: string;
+    /** ``custom`` vs ``ready_to_go``. */
+    projectType?: string;
     initialFirstPage?: PaginatedFormulationsDto | null;
   },
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedFormulationsDto, string | null>,
   ApiError
 > {
-  const { ordering, pageSize, search, hasOpenProposal, initialFirstPage } =
-    options;
+  const {
+    ordering,
+    pageSize,
+    search,
+    hasOpenProposal,
+    statuses,
+    salesPersonId,
+    projectType,
+    initialFirstPage,
+  } = options;
   const normalisedSearch = search?.trim() ?? "";
+  // Any filter narrowing the list invalidates the unfiltered SSR
+  // seed; only feed the initial page when no filter is active.
+  const filtersActive =
+    Boolean(normalisedSearch) ||
+    (statuses?.length ?? 0) > 0 ||
+    Boolean(salesPersonId) ||
+    Boolean(projectType);
   return useInfiniteQuery<
     PaginatedFormulationsDto,
     ApiError,
@@ -131,13 +162,13 @@ export function useInfiniteFormulations(
     readonly unknown[],
     string | null
   >({
-    // ``hasOpenProposal`` is part of the cache key so switching
-    // filters (e.g. opening the proposal modal vs. the projects list)
-    // doesn't reuse the wrong cached page.
     queryKey: formulationsQueryKeys.infinite(orgId, {
       ordering,
       search: normalisedSearch,
       hasOpenProposal,
+      statuses,
+      salesPersonId,
+      projectType,
     }),
     queryFn: ({ pageParam }) =>
       fetchFormulationsPage(orgId, {
@@ -145,17 +176,16 @@ export function useInfiniteFormulations(
         pageSize,
         search: normalisedSearch || undefined,
         hasOpenProposal,
+        statuses,
+        salesPersonId,
+        projectType,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
-    // SSR hydration is unfiltered, so only seed the cache when no
-    // search term is active — otherwise the first page would echo
-    // every project, then snap to the filtered set after the
-    // client-side fetch resolves.
     initialData:
-      initialFirstPage && !normalisedSearch
+      initialFirstPage && !filtersActive
         ? {
             pages: [initialFirstPage],
             pageParams: [null],

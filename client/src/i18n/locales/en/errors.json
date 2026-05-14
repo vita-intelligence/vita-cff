@@ -29,6 +29,8 @@
     "specification_code_conflict": "Another specification sheet in this project already uses this code.",
     "specification_review_slot_taken": "Another sheet of the same kind is already waiting for the director's approval. Approve or revert that one first before sending this one for review.",
     "specification_sheet_not_approved": "This specification sheet hasn't been signed by the director yet, so it can't be bundled with a proposal. Get it director-approved first.",
+    "specification_not_mutable": "This specification sheet is locked. The director has signed it and any edit would invalidate that signature. Revert it to draft if you need to change something.",
+    "specification_pricing_locked": "Pricing is part of what the director signed. Revert this sheet to draft to change cost or margin.",
     "proposal_code_conflict": "Another proposal in this organisation already uses this code.",
     "clone_target_required": "Pick a target project to replace before duplicating.",
     "clone_target_not_found": "Couldn't find that target project in this organisation.",

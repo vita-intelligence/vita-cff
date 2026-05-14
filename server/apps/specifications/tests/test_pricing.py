@@ -110,34 +110,39 @@ class TestSetSpecPricing:
 
     def test_update_sheet_also_blocks_pricing_on_approved(self) -> None:
         # The generic ``update_sheet`` PATCH path goes through the
-        # same lock. A legacy client patching pricing on an approved
-        # sheet must hit the gate, not slip in via a different
-        # endpoint.
+        # broader edit lock now — any field on an approved sheet
+        # surfaces ``SpecificationNotMutable``, not just pricing.
+        # Editing any field after director sign-off would orphan
+        # the captured signature.
+        from apps.specifications.services import SpecificationNotMutable
+
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(
             organization=org, status=SpecificationStatus.APPROVED
         )
-        with pytest.raises(SpecificationPricingLocked):
+        with pytest.raises(SpecificationNotMutable):
             update_sheet(
                 sheet=sheet,
                 actor=org.created_by,
                 final_price="200.00",
             )
 
-    def test_non_pricing_patch_on_approved_still_allowed(self) -> None:
-        # Non-pricing fields (cover notes, packaging strings) stay
-        # editable on an approved sheet — only the signed pricing
-        # block is frozen.
+    def test_any_patch_on_approved_blocked(self) -> None:
+        # Non-pricing fields (cover notes, packaging strings) are
+        # locked too — once a signature is captured, every field on
+        # the snapshot is part of what was attested to.
+        from apps.specifications.services import SpecificationNotMutable
+
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(
             organization=org, status=SpecificationStatus.APPROVED
         )
-        updated = update_sheet(
-            sheet=sheet,
-            actor=org.created_by,
-            cover_notes="Updated post-approval",
-        )
-        assert updated.cover_notes == "Updated post-approval"
+        with pytest.raises(SpecificationNotMutable):
+            update_sheet(
+                sheet=sheet,
+                actor=org.created_by,
+                cover_notes="Updated post-approval",
+            )
 
 
 class TestApprovalWithPricing:
@@ -192,3 +197,58 @@ class TestApprovalWithPricing:
                 actor=org.created_by,
                 final_price="999.99",
             )
+
+
+class TestSpecEditLock:
+    """Once the director signs (``approved`` and later) the snapshot
+    is locked — every field becomes part of what was attested to, so
+    edit-style services must refuse writes. ``in_review`` stays open
+    so the director can tweak before signing."""
+
+    @pytest.mark.parametrize(
+        "locked_status",
+        [
+            SpecificationStatus.APPROVED,
+            SpecificationStatus.SENT,
+            SpecificationStatus.ACCEPTED,
+            SpecificationStatus.REJECTED,
+        ],
+    )
+    def test_update_sheet_blocked_on_locked_status(
+        self, locked_status: str
+    ) -> None:
+        from apps.specifications.services import SpecificationNotMutable
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org, status=locked_status
+        )
+        with pytest.raises(SpecificationNotMutable):
+            update_sheet(
+                sheet=sheet,
+                actor=org.created_by,
+                cover_notes="should not persist",
+            )
+
+    @pytest.mark.parametrize(
+        "editable_status",
+        [SpecificationStatus.DRAFT, SpecificationStatus.IN_REVIEW],
+    )
+    def test_pre_approval_states_remain_editable(
+        self, editable_status: str
+    ) -> None:
+        # Both ``draft`` and ``in_review`` write through — the
+        # director needs the in_review window to fine-tune before
+        # signing. The prepared-by stamp at in_review tolerates
+        # edits because it's an internal marker, not the legally
+        # binding signature.
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org, status=editable_status
+        )
+        updated = update_sheet(
+            sheet=sheet,
+            actor=org.created_by,
+            cover_notes="edit landed",
+        )
+        assert updated.cover_notes == "edit landed"

@@ -403,10 +403,49 @@ class ProposalListCreateView(APIView):
                 {"status": ["invalid_status"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # ``statuses`` is the multi-select filter the org-wide list
+        # bar uses; ``getlist`` returns ``[]`` when absent. Validate
+        # each value individually so a typo surfaces as a focused
+        # 400 instead of a silently-empty page.
+        statuses = request.query_params.getlist("statuses") or None
+        if statuses:
+            invalid = [s for s in statuses if s and s not in ProposalStatus.values]
+            if invalid:
+                return Response(
+                    {"statuses": ["invalid_status"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        search = request.query_params.get("search") or None
+        sales_person_id = request.query_params.get("sales_person_id") or None
+        # ISO ``YYYY-MM-DD`` date bounds. Django coerces to ``date``
+        # on the queryset filter; a malformed string would surface
+        # as a 500 from deeper down, so we validate up front and
+        # treat garbage as "no bound" to keep the URL forgiving.
+        from datetime import date as _date
+
+        def _parse_date(raw: str | None) -> _date | None:
+            if not raw:
+                return None
+            try:
+                return _date.fromisoformat(raw.strip())
+            except ValueError:
+                return None
+
+        valid_until_from = _parse_date(
+            request.query_params.get("valid_until_from")
+        )
+        valid_until_to = _parse_date(
+            request.query_params.get("valid_until_to")
+        )
         queryset = list_proposals(
             organization=self.organization,
             formulation_id=formulation_id,
             status=status_filter,
+            statuses=statuses,
+            search=search,
+            sales_person_id=sales_person_id,
+            valid_until_from=valid_until_from,
+            valid_until_to=valid_until_to,
         )
         serializer = ProposalReadSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)

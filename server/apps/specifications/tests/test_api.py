@@ -284,3 +284,87 @@ class TestStatusEndpoint:
         )
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert response.json()["status"] == ["invalid_status_transition"]
+
+
+class TestStatusTransitionRBAC:
+    """Director-grade transitions (``→ approved``, ``→ rejected``,
+    revert from ``approved → draft``) must require the ``approve``
+    capability. A scientist with only ``edit`` can draft and send for
+    review but cannot flip their own work past director review."""
+
+    def _editor_client(self, org: Any) -> tuple[APIClient, Any]:
+        # Helper: spin up a non-owner user with only ``edit`` so we
+        # can prove the gate refuses director-grade transitions.
+        user = UserFactory(
+            email=f"editor-{org.id}@spec.test",
+            password=DEFAULT_TEST_PASSWORD,
+        )
+        _grant(user, org, ["view", "edit"])
+        client = APIClient()
+        _login(client, user)
+        return client, user
+
+    def test_editor_can_send_draft_for_review(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        # ``draft → in_review`` is the scientist's everyday action;
+        # EDIT is enough. Sanity-checks that the per-transition gate
+        # doesn't over-block.
+        _, _, org = owner_client
+        client, _user = self._editor_client(org)
+        sheet = SpecificationSheetFactory(organization=org, status="draft")
+        response = client.post(
+            _status_url(str(org.id), str(sheet.id)),
+            {"status": "in_review", "signature_image": _SIG_FIXTURE_API},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_editor_cannot_approve(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        # The bug we're fixing: a scientist with EDIT but no APPROVE
+        # must not be able to flip an ``in_review`` sheet to
+        # ``approved``. That's the director's signature.
+        _, _, org = owner_client
+        client, _user = self._editor_client(org)
+        sheet = SpecificationSheetFactory(organization=org, status="in_review")
+        response = client.post(
+            _status_url(str(org.id), str(sheet.id)),
+            {"status": "approved", "signature_image": _SIG_FIXTURE_API},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_editor_cannot_revert_from_approved(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        # Revert from ``approved → draft`` unlocks the director's
+        # signature. Treated the same way as ``→ approved``: APPROVE
+        # only. A scientist with EDIT cannot un-sign for the director.
+        _, _, org = owner_client
+        client, _user = self._editor_client(org)
+        sheet = SpecificationSheetFactory(organization=org, status="approved")
+        response = client.post(
+            _status_url(str(org.id), str(sheet.id)),
+            {"status": "draft"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_editor_can_send_to_customer(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        # ``approved → sent`` is a sales action (forwarding the
+        # signed sheet to the client). It does NOT modify the signed
+        # snapshot, so EDIT is enough — director permission would be
+        # over-gated and block sales reps from sending.
+        _, _, org = owner_client
+        client, _user = self._editor_client(org)
+        sheet = SpecificationSheetFactory(organization=org, status="approved")
+        response = client.post(
+            _status_url(str(org.id), str(sheet.id)),
+            {"status": "sent"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK

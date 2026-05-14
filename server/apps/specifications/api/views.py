@@ -25,6 +25,7 @@ from apps.specifications.api.serializers import (
     SpecificationCustomerAcceptSerializer,
 )
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
+from apps.specifications.models import SpecificationSheet
 from apps.specifications.services import (
     FormulationVersionNotInOrg,
     InvalidSnapshotOverrides,
@@ -34,6 +35,7 @@ from apps.specifications.services import (
     PackagingItemNotAllowed,
     PublicLinkNotEnabled,
     SpecificationCodeConflict,
+    SpecificationNotMutable,
     SpecificationPricingLocked,
     SpecificationNotFound,
     SpecificationReviewSlotTaken,
@@ -222,6 +224,11 @@ class SpecificationDetailView(APIView):
                 {"detail": ["specification_pricing_locked"]},
                 status=status.HTTP_409_CONFLICT,
             )
+        except SpecificationNotMutable:
+            return Response(
+                {"detail": ["specification_not_mutable"]},
+                status=status.HTTP_409_CONFLICT,
+            )
         except InvalidSpecificationDocumentKind:
             return Response(
                 {"document_kind": ["invalid_specification_document_kind"]},
@@ -263,10 +270,54 @@ class SpecificationStatusView(APIView):
     """``POST`` ``/.../specifications/<id>/status/``."""
 
     permission_classes = (HasSpecificationsPermission,)
-    # Status transitions (draft → in_review → sent → approved/accepted)
-    # are approvals, not edits — a scientist with ``edit`` can build a
-    # draft but not send it to a client.
+    # Per-transition gate is set in ``initial()`` based on the target
+    # status (and, for revert-to-draft, the source status). Default
+    # to APPROVE here so a misrouted call without ``initial()`` ever
+    # firing fails closed rather than letting an EDIT-only user
+    # advance the sheet.
     required_capability = FormulationsCapability.APPROVE
+
+    def initial(self, request: Request, *args, **kwargs) -> None:
+        # Read the target status off the payload to pick the right
+        # capability *before* the permission check runs. ``initial``
+        # is the DRF hook for exactly this — DRF calls it after auth
+        # but before ``check_permissions``, so the resolved capability
+        # is in place by the time ``HasSpecificationsPermission``
+        # reads it.
+        #
+        # Mapping:
+        # * ``→ approved``: director sign-off — APPROVE-only. The
+        #   scientist who drafted the sheet must not be able to flip
+        #   their own work to director-approved.
+        # * ``→ rejected``: manual terminal close (customer rejected
+        #   over phone / email rather than on the kiosk) — APPROVE.
+        # * ``→ draft`` from ``approved``: unlocks the director's
+        #   signature, so APPROVE. From any other source it's an
+        #   ordinary revert and EDIT is enough.
+        # * Everything else (``draft → in_review``, ``approved →
+        #   sent``, ``in_review → draft`` for scientist pull-back,
+        #   ``rejected → draft`` for reopen): EDIT.
+        target = (request.data or {}).get("status")
+        if target == "approved" or target == "rejected":
+            self.required_capability = FormulationsCapability.APPROVE
+        elif target == "draft":
+            sheet_id = kwargs.get("sheet_id")
+            current_status: str | None = None
+            if sheet_id is not None:
+                current_status = (
+                    SpecificationSheet.objects.filter(id=sheet_id)
+                    .values_list("status", flat=True)
+                    .first()
+                )
+            if current_status == "approved":
+                self.required_capability = FormulationsCapability.APPROVE
+            else:
+                self.required_capability = FormulationsCapability.EDIT
+        else:
+            # ``draft → in_review`` (send for review) and ``approved
+            # → sent`` (sales sends to customer) — both are EDIT.
+            self.required_capability = FormulationsCapability.EDIT
+        super().initial(request, *args, **kwargs)
 
     def post(
         self, request: Request, org_id: str, sheet_id: str
@@ -412,36 +463,42 @@ class SpecificationVisibilityView(APIView):
             )
 
         updated = sheet
-        if raw_visibility is not None:
-            if not isinstance(raw_visibility, dict):
-                return Response(
-                    {"visibility": ["invalid"]},
-                    status=status.HTTP_400_BAD_REQUEST,
+        try:
+            if raw_visibility is not None:
+                if not isinstance(raw_visibility, dict):
+                    return Response(
+                        {"visibility": ["invalid"]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                # Coerce defensively: JSON booleans only. Strings like
+                # ``"false"`` would silently coerce to ``True`` otherwise.
+                visibility: dict[str, bool] = {}
+                for slug, value in raw_visibility.items():
+                    if isinstance(value, bool):
+                        visibility[slug] = value
+                    elif isinstance(value, (int, float)):
+                        visibility[slug] = bool(value)
+                updated = set_section_visibility(
+                    sheet=updated,
+                    actor=request.user,
+                    visibility=visibility,
                 )
-            # Coerce defensively: JSON booleans only. Strings like
-            # ``"false"`` would silently coerce to ``True`` otherwise.
-            visibility: dict[str, bool] = {}
-            for slug, value in raw_visibility.items():
-                if isinstance(value, bool):
-                    visibility[slug] = value
-                elif isinstance(value, (int, float)):
-                    visibility[slug] = bool(value)
-            updated = set_section_visibility(
-                sheet=updated,
-                actor=request.user,
-                visibility=visibility,
-            )
 
-        if raw_order is not None:
-            if not isinstance(raw_order, list):
-                return Response(
-                    {"order": ["invalid"]},
-                    status=status.HTTP_400_BAD_REQUEST,
+            if raw_order is not None:
+                if not isinstance(raw_order, list):
+                    return Response(
+                        {"order": ["invalid"]},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                updated = set_section_order(
+                    sheet=updated,
+                    actor=request.user,
+                    order=raw_order,
                 )
-            updated = set_section_order(
-                sheet=updated,
-                actor=request.user,
-                order=raw_order,
+        except SpecificationNotMutable:
+            return Response(
+                {"detail": ["specification_not_mutable"]},
+                status=status.HTTP_409_CONFLICT,
             )
 
         return Response(render_context(updated), status=status.HTTP_200_OK)
@@ -486,6 +543,11 @@ class SpecificationPackagingView(APIView):
             return Response(
                 {"packaging": ["packaging_item_not_allowed"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationNotMutable:
+            return Response(
+                {"detail": ["specification_not_mutable"]},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             SpecificationSheetReadSerializer(updated).data,

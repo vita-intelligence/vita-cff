@@ -132,6 +132,14 @@ export interface FormulationsListQuery {
    *  ``New proposal`` modal so the picker only surfaces projects
    *  eligible for a fresh quote. */
   readonly hasOpenProposal?: boolean;
+  /** Multi-select project_status filter. Pass an array of
+   *  ``ProjectStatus`` values to narrow the list to those buckets. */
+  readonly statuses?: readonly string[];
+  /** Filter by assigned sales person UUID, or the special string
+   *  ``"unassigned"`` to surface projects with no commercial owner. */
+  readonly salesPersonId?: string;
+  /** Custom vs ready_to_go engagement model. */
+  readonly projectType?: string;
 }
 
 /**
