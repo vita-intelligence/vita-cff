@@ -27,6 +27,8 @@ import { Button } from "@heroui/react";
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useCustomers, type CustomerDto } from "@/services/customers";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
+
+import { SendToClientModal } from "./send-to-client-modal";
 import { Link } from "@/i18n/navigation";
 import { apiClient, ApiError } from "@/lib/api";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
@@ -88,6 +90,7 @@ export function ProposalSheetView({
   const [signatureDialogOpen, setSignatureDialogOpen] = useState<
     false | "in_review" | "approved"
   >(false);
+  const [sendToClientOpen, setSendToClientOpen] = useState(false);
   // Proposal body is rendered server-side (Django template → DOCX
   // → PDF via LibreOffice when available, raw HTML fallback
   // otherwise) and streamed into an iframe here. The iframe src
@@ -225,17 +228,35 @@ export function ProposalSheetView({
             </Button>
           </div>
         );
-      case "approved":
-        return (
-          <Button
-            type="button"
-            onClick={() => handleTransition("sent")}
-            className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-          >
-            <Send className="mr-1.5 h-4 w-4" />
-            {tProposals("detail.actions.mark_sent")}
-          </Button>
+      case "approved": {
+        // ``customer_email`` is the only hard prerequisite for
+        // sending — the compose modal pre-fills it but we still
+        // disable the trigger when it's blank so a sales person
+        // sees "fill the customer email first" before opening the
+        // modal rather than after they've typed a body.
+        const hasRecipient = Boolean(
+          (proposal.customer_email || "").trim(),
         );
+        return (
+          <span
+            title={
+              hasRecipient
+                ? undefined
+                : tProposals("detail.actions.send_disabled_no_email")
+            }
+          >
+            <Button
+              type="button"
+              onClick={() => setSendToClientOpen(true)}
+              isDisabled={!hasRecipient}
+              className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Send className="mr-1.5 h-4 w-4" />
+              {tProposals("detail.actions.send_to_client")}
+            </Button>
+          </span>
+        );
+      }
       default:
         return null;
     }
@@ -395,6 +416,19 @@ export function ProposalSheetView({
             image,
           );
           setSignatureDialogOpen(false);
+        }}
+      />
+
+      <SendToClientModal
+        orgId={orgId}
+        proposal={proposal}
+        isOpen={sendToClientOpen}
+        onOpenChange={setSendToClientOpen}
+        onSent={() => {
+          // The mutation hook already swaps the cached detail row
+          // with the freshly-returned proposal (now at ``sent``) so
+          // the page re-renders with the new status badge + the
+          // kiosk-link affordances without an extra refetch.
         }}
       />
     </div>

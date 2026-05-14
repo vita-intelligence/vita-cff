@@ -10,6 +10,8 @@ from apps.proposals.api.views import (
     ProposalLineListCreateView,
     ProposalListCreateView,
     ProposalRenderView,
+    ProposalSendTestEmailView,
+    ProposalSendToClientView,
     ProposalStatusView,
     ProposalTransitionsView,
     PublicProposalDownloadView,
@@ -38,6 +40,16 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/status/",
         ProposalStatusView.as_view(),
         name="proposal-status",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/send-to-client/",
+        ProposalSendToClientView.as_view(),
+        name="proposal-send-to-client",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/send-test-email/",
+        ProposalSendTestEmailView.as_view(),
+        name="proposal-send-test-email",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/transitions/",

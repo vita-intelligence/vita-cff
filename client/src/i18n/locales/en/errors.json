@@ -51,6 +51,8 @@
     "invalid_status_transition": "This document can't move to that state from where it is now. Refresh and try again.",
     "invalid_proposal_transition": "This proposal can't move to that state from where it is now. Refresh and try again.",
     "proposal_not_mutable": "This proposal is finalised and can no longer be edited or deleted.",
+    "proposal_email_recipient_required": "Add a customer email before sending.",
+    "proposal_email_send_failed": "The email server rejected the message. Check the recipient address and try again.",
     "signature_required": "Draw a signature before continuing.",
     "kiosk_token_invalid": "This link is no longer valid. Ask the sender for a fresh one.",
     "kiosk_session_invalid": "Your session has expired. Please identify yourself again.",

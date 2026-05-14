@@ -168,3 +168,54 @@ export async function fetchProposalAudit(
   );
   return data;
 }
+
+
+/**
+ * Send a preview of the customer email to a test recipient (defaults
+ * to the caller's own email on the backend if ``recipient`` is left
+ * empty). The proposal status is NOT changed — this is a preview-
+ * to-myself affordance for the compose modal, not part of the
+ * customer-facing send flow.
+ */
+export async function sendProposalTestEmail(
+  orgId: string,
+  proposalId: string,
+  payload: {
+    readonly recipient?: string;
+    readonly subject: string;
+    readonly body_text: string;
+  },
+): Promise<{ readonly recipient: string; readonly subject: string }> {
+  const { data } = await apiClient.post<{
+    readonly recipient: string;
+    readonly subject: string;
+  }>(proposalsEndpoints.sendTestEmail(orgId, proposalId), payload);
+  return data;
+}
+
+
+/**
+ * Atomic "email + flip-to-sent" for an approved proposal.
+ *
+ * Either the customer receives the email AND the proposal advances
+ * to ``sent`` in the same request, or neither happens (status stays
+ * ``approved`` and the modal surfaces the SMTP error so the sales
+ * person can retry).
+ */
+export async function sendProposalToClient(
+  orgId: string,
+  proposalId: string,
+  payload: {
+    readonly recipient: string;
+    readonly subject: string;
+    readonly body_text: string;
+    readonly cc?: readonly string[];
+    readonly bcc?: readonly string[];
+  },
+): Promise<ProposalDto> {
+  const { data } = await apiClient.post<ProposalDto>(
+    proposalsEndpoints.sendToClient(orgId, proposalId),
+    payload,
+  );
+  return data;
+}

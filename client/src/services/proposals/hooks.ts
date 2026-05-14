@@ -25,6 +25,8 @@ import {
   fetchProposalTransitions,
   fetchProposals,
   patchProposalLine,
+  sendProposalTestEmail,
+  sendProposalToClient,
   transitionProposalStatus,
   updateProposal,
 } from "./api";
@@ -316,6 +318,68 @@ export function useTransitionProposalStatus(
   return useMutation<ProposalDto, ApiError, ProposalStatusRequestDto>({
     mutationFn: (payload) =>
       transitionProposalStatus(orgId, proposalId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        proposalsQueryKeys.detail(orgId, proposalId),
+        updated,
+      );
+      queryClient.invalidateQueries({
+        queryKey: proposalsQueryKeys.transitions(orgId, proposalId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "proposals", orgId],
+      });
+    },
+  });
+}
+
+
+/**
+ * Send a preview of the customer email to a test recipient. The
+ * proposal stays at its current status — useful for sales staff
+ * to eyeball the final layout in their own inbox before clicking
+ * "Send to client" for real. ``recipient`` is optional; the backend
+ * defaults to the logged-in user's email when omitted.
+ */
+export function useSendProposalTestEmail(
+  orgId: string,
+  proposalId: string,
+): UseMutationResult<
+  { readonly recipient: string; readonly subject: string },
+  ApiError,
+  { readonly recipient?: string; readonly subject: string; readonly body_text: string }
+> {
+  return useMutation({
+    mutationFn: (payload) =>
+      sendProposalTestEmail(orgId, proposalId, payload),
+  });
+}
+
+
+/**
+ * Atomic "email + flip-to-sent" mutation for an approved proposal.
+ * On success the detail cache is replaced with the freshly-returned
+ * proposal (now at status ``sent``) and the status-transitions
+ * timeline is invalidated so the new entry shows up.
+ */
+export function useSendProposalToClient(
+  orgId: string,
+  proposalId: string,
+): UseMutationResult<
+  ProposalDto,
+  ApiError,
+  {
+    readonly recipient: string;
+    readonly subject: string;
+    readonly body_text: string;
+    readonly cc?: readonly string[];
+    readonly bcc?: readonly string[];
+  }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload) =>
+      sendProposalToClient(orgId, proposalId, payload),
     onSuccess: (updated) => {
       queryClient.setQueryData(
         proposalsQueryKeys.detail(orgId, proposalId),

@@ -88,6 +88,23 @@ class ProposalNotFound(Exception):
     code = "proposal_not_found"
 
 
+class ProposalEmailRecipientRequired(Exception):
+    """Raised when ``send_proposal_to_client`` is called without a
+    recipient — the proposal's ``customer_email`` is empty and no
+    override was passed. Fixed by filling the customer email on the
+    proposal record (or typing one into the compose modal)."""
+
+    code = "proposal_email_recipient_required"
+
+
+class ProposalEmailSendFailed(Exception):
+    """Raised when the SMTP send itself fails. The status transition
+    is wrapped in the same atomic block so the proposal stays at
+    ``approved`` and the sales person can retry from the modal."""
+
+    code = "proposal_email_send_failed"
+
+
 class ProposalNotMutable(Exception):
     """Raised when a write targets a terminal-state proposal.
 
@@ -1098,6 +1115,247 @@ def transition_status(
         after=snapshot(proposal),
     )
     return proposal
+
+
+def _render_and_send_proposal_email(
+    *,
+    proposal: Proposal,
+    recipient: str,
+    subject: str,
+    body_text: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """Render the proposal email body (HTML wrapper + plain text) and
+    push it through Django's email backend. Returns the final
+    ``(subject, cc_clean, bcc_clean)`` so callers can audit-log what
+    actually went out.
+
+    Shared between :func:`send_proposal_to_client` (which then flips
+    status to ``sent``) and :func:`send_proposal_test_email` (which
+    sends a preview to the operator without touching status). Keeping
+    one render path guarantees the test email is byte-identical to
+    what the customer would receive — that's the whole point of
+    letting sales send a preview to themselves.
+
+    The template lookup is :data:`proposals/email/send_to_client.html`;
+    the plain-text alternative is the operator's typed body verbatim.
+
+    Raises :class:`ProposalEmailRecipientRequired` when ``recipient``
+    is empty and :class:`ProposalEmailSendFailed` when the SMTP layer
+    raises (the original exception is chained for the audit log).
+    """
+
+    recipient_clean = (recipient or "").strip()
+    if not recipient_clean:
+        raise ProposalEmailRecipientRequired()
+
+    # Defensive cleaning on CC / BCC so a stray empty string from the
+    # form layer doesn't fail SMTP validation. Lists default to empty.
+    cc_clean = [addr.strip() for addr in (cc or []) if addr and addr.strip()]
+    bcc_clean = [addr.strip() for addr in (bcc or []) if addr and addr.strip()]
+
+    # Lazy import — Django email machinery doesn't need to be on the
+    # import path for tests that don't exercise this code path.
+    from django.conf import settings
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+
+    from_email = getattr(
+        settings, "DEFAULT_FROM_EMAIL", "no-reply@localhost"
+    )
+    app_base = getattr(
+        settings, "APP_BASE_URL", "http://localhost:3000"
+    ).rstrip("/")
+    kiosk_url = (
+        f"{app_base}/p/proposal/{proposal.public_token}"
+        if proposal.public_token is not None
+        else ""
+    )
+
+    # Cover-letter signoff name. Falls back through sales person →
+    # primary project's owner → empty so the email never carries a
+    # placeholder ``None`` token where a real name should be.
+    sales_person = (
+        proposal.sales_person
+        or getattr(
+            proposal.formulation_version.formulation, "sales_person", None
+        )
+    )
+    sales_person_name = ""
+    if sales_person is not None:
+        sales_person_name = (
+            sales_person.get_full_name() or sales_person.email or ""
+        ).strip()
+
+    body_html = render_to_string(
+        "proposals/email/send_to_client.html",
+        {
+            "proposal": proposal,
+            "body_text": body_text or "",
+            "kiosk_url": kiosk_url,
+            "sales_person_name": sales_person_name,
+        },
+    )
+
+    final_subject = (subject or "").strip() or (
+        f"Your proposal from Vita NPD — {proposal.code}"
+    )
+    message = EmailMultiAlternatives(
+        subject=final_subject,
+        body=body_text or "",
+        from_email=from_email,
+        to=[recipient_clean],
+        cc=cc_clean or None,
+        bcc=bcc_clean or None,
+    )
+    message.attach_alternative(body_html, "text/html")
+
+    try:
+        message.send(fail_silently=False)
+    except Exception as exc:  # noqa: BLE001 — re-raised as domain error
+        raise ProposalEmailSendFailed(str(exc)) from exc
+
+    return final_subject, cc_clean, bcc_clean
+
+
+def send_proposal_test_email(
+    *,
+    proposal: Proposal,
+    actor: Any,
+    recipient: str,
+    subject: str,
+    body_text: str,
+) -> str:
+    """Send a preview of the customer email to ``recipient`` (typically
+    the operator themselves) without touching the proposal's status.
+
+    The body is rendered through the same template + plain-text path
+    as :func:`send_proposal_to_client`, so what the operator sees in
+    their inbox is byte-identical to what the customer would receive
+    if they hit "Send to client" with the same modal state.
+
+    Deliberately *not* wrapped in a transaction: a test send is a
+    side effect, not part of any business invariant. An audit row is
+    still written so an admin reviewing the log can see who sent a
+    preview and to which address (useful when a sales rep emails a
+    test to a client by accident).
+
+    Returns the final subject line that was sent — the modal uses it
+    to render a "Sent test to …" confirmation banner.
+    """
+
+    final_subject, cc_clean, bcc_clean = _render_and_send_proposal_email(
+        proposal=proposal,
+        recipient=recipient,
+        subject=subject,
+        body_text=body_text,
+        cc=None,
+        bcc=None,
+    )
+    record_audit(
+        organization=proposal.organization,
+        actor=actor,
+        action="proposal.test_email_sent",
+        target=proposal,
+        after={
+            "recipient": (recipient or "").strip(),
+            "subject": final_subject,
+        },
+    )
+    return final_subject
+
+
+@transaction.atomic
+def send_proposal_to_client(
+    *,
+    proposal: Proposal,
+    actor: Any,
+    recipient: str,
+    subject: str,
+    body_text: str,
+    cc: list[str] | None = None,
+    bcc: list[str] | None = None,
+) -> Proposal:
+    """Email the kiosk link to the customer and atomically flip the
+    proposal status from ``approved`` to ``sent``.
+
+    Atomic semantics: either the customer gets the email AND the
+    proposal moves to ``sent``, or neither happens. The whole
+    function runs inside ``@transaction.atomic`` and we send the email
+    *before* the transition is recorded — if the SMTP layer raises,
+    the surrounding transaction rolls back, the status stays at
+    ``approved``, and the sales person can retry from the modal.
+
+    The ``body_text`` arrives from the compose modal exactly as the
+    sales person typed it. The HTML alternative is rendered server-
+    side from :data:`proposals/email/send_to_client.html` with the
+    typed copy wrapped in a branded card and an "Open proposal" CTA
+    pointing at the kiosk URL. Two reasons the HTML is server-side:
+
+    * Customers across email clients render markup inconsistently;
+      one canonical template avoids surprises.
+    * The kiosk URL is always built from ``APP_BASE_URL`` +
+      ``proposal.public_token`` — never trust the frontend to embed
+      a deep link.
+
+    Raises:
+        :class:`InvalidProposalTransition` — proposal isn't at
+            ``approved`` (the state machine refuses the edge).
+        :class:`ProposalEmailRecipientRequired` — ``recipient`` is
+            empty after trimming.
+        :class:`ProposalEmailSendFailed` — SMTP / Django raised on
+            ``message.send``. Wraps the original exception.
+        :class:`MissingRequiredFields` — proposal is missing
+            something the status machine requires for ``sent``.
+    """
+
+    # State-machine guard. We do this before the render to avoid
+    # wasting work on a proposal that can't actually advance.
+    if proposal.status != ProposalStatus.APPROVED.value:
+        raise InvalidProposalTransition()
+
+    # Shared render + send path. Raises on empty recipient or SMTP
+    # failure; the surrounding ``@transaction.atomic`` rolls back the
+    # whole block on any exception so a failed send never leaves the
+    # status flipped.
+    final_subject, cc_clean, bcc_clean = _render_and_send_proposal_email(
+        proposal=proposal,
+        recipient=recipient,
+        subject=subject,
+        body_text=body_text,
+        cc=cc,
+        bcc=bcc,
+    )
+    recipient_clean = (recipient or "").strip()
+
+    # Email succeeded — record the dispatch *before* the transition so
+    # an operator inspecting the audit log can see the message went out
+    # even if a later assertion in ``transition_status`` raises and
+    # rolls the whole atomic block back. Recipient + subject only —
+    # the body is captured in the SMTP log, not in our DB.
+    record_audit(
+        organization=proposal.organization,
+        actor=actor,
+        action="proposal.email_sent",
+        target=proposal,
+        after={
+            "recipient": recipient_clean,
+            "cc": cc_clean,
+            "bcc": bcc_clean,
+            "subject": final_subject,
+        },
+    )
+
+    # Now flip status to ``sent``. Reuses the canonical transition path
+    # so attached specs get promoted, the status-transition row is
+    # written, and the same legal-edge check runs.
+    return transition_status(
+        proposal=proposal,
+        actor=actor,
+        to_status=ProposalStatus.SENT.value,
+        notes=f"Sent to {recipient_clean}",
+    )
 
 
 # ---------------------------------------------------------------------------

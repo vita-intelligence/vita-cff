@@ -10,6 +10,10 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/`,
   status: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/status/`,
+  sendToClient: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/send-to-client/`,
+  sendTestEmail: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/send-test-email/`,
   transitions: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/transitions/`,
   render: (orgId: string, proposalId: string) =>

@@ -80,7 +80,31 @@
       "send_for_review": "Send for internal review",
       "approve": "Approve",
       "back_to_draft": "Back to draft",
-      "mark_sent": "Mark as sent to client"
+      "mark_sent": "Mark as sent to client",
+      "send_to_client": "Send to client",
+      "send_disabled_no_email": "Add a customer email to the proposal before sending."
+    },
+    "send_to_client": {
+      "title": "Send proposal {code} to the client",
+      "subtitle": "We'll email the kiosk link to the customer and move the proposal to ‘sent’. Edit the message below if you want to add a personal note.",
+      "to_label": "To",
+      "subject_label": "Subject",
+      "body_label": "Message",
+      "body_hint": "The customer also receives an ‘Open proposal’ button to the kiosk link below the message.",
+      "invalid_email": "That doesn't look like a valid email address.",
+      "default_subject": "Your proposal from Vita NPD — {code}",
+      "default_body": "Dear {name},\n\nThank you for your time discussing your project with us. Your proposal {code} is ready for your review — please use the button below to open the secure proposal portal, review the commercial terms and the bundled specification sheets, and sign the documents online.\n\nIf you have any questions before signing, please reply to this email and I'll come back to you as soon as possible.",
+      "fallback_greeting": "Customer",
+      "cancel": "Cancel",
+      "send": "Send to client",
+      "sending": "Sending…",
+      "error_generic": "Couldn't send the email. Please try again.",
+      "test_label": "Send a test first",
+      "test_hint": "We won't change the proposal status.",
+      "test_placeholder": "your.email@example.com",
+      "test_send": "Send test",
+      "test_sending": "Sending test…",
+      "test_sent": "Test sent to {recipient}."
     },
     "signatures": {
       "prepared_by_title": "Sign as Prepared By",

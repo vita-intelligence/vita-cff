@@ -11,6 +11,8 @@ export {
   fetchProposalTransitions,
   fetchProposals,
   patchProposalLine,
+  sendProposalTestEmail,
+  sendProposalToClient,
   transitionProposalStatus,
   updateProposal,
 } from "./api";
@@ -27,6 +29,8 @@ export {
   useProposalLines,
   useProposalTransitions,
   useProposals,
+  useSendProposalTestEmail,
+  useSendProposalToClient,
   useTransitionProposalStatus,
   useUpdateProposal,
 } from "./hooks";

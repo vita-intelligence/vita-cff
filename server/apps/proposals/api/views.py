@@ -623,6 +623,173 @@ class ProposalStatusView(APIView):
         return Response(ProposalReadSerializer(updated).data)
 
 
+class ProposalSendToClientView(APIView):
+    """``POST`` ``/.../proposals/<id>/send-to-client/``.
+
+    Atomic "email + flip-to-sent" for an approved proposal. The body
+    accepts ``recipient`` (defaults to ``proposal.customer_email`` when
+    omitted), ``subject``, ``body_text``, ``body_html``, and optional
+    ``cc`` / ``bcc`` lists. Either the email lands AND the proposal
+    moves to ``sent``, or neither does — the service wraps the SMTP
+    send + the transition in one transaction.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        from apps.proposals.services import (
+            ProposalEmailRecipientRequired,
+            ProposalEmailSendFailed,
+            send_proposal_to_client,
+        )
+
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        data = request.data if isinstance(request.data, dict) else {}
+        recipient = str(
+            data.get("recipient") or proposal.customer_email or ""
+        ).strip()
+        subject = str(data.get("subject") or "").strip()
+        body_text = str(data.get("body_text") or "")
+        cc_raw = data.get("cc") or []
+        bcc_raw = data.get("bcc") or []
+        cc = (
+            [str(x) for x in cc_raw if isinstance(x, str)]
+            if isinstance(cc_raw, list)
+            else []
+        )
+        bcc = (
+            [str(x) for x in bcc_raw if isinstance(x, str)]
+            if isinstance(bcc_raw, list)
+            else []
+        )
+
+        try:
+            updated = send_proposal_to_client(
+                proposal=proposal,
+                actor=request.user,
+                recipient=recipient,
+                subject=subject,
+                body_text=body_text,
+                cc=cc,
+                bcc=bcc,
+            )
+        except ProposalEmailRecipientRequired:
+            return Response(
+                {"recipient": ["proposal_email_recipient_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidProposalTransition:
+            return Response(
+                {"status": ["invalid_proposal_transition"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except MissingRequiredFields as exc:
+            return Response(
+                {
+                    "missing_required_fields": exc.missing,
+                    "detail": ["missing_required_fields"],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ProposalEmailSendFailed as exc:
+            # SMTP layer rejected the message. Surface the underlying
+            # error code so the modal can show "Couldn't send: <why>"
+            # rather than a generic banner; the status stayed at
+            # ``approved`` thanks to the atomic block in the service.
+            return Response(
+                {
+                    "detail": ["proposal_email_send_failed"],
+                    "error": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(ProposalReadSerializer(updated).data)
+
+
+class ProposalSendTestEmailView(APIView):
+    """``POST`` ``/.../proposals/<id>/send-test-email/``.
+
+    Sends a preview of the same email the ``send-to-client`` endpoint
+    would dispatch, but to a test recipient (defaults to the caller's
+    own email). The proposal status is **not** changed. Used by the
+    "Send test to me" affordance in the compose modal so sales staff
+    can eyeball the final layout before committing to a customer-
+    facing send.
+
+    Available regardless of the proposal's current status — sales may
+    want to preview an email on a draft, even though the real send
+    requires ``approved``.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        from apps.proposals.services import (
+            ProposalEmailRecipientRequired,
+            ProposalEmailSendFailed,
+            send_proposal_test_email,
+        )
+
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        data = request.data if isinstance(request.data, dict) else {}
+        # Recipient defaults to the caller's own email so the most
+        # common case ("send a test to myself") is a single click in
+        # the modal. An optional ``recipient`` overrides this for
+        # cases where the operator wants the preview in a different
+        # inbox (e.g. a colleague's).
+        recipient = str(
+            data.get("recipient")
+            or getattr(request.user, "email", "")
+            or ""
+        ).strip()
+        subject = str(data.get("subject") or "").strip()
+        body_text = str(data.get("body_text") or "")
+
+        try:
+            final_subject = send_proposal_test_email(
+                proposal=proposal,
+                actor=request.user,
+                recipient=recipient,
+                subject=subject,
+                body_text=body_text,
+            )
+        except ProposalEmailRecipientRequired:
+            return Response(
+                {"recipient": ["proposal_email_recipient_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ProposalEmailSendFailed as exc:
+            return Response(
+                {
+                    "detail": ["proposal_email_send_failed"],
+                    "error": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(
+            {"recipient": recipient, "subject": final_subject},
+            status=status.HTTP_200_OK,
+        )
+
+
 class ProposalTransitionsView(APIView):
     """``GET`` ``/.../proposals/<id>/transitions/`` — timeline of
     status changes used by the detail page's audit sidebar."""
