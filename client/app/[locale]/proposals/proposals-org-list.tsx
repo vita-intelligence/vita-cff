@@ -272,6 +272,12 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   const [quantity, setQuantity] = useState<string>("1");
   const [unitCost, setUnitCost] = useState<string>("");
   const [margin, setMargin] = useState<string>("30");
+  //: When ``true``, the rep has explicitly opened the override panel
+  //: to retype cost / margin against the spec's signed values. When
+  //: ``false`` (default), the spec is the single source of truth and
+  //: we don't forward cost / margin / price in the create payload —
+  //: the backend pulls them from the attached spec instead.
+  const [pricingOverride, setPricingOverride] = useState(false);
   //: Optional spec-sheet attachment. Empty = no bundled spec; any
   //: value = SpecificationSheet UUID. The backend validates tenancy
   //: and the OneToOne uniqueness (one proposal per sheet) and
@@ -348,6 +354,7 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
+    setPricingOverride(false);
     setTemplate("custom");
     setSpecSheetId("");
     setError(null);
@@ -361,7 +368,14 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
       return;
     }
     try {
-      const created = await createMutation.mutateAsync({
+      // Quantity is the only required field. Cost / margin / price
+      // only get forwarded when sales has explicitly opened the
+      // override panel and typed something. Otherwise the backend
+      // does the right thing on its own: an attached spec's signed
+      // pricing flows in via the auto-fill; an un-priced or absent
+      // spec leaves the proposal's pricing columns blank for sales
+      // to fill in later from the proposal detail page.
+      const basePayload = {
         formulation_version_id: versionId,
         template_type: template,
         // Link the address-book record when one was picked. The
@@ -375,13 +389,20 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
         customer_email: customer?.email ?? "",
         customer_company: customer?.company ?? "",
         quantity: Math.max(1, Number.parseInt(quantity, 10) || 1),
-        unit_price:
-          derivedUnitPrice !== null
-            ? derivedUnitPrice.toFixed(4)
-            : null,
-        material_cost_per_pack: unitCost ? unitCost : null,
-        margin_percent: margin ? margin : null,
-      });
+      };
+      const created = await createMutation.mutateAsync(
+        pricingOverride
+          ? {
+              ...basePayload,
+              unit_price:
+                derivedUnitPrice !== null
+                  ? derivedUnitPrice.toFixed(4)
+                  : null,
+              material_cost_per_pack: unitCost ? unitCost : null,
+              margin_percent: margin ? margin : null,
+            }
+          : basePayload,
+      );
       close();
       router.push(`/proposals/${created.id}`);
     } catch (err) {
@@ -545,7 +566,33 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   </span>
                   <select
                     value={specSheetId}
-                    onChange={(e) => setSpecSheetId(e.target.value)}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSpecSheetId(nextId);
+                      // Picking a fresh spec resets the override —
+                      // the new spec's signed values become the
+                      // displayed truth again. Sales has to opt back
+                      // into typing a custom rate explicitly.
+                      setPricingOverride(false);
+                      if (!nextId) return;
+                      // Pre-seed the (hidden) cost / margin inputs
+                      // with the spec's signed values so the override
+                      // panel, when revealed, starts from the spec's
+                      // numbers rather than an empty form. Quantity
+                      // intentionally stays as the user typed —
+                      // order size is a proposal-level concern, not
+                      // a spec-level constant.
+                      const picked = specSheets.find(
+                        (s) => s.id === nextId,
+                      );
+                      if (!picked) return;
+                      if (picked.unit_cost) {
+                        setUnitCost(String(picked.unit_cost));
+                      }
+                      if (picked.margin_percent) {
+                        setMargin(String(picked.margin_percent));
+                      }
+                    }}
                     disabled={!formulationId || specSheetsQuery.isLoading}
                     className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-100"
                   >
@@ -585,6 +632,23 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       })
                     }
                   </select>
+                  {(() => {
+                    // Yellow inline warning when the picked spec has
+                    // no pricing on file. Sales can still proceed
+                    // — they just have to type the price below
+                    // by hand instead of relying on the autofill.
+                    if (!specSheetId) return null;
+                    const picked = specSheets.find(
+                      (s) => s.id === specSheetId,
+                    );
+                    if (!picked) return null;
+                    if (picked.final_price || picked.unit_cost) return null;
+                    return (
+                      <p className="mt-1 inline-flex items-center gap-1.5 rounded-md bg-yellow-100 px-2 py-1 text-[11px] font-medium text-yellow-800 ring-1 ring-inset ring-yellow-300">
+                        {tProposals("create.spec_no_price_warning")}
+                      </p>
+                    );
+                  })()}
                   <PickerHint
                     loading={
                       Boolean(formulationId) && specSheetsQuery.isLoading
@@ -608,58 +672,206 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   onCreateNew={() => setCustomerCreating(true)}
                 />
 
-                <div className="grid grid-cols-3 gap-3">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.quantity")}
-                    </span>
-                    <input
-                      type="number"
-                      min={1}
-                      value={quantity}
-                      onChange={(e) => setQuantity(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.unit_cost")}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.0001"
-                      value={unitCost}
-                      onChange={(e) => setUnitCost(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.margin_percent")}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={margin}
-                      onChange={(e) => setMargin(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                </div>
+                {(() => {
+                  // Quantity is always visible — it's the one number
+                  // that's genuinely per-order and the only thing
+                  // sales has to type by default. Cost + margin live
+                  // behind an "Adjust pricing" toggle: by default the
+                  // spec's signed numbers drive the proposal (or, if
+                  // no spec is attached yet, the proposal is created
+                  // without pricing and sales fills it in later from
+                  // the proposal detail page).
+                  const pickedSpec = specSheetId
+                    ? specSheets.find((s) => s.id === specSheetId) ?? null
+                    : null;
+                  const specHasPricing = Boolean(
+                    pickedSpec &&
+                      (pickedSpec.unit_cost || pickedSpec.final_price),
+                  );
+                  const specCurrency = (
+                    pickedSpec?.currency || "GBP"
+                  ).toUpperCase();
+                  // Prefer the explicit final price the director
+                  // signed; fall back to cost + margin derivation
+                  // only if the legacy row has no final_price.
+                  const specPrice =
+                    pickedSpec && pickedSpec.final_price
+                      ? Number(pickedSpec.final_price).toFixed(2)
+                      : pickedSpec &&
+                          pickedSpec.unit_cost &&
+                          pickedSpec.margin_percent
+                        ? (
+                            Number(pickedSpec.unit_cost) /
+                            (1 - Number(pickedSpec.margin_percent) / 100)
+                          ).toFixed(2)
+                        : null;
 
-                <div
-                  className={`rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset ${
-                    derivedUnitPrice === null
-                      ? "bg-ink-50 text-ink-500 ring-ink-200"
-                      : "bg-success/10 text-success ring-success/30"
-                  }`}
-                >
-                  {derivedUnitPrice === null
-                    ? tProposals("create.price_placeholder")
-                    : tProposals("create.price_derived", {
-                        price: derivedUnitPrice.toFixed(2),
-                      })}
-                </div>
+                  return (
+                    <>
+                      <label className="flex w-32 flex-col gap-1.5">
+                        <span className="text-xs font-medium text-ink-700">
+                          {tProposals("create.quantity")}
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          value={quantity}
+                          onChange={(e) => setQuantity(e.target.value)}
+                          className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                        />
+                      </label>
+
+                      {/* Read-only summary of the spec's signed
+                       *  pricing. Renders only when a priced spec
+                       *  is attached and sales hasn't opened the
+                       *  override — gives them visibility into the
+                       *  numbers the customer will see without
+                       *  letting them retype. */}
+                      {pickedSpec && specHasPricing && !pricingOverride ? (
+                        <div className="flex flex-col gap-2 rounded-xl bg-amber-50 px-3 py-3 ring-1 ring-inset ring-amber-200">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+                              {tProposals("create.spec_pricing_label")}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setPricingOverride(true)}
+                              className="text-[11px] font-medium text-amber-900 underline-offset-2 hover:underline"
+                            >
+                              {tProposals("create.adjust_pricing")}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2 text-xs text-amber-900">
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                                {tProposals("create.unit_cost")}
+                              </span>
+                              <span className="font-semibold text-amber-950">
+                                {pickedSpec.unit_cost
+                                  ? `${specCurrency} ${Number(pickedSpec.unit_cost).toFixed(2)}`
+                                  : "—"}
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                                {tProposals("create.margin_percent")}
+                              </span>
+                              <span className="font-semibold text-amber-950">
+                                {pickedSpec.margin_percent
+                                  ? `${Number(pickedSpec.margin_percent).toFixed(1)} %`
+                                  : "—"}
+                              </span>
+                            </div>
+                            <div className="flex flex-col gap-0.5">
+                              <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                                {tProposals("create.customer_pays")}
+                              </span>
+                              <span className="font-semibold text-amber-950">
+                                {specPrice
+                                  ? `${specCurrency} ${specPrice}`
+                                  : "—"}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {/* Override panel — only rendered when sales
+                       *  explicitly opens it, OR when no priced spec
+                       *  is attached AND they want to type pricing
+                       *  ad-hoc. Default state stays clean: just the
+                       *  Quantity input above. */}
+                      {pricingOverride ? (
+                        <div className="flex flex-col gap-2 rounded-xl bg-ink-50 px-3 py-3 ring-1 ring-inset ring-ink-200">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+                              {tProposals("create.custom_pricing_label")}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                // Collapse back: when a priced spec
+                                // is attached, also re-seed from it
+                                // so the next override starts fresh.
+                                if (pickedSpec && specHasPricing) {
+                                  setUnitCost(
+                                    pickedSpec.unit_cost
+                                      ? String(pickedSpec.unit_cost)
+                                      : "",
+                                  );
+                                  setMargin(
+                                    pickedSpec.margin_percent
+                                      ? String(pickedSpec.margin_percent)
+                                      : "30",
+                                  );
+                                }
+                                setPricingOverride(false);
+                              }}
+                              className="text-[11px] font-medium text-ink-700 underline-offset-2 hover:underline"
+                            >
+                              {pickedSpec && specHasPricing
+                                ? tProposals("create.use_spec_pricing")
+                                : tProposals("create.cancel_pricing")}
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="flex flex-col gap-1.5">
+                              <span className="text-xs font-medium text-ink-700">
+                                {tProposals("create.unit_cost")}
+                              </span>
+                              <input
+                                type="number"
+                                step="0.0001"
+                                value={unitCost}
+                                onChange={(e) =>
+                                  setUnitCost(e.target.value)
+                                }
+                                className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                              />
+                            </label>
+                            <label className="flex flex-col gap-1.5">
+                              <span className="text-xs font-medium text-ink-700">
+                                {tProposals("create.margin_percent")}
+                              </span>
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={margin}
+                                onChange={(e) => setMargin(e.target.value)}
+                                className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                              />
+                            </label>
+                          </div>
+                          <div
+                            className={`rounded-lg px-3 py-2 text-sm font-medium ring-1 ring-inset ${
+                              derivedUnitPrice === null
+                                ? "bg-ink-0 text-ink-500 ring-ink-200"
+                                : "bg-success/10 text-success ring-success/30"
+                            }`}
+                          >
+                            {derivedUnitPrice === null
+                              ? tProposals("create.price_placeholder")
+                              : tProposals("create.price_derived", {
+                                  price: derivedUnitPrice.toFixed(2),
+                                })}
+                          </div>
+                        </div>
+                      ) : !pickedSpec || !specHasPricing ? (
+                        // No spec attached (or spec has no pricing
+                        // on file) and override isn't open yet —
+                        // surface a quiet hint so sales knows where
+                        // to type ad-hoc cost / margin if they need.
+                        <button
+                          type="button"
+                          onClick={() => setPricingOverride(true)}
+                          className="self-start text-xs font-medium text-ink-700 underline-offset-2 hover:underline"
+                        >
+                          {tProposals("create.adjust_pricing")}
+                        </button>
+                      ) : null}
+                    </>
+                  );
+                })()}
 
                 {error ? (
                   <p

@@ -57,6 +57,30 @@ _QUOTABLE_SHEET_STATUSES: frozenset[str] = frozenset(
 )
 
 
+def _spec_unit_cost(sheet: "SpecificationSheet") -> Decimal | None:
+    """Best-available per-unit cost for a spec sheet.
+
+    Prefers the explicit ``unit_cost`` column the director enters
+    during the new approval flow. Falls back to deriving cost from
+    ``final_price`` × ``(1 − margin_percent/100)`` for legacy / hand-
+    typed specs where only price + margin were captured. Returns
+    ``None`` when neither path can produce a positive cost so the
+    caller leaves the line column blank rather than guessing zero.
+    """
+
+    if sheet.unit_cost is not None:
+        return sheet.unit_cost
+    price = sheet.final_price
+    margin = sheet.margin_percent
+    if price is None or margin is None:
+        return None
+    if margin < 0 or margin >= 100:
+        return None
+    return (price * (Decimal("1") - margin / Decimal("100"))).quantize(
+        Decimal("0.0001")
+    )
+
+
 def _resolve_quotable_sheet(
     sheet_id: Any, organization
 ) -> "SpecificationSheet":
@@ -506,6 +530,40 @@ def create_proposal(
         material_cost = material_cost_per_pack
     else:
         material_cost = compute_material_cost_per_pack(version)
+    # Auto-fill from the picked spec when the caller didn't supply
+    # pricing — the spec is the new "single source of truth" the
+    # team agreed on. Caller's explicit values still win so a
+    # negotiated rate can override the spec default.
+    if sheet is not None:
+        if unit_price is None and sheet.final_price is not None:
+            unit_price = sheet.final_price
+        if margin_percent is None and sheet.margin_percent is not None:
+            margin_percent = sheet.margin_percent
+        # Cost: prefer the spec's signed cost; fall back to deriving
+        # from price + margin for legacy specs that only stored the
+        # price. Only overrides the auto-roll-up — caller's typed
+        # ``material_cost_per_pack`` still wins via the branch above.
+        if material_cost_per_pack is None:
+            derived_cost = _spec_unit_cost(sheet)
+            if derived_cost is not None:
+                material_cost = derived_cost
+        # Spec currency seeds the proposal currency unless the caller
+        # explicitly chose a different one. ``currency`` defaults to
+        # ``"GBP"``; treat that default as "unspecified" so a spec
+        # priced in EUR / USD takes precedence.
+        spec_currency = (sheet.currency or "").strip().upper()
+        if (
+            spec_currency
+            and spec_currency != "GBP"
+            and (currency or "").strip().upper() == "GBP"
+        ):
+            currency = spec_currency
+        # Quantity is a per-order figure the sales rep sets on the
+        # proposal, not part of the signed per-unit economics on the
+        # spec. We deliberately do *not* inherit ``sheet.quantity``
+        # — one spec can underpin proposals at very different
+        # volumes, and the customer always signs against the value
+        # on the proposal.
     if unit_price is None:
         unit_price = suggest_unit_price(material_cost, margin_percent)
 
@@ -858,13 +916,49 @@ def add_proposal_line(
     if display_order is None:
         display_order = proposal.lines.count()
 
+    # Auto-fill pricing from the picked spec when the caller didn't
+    # provide their own. The spec carries a director-approved price
+    # (set during the approval flow); seeding the proposal line from
+    # it means sales doesn't retype the same numbers on every quote.
+    # Caller-provided values still win — sales can negotiate a
+    # custom rate by passing ``unit_cost`` / ``unit_price``
+    # explicitly, and the line column owns the source of truth from
+    # that point onward.
+    seeded_qty = quantity
+    if sheet is not None:
+        if unit_cost is None:
+            derived_cost = _spec_unit_cost(sheet)
+            if derived_cost is not None:
+                unit_cost = derived_cost
+        if unit_price is None and sheet.final_price is not None:
+            unit_price = sheet.final_price
+        # Quantity is intentionally NOT inherited from the spec — it's
+        # a per-order figure the sales rep sets on the proposal line,
+        # not part of the signed per-unit economics. One spec can
+        # underpin lines at very different volumes.
+        # Inherit the spec's currency when the proposal is still on
+        # the default GBP. Proposals are single-currency by design,
+        # so the first non-default spec currency wins; later
+        # additions of differently-priced specs keep the original
+        # proposal currency (and the line stores prices verbatim,
+        # which is a flag for the team to reprice if needed).
+        spec_currency = (sheet.currency or "").strip().upper()
+        if (
+            spec_currency
+            and spec_currency != "GBP"
+            and (proposal.currency or "").strip().upper() == "GBP"
+            and proposal.lines.count() == 0
+        ):
+            proposal.currency = spec_currency
+            proposal.save(update_fields=["currency", "updated_at"])
+
     line = ProposalLine.objects.create(
         proposal=proposal,
         formulation_version=version,
         specification_sheet=sheet,
         product_code=product_code,
         description=description,
-        quantity=max(1, int(quantity)),
+        quantity=max(1, int(seeded_qty)),
         unit_cost=unit_cost,
         unit_price=unit_price,
         display_order=display_order,
@@ -896,6 +990,7 @@ def update_proposal_line(
 
     # ``specification_sheet_id`` needs the cross-tenant FK check + the
     # director-signed guard. ``_resolve_quotable_sheet`` covers both.
+    sheet_changed = False
     if "specification_sheet_id" in changes:
         sheet_id = changes.pop("specification_sheet_id")
         if sheet_id is None:
@@ -904,6 +999,7 @@ def update_proposal_line(
             line.specification_sheet = _resolve_quotable_sheet(
                 sheet_id, proposal.organization
             )
+        sheet_changed = True
 
     updatable = {
         "product_code",
@@ -916,6 +1012,20 @@ def update_proposal_line(
     for key, value in changes.items():
         if key in updatable and value is not None:
             setattr(line, key, value)
+
+    # Auto-fill pricing from the newly-attached spec — only when the
+    # sheet link was just changed AND the corresponding line column
+    # is empty. This is the "sales picks a new spec on an existing
+    # line" path. Sales-provided values in the same PATCH win
+    # because we evaluate this *after* the updatable loop above.
+    if sheet_changed and line.specification_sheet is not None:
+        spec = line.specification_sheet
+        if line.unit_cost is None:
+            derived_cost = _spec_unit_cost(spec)
+            if derived_cost is not None:
+                line.unit_cost = derived_cost
+        if line.unit_price is None and spec.final_price is not None:
+            line.unit_price = spec.final_price
 
     line.save()
     proposal.updated_by = actor
@@ -1211,16 +1321,71 @@ def _render_and_send_proposal_email(
         },
     )
 
+    # Plain-text body. Critical for deliverability: corporate spam
+    # filters (especially Mimecast / Proofpoint / Microsoft ATP)
+    # score messages on the HTML-only-vs-plain-text ratio, and some
+    # paranoid Outlook policies render *only* the plain-text part to
+    # the recipient. We append the kiosk URL on its own line so the
+    # link survives even if the sales rep's typed body doesn't
+    # mention it, and stamp the proposal code so the customer can
+    # match the message to a deal in their own records.
+    plain_lines: list[str] = []
+    if body_text and body_text.strip():
+        plain_lines.append(body_text.rstrip())
+        plain_lines.append("")
+    if kiosk_url:
+        plain_lines.append("Open the proposal here:")
+        plain_lines.append(kiosk_url)
+        plain_lines.append("")
+    if sales_person_name:
+        plain_lines.append("Yours sincerely,")
+        plain_lines.append(sales_person_name)
+        plain_lines.append("")
+    plain_lines.append(f"— Vita NPD · {proposal.code}")
+    plain_body = "\n".join(plain_lines)
+
     final_subject = (subject or "").strip() or (
         f"Your proposal from Vita NPD — {proposal.code}"
     )
+
+    # ``Reply-To`` points at the sales person, not at the
+    # ``no-reply`` from-address. Two reasons:
+    #   1. Corporate spam filters flag ``no-reply`` senders without
+    #      a reachable Reply-To header as low-trust.
+    #   2. The customer should be able to reply to the email and
+    #      reach a human, not the void. The from-address stays
+    #      ``DEFAULT_FROM_EMAIL`` because SPF/DKIM are aligned on
+    #      that domain (signing with the sales person's personal
+    #      address would break DMARC).
+    reply_to: list[str] = []
+    if sales_person is not None:
+        sales_email = (getattr(sales_person, "email", "") or "").strip()
+        if sales_email:
+            reply_to = [
+                f"{sales_person_name} <{sales_email}>"
+                if sales_person_name
+                else sales_email
+            ]
+
     message = EmailMultiAlternatives(
         subject=final_subject,
-        body=body_text or "",
+        body=plain_body,
         from_email=from_email,
         to=[recipient_clean],
         cc=cc_clean or None,
         bcc=bcc_clean or None,
+        reply_to=reply_to or None,
+        headers={
+            # ``X-Auto-Response-Suppress`` tells exchange servers not
+            # to bounce auto-replies back; the proposal email is
+            # transactional and an OOO bounce is noise.
+            "X-Auto-Response-Suppress": "All",
+            # ``X-Entity-Ref-ID`` is read by Gmail to thread / group
+            # emails about the same proposal. Pins related messages
+            # (test send, real send) into one conversation so the
+            # customer's inbox doesn't show two unrelated rows.
+            "X-Entity-Ref-ID": str(proposal.id),
+        },
     )
     message.attach_alternative(body_html, "text/html")
 

@@ -495,9 +495,29 @@ class Proposal(models.Model):
 
     @property
     def subtotal(self):
-        """``unit_price × quantity`` — returns ``None`` when either
-        value is missing so the caller can render ``TBC``."""
+        """Sum of line subtotals when the proposal has any lines —
+        keeps every total reader (kiosk header, list-row badge, API
+        serializers) in lock-step with what the rendered document
+        actually prints. Falls back to the legacy single-line
+        ``unit_price × quantity`` envelope only when the proposal
+        has no lines (e.g. partially-migrated rows from before the
+        multi-product refactor). Returns ``None`` when no number can
+        be computed so callers render ``TBC`` instead of a zero."""
 
+        # ``self.lines`` may not be prefetched; ``.all()`` triggers a
+        # single small query. ``ProposalLine.subtotal`` is the same
+        # ``unit_price × quantity`` math wrapped per-line.
+        lines_total = None
+        if self.pk is not None:
+            for line in self.lines.all():
+                line_sub = line.subtotal
+                if line_sub is None:
+                    continue
+                lines_total = (
+                    line_sub if lines_total is None else lines_total + line_sub
+                )
+        if lines_total is not None:
+            return lines_total
         if self.unit_price is None or self.quantity is None:
             return None
         return self.unit_price * self.quantity

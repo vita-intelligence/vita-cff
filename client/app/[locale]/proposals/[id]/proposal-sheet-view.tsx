@@ -598,36 +598,11 @@ function EditProposalPanel({
     //: proposal ↔ one sheet at the DB layer, so swapping the value
     //: here implicitly detaches any previously-linked sheet.
     specification_sheet_id: proposal.specification_sheet_id ?? "",
-    quantity: String(proposal.quantity),
-    unit_cost: proposal.material_cost_per_pack ?? "",
-    // Store the margin in the form state (not the unit_price). When
-    // the proposal arrived with a non-zero margin we use that;
-    // otherwise we back-compute the implied margin from the stored
-    // cost + price pair so an existing proposal's current price
-    // round-trips through the new UI without reading as "0%".
-    margin:
-      proposal.margin_percent ??
-      _deriveMargin(
-        proposal.material_cost_per_pack,
-        proposal.unit_price,
-      ),
     freight_amount: proposal.freight_amount ?? "",
     currency: proposal.currency,
     valid_until: proposal.valid_until ?? "",
     cover_notes: proposal.cover_notes,
   }));
-
-  //: Live-computed unit price from cost + margin. Gross-margin
-  //: semantics: ``price = cost / (1 − margin/100)``. Read-only in
-  //: the UI — the backend still stores unit_price for template
-  //: rendering, but the scientist only types cost + margin.
-  const derivedUnitPrice = useMemo(() => {
-    const cost = Number.parseFloat(form.unit_cost);
-    const pct = Number.parseFloat(form.margin);
-    if (!Number.isFinite(cost) || cost <= 0) return null;
-    if (!Number.isFinite(pct) || pct < 0 || pct >= 100) return null;
-    return cost / (1 - pct / 100);
-  }, [form.unit_cost, form.margin]);
 
   const bind =
     (key: keyof typeof form) =>
@@ -660,13 +635,6 @@ function EditProposalPanel({
       // ``specification_sheet_not_in_org``).
       specification_sheet_id: form.specification_sheet_id || null,
       currency: form.currency || "GBP",
-      quantity: Math.max(1, Number.parseInt(form.quantity, 10) || 1),
-      unit_price:
-        derivedUnitPrice !== null
-          ? derivedUnitPrice.toFixed(4)
-          : null,
-      material_cost_per_pack: form.unit_cost || null,
-      margin_percent: form.margin || null,
       freight_amount: form.freight_amount || null,
       valid_until: form.valid_until || null,
       cover_notes: form.cover_notes,
@@ -821,12 +789,29 @@ function EditProposalPanel({
         <Field label={tProposals("edit.specification_sheet")}>
           <select
             value={form.specification_sheet_id}
-            onChange={(e) =>
-              setForm((prev) => ({
-                ...prev,
-                specification_sheet_id: e.target.value,
-              }))
-            }
+            onChange={(e) => {
+              const nextId = e.target.value;
+              setForm((prev) => {
+                const next = {
+                  ...prev,
+                  specification_sheet_id: nextId,
+                };
+                if (!nextId) return next;
+                // Currency on the spec is the source of truth for
+                // the proposal currency unless the proposal is
+                // already on a non-GBP rate (don't silently flip
+                // EUR → GBP). Cost / margin no longer live on this
+                // panel — they're owned per-line in the lines
+                // table, so we don't seed them here.
+                const picked = specSheets.find((s) => s.id === nextId);
+                if (picked?.currency &&
+                  (next.currency === "" || next.currency === "GBP")
+                ) {
+                  next.currency = picked.currency.toUpperCase();
+                }
+                return next;
+              });
+            }}
             className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           >
             <option value="">
@@ -880,40 +865,12 @@ function EditProposalPanel({
             }
           </select>
         </Field>
-        <Field label={tProposals("edit.quantity")}>
-          <input
-            type="number"
-            min={1}
-            value={form.quantity}
-            onChange={bind("quantity")}
-            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </Field>
         <Field label={tProposals("edit.currency")}>
           <input
             value={form.currency}
             onChange={bind("currency")}
             maxLength={3}
             className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm uppercase text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </Field>
-        <Field label={tProposals("edit.unit_cost")}>
-          <input
-            type="number"
-            step="0.0001"
-            value={form.unit_cost}
-            onChange={bind("unit_cost")}
-            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </Field>
-        <Field label={tProposals("edit.margin")}>
-          <input
-            type="number"
-            step="0.1"
-            value={form.margin}
-            onChange={bind("margin")}
-            placeholder="30"
-            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           />
         </Field>
         <Field label={tProposals("edit.freight_amount")}>
@@ -933,20 +890,6 @@ function EditProposalPanel({
             className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           />
         </Field>
-      </div>
-
-      <div
-        className={`mt-4 rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset ${
-          derivedUnitPrice === null
-            ? "bg-ink-50 text-ink-500 ring-ink-200"
-            : "bg-success/10 text-success ring-success/30"
-        }`}
-      >
-        {derivedUnitPrice === null
-          ? tProposals("create.price_placeholder")
-          : tProposals("create.price_derived", {
-              price: derivedUnitPrice.toFixed(2),
-            })}
       </div>
 
       <label className="mt-4 flex flex-col gap-1.5">

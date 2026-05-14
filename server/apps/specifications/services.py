@@ -342,8 +342,18 @@ def update_sheet(
         "client_name",
         "client_email",
         "client_company",
+        # Commercial pricing trio + unit-of-quote. ``unit_cost`` and
+        # ``margin_percent`` derive ``final_price`` via
+        # :func:`set_spec_pricing`; the existing ``update_sheet`` path
+        # is preserved for direct edits, but a pricing-lock guard
+        # below refuses these fields once the spec hits
+        # ``approved`` (the director signed the snapshot — including
+        # the price).
+        "unit_cost",
         "margin_percent",
         "final_price",
+        "quantity",
+        "currency",
         "cover_notes",
         "total_weight_label",
         # Extra packaging-spec strings from the reference workbook —
@@ -362,6 +372,21 @@ def update_sheet(
         # triggering a lifecycle transition.
         "document_kind",
     }
+    # Pricing fields freeze with the director signature. Refuse the
+    # write *before* the snapshot diff so a stray patch from a
+    # legacy client doesn't silently overwrite the signed price.
+    pricing_keys = {
+        "unit_cost",
+        "margin_percent",
+        "final_price",
+        "quantity",
+        "currency",
+    }
+    pricing_in_payload = any(
+        key in changes and changes[key] is not None for key in pricing_keys
+    )
+    if pricing_in_payload and sheet.status in _PRICING_LOCKED_STATUSES:
+        raise SpecificationPricingLocked()
     new_kind = changes.get("document_kind")
     if new_kind is not None and new_kind not in SpecificationDocumentKind.values:
         raise InvalidSpecificationDocumentKind()
@@ -400,6 +425,133 @@ def update_sheet(
         organization=sheet.organization,
         actor=actor,
         action="spec_sheet.update",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
+    return sheet
+
+
+class SpecificationPricingLocked(Exception):
+    """Raised when ``set_spec_pricing`` is called on a sheet that has
+    already been director-approved (or any later status). Pricing is
+    part of the snapshot the director signs, so editing it after the
+    signature would invalidate the audit trail."""
+
+    code = "specification_pricing_locked"
+
+
+#: Statuses that freeze the spec's pricing. Mirrors the snapshot
+#: lock — once a director has signed off, the per-unit cost,
+#: margin, and price are part of what they attested to.
+_PRICING_LOCKED_STATUSES: frozenset = frozenset(
+    {
+        SpecificationStatus.APPROVED,
+        SpecificationStatus.SENT,
+        SpecificationStatus.ACCEPTED,
+    }
+)
+
+
+@transaction.atomic
+def set_spec_pricing(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+    unit_cost: Decimal | str | None = None,
+    margin_percent: Decimal | str | None = None,
+    final_price: Decimal | str | None = None,
+    quantity: int | None = None,
+    currency: str | None = None,
+    allow_locked: bool = False,
+) -> SpecificationSheet:
+    """Persist commercial pricing on a spec sheet.
+
+    Mirrors the proposal modal's math exactly: when ``unit_cost`` and
+    ``margin_percent`` are provided and ``final_price`` is omitted,
+    the per-unit price is derived as ``cost / (1 - margin/100)`` via
+    :func:`apps.proposals.services.suggest_unit_price`. An explicit
+    ``final_price`` overrides the derivation, useful when the team
+    negotiates a custom rate.
+
+    All inputs are optional — the caller patches whichever fields it
+    has. ``None`` means "leave the existing value alone" rather than
+    "set to NULL", matching the partial-PATCH semantics of the
+    serializer that wraps this call.
+
+    Locks once the sheet hits an approved-or-later status. The
+    ``allow_locked`` escape hatch is the only way past the gate;
+    callers use it from the director-approval flow so the price can
+    be edited *at the moment of signing* (one atomic transaction
+    sets both the price and the signature, after which the lock
+    engages).
+    """
+
+    from apps.proposals.services import suggest_unit_price
+
+    if not allow_locked and sheet.status in _PRICING_LOCKED_STATUSES:
+        raise SpecificationPricingLocked()
+
+    before = snapshot(sheet)
+    dirty: list[str] = []
+
+    def _coerce_decimal(value: Any) -> Decimal | None:
+        """Accept Decimal / str / numeric input; raise on garbage so
+        a malformed payload doesn't write zeros to the DB."""
+
+        if value is None:
+            return None
+        if isinstance(value, Decimal):
+            return value
+        try:
+            return Decimal(str(value).strip())
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"invalid pricing value: {value!r}") from exc
+
+    if unit_cost is not None:
+        sheet.unit_cost = _coerce_decimal(unit_cost)
+        dirty.append("unit_cost")
+    if margin_percent is not None:
+        sheet.margin_percent = _coerce_decimal(margin_percent)
+        dirty.append("margin_percent")
+    if final_price is not None:
+        sheet.final_price = _coerce_decimal(final_price)
+        dirty.append("final_price")
+    elif (
+        unit_cost is not None
+        and margin_percent is not None
+        and sheet.unit_cost is not None
+        and sheet.margin_percent is not None
+    ):
+        # Cost + margin without an explicit price → derive. Skipped
+        # when one of the two is missing so a single-field patch
+        # doesn't overwrite a previously hand-typed price with a
+        # half-derived number.
+        sheet.final_price = suggest_unit_price(
+            sheet.unit_cost, sheet.margin_percent
+        )
+        if "final_price" not in dirty:
+            dirty.append("final_price")
+    if quantity is not None:
+        sheet.quantity = max(1, int(quantity))
+        dirty.append("quantity")
+    if currency is not None:
+        cleaned = (currency or "").strip().upper()
+        if cleaned:
+            sheet.currency = cleaned[:3]
+            dirty.append("currency")
+
+    if not dirty:
+        return sheet
+
+    sheet.updated_by = actor
+    dirty.append("updated_by")
+    dirty.append("updated_at")
+    sheet.save(update_fields=dirty)
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.set_pricing",
         target=sheet,
         before=before,
         after=snapshot(sheet),
@@ -580,6 +732,7 @@ def transition_status(
     next_status: str,
     notes: str = "",
     signature_image: str | None = None,
+    pricing: dict[str, Any] | None = None,
 ) -> SpecificationSheet:
     """Move the sheet one state forward and stamp an audit row.
 
@@ -640,6 +793,27 @@ def transition_status(
             normalised_image = validate_signature_image(signature_image)
         except SignatureImageInvalid as exc:
             raise SignatureRequired() from exc
+
+    # If the caller bundled pricing into the approval payload, apply
+    # it *before* the status flip so the values land outside the
+    # ``_PRICING_LOCKED_STATUSES`` gate (the lock engages the moment
+    # the sheet hits ``approved``). The ``allow_locked=True`` escape
+    # hatch isn't needed because we're still on the pre-approved
+    # status when this runs.
+    if (
+        pricing
+        and next_status == SpecificationStatus.APPROVED
+        and any(value is not None for value in pricing.values())
+    ):
+        set_spec_pricing(
+            sheet=sheet,
+            actor=actor,
+            unit_cost=pricing.get("unit_cost"),
+            margin_percent=pricing.get("margin_percent"),
+            final_price=pricing.get("final_price"),
+            quantity=pricing.get("quantity"),
+            currency=pricing.get("currency"),
+        )
 
     sheet.status = next_status
     sheet.updated_by = actor

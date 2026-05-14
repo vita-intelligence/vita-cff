@@ -34,6 +34,7 @@ from apps.specifications.services import (
     PackagingItemNotAllowed,
     PublicLinkNotEnabled,
     SpecificationCodeConflict,
+    SpecificationPricingLocked,
     SpecificationNotFound,
     SpecificationReviewSlotTaken,
     create_sheet,
@@ -216,6 +217,11 @@ class SpecificationDetailView(APIView):
                 {"code": ["specification_code_conflict"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except SpecificationPricingLocked:
+            return Response(
+                {"detail": ["specification_pricing_locked"]},
+                status=status.HTTP_409_CONFLICT,
+            )
         except InvalidSpecificationDocumentKind:
             return Response(
                 {"document_kind": ["invalid_specification_document_kind"]},
@@ -273,15 +279,27 @@ class SpecificationStatusView(APIView):
             raise NotFound() from exc
         serializer = SpecificationStatusSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        # Pluck the optional pricing block out of the payload. The
+        # service only consumes it on the ``in_review → approved``
+        # edge; other edges ignore it. We pass the full dict
+        # unconditionally because the service's ``any(...)`` check
+        # short-circuits a no-op when every field is null.
+        pricing_payload = {
+            "unit_cost": data.get("unit_cost"),
+            "margin_percent": data.get("margin_percent"),
+            "final_price": data.get("final_price"),
+            "quantity": data.get("quantity"),
+            "currency": data.get("currency") or None,
+        }
         try:
             updated = transition_status(
                 sheet=sheet,
                 actor=request.user,
-                next_status=serializer.validated_data["status"],
-                notes=serializer.validated_data.get("notes", ""),
-                signature_image=serializer.validated_data.get(
-                    "signature_image"
-                ) or None,
+                next_status=data["status"],
+                notes=data.get("notes", ""),
+                signature_image=data.get("signature_image") or None,
+                pricing=pricing_payload,
             )
         except InvalidStatusTransition:
             return Response(

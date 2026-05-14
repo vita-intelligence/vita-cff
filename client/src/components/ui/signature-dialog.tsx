@@ -31,6 +31,16 @@ interface Props {
   readonly busy?: boolean;
   readonly errorMessage?: string | null;
   readonly padLabel?: string;
+  /** Optional pre-pad content. Used by the spec sheet's
+   *  director-approval flow to surface a pricing form above the
+   *  signature so the director can set both in one transaction.
+   *  When ``null`` / undefined, only the pad + subtitle render. */
+  readonly extraContent?: React.ReactNode;
+  /** Optional external "can confirm" gate. When provided AND
+   *  ``false``, the Confirm button stays disabled even after the
+   *  user has drawn a signature — used to require pricing inputs
+   *  to be filled before allowing approval. */
+  readonly canConfirm?: boolean;
   readonly onConfirm: (dataUrl: string) => Promise<void> | void;
 }
 
@@ -45,6 +55,8 @@ export function SignatureDialog({
   busy = false,
   errorMessage = null,
   padLabel,
+  extraContent,
+  canConfirm = true,
   onConfirm,
 }: Props) {
   const padRef = useRef<SignaturePadHandle | null>(null);
@@ -78,6 +90,7 @@ export function SignatureDialog({
               {subtitle ? (
                 <p className="text-sm text-ink-500">{subtitle}</p>
               ) : null}
+              {extraContent}
               {isOpen ? (
                 <SignaturePad
                   ref={padRef}
@@ -112,7 +125,7 @@ export function SignatureDialog({
                 size="md"
                 className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600 disabled:opacity-40"
                 onClick={handleConfirm}
-                isDisabled={busy || !dataUrl}
+                isDisabled={busy || !dataUrl || !canConfirm}
               >
                 {confirmLabel}
               </Button>

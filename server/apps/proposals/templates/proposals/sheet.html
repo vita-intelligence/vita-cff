@@ -262,7 +262,7 @@
       <div>Signature:</div>
       <img src="{{ proposal.customer_signature_image }}" alt="Customer signature" style="max-width: 220px; max-height: 70px; display: block; margin-top: 4px;" />
       <div class="muted small" style="margin-top: 4px;">
-        Signed by {{ proposal.customer_name }}{% if proposal.customer_company %} ({{ proposal.customer_company }}){% endif %}
+        Signed by {{ proposal.customer_signer_name|default:proposal.customer_name }}{% if proposal.customer_company %} ({{ proposal.customer_company }}){% endif %}
       </div>
     </div>
   {% else %}

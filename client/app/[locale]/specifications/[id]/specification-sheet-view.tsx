@@ -152,6 +152,54 @@ export function SpecificationSheetView({
     useState<SpecificationStatus | null>(null);
   const [signatureError, setSignatureError] = useState<string | null>(null);
 
+  // Pricing inputs the director fills in (or confirms) at approval
+  // time. Seeded from the sheet whenever the approval modal opens so
+  // a partially-filled price isn't lost between sessions. The form
+  // is mounted inside the SignatureDialog via the ``extraContent``
+  // slot — director sets pricing + signs in one click.
+  const [approvalUnitCost, setApprovalUnitCost] = useState<string>("");
+  const [approvalMargin, setApprovalMargin] = useState<string>("");
+  const [approvalCurrency, setApprovalCurrency] = useState<string>("GBP");
+  useEffect(() => {
+    if (signaturePending !== "approved") return;
+    // Re-seed from the sheet each time the dialog opens for
+    // approval — covers "director rejected the modal, then
+    // re-opened it" so they see the latest server state.
+    setApprovalUnitCost(
+      sheet.unit_cost === null || sheet.unit_cost === undefined
+        ? ""
+        : String(sheet.unit_cost),
+    );
+    setApprovalMargin(
+      sheet.margin_percent === null || sheet.margin_percent === undefined
+        ? ""
+        : String(sheet.margin_percent),
+    );
+    setApprovalCurrency(sheet.currency || "GBP");
+  }, [
+    signaturePending,
+    sheet.unit_cost,
+    sheet.margin_percent,
+    sheet.currency,
+  ]);
+
+  // Cost + Margin only — the customer price is derived, never
+  // typed. Same formula the proposal modal uses
+  // (``price = cost / (1 - margin/100)``); a separate price input
+  // would just drift from the derivation, so we don't expose one.
+  const approvalPricingValid = (() => {
+    if (signaturePending !== "approved") return true;
+    const cost = Number.parseFloat(approvalUnitCost);
+    const margin = Number.parseFloat(approvalMargin);
+    return (
+      Number.isFinite(cost) &&
+      cost > 0 &&
+      Number.isFinite(margin) &&
+      margin >= 0 &&
+      margin < 100
+    );
+  })();
+
   // Auto-open the director-approve dialog when arriving from the
   // approvals inbox (``?action=approve``). Guarded on status so a
   // stale link can't dispatch an illegal transition.
@@ -193,10 +241,34 @@ export function SpecificationSheetView({
     if (!signaturePending) return;
     setSignatureError(null);
     try {
-      await transitionMutation.mutateAsync({
+      // Bundle the pricing block into the transition payload when
+      // approving — backend applies it before the lock engages, so
+      // the director's signature lands on the spec WITH its price
+      // in one atomic transaction.
+      // Final price is intentionally omitted — the backend derives
+      // it from cost + margin so the displayed preview, the stored
+      // value, and the proposal autofill all share one source of
+      // truth. ``quantity`` is also omitted: it's a per-order figure
+      // the sales rep sets on the proposal, not part of the signed
+      // per-unit economics on the spec.
+      const payload: {
+        status: SpecificationStatus;
+        signature_image: string;
+        unit_cost?: string | null;
+        margin_percent?: string | null;
+        currency?: string;
+      } = {
         status: signaturePending,
         signature_image: dataUrl,
-      });
+      };
+      if (signaturePending === "approved") {
+        payload.unit_cost = approvalUnitCost.trim() || null;
+        payload.margin_percent = approvalMargin.trim() || null;
+        if (approvalCurrency.trim()) {
+          payload.currency = approvalCurrency.trim().toUpperCase();
+        }
+      }
+      await transitionMutation.mutateAsync(payload);
       setSignaturePending(null);
       router.refresh();
     } catch (err) {
@@ -241,6 +313,22 @@ export function SpecificationSheetView({
         cancelLabel={tSpecs("signature.cancel")}
         busy={transitionMutation.isPending}
         errorMessage={signatureError}
+        canConfirm={approvalPricingValid}
+        extraContent={
+          signaturePending === "approved" ? (
+            <ApprovalPricingForm
+              unitCost={approvalUnitCost}
+              margin={approvalMargin}
+              currency={approvalCurrency}
+              onUnitCostChange={setApprovalUnitCost}
+              onMarginChange={setApprovalMargin}
+              onCurrencyChange={setApprovalCurrency}
+              busy={transitionMutation.isPending}
+              valid={approvalPricingValid}
+              tSpecs={tSpecs}
+            />
+          ) : null
+        }
         onConfirm={handleSignatureConfirm}
       />
 
@@ -270,6 +358,23 @@ export function SpecificationSheetView({
             canWrite={canWrite}
             tSpecs={tSpecs}
           />
+          {/* Yellow "no price set" badge. Surfaces whenever the
+              commercial pricing trio is unset — sales picks this
+              spec in the proposal modal and gets an autofill;
+              without a price the proposal-line falls back to zero
+              and the team types it in by hand. We show the badge
+              regardless of status so a director glancing at the
+              page during the review knows the price still needs
+              attention before signing. */}
+          {sheet.final_price === null &&
+          sheet.unit_cost === null ? (
+            <span
+              title={tSpecs("detail.no_price_set_hint")}
+              className="inline-flex items-center gap-1.5 rounded-full bg-yellow-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-800 ring-1 ring-inset ring-yellow-300"
+            >
+              {tSpecs("detail.no_price_set")}
+            </span>
+          ) : null}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite
@@ -1689,5 +1794,156 @@ function DocumentKindToggle({
         );
       })}
     </div>
+  );
+}
+
+
+/**
+ * Pricing form rendered above the signature pad on the director-
+ * approval modal. Asks the director to set (or confirm) the
+ * commercial pricing as part of the same transaction that captures
+ * their signature — backend bundles both into one atomic write so
+ * the price freezes with the signature.
+ *
+ * Mirrors the proposal modal's cost + margin → derived price math
+ * so what the director enters here lines up exactly with what
+ * sales sees autofilled into proposal lines later.
+ */
+function ApprovalPricingForm({
+  unitCost,
+  margin,
+  currency,
+  onUnitCostChange,
+  onMarginChange,
+  onCurrencyChange,
+  busy,
+  valid,
+  tSpecs,
+}: {
+  unitCost: string;
+  margin: string;
+  currency: string;
+  onUnitCostChange: (v: string) => void;
+  onMarginChange: (v: string) => void;
+  onCurrencyChange: (v: string) => void;
+  busy: boolean;
+  valid: boolean;
+  tSpecs: ReturnType<typeof useTranslations<"specifications">>;
+}) {
+  // Live derived-price preview so the director sees exactly what
+  // the customer will be quoted before they sign. Same formula
+  // the spec edit modal uses: ``cost / (1 - margin/100)``.
+  const derivedHint = (() => {
+    const c = Number.parseFloat(unitCost);
+    const m = Number.parseFloat(margin);
+    if (
+      !Number.isFinite(c) ||
+      c <= 0 ||
+      !Number.isFinite(m) ||
+      m < 0 ||
+      m >= 100
+    ) {
+      return null;
+    }
+    return (c / (1 - m / 100)).toFixed(2);
+  })();
+
+  return (
+    <div className="flex flex-col gap-3 rounded-xl bg-amber-50 px-4 py-3 ring-1 ring-inset ring-amber-200">
+      <div className="flex flex-col gap-0.5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-amber-900">
+          {tSpecs("approval.pricing_title")}
+        </p>
+        <p className="text-[11px] text-amber-800">
+          {tSpecs("approval.pricing_subtitle")}
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <PricingField
+          label={tSpecs("approval.unit_cost")}
+          value={unitCost}
+          onChange={onUnitCostChange}
+          disabled={busy}
+          placeholder="0.00"
+          inputMode="decimal"
+        />
+        <PricingField
+          label={tSpecs("approval.margin")}
+          value={margin}
+          onChange={onMarginChange}
+          disabled={busy}
+          placeholder="30"
+          inputMode="decimal"
+        />
+        <PricingField
+          label={tSpecs("approval.currency")}
+          value={currency}
+          onChange={(v) => onCurrencyChange(v.toUpperCase().slice(0, 3))}
+          disabled={busy}
+          placeholder="GBP"
+        />
+      </div>
+
+      {/* Single source of truth for the customer price: derived from
+       *  cost + margin and never typed. Renders as a read-only chip
+       *  so the director sees the exact number that will land on the
+       *  signed snapshot before they pick up the pen. */}
+      <div className="flex items-baseline justify-between rounded-lg bg-amber-100 px-3 py-2 ring-1 ring-inset ring-amber-300">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+          {tSpecs("approval.customer_pays")}
+        </span>
+        <span className="text-base font-semibold text-amber-950">
+          {derivedHint
+            ? `${(currency || "GBP").toUpperCase()} ${derivedHint}`
+            : tSpecs("approval.customer_pays_placeholder")}
+        </span>
+      </div>
+
+      {!valid ? (
+        <p className="text-[11px] font-medium text-amber-900">
+          {tSpecs("approval.pricing_required")}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+
+function PricingField({
+  label,
+  value,
+  onChange,
+  disabled,
+  placeholder,
+  inputMode,
+  hint,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  disabled: boolean;
+  placeholder?: string;
+  inputMode?: "decimal" | "numeric" | "text";
+  hint?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+        {label}
+      </span>
+      <input
+        type="text"
+        inputMode={inputMode ?? "text"}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={disabled}
+        placeholder={placeholder}
+        className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-sm text-ink-1000 ring-1 ring-inset ring-amber-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:bg-ink-50"
+      />
+      {hint ? (
+        <span className="text-[10px] text-amber-800">{hint}</span>
+      ) : null}
+    </label>
   );
 }

@@ -162,6 +162,54 @@ class TestSendProposalToClient:
             )
         assert mailoutbox == []
 
+    def test_reply_to_points_at_sales_person(
+        self, settings, mailoutbox
+    ) -> None:
+        # Reply-To carries the sales person's address so the customer
+        # reaches a human if they hit Reply, even though the From
+        # header has to stay on the DMARC-aligned domain. Corporate
+        # spam filters score a missing Reply-To as low-trust, so we
+        # always populate it.
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        proposal = _approved_proposal()
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="alex@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+        assert len(mailoutbox) == 1
+        sent = mailoutbox[0]
+        sales_email = proposal.organization.created_by.email
+        # ``reply_to`` may be ``"Name <addr>"`` formatted; assert
+        # the bare address appears.
+        assert sent.reply_to, "Reply-To should be set"
+        assert any(sales_email in addr for addr in sent.reply_to)
+
+    def test_plain_text_body_includes_kiosk_url(
+        self, settings, mailoutbox
+    ) -> None:
+        # Plain-text fallback must carry the kiosk URL on its own
+        # line so corporate gateways that strip HTML (and Outlook
+        # policies that render plain-text only) still leak a usable
+        # link to the customer.
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        proposal = _approved_proposal()
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="alex@buyer.test",
+            subject="x",
+            body_text="Hi Alex,\n\nPlease review.",
+        )
+        plain = mailoutbox[0].body
+        assert "Hi Alex" in plain  # typed body preserved
+        assert f"/p/proposal/{proposal.public_token}" in plain
+        assert proposal.code in plain
+
     def test_default_subject_used_when_blank(
         self, settings, mailoutbox
     ) -> None:

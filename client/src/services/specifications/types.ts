@@ -41,8 +41,11 @@ export interface SpecificationSheetDto {
   readonly client_name: string;
   readonly client_email: string;
   readonly client_company: string;
+  readonly unit_cost: string | null;
   readonly margin_percent: string | null;
   readonly final_price: string | null;
+  readonly quantity: number;
+  readonly currency: string;
   readonly cover_notes: string;
   readonly total_weight_label: string;
   readonly unit_quantity: string;
@@ -230,8 +233,11 @@ export interface CreateSpecificationRequestDto {
   readonly client_name?: string;
   readonly client_email?: string;
   readonly client_company?: string;
+  readonly unit_cost?: string | null;
   readonly margin_percent?: string | null;
   readonly final_price?: string | null;
+  readonly quantity?: number;
+  readonly currency?: string;
   readonly cover_notes?: string;
   readonly total_weight_label?: string;
   readonly document_kind?: SpecificationDocumentKind;
@@ -274,6 +280,15 @@ export interface TransitionStatusRequestDto {
    *  sign-off (``sent → accepted``) goes through the kiosk endpoint
    *  instead. */
   readonly signature_image?: string;
+  /** Optional pricing block applied as part of the
+   *  ``in_review → approved`` transition. Backend writes the values
+   *  before the pricing lock engages so the director can set or
+   *  confirm the price in the same modal where they sign. */
+  readonly unit_cost?: string | null;
+  readonly margin_percent?: string | null;
+  readonly final_price?: string | null;
+  readonly quantity?: number;
+  readonly currency?: string;
 }
 
 

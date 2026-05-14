@@ -61,8 +61,9 @@ export function EditDetailsButton({
       client_email: sheet.client_email,
       client_company: sheet.client_company,
       cover_notes: sheet.cover_notes,
+      unit_cost: sheet.unit_cost,
       margin_percent: sheet.margin_percent,
-      final_price: sheet.final_price,
+      currency: sheet.currency,
       food_contact_status: sheet.food_contact_status,
       shelf_life: sheet.shelf_life,
       storage_conditions: sheet.storage_conditions,
@@ -76,8 +77,9 @@ export function EditDetailsButton({
     sheet.client_email,
     sheet.client_company,
     sheet.cover_notes,
+    sheet.unit_cost,
     sheet.margin_percent,
-    sheet.final_price,
+    sheet.currency,
     sheet.food_contact_status,
     sheet.shelf_life,
     sheet.storage_conditions,
@@ -174,15 +176,30 @@ export function EditDetailsButton({
                 </fieldset>
 
                 {/* Commercial numbers the customer sees on the sheet.
-                    Optional on a draft; required once the sheet is
-                    ``sent`` to a client and a price has been agreed.
-                    Scientists quote in the sheet's currency (stored
-                    on the org, not per-sheet) so we show the bare
-                    number without an attached symbol here. */}
+                    Cost + Margin only — the customer price is
+                    derived, never typed. Same formula the proposal
+                    modal uses, so what the scientist enters here
+                    lines up exactly with what sales sees when the
+                    spec is autofilled into a proposal line. */}
                 <fieldset className="grid grid-cols-1 gap-4 rounded-xl border border-ink-100 p-4 sm:grid-cols-2">
                   <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
                     {tSpecs("edit_details.group.commercial")}
                   </legend>
+                  <TextField
+                    label={tSpecs("edit_details.unit_cost")}
+                    value={
+                      form.unit_cost === null ||
+                      form.unit_cost === undefined
+                        ? ""
+                        : String(form.unit_cost)
+                    }
+                    onChange={(v) =>
+                      set("unit_cost", v === "" ? null : v)
+                    }
+                    placeholder="0.00"
+                    hint={tSpecs("edit_details.unit_cost_hint")}
+                    inputMode="decimal"
+                  />
                   <TextField
                     label={tSpecs("edit_details.margin_percent")}
                     value={
@@ -199,20 +216,46 @@ export function EditDetailsButton({
                     inputMode="decimal"
                   />
                   <TextField
-                    label={tSpecs("edit_details.final_price")}
-                    value={
-                      form.final_price === null ||
-                      form.final_price === undefined
-                        ? ""
-                        : String(form.final_price)
-                    }
+                    label={tSpecs("edit_details.currency")}
+                    value={form.currency ?? ""}
                     onChange={(v) =>
-                      set("final_price", v === "" ? null : v)
+                      set("currency", (v || "").toUpperCase().slice(0, 3))
                     }
-                    placeholder="0.00"
-                    hint={tSpecs("edit_details.final_price_hint")}
-                    inputMode="decimal"
+                    placeholder="GBP"
+                    hint={tSpecs("edit_details.currency_hint")}
                   />
+
+                  {/* Single source of truth for the customer-facing
+                   *  price — derived from cost + margin and shown
+                   *  read-only so it can't drift from the formula.
+                   *  Spans both columns on wide layouts so the chip
+                   *  reads like a final summary line, not just
+                   *  another input. */}
+                  <div className="sm:col-span-2 flex items-baseline justify-between rounded-lg bg-amber-50 px-3 py-2 ring-1 ring-inset ring-amber-200">
+                    <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+                      {tSpecs("edit_details.customer_pays")}
+                    </span>
+                    <span className="text-base font-semibold text-amber-950">
+                      {(() => {
+                        const c = Number(form.unit_cost);
+                        const m = Number(form.margin_percent);
+                        if (
+                          !Number.isFinite(c) ||
+                          c <= 0 ||
+                          !Number.isFinite(m) ||
+                          m < 0 ||
+                          m >= 100
+                        ) {
+                          return tSpecs(
+                            "edit_details.customer_pays_placeholder",
+                          );
+                        }
+                        const derived = (c / (1 - m / 100)).toFixed(2);
+                        const ccy = (form.currency || "GBP").toUpperCase();
+                        return `${ccy} ${derived}`;
+                      })()}
+                    </span>
+                  </div>
                 </fieldset>
 
                 {/* Client-negotiated product properties — shelf life,

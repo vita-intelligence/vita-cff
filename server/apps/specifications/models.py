@@ -423,6 +423,59 @@ class SpecificationSheet(models.Model):
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Commercial pricing attached to the spec — mirrors the trio the
+    # proposal modal has used since day one (``unit_cost`` +
+    # ``margin_percent`` → derived ``unit_price``) so the math the
+    # scientist sees here is byte-identical to what sales does later.
+    #
+    # ``margin_percent`` and ``final_price`` already existed on the
+    # model from earlier work but were never wired into a UI. We
+    # reuse them: ``margin_percent`` keeps its name, ``final_price``
+    # represents the per-unit price (semantically the proposal
+    # modal's ``unit_price``). The new fields below are ``unit_cost``,
+    # ``quantity``, and ``currency``.
+    #
+    # Every pricing field is nullable for backwards compat: every
+    # spec that existed before this migration carries ``None`` for
+    # the new columns and the UI shows a yellow "no price set"
+    # badge until the team fills it in.
+    #
+    # Pricing freezes once the sheet hits ``approved`` (the director
+    # signs the snapshot — including its price). The service layer
+    # enforces the lock; the model fields stay writable so a future
+    # migration that *needs* to backfill historical pricing isn't
+    # blocked at the DB layer.
+    unit_cost = models.DecimalField(
+        _("unit cost"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+        help_text=_(
+            "What the unit costs us to make. Combined with "
+            "``margin_percent`` to compute the customer unit price "
+            "(stored on ``final_price``)."
+        ),
+    )
+    quantity = models.PositiveIntegerField(
+        _("quantity"),
+        default=1,
+        help_text=_(
+            "Number of units in the order this price quotes. The "
+            "proposal modal seeds its own ``quantity`` from this "
+            "value when the spec is selected."
+        ),
+    )
+    currency = models.CharField(
+        _("currency"),
+        max_length=3,
+        default="GBP",
+        help_text=_(
+            "ISO-4217 currency code. Defaults to GBP; override per "
+            "spec when quoting in another currency."
+        ),
+    )
+
     class Meta:
         verbose_name = _("specification sheet")
         verbose_name_plural = _("specification sheets")

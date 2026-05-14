@@ -96,6 +96,8 @@
   "detail": {
     "back": "Back to specifications",
     "status_label": "Status",
+    "no_price_set": "No price set",
+    "no_price_set_hint": "Add a unit cost + margin (or a direct unit price) on Edit details so sales auto-fills it on the proposal.",
     "advance_to": "Advance to",
     "review_slot_taken_tooltip": "Sheet {code} of the same kind is already waiting for the director's approval. Approve or revert that one before sending this one for review.",
     "download_pdf": "Download PDF",
@@ -125,10 +127,14 @@
       "commercial": "Commercial terms",
       "product_spec": "Product specification"
     },
+    "unit_cost": "Unit cost",
+    "unit_cost_hint": "What one unit costs us to make. Combined with the margin to derive the customer-facing price.",
     "margin_percent": "Margin %",
-    "margin_percent_hint": "Target margin used to derive the quoted price. Leave blank if price is entered directly.",
-    "final_price": "Final price",
-    "final_price_hint": "Per-pack price printed on the sheet. Leave blank to hide the commercial row until agreed.",
+    "margin_percent_hint": "Target gross margin. Customer price = cost / (1 - margin/100).",
+    "customer_pays": "Customer pays",
+    "customer_pays_placeholder": "Enter cost and margin",
+    "currency": "Currency",
+    "currency_hint": "ISO code (GBP, EUR, USD). Defaults to GBP.",
     "code_hint": "Sheet reference printed in the header. Defaults to the project code when blank.",
     "client_company_hint": "Company name on the client's copy of the sheet.",
     "client_name_hint": "Primary contact person at the client.",
@@ -142,6 +148,16 @@
     "storage_conditions": "Storage conditions",
     "storage_conditions_hint": "Statement printed on the pack (e.g. \"Store in a cool dry place, below 25°C, protected from light\").",
     "cover_notes_hint": "Free-form paragraph printed above the signature block — use it for bespoke caveats or a cover letter."
+  },
+  "approval": {
+    "pricing_title": "Confirm pricing before signing",
+    "pricing_subtitle": "These figures are part of the snapshot you're approving. They'll flow into every proposal that bundles this spec and freeze once you sign.",
+    "unit_cost": "Unit cost",
+    "margin": "Margin %",
+    "currency": "Currency",
+    "customer_pays": "Customer pays",
+    "customer_pays_placeholder": "Enter cost and margin",
+    "pricing_required": "Enter cost and margin before you can sign."
   },
   "signature": {
     "prepared_by_title": "Prepared-by signature required",

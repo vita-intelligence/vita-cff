@@ -112,8 +112,11 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "client_name",
             "client_email",
             "client_company",
+            "unit_cost",
             "margin_percent",
             "final_price",
+            "quantity",
+            "currency",
             "cover_notes",
             "total_weight_label",
             "unit_quantity",
@@ -165,11 +168,20 @@ class SpecificationSheetCreateSerializer(serializers.Serializer):
     client_company = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default=""
     )
+    unit_cost = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
     margin_percent = serializers.DecimalField(
         max_digits=6, decimal_places=2, required=False, allow_null=True
     )
     final_price = serializers.DecimalField(
         max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
+    quantity = serializers.IntegerField(
+        required=False, min_value=1
+    )
+    currency = serializers.CharField(
+        max_length=3, required=False, allow_blank=True
     )
     cover_notes = serializers.CharField(
         required=False, allow_blank=True, default=""
@@ -195,11 +207,18 @@ class SpecificationSheetUpdateSerializer(serializers.Serializer):
     client_company = serializers.CharField(
         max_length=200, required=False, allow_blank=True
     )
+    unit_cost = serializers.DecimalField(
+        max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
     margin_percent = serializers.DecimalField(
         max_digits=6, decimal_places=2, required=False, allow_null=True
     )
     final_price = serializers.DecimalField(
         max_digits=12, decimal_places=4, required=False, allow_null=True
+    )
+    quantity = serializers.IntegerField(required=False, min_value=1)
+    currency = serializers.CharField(
+        max_length=3, required=False, allow_blank=True
     )
     cover_notes = serializers.CharField(required=False, allow_blank=True)
     total_weight_label = serializers.CharField(
@@ -265,6 +284,34 @@ class SpecificationStatusSerializer(serializers.Serializer):
         required=False,
         allow_blank=True,
         trim_whitespace=False,
+    )
+    # Optional pricing block — used by the director-approval flow so
+    # the price can be set or confirmed *as part of* the signing
+    # transaction. Once the status flips to ``approved`` the price
+    # freezes; bundling it into the transition payload means the
+    # director never has to "edit details, save, then sign" — one
+    # modal, one click. Ignored for any other transition.
+    unit_cost = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+    )
+    margin_percent = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+    )
+    final_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        required=False,
+        allow_null=True,
+    )
+    quantity = serializers.IntegerField(required=False, min_value=1)
+    currency = serializers.CharField(
+        max_length=3, required=False, allow_blank=True
     )
 
 
