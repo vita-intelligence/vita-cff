@@ -8,9 +8,11 @@
   <meta name="x-apple-disable-message-reformatting" />
   <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
   <title>{{ proposal.code }}</title>
-  {# Outlook (Windows) honours these MSO conditionals — gives every
-     cell a fixed line-height and disables Word's font scaling. The
-     non-Office mail clients ignore the block entirely. #}
+  {% comment %}
+  Outlook (Windows) honours these MSO conditionals — gives every
+  cell a fixed line-height and disables Word's font scaling. The
+  non-Office mail clients ignore the block entirely.
+  {% endcomment %}
   <!--[if mso]>
   <noscript>
     <xml>
@@ -38,11 +40,13 @@
   </style>
 </head>
 <body style="margin:0;padding:0;background-color:#f6f5f3;mso-line-height-rule:exactly;-webkit-font-smoothing:antialiased;" class="email-bg">
-  {# A hidden one-line preheader. Gmail / Outlook / Apple Mail render
-     this as the inbox preview snippet — first thing the customer
-     sees before they even open the email. Keep it under 100 chars. #}
+  {% comment %}
+  A hidden one-line preheader. Gmail / Outlook / Apple Mail render
+  this as the inbox preview snippet — first thing the customer
+  sees before they even open the email. Keep it under 100 chars.
+  {% endcomment %}
   <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f6f5f3;">
-    Your Vita NPD proposal {{ proposal.code }} is ready to review and sign.
+    Your Vita Manufacture proposal {{ proposal.code }} is ready to review.
   </div>
 
   <center style="width:100%;background-color:#f6f5f3;" class="email-bg">
@@ -53,11 +57,8 @@
             <tr>
               <td style="padding:32px 32px 8px 32px;">
                 <p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#8a857c;font-family:'Segoe UI',Arial,sans-serif;">
-                  Vita NPD &middot; {{ proposal.code }}
+                  Vita Manufacture &middot; {{ proposal.code }}
                 </p>
-                <h1 style="margin:8px 0 0 0;font-size:22px;font-weight:600;color:#1a1a1a;line-height:1.3;font-family:'Segoe UI',Arial,sans-serif;">
-                  Your proposal is ready to review
-                </h1>
               </td>
             </tr>
 
@@ -70,12 +71,14 @@
             {% if kiosk_url %}
             <tr>
               <td align="center" style="padding:28px 32px 8px 32px;">
-                {# Bulletproof button: a VML rounded-rect for Outlook
-                   desktop (Word rendering engine doesn't honour
-                   border-radius on anchors), wrapped around the same
-                   ``<a>`` so every other client falls through to the
-                   normal styled link. Two URLs in one declaration:
-                   the VML ``href=`` and the inner ``<a href=``. #}
+                {% comment %}
+                Bulletproof button: a VML rounded-rect for Outlook
+                desktop (Word rendering engine doesn't honour
+                border-radius on anchors), wrapped around the same
+                ``<a>`` so every other client falls through to the
+                normal styled link. Two URLs in one declaration:
+                the VML ``href=`` and the inner ``<a href=``.
+                {% endcomment %}
                 <!--[if mso]>
                 <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
                              href="{{ kiosk_url }}" style="height:48px;v-text-anchor:middle;width:200px;" arcsize="22%" stroke="f" fillcolor="#ff7a18">
@@ -108,7 +111,7 @@
             {% if sales_person_name %}
             <tr>
               <td style="padding:8px 32px 32px 32px;font-size:14px;color:#5a574f;border-top:1px solid #f0eee9;font-family:'Segoe UI',Arial,sans-serif;">
-                <p style="margin:16px 0 0 0;">Yours sincerely,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong></p>
+                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong></p>
               </td>
             </tr>
             {% endif %}
@@ -117,7 +120,7 @@
           <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;">
             <tr>
               <td align="center" style="padding:16px 16px 0 16px;font-size:11px;color:#8a857c;line-height:1.5;font-family:'Segoe UI',Arial,sans-serif;">
-                Vita NPD &middot; sent because you have a live proposal with us.<br/>
+                Vita Manufacture &middot; sent because you have a live proposal with us.<br/>
                 Reply to this email to reach the team directly.
               </td>
             </tr>
