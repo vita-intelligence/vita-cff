@@ -15,6 +15,7 @@ import { rootQueryKey } from "@/lib/query";
 
 import {
   addProposalLine,
+  completeProposalRequiredFields,
   createProposal,
   deleteProposal,
   deleteProposalLine,
@@ -236,6 +237,33 @@ export function useUpdateProposal(
   const queryClient = useQueryClient();
   return useMutation<ProposalDto, ApiError, UpdateProposalRequestDto>({
     mutationFn: (payload) => updateProposal(orgId, proposalId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        proposalsQueryKeys.detail(orgId, proposalId),
+        updated,
+      );
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "proposals", orgId],
+      });
+    },
+  });
+}
+
+
+/**
+ * Fill missing required-for-sent fields on an already-approved
+ * proposal. Backend whitelists the keys and verifies each is
+ * actually flagged missing, so this can't be used as a back-door to
+ * mutate content the director already approved.
+ */
+export function useCompleteProposalRequiredFields(
+  orgId: string,
+  proposalId: string,
+): UseMutationResult<ProposalDto, ApiError, Record<string, string>> {
+  const queryClient = useQueryClient();
+  return useMutation<ProposalDto, ApiError, Record<string, string>>({
+    mutationFn: (patch) =>
+      completeProposalRequiredFields(orgId, proposalId, patch),
     onSuccess: (updated) => {
       queryClient.setQueryData(
         proposalsQueryKeys.detail(orgId, proposalId),

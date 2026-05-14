@@ -1132,8 +1132,17 @@ _REQUIRED_FOR_TRANSITION: dict[tuple[str, str], tuple[str, ...]] = {
         "lines",
     ),
     (ProposalStatus.IN_REVIEW.value, ProposalStatus.APPROVED.value): (
+        # Mirrors the ``approved → sent`` set so a director cannot
+        # sign off on a proposal that's missing content the customer
+        # would have seen on the rendered PDF. Catching it here means
+        # the only way to reach ``approved`` is with a document that's
+        # already complete — the alternative (catching it at send)
+        # leaves the director's signature attached to an incomplete
+        # proposal that then needs post-hoc edits.
         "customer_name",
         "customer_email",
+        "reference",
+        "invoice_address",
         "sales_person",
         "lines",
     ),
@@ -1197,6 +1206,96 @@ def _missing_required_fields(
         if value is None or (isinstance(value, str) and not value.strip()):
             missing.append(key)
     return missing
+
+
+#: Free-text fields that may be filled on a locked (``approved``)
+#: proposal *only* to satisfy the required-for-sent gate. Excludes
+#: ``sales_person`` (a FK, not a text field) and ``lines`` (a logical
+#: state, not a field). Both of those are now caught at the
+#: ``in_review → approved`` gate too, so the only realistic miss on
+#: an approved proposal is text metadata the director left blank.
+_COMPLETABLE_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    {
+        "customer_name",
+        "customer_email",
+        "reference",
+        "invoice_address",
+    }
+)
+
+
+class ProposalNotMissingRequiredField(Exception):
+    """Raised when the caller asks to fill a field on an approved
+    proposal that wasn't actually missing — guards against silent
+    post-approval edits of fields the director did sign off on."""
+
+    code = "proposal_not_missing_required_field"
+
+
+@transaction.atomic
+def complete_required_fields(
+    *, proposal: Proposal, actor: Any, patch: dict[str, str]
+) -> Proposal:
+    """Fill required-for-send fields on an already-approved proposal.
+
+    Narrow escape hatch for the case where a director approved a
+    proposal before the ``in_review → approved`` gate was tightened to
+    catch the full required-for-sent set. The mainline rule still
+    stands: a locked proposal is read-only. This path only accepts
+    keys in :data:`_COMPLETABLE_REQUIRED_FIELDS` that are currently
+    reported missing by :func:`_missing_required_fields`, so it cannot
+    be used to silently rewrite content the director did review.
+
+    Raises:
+        :class:`ProposalNotMutable` — proposal is not in ``approved``
+            (drafts/in-review use ``update_proposal``; sent/accepted/
+            rejected are terminal).
+        :class:`ProposalNotMissingRequiredField` — caller tried to set
+            a field that wasn't on the missing list.
+    """
+
+    if proposal.status != ProposalStatus.APPROVED.value:
+        raise ProposalNotMutable()
+
+    missing = set(
+        _missing_required_fields(
+            proposal,
+            ProposalStatus.APPROVED.value,
+            ProposalStatus.SENT.value,
+        )
+    )
+
+    sanitized: dict[str, str] = {}
+    for key, raw in patch.items():
+        if key not in _COMPLETABLE_REQUIRED_FIELDS:
+            raise ProposalNotMissingRequiredField()
+        if key not in missing:
+            raise ProposalNotMissingRequiredField()
+        value = "" if raw is None else str(raw).strip()
+        if not value:
+            # Empty/whitespace is the state we're trying to fix —
+            # rejecting it here means the audit row only records
+            # actual transitions from blank → filled.
+            raise ProposalNotMissingRequiredField()
+        sanitized[key] = value
+
+    if not sanitized:
+        return proposal
+
+    before = snapshot(proposal)
+    for key, value in sanitized.items():
+        setattr(proposal, key, value)
+    proposal.updated_by = actor
+    proposal.save()
+    record_audit(
+        organization=proposal.organization,
+        actor=actor,
+        action="proposal.complete_required_fields",
+        target=proposal,
+        before=before,
+        after=snapshot(proposal),
+    )
+    return proposal
 
 
 @transaction.atomic

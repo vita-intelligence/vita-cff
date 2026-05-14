@@ -251,6 +251,14 @@
       "reference": "Reference",
       "sales_person": "Assigned sales person on the project",
       "lines": "At least one priced product"
+    },
+    "complete": {
+      "title": "Complete required details",
+      "body": "This proposal needs a few more details before it can be sent. Fill them in below — the director's approval signature stays in place.",
+      "save": "Save and continue",
+      "saving": "Saving…",
+      "non_fillable_title": "Also needs attention (edit the proposal directly):",
+      "error_generic": "Could not save the details. Please try again."
     }
   },
   "contract": {

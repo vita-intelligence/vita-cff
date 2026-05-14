@@ -44,6 +44,12 @@ interface Props {
   readonly isOpen: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly onSent: () => void;
+  /** Bubble missing-required-fields up to the parent so it can pop
+   *  the inline-fill modal. Without this hook the modal would just
+   *  render the codified error in its own banner, which is the wrong
+   *  affordance — sales needs to *fix* the blanks, not read about
+   *  them. */
+  readonly onMissingRequiredFields?: (missing: readonly string[]) => void;
 }
 
 
@@ -53,6 +59,7 @@ export function SendToClientModal({
   isOpen,
   onOpenChange,
   onSent,
+  onMissingRequiredFields,
 }: Props) {
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
@@ -125,6 +132,21 @@ export function SendToClientModal({
       // losing their edits. Surface the codified error so the i18n
       // layer renders the right copy.
       if (err instanceof ApiError) {
+        const missingRaw = (err.fieldErrors as Record<string, unknown>)
+          .missing_required_fields;
+        if (
+          Array.isArray(missingRaw) &&
+          missingRaw.length > 0 &&
+          onMissingRequiredFields
+        ) {
+          // Hand off to the parent's inline-fill modal — the compose
+          // draft is throwaway, sales will re-open this modal once
+          // the blanks are filled and the recipient/subject/body
+          // re-seed from the freshly-updated proposal.
+          onMissingRequiredFields(missingRaw.map(String));
+          onOpenChange(false);
+          return;
+        }
         setError(extractApiErrorMessage(err, tErrors));
       } else {
         setError(tProposals("detail.send_to_client.error_generic"));

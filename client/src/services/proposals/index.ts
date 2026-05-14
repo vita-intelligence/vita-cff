@@ -1,6 +1,7 @@
 export { proposalsEndpoints } from "./endpoints";
 export {
   addProposalLine,
+  completeProposalRequiredFields,
   createProposal,
   deleteProposal,
   deleteProposalLine,
@@ -19,6 +20,7 @@ export {
 export {
   proposalsQueryKeys,
   useAddProposalLine,
+  useCompleteProposalRequiredFields,
   useCostPreview,
   useCreateProposal,
   useDeleteProposal,

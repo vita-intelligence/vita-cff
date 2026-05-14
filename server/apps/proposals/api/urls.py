@@ -4,6 +4,7 @@ from django.urls import path
 
 from apps.proposals.api.views import (
     ProposalAuditView,
+    ProposalCompleteRequiredFieldsView,
     ProposalCostPreviewView,
     ProposalDetailView,
     ProposalLineDetailView,
@@ -42,6 +43,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/status/",
         ProposalStatusView.as_view(),
         name="proposal-status",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/complete-required-fields/",
+        ProposalCompleteRequiredFieldsView.as_view(),
+        name="proposal-complete-required-fields",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/send-to-client/",

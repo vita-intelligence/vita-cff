@@ -107,6 +107,26 @@ export async function transitionProposalStatus(
   return data;
 }
 
+/**
+ * Fill required-for-sent fields on a proposal that's already in
+ * ``approved``. The backend whitelists the keys and only accepts
+ * values for fields it currently reports as missing, so the
+ * director's signature stays attached to a proposal whose blank
+ * slots are being filled — not one whose reviewed content is
+ * being rewritten.
+ */
+export async function completeProposalRequiredFields(
+  orgId: string,
+  proposalId: string,
+  patch: Record<string, string>,
+): Promise<ProposalDto> {
+  const { data } = await apiClient.post<ProposalDto>(
+    proposalsEndpoints.completeRequiredFields(orgId, proposalId),
+    { patch },
+  );
+  return data;
+}
+
 export async function fetchProposalTransitions(
   orgId: string,
   proposalId: string,

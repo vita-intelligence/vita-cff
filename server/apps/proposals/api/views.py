@@ -315,6 +315,7 @@ from apps.proposals.services import (
     ProposalCodeConflict,
     ProposalLineNotFound,
     ProposalNotFound,
+    ProposalNotMissingRequiredField,
     ProposalNotMutable,
     ProposalPublicLinkNotEnabled,
     ProposalSalesPersonNotMember,
@@ -324,6 +325,7 @@ from apps.proposals.services import (
     add_proposal_line,
     capture_customer_signature_on_attached_spec,
     capture_customer_signature_on_proposal,
+    complete_required_fields,
     compute_material_cost_per_pack,
     create_proposal,
     delete_proposal,
@@ -701,6 +703,64 @@ class ProposalStatusView(APIView):
         except SignatureRequired:
             return Response(
                 {"signature_image": ["signature_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(ProposalReadSerializer(updated).data)
+
+
+class ProposalCompleteRequiredFieldsView(APIView):
+    """``POST`` ``/.../proposals/<id>/complete-required-fields/``.
+
+    Narrow escape hatch for the case where a proposal was approved
+    before the ``in_review → approved`` gate caught the full
+    required-for-sent set. Accepts a flat patch of free-text fields,
+    enforces that every key is both whitelisted and currently
+    flagged as missing, then writes the values and audits the change.
+    The director's signature is left in place: the values being
+    written are the ones the rendered PDF had as blanks at sign time,
+    so filling them in does not silently rewrite content the
+    director did approve.
+
+    For every other status (``draft`` / ``in_review`` / ``sent`` /
+    terminal) the mainline ``update_proposal`` / lock guard applies
+    and this endpoint returns 409.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        patch = payload.get("patch")
+        if not isinstance(patch, dict):
+            return Response(
+                {"patch": ["invalid"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            updated = complete_required_fields(
+                proposal=proposal,
+                actor=request.user,
+                patch=patch,
+            )
+        except ProposalNotMutable:
+            return Response(
+                {"code": "proposal_not_mutable"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ProposalNotMissingRequiredField:
+            return Response(
+                {"code": "proposal_not_missing_required_field"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(ProposalReadSerializer(updated).data)

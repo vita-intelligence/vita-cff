@@ -10,6 +10,13 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/`,
   status: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/status/`,
+  //: Narrow patch for filling required-for-sent fields that were left
+  //: blank when the director approved the proposal. Backend rejects
+  //: any key outside its whitelist or any key that isn't currently
+  //: flagged missing, so this can't be used to silently mutate
+  //: approved content.
+  completeRequiredFields: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/complete-required-fields/`,
   sendToClient: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/send-to-client/`,
   sendTestEmail: (orgId: string, proposalId: string) =>

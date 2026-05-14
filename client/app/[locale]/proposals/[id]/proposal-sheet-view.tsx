@@ -39,6 +39,7 @@ import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   proposalsEndpoints,
   useAddProposalLine,
+  useCompleteProposalRequiredFields,
   useDeleteProposalLine,
   usePatchProposalLine,
   useProposal,
@@ -462,12 +463,26 @@ export function ProposalSheetView({
 
       {missingFields ? (
         <MissingFieldsModal
+          orgId={orgId}
+          proposalId={proposalId}
+          proposal={proposal}
           fields={missingFields}
           onEdit={() => {
             setMissingFields(null);
             setEditOpen(true);
           }}
           onDismiss={() => setMissingFields(null)}
+          onCompleted={() => {
+            setMissingFields(null);
+            // Re-open the send-to-client compose modal so sales can
+            // ship the now-complete proposal without re-clicking
+            // their way back through the buttons. The compose form
+            // re-seeds from the freshly-saved proposal in its
+            // ``isOpen`` effect.
+            if (proposal.status === "approved") {
+              setSendToClientOpen(true);
+            }
+          }}
         />
       ) : null}
 
@@ -525,6 +540,9 @@ export function ProposalSheetView({
           // the page re-renders with the new status badge + the
           // kiosk-link affordances without an extra refetch.
         }}
+        onMissingRequiredFields={(missing) =>
+          setMissingFields(Array.from(missing))
+        }
       />
     </div>
   );
@@ -1598,20 +1616,98 @@ function AddLineForm({
 }
 
 
-/** Pops when a status transition returns ``missing_required_fields``
- *  from the backend. Lists the fields in plain English and offers a
- *  one-click "Edit" button that dismisses the modal and opens the
- *  edit panel with the proposal's current values. */
+/** Fields safe to fill on a locked (``approved``) proposal via the
+ *  narrow ``complete-required-fields`` endpoint — mirror of the
+ *  backend's ``_COMPLETABLE_REQUIRED_FIELDS`` whitelist. ``lines``
+ *  and ``sales_person`` aren't fillable here because they aren't
+ *  free-text inputs; post the future-proof tighten of the
+ *  ``in_review → approved`` gate, those can no longer be missing on
+ *  an approved proposal anyway. */
+const COMPLETABLE_REQUIRED_FIELDS: ReadonlySet<string> = new Set([
+  "customer_name",
+  "customer_email",
+  "reference",
+  "invoice_address",
+]);
+
+
+/** Modal surfaced when the backend returns ``missing_required_fields``.
+ *
+ *  Two modes:
+ *
+ *  * Mutable proposal (``draft`` / ``in_review``): lists the fields
+ *    and offers an "Edit details" button that opens the full edit
+ *    panel — the proposal isn't locked so any field is reachable.
+ *  * Locked proposal (``approved``): renders inline inputs for the
+ *    whitelisted text fields and POSTs to the
+ *    ``complete-required-fields`` endpoint, which audits and writes
+ *    only the values that were actually missing. The director's
+ *    signature stays attached — the values being written are the
+ *    blanks the rendered PDF already had, not edits to content the
+ *    director did approve. */
 function MissingFieldsModal({
+  orgId,
+  proposalId,
+  proposal,
   fields,
   onEdit,
   onDismiss,
+  onCompleted,
 }: {
+  orgId: string;
+  proposalId: string;
+  proposal: ProposalDto;
   fields: string[];
   onEdit: () => void;
   onDismiss: () => void;
+  onCompleted: () => void;
 }) {
   const tProposals = useTranslations("proposals");
+  const tErrors = useTranslations("errors");
+  const completeMutation = useCompleteProposalRequiredFields(
+    orgId,
+    proposalId,
+  );
+
+  const isApproved = proposal.status === "approved";
+  const fillable = fields.filter((key) =>
+    COMPLETABLE_REQUIRED_FIELDS.has(key),
+  );
+  const nonFillable = fields.filter(
+    (key) => !COMPLETABLE_REQUIRED_FIELDS.has(key),
+  );
+  const inlineMode = isApproved && fillable.length > 0;
+
+  // Per-field draft values. Seeded empty (the fields are by
+  // definition blank — that's why they're on the missing list) and
+  // bound to controlled inputs.
+  const [draft, setDraft] = useState<Record<string, string>>(() =>
+    Object.fromEntries(fillable.map((key) => [key, ""])),
+  );
+  const [error, setError] = useState<string | null>(null);
+
+  const allFilled = fillable.every((key) => (draft[key] ?? "").trim());
+
+  const handleSave = async () => {
+    if (!allFilled || completeMutation.isPending) return;
+    setError(null);
+    const patch: Record<string, string> = {};
+    for (const key of fillable) {
+      const value = (draft[key] ?? "").trim();
+      if (value) patch[key] = value;
+    }
+    try {
+      await completeMutation.mutateAsync(patch);
+      onCompleted();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(extractApiErrorMessage(err, tErrors));
+      } else {
+        setError(tProposals("missing.complete.error_generic"));
+      }
+    }
+  };
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink-1000/50 px-4"
@@ -1620,41 +1716,131 @@ function MissingFieldsModal({
     >
       <div className="w-full max-w-md rounded-2xl bg-ink-0 p-6 shadow-xl ring-1 ring-ink-200">
         <h3 className="text-base font-semibold text-ink-1000">
-          {tProposals("missing.title")}
+          {inlineMode
+            ? tProposals("missing.complete.title")
+            : tProposals("missing.title")}
         </h3>
         <p className="mt-1 text-sm text-ink-500">
-          {tProposals("missing.body")}
+          {inlineMode
+            ? tProposals("missing.complete.body")
+            : tProposals("missing.body")}
         </p>
-        <ul className="mt-4 flex flex-col gap-1.5">
-          {fields.map((key) => (
-            <li
-              key={key}
-              className="flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-1.5 text-sm text-warning ring-1 ring-inset ring-warning/20"
-            >
-              <span className="text-xs uppercase tracking-wide">•</span>
-              {tProposals(
+
+        {inlineMode ? (
+          <div className="mt-4 flex flex-col gap-3">
+            {fillable.map((key) => {
+              const label = tProposals(
                 `missing.fields.${key}` as "missing.fields.customer_name",
-              )}
-            </li>
-          ))}
-        </ul>
+              );
+              const isAddress = key === "invoice_address";
+              return (
+                <label key={key} className="flex flex-col gap-1">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                    {label}
+                  </span>
+                  {isAddress ? (
+                    <textarea
+                      value={draft[key] ?? ""}
+                      onChange={(e) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          [key]: e.target.value,
+                        }))
+                      }
+                      rows={3}
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  ) : (
+                    <input
+                      type={key === "customer_email" ? "email" : "text"}
+                      value={draft[key] ?? ""}
+                      onChange={(e) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          [key]: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  )}
+                </label>
+              );
+            })}
+            {nonFillable.length > 0 ? (
+              // Shouldn't happen after the in_review → approved gate
+              // catches the full set, but kept as a clear fall-through
+              // so we don't silently swallow a real problem.
+              <div className="rounded-lg bg-warning/10 px-3 py-2 text-xs text-warning ring-1 ring-inset ring-warning/20">
+                <p className="font-medium">
+                  {tProposals("missing.complete.non_fillable_title")}
+                </p>
+                <ul className="mt-1 list-disc pl-4">
+                  {nonFillable.map((key) => (
+                    <li key={key}>
+                      {tProposals(
+                        `missing.fields.${key}` as "missing.fields.customer_name",
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {error ? (
+              <p
+                role="alert"
+                className="rounded-lg bg-danger/10 px-3 py-1.5 text-xs font-medium text-danger ring-1 ring-inset ring-danger/20"
+              >
+                {error}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <ul className="mt-4 flex flex-col gap-1.5">
+            {fields.map((key) => (
+              <li
+                key={key}
+                className="flex items-center gap-2 rounded-lg bg-warning/10 px-3 py-1.5 text-sm text-warning ring-1 ring-inset ring-warning/20"
+              >
+                <span className="text-xs uppercase tracking-wide">•</span>
+                {tProposals(
+                  `missing.fields.${key}` as "missing.fields.customer_name",
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+
         <div className="mt-6 flex justify-end gap-2">
           <Button
             type="button"
             variant="outline"
             onClick={onDismiss}
-            className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+            isDisabled={completeMutation.isPending}
+            className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {tProposals("missing.dismiss")}
           </Button>
-          <Button
-            type="button"
-            onClick={onEdit}
-            className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-          >
-            <Pencil className="mr-1.5 h-4 w-4" />
-            {tProposals("missing.edit")}
-          </Button>
+          {inlineMode ? (
+            <Button
+              type="button"
+              onClick={handleSave}
+              isDisabled={!allFilled || completeMutation.isPending}
+              className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {completeMutation.isPending
+                ? tProposals("missing.complete.saving")
+                : tProposals("missing.complete.save")}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={onEdit}
+              className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+            >
+              <Pencil className="mr-1.5 h-4 w-4" />
+              {tProposals("missing.edit")}
+            </Button>
+          )}
         </div>
       </div>
     </div>
