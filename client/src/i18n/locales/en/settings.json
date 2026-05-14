@@ -149,7 +149,8 @@
       "delete": "Delete",
       "sign": "Sign proposal",
       "view_approvals": "View approvals queue",
-      "view_signed": "View signed documents"
+      "view_signed": "View signed documents",
+      "manual_close": "Manually close (accept / reject)"
     },
     "audit": {
       "view": "View audit log"
@@ -186,11 +187,12 @@
     "proposals": {
       "view": "Read the proposals list, individual proposals, and the customer-facing PDF.",
       "edit": "Create proposals, edit lines, customer info, pricing, and acknowledgements. Render and re-render the PDF.",
-      "approve": "Move a proposal through draft → in review → approved → sent. Required to send the customer signing link.",
+      "approve": "Director-only. Flip a proposal from In review → Approved by signing as Director. Send-to-client is separately governed by Edit.",
       "delete": "Permanently remove a proposal.",
       "sign": "Apply your signature to a proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). The customer signature on the public kiosk is gated by the link, not by this capability.",
       "view_approvals": "Open the proposals tab of the org-wide approvals inbox showing every proposal waiting for a signature.",
-      "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed."
+      "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed.",
+      "manual_close": "Override the kiosk flow and manually mark a Sent proposal as Accepted or Rejected (e.g. when the customer responded by phone or email). Usually granted to commercial leads or the director."
     },
     "audit": {
       "view": "Read the org-wide log of every write across catalogues, projects, spec sheets, trial batches, and QC."
@@ -226,12 +228,13 @@
     },
     "proposals": {
       "view": "Proposals list (/proposals). Proposal detail page. Customers list (/customers) and customer create/edit modals. Customer picker on Spec sheet + Proposal forms.",
-      "edit": "New proposal button on Project → Proposals tab. Edit proposal lines, pricing, customer info, acknowledgements. Render / re-render the customer-facing PDF.",
-      "approve": "Approve & send button on Proposal detail. Sets status → sent and emits the customer signing link.",
+      "edit": "New proposal button on Project → Proposals tab. Edit proposal lines, pricing, customer info, acknowledgements. Send-to-client button on the proposal detail page.",
+      "approve": "Approve button on the Proposal detail page (In review state). Gates the in_review → approved transition that lands the director signature on the proposal.",
       "delete": "Delete button on the Proposals list. Paired with Projects → Delete.",
       "sign": "Internal signature slot on Proposal detail (Scientist / R&D Manager / Product Manager / Director). Paired with Projects → Sign spec sheet.",
       "view_approvals": "Paired with Projects → View approvals queue. Granting either covers the full /approvals page (both tabs).",
-      "view_signed": "Paired with Projects → View signed documents. Granting either covers the full /signed page (both tabs)."
+      "view_signed": "Paired with Projects → View signed documents. Granting either covers the full /signed page (both tabs).",
+      "manual_close": "Manual override on a Sent proposal: flip it to Accepted or Rejected from the staff UI when the customer responded by phone or email instead of via the kiosk."
     },
     "audit": {
       "view": "Settings → Audit log (org-wide immutable trail of every write across catalogues, projects, spec sheets, trial batches, QC, comments, and integration changes)."
@@ -245,7 +248,7 @@
     "formulations_label": "Common roles",
     "formulations": "Scientist: View, Edit, Sign spec sheet, Comments view + write. R&D Manager / Director: everything above + Approve & send + Comments moderate. Read-only stakeholder: View only. (Sales typically does not need any Projects capability — they live in the Proposals module instead.)",
     "proposals_label": "Common roles",
-    "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Approve & send. Director: all of the above + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
+    "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Manually close. Director: everything above + Approve + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
     "audit_label": "Common roles",
     "audit": "Compliance and QA leads. Owners get it implicitly."
   }

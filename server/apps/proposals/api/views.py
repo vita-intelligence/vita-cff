@@ -567,10 +567,48 @@ class ProposalDetailView(APIView):
 
 class ProposalStatusView(APIView):
     """``POST`` ``/.../proposals/<id>/status/`` — transition the sheet
-    one step along its state machine."""
+    one step along its state machine.
+
+    Capability depends on the target status: a sales rep can submit
+    a draft for review (``edit``), but only an approver can flip a
+    proposal to ``approved`` (``approve``), and only a manual-close
+    role can override a customer outcome from the staff UI
+    (``manual_close``). Mirrors the role-split the user requested:
+    one person edits, a different person signs off, a third person
+    declares the deal won or lost.
+    """
 
     permission_classes = (HasProposalsPermission,)
-    required_capability = ProposalsCapability.EDIT
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # Inspect the requested target status so the permission
+        # check can pick the right capability *before* the view's
+        # ``post`` body runs. The middleware enforces
+        # ``required_capability`` against the org membership on
+        # entry; setting it lazily lets one endpoint host four
+        # gates.
+        from apps.proposals.models import ProposalStatus
+
+        target = ""
+        if isinstance(request.data, dict):
+            target = str(request.data.get("status") or "")
+        if target == ProposalStatus.APPROVED.value:
+            # Director sign-off. Reuses the existing ``approve``
+            # capability that was previously dead code.
+            self.required_capability = ProposalsCapability.APPROVE
+        elif target in (
+            ProposalStatus.ACCEPTED.value,
+            ProposalStatus.REJECTED.value,
+        ):
+            # Manual close — overriding the kiosk-driven outcome.
+            # Separate cap so an approver isn't automatically a
+            # closer.
+            self.required_capability = ProposalsCapability.MANUAL_CLOSE
+        else:
+            # ``draft``, ``in_review``, ``sent`` — workflow edges
+            # the sales rep with edit rights drives day-to-day.
+            self.required_capability = ProposalsCapability.EDIT
+        super().initial(request, *args, **kwargs)
 
     def post(
         self, request: Request, org_id: str, proposal_id: str

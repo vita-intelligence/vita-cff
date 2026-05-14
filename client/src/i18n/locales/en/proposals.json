@@ -80,6 +80,7 @@
     "actions": {
       "send_for_review": "Send for internal review",
       "approve": "Approve",
+      "approve_disabled_no_cap": "Only a member with the Approve proposals permission (typically the director) can approve this. Ask them to sign off.",
       "back_to_draft": "Back to draft",
       "mark_sent": "Mark as sent to client",
       "send_to_client": "Send to client",

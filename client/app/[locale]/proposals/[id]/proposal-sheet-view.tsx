@@ -56,6 +56,7 @@ import {
   useInfiniteFormulations,
   type FormulationVersionDto,
 } from "@/services/formulations";
+import { useCurrentUser } from "@/services/accounts";
 import { useMemberships } from "@/services/members";
 import {
   specificationsEndpoints,
@@ -83,6 +84,37 @@ export function ProposalSheetView({
   const proposalQuery = useProposal(orgId, proposalId);
   const transitionMutation = useTransitionProposalStatus(orgId, proposalId);
   const updateMutation = useUpdateProposal(orgId, proposalId);
+  // Current user's membership on this org — drives the per-button
+  // RBAC gates below. ``is_owner`` short-circuits everything (the
+  // owner role bypasses capability checks server-side too).
+  const currentUserQuery = useCurrentUser();
+  const membershipsQuery = useMemberships(orgId);
+  const myMembership = useMemo(() => {
+    const me = currentUserQuery.data;
+    if (!me) return null;
+    return (
+      membershipsQuery.data?.find((m) => m.user.id === me.id) ?? null
+    );
+  }, [currentUserQuery.data, membershipsQuery.data]);
+  const hasProposalsCap = (cap: string): boolean => {
+    if (!myMembership) return false;
+    if (myMembership.is_owner) return true;
+    const raw = myMembership.permissions["proposals"];
+    return Array.isArray(raw) ? raw.includes(cap) : false;
+  };
+  // ``approve`` and ``manual_close`` are the two new gates. Falls
+  // back to ``false`` while the memberships query is still loading
+  // so a fast-rendered ``in_review`` proposal doesn't briefly show
+  // the Approve button to a viewer who shouldn't see it.
+  const canApprove = hasProposalsCap("approve");
+  // ``manual_close`` gates the staff-side "mark as accepted /
+  // rejected" override on a ``sent`` proposal. No UI button exposes
+  // that action today (the customer kiosk drives it), but the
+  // capability is checked server-side so any future button or
+  // direct admin call lands behind the gate. Computed here so we
+  // can wire the affordance the moment it's added.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const canManualClose = hasProposalsCap("manual_close");
   const [editOpen, setEditOpen] = useState(false);
   //: Missing-fields modal state — set by a 400 response on a status
   //: transition when the backend surfaces ``missing_required_fields``.
@@ -222,14 +254,35 @@ export function ProposalSheetView({
       case "in_review":
         return (
           <div className="flex gap-2">
-            <Button
-              type="button"
-              onClick={() => setSignatureDialogOpen("approved")}
-              className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-            >
-              <CheckCircle2 className="mr-1.5 h-4 w-4" />
-              {tProposals("detail.actions.approve")}
-            </Button>
+            {/* Approve is director-only (``proposals:approve``).
+                Members without the cap can still send the proposal
+                back to draft so they're not stuck — they just can't
+                self-sign the approval. The backend enforces the
+                same gate via ``ProposalStatusView.initial``; the UI
+                check here is for affordance, not security. */}
+            {canApprove ? (
+              <Button
+                type="button"
+                onClick={() => setSignatureDialogOpen("approved")}
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+              >
+                <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                {tProposals("detail.actions.approve")}
+              </Button>
+            ) : (
+              <span
+                title={tProposals("detail.actions.approve_disabled_no_cap")}
+              >
+                <Button
+                  type="button"
+                  isDisabled
+                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <CheckCircle2 className="mr-1.5 h-4 w-4" />
+                  {tProposals("detail.actions.approve")}
+                </Button>
+              </span>
+            )}
             <Button
               type="button"
               variant="outline"

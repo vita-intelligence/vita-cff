@@ -152,6 +152,17 @@ class ProposalsCapability:
     #: Read the proposals tab of the customer-signed archive.
     #: Paired with :attr:`FormulationsCapability.VIEW_SIGNED`.
     VIEW_SIGNED = "view_signed"
+    #: Manually close a ``sent`` proposal as ``accepted`` or
+    #: ``rejected`` from the staff UI — i.e. overriding the
+    #: kiosk-driven flow when the customer responded over phone /
+    #: email and the team needs to mark the deal closed by hand.
+    #: Deliberately split from :attr:`EDIT` so a sales rep with
+    #: edit rights can't unilaterally mark a deal won; deliberately
+    #: split from :attr:`APPROVE` so the role that internally
+    #: approves a proposal isn't automatically the role that
+    #: declares a customer outcome. Usually granted to commercial
+    #: leads or directors.
+    MANUAL_CLOSE = "manual_close"
 
 
 class AuditCapability:
@@ -247,6 +258,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             ProposalsCapability.SIGN,
             ProposalsCapability.VIEW_APPROVALS,
             ProposalsCapability.VIEW_SIGNED,
+            ProposalsCapability.MANUAL_CLOSE,
         ),
     ),
     AUDIT_MODULE: Module(

@@ -508,13 +508,33 @@ class TestModuleRegistry:
         assert response.status_code == status.HTTP_200_OK
         rows = response.json()
         keys = {r["key"] for r in rows}
-        assert keys == {"members", "catalogues", "formulations", "audit"}
+        assert keys == {
+            "members",
+            "catalogues",
+            "formulations",
+            "proposals",
+            "audit",
+        }
         members = next(r for r in rows if r["key"] == "members")
         assert set(members["capabilities"]) == {
             "view",
             "invite",
             "edit_permissions",
             "remove",
+        }
+        # Pin the full proposals capability set so adding or removing
+        # a cap (like the new ``manual_close`` gate) trips this test
+        # and forces an admin-UI review.
+        proposals = next(r for r in rows if r["key"] == "proposals")
+        assert set(proposals["capabilities"]) == {
+            "view",
+            "edit",
+            "approve",
+            "delete",
+            "sign",
+            "view_approvals",
+            "view_signed",
+            "manual_close",
         }
 
     def test_unauthenticated_is_401(self) -> None:
