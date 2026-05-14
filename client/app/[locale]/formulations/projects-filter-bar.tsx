@@ -297,6 +297,7 @@ export function ProjectsFilterBar({
             unassignedLabel={t("filters.sales_person_unassigned")}
             searchPlaceholder={t("filters.sales_person_search_placeholder")}
             emptyHint={t("filters.sales_person_no_matches")}
+            group="sales"
           />
 
           {/* Right-rail action cluster. The Apply button is ALWAYS

@@ -17,6 +17,7 @@ from apps.organizations.api.serializers import (
     AcceptInvitationSerializer,
     InvitationCreateSerializer,
     InvitationReadSerializer,
+    MembershipGroupsUpdateSerializer,
     MembershipPermissionsUpdateSerializer,
     MembershipReadSerializer,
     OrganizationCreateSerializer,
@@ -27,6 +28,7 @@ from apps.organizations.api.serializers import (
 from apps.organizations.models import Membership, Organization
 from apps.organizations.modules import MembersCapability, all_modules
 from apps.organizations.services import (
+    InvalidMembershipPayload,
     InvitationAlreadyAccepted,
     InvitationAlreadyExists,
     InvitationEmailAlreadyMember,
@@ -51,6 +53,7 @@ from apps.organizations.services import (
     remove_membership,
     resend_invitation,
     revoke_invitation,
+    update_membership_groups,
     update_membership_permissions,
     update_organization,
 )
@@ -313,7 +316,12 @@ class MembershipListView(APIView):
         organization = _load_org_for_caller(
             request, org_id, MembersCapability.VIEW
         )
-        queryset = list_memberships(organization=organization)
+        # ``?group=sales`` (or ``scientist``) narrows the result to
+        # members tagged with that role + owners. Used by the picker
+        # endpoints; unknown values fall through as "no filter" so a
+        # typo doesn't 400 a UI that's already loading.
+        group = request.query_params.get("group") or None
+        queryset = list_memberships(organization=organization, group=group)
         return Response(
             MembershipReadSerializer(queryset, many=True).data,
             status=status.HTTP_200_OK,
@@ -414,6 +422,55 @@ class MembershipDetailView(APIView):
             )
 
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MembershipGroupsView(APIView):
+    """``PATCH`` ``/api/.../memberships/<id>/groups/``.
+
+    Replaces ``Membership.groups`` with the provided list. Gated on
+    ``members.edit_permissions`` — the same admin cap that gates the
+    capability grid, so a single "manage members" role covers both
+    classification and authorization. Owner targeting is allowed
+    here: the org owner may also need a ``"sales"`` tag if they
+    handle commercial work directly. Self-targeting stays open
+    because group tags are benign (you can't elevate your own
+    permissions by adding a tag).
+    """
+
+    permission_classes = (IsAuthenticated,)
+
+    def patch(
+        self, request: Request, org_id: str, membership_id: str
+    ) -> Response:
+        organization = _load_org_for_caller(
+            request, org_id, MembersCapability.EDIT_PERMISSIONS
+        )
+        target = (
+            Membership.objects.select_related("user")
+            .filter(id=membership_id, organization=organization)
+            .first()
+        )
+        if target is None:
+            raise NotFound()
+
+        serializer = MembershipGroupsUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            updated = update_membership_groups(
+                membership=target,
+                groups=serializer.validated_data["groups"],
+            )
+        except InvalidMembershipPayload:
+            return Response(
+                {"groups": ["invalid_membership_payload"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            MembershipReadSerializer(updated).data,
+            status=status.HTTP_200_OK,
+        )
 
 
 class ModuleRegistryView(APIView):

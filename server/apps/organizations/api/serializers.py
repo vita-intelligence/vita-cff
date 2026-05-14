@@ -138,10 +138,26 @@ class MembershipReadSerializer(serializers.ModelSerializer):
             "user",
             "is_owner",
             "permissions",
+            "groups",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+
+class MembershipGroupsUpdateSerializer(serializers.Serializer):
+    """Input shape for ``PATCH /api/.../memberships/<id>/groups/``.
+
+    The list of valid tags is enforced by the service layer (it drops
+    unknown values silently rather than failing the whole request)
+    so this serializer just ensures the payload is a JSON array of
+    strings, not a dict / scalar / missing entirely.
+    """
+
+    groups = serializers.ListField(
+        child=serializers.CharField(allow_blank=False, max_length=32),
+        allow_empty=True,
+    )
 
 
 class MembershipPermissionsUpdateSerializer(serializers.Serializer):

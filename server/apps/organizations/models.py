@@ -16,6 +16,18 @@ from django.utils.translation import gettext_lazy as _
 INVITATION_EXPIRY = timedelta(days=7)
 
 
+#: Picker-scoping role tags on a Membership. Independent of the
+#: capability grid in :mod:`apps.organizations.modules` — a member's
+#: ``groups`` tells the UI which dropdowns to surface them in, while
+#: ``permissions`` decides what they can actually do once there.
+#: Kept as a hardcoded frozenset (rather than an admin-managed
+#: table) because the two roles map directly onto the product's
+#: lifecycle: scientists author formulations and spec sheets;
+#: salespeople negotiate proposals. Adding a third group later is a
+#: one-line change.
+MEMBERSHIP_GROUPS: frozenset[str] = frozenset({"scientist", "sales"})
+
+
 def _generate_invitation_token() -> str:
     """Return a URL-safe, high-entropy invitation token.
 
@@ -148,6 +160,23 @@ class Membership(models.Model):
         default=dict,
         blank=True,
         help_text=_("Map of module key to permission level for non-owners."),
+    )
+    #: Optional role tags. Currently restricted to ``"scientist"`` and
+    #: ``"sales"`` (see :data:`MEMBERSHIP_GROUPS`). Drives picker
+    #: scoping so the sales-person dropdown lists only commercial
+    #: staff, not the entire org roster. Independent of
+    #: :attr:`permissions` — a sales rep with ``proposals.edit`` and a
+    #: scientist with ``formulations.edit`` are both ordinary members
+    #: from a capability standpoint; ``groups`` is a directory
+    #: classifier the admin curates on the Members tab.
+    groups: models.JSONField = models.JSONField(
+        _("groups"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "Role tags for picker scoping (subset of "
+            '{"scientist", "sales"}).'
+        ),
     )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)

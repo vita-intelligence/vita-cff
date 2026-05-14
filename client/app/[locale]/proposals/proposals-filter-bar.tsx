@@ -296,6 +296,7 @@ export function ProposalsFilterBar({
               "filters.sales_person_search_placeholder",
             )}
             emptyHint={tFormulations("filters.sales_person_no_matches")}
+            group="sales"
           />
 
           {/* Right-rail action cluster — always rendered so the bar's

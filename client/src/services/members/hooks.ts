@@ -16,18 +16,21 @@ import {
   listMemberships,
   listModules,
   removeMembership,
+  updateMembershipGroups,
   updateMembershipPermissions,
 } from "./api";
 import type {
   MembershipDto,
   ModuleDefinitionDto,
+  UpdateMembershipGroupsRequestDto,
   UpdateMembershipPermissionsRequestDto,
 } from "./types";
 
 
 export const membersQueryKeys = {
   all: ["members"] as const,
-  list: (orgId: string) => [...membersQueryKeys.all, "list", orgId] as const,
+  list: (orgId: string, group?: string) =>
+    [...membersQueryKeys.all, "list", orgId, group ?? "__all__"] as const,
   modules: () => ["module-registry"] as const,
 };
 
@@ -40,12 +43,18 @@ export function useMemberships(
      *  until the caller actually needs the roster (e.g. a dropdown
      *  that only queries once opened). */
     readonly enabled?: boolean;
+    /** Narrow the roster to a role tag — ``"sales"`` or
+     *  ``"scientist"``. Owners are always included. */
+    readonly group?: string;
   } = {},
 ): UseQueryResult<readonly MembershipDto[], ApiError> {
   return useQuery<readonly MembershipDto[], ApiError>({
-    queryKey: membersQueryKeys.list(orgId),
-    queryFn: () => listMemberships(orgId),
-    initialData: options.initialData,
+    queryKey: membersQueryKeys.list(orgId, options.group),
+    queryFn: () => listMemberships(orgId, { group: options.group }),
+    // ``initialData`` is only valid for the unfiltered list — SSR
+    // doesn't pre-fetch the group-scoped variants, so a filtered
+    // query starts cold.
+    initialData: options.group ? undefined : options.initialData,
     enabled: options.enabled ?? true,
     staleTime: 10_000,
   });
@@ -85,6 +94,29 @@ export function useUpdateMembershipPermissions(
       queryClient.invalidateQueries({
         queryKey: membersQueryKeys.list(orgId),
       }),
+  });
+}
+
+
+export function useUpdateMembershipGroups(
+  orgId: string,
+): UseMutationResult<
+  MembershipDto,
+  ApiError,
+  { membershipId: string; payload: UpdateMembershipGroupsRequestDto }
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    MembershipDto,
+    ApiError,
+    { membershipId: string; payload: UpdateMembershipGroupsRequestDto }
+  >({
+    mutationFn: ({ membershipId, payload }) =>
+      updateMembershipGroups(orgId, membershipId, payload),
+    onSuccess: () =>
+      // Invalidate every group-scoped variant — a tag change can
+      // add or remove the member from any picker query.
+      queryClient.invalidateQueries({ queryKey: membersQueryKeys.all }),
   });
 }
 

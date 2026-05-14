@@ -70,8 +70,16 @@
     "list_title": "{count, plural, =0 {No members yet} one {# member} other {# members}}",
     "col_name": "Member",
     "col_role": "Role",
+    "col_groups": "Groups",
     "col_joined": "Joined",
     "col_actions": "Actions",
+    "no_groups": "—",
+    "groups_legend": "Groups",
+    "groups_hint": "Used by directory dropdowns. Sales filters list only people tagged 'Sales'; the future scientist picker only lists 'Scientist'. Independent of permissions — tagging here does not grant or revoke access.",
+    "group": {
+      "scientist": "Scientist",
+      "sales": "Sales"
+    },
     "action_edit": "Edit",
     "action_remove": "Remove",
     "action_resend": "Resend",

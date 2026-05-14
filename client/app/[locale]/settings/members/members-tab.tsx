@@ -30,11 +30,14 @@ import {
   type InvitationStatus,
 } from "@/services/invitations";
 import {
+  MEMBERSHIP_GROUPS,
   useMemberships,
   useModules,
   useRemoveMembership,
+  useUpdateMembershipGroups,
   useUpdateMembershipPermissions,
   type MembershipDto,
+  type MembershipGroup,
   type ModuleDefinitionDto,
   type PermissionsDict,
 } from "@/services/members";
@@ -203,6 +206,9 @@ function MembersListCard({
                 {tSettings("members.col_role")}
               </th>
               <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
+                {tSettings("members.col_groups")}
+              </th>
+              <th className="px-5 py-3 text-left text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tSettings("members.col_joined")}
               </th>
               <th className="px-5 py-3 text-right text-xs font-medium uppercase tracking-wide text-ink-500">
@@ -279,6 +285,23 @@ function MemberRow({
           <Chip tone="orange">{tSettings("organization.role_owner")}</Chip>
         ) : (
           <Chip tone="neutral">{tSettings("organization.role_member")}</Chip>
+        )}
+      </td>
+      <td className="px-5 py-4">
+        {membership.groups && membership.groups.length > 0 ? (
+          <div className="flex flex-wrap gap-1">
+            {membership.groups.map((group) => (
+              <Chip key={group} tone="neutral">
+                {tSettings(
+                  `members.group.${group}` as "members.group.sales",
+                )}
+              </Chip>
+            ))}
+          </div>
+        ) : (
+          <span className="text-xs text-ink-400">
+            {tSettings("members.no_groups")}
+          </span>
         )}
       </td>
       <td className="px-5 py-4 text-sm text-ink-500">
@@ -540,29 +563,60 @@ function EditPermissionsDrawer({
   const [draft, setDraft] = useState<PermissionsDict>(
     membership.permissions ?? {},
   );
+  const [groupsDraft, setGroupsDraft] = useState<readonly MembershipGroup[]>(
+    membership.groups ?? [],
+  );
   const [error, setError] = useState<string | null>(null);
 
-  const mutation = useUpdateMembershipPermissions(orgId);
+  const permissionsMutation = useUpdateMembershipPermissions(orgId);
+  const groupsMutation = useUpdateMembershipGroups(orgId);
 
-  // Reset the draft if the target changes (drawer reopens for a
-  // different member without unmounting — unlikely today but cheap
-  // to be defensive about).
+  // Reset both drafts when the target changes.
   useEffect(() => {
     setDraft(membership.permissions ?? {});
+    setGroupsDraft(membership.groups ?? []);
     setError(null);
-  }, [membership.id, membership.permissions]);
+  }, [membership.id, membership.permissions, membership.groups]);
+
+  const permsDirty =
+    JSON.stringify(draft) !== JSON.stringify(membership.permissions ?? {});
+  const groupsDirty =
+    [...groupsDraft].sort().join(",") !==
+    [...(membership.groups ?? [])].sort().join(",");
+  const isPending =
+    permissionsMutation.isPending || groupsMutation.isPending;
 
   const handleSave = async () => {
     setError(null);
     try {
-      await mutation.mutateAsync({
-        membershipId: membership.id,
-        payload: { permissions: draft },
-      });
+      // Permissions + groups are independent fields stored on the
+      // same row but exposed as two endpoints. We fire only the
+      // patches that actually changed so an admin tweaking just one
+      // axis doesn't roundtrip the whole snapshot.
+      if (permsDirty) {
+        await permissionsMutation.mutateAsync({
+          membershipId: membership.id,
+          payload: { permissions: draft },
+        });
+      }
+      if (groupsDirty) {
+        await groupsMutation.mutateAsync({
+          membershipId: membership.id,
+          payload: { groups: groupsDraft },
+        });
+      }
       onClose();
     } catch (err) {
       setError(extractApiMessage(err, tErrors));
     }
+  };
+
+  const toggleGroup = (value: MembershipGroup) => {
+    setGroupsDraft((current) =>
+      current.includes(value)
+        ? current.filter((g) => g !== value)
+        : [...current, value],
+    );
   };
 
   return (
@@ -599,12 +653,54 @@ function EditPermissionsDrawer({
               </button>
             </Modal.Header>
             <Modal.Body className="max-h-[70vh] overflow-y-auto px-6 py-6">
+              {/* Role tags — drives picker scoping (sales-person
+               *  dropdowns, future scientist picker). Independent of
+               *  the capability grid below: a scientist with no
+               *  formulations.edit can still be tagged ``scientist``
+               *  so they appear in directory dropdowns, and a sales
+               *  rep keeps their proposals caps regardless of how
+               *  the tags are flipped. */}
+              <fieldset className="mb-6 rounded-xl border border-ink-100 p-4">
+                <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
+                  {tSettings("members.groups_legend")}
+                </legend>
+                <p className="mb-3 text-xs text-ink-500">
+                  {tSettings("members.groups_hint")}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {MEMBERSHIP_GROUPS.map((group) => {
+                    const active = groupsDraft.includes(group);
+                    return (
+                      <button
+                        key={group}
+                        type="button"
+                        onClick={() => toggleGroup(group)}
+                        aria-pressed={active}
+                        disabled={isPending}
+                        className={`inline-flex h-9 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-colors ${
+                          active
+                            ? "bg-orange-500 text-ink-0 ring-1 ring-inset ring-orange-500"
+                            : "bg-ink-50 text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100 hover:ring-ink-300"
+                        }`}
+                      >
+                        {active ? (
+                          <Check className="h-3 w-3" aria-hidden />
+                        ) : null}
+                        {tSettings(
+                          `members.group.${group}` as "members.group.sales",
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </fieldset>
+
               <CapabilityGrid
                 modules={modules}
                 catalogueSlugs={catalogueSlugs}
                 value={draft}
                 onChange={setDraft}
-                disabled={mutation.isPending}
+                disabled={isPending}
               />
               {error ? (
                 <p
@@ -622,7 +718,7 @@ function EditPermissionsDrawer({
                 size="md"
                 className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
                 onClick={onClose}
-                isDisabled={mutation.isPending}
+                isDisabled={isPending}
               >
                 {tSettings("members.cancel")}
               </Button>
@@ -630,9 +726,9 @@ function EditPermissionsDrawer({
                 type="button"
                 variant="primary"
                 size="md"
-                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
+                className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:opacity-40"
                 onClick={handleSave}
-                isDisabled={mutation.isPending}
+                isDisabled={isPending || (!permsDirty && !groupsDirty)}
               >
                 {tSettings("members.save")}
               </Button>

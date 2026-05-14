@@ -18,13 +18,27 @@ export interface MembershipDto {
   readonly user: NestedUserDto;
   readonly is_owner: boolean;
   readonly permissions: PermissionsDict;
+  /** Picker-scoping tags. Currently a subset of
+   *  ``"scientist" | "sales"``; the backend silently drops unknown
+   *  values so a future tag drop won't 400 a stale client. */
+  readonly groups: readonly MembershipGroup[];
   readonly created_at: string;
   readonly updated_at: string;
 }
 
 
+/** The two role tags admins can assign in Members > Edit. */
+export const MEMBERSHIP_GROUPS = ["scientist", "sales"] as const;
+export type MembershipGroup = (typeof MEMBERSHIP_GROUPS)[number];
+
+
 export interface UpdateMembershipPermissionsRequestDto {
   readonly permissions: PermissionsDict;
+}
+
+
+export interface UpdateMembershipGroupsRequestDto {
+  readonly groups: readonly MembershipGroup[];
 }
 
 

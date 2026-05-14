@@ -8,6 +8,7 @@ from apps.organizations.api.views import (
     InvitationListCreateView,
     InvitationResendView,
     MembershipDetailView,
+    MembershipGroupsView,
     MembershipListView,
     ModuleRegistryView,
     OrganizationDetailView,
@@ -44,6 +45,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/memberships/<uuid:membership_id>/",
         MembershipDetailView.as_view(),
         name="membership-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/memberships/<uuid:membership_id>/groups/",
+        MembershipGroupsView.as_view(),
+        name="membership-groups",
     ),
     path(
         "organizations/<uuid:org_id>/invitations/",

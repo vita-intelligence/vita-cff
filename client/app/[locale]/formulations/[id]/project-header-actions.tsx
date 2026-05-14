@@ -252,11 +252,14 @@ function SalesPersonMenu({
   const containerRef = useRef<HTMLDivElement | null>(null);
   useClickOutside(containerRef, () => setOpen(false));
 
-  // Fetch members on demand — there is no point holding the full
-  // roster in cache for readers who cannot assign. The hook gates
-  // itself on ``canAssign`` via the ``enabled`` field inside
-  // ``useMemberships``; we mirror that here for safety.
-  const membershipsQuery = useMemberships(orgId, { enabled: open && canAssign });
+  // Fetch sales-tagged members on demand — there's no point holding
+  // the full roster in cache for readers who cannot assign. Owners
+  // are always included by the backend so an admin who hasn't
+  // tagged themselves still appears in the picker.
+  const membershipsQuery = useMemberships(orgId, {
+    enabled: open && canAssign,
+    group: "sales",
+  });
 
   const assign = useAssignSalesPerson(orgId, formulationId);
 

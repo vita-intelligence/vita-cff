@@ -410,15 +410,38 @@ AI_PROVIDER_TIMEOUT_SECONDS = int(
 
 # Email. Dev uses the console backend so ``send_mail`` writes to stdout
 # — no SMTP credentials required to exercise the comments-notification
-# flow locally. Production points at a real SMTP relay via environment
-# variables; Django auto-picks up ``EMAIL_HOST`` / ``EMAIL_PORT`` /
-# ``EMAIL_HOST_USER`` / ``EMAIL_HOST_PASSWORD`` / ``EMAIL_USE_TLS``.
+# flow locally. Production points at a real SMTP relay (currently Azure
+# Communication Services Email) — every variable below is read
+# explicitly from the environment because Django's default settings
+# leave ``EMAIL_HOST`` etc. at ``'localhost'`` unless settings.py
+# overrides them.
 EMAIL_BACKEND = os.environ.get(
     "EMAIL_BACKEND",
     "django.core.mail.backends.console.EmailBackend"
     if DEBUG
     else "django.core.mail.backends.smtp.EmailBackend",
 )
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "25"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+# Env vars arrive as strings; Django expects booleans for the
+# transport-security flags. ``"True"`` / ``"true"`` / ``"1"`` all
+# resolve to ``True``; anything else (incl. unset) is ``False``.
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "False").strip().lower() in {
+    "true",
+    "1",
+    "yes",
+}
+EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").strip().lower() in {
+    "true",
+    "1",
+    "yes",
+}
+# SMTP connection timeout in seconds. Without this, a stalled SMTP
+# handshake would block the request thread indefinitely — long enough
+# to look like a hang under modest load.
+EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "20"))
 DEFAULT_FROM_EMAIL = os.environ.get(
     "DEFAULT_FROM_EMAIL", "Vita NPD <no-reply@vita.npd>"
 )

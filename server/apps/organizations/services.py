@@ -15,11 +15,12 @@ from typing import Any
 
 from django.contrib.auth import get_user_model
 from django.db import transaction
-from django.db.models import QuerySet
+from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from apps.organizations.models import (
     Invitation,
+    MEMBERSHIP_GROUPS,
     Membership,
     Organization,
     _default_invitation_expiry,
@@ -448,14 +449,84 @@ def validate_permissions_payload(raw: Any) -> dict[str, Any]:
     return out
 
 
-def list_memberships(*, organization: Organization) -> QuerySet[Membership]:
-    """Return every membership for ``organization``, owner-first."""
+def list_memberships(
+    *,
+    organization: Organization,
+    group: str | None = None,
+):
+    """Return every membership for ``organization``, owner-first.
 
-    return (
+    ``group`` narrows the result to memberships tagged with that role
+    on their :attr:`Membership.groups` list. Used by picker endpoints
+    (sales-person dropdown, future scientist picker) so a directory
+    of 1k+ people doesn't load when a 6-person sales team is all the
+    UI actually needs. Owners are always included regardless of
+    ``groups``: they're the admin overseeing the org and need to
+    appear in every directory dropdown by default.
+
+    The group filter runs in Python after the DB fetch. JSON
+    ``contains`` is Postgres-only — testing on SQLite would break,
+    and an org's roster is bounded (tens to hundreds at most), so
+    we eat the in-memory pass rather than maintain two code paths.
+    Returns a ``list`` (not a QuerySet) when filtered so callers
+    don't accidentally chain SQL-only operations onto it.
+    """
+
+    queryset = (
         Membership.objects.filter(organization=organization)
         .select_related("user")
         .order_by("-is_owner", "user__email")
     )
+    if not group:
+        return queryset
+    cleaned = group.strip()
+    if cleaned not in MEMBERSHIP_GROUPS:
+        return queryset
+    return [
+        m
+        for m in queryset
+        if m.is_owner or (m.groups and cleaned in m.groups)
+    ]
+
+
+@transaction.atomic
+def update_membership_groups(
+    *,
+    membership: Membership,
+    groups: Any,
+) -> Membership:
+    """Replace ``membership.groups`` after validating each tag against
+    :data:`MEMBERSHIP_GROUPS`. Unknown values are silently dropped so
+    a stale client can't poison the column; duplicates collapse.
+
+    Owners can be tagged too — useful when the org owner is also the
+    head of sales and should appear in the sales dropdown without
+    needing a magic "always include owners" rule on every picker.
+    Self-targeting / owner-targeting are open here because the
+    classification is benign; the view layer can re-gate if needed.
+    """
+
+    if not isinstance(groups, (list, tuple)):
+        raise InvalidMembershipPayload()
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw in groups:
+        if not isinstance(raw, str):
+            continue
+        value = raw.strip()
+        if value in MEMBERSHIP_GROUPS and value not in seen:
+            cleaned.append(value)
+            seen.add(value)
+    membership.groups = cleaned
+    membership.save(update_fields=["groups", "updated_at"])
+    return membership
+
+
+class InvalidMembershipPayload(Exception):
+    """Payload to ``update_membership_groups`` wasn't a list/tuple.
+    Treated as a 400 at the view layer."""
+
+    code = "invalid_membership_payload"
 
 
 @transaction.atomic

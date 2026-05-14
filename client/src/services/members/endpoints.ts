@@ -13,6 +13,10 @@ export const membersEndpoints = {
   /** Update permissions (PATCH) + remove (DELETE). */
   detail: (orgId: string, membershipId: string) =>
     `/api/organizations/${orgId}/memberships/${membershipId}/`,
+  /** Replace the membership's ``groups`` list. Requires
+   *  ``members.edit_permissions``. */
+  groups: (orgId: string, membershipId: string) =>
+    `/api/organizations/${orgId}/memberships/${membershipId}/groups/`,
   /** Module + capability registry — not org-scoped. */
   modules: () => `/api/organizations/modules/`,
 } as const;

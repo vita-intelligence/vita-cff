@@ -47,6 +47,7 @@ export function MemberPicker({
   unassignedLabel,
   searchPlaceholder,
   emptyHint,
+  group,
   disabled = false,
 }: {
   readonly orgId: string;
@@ -59,6 +60,9 @@ export function MemberPicker({
   readonly unassignedLabel: string;
   readonly searchPlaceholder: string;
   readonly emptyHint: string;
+  /** Narrow the roster to a role tag (``"sales"`` / ``"scientist"``).
+   *  Owners always remain in the list. Omitted = show everyone. */
+  readonly group?: string;
   readonly disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -67,7 +71,7 @@ export function MemberPicker({
   const panelRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const membersQuery = useMemberships(orgId);
+  const membersQuery = useMemberships(orgId, { group });
   const members = membersQuery.data ?? [];
 
   // Sort members alphabetically by display name; cheap O(n log n)
