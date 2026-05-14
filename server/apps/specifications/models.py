@@ -499,6 +499,16 @@ class SpecificationSheet(models.Model):
                 fields=("formulation_version",),
                 name="specs_formulation_version_idx",
             ),
+            # ``transition_status`` runs a review-slot uniqueness
+            # query on every send-for-review and approve action:
+            # ``filter(formulation_version__formulation_id=...,
+            # document_kind=..., status=IN_REVIEW)``. Without a
+            # composite, that query scans every spec sheet in the
+            # database to enforce a per-project rule.
+            models.Index(
+                fields=("formulation_version", "document_kind", "status"),
+                name="specs_fv_kind_status_idx",
+            ),
         ]
 
     def __str__(self) -> str:

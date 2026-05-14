@@ -20,6 +20,7 @@ from apps.specifications.api.permissions import HasSpecificationsPermission
 from apps.specifications.api.serializers import (
     SpecificationPackagingSerializer,
     SpecificationSheetCreateSerializer,
+    SpecificationSheetListSerializer,
     SpecificationSheetReadSerializer,
     SpecificationSheetUpdateSerializer,
     SpecificationStatusSerializer,
@@ -117,7 +118,11 @@ class SpecificationListCreateView(APIView):
         )
         paginator = SpecificationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
-        serializer = SpecificationSheetReadSerializer(page, many=True)
+        # List variant skips the three signature-image blobs — each
+        # base64 PNG is ~8-12 KB, so a 50-row page would otherwise
+        # ship ~1.5 MB of unused image bytes. The detail view still
+        # returns them.
+        serializer = SpecificationSheetListSerializer(page, many=True)
         return paginator.get_paginated_response(serializer.data)
 
     def post(self, request: Request, org_id: str) -> Response:
@@ -749,6 +754,13 @@ class PublicSpecificationPdfView(APIView):
         response["Content-Disposition"] = (
             f'{disposition}; filename="{filename}"'
         )
+        # 5-minute CDN-friendly cache; ``must-revalidate`` so an
+        # edit-then-share workflow won't serve a stale PDF after
+        # the spec has been re-signed. The render itself is also
+        # cached in-process for 60s by :mod:`config.pdf_cache` so
+        # an aggressive refresh from one client doesn't queue
+        # WeasyPrint renders behind it.
+        response["Cache-Control"] = "public, max-age=300, must-revalidate"
         return response
 
 

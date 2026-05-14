@@ -488,6 +488,22 @@ class Proposal(models.Model):
                 fields=("organization", "status", "-updated_at"),
                 name="proposals_org_stat_upd_idx",
             ),
+            # Sales-person filter on the org-wide proposals bar
+            # narrows the roster to one rep's quotes. Without the
+            # composite the filter scans every proposal in the org
+            # and discards the non-matches.
+            models.Index(
+                fields=("organization", "sales_person"),
+                name="proposals_org_sales_idx",
+            ),
+            # ``valid_until`` range filter — sales hunts proposals
+            # about to lapse. Org-scoped + the date column means a
+            # one-week window query is a small index range scan
+            # instead of a full-table walk.
+            models.Index(
+                fields=("organization", "valid_until"),
+                name="proposals_org_valid_idx",
+            ),
         ]
 
     def __str__(self) -> str:

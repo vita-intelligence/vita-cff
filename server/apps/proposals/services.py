@@ -439,8 +439,16 @@ def list_proposals(
         queryset = queryset.filter(valid_until__lte=valid_until_to)
     return queryset.select_related(
         "formulation_version__formulation",
+        "formulation_version__formulation__sales_person",
         "specification_sheet",
         "created_by",
+        # The read serializer's ``get_sales_person_name`` /
+        # ``get_prepared_by`` / ``get_director`` all dereference these
+        # FKs; without ``select_related`` each row fires a follow-up
+        # query (3 × N for a 50-item page = 150 extra round-trips).
+        "sales_person",
+        "prepared_by_user",
+        "director_user",
     ).order_by("-updated_at")
 
 

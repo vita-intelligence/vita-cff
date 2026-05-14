@@ -297,6 +297,7 @@ from apps.proposals.api.serializers import (
     ProposalCreateSerializer,
     ProposalLineReadSerializer,
     ProposalLineWriteSerializer,
+    ProposalListSerializer,
     ProposalReadSerializer,
     ProposalStatusSerializer,
     ProposalTransitionSerializer,
@@ -448,7 +449,11 @@ class ProposalListCreateView(APIView):
             valid_until_from=valid_until_from,
             valid_until_to=valid_until_to,
         )
-        serializer = ProposalReadSerializer(queryset, many=True)
+        # List variant blanks the three signature image blobs (the
+        # row count + signed-by metadata stay; only the base64 PNG
+        # bytes are stripped). The detail endpoint returns the
+        # full payload so the audit panel sees everything.
+        serializer = ProposalListSerializer(queryset, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request: Request, org_id: str) -> Response:
@@ -1591,6 +1596,10 @@ class PublicProposalDownloadView(APIView):
         filename = f"{(proposal.code or 'proposal').strip().replace(' ', '-')}.pdf"
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        # 5-minute browser/CDN cache with revalidation — same
+        # policy as the spec PDF endpoint. ``must-revalidate``
+        # forces a refetch after edits.
+        response["Cache-Control"] = "public, max-age=300, must-revalidate"
         return response
 
 

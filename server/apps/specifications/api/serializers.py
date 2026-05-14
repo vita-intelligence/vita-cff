@@ -154,6 +154,35 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class SpecificationSheetListSerializer(SpecificationSheetReadSerializer):
+    """List-endpoint variant that drops the three signature-image
+    blobs.
+
+    Signatures are base64-encoded PNGs stored on the row — typically
+    8-12 KB each. Returning them on every list paint adds ~30 KB per
+    row × 50 rows = 1.5 MB of wire payload per page just for images
+    the list UI doesn't render. Detail endpoints still use the full
+    read serializer so the audit panel, the print view, and the
+    proposal-detail-bundled-spec inline render see the full picture.
+    """
+
+    class Meta(SpecificationSheetReadSerializer.Meta):
+        # Same fields tuple minus the three signature image columns
+        # — built off the base ``Meta.fields`` so a future field
+        # added to the read serializer flows through automatically.
+        fields = tuple(
+            f
+            for f in SpecificationSheetReadSerializer.Meta.fields
+            if f
+            not in {
+                "prepared_by_signature_image",
+                "director_signature_image",
+                "customer_signature_image",
+            }
+        )
+        read_only_fields = fields
+
+
 class SpecificationSheetCreateSerializer(serializers.Serializer):
     formulation_version_id = serializers.UUIDField()
     code = serializers.CharField(

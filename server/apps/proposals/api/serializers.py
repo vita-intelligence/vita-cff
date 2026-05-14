@@ -220,6 +220,31 @@ class ProposalReadSerializer(serializers.ModelSerializer):
         return None if total is None else str(total)
 
 
+class ProposalListSerializer(ProposalReadSerializer):
+    """List-endpoint variant that strips the three signature-image
+    blobs from the response.
+
+    A 50-row page returning ``prepared_by`` + ``director`` +
+    ``customer_signature`` with their base64 PNG ``image`` keys is
+    ~1 MB of wire payload that the list UI doesn't display. Detail
+    endpoints still use the full :class:`ProposalReadSerializer`.
+    Each signature dict is still emitted (so the list shows "Signed
+    on X" pills) — only the ``image`` byte stream is removed.
+    """
+
+    def get_prepared_by(self, obj: Proposal) -> dict | None:
+        signed = super().get_prepared_by(obj)
+        return None if signed is None else {**signed, "image": ""}
+
+    def get_director(self, obj: Proposal) -> dict | None:
+        signed = super().get_director(obj)
+        return None if signed is None else {**signed, "image": ""}
+
+    def get_customer_signature(self, obj: Proposal) -> dict | None:
+        signed = super().get_customer_signature(obj)
+        return None if signed is None else {**signed, "image": ""}
+
+
 class ProposalCreateSerializer(serializers.Serializer):
     formulation_version_id = serializers.UUIDField()
     specification_sheet_id = serializers.UUIDField(

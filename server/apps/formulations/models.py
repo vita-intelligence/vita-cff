@@ -480,6 +480,14 @@ class Formulation(models.Model):
                 fields=("organization", "project_status"),
                 name="formulations_org_status_idx",
             ),
+            # Sales-person filter on the projects list bar narrows
+            # the org-wide roster of formulations to one rep's book.
+            # Without this composite the filter scans every row in
+            # the org and discards the non-matches in Python.
+            models.Index(
+                fields=("organization", "sales_person"),
+                name="formulations_org_sales_idx",
+            ),
         ]
 
     def __str__(self) -> str:
