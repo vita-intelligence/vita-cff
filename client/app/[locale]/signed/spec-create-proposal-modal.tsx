@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
 import { Paperclip } from "lucide-react";
@@ -14,7 +14,6 @@ import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { type CustomerDto } from "@/services/customers";
 import {
   PROPOSAL_TEMPLATE_TYPES,
-  fetchCostPreview,
   proposalsQueryKeys,
   useCreateProposal,
   type ProposalTemplateType,
@@ -28,21 +27,20 @@ import { type SpecificationSheetDto } from "@/services/specifications";
  * sheet — opened from the "Create proposal" CTA on the
  * "Approved — ready to send" cards on the /signed page.
  *
- * Distinct from the org-wide modal in two important ways:
+ * Same pricing UX as the org-wide new-proposal modal:
  *
- *   1. The formulation + version + specification_sheet fields are
- *      locked to the spec the user clicked. No pickers — they read
- *      the spec's own metadata and feed it straight through to the
- *      create call. The user only fills in the commercial bits
- *      (customer, quantity, cost, margin).
- *   2. On success it refreshes the spec-list query in addition to
- *      the proposal queries so the "linked proposal" chip on the
- *      /signed page flips from "No proposal yet" → "Proposal
- *      <code>" without a manual refresh.
+ *   1. Quantity is the only field the operator types by default.
+ *   2. Cost / margin / customer-pays come straight from the spec
+ *      (the director already signed off on those numbers during
+ *      approval) and render read-only inside an amber summary card.
+ *   3. An "Adjust pricing" toggle exposes cost + margin inputs for
+ *      the rare deal that needs a custom rate. Clicking "Use spec
+ *      pricing" reverts to the spec's signed values.
  *
- * After creation the page navigates to ``/proposals/<id>`` — same
- * post-create flow as the org-wide modal so the user lands on the
- * commercial document straight away.
+ * The formulation + version + specification_sheet are locked to
+ * the sheet the user clicked — no pickers. On success the spec
+ * caches invalidate so the "linked proposal" chip flips
+ * immediately on the /signed page.
  */
 export function SpecCreateProposalModal({
   orgId,
@@ -67,45 +65,52 @@ export function SpecCreateProposalModal({
   const [quantity, setQuantity] = useState<string>("1");
   const [unitCost, setUnitCost] = useState<string>("");
   const [margin, setMargin] = useState<string>("30");
+  // ``pricingOverride`` mirrors the org-wide new-proposal modal:
+  // hidden by default, exposed via the "Adjust pricing" link.
+  // When false, cost/margin/price are NOT sent — the backend
+  // pulls them from the attached spec instead.
+  const [pricingOverride, setPricingOverride] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useCreateProposal(orgId);
 
-  // Match the org-modal pricing model: cost ÷ (1 − margin/100) gives
-  // the unit price the customer pays. Edge cases return ``null`` so
-  // the UI shows "enter cost and margin" rather than a broken number.
-  const derivedUnitPrice = (() => {
+  // Pre-seed the override inputs from the spec's signed pricing
+  // when the modal opens, so the override panel (when revealed)
+  // starts from the spec's values instead of an empty form.
+  // Quantity intentionally stays at "1" — order size is a per-
+  // proposal decision, not a spec-level constant.
+  useEffect(() => {
+    if (!isOpen) return;
+    setUnitCost(sheet.unit_cost ? String(sheet.unit_cost) : "");
+    if (sheet.margin_percent) setMargin(String(sheet.margin_percent));
+    setPricingOverride(false);
+  }, [isOpen, sheet.unit_cost, sheet.margin_percent]);
+
+  // Live derivation matches the spec approval modal's math:
+  // ``cost / (1 − margin/100)``. Used inside the override panel
+  // to show what the customer will be charged in real time.
+  const derivedUnitPrice = useMemo(() => {
     const cost = Number.parseFloat(unitCost);
     const pct = Number.parseFloat(margin);
     if (!Number.isFinite(cost) || cost <= 0) return null;
     if (!Number.isFinite(pct) || pct < 0 || pct >= 100) return null;
     return cost / (1 - pct / 100);
-  })();
+  }, [unitCost, margin]);
 
-  // Seed the unit cost once on open from the formulation version's
-  // material-cost roll-up. Never overwrites a typed value — the
-  // suggestion is a starting point, not the authoritative number.
-  useEffect(() => {
-    if (!isOpen) return;
-    let cancelled = false;
-    (async () => {
-      try {
-        const preview = await fetchCostPreview(
-          orgId,
-          sheet.formulation_version,
-        );
-        if (cancelled) return;
-        setUnitCost((current) =>
-          current === "" ? preview.material_cost_per_pack : current,
-        );
-      } catch {
-        /* cost preview is best-effort */
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [isOpen, orgId, sheet.formulation_version]);
+  // What the read-only summary shows when override is off — prefer
+  // the spec's stored ``final_price`` (the value the director
+  // signed), fall back to deriving from cost+margin for legacy
+  // specs that only have those two columns populated.
+  const specHasPricing = Boolean(sheet.unit_cost || sheet.final_price);
+  const specPrice = sheet.final_price
+    ? Number(sheet.final_price).toFixed(2)
+    : sheet.unit_cost && sheet.margin_percent
+      ? (
+          Number(sheet.unit_cost) /
+          (1 - Number(sheet.margin_percent) / 100)
+        ).toFixed(2)
+      : null;
+  const specCurrency = (sheet.currency || "GBP").toUpperCase();
 
   const reset = () => {
     setTemplate("custom");
@@ -113,6 +118,7 @@ export function SpecCreateProposalModal({
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
+    setPricingOverride(false);
     setError(null);
   };
 
@@ -125,7 +131,11 @@ export function SpecCreateProposalModal({
     e.preventDefault();
     setError(null);
     try {
-      const created = await createMutation.mutateAsync({
+      // When the override panel isn't open we forward NO pricing
+      // fields — the backend's create_proposal pulls cost / margin
+      // / price / currency from the attached spec via the
+      // spec-autofill path. Override flips to the typed values.
+      const basePayload = {
         formulation_version_id: sheet.formulation_version,
         specification_sheet_id: sheet.id,
         template_type: template,
@@ -134,11 +144,20 @@ export function SpecCreateProposalModal({
         customer_email: customer?.email ?? "",
         customer_company: customer?.company ?? "",
         quantity: Math.max(1, Number.parseInt(quantity, 10) || 1),
-        unit_price:
-          derivedUnitPrice !== null ? derivedUnitPrice.toFixed(4) : null,
-        material_cost_per_pack: unitCost ? unitCost : null,
-        margin_percent: margin ? margin : null,
-      });
+      };
+      const created = await createMutation.mutateAsync(
+        pricingOverride
+          ? {
+              ...basePayload,
+              unit_price:
+                derivedUnitPrice !== null
+                  ? derivedUnitPrice.toFixed(4)
+                  : null,
+              material_cost_per_pack: unitCost ? unitCost : null,
+              margin_percent: margin ? margin : null,
+            }
+          : basePayload,
+      );
       // ``useCreateProposal`` already refreshes the proposal trees;
       // we also nuke the spec caches so the "linked proposal" chip
       // on this page flips from missing to linked on the next paint.
@@ -234,61 +253,141 @@ export function SpecCreateProposalModal({
                   onCreateNew={() => setCustomerCreating(true)}
                 />
 
-                <div className="grid grid-cols-3 gap-3">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.quantity")}
-                    </span>
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={quantity}
-                      onChange={(e) => setQuantity(e.target.value)}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.unit_cost")}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.0001"
-                      value={unitCost}
-                      onChange={(e) => setUnitCost(e.target.value)}
-                      placeholder="0.00"
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tProposals("create.margin_percent")}
-                    </span>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={margin}
-                      onChange={(e) => setMargin(e.target.value)}
-                      placeholder="30"
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                </div>
+                {/* Quantity is the only typed input by default; cost /
+                 *  margin sit behind an Adjust pricing toggle. Same
+                 *  shape as the org-wide new-proposal modal so the
+                 *  two surfaces feel identical. */}
+                <label className="flex w-32 flex-col gap-1.5">
+                  <span className="text-xs font-medium text-ink-700">
+                    {tProposals("create.quantity")}
+                  </span>
+                  <input
+                    type="number"
+                    min={1}
+                    step={1}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                  />
+                </label>
 
-                <div
-                  className={`rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset ${
-                    derivedUnitPrice === null
-                      ? "bg-ink-50 text-ink-500 ring-ink-200"
-                      : "bg-success/10 text-success ring-success/30"
-                  }`}
-                >
-                  {derivedUnitPrice === null
-                    ? tProposals("create.price_placeholder")
-                    : tProposals("create.price_derived", {
-                        price: derivedUnitPrice.toFixed(2),
-                      })}
-                </div>
+                {specHasPricing && !pricingOverride ? (
+                  <div className="flex flex-col gap-2 rounded-xl bg-amber-50 px-3 py-3 ring-1 ring-inset ring-amber-200">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+                        {tProposals("create.spec_pricing_label")}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setPricingOverride(true)}
+                        className="text-[11px] font-medium text-amber-900 underline-offset-2 hover:underline"
+                      >
+                        {tProposals("create.adjust_pricing")}
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-xs text-amber-900">
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                          {tProposals("create.unit_cost")}
+                        </span>
+                        <span className="font-semibold text-amber-950">
+                          {sheet.unit_cost
+                            ? `${specCurrency} ${Number(sheet.unit_cost).toFixed(2)}`
+                            : "—"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                          {tProposals("create.margin_percent")}
+                        </span>
+                        <span className="font-semibold text-amber-950">
+                          {sheet.margin_percent
+                            ? `${Number(sheet.margin_percent).toFixed(1)} %`
+                            : "—"}
+                        </span>
+                      </div>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-[10px] uppercase tracking-wide text-amber-800">
+                          {tProposals("create.customer_pays")}
+                        </span>
+                        <span className="font-semibold text-amber-950">
+                          {specPrice ? `${specCurrency} ${specPrice}` : "—"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+
+                {pricingOverride || !specHasPricing ? (
+                  <div className="flex flex-col gap-2 rounded-xl bg-ink-50 px-3 py-3 ring-1 ring-inset ring-ink-200">
+                    {specHasPricing ? (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+                          {tProposals("create.custom_pricing_label")}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // Re-seed from spec and collapse back.
+                            setUnitCost(
+                              sheet.unit_cost ? String(sheet.unit_cost) : "",
+                            );
+                            setMargin(
+                              sheet.margin_percent
+                                ? String(sheet.margin_percent)
+                                : "30",
+                            );
+                            setPricingOverride(false);
+                          }}
+                          className="text-[11px] font-medium text-ink-700 underline-offset-2 hover:underline"
+                        >
+                          {tProposals("create.use_spec_pricing")}
+                        </button>
+                      </div>
+                    ) : null}
+                    <div className="grid grid-cols-2 gap-3">
+                      <label className="flex flex-col gap-1.5">
+                        <span className="text-xs font-medium text-ink-700">
+                          {tProposals("create.unit_cost")}
+                        </span>
+                        <input
+                          type="number"
+                          step="0.0001"
+                          value={unitCost}
+                          onChange={(e) => setUnitCost(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1.5">
+                        <span className="text-xs font-medium text-ink-700">
+                          {tProposals("create.margin_percent")}
+                        </span>
+                        <input
+                          type="number"
+                          step="0.1"
+                          value={margin}
+                          onChange={(e) => setMargin(e.target.value)}
+                          placeholder="30"
+                          className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                        />
+                      </label>
+                    </div>
+                    <div
+                      className={`rounded-lg px-3 py-2 text-sm font-medium ring-1 ring-inset ${
+                        derivedUnitPrice === null
+                          ? "bg-ink-0 text-ink-500 ring-ink-200"
+                          : "bg-success/10 text-success ring-success/30"
+                      }`}
+                    >
+                      {derivedUnitPrice === null
+                        ? tProposals("create.price_placeholder")
+                        : tProposals("create.price_derived", {
+                            price: derivedUnitPrice.toFixed(2),
+                          })}
+                    </div>
+                  </div>
+                ) : null}
 
                 {error ? (
                   <p

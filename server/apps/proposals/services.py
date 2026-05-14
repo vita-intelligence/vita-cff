@@ -1140,7 +1140,16 @@ _REQUIRED_FOR_TRANSITION: dict[tuple[str, str], tuple[str, ...]] = {
     (ProposalStatus.APPROVED.value, ProposalStatus.SENT.value): (
         "customer_name",
         "customer_email",
-        "dear_name",
+        # ``dear_name`` was here but the renderer already falls back
+        # to ``customer_name`` when it's empty (see
+        # apps/proposals/render.py — ``proposal.dear_name or
+        # proposal.customer_name or "Customer"``), so requiring it
+        # at the validation layer was redundant and confusing:
+        # the edit form shows the customer name as a placeholder,
+        # making the field LOOK filled while the stored value is
+        # empty. The send would then reject with
+        # ``missing_required_fields:dear_name`` for what the
+        # operator sees as a populated field.
         "reference",
         "invoice_address",
         "sales_person",

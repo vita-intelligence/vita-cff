@@ -370,23 +370,78 @@ export function SpecificationSheetView({
             canWrite={canWrite && isEditableStatus}
             tSpecs={tSpecs}
           />
-          {/* Yellow "no price set" badge. Surfaces whenever the
-              commercial pricing trio is unset — sales picks this
-              spec in the proposal modal and gets an autofill;
-              without a price the proposal-line falls back to zero
-              and the team types it in by hand. We show the badge
-              regardless of status so a director glancing at the
-              page during the review knows the price still needs
-              attention before signing. */}
-          {sheet.final_price === null &&
-          sheet.unit_cost === null ? (
-            <span
-              title={tSpecs("detail.no_price_set_hint")}
-              className="inline-flex items-center gap-1.5 rounded-full bg-yellow-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-800 ring-1 ring-inset ring-yellow-300"
-            >
-              {tSpecs("detail.no_price_set")}
-            </span>
-          ) : null}
+          {/* Pricing surface in the status bar — three states:
+           *
+           *  * Both empty → yellow "No price set" pill so the team
+           *    knows the spec still needs commercial input before
+           *    sign-off.
+           *  * Anything populated → amber read-only chip showing
+           *    "{currency} {customer-pays}" with cost / margin in
+           *    the tooltip. Always visible regardless of edit lock
+           *    so a post-approval reader can verify what the
+           *    customer is paying without opening any modal.
+           *  Prefer the spec's stored ``final_price`` (signed value)
+           *  over deriving from cost+margin so the display is the
+           *  byte-exact number the director signed. */}
+          {(() => {
+            const cost = sheet.unit_cost ? Number(sheet.unit_cost) : null;
+            const marginPercent = sheet.margin_percent
+              ? Number(sheet.margin_percent)
+              : null;
+            const customerPrice = sheet.final_price
+              ? Number(sheet.final_price)
+              : cost !== null &&
+                  marginPercent !== null &&
+                  marginPercent >= 0 &&
+                  marginPercent < 100
+                ? cost / (1 - marginPercent / 100)
+                : null;
+            const currency = (sheet.currency || "GBP").toUpperCase();
+            if (customerPrice === null && cost === null) {
+              return (
+                <span
+                  title={tSpecs("detail.no_price_set_hint")}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-yellow-100 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-yellow-800 ring-1 ring-inset ring-yellow-300"
+                >
+                  {tSpecs("detail.no_price_set")}
+                </span>
+              );
+            }
+            const tooltipParts: string[] = [];
+            if (cost !== null) {
+              tooltipParts.push(
+                tSpecs("detail.price_chip.cost_part", {
+                  cost: `${currency} ${cost.toFixed(2)}`,
+                }),
+              );
+            }
+            if (marginPercent !== null) {
+              tooltipParts.push(
+                tSpecs("detail.price_chip.margin_part", {
+                  margin: marginPercent.toFixed(1),
+                }),
+              );
+            }
+            return (
+              <span
+                title={
+                  tooltipParts.length > 0
+                    ? tooltipParts.join(" · ")
+                    : undefined
+                }
+                className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900 ring-1 ring-inset ring-amber-200"
+              >
+                {tSpecs("detail.price_chip.label")}
+                <span className="text-amber-950">
+                  {customerPrice !== null
+                    ? `${currency} ${customerPrice.toFixed(2)}`
+                    : tSpecs("detail.price_chip.cost_only", {
+                        cost: `${currency} ${(cost as number).toFixed(2)}`,
+                      })}
+                </span>
+              </span>
+            );
+          })()}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {canWrite

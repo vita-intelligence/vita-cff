@@ -98,24 +98,45 @@ export function SignedDocuments({
   const proposalsSigned = canViewProposals
     ? signedProposals.data ?? []
     : [];
+  // ``Unlinked first`` ranking — specs without a ``linked_proposal``
+  // are the action items (no quote has been raised against the sheet
+  // yet, so the sales team needs to do something). We surface them
+  // at the top of every spec column on this tab; within each bucket
+  // the backend's ``-updated_at`` ordering is preserved (the sort is
+  // stable in modern JS engines).
+  const unlinkedFirst = <T extends { linked_proposal: unknown }>(
+    rows: readonly T[],
+  ): T[] =>
+    [...rows].sort((a, b) => {
+      const aLinked = a.linked_proposal == null ? 0 : 1;
+      const bLinked = b.linked_proposal == null ? 0 : 1;
+      return aLinked - bLinked;
+    });
+
   const specsApproved = useMemo(
     () =>
       canViewSpecs
-        ? approvedSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        ? unlinkedFirst(
+            approvedSpecs.data?.pages.flatMap((p) => p.results) ?? [],
+          )
         : [],
     [approvedSpecs.data, canViewSpecs],
   );
   const specsSent = useMemo(
     () =>
       canViewSpecs
-        ? sentSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        ? unlinkedFirst(
+            sentSpecs.data?.pages.flatMap((p) => p.results) ?? [],
+          )
         : [],
     [sentSpecs.data, canViewSpecs],
   );
   const specsSigned = useMemo(
     () =>
       canViewSpecs
-        ? signedSpecs.data?.pages.flatMap((p) => p.results) ?? []
+        ? unlinkedFirst(
+            signedSpecs.data?.pages.flatMap((p) => p.results) ?? [],
+          )
         : [],
     [signedSpecs.data, canViewSpecs],
   );

@@ -98,6 +98,12 @@
     "status_label": "Status",
     "no_price_set": "No price set",
     "no_price_set_hint": "Add a unit cost + margin (or a direct unit price) on Edit details so sales auto-fills it on the proposal.",
+    "price_chip": {
+      "label": "Customer pays",
+      "cost_only": "{cost} cost (no margin set)",
+      "cost_part": "Cost: {cost}",
+      "margin_part": "Margin: {margin}%"
+    },
     "advance_to": "Advance to",
     "review_slot_taken_tooltip": "Sheet {code} of the same kind is already waiting for the director's approval. Approve or revert that one before sending this one for review.",
     "download_pdf": "Download PDF",
