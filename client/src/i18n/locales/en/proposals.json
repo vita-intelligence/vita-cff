@@ -111,6 +111,7 @@
       "subject_label": "Subject",
       "body_label": "Message",
       "body_hint": "The customer also receives an ‘Open proposal’ button to the kiosk link below the message.",
+      "auto_bcc_hint": "A copy will be BCC'd to {name} (the assigned sales person) so they have a record of this send.",
       "invalid_email": "That doesn't look like a valid email address.",
       "default_subject": "Your Vita Manufacture proposal",
       "default_body": "Hi {name},\n\nThank you for your interest in working with Vita Manufacture.\n\nPlease find your proposal using the link below.\n\nThe proposal includes the relevant product details, pricing, minimum order quantity, estimated lead time, and next steps.\n\nPlease review it when convenient and let me know if you have any questions or if there is anything you would like us to clarify.\n\nIf you are happy to proceed, we can confirm the next steps and move the project forward.",

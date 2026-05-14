@@ -75,7 +75,36 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
         }
 
     def get_linked_proposal(self, obj) -> dict | None:
+        # A spec can be attached to a proposal in two ways:
+        #
+        # 1. The legacy proposal-level FK (``Proposal.specification_sheet``,
+        #    OneToOne) — only the FIRST spec picked when creating the
+        #    proposal lands here.
+        # 2. Per-line FK (``ProposalLine.specification_sheet``) — every
+        #    additional spec bundled into the proposal goes through a
+        #    new line.
+        #
+        # The original implementation only checked #1, so any spec
+        # attached as a line was incorrectly reported as "unlinked"
+        # on the Signed tab and showed a "+ Create proposal" button
+        # that would silently produce a duplicate proposal.
+        #
+        # Resolution order: the legacy OneToOne wins if present
+        # (matches the "first picked" semantics from the create
+        # flow); otherwise we take the most-recently-updated
+        # proposal that has a line referencing this sheet. A spec
+        # used on multiple proposals only surfaces the freshest
+        # one — enough to clear the "is this used?" check.
         proposal = getattr(obj, "proposal", None)
+        if proposal is None:
+            # ``.all()`` returns the prefetched list when ``list_sheets``
+            # provided the ``proposal_lines`` Prefetch (already ordered
+            # ``-proposal__updated_at`` in the prefetch queryset). Falling
+            # back to a fresh query when the prefetch is absent — keeps
+            # detail / single-fetch contexts working.
+            lines = list(obj.proposal_lines.all())
+            line = lines[0] if lines else None
+            proposal = line.proposal if line is not None else None
         if proposal is None:
             return None
         return {

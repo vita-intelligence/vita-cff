@@ -225,6 +225,10 @@ def list_sheets(
     in one query.
     """
 
+    from django.db.models import Prefetch
+
+    from apps.proposals.models import ProposalLine
+
     queryset = SpecificationSheet.objects.filter(organization=organization)
     if formulation_id is not None:
         queryset = queryset.filter(
@@ -232,7 +236,23 @@ def list_sheets(
         )
     if status:
         queryset = queryset.filter(status=status)
-    return queryset.select_related(*_SHEET_RELATED).order_by("-updated_at")
+    return (
+        queryset.select_related(*_SHEET_RELATED)
+        .prefetch_related(
+            # ``get_linked_proposal`` checks ``proposal_lines`` when the
+            # legacy OneToOne ``proposal`` link is empty — without the
+            # prefetch it would fire one query per sheet on the org-wide
+            # /signed list. Order by ``-updated_at`` matches the
+            # resolver's "freshest proposal wins" pick.
+            Prefetch(
+                "proposal_lines",
+                queryset=ProposalLine.objects.select_related("proposal").order_by(
+                    "-proposal__updated_at"
+                ),
+            ),
+        )
+        .order_by("-updated_at")
+    )
 
 
 def get_sheet(

@@ -162,6 +162,51 @@ class TestSendProposalToClient:
             )
         assert mailoutbox == []
 
+    def test_auto_bccs_sales_person(
+        self, settings, mailoutbox
+    ) -> None:
+        # The assigned sales person is auto-added to BCC so they
+        # always have a record of customer-facing sends. BCC (not
+        # CC) so the customer doesn't see internal addresses; the
+        # Reply-To header still routes any reply back to them.
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        proposal = _approved_proposal()
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="alex@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+        sales_email = proposal.organization.created_by.email
+        sent = mailoutbox[0]
+        assert sales_email in sent.bcc
+        # The customer-facing ``To`` line stays clean — only the
+        # actual recipient appears, no internal addresses leaked.
+        assert sent.to == ["alex@buyer.test"]
+
+    def test_auto_bcc_skipped_when_sales_person_is_recipient(
+        self, settings, mailoutbox
+    ) -> None:
+        # Edge case: the operator is sending the email to themselves
+        # (e.g. they're both the assigned sales person AND the test
+        # recipient). The auto-BCC should drop in that case so the
+        # mailbox doesn't double-deliver.
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        proposal = _approved_proposal()
+        sales_email = proposal.organization.created_by.email
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient=sales_email,
+            subject="x",
+            body_text="y",
+        )
+        sent = mailoutbox[0]
+        assert sent.bcc == []
+
     def test_reply_to_points_at_sales_person(
         self, settings, mailoutbox
     ) -> None:

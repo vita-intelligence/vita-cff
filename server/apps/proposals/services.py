@@ -1405,6 +1405,7 @@ def _render_and_send_proposal_email(
     #      that domain (signing with the sales person's personal
     #      address would break DMARC).
     reply_to: list[str] = []
+    sales_email = ""
     if sales_person is not None:
         sales_email = (getattr(sales_person, "email", "") or "").strip()
         if sales_email:
@@ -1413,6 +1414,21 @@ def _render_and_send_proposal_email(
                 if sales_person_name
                 else sales_email
             ]
+
+    # Auto-BCC the assigned sales person so they get a record of
+    # every customer-facing send without the operator having to
+    # remember to CC themselves. BCC (not CC) so the customer
+    # doesn't see internal addresses in the visible headers — the
+    # Reply-To above already routes any reply back to them. Skip
+    # when (a) the operator already put the sales person on the cc
+    # / bcc explicitly, or (b) the sales person IS the recipient
+    # (sending to yourself is weird).
+    if sales_email:
+        lowered_existing = {
+            addr.lower() for addr in (cc_clean + bcc_clean + [recipient_clean])
+        }
+        if sales_email.lower() not in lowered_existing:
+            bcc_clean.append(sales_email)
 
     message = EmailMultiAlternatives(
         subject=final_subject,

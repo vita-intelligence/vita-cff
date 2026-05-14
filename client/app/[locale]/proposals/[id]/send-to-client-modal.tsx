@@ -237,6 +237,19 @@ export function SendToClientModal({
                 />
               </Field>
 
+              {/* Sales-person BCC hint. The backend auto-adds the
+               *  assigned sales person to the BCC line so they
+               *  always get a record of the send. Surfaced here so
+               *  the operator knows the behaviour exists and isn't
+               *  surprised by a BCC line in the audit log. */}
+              {proposal.effective_sales_person_name ? (
+                <p className="rounded-xl bg-ink-50 px-3 py-2 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
+                  {tProposals("detail.send_to_client.auto_bcc_hint", {
+                    name: proposal.effective_sales_person_name,
+                  })}
+                </p>
+              ) : null}
+
               {/* Send-test affordance. A separate input + button so the
                   operator can preview the exact email in their own (or
                   a colleague's) inbox before committing to the
