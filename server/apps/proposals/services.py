@@ -1353,10 +1353,17 @@ def _render_and_send_proposal_email(
         )
     )
     sales_person_name = ""
+    sales_person_email = ""
     if sales_person is not None:
         sales_person_name = (
             sales_person.get_full_name() or sales_person.email or ""
         ).strip()
+        # Sign-off email — only surface it when distinct from the
+        # name to avoid "Alex Smith\nAlex Smith" when the user has
+        # no full name set. The template hides the line when empty.
+        candidate_email = (sales_person.email or "").strip()
+        if candidate_email and candidate_email != sales_person_name:
+            sales_person_email = candidate_email
 
     body_html = render_to_string(
         "proposals/email/send_to_client.html",
@@ -1365,6 +1372,7 @@ def _render_and_send_proposal_email(
             "body_text": body_text or "",
             "kiosk_url": kiosk_url,
             "sales_person_name": sales_person_name,
+            "sales_person_email": sales_person_email,
         },
     )
 
@@ -1385,8 +1393,10 @@ def _render_and_send_proposal_email(
         plain_lines.append(kiosk_url)
         plain_lines.append("")
     if sales_person_name:
-        plain_lines.append("Yours sincerely,")
+        plain_lines.append("Kind regards,")
         plain_lines.append(sales_person_name)
+        if sales_person_email:
+            plain_lines.append(sales_person_email)
         plain_lines.append("")
     plain_lines.append(f"— Vita NPD · {proposal.code}")
     plain_body = "\n".join(plain_lines)

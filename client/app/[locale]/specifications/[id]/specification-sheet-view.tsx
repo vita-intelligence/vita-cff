@@ -1030,7 +1030,12 @@ export function SpecSheetContent({
 
   return (
     <article
-      className="relative mx-auto max-w-[820px] bg-ink-0 px-6 py-8 text-ink-1000 md:px-12 md:py-12 print:px-0 print:py-0"
+      // Mobile gets a tight 12-px inset so wide actives / nutrition
+      // tables don't get squeezed inside the kiosk's spec preview
+      // window (which already nests this inside one or two parent
+      // padded boxes). Desktop keeps the comfortable letterhead-
+      // style margins.
+      className="relative mx-auto max-w-[820px] bg-ink-0 px-3 py-8 text-ink-1000 sm:px-6 md:px-12 md:py-12 print:px-0 print:py-0"
       style={{ fontFamily: "Arial, Helvetica, sans-serif" }}
     >
       {rendered.watermark ? <DraftWatermark /> : null}

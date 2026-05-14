@@ -738,12 +738,13 @@ function DocumentCard({
             </p>
           ) : null}
         </div>
-        {/* Action row. On mobile this drops below the title and
-            stretches full-width so the Sign button is a thumb-sized
-            target; on ≥sm it floats to the right of the title. */}
-        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+        {/* Action row. On mobile each control stacks full-width so
+            the buttons are thumb-sized and the labels never wrap
+            inside narrow side-by-side slots. On ≥sm everything
+            flows into one row to the right of the title. */}
+        <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:flex-wrap sm:items-center">
           {hasSignature ? (
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30">
+            <span className="inline-flex items-center justify-center gap-1.5 rounded-full bg-success/10 px-3 py-1 text-xs font-medium text-success ring-1 ring-inset ring-success/30 sm:justify-start">
               <CheckCircle2 className="h-3.5 w-3.5" />
               {tProposals("public.doc.signed_badge")}
             </span>
@@ -753,7 +754,7 @@ function DocumentCard({
               href={commentsHref}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:flex-initial sm:justify-start"
+              className="inline-flex h-10 w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:w-auto sm:justify-start"
             >
               <MessageCircle className="h-4 w-4" />
               {commentsLabel}
@@ -768,7 +769,7 @@ function DocumentCard({
             <a
               href={downloadHref}
               download
-              className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:flex-initial sm:justify-start"
+              className="inline-flex h-10 w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50 sm:w-auto sm:justify-start"
             >
               <Download className="h-4 w-4" />
               {downloadLabel}
@@ -777,7 +778,7 @@ function DocumentCard({
           {!locked ? (
             <span
               title={signDisabled ? signDisabledHint : undefined}
-              className="flex-1 sm:flex-initial"
+              className="w-full sm:w-auto"
             >
               <Button
                 type="button"
@@ -786,8 +787,8 @@ function DocumentCard({
                 isDisabled={signDisabled}
                 className={
                   hasSignature
-                    ? "inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
-                    : "inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
+                    ? "inline-flex h-10 w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
+                    : "inline-flex h-10 w-full items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto sm:justify-start"
                 }
               >
                 <PenLine className="h-4 w-4" />
@@ -1018,10 +1019,19 @@ function InlineSpecPreview({
       {/* Fixed-height window with internal scroll — same footprint
        *  as the proposal iframe. The customer scrolls inside the
        *  window; the polling loop above tracks how far they got
-       *  through the spec content. */}
+       *  through the spec content.
+       *
+       *  Mobile: zero horizontal padding so ``SpecSheetContent``'s
+       *  own ``px-6`` (24px each side) is the only inset — without
+       *  this we'd double-stack padding from the page wrapper,
+       *  the section card, this container, AND the spec content,
+       *  eating ~150 px of horizontal real estate and pushing
+       *  wide tables off-screen. ``overflow-auto`` (both axes) so
+       *  any table that does overflow horizontally scrolls inside
+       *  the box rather than the body. */}
       <div
         ref={scrollContainerRef}
-        className="h-[70vh] w-full overflow-y-auto rounded-xl bg-ink-50 px-4 py-6 ring-1 ring-inset ring-ink-200 sm:px-6 md:h-[780px]"
+        className="h-[70vh] w-full overflow-auto rounded-xl bg-ink-50 py-6 ring-1 ring-inset ring-ink-200 md:h-[780px]"
       >
         <SpecSheetContent rendered={rendered} />
       </div>

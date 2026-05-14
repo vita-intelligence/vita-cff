@@ -1798,7 +1798,13 @@ function AttachedSpecPreviewCard({
           {tProposals("detail.attached_specs.download_pdf")}
         </a>
       </header>
-      <div className="mt-3 h-[780px] overflow-y-auto rounded-xl bg-ink-50 px-4 py-6 ring-1 ring-inset ring-ink-200 sm:px-6">
+      {/* Same mobile treatment as the kiosk's ``InlineSpecPreview``
+          — no horizontal padding on this wrapper so the inner
+          ``SpecSheetContent`` (which already has its own ``px-6
+          md:px-12``) gets full width. ``overflow-auto`` (both axes)
+          so an over-wide actives / nutrition table scrolls inside
+          the box instead of stretching the page. */}
+      <div className="mt-3 h-[70vh] overflow-auto rounded-xl bg-ink-50 py-6 ring-1 ring-inset ring-ink-200 md:h-[780px]">
         {renderedQuery.data ? (
           <SpecSheetContent rendered={renderedQuery.data} />
         ) : renderedQuery.isError ? (

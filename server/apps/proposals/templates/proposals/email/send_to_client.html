@@ -111,7 +111,7 @@
             {% if sales_person_name %}
             <tr>
               <td style="padding:8px 32px 32px 32px;font-size:14px;color:#5a574f;border-top:1px solid #f0eee9;font-family:'Segoe UI',Arial,sans-serif;">
-                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong></p>
+                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong>{% if sales_person_email %}<br/><a href="mailto:{{ sales_person_email }}" style="color:#5a574f;text-decoration:underline;">{{ sales_person_email }}</a>{% endif %}</p>
               </td>
             </tr>
             {% endif %}
