@@ -161,6 +161,11 @@ class TestApproveCapability:
             organization=org,
             permissions={"proposals": ["view", "edit"]},
         )
+        # Seed every required field — this test pins the *RBAC*
+        # outcome (editor with the right cap CAN move to in_review);
+        # the required-fields gate is exercised separately in
+        # ``test_complete_required_fields.py`` and would otherwise
+        # mask the capability check with a 400 for missing data.
         proposal = ProposalFactory(
             organization=org,
             created_by=owner,
@@ -168,6 +173,8 @@ class TestApproveCapability:
             status=ProposalStatus.DRAFT.value,
             customer_name="Alex",
             customer_email="alex@buyer.test",
+            reference="REF-001",
+            invoice_address="1 Buyer Street",
         )
         proposal.sales_person = owner
         proposal.save(update_fields=["sales_person"])

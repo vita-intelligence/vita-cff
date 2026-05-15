@@ -172,6 +172,98 @@ class TestApprovalGateRequiresFullSet:
 
 
 # ---------------------------------------------------------------------------
+# Tightened send-for-review gate
+# ---------------------------------------------------------------------------
+
+
+def _seed_draft(org, owner, **overrides) -> Any:
+    """Build a ``draft`` proposal populated enough that the
+    ``draft → in_review`` gate passes. Callers spread
+    ``overrides`` to selectively blank a field under test.
+
+    Mirrors :func:`_seed_in_review` so the only difference between
+    the two seed helpers is the starting status — keeps the
+    "what does each gate require?" surface comparable at a glance.
+    """
+
+    defaults = dict(
+        organization=org,
+        created_by=owner,
+        updated_by=owner,
+        status=ProposalStatus.DRAFT.value,
+        customer_name="Alex Buyer",
+        customer_email="alex@buyer.test",
+        customer_company="Buyer Ltd",
+        invoice_address="1 Buyer Street",
+        reference="REF-001",
+        currency="GBP",
+        quantity=1,
+    )
+    defaults.update(overrides)
+    proposal = ProposalFactory(**defaults)
+    proposal.sales_person = owner
+    proposal.save(update_fields=["sales_person"])
+    proposal.lines.create(
+        formulation_version=proposal.formulation_version,
+        product_code="LINE-001",
+        description="Test line",
+        quantity=1,
+        unit_price="10.00",
+        display_order=0,
+    )
+    return proposal
+
+
+class TestSendForReviewGateRequiresFullSet:
+    """``draft → in_review`` now rejects the same blanks that
+    ``in_review → approved`` (and ``approved → sent``) did. The
+    upstream gate stops the rep from paging the director with an
+    incomplete proposal — the director's queue only ever holds
+    proposals already ready for sign-off."""
+
+    def test_blank_reference_blocks_send_for_review(self) -> None:
+        owner = UserFactory()
+        org = create_organization(user=owner, name="Review Test Co")
+        proposal = _seed_draft(org, owner, reference="")
+
+        with pytest.raises(MissingRequiredFields) as exc:
+            transition_status(
+                proposal=proposal,
+                actor=owner,
+                to_status=ProposalStatus.IN_REVIEW.value,
+                signature_image=_TINY_PNG,
+            )
+        assert "reference" in exc.value.missing
+
+    def test_blank_invoice_address_blocks_send_for_review(self) -> None:
+        owner = UserFactory()
+        org = create_organization(user=owner, name="Review Test Co")
+        proposal = _seed_draft(org, owner, invoice_address="")
+
+        with pytest.raises(MissingRequiredFields) as exc:
+            transition_status(
+                proposal=proposal,
+                actor=owner,
+                to_status=ProposalStatus.IN_REVIEW.value,
+                signature_image=_TINY_PNG,
+            )
+        assert "invoice_address" in exc.value.missing
+
+    def test_complete_proposal_sends_for_review(self) -> None:
+        owner = UserFactory()
+        org = create_organization(user=owner, name="Review Test Co")
+        proposal = _seed_draft(org, owner)
+
+        updated = transition_status(
+            proposal=proposal,
+            actor=owner,
+            to_status=ProposalStatus.IN_REVIEW.value,
+            signature_image=_TINY_PNG,
+        )
+        assert updated.status == ProposalStatus.IN_REVIEW.value
+
+
+# ---------------------------------------------------------------------------
 # complete_required_fields service
 # ---------------------------------------------------------------------------
 

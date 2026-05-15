@@ -1189,19 +1189,33 @@ def delete_proposal_line(
 #: instead of a plain text input when it sees this key.
 _REQUIRED_FOR_TRANSITION: dict[tuple[str, str], tuple[str, ...]] = {
     (ProposalStatus.DRAFT.value, ProposalStatus.IN_REVIEW.value): (
+        # Mirrors the ``in_review → approved`` (and therefore the
+        # ``approved → sent``) set so the operator cannot kick a
+        # proposal into the director's queue with content the
+        # director would have rejected anyway. Catching it at
+        # send-for-review pushes the validation a step earlier
+        # in the flow: the only way the proposal can REACH
+        # ``in_review`` is with a complete document, so the
+        # director can sign off on whatever lands in front of
+        # them without paging the rep to fix blanks. The
+        # alternative — gating only at approval — leaves the
+        # director with the choice between rejecting (which
+        # forces a second round-trip) and approving an
+        # incomplete proposal that needs the post-hoc
+        # ``complete_required_fields`` escape hatch.
         "customer_name",
         "customer_email",
+        "reference",
+        "invoice_address",
         "sales_person",
         "lines",
     ),
     (ProposalStatus.IN_REVIEW.value, ProposalStatus.APPROVED.value): (
-        # Mirrors the ``approved → sent`` set so a director cannot
-        # sign off on a proposal that's missing content the customer
-        # would have seen on the rendered PDF. Catching it here means
-        # the only way to reach ``approved`` is with a document that's
-        # already complete — the alternative (catching it at send)
-        # leaves the director's signature attached to an incomplete
-        # proposal that then needs post-hoc edits.
+        # Same set as the ``draft → in_review`` gate above. Kept
+        # explicit (rather than collapsed via a shared tuple) so
+        # the per-transition contract is auditable in one place
+        # and a future divergence (e.g. director-specific fields)
+        # is a localised edit.
         "customer_name",
         "customer_email",
         "reference",
