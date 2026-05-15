@@ -1,4 +1,5 @@
 export { mrpeasyEndpoints } from "./endpoints";
+export { buildMrpeasyItemUrl } from "./url";
 export {
   clearMrpeasyConfig,
   fetchMrpeasyConfig,

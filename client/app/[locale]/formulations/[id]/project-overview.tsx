@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { MrpeasyItemLink } from "@/components/mrpeasy/mrpeasy-item-link";
 import {
   useProjectOverview,
   type ProjectOverviewDto,
@@ -47,7 +48,7 @@ export function ProjectOverview({
 
   return (
     <article className="flex flex-col gap-6">
-      <HeaderCard overview={overview} tProject={tProject} />
+      <HeaderCard orgId={orgId} overview={overview} tProject={tProject} />
       <KpiRow overview={overview} tProject={tProject} />
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <SnapshotCard overview={overview} tProject={tProject} />
@@ -65,9 +66,11 @@ export function ProjectOverview({
 
 
 function HeaderCard({
+  orgId,
   overview,
   tProject,
 }: {
+  orgId: string;
   overview: ProjectOverviewDto;
   tProject: ReturnType<typeof useTranslations<"project_overview">>;
 }) {
@@ -76,9 +79,21 @@ function HeaderCard({
     <section className="rounded-2xl bg-ink-0 p-8 shadow-sm ring-1 ring-ink-200">
       <div className="flex flex-wrap items-start justify-between gap-6">
         <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            {overview.code || tProject("header.no_code")}
-          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              {overview.code || tProject("header.no_code")}
+            </p>
+            {/* "Open in MRPEasy" — sits inline with the project
+                code so the team can jump from the project page
+                straight to the source ERP record in one click.
+                Self-hides when MRPEasy isn't live for the org or
+                when the project has no code yet. */}
+            <MrpeasyItemLink
+              orgId={orgId}
+              code={overview.code}
+              variant="compact"
+            />
+          </div>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink-1000">
             {overview.name}
           </h1>

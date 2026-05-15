@@ -19,6 +19,7 @@ import { useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { CommentsPanel } from "@/components/comments";
+import { MrpeasyItemLink } from "@/components/mrpeasy/mrpeasy-item-link";
 import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
@@ -2016,13 +2017,23 @@ function ApprovalPricingForm({
           says this product sells for Y; let me adjust margin if
           they differ". No autofill button — the spec stores cost
           + margin (final_price is derived), so there isn't a
-          single field to copy MRPEasy's value into. */}
-      <MrpeasyPriceHint
-        orgId={orgId}
-        code={formulationCode}
-        currency={currency}
-        className="self-start"
-      />
+          single field to copy MRPEasy's value into.
+
+          The "Open in MRPEasy" link sits inline next to the price
+          chip so the director can pop the source record open in
+          a new tab before they pick up the pen — same data the
+          chip distilled, but the live ERP view, in case they
+          want to double-check stock or supplier terms before
+          signing. Both surfaces self-hide when MRPEasy isn't
+          live for this org. */}
+      <div className="flex flex-wrap items-center gap-2">
+        <MrpeasyPriceHint
+          orgId={orgId}
+          code={formulationCode}
+          currency={currency}
+        />
+        <MrpeasyItemLink orgId={orgId} code={formulationCode} />
+      </div>
 
       {!valid ? (
         <p className="text-[11px] font-medium text-amber-900">

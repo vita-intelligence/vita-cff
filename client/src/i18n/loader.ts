@@ -41,6 +41,7 @@ export const namespaces = [
   "comments",
   "approvals",
   "signed",
+  "mrpeasy",
 ] as const;
 
 export type Namespace = (typeof namespaces)[number];
