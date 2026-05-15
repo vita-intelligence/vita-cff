@@ -340,3 +340,32 @@ class TestSendProposalTestEmail:
                 subject="x",
                 body_text="y",
             )
+
+    def test_does_not_auto_bcc_sales_person(
+        self, settings, mailoutbox
+    ) -> None:
+        # Regression: an earlier version of the shared render helper
+        # auto-BCC'd the sales person on every send — including test
+        # previews. That caused the assigned sales rep to receive a
+        # copy of every iteration their teammate did in the compose
+        # modal. Test sends must land in the typed recipient's inbox
+        # and nowhere else.
+        from apps.proposals.services import send_proposal_test_email
+
+        settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
+        proposal = _approved_proposal()
+
+        send_proposal_test_email(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="me@vita.test",
+            subject="x",
+            body_text="y",
+        )
+
+        assert len(mailoutbox) == 1
+        assert mailoutbox[0].to == ["me@vita.test"]
+        # The whole point of the regression: zero CC and zero BCC on
+        # the test path, no matter who the proposal's sales person is.
+        assert not mailoutbox[0].cc
+        assert not mailoutbox[0].bcc

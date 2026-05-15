@@ -1480,6 +1480,7 @@ def _render_and_send_proposal_email(
     body_text: str,
     cc: list[str] | None = None,
     bcc: list[str] | None = None,
+    auto_bcc_sales_person: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     """Render the proposal email body (HTML wrapper + plain text) and
     push it through Django's email backend. Returns the final
@@ -1618,7 +1619,12 @@ def _render_and_send_proposal_email(
     # when (a) the operator already put the sales person on the cc
     # / bcc explicitly, or (b) the sales person IS the recipient
     # (sending to yourself is weird).
-    if sales_email:
+    #
+    # Gated on ``auto_bcc_sales_person`` so the preview path
+    # (:func:`send_proposal_test_email`) never copies the sales
+    # person — a test send is the operator's own iteration loop and
+    # must not leak into anyone else's inbox.
+    if auto_bcc_sales_person and sales_email:
         lowered_existing = {
             addr.lower() for addr in (cc_clean + bcc_clean + [recipient_clean])
         }
@@ -1837,15 +1843,25 @@ def send_proposal_to_client(
             something the status machine requires for ``sent``.
     """
 
-    # State-machine guard. We do this before the render to avoid
-    # wasting work on a proposal that can't actually advance.
+    # Re-fetch under a row lock so two parallel "Send to client"
+    # clicks on the same proposal serialise on the DB. Without this,
+    # both requests would read ``status=approved`` simultaneously,
+    # both pass the guard below, and both fire SMTP — producing
+    # duplicate customer emails. The lock makes the second caller
+    # wait until the first commits, at which point it sees the
+    # ``sent`` status and raises ``InvalidProposalTransition``.
+    proposal = Proposal.objects.select_for_update().get(pk=proposal.pk)
+
     if proposal.status != ProposalStatus.APPROVED.value:
         raise InvalidProposalTransition()
 
     # Shared render + send path. Raises on empty recipient or SMTP
     # failure; the surrounding ``@transaction.atomic`` rolls back the
     # whole block on any exception so a failed send never leaves the
-    # status flipped.
+    # status flipped. ``auto_bcc_sales_person=True`` so the real
+    # customer dispatch always cc's the proposal's sales person —
+    # the preview path leaves this off so a test send only ever
+    # reaches the typed recipient.
     final_subject, cc_clean, bcc_clean = _render_and_send_proposal_email(
         proposal=proposal,
         recipient=recipient,
@@ -1853,6 +1869,7 @@ def send_proposal_to_client(
         body_text=body_text,
         cc=cc,
         bcc=bcc,
+        auto_bcc_sales_person=True,
     )
     recipient_clean = (recipient or "").strip()
 
