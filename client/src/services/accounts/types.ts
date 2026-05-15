@@ -33,3 +33,24 @@ export interface LoginRequestDto {
 }
 
 export type LoginResponseDto = UserDto;
+
+export interface PasswordResetRequestDto {
+  readonly email: string;
+}
+
+export interface PasswordResetConfirmDto {
+  readonly token: string;
+  readonly password: string;
+  readonly password_confirm: string;
+}
+
+/** Shape of an error response from the validate or confirm endpoints
+ *  when the token itself is the problem. The frontend uses the
+ *  ``code`` to choose a translation string. */
+export interface PasswordResetTokenErrorDto {
+  readonly code:
+    | "password_reset_token_invalid"
+    | "password_reset_token_expired"
+    | "password_reset_token_used"
+    | "password_reset_token_invalidated";
+}

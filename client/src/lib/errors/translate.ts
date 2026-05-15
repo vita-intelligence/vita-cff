@@ -118,6 +118,7 @@ export function extractApiErrorMessage(
     if (error.status === 401) return t("unauthorized");
     if (error.status === 403) return t("forbidden");
     if (error.status === 404) return t("not_found");
+    if (error.status === 429) return t("too_many_requests");
     if (error.status >= 500) return t("server");
     if (error.status === 0) return t("network");
 

@@ -223,11 +223,18 @@ ASGI_APPLICATION = "config.asgi.application"
 # Channels — WebSocket transport + inter-consumer message bus.
 #
 # Dev default: ``channels.layers.InMemoryChannelLayer``. Fine for
-# single-process ``runserver`` and the test suite. Production
-# overrides ``CHANNEL_LAYER_URL`` to a Redis DSN so consumers across
-# multiple worker processes can broadcast to each other via
-# ``channels_redis`` — the same Redis we will also use for Celery
-# when commit 3's payload lands in production.
+# single-process ``runserver`` and the test suite. **Production
+# MUST set ``CHANNEL_LAYER_URL``** to a Redis DSN so consumers
+# across multiple uvicorn workers can broadcast to each other via
+# ``channels_redis`` — without it, the second uvicorn worker on
+# the same instance silently ignores cross-worker WebSocket
+# broadcasts (commit-feed updates, presence pings, kiosk comment
+# fanout) and clients connected to the "wrong" worker only see
+# events when they refetch on focus.
+#
+# The DSN points at DB 1 of the shared Vita Performance Redis;
+# DB 0 belongs to ``vita-performance-api``, DB 2 is reserved for
+# Celery's broker, DB 3 for any future Celery result backend.
 CHANNEL_LAYER_URL = os.environ.get("CHANNEL_LAYER_URL")
 if CHANNEL_LAYER_URL:
     CHANNEL_LAYERS = {
@@ -242,6 +249,48 @@ else:
             "BACKEND": "channels.layers.InMemoryChannelLayer",
         }
     }
+
+
+# Celery — async task queue for work that must not block a request
+# (PDF rendering, email send, future MRPeasy push, etc.).
+#
+# Optional in dev: when ``CELERY_BROKER_URL`` is unset, every
+# ``.delay()`` falls through to a synchronous in-process call via
+# ``CELERY_TASK_ALWAYS_EAGER``. That keeps the test suite + a
+# fresh ``runserver`` working without a Redis broker. Production
+# points ``CELERY_BROKER_URL`` at DB 2 of the shared Redis (DB 1
+# is Channels above) and runs a dedicated worker container with
+# ``celery -A config worker``.
+#
+# ``CELERY_TASK_EAGER_PROPAGATES`` ensures exceptions raised inside
+# an eager task surface to the caller exactly as they would on a
+# real worker — otherwise tests that exercise the failure path
+# would silently green-pass.
+CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "")
+CELERY_TASK_ALWAYS_EAGER = not CELERY_BROKER_URL
+CELERY_TASK_EAGER_PROPAGATES = True
+# Result backend is intentionally **not** configured. None of the
+# current task surfaces (email send, future MRPeasy push as
+# fire-and-forget) need to inspect a return value; persisting
+# results would only add DB writes for no caller. Switch this on
+# (e.g. ``redis://…/3``) once a workflow needs ``AsyncResult.get()``.
+CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "")
+# JSON is the only serializer we expect — explicitly reject pickle
+# so a future task author can't accidentally ship a Django model
+# instance through the broker (which would also create an arbitrary
+# code execution surface on the worker).
+CELERY_ACCEPT_CONTENT = ["json"]
+CELERY_TASK_SERIALIZER = "json"
+CELERY_RESULT_SERIALIZER = "json"
+# Long but finite default time limit so a stuck task can never pin a
+# worker forever. Tasks that legitimately take longer override per
+# task via ``@shared_task(time_limit=...)``.
+CELERY_TASK_TIME_LIMIT = 60 * 5  # 5 minutes hard kill
+CELERY_TASK_SOFT_TIME_LIMIT = 60 * 4  # 4 minutes soft (raises SoftTimeLimitExceeded)
+# Helpful operational defaults: when a worker restarts, retry
+# connection to the broker without spamming logs forever.
+CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
+CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
 
 
 # Templates

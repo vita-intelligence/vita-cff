@@ -13,6 +13,8 @@ import { accountsEndpoints } from "./endpoints";
 import type {
   LoginRequestDto,
   LoginResponseDto,
+  PasswordResetConfirmDto,
+  PasswordResetRequestDto,
   RegisterRequestDto,
   RegisterResponseDto,
   UserDto,
@@ -62,4 +64,27 @@ export async function updateCurrentUser(
     payload,
   );
   return data;
+}
+
+export async function requestPasswordReset(
+  payload: PasswordResetRequestDto,
+): Promise<void> {
+  await apiClient.post(accountsEndpoints.passwordResetRequest, payload);
+}
+
+/** Peek at a reset token's validity *before* showing the password
+ *  form. Returns ``true`` if the token is currently consumable. The
+ *  caller does not get to know which specific failure mode the
+ *  token is in — that is surfaced by the confirm endpoint where the
+ *  user can see a meaningful next step. */
+export async function validatePasswordResetToken(token: string): Promise<void> {
+  await apiClient.get(accountsEndpoints.passwordResetValidate, {
+    params: { token },
+  });
+}
+
+export async function confirmPasswordReset(
+  payload: PasswordResetConfirmDto,
+): Promise<void> {
+  await apiClient.post(accountsEndpoints.passwordResetConfirm, payload);
 }

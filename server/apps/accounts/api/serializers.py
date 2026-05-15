@@ -141,6 +141,53 @@ class RegisterSerializer(serializers.ModelSerializer):
         return UserModel.objects.create_user(password=password, **validated_data)
 
 
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """Input for ``POST /api/auth/password-reset/request/``.
+
+    Only ``email`` — we never branch on the response shape so the
+    serializer accepts any well-formed address regardless of whether
+    a matching user exists. Validation errors here are limited to
+    "not an email at all" so the endpoint can still 400 on garbage
+    input without revealing user existence.
+    """
+
+    email = serializers.EmailField(required=True, allow_blank=False)
+
+    def validate_email(self, value: str) -> str:
+        return value.strip().lower()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Input for ``POST /api/auth/password-reset/confirm/``.
+
+    The new password is validated downstream by the service layer
+    (which runs Django's password validators against the *actual*
+    user attached to the token, so similarity checks work). We only
+    check shape here.
+    """
+
+    token = serializers.CharField(required=True, allow_blank=False)
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={"input_type": "password"},
+        trim_whitespace=False,
+    )
+    password_confirm = serializers.CharField(
+        write_only=True,
+        required=True,
+        style={"input_type": "password"},
+        trim_whitespace=False,
+    )
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if attrs["password"] != attrs["password_confirm"]:
+            raise serializers.ValidationError(
+                {"password_confirm": [_code("passwords_do_not_match")]}
+            )
+        return attrs
+
+
 class LoginSerializer(serializers.Serializer):
     """Validate an email/password pair and return the authenticated user.
 

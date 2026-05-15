@@ -109,6 +109,15 @@ export function LoginForm() {
         )}
       />
 
+      <div className="-mt-2 text-right">
+        <Link
+          href="/forgot-password"
+          className="text-xs font-medium text-orange-700 underline-offset-4 hover:text-orange-800 hover:underline"
+        >
+          {tAuth("login.forgot_password")}
+        </Link>
+      </div>
+
       {errors.root?.message ? (
         <p
           role="alert"

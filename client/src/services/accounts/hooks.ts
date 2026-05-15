@@ -18,16 +18,21 @@ import type { ApiError } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
 
 import {
+  confirmPasswordReset,
   fetchCurrentUser,
   loginUser,
   logoutUser,
   registerUser,
+  requestPasswordReset,
   updateCurrentUser,
+  validatePasswordResetToken,
   type UpdateMeRequestDto,
 } from "./api";
 import type {
   LoginRequestDto,
   LoginResponseDto,
+  PasswordResetConfirmDto,
+  PasswordResetRequestDto,
   RegisterRequestDto,
   RegisterResponseDto,
   UserDto,
@@ -104,5 +109,43 @@ export function useUpdateCurrentUser(): UseMutationResult<
       // React Query cache entirely.
       queryClient.setQueryData(accountsQueryKeys.me(), user);
     },
+  });
+}
+
+export function useRequestPasswordReset(): UseMutationResult<
+  void,
+  ApiError,
+  PasswordResetRequestDto
+> {
+  return useMutation<void, ApiError, PasswordResetRequestDto>({
+    mutationFn: requestPasswordReset,
+  });
+}
+
+/** TanStack ``useQuery`` wrapper around the validate endpoint.
+ *  ``enabled`` is bound to whether a token is present so the reset
+ *  page can show its own missing-token state before this fires.
+ *  ``retry: false`` keeps a 400 (expired / used / invalid) from
+ *  bouncing the user through three retries before they see the
+ *  error state. */
+export function useValidatePasswordResetToken(
+  token: string | undefined,
+): UseQueryResult<void, ApiError> {
+  return useQuery<void, ApiError>({
+    queryKey: [...accountsQueryKeys.all, "password-reset", "validate", token],
+    queryFn: () => validatePasswordResetToken(token ?? ""),
+    enabled: Boolean(token),
+    retry: false,
+    staleTime: 0,
+  });
+}
+
+export function useConfirmPasswordReset(): UseMutationResult<
+  void,
+  ApiError,
+  PasswordResetConfirmDto
+> {
+  return useMutation<void, ApiError, PasswordResetConfirmDto>({
+    mutationFn: confirmPasswordReset,
   });
 }

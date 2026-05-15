@@ -235,21 +235,50 @@ async function serverFetch<T>(path: string): Promise<T | null> {
 }
 
 /**
+ * Single round-trip seed used by every authenticated page.
+ *
+ * Backed by ``/api/auth/bootstrap/`` which returns ``{user,
+ * organizations}`` in one response. Wrapping in :func:`react.cache`
+ * means every Server Component in the same render shares one
+ * backend hit — the page guard, the header chrome, and the layout
+ * all read from the same memoized promise.
+ *
+ * Returns ``null`` on auth failure (missing/expired cookie), and
+ * raises :class:`BackendUnavailableError` when the backend is
+ * reachable but degraded — same contract as the lower-level
+ * helpers below so callers can keep their error boundaries.
+ */
+interface BootstrapPayload {
+  readonly user: UserDto;
+  readonly organizations: readonly OrganizationDto[];
+}
+
+const getBootstrapServer = cache(
+  async (): Promise<BootstrapPayload | null> =>
+    serverFetch<BootstrapPayload>("/api/auth/bootstrap/"),
+);
+
+/**
  * Read the current user from an incoming Server Component request.
  *
- * We call the backend's ``/api/auth/me/`` endpoint directly from the
- * server, forwarding the httpOnly cookies attached to the inbound
- * request. This runs before any HTML is shipped to the browser so we
- * can redirect logged-in visitors away from public pages (and
- * unauthenticated visitors away from protected pages) without a
- * client-side flicker.
+ * Routed through ``/api/auth/bootstrap/`` so the sibling
+ * :func:`getUserOrganizationsServer` call in the same render
+ * shares the round-trip. Falls back to ``/api/auth/me/`` only if
+ * a stale bundle (or test) bypasses the bootstrap path.
  *
  * Returns ``null`` when the cookie is missing, expired, tampered with,
  * or the backend is unreachable.
  */
 export const getCurrentUserServer = cache(
-  async (): Promise<UserDto | null> =>
-    serverFetch<UserDto>(accountsEndpoints.me),
+  async (): Promise<UserDto | null> => {
+    const bootstrap = await getBootstrapServer();
+    if (bootstrap) return bootstrap.user;
+    // Fallback path: bootstrap missing/failed (e.g. 401 invalid
+    // cookies). Probe ``/api/auth/me/`` directly so an error like
+    // BackendUnavailableError still surfaces here even if a
+    // previous bootstrap call swallowed it.
+    return serverFetch<UserDto>(accountsEndpoints.me);
+  },
 );
 
 /**
@@ -264,8 +293,12 @@ export const getCurrentUserServer = cache(
  * same request (e.g. page guard + header) share one backend hit.
  */
 export const getUserOrganizationsServer = cache(
-  async (): Promise<OrganizationDto[] | null> =>
-    serverFetch<OrganizationDto[]>(organizationsEndpoints.list),
+  async (): Promise<OrganizationDto[] | null> => {
+    const bootstrap = await getBootstrapServer();
+    if (bootstrap) return [...bootstrap.organizations];
+    // See :func:`getCurrentUserServer` rationale for the fallback.
+    return serverFetch<OrganizationDto[]>(organizationsEndpoints.list);
+  },
 );
 
 /**

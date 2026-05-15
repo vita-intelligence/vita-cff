@@ -12,6 +12,9 @@ export const accountsEndpoints = {
   logout: "/api/auth/logout/",
   refresh: "/api/auth/refresh/",
   me: "/api/auth/me/",
+  passwordResetRequest: "/api/auth/password-reset/request/",
+  passwordResetValidate: "/api/auth/password-reset/validate/",
+  passwordResetConfirm: "/api/auth/password-reset/confirm/",
 } as const;
 
 export type AccountsEndpoint =

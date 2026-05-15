@@ -6,6 +6,7 @@
   "not_found": "We could not find what you were looking for.",
   "server": "Our servers are having a problem. Please try again shortly.",
   "validation": "Please correct the errors and try again.",
+  "too_many_requests": "Too many attempts. Wait a few minutes and try again.",
   "codes": {
     "required": "This field is required.",
     "blank": "This field cannot be empty.",
@@ -36,6 +37,8 @@
     "clone_target_not_found": "Couldn't find that target project in this organisation.",
     "clone_target_is_source": "You can't replace a project with itself. Pick a different target or switch to 'New project'.",
     "invalid_clone_mode": "Duplicate failed: unknown mode. Refresh and try again.",
+    "customer_creation_disabled_by_dynamics": "This workspace manages customers via Microsoft Dynamics. Add the contact in Dynamics and import it from the customer picker instead.",
+    "specification_deletion_locked": "This spec sheet has been signed by the director or customer. Revert it to draft first — that clears the signatures — and then delete.",
     "dynamics_auth_failed": "Azure AD rejected the credentials. Double-check the tenant ID, client ID, and secret.",
     "dynamics_unreachable": "Couldn't reach the Dataverse endpoint. Verify the Dataverse URL and your network.",
     "dynamics_rate_limited": "Dataverse rate limit hit. Wait a moment and try again.",
