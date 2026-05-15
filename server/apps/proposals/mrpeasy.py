@@ -51,21 +51,29 @@ from urllib.request import Request, urlopen
 class MrpeasyItem:
     """One ``Item`` row returned by an MRPEasy lookup.
 
-    Only the fields the price-hint surface needs — the MRPEasy
-    response carries dozens of columns (cost, stock, vendor, …) but
-    we deliberately project to the minimum so a future renaming on
-    their side doesn't break unrelated callers.
+    Only the fields the price-hint + deep-link surfaces need —
+    the MRPEasy response carries dozens of columns (cost, stock,
+    vendor, …) but we deliberately project to the minimum so a
+    future renaming on their side doesn't break unrelated callers.
 
     ``selling_price`` is the customer-facing list price MRPEasy
     stores against the item; we surface it as the director's
     "MRPEasy suggested price" hint. ``None`` when MRPEasy stored
     the item but left ``selling_price`` blank — the UI treats it
     the same as "no MRPEasy match".
+
+    ``product_id`` is MRPEasy's internal numeric ID for the row.
+    Powers the deep link into the MRPEasy admin UI
+    (``/articles/view/<product_id>``). ``None`` when the row
+    didn't carry one (defensive — every real row has it, but
+    keeping it optional means the dataclass survives a partial
+    or older API response).
     """
 
     code: str
     title: str
     selling_price: Decimal | None
+    product_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -142,11 +150,13 @@ _MOCK_ITEMS: dict[str, MrpeasyItem] = {
         code="MA210367",
         title="Valley Low Fat Burner Capsules (60s)",
         selling_price=Decimal("14.99"),
+        product_id=4205,
     ),
     "MA512342": MrpeasyItem(
         code="MA512342",
         title="Super Puper Capsules",
         selling_price=Decimal("18.50"),
+        product_id=4207,
     ),
 }
 
@@ -451,10 +461,23 @@ def _build_item(row: dict[str, Any]) -> MrpeasyItem:
         or row.get("name")
         or ""
     )
+    # ``product_id`` is the integer MRPEasy uses in its admin URL
+    # (``/articles/view/<product_id>``). Coerce defensively — the
+    # field has always come back as an int in observed responses,
+    # but a string-typed value (or a missing field on a future
+    # endpoint variant) should degrade to ``None`` rather than
+    # crashing the projector.
+    raw_product_id = row.get("product_id")
+    product_id: int | None = None
+    if isinstance(raw_product_id, int):
+        product_id = raw_product_id
+    elif isinstance(raw_product_id, str) and raw_product_id.strip().isdigit():
+        product_id = int(raw_product_id.strip())
     return MrpeasyItem(
         code=str(row.get("code") or row.get("part_number") or ""),
         title=str(name),
         selling_price=selling_price,
+        product_id=product_id,
     )
 
 

@@ -46,6 +46,12 @@ export type MrpeasyLookupResultDto =
        *  DecimalField response so the math layer can treat
        *  all price fields identically). */
       readonly selling_price: string;
+      /** MRPEasy's internal numeric ID for the row. Powers
+       *  the "Open in MRPEasy" deep link
+       *  (``/articles/view/<product_id>``). ``null`` only if
+       *  the API response omitted it — every observed real
+       *  response carries it. */
+      readonly product_id: number | null;
     }
   | {
       readonly matched: false;
@@ -61,6 +67,10 @@ export interface MrpeasyItemDto {
   readonly code: string;
   readonly title: string;
   readonly selling_price: string;
+  /** MRPEasy's internal numeric ID. May be ``null`` for
+   *  responses that pre-date the projector capturing it; new
+   *  callers should be defensive. */
+  readonly product_id: number | null;
 }
 
 export interface MrpeasyItemListResponseDto {

@@ -227,6 +227,13 @@ class MrpeasyItemListView(APIView):
                             if item.selling_price is not None
                             else ""
                         ),
+                        # MRPEasy's internal numeric id — drives
+                        # the "Open in MRPEasy" deep link
+                        # (``/articles/view/<product_id>``). The
+                        # picker doesn't surface it directly, but
+                        # any future "remember which row I picked"
+                        # workflow will want it.
+                        "product_id": item.product_id,
                     }
                     for item in items
                 ]
@@ -295,6 +302,11 @@ class MrpeasyPriceLookupView(APIView):
                 # DecimalField response — no float-precision
                 # weirdness when the operator clicks Use.
                 "selling_price": str(item.selling_price),
+                # MRPEasy's internal id — lets the "Open in
+                # MRPEasy" link build the direct
+                # ``/articles/view/<product_id>`` URL instead of
+                # falling back to a search-filter URL.
+                "product_id": item.product_id,
             },
             status=status.HTTP_200_OK,
         )

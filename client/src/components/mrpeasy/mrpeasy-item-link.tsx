@@ -3,7 +3,7 @@
 import { ExternalLink } from "lucide-react";
 import { useTranslations } from "next-intl";
 
-import { buildMrpeasyItemUrl } from "@/services/mrpeasy";
+import { buildMrpeasyItemUrl, useMrpeasyPrice } from "@/services/mrpeasy";
 import { useOrganization } from "@/services/organizations";
 
 /**
@@ -17,6 +17,16 @@ import { useOrganization } from "@/services/organizations";
  * The link opens a new tab (``target="_blank"`` +
  * ``rel="noopener noreferrer"``) so the operator never loses the
  * Vita context they were in when they clicked.
+ *
+ * Internally the component fires the same MRPEasy lookup the
+ * price hint uses (``useMrpeasyPrice``). TanStack Query dedupes
+ * by ``(orgId, code)`` so when both components mount together
+ * (e.g. inside the director's signature dialog) there's a single
+ * shared round-trip. The lookup resolves the row's
+ * ``product_id`` which lets us deep-link straight into MRPEasy's
+ * ``/articles/view/<id>`` page; until it resolves (or if MRPEasy
+ * returns no match) we fall back to the code-filter URL so the
+ * operator always lands on the right tenant view.
  *
  * ``variant`` lets the host pick between a compact icon-only chip
  * (good for tight headers next to a project code) and a fuller
@@ -37,7 +47,18 @@ export function MrpeasyItemLink({
   const organization = useOrganization(orgId);
   const live = Boolean(organization?.mrpeasy_live);
 
-  const href = buildMrpeasyItemUrl(code);
+  // Gate the lookup on the same conditions as the chip: org
+  // integration live AND a non-empty code. Otherwise the query
+  // never fires and we either bail (no link) or render the
+  // search-fallback URL with the code we already have.
+  const trimmedCode = (code ?? "").trim();
+  const priceQuery = useMrpeasyPrice(orgId, trimmedCode, {
+    enabled: live && trimmedCode.length > 0,
+  });
+  const productId =
+    priceQuery.data?.matched === true ? priceQuery.data.product_id : null;
+
+  const href = buildMrpeasyItemUrl({ code: trimmedCode, productId });
   if (!live || !href) return null;
 
   const label = t("open_in_mrpeasy");
