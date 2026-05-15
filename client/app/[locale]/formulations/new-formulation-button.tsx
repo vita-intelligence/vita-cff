@@ -29,6 +29,7 @@ import {
   type DosageForm,
   type FormulationLineInput,
 } from "@/services/formulations";
+import { useOrganization } from "@/services/organizations";
 
 
 interface ApiFieldErrors {
@@ -121,6 +122,15 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
   const tAI = useTranslations("ai");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+
+  // When MRPEasy is connected, the workspace treats the ERP as the
+  // source of truth for product codes + names. The picker above the
+  // code/name inputs is the only way to populate them, and the
+  // inputs themselves render read-only so an operator can't type a
+  // stray SKU that doesn't exist in MRPEasy. Mirrors the Dynamics-
+  // managed-customers pattern: integration on → manual entry off.
+  const organization = useOrganization(orgId);
+  const mrpeasyLive = Boolean(organization?.mrpeasy_live);
 
   const [isOpen, setIsOpen] = useState(false);
 
@@ -426,32 +436,68 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                   }}
                 />
 
-                <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tFormulations("fields.code")}
-                    </span>
-                    <input
-                      required
-                      value={code}
-                      onChange={(e) => setCode(e.target.value)}
-                      placeholder={tFormulations("placeholders.code")}
-                      maxLength={64}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium text-ink-700">
-                      {tFormulations("fields.name")}
-                    </span>
-                    <input
-                      required
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      placeholder={tFormulations("placeholders.name")}
-                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                    />
-                  </label>
+                <div className="flex flex-col gap-1.5">
+                  <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-ink-700">
+                        {tFormulations("fields.code")}
+                      </span>
+                      <input
+                        required
+                        value={code}
+                        onChange={(e) => setCode(e.target.value)}
+                        placeholder={
+                          mrpeasyLive
+                            ? tFormulations(
+                                "mrpeasy_picker.locked_placeholder",
+                              )
+                            : tFormulations("placeholders.code")
+                        }
+                        maxLength={64}
+                        readOnly={mrpeasyLive}
+                        aria-readonly={mrpeasyLive}
+                        // Read-only styling: muted background + a not-
+                        // allowed cursor so the operator gets visual
+                        // confirmation they can't type here, without
+                        // killing copy-to-clipboard (which ``disabled``
+                        // would block).
+                        className={`w-full rounded-lg px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset outline-none focus:ring-2 focus:ring-orange-400 ${
+                          mrpeasyLive
+                            ? "cursor-not-allowed bg-ink-100 ring-ink-200"
+                            : "bg-ink-0 ring-ink-200"
+                        }`}
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1.5">
+                      <span className="text-xs font-medium text-ink-700">
+                        {tFormulations("fields.name")}
+                      </span>
+                      <input
+                        required
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        placeholder={
+                          mrpeasyLive
+                            ? tFormulations(
+                                "mrpeasy_picker.locked_placeholder",
+                              )
+                            : tFormulations("placeholders.name")
+                        }
+                        readOnly={mrpeasyLive}
+                        aria-readonly={mrpeasyLive}
+                        className={`w-full rounded-lg px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset outline-none focus:ring-2 focus:ring-orange-400 ${
+                          mrpeasyLive
+                            ? "cursor-not-allowed bg-ink-100 ring-ink-200"
+                            : "bg-ink-0 ring-ink-200"
+                        }`}
+                      />
+                    </label>
+                  </div>
+                  {mrpeasyLive ? (
+                    <p className="text-[11px] text-ink-500">
+                      {tFormulations("mrpeasy_picker.locked_hint")}
+                    </p>
+                  ) : null}
                 </div>
 
                 {description ? (

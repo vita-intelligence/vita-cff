@@ -227,7 +227,9 @@
     "loading": "Loading items from MRPEasy…",
     "empty_results": "No matching MRPEasy items.",
     "price": "Selling price: {price}",
-    "hint": "Type a code or product name and press Search to look it up in MRPEasy. Pick a row to autofill the code and name. Leave blank to enter them manually."
+    "hint": "Type a code or product name and press Search to look it up in MRPEasy. Pick a row to autofill the code and name. Leave blank to enter them manually.",
+    "locked_placeholder": "Pick from MRPEasy above…",
+    "locked_hint": "Code and product name are managed via MRPEasy on this workspace. Use the search above to pick the matching product — the fields will autofill."
   },
   "builder": {
     "metadata": "Product metadata",
