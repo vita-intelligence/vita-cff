@@ -259,6 +259,16 @@ function attributesFromLine(
     purity: line_attributes.purity ?? null,
     extract_ratio: line_attributes.extract_ratio ?? null,
     overage: line_attributes.overage ?? null,
+    // ``use_as`` flows through verbatim — the server serializes it
+    // from ``Item.attributes.use_as`` (see
+    // ``FormulationLineReadSerializer.get_item_attributes``) and the
+    // math classifier reads ``line.attributes.use_as`` to decide
+    // whether each line counts as Active / Acidity Regulator /
+    // Sweeteners / etc. Without this key the live "item missing
+    // use_as" warning fires for every saved line, regardless of
+    // whether the underlying raw material actually carries a
+    // classification.
+    use_as: (extra.use_as as string | null | undefined) ?? null,
     ingredient_list_name:
       (extra.ingredient_list_name as string | null | undefined) ?? null,
     nutrition_information_name:
@@ -291,6 +301,14 @@ function attributesFromItem(item: ItemDto): ItemAttributesForMath {
     purity: pickNum("purity"),
     extract_ratio: pickNum("extract_ratio"),
     overage: pickNum("overage"),
+    // ``use_as`` is the classifier that drives the math's
+    // Active/Sweetener/Carrier dispatch and the "item missing
+    // use_as" warning the viability panel surfaces live. The
+    // converter was previously dropping it on the floor, which
+    // meant *every* freshly-picked ingredient fired the warning
+    // regardless of whether the raw material's ``attributes.use_as``
+    // was set in the catalogue.
+    use_as: pickStr("use_as"),
     ingredient_list_name: pickStr("ingredient_list_name"),
     nutrition_information_name: pickStr("nutrition_information_name"),
     vegan: pickStr("vegan"),

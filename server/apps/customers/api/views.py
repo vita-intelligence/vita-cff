@@ -26,6 +26,7 @@ from apps.customers.dynamics import (
     DynamicsContact,
 )
 from apps.customers.services import (
+    CustomerCreationDisabledByDynamics,
     CustomerNotFound,
     DataverseFailure,
     DynamicsConfigInvalid,
@@ -81,11 +82,23 @@ class CustomerListCreateView(APIView):
         serializer = CustomerWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        customer = create_customer(
-            organization=self.organization,
-            actor=request.user,
-            **data,
-        )
+        try:
+            customer = create_customer(
+                organization=self.organization,
+                actor=request.user,
+                **data,
+            )
+        except CustomerCreationDisabledByDynamics:
+            # 409 (not 403) — the resource exists / is reachable, the
+            # caller's permission isn't the problem. The org has
+            # opted into Dynamics-managed customers and a manual row
+            # would create a divergent source of truth. Codified
+            # error so the frontend banner copy matches the wire
+            # response when a stale client tries to POST anyway.
+            return Response(
+                {"code": "customer_creation_disabled_by_dynamics"},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             CustomerReadSerializer(customer).data,
             status=status.HTTP_201_CREATED,

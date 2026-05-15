@@ -44,7 +44,12 @@ export default async function CustomersPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user!} active="customers" />
 
-        <CustomersList orgId={organization!.id} />
+        <CustomersList
+          orgId={organization!.id}
+          dynamicsManaged={Boolean(
+            organization!.dynamics_customers_managed,
+          )}
+        />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v0.1.0</span>

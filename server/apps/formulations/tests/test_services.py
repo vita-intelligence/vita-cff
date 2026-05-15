@@ -214,6 +214,127 @@ class TestListFormulations:
         assert "Busy" not in eligible
         assert "Accepted" not in eligible
 
+    def test_has_open_proposal_false_keeps_project_with_free_second_spec(
+        self,
+    ) -> None:
+        # Multi-spec bug fix: a project with one in-flight proposal
+        # AND a second director-approved spec that isn't yet bundled
+        # into any proposal must STILL appear in the picker. Sales
+        # raises the second proposal against the second spec; hiding
+        # the project at the formulation level stripped that workflow.
+        from apps.formulations.services import save_version
+        from apps.proposals.models import ProposalStatus
+        from apps.proposals.tests.factories import ProposalFactory
+        from apps.specifications.models import (
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        org = OrganizationFactory()
+        project = FormulationFactory(organization=org, name="Multi-Spec")
+        version = save_version(formulation=project, actor=org.created_by)
+
+        # Spec A — director-approved AND already attached to a sent
+        # proposal. Mirrors the user's reported flow: the customer
+        # has Spec A in their inbox.
+        spec_a = SpecificationSheet.objects.create(
+            organization=org,
+            formulation_version=version,
+            code="SPEC-A",
+            status=SpecificationStatus.ACCEPTED,
+            created_by=org.created_by,
+            updated_by=org.created_by,
+        )
+        ProposalFactory(
+            organization=org,
+            formulation_version=version,
+            specification_sheet=spec_a,
+            status=ProposalStatus.SENT.value,
+        )
+
+        # Spec B — also director-approved on the same recipe but
+        # not yet bundled into any proposal. This is the spec sales
+        # wants to attach to a brand-new quote.
+        SpecificationSheet.objects.create(
+            organization=org,
+            formulation_version=version,
+            code="SPEC-B",
+            status=SpecificationStatus.APPROVED,
+            created_by=org.created_by,
+            updated_by=org.created_by,
+        )
+
+        eligible = {
+            f.name
+            for f in list_formulations(
+                organization=org, has_open_proposal=False
+            )
+        }
+        assert "Multi-Spec" in eligible
+
+    def test_has_open_proposal_false_hides_project_with_every_spec_busy(
+        self,
+    ) -> None:
+        # Inverse of the multi-spec fix: a project where *every*
+        # director-approved spec is already linked to a non-rejected
+        # proposal stays excluded — there's nothing free to bundle.
+        from apps.formulations.services import save_version
+        from apps.proposals.models import ProposalLine, ProposalStatus
+        from apps.proposals.tests.factories import ProposalFactory
+        from apps.specifications.models import (
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        org = OrganizationFactory()
+        project = FormulationFactory(organization=org, name="All-Busy")
+        version = save_version(formulation=project, actor=org.created_by)
+
+        spec_a = SpecificationSheet.objects.create(
+            organization=org,
+            formulation_version=version,
+            code="SPEC-A",
+            status=SpecificationStatus.APPROVED,
+            created_by=org.created_by,
+            updated_by=org.created_by,
+        )
+        ProposalFactory(
+            organization=org,
+            formulation_version=version,
+            specification_sheet=spec_a,
+            status=ProposalStatus.SENT.value,
+        )
+
+        # Spec B is busy through a multi-spec ProposalLine instead
+        # of the legacy OneToOne — the resolver must spot both
+        # attachment shapes or the bug fix only half-lands.
+        spec_b = SpecificationSheet.objects.create(
+            organization=org,
+            formulation_version=version,
+            code="SPEC-B",
+            status=SpecificationStatus.APPROVED,
+            created_by=org.created_by,
+            updated_by=org.created_by,
+        )
+        line_proposal = ProposalFactory(
+            organization=org,
+            formulation_version=version,
+            status=ProposalStatus.DRAFT.value,
+        )
+        ProposalLine.objects.create(
+            proposal=line_proposal,
+            formulation_version=version,
+            specification_sheet=spec_b,
+        )
+
+        eligible = {
+            f.name
+            for f in list_formulations(
+                organization=org, has_open_proposal=False
+            )
+        }
+        assert "All-Busy" not in eligible
+
     def test_has_open_proposal_true_includes_accepted(self) -> None:
         # Inverse of the above. Anything not rejected counts as
         # "open" so a dashboard listing live + closed deals would

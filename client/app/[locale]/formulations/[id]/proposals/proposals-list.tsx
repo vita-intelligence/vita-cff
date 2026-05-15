@@ -31,6 +31,7 @@ import {
 } from "@/services/proposals";
 import { type CustomerDto } from "@/services/customers";
 import { CustomerPicker } from "@/components/customers/customer-picker";
+import { useOrganization } from "@/services/organizations";
 import { CustomerFormModal } from "../../../customers/customers-list";
 
 
@@ -251,6 +252,13 @@ function NewProposalButton({
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+  // Dynamics-managed orgs hide the inline "Create new customer"
+  // affordance (the picker still shows imported customers + the
+  // Dataverse search list — only the manual create button goes).
+  const organization = useOrganization(orgId);
+  const dynamicsManaged = Boolean(
+    organization?.dynamics_customers_managed,
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [versionId, setVersionId] = useState<string>("");
@@ -536,6 +544,7 @@ function NewProposalButton({
                   value={customer}
                   onChange={setCustomer}
                   onCreateNew={() => setCustomerCreating(true)}
+                  dynamicsManaged={dynamicsManaged}
                 />
 
                 <div className="grid grid-cols-3 gap-3">

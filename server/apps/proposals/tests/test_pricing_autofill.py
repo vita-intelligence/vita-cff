@@ -151,10 +151,11 @@ class TestUpdateProposalLineAutoFill:
     def test_attaching_a_spec_does_not_overwrite_existing_price(
         self,
     ) -> None:
-        # When the line already has pricing — e.g. sales already
-        # typed a custom rate — switching the attached spec must
-        # NOT silently overwrite that number. The line's own
-        # column is the source of truth from that point.
+        # When the line already has a deliberate positive price —
+        # e.g. sales typed a custom rate for a negotiated deal —
+        # switching the attached spec must NOT silently overwrite
+        # that number. A positive ``line.unit_price`` is the
+        # operator's stated intent and survives the spec swap.
         org = OrganizationFactory()
         proposal = ProposalFactory(
             organization=org, status=ProposalStatus.DRAFT.value
@@ -175,6 +176,78 @@ class TestUpdateProposalLineAutoFill:
             specification_sheet_id=spec.id,
         )
         assert updated.unit_price == Decimal("99.9900")
+
+    def test_attaching_a_spec_fills_zero_price(self) -> None:
+        # The mirror of the previous test. A line whose
+        # ``unit_price`` is zero is treated as "unset" and the spec
+        # swap fills it. The previous "None-only" guard left zero
+        # in place forever, which made the line table's derived
+        # margin column compute to nothing — the bug the operator
+        # reported on the proposal-detail page (line had a typed
+        # cost but no price; attaching a spec didn't seed the
+        # price, so margin stayed empty).
+        org = OrganizationFactory()
+        proposal = ProposalFactory(
+            organization=org, status=ProposalStatus.DRAFT.value
+        )
+        line = add_proposal_line(
+            proposal=proposal,
+            actor=org.created_by,
+            unit_cost=Decimal("15.00"),
+            unit_price=Decimal("0"),
+        )
+        spec = _priced_spec(
+            org, formulation_version=proposal.formulation_version
+        )
+
+        updated = update_proposal_line(
+            proposal=proposal,
+            line_id=line.id,
+            actor=org.created_by,
+            specification_sheet_id=spec.id,
+        )
+        # Cost was already a non-zero manual override; preserved.
+        # Price was zero (effectively unset); filled from the spec.
+        assert updated.unit_cost == Decimal("15.0000")
+        assert updated.unit_price == Decimal("7.1429")
+
+    def test_spec_attach_derives_price_from_cost_and_margin(
+        self,
+    ) -> None:
+        # The legacy ``spec.final_price`` is the canonical wire
+        # value, but historic specs (and specs typed via the
+        # cost+margin path on the approval modal) may have
+        # ``final_price=None`` while still carrying enough info to
+        # produce a customer price. The ``_spec_unit_price`` helper
+        # derives ``cost / (1 − margin/100)`` in that case so the
+        # line picker doesn't silently drop the price during a spec
+        # attach.
+        org = OrganizationFactory()
+        proposal = ProposalFactory(
+            organization=org, status=ProposalStatus.DRAFT.value
+        )
+        line = add_proposal_line(
+            proposal=proposal,
+            actor=org.created_by,
+        )
+        spec = _priced_spec(
+            org,
+            formulation_version=proposal.formulation_version,
+            unit_cost=Decimal("10.00"),
+            margin_percent=Decimal("33.33"),
+            final_price=None,
+        )
+
+        updated = update_proposal_line(
+            proposal=proposal,
+            line_id=line.id,
+            actor=org.created_by,
+            specification_sheet_id=spec.id,
+        )
+        # cost / (1 − 33.33/100) = 10 / 0.6667 ≈ 14.9993
+        assert updated.unit_cost == Decimal("10.0000")
+        assert updated.unit_price is not None
+        assert abs(updated.unit_price - Decimal("14.9993")) < Decimal("0.01")
 
 
 class TestCreateProposalAutoFill:

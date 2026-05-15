@@ -10,6 +10,7 @@ import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { useCreateSpecification } from "@/services/specifications";
 import type { CustomerDto } from "@/services/customers";
+import { useOrganization } from "@/services/organizations";
 import type { FormulationVersionDto } from "@/services/formulations";
 
 import { CustomerFormModal } from "../../customers/customers-list";
@@ -44,6 +45,13 @@ export function NewSpecSheetButton({
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+  // Dynamics-managed orgs hide the inline "Create new customer"
+  // affordance — sales has to pick an already-imported row from
+  // the address book or pull a fresh one from Dataverse.
+  const organization = useOrganization(orgId);
+  const dynamicsManaged = Boolean(
+    organization?.dynamics_customers_managed,
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [versionId, setVersionId] = useState<string>(versions[0]?.id ?? "");
@@ -199,6 +207,7 @@ export function NewSpecSheetButton({
                   onCreateNew={() => setCustomerCreating(true)}
                   label={tSpecs("create.client")}
                   hint={tSpecs("create.client_picker_hint")}
+                  dynamicsManaged={dynamicsManaged}
                 />
 
                 <label className="flex flex-col gap-1.5">

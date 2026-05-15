@@ -27,10 +27,20 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
     gate owner-only and module-specific UI without an extra request.
     ``permissions`` is empty for owners (they bypass the map), and for
     non-owners it is the raw grant dict on their membership.
+
+    ``dynamics_customers_managed`` is a non-sensitive boolean derived
+    from the org's Dynamics config — true when the integration is
+    enabled AND credentials are stored. Exposed here (instead of
+    forcing a second fetch of ``/integrations/dynamics/``) so every
+    surface that needs to hide the manual "Create customer" UI can
+    branch off a flag already present on the org payload. The full
+    config remains owner-only via its dedicated endpoint; only the
+    boolean is broadcast.
     """
 
     is_owner = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
+    dynamics_customers_managed = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -40,6 +50,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
             "is_active",
             "is_owner",
             "permissions",
+            "dynamics_customers_managed",
             "created_at",
             "updated_at",
         )
@@ -73,6 +84,17 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         if membership is None or membership.is_owner:
             return {}
         return dict(membership.permissions or {})
+
+    def get_dynamics_customers_managed(self, obj: Organization) -> bool:
+        # Route through the customers-app helper so every server
+        # surface (this serializer, the customer-create guard,
+        # any future "is Dynamics on?" check) reads from one
+        # source of truth — the boolean is JSON-cheap and the
+        # helper inspects the JSONField directly so we don't pull
+        # the whole encrypted blob through serializer code.
+        from apps.customers.services import is_dynamics_live
+
+        return is_dynamics_live(obj)
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):

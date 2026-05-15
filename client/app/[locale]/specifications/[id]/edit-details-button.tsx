@@ -14,6 +14,7 @@ import {
 } from "@/services/specifications";
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { type CustomerDto } from "@/services/customers";
+import { useOrganization } from "@/services/organizations";
 import { CustomerFormModal } from "../../customers/customers-list";
 
 
@@ -41,6 +42,13 @@ export function EditDetailsButton({
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+  // Dynamics-managed orgs hide the inline "Create new customer"
+  // affordance. Reassigning to an existing imported customer
+  // still works as before.
+  const organization = useOrganization(orgId);
+  const dynamicsManaged = Boolean(
+    organization?.dynamics_customers_managed,
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [form, setForm] = useState<UpdateSpecificationRequestDto>({});
@@ -189,6 +197,7 @@ export function EditDetailsButton({
                     onCreateNew={() => setCustomerCreating(true)}
                     label={tSpecs("create.client")}
                     hint={tSpecs("create.client_picker_hint")}
+                    dynamicsManaged={dynamicsManaged}
                   />
                   <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <TextField

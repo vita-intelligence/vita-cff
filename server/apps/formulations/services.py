@@ -2045,9 +2045,8 @@ def list_formulations(
     values are ignored so the caller can forward the query parameter
     unconditionally.
 
-    ``has_open_proposal`` filters on whether the formulation already
-    carries any non-rejected :class:`apps.proposals.models.Proposal`.
-    The "open" set is everything except ``rejected``:
+    ``has_open_proposal`` filters on the formulation's proposal
+    state. The "open" set is everything except ``rejected``:
 
     * ``draft`` / ``in_review`` / ``approved`` / ``sent`` — live deal
       in flight; another quote would race the first one.
@@ -2059,15 +2058,25 @@ def list_formulations(
     return to the picker so the team can try again with adjusted
     terms.
 
-    * ``True``  — only formulations with at least one open proposal.
-    * ``False`` — only formulations with no open proposal (i.e.
-      eligible for a fresh quote — used by the New Proposal modal).
+    The two branches are deliberately asymmetric because they
+    answer different product questions:
+
+    * ``True``  — *project-level* "is any deal live on this recipe?".
+      Returns formulations with at least one non-rejected proposal,
+      regardless of which spec the proposal attached. Used by
+      dashboard / per-project hints that flag a recipe as actively
+      being sold.
+    * ``False`` — *spec-level* "is at least one director-approved
+      spec free for a NEW proposal?". A formulation may already
+      have an open proposal on Spec A and still belong here if
+      Spec B is approved but not yet bundled into any
+      non-rejected proposal. Without that finer check, sales loses
+      the picker entry for a project the moment any spec gets
+      proposed — even when a second spec is ready to ship.
     * ``None``  — no filter (default).
 
-    The check runs as an ``Exists`` subquery so pagination remains
-    correct and the work stays at the SQL layer; the alternative
-    "fetch all proposals into a Python set" approach made the
-    50/page limit lie about how many usable rows the page held.
+    The checks run as ``Exists`` subqueries so pagination stays
+    accurate and the work stays at the SQL layer.
     """
 
     queryset = (
@@ -2108,23 +2117,79 @@ def list_formulations(
             queryset = queryset.filter(project_type=cleaned_type)
 
     if has_open_proposal is not None:
-        # Lazy import — the Proposal model lives in a sibling app and
-        # we don't want :func:`list_formulations` to fan out an
-        # import-time cycle.
+        # Lazy import — sibling apps; avoid an import-time cycle.
+        # ``Q`` is already imported at module level (line 25); a local
+        # re-import here would shadow it for the whole function and
+        # break the earlier ``search`` branch with an UnboundLocal.
         from django.db.models import Exists, OuterRef
 
-        from apps.proposals.models import Proposal, ProposalStatus
+        from apps.proposals.models import (
+            Proposal,
+            ProposalLine,
+            ProposalStatus,
+        )
+        from apps.specifications.models import (
+            SpecificationSheet,
+            SpecificationStatus,
+        )
 
-        # ``open`` = anything except ``rejected``. Accepted proposals
-        # are deliberately included so a closed-and-signed deal
-        # keeps its project out of the new-quote picker.
+        non_rejected_statuses = [
+            value
+            for value in ProposalStatus.values
+            if value != ProposalStatus.REJECTED.value
+        ]
+
         open_proposals = Proposal.objects.filter(
             formulation_version__formulation=OuterRef("pk"),
         ).exclude(status=ProposalStatus.REJECTED.value)
+
         if has_open_proposal:
+            # Project-level question: "any active deal on this recipe?"
+            # Untouched from the original implementation — drives the
+            # per-project hint chip ("a proposal is already live on
+            # this project").
             queryset = queryset.filter(Exists(open_proposals))
         else:
-            queryset = queryset.filter(~Exists(open_proposals))
+            # The previous implementation answered "no open proposal
+            # on this formulation, anywhere" — which incorrectly
+            # excluded a project the moment its first spec got
+            # proposed, even when a *second* director-signed spec
+            # on the same recipe was sitting there waiting to be
+            # bundled into its own quote.
+            #
+            # Eligibility is now the OR of two cases so neither
+            # workflow regresses:
+            #
+            #   (a) No non-rejected proposal exists on the project
+            #       at all — the original "fresh recipe" case. Kept
+            #       so projects whose specs were all reverted to
+            #       draft (and thus carry no APPROVED spec) stay
+            #       picker-visible; sales can still raise a
+            #       proposal without attaching a spec.
+            #   (b) At least one APPROVED spec on the project is not
+            #       yet linked to a non-rejected proposal (via the
+            #       legacy OneToOne FK *or* a multi-spec
+            #       ``ProposalLine``). This is the bug-fix branch
+            #       — a project with Spec A on a sent proposal and
+            #       Spec B freshly approved now stays in the picker
+            #       so the second quote can attach Spec B.
+            busy_spec_ids = (
+                SpecificationSheet.objects.filter(
+                    Q(proposal__status__in=non_rejected_statuses)
+                    | Q(
+                        proposal_lines__proposal__status__in=non_rejected_statuses
+                    )
+                )
+                .values("pk")
+                .distinct()
+            )
+            available_specs = SpecificationSheet.objects.filter(
+                formulation_version__formulation=OuterRef("pk"),
+                status=SpecificationStatus.APPROVED,
+            ).exclude(pk__in=busy_spec_ids)
+            queryset = queryset.filter(
+                ~Exists(open_proposals) | Exists(available_specs)
+            )
 
     return queryset.order_by("-updated_at")
 

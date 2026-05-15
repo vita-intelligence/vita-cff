@@ -23,6 +23,19 @@ export interface OrganizationDto {
    * the raw map stored on their membership.
    */
   readonly permissions: Record<string, string>;
+  /**
+   * ``true`` when the org has a live Microsoft Dynamics integration
+   * (enabled + credentials stored). Drives the "manual customer
+   * creation is disabled" banner + hides every ``Create new``
+   * affordance in the customer surfaces — those orgs require all
+   * customers to flow through the Dynamics import path so Dataverse
+   * stays the single source of truth.
+   *
+   * Edits remain allowed regardless: a local field tweak on a
+   * previously-imported customer isn't a divergence from Dataverse
+   * (we have no auto-sync today), it's an explicit local override.
+   */
+  readonly dynamics_customers_managed: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }

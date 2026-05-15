@@ -44,6 +44,7 @@ export function CustomerPicker({
   onCreateNew,
   label,
   hint,
+  dynamicsManaged = false,
 }: {
   orgId: string;
   value: CustomerDto | null;
@@ -55,6 +56,12 @@ export function CustomerPicker({
   //: strings when omitted.
   label?: string;
   hint?: string;
+  //: When the org is Dynamics-managed (``OrganizationDto.dynamics_customers_managed``)
+  //: every manual "Create new" affordance is hidden — the Dataverse
+  //: import path is the only way new customers enter the system. The
+  //: prop is opt-in (default false) so non-Dynamics call sites don't
+  //: have to thread the flag through.
+  dynamicsManaged?: boolean;
 }) {
   const tCustomers = useTranslations("customers");
 
@@ -207,17 +214,28 @@ export function CustomerPicker({
             visibleDynamicsSuggestions.length === 0 ? (
               <div className="flex flex-col gap-2 px-3 py-3 text-xs text-ink-500">
                 <span>{tCustomers("picker.empty_results")}</span>
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    setOpen(false);
-                    onCreateNew();
-                  }}
-                  className="self-start text-orange-700 hover:text-orange-900"
-                >
-                  {tCustomers("picker.create_new")}
-                </button>
+                {dynamicsManaged ? (
+                  // Dynamics-managed orgs: no "Create new" affordance.
+                  // The empty state instead nudges the user toward
+                  // the Dataverse search above (when nothing matches
+                  // there either, the only resolution is to add the
+                  // contact in Dynamics directly).
+                  <span className="text-[11px] text-ink-400">
+                    {tCustomers("picker.dynamics_managed_hint")}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setOpen(false);
+                      onCreateNew();
+                    }}
+                    className="self-start text-orange-700 hover:text-orange-900"
+                  >
+                    {tCustomers("picker.create_new")}
+                  </button>
+                )}
               </div>
             ) : (
               <>
@@ -304,18 +322,20 @@ export function CustomerPicker({
                   </p>
                 ) : null}
 
-                <button
-                  type="button"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    setOpen(false);
-                    onCreateNew();
-                  }}
-                  className="flex w-full items-center gap-2 border-t border-ink-200 px-3 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {tCustomers("picker.create_new")}
-                </button>
+                {dynamicsManaged ? null : (
+                  <button
+                    type="button"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setOpen(false);
+                      onCreateNew();
+                    }}
+                    className="flex w-full items-center gap-2 border-t border-ink-200 px-3 py-2 text-xs font-medium text-orange-700 hover:bg-orange-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {tCustomers("picker.create_new")}
+                  </button>
+                )}
               </>
             )}
           </div>

@@ -81,6 +81,39 @@ def _spec_unit_cost(sheet: "SpecificationSheet") -> Decimal | None:
     )
 
 
+def _spec_unit_price(sheet: "SpecificationSheet") -> Decimal | None:
+    """Best-available per-unit customer price for a spec sheet.
+
+    Symmetric to :func:`_spec_unit_cost`. Prefers the explicit
+    ``final_price`` column the director signed; falls back to
+    deriving price from ``unit_cost / (1 − margin_percent/100)``
+    for specs that were priced via cost + margin only (a common
+    path when sales enters cost + target margin and lets the math
+    produce the customer-pays figure). Returns ``None`` when
+    neither path can produce a positive price so the caller
+    leaves the line column blank rather than guessing zero.
+
+    Used by :func:`update_proposal_line` and the line-create path
+    so attaching a spec auto-fills the line's ``unit_price`` even
+    when the underlying spec only stored cost + margin — the prior
+    "only ``spec.final_price``" branch left the price at zero on
+    those specs, which made the line table's derived-margin
+    column compute to nothing.
+    """
+
+    if sheet.final_price is not None:
+        return sheet.final_price
+    cost = sheet.unit_cost
+    margin = sheet.margin_percent
+    if cost is None or margin is None:
+        return None
+    if margin < 0 or margin >= 100:
+        return None
+    return (
+        cost / (Decimal("1") - margin / Decimal("100"))
+    ).quantize(Decimal("0.0001"))
+
+
 def _resolve_quotable_sheet(
     sheet_id: Any, organization
 ) -> "SpecificationSheet":
@@ -582,8 +615,10 @@ def create_proposal(
     # team agreed on. Caller's explicit values still win so a
     # negotiated rate can override the spec default.
     if sheet is not None:
-        if unit_price is None and sheet.final_price is not None:
-            unit_price = sheet.final_price
+        if unit_price is None:
+            derived_price = _spec_unit_price(sheet)
+            if derived_price is not None:
+                unit_price = derived_price
         if margin_percent is None and sheet.margin_percent is not None:
             margin_percent = sheet.margin_percent
         # Cost: prefer the spec's signed cost; fall back to deriving
@@ -977,8 +1012,10 @@ def add_proposal_line(
             derived_cost = _spec_unit_cost(sheet)
             if derived_cost is not None:
                 unit_cost = derived_cost
-        if unit_price is None and sheet.final_price is not None:
-            unit_price = sheet.final_price
+        if unit_price is None:
+            derived_price = _spec_unit_price(sheet)
+            if derived_price is not None:
+                unit_price = derived_price
         # Quantity is intentionally NOT inherited from the spec — it's
         # a per-order figure the sales rep sets on the proposal line,
         # not part of the signed per-unit economics. One spec can
@@ -1060,19 +1097,45 @@ def update_proposal_line(
         if key in updatable and value is not None:
             setattr(line, key, value)
 
-    # Auto-fill pricing from the newly-attached spec — only when the
-    # sheet link was just changed AND the corresponding line column
-    # is empty. This is the "sales picks a new spec on an existing
-    # line" path. Sales-provided values in the same PATCH win
-    # because we evaluate this *after* the updatable loop above.
+    # Auto-fill pricing from the newly-attached spec.
+    #
+    # Three intents to balance:
+    #
+    #   1. Operator created a line manually (cost=15, price=0 from
+    #      the default Decimal zero), then attaches a spec hoping
+    #      to fill the price. The "all-None" precondition the
+    #      previous implementation used left price stuck at zero
+    #      because zero is not None — the picker looked broken.
+    #   2. Operator typed a deliberate price (price=99.99 for a
+    #      one-off negotiation), then swaps the spec for a
+    #      different one. The manual override is meaningful and
+    #      shouldn't get silently clobbered.
+    #   3. The same PATCH explicitly carries a new cost / price
+    #      alongside the spec swap. That value is the operator's
+    #      most recent stated intent and wins.
+    #
+    # Rule: same-payload override (#3) wins; otherwise empty
+    # columns get filled from the spec, where "empty" means
+    # ``None`` *or* zero (#1). A positive value on the line counts
+    # as a manual override (#2) and survives the spec swap.
     if sheet_changed and line.specification_sheet is not None:
         spec = line.specification_sheet
-        if line.unit_cost is None:
+        sales_set_cost = (
+            "unit_cost" in changes and changes["unit_cost"] is not None
+        )
+        sales_set_price = (
+            "unit_price" in changes and changes["unit_price"] is not None
+        )
+        cost_is_blank = line.unit_cost is None or line.unit_cost == 0
+        price_is_blank = line.unit_price is None or line.unit_price == 0
+        if not sales_set_cost and cost_is_blank:
             derived_cost = _spec_unit_cost(spec)
             if derived_cost is not None:
                 line.unit_cost = derived_cost
-        if line.unit_price is None and spec.final_price is not None:
-            line.unit_price = spec.final_price
+        if not sales_set_price and price_is_blank:
+            derived_price = _spec_unit_price(spec)
+            if derived_price is not None:
+                line.unit_price = derived_price
 
     line.save()
     proposal.updated_by = actor

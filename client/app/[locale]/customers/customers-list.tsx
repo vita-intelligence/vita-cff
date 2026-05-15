@@ -1,6 +1,6 @@
 "use client";
 
-import { Plus, Search, Trash2, Users } from "lucide-react";
+import { Info, Plus, Search, Trash2, Users } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
@@ -22,8 +22,22 @@ import {
  * modal. The same modal is reused by the proposal "Create new
  * customer" shortcut so adding a client in-flow doesn't lose the
  * scientist's place on the proposal creation screen.
+ *
+ * ``dynamicsManaged`` mirrors the backend ``is_dynamics_live`` flag
+ * exposed on ``OrganizationDto.dynamics_customers_managed``. When
+ * true we hide the "+ Add" CTA and surface a banner instead — every
+ * customer for those orgs must flow through the Dynamics import
+ * path so the local table never diverges from Dataverse. Edits stay
+ * open because we have no auto-sync today, so a local tweak is an
+ * explicit override, not a conflict.
  */
-export function CustomersList({ orgId }: { orgId: string }) {
+export function CustomersList({
+  orgId,
+  dynamicsManaged = false,
+}: {
+  orgId: string;
+  dynamicsManaged?: boolean;
+}) {
   const tCustomers = useTranslations("customers");
   const tErrors = useTranslations("errors");
 
@@ -56,15 +70,27 @@ export function CustomersList({ orgId }: { orgId: string }) {
             {tCustomers("subtitle")}
           </p>
         </div>
-        <Button
-          type="button"
-          onClick={() => setCreating(true)}
-          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
-        >
-          <Plus className="h-4 w-4" />
-          {tCustomers("add")}
-        </Button>
+        {dynamicsManaged ? null : (
+          <Button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-3 text-sm font-medium text-ink-0 hover:bg-orange-600"
+          >
+            <Plus className="h-4 w-4" />
+            {tCustomers("add")}
+          </Button>
+        )}
       </header>
+
+      {dynamicsManaged ? (
+        <div
+          role="status"
+          className="mt-4 flex items-start gap-2 rounded-xl bg-blue-50 px-4 py-3 text-sm text-blue-900 ring-1 ring-inset ring-blue-200"
+        >
+          <Info className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{tCustomers("dynamics_managed_banner")}</span>
+        </div>
+      ) : null}
 
       <div className="mt-4 flex items-center gap-2">
         <div className="relative flex-1">

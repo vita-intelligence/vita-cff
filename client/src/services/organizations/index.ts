@@ -8,6 +8,7 @@ export {
 export {
   organizationsQueryKeys,
   useCreateOrganization,
+  useOrganization,
   useOrganizations,
   useUpdateOrganization,
 } from "./hooks";

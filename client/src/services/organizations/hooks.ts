@@ -40,6 +40,27 @@ export function useOrganizations(
   });
 }
 
+/**
+ * Pick one organization out of the cached list by id.
+ *
+ * Reads from the same query cache key as :func:`useOrganizations`
+ * so a page that's already loaded the org list never fires a
+ * second request — the SSR seed primes the cache. Returns
+ * ``undefined`` while the list is still loading; the caller is
+ * expected to treat the undefined window the same way it would
+ * treat a missing flag (default to safe-off behaviour).
+ *
+ * Use this to read org-level booleans (``dynamics_customers_managed``,
+ * ``is_owner``, …) from deeply-nested client components without
+ * threading the org prop through every layer.
+ */
+export function useOrganization(
+  orgId: string,
+): OrganizationDto | undefined {
+  const list = useOrganizations();
+  return list.data?.find((org) => org.id === orgId);
+}
+
 export function useCreateOrganization(): UseMutationResult<
   CreateOrganizationResponseDto,
   ApiError,

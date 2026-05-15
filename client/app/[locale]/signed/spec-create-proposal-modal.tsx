@@ -9,6 +9,7 @@ import { useTranslations } from "next-intl";
 
 import { CustomerFormModal } from "../customers/customers-list";
 import { CustomerPicker } from "@/components/customers/customer-picker";
+import { useOrganization } from "@/services/organizations";
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { type CustomerDto } from "@/services/customers";
@@ -58,6 +59,12 @@ export function SpecCreateProposalModal({
   const tSigned = useTranslations("signed");
   const router = useRouter();
   const queryClient = useQueryClient();
+  // Dynamics-managed orgs hide the inline "Create new customer"
+  // affordance; reads from the cached org list, no extra fetch.
+  const organization = useOrganization(orgId);
+  const dynamicsManaged = Boolean(
+    organization?.dynamics_customers_managed,
+  );
 
   const [template, setTemplate] = useState<ProposalTemplateType>("custom");
   const [customer, setCustomer] = useState<CustomerDto | null>(null);
@@ -82,9 +89,36 @@ export function SpecCreateProposalModal({
   useEffect(() => {
     if (!isOpen) return;
     setUnitCost(sheet.unit_cost ? String(sheet.unit_cost) : "");
-    if (sheet.margin_percent) setMargin(String(sheet.margin_percent));
+    // Margin autopopulate: prefer the explicit ``margin_percent``
+    // the scientist typed; fall back to deriving it from
+    // cost + final price when the spec was priced via
+    // ``final_price`` directly (a common path — sales sometimes
+    // skips the margin field and types the customer price). Without
+    // the fallback the form silently stays at its hardcoded "30"
+    // default on those specs, which reads to the operator as
+    // "autopopulate is broken".
+    if (sheet.margin_percent) {
+      setMargin(String(sheet.margin_percent));
+    } else if (sheet.unit_cost && sheet.final_price) {
+      const cost = Number(sheet.unit_cost);
+      const price = Number(sheet.final_price);
+      if (
+        Number.isFinite(cost) &&
+        Number.isFinite(price) &&
+        price > 0 &&
+        cost > 0 &&
+        cost < price
+      ) {
+        setMargin(((1 - cost / price) * 100).toFixed(2));
+      }
+    }
     setPricingOverride(false);
-  }, [isOpen, sheet.unit_cost, sheet.margin_percent]);
+  }, [
+    isOpen,
+    sheet.unit_cost,
+    sheet.margin_percent,
+    sheet.final_price,
+  ]);
 
   // Live derivation matches the spec approval modal's math:
   // ``cost / (1 − margin/100)``. Used inside the override panel
@@ -251,6 +285,7 @@ export function SpecCreateProposalModal({
                   value={customer}
                   onChange={setCustomer}
                   onCreateNew={() => setCustomerCreating(true)}
+                  dynamicsManaged={dynamicsManaged}
                 />
 
                 {/* Quantity is the only typed input by default; cost /

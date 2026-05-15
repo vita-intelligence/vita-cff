@@ -37,6 +37,45 @@ class CustomerNotFound(Exception):
     code = "customer_not_found"
 
 
+class CustomerCreationDisabledByDynamics(Exception):
+    """The org is wired up to Microsoft Dynamics and manual customer
+    creation is disabled — every customer for these orgs must enter
+    the system through the Dynamics import path so Dataverse stays
+    the source of truth.
+
+    The API layer maps this to a 409 with a codified error so the
+    frontend banner ("customers are managed via Dynamics") matches
+    the server response when a buggy / outdated client tries to POST
+    anyway.
+    """
+
+    code = "customer_creation_disabled_by_dynamics"
+
+
+def is_dynamics_live(organization: Organization) -> bool:
+    """Return True when the org has an actually-usable Dynamics
+    integration.
+
+    "Live" = the owner has flipped ``enabled`` AND a client secret
+    is stored. ``last_tested_at`` is a UX hint (when did we last
+    confirm credentials work) and is deliberately *not* part of
+    the gate — a re-keyed integration that hasn't been re-tested
+    yet shouldn't silently let manual customer rows back into the
+    DB. Conversely, if ``enabled`` is off (operator paused the
+    integration) the gate releases so the team isn't locked out.
+
+    Single source of truth for every "is Dynamics on?" branch in
+    this app — both the customer-create guard below and the
+    organization serializer's read-only flag read from this helper
+    so they can never drift.
+    """
+
+    raw = organization.dynamics_config or {}
+    return bool(raw.get("enabled")) and bool(
+        raw.get("client_secret_ciphertext")
+    )
+
+
 class DynamicsNotConfigured(Exception):
     """The org has no usable Dynamics config (missing fields, or the
     integration was disabled). The API layer maps this to a 400 so
@@ -103,6 +142,17 @@ def create_customer(
     delivery_address: str = "",
     notes: str = "",
 ) -> Customer:
+    # Dynamics-managed orgs must import from Dataverse — manual rows
+    # would create a second source of truth and silently diverge from
+    # the CRM the rest of the company runs on. Edit is *not* blocked
+    # (no auto-sync today, so local tweaks to a previously-imported
+    # row are still meaningful); only the create path is gated. The
+    # ``import_from_dynamics`` flow bypasses this guard because it
+    # calls ``Customer.objects.create`` directly — that's intentional
+    # so the picker still works.
+    if is_dynamics_live(organization):
+        raise CustomerCreationDisabledByDynamics()
+
     customer = Customer.objects.create(
         organization=organization,
         name=name,

@@ -35,6 +35,7 @@ import {
 } from "@/services/specifications";
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
+import { useOrganization } from "@/services/organizations";
 import { CustomerFormModal } from "../customers/customers-list";
 import {
   ProposalsFilterBar,
@@ -258,6 +259,14 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
   const router = useRouter();
+  // Dynamics-managed orgs hide every manual "Create new customer"
+  // affordance — the Dataverse import is the only inbound path. The
+  // flag rides on the org payload (already cached from SSR via the
+  // bootstrap endpoint) so this read is free.
+  const organization = useOrganization(orgId);
+  const dynamicsManaged = Boolean(
+    organization?.dynamics_customers_managed,
+  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [template, setTemplate] = useState<ProposalTemplateType>("custom");
@@ -607,6 +616,12 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       // intentionally stays as the user typed —
                       // order size is a proposal-level concern, not
                       // a spec-level constant.
+                      //
+                      // Both fields are guarded with truthiness
+                      // because the DRF DecimalField serializer emits
+                      // ``null`` for unset values; ``String(null)``
+                      // would render the literal word "null" in the
+                      // input on a spec that never had pricing typed.
                       const picked = specSheets.find(
                         (s) => s.id === nextId,
                       );
@@ -614,8 +629,36 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                       if (picked.unit_cost) {
                         setUnitCost(String(picked.unit_cost));
                       }
+                      // Margin autopopulate: prefer the explicit
+                      // ``margin_percent`` the scientist typed; fall
+                      // back to deriving it from cost + final price
+                      // when the spec was priced via ``final_price``
+                      // directly (a common path — sales sometimes
+                      // skips the margin field and types the customer
+                      // price). The old "only ``margin_percent``"
+                      // branch left the form stuck at its hardcoded
+                      // ``"30"`` default on those specs, which made it
+                      // look like autopopulate was broken.
+                      // ``cost / (1 − margin/100) = price``  ⇒
+                      // ``margin = (1 − cost/price) × 100``.
                       if (picked.margin_percent) {
                         setMargin(String(picked.margin_percent));
+                      } else if (
+                        picked.unit_cost &&
+                        picked.final_price
+                      ) {
+                        const cost = Number(picked.unit_cost);
+                        const price = Number(picked.final_price);
+                        if (
+                          Number.isFinite(cost) &&
+                          Number.isFinite(price) &&
+                          price > 0 &&
+                          cost > 0 &&
+                          cost < price
+                        ) {
+                          const derived = (1 - cost / price) * 100;
+                          setMargin(derived.toFixed(2));
+                        }
                       }
                     }}
                     disabled={!formulationId || specSheetsQuery.isLoading}
@@ -626,18 +669,28 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                     </option>
                     {
                       // Strict scope: only sheets attached to the
-                      // picked formulation. Before a formulation's
-                      // been chosen the list stays empty — pick one
-                      // first, then its sheets populate. Keeps
-                      // scientists from accidentally bundling a
-                      // sheet from an unrelated project.
+                      // picked formulation AND beyond draft/in_review
+                      // (the backend would reject anything earlier as
+                      // "spec not approved" — no point offering it).
+                      //
+                      // Rows that are already linked to a non-rejected
+                      // proposal are rendered with ``disabled`` so they
+                      // stay visible (sales searching for "where did
+                      // SPEC-A go?" sees it grayed-out instead of
+                      // missing) but cannot be picked — selecting one
+                      // would either create a duplicate proposal
+                      // against the same spec or fail the backend's
+                      // OneToOne uniqueness check.
                       (formulationId
                         ? specSheets.filter(
-                            (s) => s.formulation_id === formulationId,
+                            (s) =>
+                              s.formulation_id === formulationId &&
+                              s.status !== "draft" &&
+                              s.status !== "in_review",
                           )
                         : []
                       ).map((sheet) => {
-                        const label = [
+                        const baseLabel = [
                           sheet.code,
                           sheet.formulation_name,
                           `v${sheet.formulation_version_number}`,
@@ -648,10 +701,45 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                           sheet.document_kind === "final"
                             ? " [FINAL]"
                             : " [DRAFT]";
+                        // ``In use`` set: linked to a proposal that
+                        // hasn't been rejected. Rejected proposals
+                        // release the spec so the team can try
+                        // again with adjusted terms.
+                        const linkedProposalStatus =
+                          sheet.linked_proposal?.status;
+                        const isBusy = Boolean(
+                          sheet.linked_proposal &&
+                            linkedProposalStatus !== "rejected",
+                        );
+                        // Status chip — "Approved" reads as "ready
+                        // to attach"; "Sent · PROP-0042" /
+                        // "Accepted · PROP-0042" reads as "in use,
+                        // here's the deal it's bundled with".
+                        let chip = "";
+                        if (sheet.linked_proposal && isBusy) {
+                          const statusLabel = tProposals(
+                            `create.spec_status.${sheet.status}` as
+                              "create.spec_status.approved",
+                          );
+                          chip = ` · ${statusLabel} · ${sheet.linked_proposal.code}`;
+                        } else if (sheet.status !== "approved") {
+                          // Approved + free needs no chip — that's
+                          // the ideal pick. Anything else surfaces
+                          // the lifecycle stage as context.
+                          chip = ` · ${tProposals(
+                            `create.spec_status.${sheet.status}` as
+                              "create.spec_status.approved",
+                          )}`;
+                        }
                         return (
-                          <option key={sheet.id} value={sheet.id}>
-                            {label}
+                          <option
+                            key={sheet.id}
+                            value={sheet.id}
+                            disabled={isBusy}
+                          >
+                            {baseLabel}
                             {kindTag}
+                            {chip}
                           </option>
                         );
                       })
@@ -695,6 +783,7 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                   value={customer}
                   onChange={setCustomer}
                   onCreateNew={() => setCustomerCreating(true)}
+                  dynamicsManaged={dynamicsManaged}
                 />
 
                 {(() => {
@@ -782,9 +871,41 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                                 {tProposals("create.margin_percent")}
                               </span>
                               <span className="font-semibold text-amber-950">
-                                {pickedSpec.margin_percent
-                                  ? `${Number(pickedSpec.margin_percent).toFixed(1)} %`
-                                  : "—"}
+                                {(() => {
+                                  // Same derive-from-cost-and-price
+                                  // fallback as the onChange seeder
+                                  // above. Without it, a spec priced
+                                  // through ``final_price`` (no
+                                  // explicit ``margin_percent``) shows
+                                  // "—" in this card even though the
+                                  // margin is mathematically known.
+                                  if (pickedSpec.margin_percent) {
+                                    return `${Number(
+                                      pickedSpec.margin_percent,
+                                    ).toFixed(1)} %`;
+                                  }
+                                  if (
+                                    pickedSpec.unit_cost &&
+                                    pickedSpec.final_price
+                                  ) {
+                                    const cost = Number(
+                                      pickedSpec.unit_cost,
+                                    );
+                                    const price = Number(
+                                      pickedSpec.final_price,
+                                    );
+                                    if (
+                                      Number.isFinite(cost) &&
+                                      Number.isFinite(price) &&
+                                      price > 0 &&
+                                      cost > 0 &&
+                                      cost < price
+                                    ) {
+                                      return `${((1 - cost / price) * 100).toFixed(1)} %`;
+                                    }
+                                  }
+                                  return "—";
+                                })()}
                               </span>
                             </div>
                             <div className="flex flex-col gap-0.5">

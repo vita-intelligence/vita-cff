@@ -1352,15 +1352,51 @@ function LineSpecPicker({
     >
       <option value="">{tProposals("lines.no_spec")}</option>
       {relevant.map((sheet) => {
-        const label = [sheet.code, `v${sheet.formulation_version_number}`]
+        const baseLabel = [sheet.code, `v${sheet.formulation_version_number}`]
           .filter(Boolean)
           .join(" · ");
+        // ``document_kind`` is the watermark, INDEPENDENT of the
+        // lifecycle status. A sheet can be ``approved`` (director-
+        // signed) while still carrying a "[DRAFT]" watermark.
         const kindTag =
           sheet.document_kind === "final" ? " [FINAL]" : " [DRAFT]";
+        // Mirror the create-modal picker's "busy" semantics so the
+        // per-line picker also signals when a spec is already
+        // bundled into another non-rejected proposal. We exempt
+        // the *current* line's bound sheet from the "busy" rule —
+        // otherwise re-saving the same spec on its own line would
+        // look impossible.
+        const linkedProposalStatus = sheet.linked_proposal?.status;
+        const isBusyElsewhere = Boolean(
+          sheet.linked_proposal &&
+            linkedProposalStatus !== "rejected" &&
+            sheet.id !== line.specification_sheet_id,
+        );
+        // Chip: free + approved → no chip (ideal pick); anything
+        // else surfaces the lifecycle stage so the operator can
+        // tell at a glance which one is fresh vs in-flight.
+        let chip = "";
+        if (sheet.linked_proposal && isBusyElsewhere) {
+          const statusLabel = tProposals(
+            `create.spec_status.${sheet.status}` as
+              "create.spec_status.approved",
+          );
+          chip = ` · ${statusLabel} · ${sheet.linked_proposal.code}`;
+        } else if (sheet.status !== "approved") {
+          chip = ` · ${tProposals(
+            `create.spec_status.${sheet.status}` as
+              "create.spec_status.approved",
+          )}`;
+        }
         return (
-          <option key={sheet.id} value={sheet.id}>
-            {label}
+          <option
+            key={sheet.id}
+            value={sheet.id}
+            disabled={isBusyElsewhere}
+          >
+            {baseLabel}
             {kindTag}
+            {chip}
           </option>
         );
       })}

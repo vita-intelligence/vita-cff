@@ -6,6 +6,7 @@
   "empty": "No customers yet. Add one to stop re-typing details on every proposal.",
   "empty_search": "No matches. Try a different search term.",
   "add": "Add customer",
+  "dynamics_managed_banner": "Customers on this workspace are managed via Microsoft Dynamics. New customers enter the system through the Dynamics import path in the proposal or spec sheet picker — manual creation is disabled so the local list never drifts from Dataverse.",
   "columns": {
     "company": "Company",
     "name": "Contact",
@@ -39,6 +40,7 @@
     "dynamics_chip": "Dynamics",
     "dynamics_section": "From Microsoft Dynamics",
     "dynamics_no_matches": "No Dynamics matches.",
+    "dynamics_managed_hint": "This workspace imports customers from Microsoft Dynamics. If the contact isn't here, add it in Dynamics first.",
     "importing": "Importing customer from Dynamics…",
     "dynamics_import_failed": "Couldn't import that contact. Check your connection and try again.",
     "dismiss": "Dismiss"
