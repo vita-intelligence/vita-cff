@@ -220,6 +220,15 @@
     "disintegration_spec": "Disintegrate within 60 minutes",
     "auto_pick": "Auto-pick based on total active"
   },
+  "mrpeasy_picker": {
+    "label": "Search MRPEasy product (optional)",
+    "placeholder": "Type code or product name…",
+    "search_button": "Search",
+    "loading": "Loading items from MRPEasy…",
+    "empty_results": "No matching MRPEasy items.",
+    "price": "Selling price: {price}",
+    "hint": "Type a code or product name and press Search to look it up in MRPEasy. Pick a row to autofill the code and name. Leave blank to enter them manually."
+  },
   "builder": {
     "metadata": "Product metadata",
     "ingredients": "Active ingredients",

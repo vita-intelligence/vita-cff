@@ -113,6 +113,38 @@ class Organization(models.Model):
             "workspace. Empty dict = integration disabled."
         ),
     )
+    #: Per-org MRPEasy integration config. When live, the spec
+    #: approval modal and the proposal create / detail surfaces
+    #: look up the project's MRPEasy ``selling_price`` (filtered
+    #: by the project code) so the director can see the
+    #: catalogue-suggested unit price beside the figure they're
+    #: typing. The Fernet-encrypted ``api_secret_ciphertext`` is
+    #: stored here so every MRPEasy request reads the current
+    #: secret from a single source. Schema:
+    #:
+    #: .. code-block:: json
+    #:
+    #:    {
+    #:      "enabled": true,
+    #:      "api_key": "<mrpeasy api key>",
+    #:      "api_secret_ciphertext": "<fernet ciphertext>",
+    #:      "last_tested_at": "2026-05-15T10:00:00Z"
+    #:    }
+    #:
+    #: Empty dict = no integration configured. Every MRPEasy code
+    #: path treats that as off — the price-hint component renders
+    #: nothing, settings UI offers the connect form, no calls go
+    #: out. The base URL is fixed (``https://app.mrpeasy.com``)
+    #: so no per-org subdomain field is needed.
+    mrpeasy_config = models.JSONField(
+        _("mrpeasy integration config"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "MRPEasy connection settings for this workspace. "
+            "Empty dict = integration disabled."
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

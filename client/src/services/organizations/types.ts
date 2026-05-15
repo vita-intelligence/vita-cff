@@ -36,6 +36,14 @@ export interface OrganizationDto {
    * (we have no auto-sync today), it's an explicit local override.
    */
   readonly dynamics_customers_managed: boolean;
+  /**
+   * ``true`` when the org has a live MRPEasy integration
+   * (enabled + credentials stored). Drives the render gate on the
+   * ``<MrpeasyPriceHint>`` component — without it set, the hint
+   * stays silent so we don't surface "no MRPEasy match" alarmism
+   * to orgs that haven't connected the integration yet.
+   */
+  readonly mrpeasy_live: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }

@@ -9,6 +9,7 @@ import { useTranslations } from "next-intl";
 
 import { CustomerFormModal } from "../customers/customers-list";
 import { CustomerPicker } from "@/components/customers/customer-picker";
+import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { useOrganization } from "@/services/organizations";
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
@@ -350,6 +351,16 @@ export function SpecCreateProposalModal({
                         </span>
                       </div>
                     </div>
+                    {/* MRPEasy reference price for this project,
+                        keyed on the spec's parent project code.
+                        Read-only sanity check beside the
+                        director-signed pricing. */}
+                    <MrpeasyPriceHint
+                      orgId={orgId}
+                      code={sheet.formulation_code ?? ""}
+                      currency={specCurrency}
+                      className="self-start"
+                    />
                   </div>
                 ) : null}
 

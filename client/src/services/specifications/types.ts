@@ -74,6 +74,10 @@ export interface SpecificationSheetDto {
   readonly formulation_version: string;
   readonly formulation_id: string;
   readonly formulation_name: string;
+  /** The parent project's own ``code`` field (e.g. "MA210367").
+   *  Used by the MRPEasy price-hint component to look up the
+   *  catalogue-suggested price by part number. */
+  readonly formulation_code: string;
   readonly formulation_version_number: number;
   /** Compact summary of the proposal linked to this sheet via
    *  ``Proposal.specification_sheet`` (OneToOne). ``null`` when no

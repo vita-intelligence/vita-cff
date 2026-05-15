@@ -14,6 +14,7 @@ import { useTranslations } from "next-intl";
 import { useMemo, useState, type FormEvent } from "react";
 
 import { Chip } from "@/components/ui/chip";
+import { MrpeasyItemPicker } from "@/components/mrpeasy/mrpeasy-item-picker";
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
@@ -409,6 +410,22 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
                 {/* ------------------------------------------------- */}
                 {/* Core metadata                                     */}
                 {/* ------------------------------------------------- */}
+                {/* MRPEasy picker sits above the code+name inputs.
+                    Mirrors the Dynamics customer picker pattern:
+                    the operator types, picks an item, and the two
+                    text inputs below autofill with the MRPEasy
+                    catalogue's part number + product title. The
+                    component self-hides when the org doesn't have
+                    MRPEasy live so the form behaves exactly as
+                    before for non-connected workspaces. */}
+                <MrpeasyItemPicker
+                  orgId={orgId}
+                  onPick={(item) => {
+                    setCode(item.code);
+                    setName(item.title);
+                  }}
+                />
+
                 <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
                   <label className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-ink-700">

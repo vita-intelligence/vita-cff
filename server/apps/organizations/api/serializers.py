@@ -41,6 +41,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
     is_owner = serializers.SerializerMethodField()
     permissions = serializers.SerializerMethodField()
     dynamics_customers_managed = serializers.SerializerMethodField()
+    mrpeasy_live = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -51,6 +52,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
             "is_owner",
             "permissions",
             "dynamics_customers_managed",
+            "mrpeasy_live",
             "created_at",
             "updated_at",
         )
@@ -95,6 +97,18 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         from apps.customers.services import is_dynamics_live
 
         return is_dynamics_live(obj)
+
+    def get_mrpeasy_live(self, obj: Organization) -> bool:
+        # Same source-of-truth pattern as ``dynamics_customers_managed``
+        # above — the helper inspects the JSONField directly so the
+        # serializer never decrypts the secret just to compute a
+        # boolean. Drives the price-hint component's render gate:
+        # the chip stays hidden on orgs without MRPEasy live so we
+        # don't surface "no MRPEasy match" alarmism to customers who
+        # haven't even connected the integration yet.
+        from apps.proposals.mrpeasy import is_mrpeasy_live
+
+        return is_mrpeasy_live(obj)
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):

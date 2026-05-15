@@ -35,6 +35,7 @@ import {
 } from "@/services/specifications";
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
+import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { useOrganization } from "@/services/organizations";
 import { CustomerFormModal } from "../customers/customers-list";
 import {
@@ -919,6 +920,21 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                               </span>
                             </div>
                           </div>
+                          {/* MRPEasy hint: the catalogue-suggested
+                              price for this project's code. Sales
+                              uses it as a sanity check against the
+                              director-signed spec price beside it.
+                              No autofill button here — the spec's
+                              pricing is the source of truth on the
+                              proposal; MRPEasy is reference only. */}
+                          {pickedFormulation ? (
+                            <MrpeasyPriceHint
+                              orgId={orgId}
+                              code={pickedFormulation.code ?? ""}
+                              currency={specCurrency}
+                              className="self-start"
+                            />
+                          ) : null}
                         </div>
                       ) : null}
 

@@ -19,6 +19,7 @@ import { useSearchParams } from "next/navigation";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { CommentsPanel } from "@/components/comments";
+import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
@@ -338,6 +339,8 @@ export function SpecificationSheetView({
               busy={transitionMutation.isPending}
               valid={approvalPricingValid}
               tSpecs={tSpecs}
+              orgId={orgId}
+              formulationCode={sheet.formulation_code ?? ""}
             />
           ) : null
         }
@@ -1917,6 +1920,8 @@ function ApprovalPricingForm({
   busy,
   valid,
   tSpecs,
+  orgId,
+  formulationCode,
 }: {
   unitCost: string;
   margin: string;
@@ -1927,6 +1932,12 @@ function ApprovalPricingForm({
   busy: boolean;
   valid: boolean;
   tSpecs: ReturnType<typeof useTranslations<"specifications">>;
+  //: For the MRPEasy price-hint chip. ``formulationCode`` is the
+  //: project's own ``code`` field (the part number on the MRPEasy
+  //: side). Empty string disables the lookup (e.g. legacy
+  //: projects with a blank code).
+  orgId: string;
+  formulationCode: string;
 }) {
   // Live derived-price preview so the director sees exactly what
   // the customer will be quoted before they sign. Same formula
@@ -1997,6 +2008,21 @@ function ApprovalPricingForm({
             : tSpecs("approval.customer_pays_placeholder")}
         </span>
       </div>
+
+      {/* MRPEasy hint — the catalogue-suggested customer price
+          for this project's code. Sits below the derived
+          customer-pays line so the director can read both side
+          by side: "the math my cost+margin produces is X; MRPEasy
+          says this product sells for Y; let me adjust margin if
+          they differ". No autofill button — the spec stores cost
+          + margin (final_price is derived), so there isn't a
+          single field to copy MRPEasy's value into. */}
+      <MrpeasyPriceHint
+        orgId={orgId}
+        code={formulationCode}
+        currency={currency}
+        className="self-start"
+      />
 
       {!valid ? (
         <p className="text-[11px] font-medium text-amber-900">

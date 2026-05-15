@@ -37,6 +37,29 @@
       "disable_confirm": "Disable the Dynamics integration? The stored credentials are erased. Customers already imported keep working.",
       "disabled": "Integration disabled. The customer picker will fall back to local results only.",
       "footer_note": "The picker only calls Dynamics after a user types at least two characters. Outages and rate-limit hits degrade silently to local-only results so a Dynamics issue never blocks the proposal flow."
+    },
+    "mrpeasy": {
+      "title": "MRPEasy",
+      "subtitle": "Pull the catalogue-suggested price into the spec approval modal and the proposal pages. Lookups are read-only — MRPEasy stays the source of truth, the price hint is purely a reference for the operator.",
+      "status_connected": "Connected",
+      "status_untested": "Credentials saved — test the connection",
+      "status_not_connected": "Not connected",
+      "enabled_label": "Enable the MRPEasy price hint for this organization",
+      "api_key_label": "API key",
+      "api_key_hint": "From MRPEasy → Settings → Integration → API access. Public-ish identifier; pair it with the secret below.",
+      "api_secret_label": "API secret",
+      "api_secret_placeholder": "Paste the secret generated in MRPEasy",
+      "api_secret_hint": "Stored Fernet-encrypted server-side. Leave blank when editing other fields to keep the existing secret.",
+      "test_button": "Test connection",
+      "test_button_hint": "Issues a one-row /items request against MRPEasy with the saved credentials.",
+      "test_button_disabled_hint": "Save credentials first, then run the test.",
+      "save_button": "Save",
+      "saved": "Settings saved. Run Test connection to confirm the credentials work.",
+      "test_ok": "MRPEasy responded successfully — the price hint will now appear on the proposal and spec approval surfaces.",
+      "disable": "Disable",
+      "disable_confirm": "Disable the MRPEasy integration? The price hint stops appearing immediately. Stored data on your proposals and specs is unchanged — the integration only reads from MRPEasy.",
+      "disabled": "Integration disabled. The price hint will no longer appear.",
+      "footer_note": "Each lookup is keyed on the project / line code (the same code used in MRPEasy as the part number). When MRPEasy has no matching item, the hint chip says so explicitly — never a silent miss."
     }
   },
   "profile": {

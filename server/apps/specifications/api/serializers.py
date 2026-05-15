@@ -39,6 +39,14 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation_version.formulation.name", read_only=True
     )
+    #: The project's own code (e.g. "MA210367"). Surfaced on the
+    #: spec payload so the MRPEasy price-hint component can look
+    #: up the suggested price by part number without a second
+    #: round-trip to the formulations endpoint — the spec view
+    #: already has every other display field for the project.
+    formulation_code = serializers.CharField(
+        source="formulation_version.formulation.code", read_only=True
+    )
     formulation_version_number = serializers.IntegerField(
         source="formulation_version.version_number", read_only=True
     )
@@ -170,6 +178,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_version",
             "formulation_id",
             "formulation_name",
+            "formulation_code",
             "formulation_version_number",
             "linked_proposal",
             "review_slot_blocker",

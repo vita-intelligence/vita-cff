@@ -548,5 +548,11 @@
         "full_terms_note": "Full R&D, Sampling and Formulation Terms are recorded against this proposal and apply once the proposal is signed. Sections include: Purpose of the R&D Phase, R&D Packages, Additional Samples and Extra Iterations, Customer Feedback and Approval, Reasonable Sample Support, Material Formula Changes, Technical / Regulatory / Manufacturing Limitations, R&D Timelines, Sample Approval and Production Scale-Up, Ownership of Formulations and R&D Work, Cancellation / Delay / Non-Proceeding, and Sales Representations."
       }
     }
+  },
+  "mrpeasy_hint": {
+    "loading": "MRPEasy: looking up…",
+    "no_match": "No MRPEasy match for {code}",
+    "suggested": "MRPEasy: {currency} {price}",
+    "use": "Use"
   }
 }

@@ -2,6 +2,12 @@
 
 from django.urls import path
 
+from apps.proposals.api.mrpeasy_views import (
+    MrpeasyIntegrationView,
+    MrpeasyItemListView,
+    MrpeasyPriceLookupView,
+    MrpeasyTestConnectionView,
+)
 from apps.proposals.api.views import (
     ProposalAuditView,
     ProposalCompleteRequiredFieldsView,
@@ -134,5 +140,29 @@ urlpatterns = [
         "public/proposals/<uuid:token>/finalize/",
         PublicProposalFinalizeView.as_view(),
         name="proposal-public-finalize",
+    ),
+    # MRPEasy integration. Same ``<org_id>/integrations/<name>/``
+    # URL shape the Dynamics integration uses so the settings page
+    # and any future integration follow a single discoverable
+    # pattern.
+    path(
+        "organizations/<uuid:org_id>/integrations/mrpeasy/",
+        MrpeasyIntegrationView.as_view(),
+        name="mrpeasy-integration",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/mrpeasy/test/",
+        MrpeasyTestConnectionView.as_view(),
+        name="mrpeasy-test",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/mrpeasy/lookup/",
+        MrpeasyPriceLookupView.as_view(),
+        name="mrpeasy-lookup",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/mrpeasy/items/",
+        MrpeasyItemListView.as_view(),
+        name="mrpeasy-items",
     ),
 ]

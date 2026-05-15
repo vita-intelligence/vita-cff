@@ -17,6 +17,12 @@ import {
   useSaveDynamicsConfig,
   useTestDynamicsConnection,
 } from "@/services/customers";
+import {
+  useClearMrpeasyConfig,
+  useMrpeasyConfig,
+  useSaveMrpeasyConfig,
+  useTestMrpeasyConnection,
+} from "@/services/mrpeasy";
 import type { OrganizationDto } from "@/services/organizations/types";
 
 
@@ -58,6 +64,7 @@ export function IntegrationsTab({
   return (
     <section className="flex flex-col gap-6">
       <DynamicsCard orgId={organization.id} />
+      <MrpeasyCard orgId={organization.id} />
     </section>
   );
 }
@@ -284,6 +291,217 @@ function DynamicsCard({ orgId }: { orgId: string }) {
 }
 
 
+/**
+ * MRPEasy card. Mirrors :func:`DynamicsCard` but with a simpler
+ * form (two fields: API key + API secret) because MRPEasy's REST
+ * auth is HTTP Basic against a fixed base URL — no per-org
+ * subdomain / tenant / OAuth flow to configure. Owner-only by
+ * the same backend permission class.
+ */
+function MrpeasyCard({ orgId }: { orgId: string }) {
+  const tSettings = useTranslations("settings.integrations.mrpeasy");
+  const tErrors = useTranslations("errors");
+
+  const configQuery = useMrpeasyConfig(orgId);
+  const saveMutation = useSaveMrpeasyConfig(orgId);
+  const testMutation = useTestMrpeasyConnection(orgId);
+  const clearMutation = useClearMrpeasyConfig(orgId);
+
+  const [enabled, setEnabled] = useState(true);
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [banner, setBanner] = useState<Banner>(null);
+
+  useEffect(() => {
+    const cfg = configQuery.data;
+    if (!cfg) return;
+    // First-setup UX: when nothing has been stored yet, leave the
+    // ``Enable`` box ticked (the ``useState(true)`` default). The
+    // server's ``cfg.enabled`` is false for an unconfigured org,
+    // and seeding from it would silently flip the box off — so the
+    // operator types credentials, clicks Save, and is then puzzled
+    // when the Test button reports "not configured" because
+    // ``enabled`` rode false through the save. Only mirror the
+    // server's flag when there's actually a stored secret to
+    // toggle against.
+    setEnabled(cfg.has_secret ? cfg.enabled : true);
+    setApiKey(cfg.api_key);
+    setApiSecret("");
+  }, [configQuery.data]);
+
+  const hasStoredSecret = Boolean(configQuery.data?.has_secret);
+  const lastTestedAt = configQuery.data?.last_tested_at ?? null;
+  const isConnected = hasStoredSecret && Boolean(lastTestedAt);
+
+  const handleSave = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBanner(null);
+    try {
+      await saveMutation.mutateAsync({
+        enabled,
+        api_key: apiKey.trim(),
+        // Empty string = "keep existing secret" (same UX as
+        // Dynamics). Non-empty rotates.
+        api_secret: apiSecret,
+      });
+      setApiSecret("");
+      setBanner({ kind: "success", message: tSettings("saved") });
+    } catch (err) {
+      setBanner({ kind: "error", message: extractError(err, tErrors) });
+    }
+  };
+
+  const handleTest = async () => {
+    setBanner(null);
+    try {
+      await testMutation.mutateAsync();
+      setBanner({ kind: "success", message: tSettings("test_ok") });
+    } catch (err) {
+      setBanner({ kind: "error", message: extractError(err, tErrors) });
+    }
+  };
+
+  const handleDisable = async () => {
+    if (!window.confirm(tSettings("disable_confirm"))) return;
+    setBanner(null);
+    try {
+      await clearMutation.mutateAsync();
+      setApiSecret("");
+      setBanner({ kind: "success", message: tSettings("disabled") });
+    } catch (err) {
+      setBanner({ kind: "error", message: extractError(err, tErrors) });
+    }
+  };
+
+  const isBusy =
+    saveMutation.isPending ||
+    testMutation.isPending ||
+    clearMutation.isPending;
+
+  return (
+    <article className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <header className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-200">
+            <Plug className="h-5 w-5" />
+          </div>
+          <div className="flex flex-col">
+            <h2 className="text-base font-semibold text-ink-1000">
+              {tSettings("title")}
+            </h2>
+            <p className="mt-0.5 text-xs leading-snug text-ink-500">
+              {tSettings("subtitle")}
+            </p>
+          </div>
+        </div>
+        <StatusBadge
+          isConnected={isConnected}
+          hasStoredSecret={hasStoredSecret}
+          tSettings={tSettings}
+        />
+      </header>
+
+      <form onSubmit={handleSave} className="mt-6 flex flex-col gap-5">
+        <label className="flex items-center gap-2 text-xs font-medium text-ink-700">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) => setEnabled(e.target.checked)}
+            className="h-4 w-4 accent-orange-500"
+          />
+          {tSettings("enabled_label")}
+        </label>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <Field
+            label={tSettings("api_key_label")}
+            value={apiKey}
+            onChange={setApiKey}
+            placeholder="z1g41b3d0a7c2"
+            hint={tSettings("api_key_hint")}
+          />
+          <Field
+            label={tSettings("api_secret_label")}
+            value={apiSecret}
+            onChange={setApiSecret}
+            placeholder={
+              hasStoredSecret
+                ? "••••••••••••••••  (stored — leave blank to keep)"
+                : tSettings("api_secret_placeholder")
+            }
+            hint={tSettings("api_secret_hint")}
+            type="password"
+          />
+        </div>
+
+        {banner ? (
+          <p
+            role="alert"
+            className={`flex items-start gap-2 rounded-lg px-3 py-2 text-xs font-medium ring-1 ring-inset ${
+              banner.kind === "success"
+                ? "bg-success/10 text-success ring-success/20"
+                : "bg-danger/10 text-danger ring-danger/20"
+            }`}
+          >
+            {banner.kind === "success" ? (
+              <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            ) : (
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            )}
+            <span>{banner.message}</span>
+          </p>
+        ) : null}
+
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {hasStoredSecret ? (
+            <button
+              type="button"
+              onClick={() => void handleDisable()}
+              disabled={isBusy}
+              className="rounded-lg px-3 py-2 text-xs font-medium text-danger ring-1 ring-inset ring-danger/30 hover:bg-danger/5 disabled:opacity-60"
+            >
+              {tSettings("disable")}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => void handleTest()}
+            disabled={isBusy || !hasStoredSecret}
+            title={
+              hasStoredSecret
+                ? tSettings("test_button_hint")
+                : tSettings("test_button_disabled_hint")
+            }
+            className="inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-60"
+          >
+            {testMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            )}
+            {tSettings("test_button")}
+          </button>
+          <button
+            type="submit"
+            disabled={isBusy}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-2 text-xs font-medium text-ink-0 hover:bg-orange-600 disabled:opacity-60"
+          >
+            {saveMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : null}
+            {tSettings("save_button")}
+          </button>
+        </div>
+      </form>
+
+      <p className="mt-6 border-t border-ink-100 pt-4 text-[11px] leading-snug text-ink-500">
+        {tSettings("footer_note")}
+      </p>
+    </article>
+  );
+}
+
+
 function StatusBadge({
   isConnected,
   hasStoredSecret,
@@ -291,7 +509,13 @@ function StatusBadge({
 }: {
   isConnected: boolean;
   hasStoredSecret: boolean;
-  tSettings: ReturnType<typeof useTranslations<"settings.integrations.dynamics">>;
+  // Loosened from the Dynamics-specific namespace so the MRPEasy
+  // card can reuse this same badge. Both translation namespaces
+  // expose ``status_connected`` / ``status_untested`` /
+  // ``status_not_connected`` keys with identical labels — the
+  // type widens to ``string`` so the function signature accepts
+  // either.
+  tSettings: (key: string) => string;
 }) {
   if (isConnected) {
     return (
