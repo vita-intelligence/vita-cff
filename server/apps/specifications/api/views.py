@@ -37,11 +37,13 @@ from apps.specifications.services import (
     PackagingItemNotAllowed,
     PublicLinkNotEnabled,
     SpecificationCodeConflict,
+    SpecificationDeletionLocked,
     SpecificationNotMutable,
     SpecificationPricingLocked,
     SpecificationNotFound,
     SpecificationReviewSlotTaken,
     create_sheet,
+    delete_sheet,
     get_by_public_token,
     get_sheet,
     list_sheets,
@@ -253,21 +255,33 @@ class SpecificationDetailView(APIView):
     def delete(
         self, request: Request, org_id: str, sheet_id: str
     ) -> Response:
-        from apps.audit.services import record as record_audit, snapshot
+        from apps.audit.services import record as record_audit
 
         sheet = self._load(sheet_id)
-        organization = sheet.organization
-        target_id = str(sheet.pk)
-        before = snapshot(sheet)
-        sheet.delete()
+        try:
+            outcome = delete_sheet(sheet=sheet, actor=request.user)
+        except SpecificationDeletionLocked:
+            # 409 (not 403) — the caller has the DELETE capability,
+            # the resource exists; the deny is a property of the
+            # row's lifecycle state. Codified error so the frontend
+            # can render "revert to draft first" copy without
+            # string-matching the response body.
+            return Response(
+                {"code": "specification_deletion_locked"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        # The audit row lands here (not in the service) so a failed
+        # write to the audit log doesn't roll back the DELETE — the
+        # spec is gone either way and we'd rather lose the trail than
+        # half-delete and confuse every subsequent read.
         record_audit(
-            organization=organization,
-            actor=request.user,
+            organization=outcome["organization"],
+            actor=outcome["actor"],
             action="spec_sheet.delete",
             target=None,
             target_type="specificationsheet",
-            target_id=target_id,
-            before=before,
+            target_id=outcome["target_id"],
+            before=outcome["before"],
         )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
@@ -427,7 +441,7 @@ class SpecificationPdfView(APIView):
         # only one WeasyPrint call runs at a time per worker. See
         # :mod:`config.pdf_cache` for the rationale.
         pdf_bytes, filename = cached_render(
-            f"spec-pdf:{sheet.id}:{int(sheet.updated_at.timestamp())}",
+            f"spec-pdf:{sheet.id}",
             lambda: render_pdf(sheet),
         )
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
@@ -742,7 +756,7 @@ class PublicSpecificationPdfView(APIView):
         # at the same time would otherwise OOM the worker on the
         # very first batch of Download clicks.
         pdf_bytes, filename = cached_render(
-            f"spec-pdf:{sheet.id}:{int(sheet.updated_at.timestamp())}",
+            f"spec-pdf:{sheet.id}",
             lambda: render_pdf(sheet),
         )
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
@@ -784,13 +798,18 @@ class PublicProposalRenderView(APIView):
         # endpoint fires so the specifications module stays load-clean
         # in environments that don't serve proposals yet.
         from apps.proposals.api.views import _render_proposal_html
+        from apps.specifications.services import resolve_linked_proposal
 
         try:
             sheet = get_by_public_token(token)
         except PublicLinkNotEnabled as exc:
             raise NotFound() from exc
 
-        proposal = getattr(sheet, "proposal", None)
+        # ``resolve_linked_proposal`` falls back to ``ProposalLine``
+        # when the legacy OneToOne is empty — without it every spec
+        # past the first one in a multi-spec proposal would 404 here
+        # and the iframe on the spec kiosk would render an error.
+        proposal = resolve_linked_proposal(sheet)
         if proposal is None:
             raise NotFound()
 

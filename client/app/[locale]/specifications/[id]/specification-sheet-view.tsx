@@ -534,7 +534,16 @@ export function SpecificationSheetView({
           {canWrite ? (
             <SharePublicLinkButton orgId={orgId} sheet={sheet} />
           ) : null}
-          {canAdmin ? (
+          {canAdmin && sheet.status === "draft" ? (
+            // Delete is restricted to ``draft`` because every other
+            // status carries either a director signature, a
+            // customer signature, or a terminal audit trail. The
+            // backend enforces the same rule (409
+            // ``specification_deletion_locked``) so a stale
+            // client can't bypass — this just hides the button
+            // when it would never succeed anyway. To delete a
+            // signed sheet, revert it to draft first; the revert
+            // path explicitly clears the relevant signatures.
             <Button
               type="button"
               variant="danger"

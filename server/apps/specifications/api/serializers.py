@@ -10,6 +10,7 @@ from apps.specifications.models import (
     SpecificationSheet,
     SpecificationStatus,
 )
+from apps.specifications.services import resolve_linked_proposal
 
 
 def _code(value: str) -> ErrorDetail:
@@ -75,36 +76,13 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
         }
 
     def get_linked_proposal(self, obj) -> dict | None:
-        # A spec can be attached to a proposal in two ways:
-        #
-        # 1. The legacy proposal-level FK (``Proposal.specification_sheet``,
-        #    OneToOne) — only the FIRST spec picked when creating the
-        #    proposal lands here.
-        # 2. Per-line FK (``ProposalLine.specification_sheet``) — every
-        #    additional spec bundled into the proposal goes through a
-        #    new line.
-        #
-        # The original implementation only checked #1, so any spec
-        # attached as a line was incorrectly reported as "unlinked"
-        # on the Signed tab and showed a "+ Create proposal" button
-        # that would silently produce a duplicate proposal.
-        #
-        # Resolution order: the legacy OneToOne wins if present
-        # (matches the "first picked" semantics from the create
-        # flow); otherwise we take the most-recently-updated
-        # proposal that has a line referencing this sheet. A spec
-        # used on multiple proposals only surfaces the freshest
-        # one — enough to clear the "is this used?" check.
-        proposal = getattr(obj, "proposal", None)
-        if proposal is None:
-            # ``.all()`` returns the prefetched list when ``list_sheets``
-            # provided the ``proposal_lines`` Prefetch (already ordered
-            # ``-proposal__updated_at`` in the prefetch queryset). Falling
-            # back to a fresh query when the prefetch is absent — keeps
-            # detail / single-fetch contexts working.
-            lines = list(obj.proposal_lines.all())
-            line = lines[0] if lines else None
-            proposal = line.proposal if line is not None else None
+        # Routed through ``resolve_linked_proposal`` so the Signed
+        # tab, the kiosk ``has_proposal`` flag, and the public
+        # proposal iframe all agree on what counts as "this spec
+        # has a proposal attached". The helper handles both the
+        # legacy OneToOne FK and the per-line attachment used by
+        # multi-spec proposals.
+        proposal = resolve_linked_proposal(obj)
         if proposal is None:
             return None
         return {
@@ -118,6 +96,24 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
         # only matters for sheets sitting outside the review lane
         # that the scientist might want to push into it.
         if obj.status == SpecificationStatus.IN_REVIEW.value:
+            return None
+
+        # Prefer the annotation installed by ``list_sheets`` — one
+        # extra subplan per page instead of one query per row.
+        # Falls back to an explicit ``filter().first()`` only on
+        # detail-path serializations where no list query ran (e.g.
+        # a fresh ``get_sheet`` fetch); the per-row cost is moot
+        # there because we only serialize a single object.
+        annotated_id = getattr(obj, "_review_blocker_id", None)
+        annotated_code = getattr(obj, "_review_blocker_code", None)
+        if annotated_id is not None:
+            return {"id": str(annotated_id), "code": annotated_code or ""}
+        # If the annotation was applied (list path) but matched no
+        # sibling, ``_review_blocker_id`` is ``None`` even though
+        # the attribute exists. Distinguish that from "no annotation
+        # at all" by checking ``hasattr``: present-but-null means
+        # the list query already determined there is no blocker.
+        if hasattr(obj, "_review_blocker_id"):
             return None
         blocker = (
             SpecificationSheet.objects.filter(

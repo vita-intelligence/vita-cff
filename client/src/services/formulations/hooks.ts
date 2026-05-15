@@ -235,10 +235,15 @@ export function useProjectOverview(
     queryKey: formulationsQueryKeys.overview(orgId, formulationId),
     queryFn: () => fetchProjectOverview(orgId, formulationId),
     initialData: options.initialData,
-    // Overview aggregates many child tables — refetch on mount so a
-    // freshly-saved batch / version lands immediately on the
-    // dashboard without waiting for a tab switch.
-    refetchOnMount: "always",
+    // Fresh-on-write contract is enforced by explicit
+    // ``invalidateQueries`` calls in the mutation hooks (save_version,
+    // batch updates, …) so we deliberately do NOT use
+    // ``refetchOnMount: "always"`` here. The previous setting fired a
+    // fresh ``/overview/`` request on every component mount even
+    // when the cache was milliseconds old, which on a single-worker
+    // backend turned tab-switches inside a project workspace into
+    // queued backend round-trips. Default ``staleTime`` (60s)
+    // governs everything below the mutation-driven invalidation.
   });
 }
 

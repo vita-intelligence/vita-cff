@@ -2248,17 +2248,31 @@ def capture_customer_rejection_on_proposal(
     )
 
     # Notify the sales person *after* the transaction commits — the
-    # email layer is best-effort (SMTP failures must not undo a
-    # genuine customer rejection) and ``on_commit`` keeps the two
-    # concerns decoupled.
+    # email is best-effort (SMTP failures must not undo a genuine
+    # customer rejection). ``on_commit`` guarantees the proposal row
+    # is durable before the task is enqueued so a Celery worker
+    # pulling the job immediately won't 404 on lookup.
+    #
+    # In eager mode (no broker configured) the ``.delay()`` body
+    # runs synchronously inside the on_commit callback — same
+    # observable behaviour as the previous direct call. With a real
+    # broker, the kiosk response returns the moment the rejection
+    # commits and the email round-trip happens on a worker.
     proposal_id = proposal.id
 
     def _dispatch_rejection_email() -> None:
+        from apps.proposals.tasks import (
+            send_proposal_rejection_notification_task,
+        )
+
         try:
-            _send_proposal_rejection_notification(proposal_id=proposal_id)
+            send_proposal_rejection_notification_task.delay(
+                str(proposal_id)
+            )
         except Exception:  # noqa: BLE001
-            # Logged inside the helper; swallow here so an SMTP blip
-            # doesn't bubble up as an unhandled error to the kiosk.
+            # Eager-mode failure path. The task already retried + logged
+            # internally; swallow so an SMTP blip doesn't bubble up
+            # as an unhandled error to the kiosk.
             pass
 
     transaction.on_commit(_dispatch_rejection_email)

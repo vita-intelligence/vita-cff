@@ -1,4 +1,4 @@
-import { Download, Info, PoundSterling } from "lucide-react";
+import { Download, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
@@ -63,28 +63,16 @@ export default async function PublicSpecificationPage({
           <SpecSheetContent rendered={rendered} />
         </div>
 
-        {rendered.sheet.has_proposal ? (
-          <section className="mt-8 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8 print:hidden">
-            <header className="flex items-center gap-2 border-b border-ink-100 pb-3">
-              <PoundSterling className="h-4 w-4 text-orange-600" />
-              <h2 className="text-base font-semibold text-ink-1000">
-                {tSpecs("public.proposal_heading")}
-              </h2>
-            </header>
-            <p className="mt-3 text-sm text-ink-500">
-              {tSpecs("public.proposal_body")}
-            </p>
-            {/* Public endpoint — AllowAny, so we can point the
-                iframe directly at the API origin without the
-                cross-site cookie dance. ``NEXT_PUBLIC_API_URL`` is
-                the same base used by the auth client. */}
-            <iframe
-              src={`${process.env.NEXT_PUBLIC_API_URL ?? ""}/api/public/specifications/${token}/proposal/`}
-              title={tSpecs("public.proposal_heading")}
-              className="mt-4 h-[900px] w-full rounded-xl bg-ink-0 ring-1 ring-ink-200"
-            />
-          </section>
-        ) : null}
+        {/*
+          The "Commercial proposal" iframe used to render here. We
+          dropped it because the proposal kiosk page is the canonical
+          surface for pricing — duplicating it on every spec kiosk
+          confused customers and made the sign-off flow harder to
+          reason about. The ``has_proposal`` flag is still consumed
+          below by the accept button so its label can switch to the
+          bundled-acceptance wording when the spec is part of a
+          multi-document deal.
+        */}
 
         <div className="mt-8 print:hidden">
           <KioskAcceptButton

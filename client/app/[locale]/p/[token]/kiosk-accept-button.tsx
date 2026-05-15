@@ -133,9 +133,22 @@ export function KioskAcceptButton({
     setDialogOpen(true);
   };
 
-  // Already accepted — show a read-only confirmation card instead
-  // of the sign-off button.
-  if (sheetStatus === "accepted" && customerSignedAt) {
+  // Already signed by the customer — show a read-only
+  // confirmation card instead of the sign-off button.
+  //
+  // We branch on ``customerSignedAt`` rather than ``status ===
+  // "accepted"`` because there are two signing paths:
+  //   * Standalone spec accept transitions the sheet to ``accepted``
+  //     and sets ``customer_signed_at`` in one shot.
+  //   * Bundled accept (multi-doc proposal) sets
+  //     ``customer_signed_at`` per document but keeps every sheet
+  //     at ``sent`` until ``finalize_proposal_kiosk`` runs.
+  // The button used to gate the banner on status alone, so a
+  // customer revisiting a spec they had already signed in a bundle
+  // saw "Sign and accept" a second time even though the signature
+  // was already on file. Gating on ``customerSignedAt`` directly
+  // makes the banner correct for both paths.
+  if (customerSignedAt) {
     return (
       <div className="rounded-xl border border-success/40 bg-success/5 p-4">
         <div className="flex items-start gap-3">
@@ -164,7 +177,11 @@ export function KioskAcceptButton({
   }
 
   // Pre-sent states (draft / in_review / approved / rejected) —
-  // nothing for the customer to sign yet.
+  // nothing for the customer to sign yet. ``accepted`` without
+  // ``customer_signed_at`` is impossible by construction (every
+  // path that transitions to accepted also stamps the timestamp),
+  // but the strict ``!== "sent"`` check still catches it
+  // defensively.
   if (sheetStatus !== "sent") {
     return (
       <p className="rounded-xl bg-ink-50 px-4 py-3 text-xs text-ink-500">
