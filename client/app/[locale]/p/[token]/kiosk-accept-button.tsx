@@ -27,7 +27,7 @@
 
 import { Button } from "@heroui/react";
 import { CheckCircle2, PenLine } from "lucide-react";
-import { useTranslations } from "next-intl";
+import { useFormatter, useTranslations } from "next-intl";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
@@ -91,6 +91,13 @@ export function KioskAcceptButton({
   hasProposal = false,
 }: Props) {
   const tSpecs = useTranslations("specifications");
+  // ``useFormatter`` from next-intl is locale-aware on both the
+  // server and the client, so the formatted timestamp is identical
+  // SSR ↔ hydration. The previous ``toLocaleString(undefined, …)``
+  // call used the server's default locale during SSR but the
+  // browser's locale on the client, producing the classic
+  // "May 13, 2026, 4:27 PM" vs "13 May 2026 at 16:27" mismatch.
+  const format = useFormatter();
   const router = useRouter();
   const [identity, setIdentity] = useState<KioskMarker | null>(null);
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -157,7 +164,7 @@ export function KioskAcceptButton({
             <p className="text-sm font-semibold text-ink-1000">
               {tSpecs("signature.accepted_banner", {
                 name: customerName || tSpecs("sheet.signature.customer"),
-                when: new Date(customerSignedAt).toLocaleString(undefined, {
+                when: format.dateTime(new Date(customerSignedAt), {
                   dateStyle: "medium",
                   timeStyle: "short",
                 }),
