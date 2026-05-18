@@ -5,7 +5,9 @@ export {
   editComment,
   fetchCommentsPage,
   fetchMentionableMembers,
+  fetchNotifyClientSummary,
   flagComment,
+  notifyClient,
   resolveComment,
   unflagComment,
   unresolveComment,
@@ -18,6 +20,8 @@ export {
   useEditComment,
   useInfiniteComments,
   useMentionableMembers,
+  useNotifyClient,
+  useNotifyClientSummary,
   useSetCommentFlagged,
   useSetCommentResolved,
 } from "./hooks";
@@ -49,5 +53,9 @@ export type {
   EditCommentRequestDto,
   MentionableMemberDto,
   MentionableMembersPageDto,
+  NotifyClientLatestAlertDto,
+  NotifyClientRequestDto,
+  NotifyClientResponseDto,
+  NotifyClientSummaryDto,
   PaginatedCommentsDto,
 } from "./types";

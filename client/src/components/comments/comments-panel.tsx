@@ -34,6 +34,7 @@ import {
 import { CommentComposer } from "./comment-composer";
 import { CommentCard } from "./comment-card";
 import { InfiniteLoader } from "./infinite-loader";
+import { NotifyClientButton } from "./notify-client-button";
 import { PinnedThreadPreview } from "./pinned-thread-preview";
 import { PresenceAvatars } from "./presence-avatars";
 import { TypingIndicator } from "./typing-indicator";
@@ -427,6 +428,16 @@ export function CommentsPanel({
             />
             {tComments("filter.show_resolved")}
           </label>
+          {/*
+            Notify-client surface is spec-sheet only — formulations
+            have no customer-facing surface. We also require
+            ``canWrite`` so a read-only viewer doesn't see an action
+            they can't actually use; the backend enforces the same
+            cap and would 403 even if the button were clicked.
+          */}
+          {entityKind === "specification" && canWrite ? (
+            <NotifyClientButton orgId={orgId} sheetId={entityId} />
+          ) : null}
         </div>
       </header>
 

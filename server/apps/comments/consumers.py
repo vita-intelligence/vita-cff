@@ -44,6 +44,7 @@ from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 
+from apps.comments.broadcast import inbox_group_name
 from apps.organizations.modules import (
     FORMULATIONS_MODULE,
     FormulationsCapability,
@@ -335,6 +336,74 @@ def _viewer_snapshot(user) -> dict[str, Any]:
         # full roster with photos immediately.
         "avatar_url": getattr(user, "avatar_image", "") or "",
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-user inbox consumer — single WS per authed user that receives a
+# firehose of "new comment in a thread you have access to" events.
+# Powers the global messenger bell + dropdown so the user hears about
+# new messages regardless of which page they're currently on.
+# ---------------------------------------------------------------------------
+
+
+class UserInboxConsumer(AsyncJsonWebsocketConsumer):
+    """One socket per signed-in user — receives ``inbox.message`` events
+    whenever a new comment lands on any thread the user can see.
+
+    URL pattern (see :mod:`apps.comments.routing`)::
+
+        ws/inbox/
+
+    The user is identified by the JWT cookie the standard
+    :class:`apps.comments.middleware.CookieJWTAuthMiddleware` stamps
+    onto ``scope["user"]`` — no path parameter needed.
+
+    Authorisation is enforced **at fan-out time**, not at connect
+    time. The connect handler accepts every authenticated socket,
+    because the audience of every inbox event is computed in
+    :func:`apps.comments.broadcast._fan_out_inbox_message` from the
+    comment's organisation membership + capability. The consumer is
+    therefore a pure transport — it joins the user's personal group
+    and re-emits whatever messages the broadcaster sends.
+    """
+
+    async def connect(self) -> None:
+        scope_user = self.scope.get("user") or AnonymousUser()
+        if getattr(scope_user, "is_authenticated", False) is not True:
+            await self.close(code=CLOSE_UNAUTHENTICATED)
+            return
+
+        self.user_id = str(scope_user.id)
+        self.group_name = inbox_group_name(self.user_id)
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+    async def disconnect(self, code: int) -> None:  # type: ignore[override]
+        group = getattr(self, "group_name", None)
+        if group:
+            await self.channel_layer.group_discard(group, self.channel_name)
+
+    async def receive_json(self, content: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        # The inbox channel is server-push only. Clients send no
+        # commands; we accept ``ping`` so the FE keep-alive layer can
+        # detect dead sockets through proxies that swallow idle TCP.
+        if not isinstance(content, dict):
+            return
+        if content.get("type") == "ping":
+            await self.send_json({"type": "pong"})
+
+    async def inbox_message(self, event: dict) -> None:
+        """Forward an inbox fan-out event to this socket.
+
+        The handler name matches the ``type`` field on the
+        ``group_send`` envelope (Channels converts ``inbox.message``
+        to ``inbox_message`` when picking the method to call).
+        """
+
+        await self.send_json(
+            {"type": "inbox.message", "payload": event.get("payload", {})}
+        )
 
 
 # ---------------------------------------------------------------------------

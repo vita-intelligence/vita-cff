@@ -78,3 +78,40 @@ export interface MentionableMemberDto {
 export interface MentionableMembersPageDto {
   readonly results: readonly MentionableMemberDto[];
 }
+
+
+// ---------------------------------------------------------------------------
+// Notify-client (kiosk alert) DTOs
+// ---------------------------------------------------------------------------
+
+
+export interface NotifyClientLatestAlertDto {
+  readonly id: string;
+  /** ``queued`` | ``sent`` | ``failed`` | ``skipped`` — the FE
+   *  cares mostly about ``sent`` for the "Last notified X ago"
+   *  hint, but we surface the rest so an admin can inspect a
+   *  partial / failed batch. */
+  readonly status: string;
+  readonly recipient_email: string;
+  readonly triggered_by: string;
+  readonly created_at: string;
+  readonly sent_at: string | null;
+}
+
+export interface NotifyClientSummaryDto {
+  readonly recipient_count: number;
+  readonly last_alert: NotifyClientLatestAlertDto | null;
+  readonly custom_note_max_length: number;
+}
+
+export interface NotifyClientRequestDto {
+  readonly note?: string;
+}
+
+export interface NotifyClientResponseDto {
+  readonly notified_count: number;
+  readonly sent_emails: readonly string[];
+  readonly skipped_emails: readonly string[];
+  readonly failed_emails: readonly string[];
+  readonly last_alert: NotifyClientLatestAlertDto | null;
+}

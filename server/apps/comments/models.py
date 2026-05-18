@@ -446,3 +446,198 @@ class KioskSession(models.Model):
 
     def __str__(self) -> str:
         return f"KioskSession({self.guest_email} @ {self.public_token})"
+
+
+class ThreadEntityKind(models.TextChoices):
+    """The supported comment-thread targets, mirrored from the polymorphic
+    set on :class:`Comment`. Kept as a closed set here so a typo in the
+    inbox path cannot create an orphan read-state row whose ``entity_kind``
+    doesn't match any consumer route or REST endpoint."""
+
+    FORMULATION = "formulation", _("Formulation")
+    SPECIFICATION = "specification", _("Specification")
+
+
+class ThreadReadState(models.Model):
+    """Per-user read pointer for one comment thread.
+
+    The messenger inbox surface needs to answer two questions on every
+    render: "how many unread messages do I have across all threads I
+    can see?" and "for each thread, what's my unread count?". Both
+    reduce to ``COUNT(*) FROM comments c WHERE c.target = X AND
+    c.created_at > my_last_read_at``, which is fast as long as the
+    read pointer is row-shaped + indexed — JSON-on-Membership would
+    not index for the "all threads I have unread on" sweep the bell
+    badge needs.
+
+    Lifecycle:
+
+    * Created lazily — the first :func:`mark_thread_read` for a
+      ``(user, kind, id)`` tuple INSERTs the row. Threads the user has
+      never visited contribute "everything is unread" to the inbox
+      via ``COALESCE(last_read_at, '1970-01-01')`` in the service
+      layer.
+    * Updated by :func:`mark_thread_read` — bumps ``last_read_at`` to
+      either ``timezone.now()`` (FE: "I opened this thread") or to a
+      caller-supplied timestamp (FE: "I scrolled to the bottom and
+      the newest message I saw was at T").
+    * Never deleted on entity removal — the read state row becomes an
+      orphan that never matches any thread again. Cheap to leave; a
+      future cron can sweep them up if storage ever matters.
+
+    The ``organization`` FK is deliberately omitted. It's derivable
+    through the entity and adding it here would create a denormalised
+    field that could drift if a workspace is ever migrated. Inbox
+    queries always JOIN through the entity to fetch the project
+    title anyway, so the org row comes along for free.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="thread_read_states",
+    )
+    entity_kind = models.CharField(
+        _("entity kind"),
+        max_length=24,
+        choices=ThreadEntityKind.choices,
+    )
+    entity_id = models.UUIDField(_("entity id"), db_index=True)
+
+    #: Timestamp of the most recent comment the user has acknowledged.
+    #: All comments on the thread with ``created_at > last_read_at`` are
+    #: counted as unread. The column is monotonic non-decreasing — the
+    #: service layer rejects bumps that would move the pointer
+    #: backwards so a stale "I read this" from a slow client cannot
+    #: re-surface already-read messages.
+    last_read_at = models.DateTimeField(_("last read at"), default=timezone.now)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("thread read state")
+        verbose_name_plural = _("thread read states")
+        constraints = [
+            # One row per (user, thread). The upsert in the service
+            # layer relies on this constraint to convert a duplicate
+            # write into an update without a SELECT-then-INSERT race.
+            models.UniqueConstraint(
+                fields=("user", "entity_kind", "entity_id"),
+                name="thread_read_state_unique",
+            ),
+        ]
+        indexes = [
+            # The inbox "unread count for bell badge" sweep filters by
+            # ``user`` and reads ``last_read_at`` for every row — this
+            # index lets the planner skip a heap scan on big tenants.
+            models.Index(
+                fields=("user", "-last_read_at"),
+                name="thread_read_state_user_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"ThreadReadState(user={self.user_id}, "
+            f"{self.entity_kind}={self.entity_id}, "
+            f"last_read_at={self.last_read_at.isoformat()})"
+        )
+
+
+class KioskAlertStatus(models.TextChoices):
+    QUEUED = "queued", _("Queued")
+    SENT = "sent", _("Sent")
+    FAILED = "failed", _("Failed")
+    SKIPPED = "skipped", _("Skipped (cooldown)")
+
+
+class KioskAlert(models.Model):
+    """One row per outbound "notify the client" email.
+
+    Triggered by a team member clicking the **Notify client** action
+    on a spec-sheet chat. Unlike :class:`CommentNotification` (which
+    is wired to mention + reply emails and is keyed on the comment
+    that caused the send), a kiosk alert is a deliberate team
+    gesture not tied to a specific message — the trigger is "we'd
+    like the customer to come back and look at this sheet now".
+
+    The ledger doubles as the cooldown gate: before sending we look
+    for any sibling row for the same ``(sheet, recipient_email)``
+    sent within :data:`KIOSK_ALERT_COOLDOWN_SECONDS` and skip if so.
+    That stops a double-click from delivering two emails and lets a
+    quick burst of team activity collapse into a single customer
+    notification.
+
+    A ``SKIPPED`` row is still inserted on cooldown so the UI can
+    surface the "Last notified X ago" hint without scanning sent
+    rows separately.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    sheet = models.ForeignKey(
+        "specifications.SpecificationSheet",
+        on_delete=models.CASCADE,
+        related_name="kiosk_alerts",
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="kiosk_alerts",
+    )
+
+    #: Email the alert was addressed to. Stored verbatim so an admin
+    #: looking at the ledger sees the exact recipient even if the
+    #: underlying KioskSession is later revoked / deleted.
+    recipient_email = models.EmailField(_("recipient email"))
+
+    #: User who clicked the Notify button. Nullable on user deletion
+    #: so the row survives an offboarded teammate.
+    triggered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="kiosk_alerts_triggered",
+    )
+
+    #: Optional free-text note the sender typed in the dialog. Quoted
+    #: verbatim in the email body so the customer sees a contextual
+    #: line ("we've adjusted the pricing — please review"). Blank
+    #: when the sender chose the silent "just nudge them" option.
+    custom_note = models.TextField(_("custom note"), blank=True, default="")
+
+    status = models.CharField(
+        _("status"),
+        max_length=16,
+        choices=KioskAlertStatus.choices,
+        default=KioskAlertStatus.QUEUED,
+    )
+    error = models.TextField(_("error"), blank=True, default="")
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    sent_at = models.DateTimeField(_("sent at"), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("kiosk alert")
+        verbose_name_plural = _("kiosk alerts")
+        indexes = [
+            # Powers the cooldown lookup ("most recent alert for this
+            # sheet + email") + the "last notified at" UI hint.
+            models.Index(
+                fields=("sheet", "recipient_email", "-created_at"),
+                name="kiosk_alerts_sheet_email_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"KioskAlert(sheet={self.sheet_id}, to={self.recipient_email})"
+
+
+#: How long after a successful send we refuse a second alert to the
+#: same recipient for the same sheet. Strict (server-side); the FE
+#: also disables the button for the same window.
+KIOSK_ALERT_COOLDOWN_SECONDS = 5 * 60

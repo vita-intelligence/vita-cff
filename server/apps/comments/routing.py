@@ -11,7 +11,11 @@ from __future__ import annotations
 
 from django.urls import re_path
 
-from apps.comments.consumers import CommentConsumer, PublicCommentConsumer
+from apps.comments.consumers import (
+    CommentConsumer,
+    PublicCommentConsumer,
+    UserInboxConsumer,
+)
 
 
 # URL structure mirrors the REST endpoints so the client can compute
@@ -26,6 +30,15 @@ websocket_urlpatterns = [
         r"(?P<entity_id>[0-9a-fA-F-]{36})/?$",
         CommentConsumer.as_asgi(),
         name="ws-comments-entity",
+    ),
+    # Per-user inbox firehose. Single socket per signed-in user,
+    # receives a stream of ``inbox.message`` events whenever a new
+    # comment lands on any thread the user has access to. Powers the
+    # global messenger bell + dropdown.
+    re_path(
+        r"^ws/inbox/?$",
+        UserInboxConsumer.as_asgi(),
+        name="ws-inbox",
     ),
     # Kiosk (public / token-gated) route. Uses a signed session
     # cookie for auth — the middleware stamps it onto the scope and

@@ -10,6 +10,9 @@ import type {
   CreateCommentRequestDto,
   EditCommentRequestDto,
   MentionableMembersPageDto,
+  NotifyClientRequestDto,
+  NotifyClientResponseDto,
+  NotifyClientSummaryDto,
   PaginatedCommentsDto,
 } from "./types";
 
@@ -126,6 +129,35 @@ export async function fetchMentionableMembers(
 ): Promise<MentionableMembersPageDto> {
   const { data } = await apiClient.get<MentionableMembersPageDto>(
     commentsEndpoints.mentionable(orgId, q),
+  );
+  return data;
+}
+
+
+// ---------------------------------------------------------------------------
+// Notify-client (kiosk alert)
+// ---------------------------------------------------------------------------
+
+
+export async function fetchNotifyClientSummary(
+  orgId: string,
+  sheetId: string,
+): Promise<NotifyClientSummaryDto> {
+  const { data } = await apiClient.get<NotifyClientSummaryDto>(
+    commentsEndpoints.notifyClient(orgId, sheetId),
+  );
+  return data;
+}
+
+
+export async function notifyClient(
+  orgId: string,
+  sheetId: string,
+  args: NotifyClientRequestDto = {},
+): Promise<NotifyClientResponseDto> {
+  const { data } = await apiClient.post<NotifyClientResponseDto>(
+    commentsEndpoints.notifyClient(orgId, sheetId),
+    args,
   );
   return data;
 }

@@ -25,4 +25,6 @@ export const commentsEndpoints = {
       suffix ? `?${suffix}` : ""
     }`;
   },
+  notifyClient: (orgId: string, sheetId: string) =>
+    `/api/organizations/${orgId}/specifications/${sheetId}/notify-client/`,
 } as const;

@@ -30,7 +30,9 @@ import {
   editComment,
   fetchCommentsPage,
   fetchMentionableMembers,
+  fetchNotifyClientSummary,
   flagComment,
+  notifyClient,
   resolveComment,
   unflagComment,
   unresolveComment,
@@ -41,6 +43,9 @@ import type {
   CreateCommentRequestDto,
   EditCommentRequestDto,
   MentionableMembersPageDto,
+  NotifyClientRequestDto,
+  NotifyClientResponseDto,
+  NotifyClientSummaryDto,
   PaginatedCommentsDto,
 } from "./types";
 
@@ -61,6 +66,13 @@ export const commentsQueryKeys = {
     ] as const,
   mentionable: (orgId: string, q: string) =>
     [...commentsQueryKeys.all, orgId, "mentionable", q] as const,
+  notifyClientSummary: (orgId: string, sheetId: string) =>
+    [
+      ...commentsQueryKeys.all,
+      orgId,
+      "notify-client",
+      sheetId,
+    ] as const,
 } as const;
 
 export interface UseInfiniteCommentsArgs {
@@ -232,5 +244,48 @@ export function useMentionableMembers(
     queryFn: () => fetchMentionableMembers(orgId, query),
     enabled: options.enabled ?? true,
     staleTime: 30_000,
+  });
+}
+
+
+/**
+ * Peek the current notify-client state for a spec sheet: how many
+ * identified customers we'd ping + when (if ever) the last alert
+ * went out. Powers the button's "Last notified X ago" hint.
+ */
+export function useNotifyClientSummary(
+  orgId: string,
+  sheetId: string,
+  options: { readonly enabled?: boolean } = {},
+): UseQueryResult<NotifyClientSummaryDto, ApiError> {
+  return useQuery<NotifyClientSummaryDto, ApiError>({
+    queryKey: commentsQueryKeys.notifyClientSummary(orgId, sheetId),
+    queryFn: () => fetchNotifyClientSummary(orgId, sheetId),
+    enabled: options.enabled ?? true,
+    staleTime: 30_000,
+  });
+}
+
+
+export function useNotifyClient(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<
+  NotifyClientResponseDto,
+  ApiError,
+  NotifyClientRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    NotifyClientResponseDto,
+    ApiError,
+    NotifyClientRequestDto
+  >({
+    mutationFn: (vars) => notifyClient(orgId, sheetId, vars),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: commentsQueryKeys.notifyClientSummary(orgId, sheetId),
+      });
+    },
   });
 }

@@ -2,6 +2,7 @@ import { getTranslations } from "next-intl/server";
 
 import { HeaderNav, type HeaderNavItem } from "@/components/layout/header-nav";
 import { UserMenu } from "@/components/layout/user-menu";
+import { MessengerBell } from "@/components/messenger";
 import {
   hasAnyRowScopedCapability,
   hasFlatCapability,
@@ -157,18 +158,28 @@ export async function ProtectedHeader({
         Desktop gets the avatar dropdown; mobile folds Settings and
         Sign-out into the hamburger drawer itself, so the avatar is
         redundant there and would just steal tap targets.
+
+        The messenger bell sits next to the avatar so the "new
+        message" surface is always one click away regardless of the
+        page the user is on. The bell renders on both desktop and
+        mobile — chat traffic is most relevant when the user is
+        otherwise distracted, so the affordance must follow them
+        everywhere.
       */}
-      <div className="hidden md:flex">
-        <UserMenu
-          fullName={user.full_name}
-          email={user.email}
-          avatarUrl={user.avatar_image || ""}
-          labels={{
-            settings: tNav("menu.settings"),
-            signOut: tNav("account.sign_out"),
-            openMenu: tNav("menu.open_user"),
-          }}
-        />
+      <div className="flex items-center gap-1 md:gap-2">
+        <MessengerBell />
+        <div className="hidden md:flex">
+          <UserMenu
+            fullName={user.full_name}
+            email={user.email}
+            avatarUrl={user.avatar_image || ""}
+            labels={{
+              settings: tNav("menu.settings"),
+              signOut: tNav("account.sign_out"),
+              openMenu: tNav("menu.open_user"),
+            }}
+          />
+        </div>
       </div>
     </header>
   );

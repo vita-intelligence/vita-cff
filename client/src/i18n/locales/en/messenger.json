@@ -1,0 +1,40 @@
+{
+  "bell": {
+    "label": "Open messages",
+    "label_with_unread": "Open messages ({count} unread)",
+    "badge_overflow": "9+"
+  },
+  "dropdown": {
+    "title": "Messages",
+    "empty": "No conversations yet.",
+    "loading": "Loading messages…",
+    "open_chat": "Open chat",
+    "open_project_page": "Open project page",
+    "unread_singular": "{count} unread",
+    "unread_plural": "{count} unread",
+    "view_all_unread": "Mark all as read",
+    "kind_formulation": "Project",
+    "kind_specification": "Spec sheet"
+  },
+  "panel": {
+    "close": "Close chat",
+    "minimise": "Minimise chat",
+    "open_full_page": "Open full page",
+    "title_fallback": "Chat",
+    "kind_formulation": "Project",
+    "kind_specification": "Spec sheet"
+  },
+  "notifications": {
+    "permission_prompt_title": "Get notified for new messages",
+    "permission_prompt_body": "Vita NPD can show desktop notifications when a teammate sends you a message. You can turn this off any time in your browser settings.",
+    "permission_enable": "Enable notifications",
+    "permission_not_now": "Not now",
+    "permission_denied_hint": "Notifications are blocked in your browser. Open browser site settings to re-enable.",
+    "incoming_title": "{name} · {project}",
+    "incoming_body_fallback": "New message"
+  },
+  "toast": {
+    "open": "Open chat",
+    "dismiss": "Dismiss"
+  }
+}

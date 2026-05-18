@@ -14,17 +14,24 @@ Rules (same as every other feature app in this repo):
 
 from __future__ import annotations
 
+import datetime as _dt
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Max, Q, QuerySet
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
 from apps.comments.broadcast import schedule_comment_broadcast
 from apps.comments.mentions import resolve_mentions
-from apps.comments.models import Comment, CommentMention
+from apps.comments.models import (
+    Comment,
+    CommentMention,
+    ThreadEntityKind,
+    ThreadReadState,
+)
 from apps.formulations.models import Formulation
 from apps.organizations.models import Organization
 from apps.specifications.models import SpecificationSheet
@@ -274,7 +281,43 @@ def create_comment(
     # helper registers its own ``on_commit`` hook so a rollback
     # suppresses the broadcast.
     schedule_comment_broadcast(comment, "created")
+
+    # Mark the thread as read for the author up to the moment they
+    # posted. Without this, their own message would show as unread
+    # in their own inbox the next time the inbox query polls — the
+    # WS fan-out already excludes them, but the REST endpoint
+    # computes unread purely from ``created_at > last_read_at`` and
+    # would otherwise count their write against them.
+    _mark_thread_read_for_author(comment=comment, actor=actor)
     return comment
+
+
+def _mark_thread_read_for_author(*, comment: Comment, actor) -> None:
+    """Upsert the author's read pointer up to ``comment.created_at``.
+
+    No-op for kiosk guests (``actor is None``) — they have no
+    user row to attach a read state to, and the kiosk surface
+    does not consume the messenger inbox today.
+    """
+
+    if actor is None or not getattr(actor, "id", None):
+        return
+    if comment.formulation_id is not None:
+        kind = ThreadEntityKind.FORMULATION.value
+        entity_id = comment.formulation_id
+    elif comment.specification_sheet_id is not None:
+        kind = ThreadEntityKind.SPECIFICATION.value
+        entity_id = comment.specification_sheet_id
+    else:
+        # Targets we don't (yet) surface in the inbox — nothing to
+        # update.
+        return
+    ThreadReadState.objects.update_or_create(
+        user=actor,
+        entity_kind=kind,
+        entity_id=entity_id,
+        defaults={"last_read_at": comment.created_at},
+    )
 
 
 @transaction.atomic
@@ -628,3 +671,364 @@ def create_guest_comment(
 
     schedule_comment_broadcast(comment, "created")
     return comment
+
+
+# ---------------------------------------------------------------------------
+# Messenger inbox — read pointers, unread counts, thread listing.
+#
+# These functions back the global "messenger bell" surface in the UI:
+# the user wants to see new-message indicators for every chat they
+# have access to, without having to visit the project / spec page
+# first. None of this code touches Channels; the WS push happens
+# upstream in :func:`schedule_comment_broadcast` (which fans out an
+# ``inbox.message`` envelope to every org-member at create-time). The
+# REST endpoints below are the FE's reconciliation path on first
+# render + on every "I missed events while disconnected" refetch.
+# ---------------------------------------------------------------------------
+
+
+#: Sentinel "the user has never read anything" timestamp. Threads
+#: with no ``ThreadReadState`` row default to this, which makes every
+#: comment unread on first sight — the messenger bell lights up the
+#: moment the user is added to an org with active chats.
+_UNIX_EPOCH = _dt.datetime(1970, 1, 1, tzinfo=_dt.timezone.utc)
+
+
+@dataclass(frozen=True)
+class InboxAuthor:
+    """Compact author shape for an inbox row's preview line."""
+
+    name: str
+    kind: str  # "member" / "guest" / "system"
+
+
+@dataclass(frozen=True)
+class InboxThread:
+    """One row in the messenger inbox.
+
+    Carries everything the dropdown needs to render a list item
+    without follow-up fetches: the entity label + code so we can
+    show 'CFF-128 · Morning Vital Boost', the unread count for the
+    badge, and a single-line preview of the latest message so the
+    user can decide whether to open the thread.
+    """
+
+    organization_id: str
+    organization_name: str
+    entity_kind: str
+    entity_id: str
+    entity_title: str
+    entity_code: str
+    unread_count: int
+    last_message_at: _dt.datetime
+    last_message_preview: str
+    last_message_author: InboxAuthor
+
+
+def _accessible_organizations_for_user(user) -> list[Organization]:
+    """Return every organisation in which ``user`` may see comments.
+
+    The inbox surface bypasses the project-workspace route entirely
+    (the bell is global), so we cannot rely on the page-level
+    ``formulations.view`` gate to keep an audience out. Without an
+    additional check here, a user granted ``comments_view`` but not
+    ``view`` would see chats from projects they cannot otherwise
+    reach in the app — a real RBAC leak even though the per-thread
+    REST endpoint enforces the same ``comments_view`` rule.
+
+    Eligibility therefore requires **both** capabilities in the
+    same org:
+
+    * ``formulations.view`` — the project-visibility gate that
+      governs the formulations index and every individual project
+      page (also the gate the specifications surface piggybacks on
+      for its base view, falling back to ``view_signed`` /
+      ``view_approvals`` for the role-scoped read-only flows we
+      surface separately on those pages).
+    * ``formulations.comments_view`` — the chat-visibility gate the
+      per-entity REST + WS layers also enforce.
+
+    Owners short-circuit ``has_capability`` so workspace owners
+    always pass. Inactive workspaces are filtered out (pre-billing
+    state) unless the caller is a superuser, matching the wider
+    :func:`is_organization_accessible` contract.
+    """
+
+    # Local import — these modules import service code from this
+    # file in the other direction at module load on some paths.
+    from apps.organizations.models import Membership
+    from apps.organizations.modules import (
+        FORMULATIONS_MODULE,
+        FormulationsCapability,
+    )
+    from apps.organizations.services import has_capability
+
+    memberships = (
+        Membership.objects.filter(user=user)
+        .select_related("organization")
+    )
+    eligible: list[Organization] = []
+    for membership in memberships:
+        if not has_capability(
+            membership,
+            FORMULATIONS_MODULE,
+            FormulationsCapability.VIEW,
+        ):
+            continue
+        if not has_capability(
+            membership,
+            FORMULATIONS_MODULE,
+            FormulationsCapability.COMMENTS_VIEW,
+        ):
+            continue
+        if not membership.organization.is_active and not getattr(
+            user, "is_superuser", False
+        ):
+            # Mirror :func:`is_organization_accessible` — pre-billing
+            # workspaces are read-only to non-superusers.
+            continue
+        eligible.append(membership.organization)
+    return eligible
+
+
+def _preview_for_comment(comment: Comment, *, max_chars: int = 140) -> str:
+    """Single-line preview text the dropdown renders next to the
+    author name. Strips newlines so a multi-paragraph comment doesn't
+    smear the row, and truncates with an ellipsis past ``max_chars``.
+
+    Deleted comments render as the empty string — the FE shows a
+    "(message deleted)" placeholder in that case.
+    """
+
+    if comment.is_deleted:
+        return ""
+    body = (comment.body or "").strip().replace("\n", " ")
+    if len(body) <= max_chars:
+        return body
+    # Cut on whitespace if possible so we never split a word mid-character.
+    cut = body[:max_chars].rsplit(" ", 1)[0]
+    return f"{cut}…"
+
+
+def _author_snapshot(comment: Comment) -> InboxAuthor:
+    """Compact author shape for the inbox preview — same name-resolution
+    logic as the in-page broadcast, kept minimal here because the
+    dropdown only ever shows a one-line summary."""
+
+    if comment.is_deleted:
+        return InboxAuthor(name="", kind="system")
+    if comment.author_id and comment.author is not None:
+        user = comment.author
+        full = (user.get_full_name() or user.email or "").strip()
+        return InboxAuthor(name=full, kind="member")
+    return InboxAuthor(
+        name=(comment.guest_name or comment.guest_email or "").strip(),
+        kind="guest",
+    )
+
+
+@transaction.atomic
+def mark_thread_read(
+    *,
+    user,
+    entity_kind: str,
+    entity_id: Any,
+    at: _dt.datetime | None = None,
+) -> ThreadReadState:
+    """Upsert the read pointer for ``(user, entity_kind, entity_id)``.
+
+    Caller is responsible for authorising the user against the entity
+    — the view layer does this via the same membership + capability
+    check the WS consumer enforces. Unknown ``entity_kind`` values
+    are refused so a typo in the URL can't seed orphan rows that
+    never match a real thread.
+
+    ``at`` defaults to ``timezone.now()`` (the common "I just opened
+    this thread" case). Callers can pass an explicit timestamp when
+    "I have read up to the message at T" is the right semantic
+    (e.g. a scroll-to-bottom event tied to a specific message).
+    """
+
+    if entity_kind not in ThreadEntityKind.values:
+        raise ValueError(
+            f"Unsupported entity_kind for thread read state: {entity_kind!r}"
+        )
+
+    timestamp = at or timezone.now()
+    state, _created = ThreadReadState.objects.update_or_create(
+        user=user,
+        entity_kind=entity_kind,
+        entity_id=entity_id,
+        defaults={"last_read_at": timestamp},
+    )
+    return state
+
+
+def list_inbox_threads(*, user) -> list[InboxThread]:
+    """Return every chat ``user`` can see, with unread counts +
+    previews, newest activity first.
+
+    Implementation note: one query per (org, entity-kind) for the
+    entity list, then one ``COUNT`` + one ``ORDER BY`` per entity
+    for unread + latest. For Vita-scale tenants (tens of projects,
+    one chat each) that's bounded at low double-digit queries, well
+    inside the dropdown's perf budget. We optimise later if real
+    workloads ever push past a hundred active threads.
+    """
+
+    organizations = _accessible_organizations_for_user(user)
+    if not organizations:
+        return []
+
+    # Read pointers loaded up front so per-thread access is O(1).
+    pointer_rows = ThreadReadState.objects.filter(user=user).values_list(
+        "entity_kind", "entity_id", "last_read_at"
+    )
+    pointers: dict[tuple[str, str], _dt.datetime] = {
+        (kind, str(eid)): ts for kind, eid, ts in pointer_rows
+    }
+
+    threads: list[InboxThread] = []
+
+    for organization in organizations:
+        threads.extend(
+            _inbox_threads_for_formulations(
+                organization=organization, pointers=pointers
+            )
+        )
+        threads.extend(
+            _inbox_threads_for_specifications(
+                organization=organization, pointers=pointers
+            )
+        )
+
+    threads.sort(key=lambda t: t.last_message_at, reverse=True)
+    return threads
+
+
+def compute_total_unread(*, user) -> int:
+    """Sum of unread comments across every thread the user can see.
+
+    Powers the bell badge — the FE polls this on bell mount + on
+    every inbox WS event as a cheap reconciliation against the
+    optimistic local counter. We could maintain a denormalised
+    counter row, but the query as written is one COUNT per active
+    thread and the FE only fires this on user-visible state changes,
+    so the simpler shape wins.
+    """
+
+    return sum(thread.unread_count for thread in list_inbox_threads(user=user))
+
+
+# ---- internals -------------------------------------------------------------
+
+
+def _inbox_threads_for_formulations(
+    *,
+    organization: Organization,
+    pointers: dict[tuple[str, str], _dt.datetime],
+) -> list[InboxThread]:
+    """Build the inbox rows for every formulation in ``organization``
+    that has at least one non-deleted comment."""
+
+    formulations = (
+        Formulation.objects.filter(
+            organization=organization,
+            comments__isnull=False,
+            comments__is_deleted=False,
+        )
+        .annotate(last_at=Max("comments__created_at"))
+        .distinct()
+        .order_by("-last_at")
+    )
+    rows: list[InboxThread] = []
+    for formulation in formulations:
+        latest = (
+            Comment.objects.filter(
+                formulation=formulation, is_deleted=False
+            )
+            .select_related("author")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = pointers.get(("formulation", str(formulation.id)), _UNIX_EPOCH)
+        unread = Comment.objects.filter(
+            formulation=formulation,
+            is_deleted=False,
+            created_at__gt=last_read,
+        ).count()
+        rows.append(
+            InboxThread(
+                organization_id=str(organization.id),
+                organization_name=organization.name,
+                entity_kind=ThreadEntityKind.FORMULATION.value,
+                entity_id=str(formulation.id),
+                entity_title=(formulation.name or "").strip(),
+                entity_code=(formulation.code or "").strip(),
+                unread_count=unread,
+                last_message_at=latest.created_at,
+                last_message_preview=_preview_for_comment(latest),
+                last_message_author=_author_snapshot(latest),
+            )
+        )
+    return rows
+
+
+def _inbox_threads_for_specifications(
+    *,
+    organization: Organization,
+    pointers: dict[tuple[str, str], _dt.datetime],
+) -> list[InboxThread]:
+    """Build the inbox rows for every specification sheet in
+    ``organization`` that has at least one non-deleted comment."""
+
+    sheets = (
+        SpecificationSheet.objects.filter(
+            organization=organization,
+            comments__isnull=False,
+            comments__is_deleted=False,
+        )
+        .annotate(last_at=Max("comments__created_at"))
+        .distinct()
+        .order_by("-last_at")
+    )
+    rows: list[InboxThread] = []
+    for sheet in sheets:
+        latest = (
+            Comment.objects.filter(
+                specification_sheet=sheet, is_deleted=False
+            )
+            .select_related("author")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = pointers.get(
+            ("specification", str(sheet.id)), _UNIX_EPOCH
+        )
+        unread = Comment.objects.filter(
+            specification_sheet=sheet,
+            is_deleted=False,
+            created_at__gt=last_read,
+        ).count()
+        # Specifications have no name field — fall back to client
+        # company / code so the dropdown always shows *something*.
+        title = (sheet.code or sheet.client_company or "").strip()
+        rows.append(
+            InboxThread(
+                organization_id=str(organization.id),
+                organization_name=organization.name,
+                entity_kind=ThreadEntityKind.SPECIFICATION.value,
+                entity_id=str(sheet.id),
+                entity_title=title,
+                entity_code=(sheet.code or "").strip(),
+                unread_count=unread,
+                last_message_at=latest.created_at,
+                last_message_preview=_preview_for_comment(latest),
+                last_message_author=_author_snapshot(latest),
+            )
+        )
+    return rows

@@ -1,0 +1,12 @@
+{% autoescape off %}Hi{% if recipient_name %} {{ recipient_name }}{% endif %},
+
+The team at {{ brand }} has new updates for you on{% if sheet_code %} specification {{ sheet_code }}{% else %} your specification{% endif %}.
+{% if custom_note %}
+"{{ custom_note }}"
+{% endif %}
+Open the specification:
+{{ kiosk_url }}
+
+{% if triggered_by_name %}— {{ triggered_by_name }}
+{{ brand }}{% else %}— {{ brand }}{% endif %}
+{% endautoescape %}

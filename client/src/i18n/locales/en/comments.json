@@ -78,5 +78,31 @@
     "privacy_note": "We store your name and email with each comment so the project team can follow up. No account is created.",
     "error_generic": "Something went wrong. Please try again.",
     "error_session_expired": "Your session has expired. Please sign in again to continue."
+  },
+  "notify_client": {
+    "button": "Notify client",
+    "button_disabled_no_clients": "No identified clients to notify",
+    "hint_last_sent": "Last notified {when}",
+    "hint_never": "Client never notified for this sheet",
+    "hint_recipient_count_singular": "{count} client identified",
+    "hint_recipient_count_plural": "{count} clients identified",
+    "dialog_title": "Notify client about updates",
+    "dialog_body": "We'll email every identified client of this specification a short note pointing them back here. Internal team chatter won't be included.",
+    "dialog_recipients_singular": "Sending to {count} client.",
+    "dialog_recipients_plural": "Sending to {count} clients.",
+    "dialog_note_label": "Optional note to include (visible to client)",
+    "dialog_note_placeholder": "e.g. We've adjusted the pricing — please review.",
+    "dialog_note_remaining": "{remaining} characters remaining",
+    "dialog_cancel": "Cancel",
+    "dialog_send": "Send notification",
+    "dialog_sending": "Sending…",
+    "toast_sent_singular": "Notified {count} client.",
+    "toast_sent_plural": "Notified {count} clients.",
+    "toast_partial": "Notified {sent} of {total} — {skipped} already notified moments ago.",
+    "toast_all_skipped": "All clients were notified recently — no email sent.",
+    "toast_failed": "Email send failed. Please try again.",
+    "error_no_clients": "This sheet has no identified clients yet. The customer needs to open the kiosk link and enter their name first.",
+    "error_note_too_long": "The note is too long. Please shorten it.",
+    "error_generic": "Couldn't send the notification. Please try again."
   }
 }
