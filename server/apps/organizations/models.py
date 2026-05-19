@@ -145,6 +145,34 @@ class Organization(models.Model):
             "Empty dict = integration disabled."
         ),
     )
+    #: Per-org Wix CFF intake config. When live, the Celery poller
+    #: pulls every submission of the configured form into the
+    #: :mod:`apps.cff_submissions` workspace where the team can
+    #: triage each request and attach it to a project. Schema:
+    #:
+    #: .. code-block:: json
+    #:
+    #:    {
+    #:      "enabled": true,
+    #:      "api_key_ciphertext": "<fernet ciphertext>",
+    #:      "site_id": "c0d9135f-...",
+    #:      "form_id": "bec673ee-...",
+    #:      "namespace": "wix.form_app.form",
+    #:      "last_tested_at": "2026-05-19T08:00:00Z"
+    #:    }
+    #:
+    #: Empty dict = integration disabled — the CFF tab still mounts
+    #: (so existing imported rows stay browseable) but the poller
+    #: skips the org and the settings card surfaces the connect form.
+    wix_cff_config = models.JSONField(
+        _("Wix CFF integration config"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Wix Custom Formulation Request form connection settings. "
+            "Empty dict = integration disabled."
+        ),
+    )
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

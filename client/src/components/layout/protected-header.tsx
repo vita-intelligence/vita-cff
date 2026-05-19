@@ -16,6 +16,7 @@ export type ProtectedNavKey =
   | "formulations"
   | "proposals"
   | "customers"
+  | "cff"
   | "approvals"
   | "signed";
 
@@ -80,6 +81,11 @@ export async function ProtectedHeader({
   // so the nav item shows whenever the member can read EITHER tab.
   // The page itself hides the tab the member cannot read so the
   // surface stays consistent with the per-module grants.
+  // CFF intake — its own RBAC module so commercial / triage roles
+  // can be granted CFF visibility without inheriting project-edit
+  // rights. The page itself re-checks server-side; the header link
+  // just suppresses the entry for members without the cap.
+  const canSeeCFF = hasFlatCapability(primaryOrg, "cff_submissions", "view");
   const canSeeApprovals =
     hasFlatCapability(primaryOrg, "formulations", "view_approvals") ||
     hasFlatCapability(primaryOrg, "proposals", "view_approvals");
@@ -87,6 +93,18 @@ export async function ProtectedHeader({
     hasFlatCapability(primaryOrg, "formulations", "view_signed") ||
     hasFlatCapability(primaryOrg, "proposals", "view_signed");
 
+  // Nav order follows the chronological lifecycle of a customer
+  // request through the workspace:
+  //
+  //   1. Dashboard       — landing page, always first.
+  //   2. Catalogues      — reference data underpinning everything below.
+  //   3. CFF             — INTAKE: customer fills the public form.
+  //   4. Projects        — work begins: formulations, versions, specs.
+  //   5. Approvals       — REVIEW: documents waiting for sign-off.
+  //   6. Signed          — closed-loop archive of signed documents.
+  //   7. Customers       — address book that proposals draw from.
+  //   8. Proposals       — END of the sales cycle: quote → sign.
+  //
   // Specifications intentionally omitted — every spec sheet belongs
   // to a project, so it's surfaced inside the project workspace's
   // "Spec sheets" tab rather than as a peer top-level destination.
@@ -100,26 +118,18 @@ export async function ProtectedHeader({
       label: tNav("main.catalogues"),
     });
   }
+  if (canSeeCFF) {
+    navItems.push({
+      key: "cff",
+      href: "/cff",
+      label: tNav("main.cff"),
+    });
+  }
   if (canSeeFormulations) {
     navItems.push({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
-    });
-  }
-  if (canSeeProposals) {
-    // Proposals + Customers gated on the dedicated ``proposals``
-    // module — sales-only roles see these even without any Projects
-    // capability.
-    navItems.push({
-      key: "proposals",
-      href: "/proposals",
-      label: tNav("main.proposals"),
-    });
-    navItems.push({
-      key: "customers",
-      href: "/customers",
-      label: tNav("main.customers"),
     });
   }
   if (canSeeApprovals) {
@@ -134,6 +144,23 @@ export async function ProtectedHeader({
       key: "signed",
       href: "/signed",
       label: tNav("main.signed"),
+    });
+  }
+  if (canSeeProposals) {
+    // Customers + Proposals share the ``proposals`` module gate —
+    // sales-only roles see both even without any Projects
+    // capability. Customers comes first (the address book the
+    // proposal draws from); Proposals lands at the very end of the
+    // nav since it's the final step of the sales cycle.
+    navItems.push({
+      key: "customers",
+      href: "/customers",
+      label: tNav("main.customers"),
+    });
+    navItems.push({
+      key: "proposals",
+      href: "/proposals",
+      label: tNav("main.proposals"),
     });
   }
 

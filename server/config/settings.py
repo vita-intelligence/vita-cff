@@ -108,6 +108,7 @@ LOCAL_APPS = [
     "apps.ai",
     "apps.audit",
     "apps.comments",
+    "apps.cff_submissions",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -291,6 +292,23 @@ CELERY_TASK_SOFT_TIME_LIMIT = 60 * 4  # 4 minutes soft (raises SoftTimeLimitExce
 # connection to the broker without spamming logs forever.
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP = True
 CELERY_BROKER_CONNECTION_MAX_RETRIES = 10
+
+# Periodic schedule for the ``celery beat`` process. The worker
+# autodiscovers ``tasks.py`` in every installed app; beat just needs
+# to know which of those tasks to fire on a cadence. Empty in dev
+# (``CELERY_TASK_ALWAYS_EAGER`` mode never runs beat anyway) and
+# the production beat container picks the schedule up via
+# ``django.conf:settings`` config_from_object on boot.
+CELERY_BEAT_SCHEDULE: dict[str, dict[str, object]] = {
+    "cff-submissions-poll": {
+        "task": "apps.cff_submissions.tasks.poll_cff_submissions",
+        # Five-minute cadence: fast enough that a newly-submitted
+        # CFF lands in the workspace within one coffee, slow enough
+        # that we never hit Wix's per-tenant rate limits even with
+        # a 100-page form.
+        "schedule": 300.0,
+    },
+}
 
 
 # Templates

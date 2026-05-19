@@ -71,6 +71,13 @@
     "kiosk_session_required": "Please identify yourself before signing.",
     "kiosk_rate_limited": "You've sent too many messages in a short time. Please wait a minute.",
     "kiosk_signatures_pending": "Every document must be signed before finishing. Scroll up and sign any that are still pending.",
-    "formulation_version_not_approved": "Only the version locked in by a director-signed specification sheet can be quoted. Sign off on a draft sheet for this project before creating a proposal."
+    "formulation_version_not_approved": "Only the version locked in by a director-signed specification sheet can be quoted. Sign off on a draft sheet for this project before creating a proposal.",
+    "wix_cff_not_configured": "Wix CFF integration is not configured for this organisation.",
+    "wix_cff_decryption_failed": "Stored Wix API key couldn't be decrypted. Re-paste it and save.",
+    "wix_cff_auth_failed": "Wix rejected the credentials. Check the API key and site ID.",
+    "wix_cff_not_found": "Wix could not find that form. Check the form ID.",
+    "wix_cff_rate_limited": "Too many requests to Wix. Wait a minute and try again.",
+    "wix_cff_unreachable": "Couldn't reach Wix. Try again in a moment.",
+    "wix_cff_unknown_error": "Something went wrong talking to Wix. Please try again."
   }
 }

@@ -7,6 +7,8 @@ import {
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
+import { CFFQuickViewButton } from "@/components/cff/cff-quick-view-button";
+
 import { ProjectCommentsBubble } from "./project-comments-bubble";
 
 
@@ -81,6 +83,10 @@ export default async function ProjectLayout({
   return (
     <>
       {children}
+      {/* Floating CFF bubble (bottom-left). Self-hides for projects
+          without an attached CFF or for members without the
+          cff_submissions.view cap, so legacy projects show nothing. */}
+      <CFFQuickViewButton organization={organization} projectId={id} />
       <ProjectCommentsBubble
         orgId={organization.id}
         formulationId={id}

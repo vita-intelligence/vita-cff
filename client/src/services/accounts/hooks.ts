@@ -130,8 +130,8 @@ export function useRequestPasswordReset(): UseMutationResult<
  *  error state. */
 export function useValidatePasswordResetToken(
   token: string | undefined,
-): UseQueryResult<void, ApiError> {
-  return useQuery<void, ApiError>({
+): UseQueryResult<true, ApiError> {
+  return useQuery<true, ApiError>({
     queryKey: [...accountsQueryKeys.all, "password-reset", "validate", token],
     queryFn: () => validatePasswordResetToken(token ?? ""),
     enabled: Boolean(token),

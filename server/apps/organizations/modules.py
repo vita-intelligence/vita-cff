@@ -34,6 +34,7 @@ CATALOGUES_MODULE = "catalogues"
 FORMULATIONS_MODULE = "formulations"
 PROPOSALS_MODULE = "proposals"
 AUDIT_MODULE = "audit"
+CFF_SUBMISSIONS_MODULE = "cff_submissions"
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,31 @@ class AuditCapability:
     VIEW = "view"
 
 
+class CFFSubmissionsCapability:
+    """Capabilities for the CFF (Custom Formulation Request) intake.
+
+    The CFF intake is the upstream funnel for new project work:
+    customers fill in a public Wix-hosted form, our poller mirrors
+    each submission, and a team member with
+    :attr:`ASSIGN_PROJECT` attaches it to a :class:`Formulation`
+    (project), which is when the workspace actually opens.
+
+    Split from the Projects module on purpose — commercial / triage
+    roles often need to read the intake and route it without holding
+    formulation-edit rights, and granting "view CFFs" via
+    ``formulations.view`` would over-share. When a future
+    ``formulations.assign_scientist`` capability lands, the admin UI
+    pairs it with :attr:`ASSIGN_PROJECT` on the same roles so the
+    triage workflow stays coherent.
+    """
+
+    VIEW = "view"
+    #: Attach a CFF submission to a project (or detach it). Split
+    #: from :attr:`VIEW` so a read-only reviewer can browse the
+    #: intake without changing what's wired to which project.
+    ASSIGN_PROJECT = "assign_project"
+
+
 @dataclass(frozen=True)
 class Module:
     key: str
@@ -270,6 +296,19 @@ MODULE_REGISTRY: dict[str, Module] = {
             "QC validations. Compliance + incident review surface."
         ),
         capabilities=(AuditCapability.VIEW,),
+    ),
+    CFF_SUBMISSIONS_MODULE: Module(
+        key=CFF_SUBMISSIONS_MODULE,
+        name="CFF Submissions",
+        description=(
+            "Custom Formulation Request intake: read submissions "
+            "imported from the public Wix-hosted form and attach "
+            "each one to a project. Upstream of the Projects module."
+        ),
+        capabilities=(
+            CFFSubmissionsCapability.VIEW,
+            CFFSubmissionsCapability.ASSIGN_PROJECT,
+        ),
     ),
 }
 

@@ -49,4 +49,8 @@ urlpatterns = [
     path("api/", include("apps.ai.api.urls", namespace="ai")),
     path("api/", include("apps.audit.api.urls", namespace="audit")),
     path("api/", include("apps.comments.api.urls", namespace="comments")),
+    path(
+        "api/",
+        include("apps.cff_submissions.api.urls", namespace="cff_submissions"),
+    ),
 ]

@@ -17,6 +17,7 @@ export interface HeaderNavItem {
     | "/formulations"
     | "/proposals"
     | "/customers"
+    | "/cff"
     | "/approvals"
     | "/signed";
   readonly label: string;

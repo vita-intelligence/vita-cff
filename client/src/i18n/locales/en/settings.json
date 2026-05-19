@@ -145,6 +145,8 @@
     "proposals_description": "Customer-facing proposal pipeline — list, edit, approve, sign, browse approvals queue and signed archive. Split from Projects so commercial roles can own this workflow without project-edit rights.",
     "audit": "Audit log",
     "audit_description": "Read the org-wide trail of every write across catalogues, projects, spec sheets, trial batches, and QC validations.",
+    "cff_submissions": "CFF Submissions",
+    "cff_submissions_description": "Custom Formulation Request intake: read submissions imported from the public Wix-hosted form and attach each one to a project. Upstream of the Projects module so commercial / triage roles can route requests without project-edit rights.",
     "no_row_scopes": "No catalogues exist yet — create one to scope access."
   },
   "capabilities": {
@@ -187,6 +189,10 @@
     },
     "audit": {
       "view": "View audit log"
+    },
+    "cff_submissions": {
+      "view": "View CFF submissions",
+      "assign_project": "Attach CFFs to projects"
     }
   },
   "capability_hints": {
@@ -229,6 +235,10 @@
     },
     "audit": {
       "view": "Read the org-wide log of every write across catalogues, projects, spec sheets, trial batches, and QC."
+    },
+    "cff_submissions": {
+      "view": "Open the CFF inbox and read every Custom Formulation Request submitted via the public Wix form.",
+      "assign_project": "Create a project from a CFF (or attach a CFF to an existing one). Also detach a CFF from its project. Required to convert intake into work."
     }
   },
   "capability_pages": {
@@ -271,6 +281,10 @@
     },
     "audit": {
       "view": "Settings → Audit log (org-wide immutable trail of every write across catalogues, projects, spec sheets, trial batches, QC, comments, and integration changes)."
+    },
+    "cff_submissions": {
+      "view": "CFF inbox (/cff) — read every Custom Formulation Request. Floating CFF bubble (bottom-left) on every Project page that has a CFF attached.",
+      "assign_project": "CFF inbox → Create new project / Attach to existing project buttons. Detach action on assigned CFF rows. Required to convert intake into a project workspace."
     }
   },
   "role_presets": {
@@ -283,6 +297,8 @@
     "proposals_label": "Common roles",
     "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Manually close. Director: everything above + Approve + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
     "audit_label": "Common roles",
-    "audit": "Compliance and QA leads. Owners get it implicitly."
+    "audit": "Compliance and QA leads. Owners get it implicitly.",
+    "cff_submissions_label": "Common roles",
+    "cff_submissions": "Sales / triage: View + Attach to projects. Project leads who route incoming customer requests onto projects (paired with Projects → Edit so they can actually create the project). Read-only stakeholder: View only — useful for managers who want to monitor intake volume without acting on it."
   }
 }

@@ -29,6 +29,7 @@ import {
   type DosageForm,
   type FormulationLineInput,
 } from "@/services/formulations";
+import { useCreateProjectFromCFF } from "@/services/cff-submissions";
 import { useOrganization } from "@/services/organizations";
 
 
@@ -117,7 +118,59 @@ function resolvedItemId(
 }
 
 
-export function NewFormulationButton({ orgId }: { orgId: string }) {
+/**
+ * The "+ New project" surface used on the projects page AND on the
+ * CFF inbox when an operator wants to spin up a project for a fresh
+ * customer request.
+ *
+ * Two operating modes:
+ *
+ * * **Standalone** (default) — the button renders its own trigger
+ *   and is opened by the operator. Post-create routes to the new
+ *   project page.
+ * * **CFF triage** — set ``cffSubmissionId`` and (usually)
+ *   ``externallyOpen`` / ``onClose`` so the CFF detail modal can
+ *   open this dialog as a sibling. Post-create routes through
+ *   :func:`createProjectFromCFF` which (in one transaction)
+ *   creates the project, attaches the CFF, and best-effort
+ *   auto-assigns the sales person matched against the customer's
+ *   account-manager email. Returns the same navigation result.
+ */
+export function NewFormulationButton({
+  orgId,
+  cffSubmissionId,
+  initialDescription,
+  externallyOpen,
+  onClose: onExternalClose,
+  onCFFCreated,
+}: {
+  readonly orgId: string;
+  /** CFF id — when set, the post-create flow goes through the
+   *  ``create-project-from-cff`` endpoint instead of the regular
+   *  ``create_formulation`` so the CFF attach + sales auto-assign
+   *  run atomically alongside the project insert. */
+  readonly cffSubmissionId?: string;
+  /** Pre-fill the description field on first render. Used by the
+   *  CFF flow to seed "From CFF intake — <market segment>". */
+  readonly initialDescription?: string;
+  /** Externally controlled open-state. When provided the
+   *  component's own ``Modal.Trigger`` is suppressed and parent
+   *  state drives the dialog visibility. */
+  readonly externallyOpen?: boolean;
+  /** Called when the externally-controlled modal closes. */
+  readonly onClose?: () => void;
+  /** Fires after a successful CFF create-project response so the
+   *  CFF page can show the sales-auto-assign outcome before
+   *  navigating away. */
+  readonly onCFFCreated?: (result: {
+    readonly projectId: string;
+    readonly projectCode: string;
+    readonly projectName: string;
+    readonly autoAssignedSalesPersonEmail: string | null;
+    readonly cffSalesPersonEmailHint: string | null;
+    readonly canAssignSalesPerson: boolean;
+  }) => void;
+}) {
   const tFormulations = useTranslations("formulations");
   const tAI = useTranslations("ai");
   const tErrors = useTranslations("errors");
@@ -132,7 +185,11 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
   const organization = useOrganization(orgId);
   const mrpeasyLive = Boolean(organization?.mrpeasy_live);
 
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  // Single source of truth for "is the dialog open?": parent state
+  // wins when present, otherwise we manage our own.
+  const isOpen = externallyOpen ?? internalOpen;
+  const isCFFMode = Boolean(cffSubmissionId);
 
   // AI draft state
   const [brief, setBrief] = useState("");
@@ -152,7 +209,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
   // and the proposal without divergence.
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(initialDescription ?? "");
   const [dosageForm, setDosageForm] = useState<DosageForm>("capsule");
   const [servingsPerPack, setServingsPerPack] = useState(60);
   const [servingSize, setServingSize] = useState(1);
@@ -164,6 +221,11 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
 
   const draftMutation = useGenerateFormulationDraft(orgId);
   const createMutation = useCreateFormulation(orgId);
+  // CFF triage path uses a dedicated endpoint that creates the
+  // project + attaches the CFF + auto-assigns the sales person
+  // in one transaction. Both hooks are instantiated so the choice
+  // can branch per-submit without breaking React's rules-of-hooks.
+  const cffCreateMutation = useCreateProjectFromCFF(orgId);
   // The lines endpoint needs the fresh ``formulation_id`` the
   // /formulations POST just returned. We call its raw API function
   // imperatively right after create — wiring a ``useReplaceLines``
@@ -180,7 +242,7 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     setDraftError(null);
     setCode("");
     setName("");
-    setDescription("");
+    setDescription(initialDescription ?? "");
     setDosageForm("capsule");
     setServingsPerPack(60);
     setServingSize(1);
@@ -193,7 +255,11 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
   };
 
   const close = () => {
-    setIsOpen(false);
+    if (externallyOpen !== undefined) {
+      onExternalClose?.();
+    } else {
+      setInternalOpen(false);
+    }
     reset();
   };
 
@@ -276,40 +342,18 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     event.preventDefault();
     setError(null);
     try {
-      const created = await createMutation.mutateAsync({
-        name: name.trim(),
-        code: code.trim(),
-        description: description.trim(),
-        dosage_form: dosageForm,
-        servings_per_pack: servingsPerPack,
-        serving_size: servingSize,
-        directions_of_use: directionsOfUse.trim(),
-        suggested_dosage: suggestedDosage.trim(),
-        appearance: appearance.trim(),
-        disintegration_spec: disintegrationSpec.trim(),
-      });
-
-      // Attach the matched ingredients as formulation lines in a
-      // second call using the fresh formulation id. A failure here
-      // isn't fatal — the header is already persisted, so we surface
-      // a soft warning and let the scientist add the lines from the
-      // builder if needed.
-      if (linesToSave.length > 0) {
-        setIsAttachingLines(true);
-        try {
-          await replaceFormulationLines(orgId, created.id, {
-            lines: linesToSave,
-          });
-        } catch {
-          setError(tAI("create.lines_failed"));
-          setIsAttachingLines(false);
-          return;
-        }
-        setIsAttachingLines(false);
-      }
+      // CFF triage path uses the dedicated endpoint so the project
+      // create, CFF attach, and sales auto-assign land in one
+      // transaction. The standalone path stays on the existing
+      // ``useCreateFormulation`` hook so nothing changes for the
+      // projects-page invocation.
+      const projectId = isCFFMode
+        ? await submitViaCFF()
+        : await submitDirect();
+      if (projectId === null) return;
 
       close();
-      router.push(`/formulations/${created.id}`);
+      router.push(`/formulations/${projectId}`);
     } catch (err) {
       const fieldErrors = (err as ApiFieldErrors).fieldErrors ?? {};
       const firstKey = Object.keys(fieldErrors)[0];
@@ -323,24 +367,127 @@ export function NewFormulationButton({ orgId }: { orgId: string }) {
     }
   };
 
-  const isBusy = createMutation.isPending || isAttachingLines;
+
+  /** Standalone create path: create the project, then attach the
+   *  AI-matched ingredient lines as a sidecar call. Returns the
+   *  new project id or ``null`` when a lines-attach failure has
+   *  already surfaced an inline error to the operator. */
+  const submitDirect = async (): Promise<string | null> => {
+    const created = await createMutation.mutateAsync({
+      name: name.trim(),
+      code: code.trim(),
+      description: description.trim(),
+      dosage_form: dosageForm,
+      servings_per_pack: servingsPerPack,
+      serving_size: servingSize,
+      directions_of_use: directionsOfUse.trim(),
+      suggested_dosage: suggestedDosage.trim(),
+      appearance: appearance.trim(),
+      disintegration_spec: disintegrationSpec.trim(),
+    });
+
+    if (linesToSave.length > 0) {
+      setIsAttachingLines(true);
+      try {
+        await replaceFormulationLines(orgId, created.id, {
+          lines: linesToSave,
+        });
+      } catch {
+        setError(tAI("create.lines_failed"));
+        setIsAttachingLines(false);
+        return null;
+      }
+      setIsAttachingLines(false);
+    }
+    return created.id;
+  };
+
+
+  /** CFF triage create path. Creates project + attaches CFF + runs
+   *  sales auto-assignment atomically on the server, then attaches
+   *  the AI-matched ingredient lines as the same sidecar call the
+   *  standalone path uses. */
+  const submitViaCFF = async (): Promise<string | null> => {
+    const result = await cffCreateMutation.mutateAsync({
+      submissionId: cffSubmissionId!,
+      payload: {
+        name: name.trim(),
+        code: code.trim(),
+        description: description.trim(),
+        dosage_form: dosageForm,
+        servings_per_pack: servingsPerPack,
+        serving_size: servingSize,
+        directions_of_use: directionsOfUse.trim(),
+        suggested_dosage: suggestedDosage.trim(),
+        appearance: appearance.trim(),
+        disintegration_spec: disintegrationSpec.trim(),
+      },
+    });
+
+    if (linesToSave.length > 0) {
+      setIsAttachingLines(true);
+      try {
+        await replaceFormulationLines(orgId, result.project.id, {
+          lines: linesToSave,
+        });
+      } catch {
+        setError(tAI("create.lines_failed"));
+        setIsAttachingLines(false);
+        return null;
+      }
+      setIsAttachingLines(false);
+    }
+
+    onCFFCreated?.({
+      projectId: result.project.id,
+      projectCode: result.project.code,
+      projectName: result.project.name,
+      autoAssignedSalesPersonEmail:
+        result.auto_assigned_sales_person?.email ?? null,
+      cffSalesPersonEmailHint: result.cff_sales_person_email_hint,
+      canAssignSalesPerson: result.can_assign_sales_person,
+    });
+    return result.project.id;
+  };
+
+  const isBusy =
+    createMutation.isPending ||
+    cffCreateMutation.isPending ||
+    isAttachingLines;
   const isGenerating = draftMutation.isPending;
 
   return (
-    <Modal isOpen={isOpen} onOpenChange={(open) => (open ? setIsOpen(true) : close())}>
-      <Modal.Trigger>
-        <Button
-          type="button"
-          variant="primary"
-          size="md"
-          className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
-        >
-          <span className="inline-flex items-center gap-1.5">
-            <Plus className="h-4 w-4" />
-            {tFormulations("new_formulation")}
-          </span>
-        </Button>
-      </Modal.Trigger>
+    <Modal
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (open) {
+          if (externallyOpen === undefined) {
+            setInternalOpen(true);
+          }
+        } else {
+          close();
+        }
+      }}
+    >
+      {/* Suppress the internal trigger when the modal is opened
+          by a parent — the CFF detail modal renders its own
+          "Create new project" button and just flips the
+          ``externallyOpen`` prop. */}
+      {externallyOpen === undefined ? (
+        <Modal.Trigger>
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
+          >
+            <span className="inline-flex items-center gap-1.5">
+              <Plus className="h-4 w-4" />
+              {tFormulations("new_formulation")}
+            </span>
+          </Button>
+        </Modal.Trigger>
+      ) : null}
       <Modal.Backdrop>
         <Modal.Container size="md">
           <Modal.Dialog className="flex max-h-[90vh] flex-col overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">

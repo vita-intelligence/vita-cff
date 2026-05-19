@@ -77,10 +77,11 @@ export async function requestPasswordReset(
  *  caller does not get to know which specific failure mode the
  *  token is in — that is surfaced by the confirm endpoint where the
  *  user can see a meaningful next step. */
-export async function validatePasswordResetToken(token: string): Promise<void> {
+export async function validatePasswordResetToken(token: string): Promise<true> {
   await apiClient.get(accountsEndpoints.passwordResetValidate, {
     params: { token },
   });
+  return true;
 }
 
 export async function confirmPasswordReset(
