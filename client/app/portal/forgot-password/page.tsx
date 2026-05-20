@@ -3,12 +3,7 @@ import { PortalShell } from "@/components/portal/brutalist";
 import { ForgotForm } from "./forgot-form";
 
 
-export default async function PortalForgotPasswordPage({
-  params,
-}: {
-  params: Promise<{ locale: string }>;
-}) {
-  await params;
+export default function PortalForgotPasswordPage() {
   return (
     <PortalShell>
       <ForgotForm />

@@ -32,12 +32,7 @@ interface ProposalListResponse {
  * Unauthenticated visitors are bounced to ``/portal/login`` before
  * any markup ships.
  */
-export default async function PortalDashboard({
-  params,
-}: {
-  params: Promise<{ locale: string }>;
-}) {
-  await params;
+export default async function PortalDashboard() {
   const jar = await cookies();
   const portalCookie = jar.get("vita_portal_access");
   if (!portalCookie) {

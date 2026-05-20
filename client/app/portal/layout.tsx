@@ -1,4 +1,3 @@
-import { setRequestLocale } from "next-intl/server";
 import type { ReactNode } from "react";
 
 
@@ -10,15 +9,19 @@ import type { ReactNode } from "react";
  * customers; rendering the staff app's chrome here would betray
  * the design intent and leak staff-only navigation hints to
  * external visitors.
+ *
+ * Lives at ``app/portal/...`` rather than ``app/[locale]/portal/``
+ * because ``[locale]`` would otherwise greedily match the URL
+ * prefix ``api`` (and any other arbitrary first segment), so
+ * ``POST /api/portal/...`` was hitting the page tree (and being
+ * blocked by the parent locale layout's ``notFound()``) instead
+ * of falling through to the Django proxy. Portal is English-only
+ * for now anyway, so dropping the next-intl layer is fine.
  */
 export default async function PortalLayout({
-  params,
   children,
 }: {
-  params: Promise<{ locale: string }>;
   children: ReactNode;
 }) {
-  const { locale } = await params;
-  setRequestLocale(locale);
   return <>{children}</>;
 }

@@ -6,7 +6,7 @@ import { ResetForm } from "./reset-form";
 export default async function PortalResetPasswordPage({
   params,
 }: {
-  params: Promise<{ locale: string; token: string }>;
+  params: Promise<{ token: string }>;
 }) {
   const { token } = await params;
   return (
