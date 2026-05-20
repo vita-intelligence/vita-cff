@@ -143,21 +143,43 @@ def _load_owned_spec(request: Request, sheet_id: str):
     proposal owned by the logged-in client. 404 for both "no such
     sheet" and "belongs to someone else" — same leak-proof shape as
     :func:`_load_owned_proposal`.
+
+    Specs attach to proposals through ``ProposalLine.specification_sheet``
+    (the canonical path) or the legacy ``Proposal.specification_sheet``
+    OneToOne. We look up the line first because the per-line attachment
+    is the modern shape — virtually every active proposal uses it.
     """
 
-    from apps.proposals.models import ProposalSpecificationAttachment
+    from apps.proposals.models import Proposal, ProposalLine
 
-    attachment = (
-        ProposalSpecificationAttachment.objects
+    # Per-line attachment: spec belongs to a proposal whose customer
+    # is the logged-in client's.
+    line = (
+        ProposalLine.objects
         .select_related("proposal", "specification_sheet")
-        .filter(specification_sheet_id=sheet_id)
+        .filter(
+            specification_sheet_id=sheet_id,
+            proposal__customer_id=request.user.customer_id,
+        )
         .first()
     )
-    if attachment is None:
-        raise NotFound("Spec sheet not found.")
-    if attachment.proposal.customer_id != request.user.customer_id:
-        raise NotFound("Spec sheet not found.")
-    return attachment.specification_sheet
+    if line is not None:
+        return line.specification_sheet
+
+    # Legacy OneToOne — keep working until those proposals migrate.
+    legacy = (
+        Proposal.objects
+        .select_related("specification_sheet")
+        .filter(
+            specification_sheet_id=sheet_id,
+            customer_id=request.user.customer_id,
+        )
+        .first()
+    )
+    if legacy is not None and legacy.specification_sheet is not None:
+        return legacy.specification_sheet
+
+    raise NotFound("Spec sheet not found.")
 
 
 # ---------------------------------------------------------------------------
@@ -179,21 +201,18 @@ class ProposalMessagesView(PortalAPIView):
     """
 
     def get(self, request: Request, proposal_id: str) -> Response:
-        from apps.proposals.models import ProposalSpecificationAttachment
+        from apps.proposals.services import _attached_spec_sheets
 
         proposal = _load_owned_proposal(request, proposal_id)
-
-        attachments = list(
-            ProposalSpecificationAttachment.objects
-            .filter(proposal=proposal)
-            .values_list("specification_sheet_id", flat=True)
-        )
+        attachments = [
+            sheet.id for sheet in _attached_spec_sheets(proposal)
+        ]
 
         # Two-leg query: spec comments + proposal-level comments.
         # ``visibility="shared"`` is enforced on both so internal
         # team chatter never surfaces to the portal.
         spec_ct = ContentType.objects.get(
-            app_label="specifications", model="specification",
+            app_label="specifications", model="specificationsheet",
         )
         spec_comments = (
             Comment.objects
@@ -241,7 +260,7 @@ class SpecMessagePostView(PortalAPIView):
     """
 
     def post(self, request: Request, sheet_id: str) -> Response:
-        from apps.specifications.models import Specification
+        from apps.specifications.models import SpecificationSheet
 
         sheet = _load_owned_spec(request, sheet_id)
         try:
@@ -251,7 +270,7 @@ class SpecMessagePostView(PortalAPIView):
             return _err("invalid_message", status.HTTP_400_BAD_REQUEST,
                         detail=exc.detail)
 
-        spec_ct = ContentType.objects.get_for_model(Specification)
+        spec_ct = ContentType.objects.get_for_model(SpecificationSheet)
 
         with transaction.atomic():
             comment = Comment.objects.create(
@@ -275,10 +294,10 @@ class SpecMessageReadView(PortalAPIView):
     """
 
     def post(self, request: Request, sheet_id: str) -> Response:
-        from apps.specifications.models import Specification
+        from apps.specifications.models import SpecificationSheet
 
         sheet = _load_owned_spec(request, sheet_id)
-        spec_ct = ContentType.objects.get_for_model(Specification)
+        spec_ct = ContentType.objects.get_for_model(SpecificationSheet)
 
         CommentReadState.objects.update_or_create(
             viewer_client=request.user,
