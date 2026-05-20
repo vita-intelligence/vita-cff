@@ -339,6 +339,9 @@ def _mark_thread_read_for_author(*, comment: Comment, actor) -> None:
     elif comment.specification_sheet_id is not None:
         kind = ThreadEntityKind.SPECIFICATION.value
         entity_id = comment.specification_sheet_id
+    elif comment.proposal_id is not None:
+        kind = ThreadEntityKind.PROPOSAL.value
+        entity_id = comment.proposal_id
     else:
         # Targets we don't (yet) surface in the inbox — nothing to
         # update.
@@ -932,6 +935,11 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
                 organization=organization, pointers=pointers
             )
         )
+        threads.extend(
+            _inbox_threads_for_proposals(
+                organization=organization, pointers=pointers
+            )
+        )
 
     threads.sort(key=lambda t: t.last_message_at, reverse=True)
     return threads
@@ -998,6 +1006,74 @@ def _inbox_threads_for_formulations(
                 entity_id=str(formulation.id),
                 entity_title=(formulation.name or "").strip(),
                 entity_code=(formulation.code or "").strip(),
+                unread_count=unread,
+                last_message_at=latest.created_at,
+                last_message_preview=_preview_for_comment(latest),
+                last_message_author=_author_snapshot(latest),
+            )
+        )
+    return rows
+
+
+def _inbox_threads_for_proposals(
+    *,
+    organization: Organization,
+    pointers: dict[tuple[str, str], _dt.datetime],
+) -> list[InboxThread]:
+    """Build the inbox rows for every proposal in ``organization``
+    that has at least one non-deleted comment. Mirrors the
+    formulation / specification helpers — same query shape, same
+    pointer lookup, same preview snapshot — so the bell + dropdown
+    surface customer-portal proposal chat alongside the project
+    threads without any further plumbing on the FE."""
+
+    Proposal = _proposal_model()
+    proposals = (
+        Proposal.objects.filter(
+            organization=organization,
+            comments__isnull=False,
+            comments__is_deleted=False,
+        )
+        .annotate(last_at=Max("comments__created_at"))
+        .distinct()
+        .order_by("-last_at")
+    )
+    rows: list[InboxThread] = []
+    for proposal in proposals:
+        latest = (
+            Comment.objects.filter(
+                proposal=proposal, is_deleted=False
+            )
+            .select_related("author")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = pointers.get(
+            ("proposal", str(proposal.id)), _UNIX_EPOCH
+        )
+        unread = Comment.objects.filter(
+            proposal=proposal,
+            is_deleted=False,
+            created_at__gt=last_read,
+        ).count()
+        # Proposals carry a ``code`` (e.g. ``PROP-0123``) — best
+        # title for the dropdown. Fall back to the customer
+        # company so a code-less draft still reads sensibly.
+        title = (
+            (getattr(proposal, "code", "") or "").strip()
+            or (getattr(proposal, "customer_company", "") or "").strip()
+            or (getattr(proposal, "customer_name", "") or "").strip()
+        )
+        rows.append(
+            InboxThread(
+                organization_id=str(organization.id),
+                organization_name=organization.name,
+                entity_kind=ThreadEntityKind.PROPOSAL.value,
+                entity_id=str(proposal.id),
+                entity_title=title,
+                entity_code=(getattr(proposal, "code", "") or "").strip(),
                 unread_count=unread,
                 last_message_at=latest.created_at,
                 last_message_preview=_preview_for_comment(latest),

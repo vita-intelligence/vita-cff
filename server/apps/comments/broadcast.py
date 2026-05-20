@@ -44,6 +44,8 @@ def group_name_for_comment(comment: Comment) -> str | None:
         return f"comments.formulation.{comment.formulation_id}"
     if comment.specification_sheet_id is not None:
         return f"comments.specification.{comment.specification_sheet_id}"
+    if comment.proposal_id is not None:
+        return f"comments.proposal.{comment.proposal_id}"
     return None
 
 
@@ -66,6 +68,8 @@ def _entity_kind_and_id(comment: Comment) -> tuple[str, str] | None:
         return ("formulation", str(comment.formulation_id))
     if comment.specification_sheet_id is not None:
         return ("specification", str(comment.specification_sheet_id))
+    if comment.proposal_id is not None:
+        return ("proposal", str(comment.proposal_id))
     return None
 
 
