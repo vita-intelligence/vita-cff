@@ -253,6 +253,48 @@ export async function markProposalChatRead(proposalId: string): Promise<void> {
 }
 
 
+// --- Inbox (bell badge + dropdown) ----------------------------------------
+
+
+export interface PortalInboxThread {
+  readonly entity_kind: "proposal" | "specification";
+  readonly entity_id: string;
+  readonly entity_title: string;
+  readonly deep_link: string;
+  readonly unread_count: number;
+  readonly last_message_at: string;
+  readonly last_message_preview: string;
+  readonly last_message_author: {
+    readonly kind: "client" | "staff" | "system";
+    readonly name: string;
+  };
+  readonly parent_proposal?: {
+    readonly id: string;
+    readonly code: string;
+  } | null;
+}
+
+
+export async function fetchPortalInbox(): Promise<{
+  results: PortalInboxThread[];
+  total_unread: number;
+}> {
+  const { data } = await apiClient.get<{
+    results: PortalInboxThread[];
+    total_unread: number;
+  }>("/api/portal/inbox/");
+  return data;
+}
+
+
+export async function fetchPortalUnreadCount(): Promise<number> {
+  const { data } = await apiClient.get<{ unread_count: number }>(
+    "/api/portal/inbox/unread_count/",
+  );
+  return data.unread_count;
+}
+
+
 export async function fetchProfile(): Promise<PortalProfileDto> {
   const { data } = await apiClient.get<PortalProfileDto>("/api/portal/profile/");
   return data;

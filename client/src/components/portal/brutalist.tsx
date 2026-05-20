@@ -22,6 +22,9 @@
  */
 
 import { CheckCircle2, ChevronLeft } from "lucide-react";
+
+import { PortalInboxBell } from "@/components/portal/portal-inbox-bell";
+
 import type {
   AnchorHTMLAttributes,
   ButtonHTMLAttributes,
@@ -84,30 +87,36 @@ export function PortalShell({
       <header className="sticky top-0 z-30 border-b-2 border-black bg-paper/95 backdrop-blur supports-[backdrop-filter]:bg-paper/80">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <PortalLogo />
-          <nav className="hidden items-center gap-1 sm:flex">
-            {NAV_ITEMS.map((item) => {
-              const isActive = active === item.key;
-              return (
-                <a
-                  key={item.key}
-                  href={item.href}
-                  className={`relative px-3 py-2 text-[11px] font-bold uppercase tracking-[0.2em] transition-colors ${
-                    isActive
-                      ? "text-black"
-                      : "text-neutral-500 hover:text-black"
-                  }`}
-                >
-                  {item.label}
-                  {isActive ? (
-                    <span
-                      aria-hidden="true"
-                      className="absolute inset-x-3 bottom-1 h-0.5 bg-black"
-                    />
-                  ) : null}
-                </a>
-              );
-            })}
-          </nav>
+          <div className="flex items-center gap-4">
+            <nav className="hidden items-center gap-1 sm:flex">
+              {NAV_ITEMS.map((item) => {
+                const isActive = active === item.key;
+                return (
+                  <a
+                    key={item.key}
+                    href={item.href}
+                    className={`relative px-3 py-2 text-[11px] font-bold uppercase tracking-[0.2em] transition-colors ${
+                      isActive
+                        ? "text-black"
+                        : "text-neutral-500 hover:text-black"
+                    }`}
+                  >
+                    {item.label}
+                    {isActive ? (
+                      <span
+                        aria-hidden="true"
+                        className="absolute inset-x-3 bottom-1 h-0.5 bg-black"
+                      />
+                    ) : null}
+                  </a>
+                );
+              })}
+            </nav>
+            {/* Bell stays visible on every breakpoint — the customer's
+                primary notification surface. The mobile nav row below
+                still shows the section links. */}
+            <PortalInboxBell />
+          </div>
         </div>
         <div className="sm:hidden border-t border-black/10 bg-paper/95">
           <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6 py-2">

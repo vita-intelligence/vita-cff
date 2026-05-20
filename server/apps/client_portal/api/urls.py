@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from django.urls import path
 
+from .inbox_views import (
+    PortalInboxListView,
+    PortalInboxUnreadCountView,
+)
 from .messaging_views import (
     ProposalChatListView,
     ProposalChatPostView,
@@ -75,6 +79,16 @@ urlpatterns = [
 
     # Authenticated identity + dashboard.
     path("auth/me/", MeView.as_view(), name="me"),
+
+    # Inbox / bell — every thread the client account can see plus
+    # a total-unread count. List shape matches the staff inbox so
+    # the FE rendering is symmetric.
+    path("inbox/", PortalInboxListView.as_view(), name="inbox-list"),
+    path(
+        "inbox/unread_count/",
+        PortalInboxUnreadCountView.as_view(),
+        name="inbox-unread-count",
+    ),
 
     # Profile / settings.
     path("profile/", ProfileView.as_view(), name="profile"),
