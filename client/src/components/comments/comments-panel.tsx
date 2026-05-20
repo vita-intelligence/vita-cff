@@ -84,9 +84,15 @@ export function CommentsPanel({
   // else (formulations, future QC surfaces) is internal-only. If the
   // caller passes ``visibility`` explicitly that wins — useful for
   // forcing internal on a sheet still in draft.
+  // Spec sheets + proposals are client-facing surfaces — comments
+  // posted here default to "shared with the customer" so staff
+  // replies actually reach the portal. Formulation threads stay
+  // internal-only unless the caller passes ``visibility`` explicitly.
   const effectiveVisibility: "internal" | "client" =
     visibility ??
-    (entityKind === "specification" ? "client" : "internal");
+    (entityKind === "specification" || entityKind === "proposal"
+      ? "client"
+      : "internal");
   const isFill = layout === "fill";
   const [includeResolved, setIncludeResolved] = useState(true);
 

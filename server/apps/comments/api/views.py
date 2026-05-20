@@ -87,6 +87,21 @@ def _load_formulation(organization, formulation_id) -> Formulation:
     return formulation
 
 
+def _load_proposal(organization, proposal_id):
+    """Match the loader pattern used for formulation / spec — 404 if
+    the proposal isn't in the actor's organisation. Keeps the
+    leak-proof contract consistent across target types."""
+
+    from apps.proposals.models import Proposal
+    try:
+        return Proposal.objects.get(
+            organization=organization, id=proposal_id,
+        )
+    except Proposal.DoesNotExist:  # pragma: no cover — exercised by tests
+        from django.http import Http404
+        raise Http404("Proposal not found.")
+
+
 def _load_specification(organization, sheet_id) -> SpecificationSheet:
     sheet = (
         SpecificationSheet.objects.filter(
@@ -233,6 +248,22 @@ class SpecificationCommentsView(_EntityCommentListBase):
         return _load_specification(
             self.organization, url_kwargs["sheet_id"]
         )
+
+
+class ProposalCommentsView(_EntityCommentListBase):
+    """``GET``/``POST`` ``/proposals/<id>/comments/``.
+
+    Staff-side surface for the proposal-level customer chat the
+    portal posts to via ``/api/portal/proposals/<id>/proposal-messages/``.
+    Same view contract as the formulation / specification variants
+    so it slots into the existing comments bubble without any new
+    UI affordances on the staff side.
+    """
+
+    target_kind = "proposal"
+
+    def _target(self, request: Request, **url_kwargs) -> Any:
+        return _load_proposal(self.organization, url_kwargs["proposal_id"])
 
 
 # ---------------------------------------------------------------------------

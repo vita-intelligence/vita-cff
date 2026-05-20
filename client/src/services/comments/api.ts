@@ -16,7 +16,10 @@ import type {
   PaginatedCommentsDto,
 } from "./types";
 
-export type CommentEntityKind = "formulation" | "specification";
+export type CommentEntityKind =
+  | "formulation"
+  | "specification"
+  | "proposal";
 
 interface ThreadKey {
   readonly orgId: string;
@@ -25,9 +28,14 @@ interface ThreadKey {
 }
 
 function threadUrl(key: ThreadKey): string {
-  return key.kind === "formulation"
-    ? commentsEndpoints.formulationThread(key.orgId, key.entityId)
-    : commentsEndpoints.specificationThread(key.orgId, key.entityId);
+  switch (key.kind) {
+    case "formulation":
+      return commentsEndpoints.formulationThread(key.orgId, key.entityId);
+    case "specification":
+      return commentsEndpoints.specificationThread(key.orgId, key.entityId);
+    case "proposal":
+      return commentsEndpoints.proposalThread(key.orgId, key.entityId);
+  }
 }
 
 export interface FetchCommentsPageArgs {

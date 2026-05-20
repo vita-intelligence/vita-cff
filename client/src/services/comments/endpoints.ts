@@ -7,6 +7,13 @@ export const commentsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/comments/`,
   specificationThread: (orgId: string, sheetId: string) =>
     `/api/organizations/${orgId}/specifications/${sheetId}/comments/`,
+  // Proposal thread — used by the staff proposal detail page to
+  // surface the customer-portal proposal-level conversation. The
+  // backend allows shared comments + staff replies on the
+  // ``proposals.Proposal`` polymorphic target (migration
+  // ``comments.0007_comment_proposal``).
+  proposalThread: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/comments/`,
   detail: (orgId: string, commentId: string) =>
     `/api/organizations/${orgId}/comments/${commentId}/`,
   resolve: (orgId: string, commentId: string) =>

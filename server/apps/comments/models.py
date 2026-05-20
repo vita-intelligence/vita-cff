@@ -642,6 +642,7 @@ class ThreadEntityKind(models.TextChoices):
 
     FORMULATION = "formulation", _("Formulation")
     SPECIFICATION = "specification", _("Specification")
+    PROPOSAL = "proposal", _("Proposal")
 
 
 class ThreadReadState(models.Model):

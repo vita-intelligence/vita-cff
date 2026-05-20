@@ -207,8 +207,11 @@ class ThreadMarkReadView(APIView):
         # is fine — the path fires only on user-driven gestures.
         if entity_kind == ThreadEntityKind.FORMULATION.value:
             entity = Formulation.objects.filter(id=entity_id).first()
-        else:  # SPECIFICATION
+        elif entity_kind == ThreadEntityKind.SPECIFICATION.value:
             entity = SpecificationSheet.objects.filter(id=entity_id).first()
+        else:  # PROPOSAL
+            from apps.proposals.models import Proposal
+            entity = Proposal.objects.filter(id=entity_id).first()
         if entity is None:
             raise NotFound()
 

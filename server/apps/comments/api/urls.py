@@ -18,6 +18,7 @@ from apps.comments.api.views import (
     CommentResolveView,
     FormulationCommentsView,
     MentionableMembersView,
+    ProposalCommentsView,
     SpecificationCommentsView,
 )
 
@@ -48,6 +49,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/comments/",
         SpecificationCommentsView.as_view(),
         name="specification-comments",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/comments/",
+        ProposalCommentsView.as_view(),
+        name="proposal-comments",
     ),
     path(
         "organizations/<uuid:org_id>/comments/<uuid:comment_id>/",

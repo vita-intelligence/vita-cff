@@ -178,7 +178,11 @@ const entityStores = new Map<
 
 export interface EntityKey {
   readonly orgId: string;
-  readonly kind: "formulation" | "specification";
+  // Mirrors :type:`CommentEntityKind` in ``../comments/api.ts`` —
+  // every supported polymorphic target on the backend (proposals
+  // joined the set when the customer-portal "about this proposal"
+  // chat surface shipped).
+  readonly kind: "formulation" | "specification" | "proposal";
   readonly entityId: string;
 }
 

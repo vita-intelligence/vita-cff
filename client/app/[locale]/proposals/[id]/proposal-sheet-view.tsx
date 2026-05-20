@@ -68,6 +68,59 @@ import {
 } from "@/services/specifications";
 import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
 
+import { CommentsPanel } from "@/components/comments";
+
+
+/**
+ * Thin wrapper around :component:`CommentsPanel` for the proposal-
+ * level conversation surface. Lives inline in the proposal sheet
+ * view so the staff team sees the customer-portal thread next to
+ * the document they're reviewing, instead of a separate page or a
+ * floating bubble.
+ */
+function ProposalConversation({
+  orgId,
+  proposalId,
+  currentUserId,
+  canRead,
+  canWrite,
+  canModerate,
+}: {
+  orgId: string;
+  proposalId: string;
+  currentUserId: string;
+  canRead: boolean;
+  canWrite: boolean;
+  canModerate: boolean;
+}) {
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-500">
+            Conversation
+          </p>
+          <h2 className="mt-0.5 text-base font-semibold text-ink-1000">
+            About this proposal
+          </h2>
+        </div>
+        <span className="text-[11px] text-ink-500">
+          Shared with the customer · posts appear in the portal
+        </span>
+      </header>
+      <CommentsPanel
+        orgId={orgId}
+        entityKind="proposal"
+        entityId={proposalId}
+        currentUserId={currentUserId}
+        canRead={canRead}
+        canWrite={canWrite}
+        canModerate={canModerate}
+      />
+    </section>
+  );
+}
+
 
 /**
  * Authenticated view for one proposal. Renders the backend HTML in
@@ -505,6 +558,24 @@ export function ProposalSheetView({
       )}
 
       <AttachedSpecPreviews orgId={orgId} proposal={proposal} />
+
+      {/* Proposal-level customer chat. Mirrors the spec-sheet panel
+        * the spec page already mounts: same component, same RBAC
+        * gates, same WebSocket — only the target entity differs.
+        * The customer portal posts here from
+        * ``/portal/proposals/[id]/proposal-messages/`` and we
+        * surface replies in the same panel without a second
+        * surface to learn. */}
+      {currentUserQuery.data ? (
+        <ProposalConversation
+          orgId={orgId}
+          proposalId={proposalId}
+          currentUserId={currentUserQuery.data.id}
+          canRead={hasProposalsCap("view") || myMembership?.is_owner === true}
+          canWrite={hasProposalsCap("view") || myMembership?.is_owner === true}
+          canModerate={myMembership?.is_owner === true}
+        />
+      ) : null}
 
 
       <SignatureDialog

@@ -81,7 +81,7 @@ class CommentConsumer(AsyncJsonWebsocketConsumer):
 
         kwargs = self.scope["url_route"]["kwargs"]
         kind: str = kwargs.get("entity_kind", "")
-        if kind not in {"formulation", "specification"}:
+        if kind not in {"formulation", "specification", "proposal"}:
             await self.close(code=CLOSE_BAD_TARGET)
             return
 
@@ -290,14 +290,18 @@ def _authorise(
     ):
         return "forbidden"
 
-    # Entity-in-org check — matches the REST ``_load_formulation`` /
-    # ``_load_specification`` 404 guard.
+    # Entity-in-org check — matches the REST loader 404 guard.
     if kind == "formulation":
         exists = Formulation.objects.filter(
             organization=organization, id=entity_id
         ).exists()
-    else:  # specification
+    elif kind == "specification":
         exists = SpecificationSheet.objects.filter(
+            organization=organization, id=entity_id
+        ).exists()
+    else:  # proposal
+        from apps.proposals.models import Proposal
+        exists = Proposal.objects.filter(
             organization=organization, id=entity_id
         ).exists()
     if not exists:
