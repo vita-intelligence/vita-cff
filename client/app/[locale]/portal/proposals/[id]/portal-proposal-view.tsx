@@ -487,13 +487,16 @@ function DocumentHeader({
         </span>
         <H2>{label}</H2>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-stretch gap-3">
         {downloadHref ? (
-          <a href={downloadHref} target="_blank" rel="noreferrer">
-            <PortalButton type="button" variant="secondary">
-              <Download className="mr-2 h-4 w-4" />
-              {downloadLabel || "Download"}
-            </PortalButton>
+          <a
+            href={downloadHref}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-2 border-2 border-black bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-widest shadow-[3px_3px_0_#000] hover:bg-neutral-100"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {downloadLabel || "Download"}
           </a>
         ) : null}
         {signed ? <SignedPill at={signedAt} /> : null}
@@ -815,11 +818,14 @@ function AckRow({
 
 
 function SignedPill({ at }: { at: string | null }) {
+  // Sized to match the small download button next to it in the
+  // document header — same px-3 py-1.5, same text size, same
+  // hard shadow. Without this they used to render at noticeably
+  // different heights and looked unbalanced.
   return (
-    <span className="inline-flex items-center gap-1.5 border-2 border-black bg-black px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
-      <CheckCircle2 className="h-3 w-3" />
-      Signed
-      {at ? ` · ${new Date(at).toLocaleDateString()}` : ""}
+    <span className="inline-flex items-center gap-1.5 border-2 border-black bg-black px-3 py-1.5 text-xs font-bold uppercase tracking-widest text-white shadow-[3px_3px_0_#000]">
+      <CheckCircle2 className="h-3.5 w-3.5" />
+      Signed{at ? ` · ${new Date(at).toLocaleDateString()}` : ""}
     </span>
   );
 }
