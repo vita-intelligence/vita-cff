@@ -61,7 +61,15 @@ export default async function PortalDashboard() {
 
   return (
     <PortalShell>
-      <H1>{me?.customer_company || "Your proposals"}</H1>
+      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+        <H1>{me?.customer_company || "Your proposals"}</H1>
+        <Link
+          href="/portal/settings"
+          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest shadow-[4px_4px_0_#000] hover:bg-neutral-100"
+        >
+          Settings →
+        </Link>
+      </div>
       {data.results.length === 0 ? (
         <Card className="max-w-2xl">
           <p className="text-sm">

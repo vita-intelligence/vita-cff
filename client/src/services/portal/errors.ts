@@ -33,6 +33,9 @@ const FRIENDLY: Record<string, string> = {
   signature_required: "Please draw your signature before submitting.",
   invalid_proposal_transition: "This proposal can no longer accept that action.",
   invalid_status_transition: "This specification sheet can no longer accept that action.",
+  email_already_in_use: "Another portal account already uses this email.",
+  invalid_email_change_code: "That code doesn't match. Check the email we just sent and try again.",
+  current_password_incorrect: "Current password is incorrect.",
 };
 
 

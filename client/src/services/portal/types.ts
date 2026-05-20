@@ -53,3 +53,23 @@ export interface PortalMessagesDto {
   readonly read_state: Record<string, string>;
   readonly spec_ids: ReadonlyArray<string>;
 }
+
+
+export interface PortalProfileDto {
+  readonly customer_id: string;
+  readonly email: string;
+  readonly name: string;
+  readonly company: string;
+  readonly phone: string;
+  readonly invoice_address: string;
+  readonly delivery_address: string;
+}
+
+
+export interface ProfileUpdate {
+  readonly name?: string;
+  readonly company?: string;
+  readonly phone?: string;
+  readonly invoice_address?: string;
+  readonly delivery_address?: string;
+}

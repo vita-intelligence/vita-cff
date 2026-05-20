@@ -152,6 +152,78 @@ class ClientAccount(AbstractBaseUser):
         return self.activated_at is not None
 
 
+class EmailChangeRequest(models.Model):
+    """A pending email-change request for one :class:`ClientAccount`.
+
+    Customers can edit their on-file email via the portal settings.
+    To prove they actually own the new address, we mail a 6-digit
+    code there and refuse the change until the customer types that
+    code back into the settings page. Same pattern as the activation
+    code that gates first-time setup; same TTL as the password reset
+    flow (30 minutes) so the inbox / settings page UX is consistent.
+
+    A fresh request invalidates every prior unused one for the same
+    account — only the most recent code in the customer's inbox can
+    be redeemed, identical to the password-reset enumeration policy.
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        related_name="email_change_requests",
+        on_delete=models.CASCADE,
+    )
+    new_email = models.EmailField(
+        help_text=_(
+            "Address the customer typed into the settings form. "
+            "Stored lowercased + trimmed so the confirm step can "
+            "match against ``normalize_email`` output without "
+            "needing a second normalisation pass."
+        ),
+    )
+    code_hash = models.CharField(
+        max_length=64,
+        help_text=_(
+            "SHA-256 of the plaintext 6-digit code sent in the "
+            "verification email. Stored hashed so a DB dump can't "
+            "be turned into a working email-change confirmation."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    invalidated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Set when a fresher request superseded this one. "
+            "Distinct from ``used_at`` so the audit log can tell "
+            "an abandoned request apart from a consumed one."
+        ),
+    )
+
+    class Meta:
+        verbose_name = _("email change request")
+        verbose_name_plural = _("email change requests")
+        indexes = [
+            models.Index(fields=("account", "-created_at")),
+            models.Index(fields=("expires_at",)),
+        ]
+
+    @property
+    def is_consumable(self) -> bool:
+        now = timezone.now()
+        return (
+            self.used_at is None
+            and self.invalidated_at is None
+            and self.expires_at > now
+        )
+
+
 class ClientPasswordResetToken(models.Model):
     """Single-use forgot-password token for a :class:`ClientAccount`.
 

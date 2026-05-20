@@ -9,6 +9,12 @@ from .messaging_views import (
     SpecMessagePostView,
     SpecMessageReadView,
 )
+from .profile_views import (
+    EmailChangeConfirmView,
+    EmailChangeRequestView,
+    PasswordChangeView,
+    ProfileView,
+)
 from .views import (
     ActivationPreviewView,
     ActivationView,
@@ -61,6 +67,25 @@ urlpatterns = [
 
     # Authenticated identity + dashboard.
     path("auth/me/", MeView.as_view(), name="me"),
+
+    # Profile / settings.
+    path("profile/", ProfileView.as_view(), name="profile"),
+    path(
+        "profile/email/request/",
+        EmailChangeRequestView.as_view(),
+        name="profile-email-request",
+    ),
+    path(
+        "profile/email/confirm/",
+        EmailChangeConfirmView.as_view(),
+        name="profile-email-confirm",
+    ),
+    path(
+        "profile/password/",
+        PasswordChangeView.as_view(),
+        name="profile-password",
+    ),
+
     path("proposals/", ProposalListView.as_view(), name="proposal-list"),
     path(
         "proposals/<uuid:proposal_id>/",

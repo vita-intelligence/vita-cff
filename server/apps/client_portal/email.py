@@ -102,6 +102,59 @@ def send_portal_activation_email(
     msg.send(fail_silently=False)
 
 
+def send_email_change_code(
+    *,
+    to_email: str,
+    code: str,
+) -> None:
+    """Send the 6-digit code that confirms an email-change request.
+
+    The code is mailed to the **new** address — proving the
+    customer actually controls it before we flip their login over.
+    """
+
+    if not to_email:
+        return
+
+    subject = "Vita NPD — confirm your new email"
+    text = (
+        "Hi,\n\n"
+        "Your code to confirm this new email on your Vita portal\n"
+        "account is:\n\n"
+        f"  {code}\n\n"
+        "Enter it on the settings page within the next 30 minutes.\n"
+        "If you didn't request this, ignore the email — your account\n"
+        "stays on its current address.\n\n"
+        "— The Vita team\n"
+    )
+    html = (
+        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
+        'color: #000; background: #fff; padding: 24px;">'
+        '<p style="font-size: 14px; line-height: 1.5;">Hi,</p>'
+        '<p style="font-size: 14px; line-height: 1.5;">'
+        "Your code to confirm this new email on your Vita portal "
+        "account is:</p>"
+        '<div style="margin: 24px 0; padding: 14px 28px; border: 2px solid #000; '
+        'display: inline-block; font-family: \'Courier New\', monospace; '
+        f'font-size: 26px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
+        '<p style="font-size: 12px; line-height: 1.5; color: #555;">'
+        "Enter it on the settings page within the next 30 minutes. "
+        "If you didn't request this, ignore the email — your account "
+        "stays on its current address.</p>"
+        '<p style="font-size: 12px; color: #555;">— The Vita team</p>'
+        "</div>"
+    )
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html, "text/html")
+    msg.send(fail_silently=False)
+
+
 def send_portal_password_reset_email(
     *,
     to_email: str,

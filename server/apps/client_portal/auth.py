@@ -49,8 +49,23 @@ class PortalCookieJWTAuthentication(JWTAuthentication):
             if raw_token is None:
                 return None
 
-        validated_token = self.get_validated_token(raw_token)
-        return self.get_user(validated_token), validated_token
+        # A cookie can be present but invalid — typical case is a
+        # stale ``vita_portal_access`` from an earlier activation
+        # against a proposal whose ``ClientAccount`` we've since
+        # wiped (test resets, password rotation, the user clearing
+        # their own row). DRF's default behaviour on
+        # ``AuthenticationFailed`` is to short-circuit with 401 BEFORE
+        # the view's ``permission_classes`` get a chance to vote, so
+        # a stale cookie would block ``AllowAny`` endpoints like
+        # activation / login. Swallowing the validation error here
+        # — returning ``None`` instead of raising — degrades the
+        # request to anonymous; the permission layer then decides
+        # whether anonymous is acceptable.
+        try:
+            validated_token = self.get_validated_token(raw_token)
+            return self.get_user(validated_token), validated_token
+        except (InvalidToken, AuthenticationFailed):
+            return None
 
     def get_user(self, validated_token):  # type: ignore[override]
         # Resolve directly against :class:`ClientAccount` — never the

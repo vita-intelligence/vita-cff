@@ -13,7 +13,9 @@ import type {
   PortalMeDto,
   PortalMessageDto,
   PortalMessagesDto,
+  PortalProfileDto,
   PortalProposalListDto,
+  ProfileUpdate,
 } from "./types";
 
 
@@ -165,4 +167,50 @@ export async function postSpecMessage(
 
 export async function markSpecMessagesRead(sheetId: string): Promise<void> {
   await apiClient.post(`/api/portal/specs/${sheetId}/messages/read/`, {});
+}
+
+
+export async function fetchProfile(): Promise<PortalProfileDto> {
+  const { data } = await apiClient.get<PortalProfileDto>("/api/portal/profile/");
+  return data;
+}
+
+
+export async function updateProfile(
+  patch: ProfileUpdate,
+): Promise<PortalProfileDto> {
+  const { data } = await apiClient.patch<PortalProfileDto>(
+    "/api/portal/profile/",
+    patch,
+  );
+  return data;
+}
+
+
+export async function requestEmailChange(newEmail: string): Promise<void> {
+  await apiClient.post("/api/portal/profile/email/request/", {
+    new_email: newEmail,
+  });
+}
+
+
+export async function confirmEmailChange(
+  code: string,
+): Promise<PortalProfileDto> {
+  const { data } = await apiClient.post<PortalProfileDto>(
+    "/api/portal/profile/email/confirm/",
+    { code },
+  );
+  return data;
+}
+
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await apiClient.post("/api/portal/profile/password/", {
+    current_password: currentPassword,
+    new_password: newPassword,
+  });
 }
