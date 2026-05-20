@@ -3,10 +3,17 @@
 /**
  * Read-only detail view for one CFF submission.
  *
+ * Renders as a **detached floating window** (draggable + resizable)
+ * rather than a centered modal so a project / spec-sheet operator
+ * can keep the CFF visible while editing the page underneath.
+ * Position and size persist to ``localStorage`` so the window
+ * stays where the user last put it across navigations and reloads.
+ *
  * Structure (top → bottom):
  *
  * 1. **Header** — customer name + company, status pill, assignment
- *    badge, submitted-time relative stamp.
+ *    badge, submitted-time relative stamp. Doubles as the drag
+ *    handle.
  * 2. **Quick contact strip** — email + phone as clickable
  *    ``mailto:`` / ``tel:`` chips so the triager can reach the
  *    customer in one click.
@@ -38,6 +45,7 @@
 
 import {
   FileText,
+  GripHorizontal,
   Image as ImageIcon,
   Link2,
   Mail,
@@ -46,9 +54,94 @@ import {
   X,
 } from "lucide-react";
 import { useFormatter, useNow, useTranslations } from "next-intl";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { CFFSubmissionDto } from "@/services/cff-submissions";
+
+
+// ---------------------------------------------------------------------------
+// Floating-window state plumbing
+// ---------------------------------------------------------------------------
+//
+// Stored shape: ``{x, y, w, h}`` in viewport pixels. Position is
+// top-left corner of the window. We clamp every read + write so a
+// previously-saved rect from a larger monitor doesn't open
+// off-screen on a laptop today.
+
+interface WindowRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+const RECT_STORAGE_KEY = "cff-detail-window-rect";
+
+//: Tight enough that the section cards stay readable, loose enough
+//: that the user can still get the page underneath visible.
+const MIN_WIDTH = 360;
+const MIN_HEIGHT = 360;
+
+//: Default window size on first open. Falls back smaller on
+//: laptops; the viewport-aware ``defaultRect`` below shrinks
+//: further if the window is small.
+const DEFAULT_WIDTH = 720;
+const DEFAULT_HEIGHT = 760;
+
+//: How much of the header must stay inside the viewport so the
+//: window can always be grabbed and dragged back. Without this a
+//: rage-drag off-screen would orphan the window — losing it to
+//: the user's mental "closed" model even though it's still mounted.
+const DRAG_VISIBLE_PX = 80;
+
+function defaultRect(): WindowRect {
+  if (typeof window === "undefined") {
+    return { x: 80, y: 80, w: DEFAULT_WIDTH, h: DEFAULT_HEIGHT };
+  }
+  const w = Math.min(DEFAULT_WIDTH, window.innerWidth - 32);
+  const h = Math.min(DEFAULT_HEIGHT, window.innerHeight - 32);
+  return {
+    x: Math.max(16, Math.round((window.innerWidth - w) / 2)),
+    y: Math.max(16, Math.round((window.innerHeight - h) / 2)),
+    w,
+    h,
+  };
+}
+
+function clampRect(rect: WindowRect): WindowRect {
+  if (typeof window === "undefined") return rect;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  const w = Math.max(MIN_WIDTH, Math.min(rect.w, Math.max(MIN_WIDTH, vw - 16)));
+  const h = Math.max(MIN_HEIGHT, Math.min(rect.h, Math.max(MIN_HEIGHT, vh - 16)));
+  // Allow the user to push the window mostly off-screen on either
+  // side — but always keep ``DRAG_VISIBLE_PX`` of the header
+  // visible so it can be grabbed back. ``y`` is bounded so the
+  // header stays at-or-below the top of the viewport (we never
+  // let it slip under a fixed nav).
+  const x = Math.max(DRAG_VISIBLE_PX - w, Math.min(rect.x, vw - DRAG_VISIBLE_PX));
+  const y = Math.max(0, Math.min(rect.y, vh - 40));
+  return { x, y, w, h };
+}
+
+function loadRect(): WindowRect {
+  if (typeof window === "undefined") return defaultRect();
+  try {
+    const raw = window.localStorage.getItem(RECT_STORAGE_KEY);
+    if (!raw) return defaultRect();
+    const parsed = JSON.parse(raw) as Partial<WindowRect>;
+    if (
+      typeof parsed.x === "number" && typeof parsed.y === "number"
+      && typeof parsed.w === "number" && typeof parsed.h === "number"
+    ) {
+      return clampRect(parsed as WindowRect);
+    }
+  } catch {
+    // Corrupt JSON / quota exceeded / SSR — fall through to
+    // default. Never block opening the window on storage hiccups.
+  }
+  return defaultRect();
+}
 
 
 export function CFFDetailModal({
@@ -74,6 +167,115 @@ export function CFFDetailModal({
   const t = useTranslations("cff");
   const format = useFormatter();
   const now = useNow();
+
+  // -- Floating-window state ----------------------------------------
+  // ``rect`` is the source of truth for position + size; ``drag`` is
+  // set while the user is pulling the header; ``resizeStart`` is set
+  // while pulling the bottom-right corner. Both clear on pointerup.
+  // We persist ``rect`` to ``localStorage`` so the user's preferred
+  // size and corner placement survive navigations + reloads.
+  const [rect, setRect] = useState<WindowRect>(() => defaultRect());
+  const dragOffsetRef = useRef<{ x: number; y: number } | null>(null);
+  const resizeStartRef = useRef<
+    { x: number; y: number; w: number; h: number } | null
+  >(null);
+  const [isInteracting, setIsInteracting] = useState(false);
+
+  // Hydrate from ``localStorage`` AFTER the first render so SSR and
+  // CSR markup match (the default rect is identical on both sides;
+  // only the post-mount restore differs).
+  useEffect(() => {
+    setRect(loadRect());
+  }, []);
+
+  // Persist whenever the rect settles. Skipping the write while the
+  // pointer is still down keeps us from spamming ``localStorage`` 60
+  // times per second during a drag.
+  useEffect(() => {
+    if (isInteracting) return;
+    try {
+      window.localStorage.setItem(RECT_STORAGE_KEY, JSON.stringify(rect));
+    } catch {
+      // Storage quota / private mode — silently drop. The rect
+      // stays valid in-memory for the rest of this session.
+    }
+  }, [rect, isInteracting]);
+
+  // Reclamp on viewport resize so a window dragged to the corner
+  // doesn't escape when the user shrinks the browser.
+  useEffect(() => {
+    const onResize = () => setRect((prev) => clampRect(prev));
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // Global pointer move / up while a drag OR a resize is in flight.
+  // Attaching at ``window`` (not the element) means the gesture
+  // survives the cursor briefly leaving the window — typing on a
+  // fast drag would otherwise "drop" the window mid-motion.
+  useEffect(() => {
+    if (!isInteracting) return;
+    const onMove = (event: PointerEvent) => {
+      const dragOffset = dragOffsetRef.current;
+      const resizeStart = resizeStartRef.current;
+      if (dragOffset) {
+        setRect((prev) =>
+          clampRect({
+            ...prev,
+            x: event.clientX - dragOffset.x,
+            y: event.clientY - dragOffset.y,
+          }),
+        );
+      } else if (resizeStart) {
+        setRect((prev) =>
+          clampRect({
+            ...prev,
+            w: resizeStart.w + (event.clientX - resizeStart.x),
+            h: resizeStart.h + (event.clientY - resizeStart.y),
+          }),
+        );
+      }
+    };
+    const onUp = () => {
+      dragOffsetRef.current = null;
+      resizeStartRef.current = null;
+      setIsInteracting(false);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [isInteracting]);
+
+  const startDrag = useCallback((event: React.PointerEvent<HTMLElement>) => {
+    // Don't hijack pointerdowns on the close button or future
+    // interactive controls placed in the header.
+    const target = event.target as HTMLElement;
+    if (target.closest("button, a, input, [data-no-drag]")) return;
+    dragOffsetRef.current = {
+      x: event.clientX - rect.x,
+      y: event.clientY - rect.y,
+    };
+    setIsInteracting(true);
+  }, [rect.x, rect.y]);
+
+  const startResize = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      event.stopPropagation();
+      resizeStartRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+        w: rect.w,
+        h: rect.h,
+      };
+      setIsInteracting(true);
+    },
+    [rect.w, rect.h],
+  );
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -125,16 +327,34 @@ export function CFFDetailModal({
   return (
     <div
       role="dialog"
-      aria-modal="true"
       aria-labelledby="cff-detail-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+      // Detached floating window: no backdrop, no full-screen
+      // container. Sits above page chrome (``z-50``) but leaves the
+      // page beneath fully interactive. Inline position + size is
+      // driven by ``rect`` so the user can drag + resize freely.
+      className="fixed z-50 flex flex-col overflow-hidden rounded-2xl bg-white shadow-2xl ring-1 ring-ink-200"
+      style={{
+        left: rect.x,
+        top: rect.y,
+        width: rect.w,
+        height: rect.h,
+        // Suppress text selection while a drag/resize gesture is
+        // active. Without this the cursor's motion across the page
+        // selects copy underneath and the gesture feels "sticky".
+        userSelect: isInteracting ? "none" : undefined,
+        touchAction: "none",
       }}
     >
-      <div className="flex w-full max-w-3xl max-h-[92vh] flex-col overflow-hidden rounded-2xl bg-white shadow-xl">
-        {/* ---- Header ---- */}
-        <header className="flex items-start justify-between gap-4 border-b border-ink-100 px-6 py-4">
+      {/* ---- Header (drag handle) ---- */}
+      <header
+        onPointerDown={startDrag}
+        className="flex cursor-grab items-start justify-between gap-4 border-b border-ink-100 bg-white px-6 py-4 active:cursor-grabbing"
+      >
+        <div className="min-w-0 flex flex-1 items-start gap-2">
+          <GripHorizontal
+            className="mt-1 h-4 w-4 shrink-0 text-ink-400"
+            aria-hidden="true"
+          />
           <div className="min-w-0 flex flex-col gap-1">
             <div className="flex flex-wrap items-center gap-2">
               <h2
@@ -157,15 +377,17 @@ export function CFFDetailModal({
               })}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label={t("detail.close")}
-            className="rounded-md p-1 text-ink-500 transition-colors hover:bg-ink-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </header>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t("detail.close")}
+          data-no-drag
+          className="rounded-md p-1 text-ink-500 transition-colors hover:bg-ink-100"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </header>
 
         {/* ---- Body ---- */}
         <div className="flex-1 overflow-y-auto bg-ink-50 px-6 py-5">
@@ -288,7 +510,33 @@ export function CFFDetailModal({
             {t("detail.close")}
           </button>
         </footer>
-      </div>
+        {/* Resize handle (bottom-right). Sits above all other
+            content so it remains grabbable even when the footer
+            buttons are at full width. The visual cue is the
+            diagonal lines pseudo-element rendered via the SVG
+            below — tied to the same pointerdown that drives the
+            window-resize gesture. */}
+        <span
+          onPointerDown={startResize}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("detail.resize_handle")}
+          className="absolute bottom-0 right-0 h-4 w-4 cursor-nwse-resize text-ink-400 hover:text-ink-700"
+          style={{ touchAction: "none" }}
+        >
+          <svg
+            viewBox="0 0 16 16"
+            className="h-full w-full"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            aria-hidden="true"
+          >
+            <line x1="11" y1="15" x2="15" y2="11" />
+            <line x1="6" y1="15" x2="15" y2="6" />
+          </svg>
+        </span>
     </div>
   );
 }

@@ -48,7 +48,8 @@
     "section_attachments": "Attachments",
     "section_other": "Other responses",
     "section_meta": "Source data",
-    "no_fields": "No fields captured."
+    "no_fields": "No fields captured.",
+    "resize_handle": "Resize CFF window"
   },
   "assign": {
     "open": "Attach to existing project",
