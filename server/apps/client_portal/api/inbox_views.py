@@ -40,21 +40,22 @@ def _author_snapshot(comment: Comment) -> dict[str, Any]:
     """One-line author identity used by the bell preview row. Mirrors
     the staff inbox shape so the FE rendering stays simple."""
 
+    # Mirror :func:`apps.client_portal.api.messaging_views._author_payload`
+    # so the bell preview row reads with the same identity rules as
+    # the in-thread bubble. Staff authors render as the consistent
+    # "Vita team" brand voice rather than the operator's individual
+    # name — same constraint the per-page chat panels apply.
     if comment.client_account_id is not None:
         ca = comment.client_account
-        return {
-            "kind": "client",
-            "name": (ca.full_name or ca.email or "").strip() or "Customer",
-        }
+        name = (
+            (ca.customer.company or "").strip()
+            or (ca.customer.name or "").strip()
+            or (ca.email or "").strip()
+            or "Customer"
+        )
+        return {"kind": "client", "name": name}
     if comment.author_id is not None:
-        a = comment.author
-        return {
-            "kind": "staff",
-            "name": (
-                a.get_full_name() or a.email or ""
-            ).strip()
-            or "Vita team",
-        }
+        return {"kind": "staff", "name": "Vita team"}
     return {"kind": "system", "name": "System"}
 
 
