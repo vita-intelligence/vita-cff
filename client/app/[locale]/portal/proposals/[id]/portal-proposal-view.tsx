@@ -1,30 +1,42 @@
 "use client";
 
 /**
- * Portal proposal view — same UX shape as the legacy public kiosk.
+ * Portal proposal view — restructured to match the kiosk's UX
+ * after customer-test feedback flagged the previous layout as
+ * "too much information, too confusing".
  *
- * The customer:
- *   1. Reads the proposal in an iframe (same HTML render the staff
- *      preview and the email PDF use).
- *   2. Reads each attached spec sheet rendered inline via
- *      :component:`SpecSheetContent` (the same component the staff
- *      side uses on the spec detail page — no second render path).
- *   3. Ticks the four acknowledgement boxes on the proposal.
- *   4. Signs each document (proposal + every spec) via
- *      :component:`SignatureDialog`.
- *   5. Clicks Finalize. The Finalize button only enables once every
- *      document carries a signature; the backend re-checks and
- *      atomically flips the bundle to ``accepted``.
+ * The page is now a single linear column with five blocks:
  *
- * Identity is sourced from the JWT session cookie — there's no
- * kiosk identity modal because the customer is already
- * authenticated. That replaces the old "type your name + email"
- * gate the public kiosk needed.
+ *   1. **What to do** — up-front guidance card listing the steps
+ *      so the customer never wonders "what's next". Same idea as
+ *      the staff onboarding wizard.
+ *   2. **Progress** — small strip showing N / N signed.
+ *   3. **One card per document** — proposal first, then each
+ *      attached spec. Each card has:
+ *        - Download (proposal-level only)
+ *        - Scroll-tracked content (iframe for the proposal,
+ *          inline ``SpecSheetContent`` for specs)
+ *        - Read-progress bar
+ *        - Acknowledgement checkboxes (proposal card only)
+ *        - Sign button — DISABLED until the document has been
+ *          scrolled to ~98% AND the proposal's acks are ticked
+ *   4. **Final decision** — Accept and Decline as paired CTAs,
+ *      same visual weight, no buried decline link.
+ *   5. **Messages** — unchanged, kept at the bottom and visually
+ *      separated from the signing flow.
+ *
+ * Scroll tracking: 98% threshold (matches the kiosk). For
+ * iframes, we poll ``contentWindow.scrollY`` / ``scrollHeight``
+ * every 250ms — same robustness reasons as the kiosk: ``load``
+ * event listeners get dropped on parent re-renders, polling
+ * sidesteps that race. For inline content (the spec cards),
+ * a plain ``scroll`` event on the wrapping div is enough since
+ * the document never gets re-mounted by sibling state changes.
  */
 
-import { CheckCircle2, PenLine, Sparkles } from "lucide-react";
+import { CheckCircle2, Download, PenLine, Sparkles, XCircle } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   Card,
@@ -42,11 +54,9 @@ import { portalErrorMessage } from "@/services/portal/errors";
 import { SpecSheetContent } from "../../../specifications/[id]/specification-sheet-view";
 
 
-// Shape of the portal proposal endpoint response. Mirrors what
-// ``_render_public_proposal_payload`` returns on the Django side —
-// declared here (not pulled from a typed module) because the legacy
-// services types are coupled to kiosk-session helpers we don't
-// import on the portal.
+const READ_THRESHOLD = 0.98;
+
+
 interface SpecRecord {
   readonly id: string;
   readonly code: string;
@@ -55,10 +65,6 @@ interface SpecRecord {
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
-  // Inline-render data for ``SpecSheetContent``. The backend names
-  // the field ``render_context`` (matches the standalone spec
-  // kiosk's payload); we keep that name through to the component
-  // so a future schema change only needs one rename.
   readonly render_context: unknown;
 }
 
@@ -73,19 +79,13 @@ interface PortalProposalDto {
   readonly ack_lead_times: boolean;
   readonly ack_terms: boolean;
   readonly ack_rd_terms: boolean;
-  // Backend key is ``attached_specs`` — not ``specs``.
   readonly attached_specs: ReadonlyArray<SpecRecord>;
 }
 
 
-type DocumentKind = "proposal" | "spec";
-
-
-interface PendingSign {
-  readonly kind: DocumentKind;
-  readonly sheetId?: string;
-  readonly label: string;
-}
+type PendingSign =
+  | { kind: "proposal"; label: string }
+  | { kind: "spec"; sheetId: string; label: string };
 
 
 export function PortalProposalView({ proposalId }: { proposalId: string }) {
@@ -94,11 +94,15 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingSign | null>(null);
   const [busy, setBusy] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
+  const [finalized, setFinalized] = useState(false);
   const [acks, setAcks] = useState({
     spec: false, leadTimes: false, terms: false, rdTerms: false,
   });
-  const [finalizing, setFinalizing] = useState(false);
-  const [finalized, setFinalized] = useState(false);
+  // Read-progress per document. Keyed by document key: "proposal"
+  // for the cover doc, ``"spec:<id>"`` for each attached spec.
+  // A value >= READ_THRESHOLD unlocks that document's sign button.
+  const [readProgress, setReadProgress] = useState<Record<string, number>>({});
 
   const load = useCallback(async () => {
     try {
@@ -106,8 +110,6 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         `/api/portal/proposals/${proposalId}/`,
       );
       setProposal(data);
-      // Seed the ack checkboxes from whatever's already on the proposal —
-      // the customer may have ticked some, navigated away, and come back.
       setAcks({
         spec: data.ack_spec_signing,
         leadTimes: data.ack_lead_times,
@@ -145,7 +147,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
           ack_terms: acks.terms,
           ack_rd_terms: acks.rdTerms,
         });
-      } else if (pending.kind === "spec" && pending.sheetId) {
+      } else {
         await apiClient.post(
           `/api/portal/proposals/${proposalId}/specs/${pending.sheetId}/sign/`,
           { signature_image: dataUrl },
@@ -160,7 +162,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     }
   }
 
-  async function onFinalize() {
+  async function onAccept() {
     setActionError(null);
     setFinalizing(true);
     try {
@@ -177,7 +179,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   if (loadError) {
     return (
       <Card className="max-w-2xl">
-        <H1>Couldn't load proposal</H1>
+        <H1>Couldn&apos;t load proposal</H1>
         <P>{loadError}</P>
         <Link
           href="/portal"
@@ -193,67 +195,100 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     return <P>Loading…</P>;
   }
 
+  const proposalReadEnough = (readProgress["proposal"] ?? 0) >= READ_THRESHOLD;
   const canSignProposal =
     !proposal.has_signature
     && proposal.status === "sent"
-    && acksAllTicked;
-  const canFinalize =
-    proposal.status === "sent" && allSigned && !finalized;
+    && acksAllTicked
+    && proposalReadEnough;
 
-  // How many documents have been signed out of the total (proposal +
-  // every attached spec). Drives the progress strip at the top so
-  // the customer can see at a glance how close they are to Finalise.
+  const isAccepted = finalized || proposal.status === "accepted";
+  const isRejected = proposal.status === "rejected";
+  const isDone = isAccepted || isRejected;
   const totalDocs = 1 + proposal.attached_specs.length;
   const signedDocs =
     (proposal.has_signature ? 1 : 0)
     + proposal.attached_specs.filter((s) => s.has_signature).length;
 
+  const guidanceSteps = [
+    { text: "Read the proposal — scroll to the bottom.", done: proposalReadEnough },
+    { text: "Tick the four acknowledgements.", done: acksAllTicked },
+    { text: "Sign the proposal.", done: proposal.has_signature },
+    {
+      text: `Read & sign ${proposal.attached_specs.length} attached specification${proposal.attached_specs.length === 1 ? "" : "s"}.`,
+      done: proposal.attached_specs.length > 0
+        && proposal.attached_specs.every((s) => s.has_signature),
+    },
+    { text: "Choose Accept or Decline.", done: isDone },
+  ];
+
   return (
     <div className="flex flex-col gap-8">
-      {/* ----- Header + progress ----- */}
-      <header className="flex flex-col gap-4">
-        <div className="flex items-center justify-between">
-          <H1>{proposal.code}</H1>
-          <StatusPill status={finalized ? "accepted" : proposal.status} />
-        </div>
-        {proposal.status === "sent" && !finalized ? (
-          <ProgressStrip signed={signedDocs} total={totalDocs} />
-        ) : null}
+      {/* ----- Header ----- */}
+      <header className="flex items-center justify-between">
+        <H1>{proposal.code}</H1>
+        <StatusPill status={isAccepted ? "accepted" : proposal.status} />
       </header>
 
       {actionError ? <ErrorBanner>{actionError}</ErrorBanner> : null}
 
-      {/* ----- Step 1: Proposal ----- */}
+      {/* ----- 1. Guidance ----- */}
+      {!isDone ? (
+        <Card>
+          <H2>What to do</H2>
+          <ol className="flex flex-col gap-2">
+            {guidanceSteps.map((step, i) => (
+              <li
+                key={i}
+                className={`flex items-start gap-3 border-2 border-black bg-white px-3 py-2 text-sm ${
+                  step.done ? "opacity-50" : ""
+                }`}
+              >
+                <span
+                  className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 border-black text-[10px] font-black ${
+                    step.done ? "bg-black text-white" : "bg-white text-black"
+                  }`}
+                >
+                  {step.done ? "✓" : i + 1}
+                </span>
+                <span className={step.done ? "line-through" : ""}>
+                  {step.text}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </Card>
+      ) : null}
+
+      {/* ----- 2. Progress ----- */}
+      {!isDone ? (
+        <ProgressStrip signed={signedDocs} total={totalDocs} />
+      ) : null}
+
+      {/* ----- 3a. Proposal document ----- */}
       <Card>
-        <StepHeader
-          n={1}
-          title="Read the proposal"
-          done={proposal.has_signature}
-          rightSlot={
-            proposal.has_signature
-              ? <SignedPill at={proposal.customer_signed_at} />
-              : null
+        <DocumentHeader
+          number={1}
+          label="Proposal"
+          signed={proposal.has_signature}
+          signedAt={proposal.customer_signed_at}
+          downloadHref={`/api/portal/proposals/${proposalId}/download/`}
+          downloadLabel="Download proposal PDF"
+        />
+        <ScrollTrackingIframe
+          src={`/api/portal/proposals/${proposalId}/pdf/`}
+          title={`Proposal ${proposal.code}`}
+          onProgressChange={(p) =>
+            setReadProgress((s) => ({ ...s, proposal: Math.max(s["proposal"] ?? 0, p) }))
           }
         />
-        <div className="mt-4 border-2 border-black">
-          <iframe
-            src={`/api/portal/proposals/${proposalId}/pdf/`}
-            title={`Proposal ${proposal.code}`}
-            className="block h-[720px] w-full bg-white"
-          />
-        </div>
-      </Card>
+        <ReadProgressBar value={readProgress["proposal"] ?? 0} />
 
-      {/* ----- Step 2: Acknowledgements + sign proposal ----- */}
-      {!proposal.has_signature ? (
-        <Card>
-          <StepHeader
-            n={2}
-            title="Acknowledge & sign the proposal"
-            done={false}
-          />
-          <P>Tick every statement, then sign below.</P>
-          <div className="flex flex-col gap-3">
+        {!proposal.has_signature ? (
+          <div className="mt-6 flex flex-col gap-4 border-t-2 border-dashed border-black pt-6">
+            <span className="text-xs font-bold uppercase tracking-widest">
+              Tick all four to enable signing:
+            </span>
             <AckRow
               checked={acks.spec}
               onChange={(v) => setAcks((s) => ({ ...s, spec: v }))}
@@ -274,97 +309,99 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               onChange={(v) => setAcks((s) => ({ ...s, rdTerms: v }))}
               text="I accept the R&D and confidentiality terms."
             />
-          </div>
-          <div className="mt-5">
-            <PortalButton
-              type="button"
-              disabled={!canSignProposal}
-              onClick={() =>
-                setPending({ kind: "proposal", label: "Proposal" })
-              }
-            >
-              <PenLine className="mr-2 h-4 w-4" />
-              Sign proposal
-            </PortalButton>
-          </div>
-        </Card>
-      ) : null}
-
-      {/* ----- Step 3: Attached specs ----- */}
-      {proposal.attached_specs.length > 0 ? (
-        <Card>
-          <StepHeader
-            n={proposal.has_signature ? 2 : 3}
-            title={`Sign ${proposal.attached_specs.length} specification${proposal.attached_specs.length === 1 ? "" : "s"}`}
-            done={proposal.attached_specs.every((s) => s.has_signature)}
-          />
-          <P>
-            Read each specification and sign it. The proposal cannot be
-            finalised until every attached document is signed.
-          </P>
-          <div className="flex flex-col gap-6">
-            {proposal.attached_specs.map((spec, index) => (
-              <SpecBlock
-                key={spec.id}
-                index={index + 1}
-                spec={spec}
-                onSign={() =>
-                  setPending({
-                    kind: "spec",
-                    sheetId: spec.id,
-                    label: `Spec ${spec.code || index + 1}`,
-                  })
+            <div>
+              <PortalButton
+                type="button"
+                disabled={!canSignProposal}
+                onClick={() =>
+                  setPending({ kind: "proposal", label: "Proposal" })
                 }
-              />
-            ))}
+              >
+                <PenLine className="mr-2 h-4 w-4" />
+                Sign proposal
+              </PortalButton>
+              {!proposalReadEnough ? (
+                <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
+                  Scroll to the bottom of the proposal to enable signing.
+                </p>
+              ) : null}
+            </div>
           </div>
-        </Card>
-      ) : null}
+        ) : null}
+      </Card>
 
-      {/* ----- Final step: Finalise ----- */}
-      <Card>
-        <StepHeader
-          n={proposal.attached_specs.length > 0
-            ? (proposal.has_signature ? 3 : 4)
-            : (proposal.has_signature ? 2 : 3)}
-          title="Finalise"
-          done={finalized || proposal.status === "accepted"}
+      {/* ----- 3b. Each attached spec ----- */}
+      {proposal.attached_specs.map((spec, index) => (
+        <SpecCard
+          key={spec.id}
+          number={index + 2}
+          spec={spec}
+          read={(readProgress[`spec:${spec.id}`] ?? 0) >= READ_THRESHOLD}
+          progress={readProgress[`spec:${spec.id}`] ?? 0}
+          onProgressChange={(p) =>
+            setReadProgress((s) => ({
+              ...s,
+              [`spec:${spec.id}`]: Math.max(s[`spec:${spec.id}`] ?? 0, p),
+            }))
+          }
+          onSign={() =>
+            setPending({
+              kind: "spec",
+              sheetId: spec.id,
+              label: `Spec ${spec.code || index + 1}`,
+            })
+          }
         />
-        <P>
-          {finalized || proposal.status === "accepted"
-            ? "This proposal is accepted. The Vita team has been notified."
-            : "Click Finalise once the proposal and every specification are signed."}
-        </P>
-        {finalized || proposal.status === "accepted" ? (
-          <div className="border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
-            <CheckCircle2 className="mr-2 inline h-4 w-4" />
-            Accepted
-          </div>
+      ))}
+
+      {/* ----- 4. Accept / Decline pair ----- */}
+      <Card>
+        <H2>Your decision</H2>
+        {isAccepted ? (
+          <DecisionBanner kind="accepted" />
+        ) : isRejected ? (
+          <DecisionBanner kind="rejected" />
         ) : (
-          <PortalButton
-            type="button"
-            disabled={!canFinalize || finalizing}
-            onClick={onFinalize}
-          >
-            <Sparkles className="mr-2 h-4 w-4" />
-            {finalizing ? "Finalising…" : "Finalise bundle"}
-          </PortalButton>
+          <>
+            <P>
+              When every document is signed, accept the proposal to confirm
+              the deal. If something isn&apos;t right, decline and tell us
+              why.
+            </P>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <PortalButton
+                type="button"
+                disabled={!allSigned || finalizing}
+                onClick={onAccept}
+                className="flex-1"
+              >
+                <Sparkles className="mr-2 h-4 w-4" />
+                {finalizing ? "Accepting…" : "Accept proposal"}
+              </PortalButton>
+              <Link
+                href={`/portal/proposals/${proposalId}/reject`}
+                className="flex-1"
+              >
+                <PortalButton
+                  type="button"
+                  variant="secondary"
+                  className="w-full"
+                >
+                  <XCircle className="mr-2 h-4 w-4" />
+                  Decline proposal
+                </PortalButton>
+              </Link>
+            </div>
+            {!allSigned ? (
+              <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
+                Accept stays disabled until every document above is signed.
+              </p>
+            ) : null}
+          </>
         )}
       </Card>
 
-      {/* ----- Decline (only while actionable) ----- */}
-      {proposal.status === "sent" && !proposal.has_signature ? (
-        <div className="border-t-2 border-dashed border-black pt-4">
-          <Link
-            href={`/portal/proposals/${proposalId}/reject`}
-            className="text-xs font-bold uppercase tracking-widest underline"
-          >
-            Decline this proposal →
-          </Link>
-        </div>
-      ) : null}
-
-      {/* ----- Conversation (separate from sign flow) ----- */}
+      {/* ----- 5. Messages ----- */}
       <MessagesPanel proposalId={proposalId} />
 
       {/* ----- Signature dialog ----- */}
@@ -388,30 +425,212 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
 }
 
 
-function StepHeader({
-  n,
-  title,
-  done,
-  rightSlot,
+function DocumentHeader({
+  number,
+  label,
+  signed,
+  signedAt,
+  downloadHref,
+  downloadLabel,
 }: {
-  n: number;
-  title: string;
-  done: boolean;
-  rightSlot?: React.ReactNode;
+  number: number;
+  label: string;
+  signed: boolean;
+  signedAt: string | null;
+  downloadHref?: string;
+  downloadLabel?: string;
 }) {
   return (
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
       <div className="flex items-center gap-3">
         <span
           className={`flex h-8 w-8 items-center justify-center border-2 border-black text-sm font-black ${
-            done ? "bg-black text-white" : "bg-white text-black"
+            signed ? "bg-black text-white" : "bg-white text-black"
           }`}
         >
-          {done ? <CheckCircle2 className="h-4 w-4" /> : n}
+          {signed ? <CheckCircle2 className="h-4 w-4" /> : number}
         </span>
-        <H2>{title}</H2>
+        <H2>{label}</H2>
       </div>
-      {rightSlot ?? null}
+      <div className="flex items-center gap-3">
+        {downloadHref ? (
+          <a href={downloadHref} target="_blank" rel="noreferrer">
+            <PortalButton type="button" variant="secondary">
+              <Download className="mr-2 h-4 w-4" />
+              {downloadLabel || "Download"}
+            </PortalButton>
+          </a>
+        ) : null}
+        {signed ? <SignedPill at={signedAt} /> : null}
+      </div>
+    </div>
+  );
+}
+
+
+function SpecCard({
+  number,
+  spec,
+  read,
+  progress,
+  onProgressChange,
+  onSign,
+}: {
+  number: number;
+  spec: SpecRecord;
+  read: boolean;
+  progress: number;
+  onProgressChange: (p: number) => void;
+  onSign: () => void;
+}) {
+  return (
+    <Card>
+      <DocumentHeader
+        number={number}
+        label={`Specification ${spec.code || ""}`.trim() || `Specification ${number - 1}`}
+        signed={spec.has_signature}
+        signedAt={spec.customer_signed_at}
+      />
+      {spec.formulation_name ? (
+        <p className="mb-3 text-[11px] uppercase tracking-widest text-neutral-600">
+          {spec.formulation_name}
+        </p>
+      ) : null}
+      <ScrollTrackingDiv
+        className="max-h-[700px] overflow-y-auto border-2 border-black bg-white p-6"
+        onProgressChange={onProgressChange}
+      >
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        <SpecSheetContent rendered={spec.render_context as any} />
+      </ScrollTrackingDiv>
+      <ReadProgressBar value={progress} />
+      {!spec.has_signature ? (
+        <div className="mt-6 border-t-2 border-dashed border-black pt-6">
+          <PortalButton type="button" disabled={!read} onClick={onSign}>
+            <PenLine className="mr-2 h-4 w-4" />
+            Sign this specification
+          </PortalButton>
+          {!read ? (
+            <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
+              Scroll to the bottom to enable signing.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </Card>
+  );
+}
+
+
+function ScrollTrackingIframe({
+  src,
+  title,
+  onProgressChange,
+}: {
+  src: string;
+  title: string;
+  onProgressChange: (p: number) => void;
+}) {
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  useEffect(() => {
+    // Polling pattern lifted from the kiosk view: ``load`` event
+    // listeners race against parent re-renders, while a 4Hz poll
+    // is cheap and never drops. See the original comment block in
+    // ``proposal-kiosk-view.tsx`` for the failure modes this guards
+    // against.
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const iframe = iframeRef.current;
+      if (!iframe) return;
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument;
+      if (!win || !doc) return;
+      if (doc.readyState !== "complete") return;
+      if (!doc.URL || doc.URL === "about:blank") return;
+      const root = doc.documentElement;
+      if (!root) return;
+      const scrollTop = win.scrollY;
+      const clientHeight = win.innerHeight;
+      const scrollHeight = root.scrollHeight;
+      if (scrollHeight <= 0 || clientHeight <= 0) return;
+      const scrollable = Math.max(0, scrollHeight - clientHeight);
+      const ratio = scrollable === 0 ? 1 : Math.min(1, scrollTop / scrollable);
+      onProgressChange(ratio);
+    };
+    const id = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [onProgressChange]);
+
+  return (
+    <div className="border-2 border-black">
+      <iframe
+        ref={iframeRef}
+        src={src}
+        title={title}
+        className="block h-[720px] w-full bg-white"
+      />
+    </div>
+  );
+}
+
+
+function ScrollTrackingDiv({
+  className,
+  children,
+  onProgressChange,
+}: {
+  className: string;
+  children: React.ReactNode;
+  onProgressChange: (p: number) => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const report = () => {
+      const scrollable = el.scrollHeight - el.clientHeight;
+      if (scrollable <= 0) {
+        // Content fits in the box without scrolling — treat as fully
+        // read. The kiosk does the same.
+        onProgressChange(1);
+        return;
+      }
+      onProgressChange(Math.min(1, el.scrollTop / scrollable));
+    };
+    el.addEventListener("scroll", report, { passive: true });
+    // Run once after layout to handle the "fits in viewport" case.
+    window.requestAnimationFrame(report);
+    return () => el.removeEventListener("scroll", report);
+  }, [onProgressChange]);
+
+  return (
+    <div ref={ref} className={className}>
+      {children}
+    </div>
+  );
+}
+
+
+function ReadProgressBar({ value }: { value: number }) {
+  const pct = Math.round(Math.min(1, Math.max(0, value)) * 100);
+  return (
+    <div className="mt-3">
+      <div className="mb-1 flex items-center justify-between text-[10px] font-bold uppercase tracking-widest">
+        <span>Read progress</span>
+        <span>{pct}%</span>
+      </div>
+      <div className="h-2 w-full border-2 border-black">
+        <div
+          className="h-full bg-black transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
     </div>
   );
 }
@@ -424,6 +643,7 @@ function ProgressStrip({
   signed: number;
   total: number;
 }) {
+  const pct = total === 0 ? 0 : Math.round((signed / total) * 100);
   return (
     <div className="border-2 border-black bg-white p-3">
       <div className="mb-2 flex items-center justify-between text-[11px] font-bold uppercase tracking-widest">
@@ -433,12 +653,7 @@ function ProgressStrip({
         </span>
       </div>
       <div className="flex h-2 w-full border-2 border-black">
-        <div
-          className="h-full bg-black transition-all"
-          style={{
-            width: `${total === 0 ? 0 : Math.round((signed / total) * 100)}%`,
-          }}
-        />
+        <div className="h-full bg-black transition-all" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -479,41 +694,25 @@ function SignedPill({ at }: { at: string | null }) {
 }
 
 
-function SpecBlock({
-  index,
-  spec,
-  onSign,
-}: {
-  index: number;
-  spec: SpecRecord;
-  onSign: () => void;
-}) {
+function DecisionBanner({ kind }: { kind: "accepted" | "rejected" }) {
+  const accepted = kind === "accepted";
   return (
-    <article className="border-2 border-black">
-      <header className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
-        <span>
-          {index}. {spec.code || `Specification ${index}`}
-          {spec.formulation_name ? ` · ${spec.formulation_name}` : null}
-        </span>
-        {spec.has_signature ? (
-          <SignedPill at={spec.customer_signed_at} />
-        ) : null}
-      </header>
-      {/* Reuse the staff app's SpecSheetContent so the customer sees
-          the same render the staff team built/reviewed — no second
-          template to drift. */}
-      <div className="max-h-[700px] overflow-y-auto bg-white p-6">
-        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <SpecSheetContent rendered={spec.render_context as any} />
-      </div>
-      {!spec.has_signature ? (
-        <div className="border-t-2 border-black bg-white px-4 py-3">
-          <PortalButton type="button" onClick={onSign}>
-            <PenLine className="mr-2 h-4 w-4" />
-            Sign this specification
-          </PortalButton>
-        </div>
-      ) : null}
-    </article>
+    <div
+      className={`border-2 border-black px-4 py-3 text-sm font-bold uppercase tracking-widest ${
+        accepted ? "bg-black text-white" : "bg-white text-black"
+      }`}
+    >
+      {accepted ? (
+        <>
+          <CheckCircle2 className="mr-2 inline h-4 w-4" /> Accepted — the Vita
+          team has been notified.
+        </>
+      ) : (
+        <>
+          <XCircle className="mr-2 inline h-4 w-4" /> Declined — the Vita team
+          has been notified.
+        </>
+      )}
+    </div>
   );
 }
