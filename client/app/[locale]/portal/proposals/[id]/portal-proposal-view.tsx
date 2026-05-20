@@ -282,7 +282,12 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
             setReadProgress((s) => ({ ...s, proposal: Math.max(s["proposal"] ?? 0, p) }))
           }
         />
-        <ReadProgressBar value={readProgress["proposal"] ?? 0} />
+        <ReadProgressBar
+          value={readProgress["proposal"] ?? 0}
+          onForceRead={() =>
+            setReadProgress((s) => ({ ...s, proposal: 1 }))
+          }
+        />
 
         {!proposal.has_signature ? (
           <div className="mt-6 flex flex-col gap-4 border-t-2 border-dashed border-black pt-6">
@@ -503,7 +508,10 @@ function SpecCard({
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
         <SpecSheetContent rendered={spec.render_context as any} />
       </ScrollTrackingDiv>
-      <ReadProgressBar value={progress} />
+      <ReadProgressBar
+        value={progress}
+        onForceRead={() => onProgressChange(1)}
+      />
       {!spec.has_signature ? (
         <div className="mt-6 border-t-2 border-dashed border-black pt-6">
           <PortalButton type="button" disabled={!read} onClick={onSign}>
@@ -534,31 +542,53 @@ function ScrollTrackingIframe({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
-    // Polling pattern lifted from the kiosk view: ``load`` event
-    // listeners race against parent re-renders, while a 4Hz poll
-    // is cheap and never drops. See the original comment block in
-    // ``proposal-kiosk-view.tsx`` for the failure modes this guards
-    // against.
+    // Polling pattern lifted from the kiosk view but loosened —
+    // the original ``readyState/URL`` guards were rejecting too
+    // many real polls (some browsers report ``URL: ""`` for
+    // same-origin iframes loaded via proxy, others report
+    // ``readyState`` as ``interactive`` even after first paint).
+    // Defensive ``Math.max`` across documentElement + body keeps
+    // the scroll math correct on both standards-mode and
+    // quirks-mode documents (which the WeasyPrint-friendly
+    // proposal template might produce depending on the doctype).
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
       const iframe = iframeRef.current;
       if (!iframe) return;
-      const win = iframe.contentWindow;
-      const doc = iframe.contentDocument;
-      if (!win || !doc) return;
-      if (doc.readyState !== "complete") return;
-      if (!doc.URL || doc.URL === "about:blank") return;
-      const root = doc.documentElement;
-      if (!root) return;
-      const scrollTop = win.scrollY;
-      const clientHeight = win.innerHeight;
-      const scrollHeight = root.scrollHeight;
-      if (scrollHeight <= 0 || clientHeight <= 0) return;
-      const scrollable = Math.max(0, scrollHeight - clientHeight);
-      const ratio = scrollable === 0 ? 1 : Math.min(1, scrollTop / scrollable);
-      onProgressChange(ratio);
+      try {
+        const doc = iframe.contentDocument;
+        const win = iframe.contentWindow;
+        if (!doc || !win) return;
+        const root = doc.documentElement;
+        const body = doc.body;
+        const scrollTop = Math.max(
+          win.scrollY || 0,
+          root?.scrollTop || 0,
+          body?.scrollTop || 0,
+        );
+        const clientHeight = win.innerHeight
+          || root?.clientHeight
+          || 0;
+        const scrollHeight = Math.max(
+          root?.scrollHeight || 0,
+          body?.scrollHeight || 0,
+        );
+        if (scrollHeight <= 0 || clientHeight <= 0) return;
+        const scrollable = Math.max(0, scrollHeight - clientHeight);
+        // ``< 8`` because some templates report 1-2px of phantom
+        // overflow from rounding — treat that as "fits, count as
+        // read" instead of leaving the bar stuck below 100%.
+        const ratio = scrollable < 8
+          ? 1
+          : Math.min(1, scrollTop / scrollable);
+        onProgressChange(ratio);
+      } catch {
+        // Cross-origin iframe (shouldn't happen via the Next
+        // proxy, but defensive) — ignore.
+      }
     };
+    tick();
     const id = window.setInterval(tick, 250);
     return () => {
       cancelled = true;
@@ -617,7 +647,19 @@ function ScrollTrackingDiv({
 }
 
 
-function ReadProgressBar({ value }: { value: number }) {
+function ReadProgressBar({
+  value,
+  onForceRead,
+}: {
+  value: number;
+  /** Escape hatch — clicking "Mark as read" sets the progress to
+   *  100% manually. Kept around because some iframe content
+   *  templates (legacy quirks-mode) report ``scrollHeight ===
+   *  clientHeight`` even when content overflows, leaving the
+   *  customer unable to advance. The button is small + secondary
+   *  so it doesn't tempt customers to skip the actual reading. */
+  onForceRead?: () => void;
+}) {
   const pct = Math.round(Math.min(1, Math.max(0, value)) * 100);
   return (
     <div className="mt-3">
@@ -631,6 +673,15 @@ function ReadProgressBar({ value }: { value: number }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      {pct < 98 && onForceRead ? (
+        <button
+          type="button"
+          onClick={onForceRead}
+          className="mt-2 text-[10px] font-bold uppercase tracking-widest underline opacity-60 hover:opacity-100"
+        >
+          Mark as read
+        </button>
+      ) : null}
     </div>
   );
 }
