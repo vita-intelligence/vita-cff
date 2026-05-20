@@ -57,6 +57,30 @@ import { SpecSheetContent } from "../../../specifications/[id]/specification-she
 const READ_THRESHOLD = 0.98;
 
 
+/**
+ * Compose a stable string from every state we want to cache-bust
+ * the proposal iframe against. Whenever any of these change
+ * (proposal signed, spec signed, acks flipped, status moves) the
+ * query param changes too, React swaps the iframe src, the browser
+ * fetches the fresh HTML, and the customer sees the updated render
+ * without a hard refresh. ``"v=|||"`` is fine for a never-signed
+ * proposal — the only requirement is monotonic uniqueness.
+ */
+function proposalIframeVersion(p: PortalProposalDto): string {
+  const parts = [
+    p.status,
+    p.has_signature ? "1" : "0",
+    p.customer_signed_at || "",
+    p.ack_spec_signing ? "1" : "0",
+    p.ack_lead_times ? "1" : "0",
+    p.ack_terms ? "1" : "0",
+    p.ack_rd_terms ? "1" : "0",
+    p.attached_specs.map((s) => s.customer_signed_at || "0").join(","),
+  ];
+  return encodeURIComponent(parts.join("|"));
+}
+
+
 interface SpecRecord {
   readonly id: string;
   readonly code: string;
@@ -280,7 +304,14 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
           downloadLabel="Download proposal PDF"
         />
         <ScrollTrackingIframe
-          src={`/api/portal/proposals/${proposalId}/pdf/`}
+          // ``?v=...`` busts the iframe cache whenever the proposal
+          // OR any attached spec gets a new signature — Django's
+          // proposal HTML render shows ticked acks + the embedded
+          // customer signature once those columns are populated, so
+          // the iframe needs to re-fetch to surface the freshly-signed
+          // state. Browser-level caching would otherwise leave the
+          // pre-signature HTML on screen until a hard refresh.
+          src={`/api/portal/proposals/${proposalId}/pdf/?v=${proposalIframeVersion(proposal)}`}
           title={`Proposal ${proposal.code}`}
           onAllReadChange={(done) =>
             setReadState((s) =>
