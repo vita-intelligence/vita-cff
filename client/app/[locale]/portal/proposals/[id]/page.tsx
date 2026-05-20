@@ -9,6 +9,7 @@ import {
   PortalShell,
   StatusPill,
 } from "@/components/portal/brutalist";
+import { MessagesPanel } from "@/components/portal/messages-panel";
 
 
 /**
@@ -80,7 +81,7 @@ export default async function PortalProposalPage({
           />
         </div>
       </Card>
-      <div className="flex flex-wrap gap-4">
+      <div className="mb-8 flex flex-wrap gap-4">
         <a href={`/api/portal/proposals/${id}/download/`} target="_blank">
           <PortalButton variant="secondary">Download PDF</PortalButton>
         </a>
@@ -100,6 +101,7 @@ export default async function PortalProposalPage({
           </>
         ) : null}
       </div>
+      <MessagesPanel proposalId={id} />
     </PortalShell>
   );
 }

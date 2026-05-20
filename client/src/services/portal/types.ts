@@ -34,3 +34,22 @@ export interface PortalProposalListItemDto {
 export interface PortalProposalListDto {
   readonly results: ReadonlyArray<PortalProposalListItemDto>;
 }
+
+
+export interface PortalMessageDto {
+  readonly id: string;
+  readonly body: string;
+  readonly created_at: string;
+  readonly is_deleted: boolean;
+  readonly author_kind: "staff" | "client";
+  readonly author_name: string;
+  readonly thread_target_type: "spec" | "proposal" | "other";
+  readonly thread_target_id: string;
+}
+
+
+export interface PortalMessagesDto {
+  readonly results: ReadonlyArray<PortalMessageDto>;
+  readonly read_state: Record<string, string>;
+  readonly spec_ids: ReadonlyArray<string>;
+}

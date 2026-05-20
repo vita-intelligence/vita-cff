@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from django.urls import path
 
+from .messaging_views import (
+    ProposalMessagesView,
+    SpecMessagePostView,
+    SpecMessageReadView,
+)
 from .views import (
     ActivationPreviewView,
     ActivationView,
@@ -91,5 +96,26 @@ urlpatterns = [
         "proposals/<uuid:proposal_id>/finalize/",
         ProposalFinalizeView.as_view(),
         name="proposal-finalize",
+    ),
+
+    # Messaging — per-spec shared comments. Project-level threads
+    # are read-only from the portal for now (they surface only
+    # when staff toggles the comment to ``shared`` from the staff
+    # comments bubble); the GET on the proposal endpoint includes
+    # them when present.
+    path(
+        "proposals/<uuid:proposal_id>/messages/",
+        ProposalMessagesView.as_view(),
+        name="proposal-messages",
+    ),
+    path(
+        "specs/<uuid:sheet_id>/messages/",
+        SpecMessagePostView.as_view(),
+        name="spec-message-post",
+    ),
+    path(
+        "specs/<uuid:sheet_id>/messages/read/",
+        SpecMessageReadView.as_view(),
+        name="spec-message-read",
     ),
 ]

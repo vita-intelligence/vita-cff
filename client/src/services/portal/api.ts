@@ -11,6 +11,8 @@ import { apiClient } from "@/lib/api";
 import type {
   ActivationPreviewDto,
   PortalMeDto,
+  PortalMessageDto,
+  PortalMessagesDto,
   PortalProposalListDto,
 } from "./types";
 
@@ -132,4 +134,31 @@ export async function signSpec(
     { signature_image: signatureImage },
   );
   return data;
+}
+
+
+export async function fetchProposalMessages(
+  proposalId: string,
+): Promise<PortalMessagesDto> {
+  const { data } = await apiClient.get<PortalMessagesDto>(
+    `/api/portal/proposals/${proposalId}/messages/`,
+  );
+  return data;
+}
+
+
+export async function postSpecMessage(
+  sheetId: string,
+  body: string,
+): Promise<PortalMessageDto> {
+  const { data } = await apiClient.post<PortalMessageDto>(
+    `/api/portal/specs/${sheetId}/messages/`,
+    { body },
+  );
+  return data;
+}
+
+
+export async function markSpecMessagesRead(sheetId: string): Promise<void> {
+  await apiClient.post(`/api/portal/specs/${sheetId}/messages/read/`, {});
 }
