@@ -445,24 +445,40 @@ export function PortalTextarea({
 // ---------------------------------------------------------------------------
 
 
-const STATUS_PALETTE: Record<string, { bg: string; text: string }> = {
-  draft: { bg: "bg-white", text: "text-black" },
-  in_review: { bg: "bg-yellow-200", text: "text-black" },
-  approved: { bg: "bg-blue-100", text: "text-black" },
-  sent: { bg: "bg-blue-100", text: "text-black" },
-  signed: { bg: "bg-black", text: "text-white" },
-  accepted: { bg: "bg-black", text: "text-white" },
-  rejected: { bg: "bg-red-700", text: "text-white" },
+/** Status palette + customer-facing label. Backend status codes
+ *  are written from the Vita-team perspective ("we sent it") —
+ *  that frame is wrong for the customer ("I received it, I need
+ *  to do something"). We relabel here so the staff app isn't
+ *  affected. */
+const STATUS_PALETTE: Record<
+  string,
+  { bg: string; text: string; label: string }
+> = {
+  draft:     { bg: "bg-white",      text: "text-black", label: "Draft" },
+  in_review: { bg: "bg-yellow-200", text: "text-black", label: "In review" },
+  approved:  { bg: "bg-blue-100",   text: "text-black", label: "Approved by Vita" },
+  sent:      { bg: "bg-blue-100",   text: "text-black", label: "Action required" },
+  signed:    { bg: "bg-black",      text: "text-white", label: "Signed" },
+  accepted:  { bg: "bg-black",      text: "text-white", label: "Accepted" },
+  rejected:  { bg: "bg-red-700",    text: "text-white", label: "Declined" },
 };
 
 
 export function StatusPill({ status }: { status: string }) {
-  const palette = STATUS_PALETTE[status] || { bg: "bg-white", text: "text-black" };
+  // Sized to match a small ``PortalButton`` / the ``SignedChip``
+  // so a header row of [download · status] reads as a balanced
+  // pair. Same padding + text size + 3/3 shadow; no hover motion
+  // because the pill isn't interactive.
+  const palette = STATUS_PALETTE[status] || {
+    bg: "bg-white",
+    text: "text-black",
+    label: status.replace(/_/g, " "),
+  };
   return (
     <span
-      className={`inline-flex items-center border-2 border-black px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest ${palette.bg} ${palette.text}`}
+      className={`inline-flex items-center border-2 border-black px-3 py-1.5 text-xs font-bold uppercase tracking-widest shadow-[3px_3px_0_#000] ${palette.bg} ${palette.text}`}
     >
-      {status.replace(/_/g, " ")}
+      {palette.label}
     </span>
   );
 }
