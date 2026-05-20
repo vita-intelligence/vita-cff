@@ -13,6 +13,7 @@ import {
   PortalInput,
 } from "@/components/portal/brutalist";
 import { login } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
 
 
 export function PortalLoginForm() {
@@ -30,12 +31,7 @@ export function PortalLoginForm() {
       await login(email, password);
       router.push("/portal");
     } catch (err: unknown) {
-      const e = err as { response?: { status?: number } };
-      if (e.response?.status === 401) {
-        setError("Email or password is incorrect.");
-      } else {
-        setError("Something went wrong. Try again.");
-      }
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

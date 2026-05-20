@@ -1534,6 +1534,16 @@ def _render_and_send_proposal_email(
         else ""
     )
 
+    # Generate a fresh 6-digit activation code. Regenerated on
+    # every send so a resent email invalidates the previous code.
+    # Stored on the proposal row so the portal can verify what
+    # the customer types as the second factor of activation.
+    # ``secrets.randbelow`` gives cryptographically uniform values;
+    # zero-padded so the customer always reads exactly six digits.
+    import secrets as _secrets
+    activation_code = f"{_secrets.randbelow(1_000_000):06d}"
+    proposal.activation_code = activation_code
+
     # Cover-letter signoff name. Falls back through sales person →
     # primary project's owner → empty so the email never carries a
     # placeholder ``None`` token where a real name should be.
@@ -1562,6 +1572,7 @@ def _render_and_send_proposal_email(
             "proposal": proposal,
             "body_text": body_text or "",
             "kiosk_url": kiosk_url,
+            "activation_code": activation_code,
             "sales_person_name": sales_person_name,
             "sales_person_email": sales_person_email,
         },
@@ -1582,6 +1593,11 @@ def _render_and_send_proposal_email(
     if kiosk_url:
         plain_lines.append("Open the proposal here:")
         plain_lines.append(kiosk_url)
+        plain_lines.append("")
+        plain_lines.append(
+            "Activation code (enter it after setting your password):"
+        )
+        plain_lines.append(activation_code)
         plain_lines.append("")
     if sales_person_name:
         plain_lines.append("Kind regards,")
@@ -1878,13 +1894,18 @@ def send_proposal_to_client(
     )
     recipient_clean = (recipient or "").strip()
 
-    # Persist the recipient the kiosk email actually reached. The
-    # portal activation page reads this so a one-off override
-    # ("send to jane.q@acme.com this time") still points the
-    # account-setup flow at the right inbox — not just
-    # ``Customer.email``.
+    # Persist the recipient the kiosk email actually reached + the
+    # activation code we just generated. Both are read by the
+    # portal activation flow. ``activation_code`` was assigned to
+    # the in-memory ``proposal`` instance earlier so this single
+    # save commits the value that was embedded in the outgoing
+    # email body.
     proposal.kiosk_recipient_email = recipient_clean
-    proposal.save(update_fields=["kiosk_recipient_email", "updated_at"])
+    proposal.save(
+        update_fields=[
+            "kiosk_recipient_email", "activation_code", "updated_at",
+        ],
+    )
 
     # Email succeeded — record the dispatch *before* the transition so
     # an operator inspecting the audit log can see the message went out

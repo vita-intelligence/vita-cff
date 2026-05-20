@@ -17,6 +17,7 @@ import {
   type SignaturePadHandle,
 } from "@/components/ui/signature-pad";
 import { signProposal } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
 
 
 export function ProposalSignForm({
@@ -63,19 +64,7 @@ export function ProposalSignForm({
       });
       router.push(`/portal/proposals/${proposalId}`);
     } catch (err: unknown) {
-      const e = err as {
-        response?: { data?: { code?: string; detail?: string[] } };
-      };
-      const code = e.response?.data?.code;
-      if (code === "proposal_acknowledgements_required") {
-        setError("Every acknowledgement must be ticked.");
-      } else if (code === "signature_required") {
-        setError("Signature image was rejected. Try again.");
-      } else if (code === "invalid_proposal_transition") {
-        setError("This proposal can no longer be signed.");
-      } else {
-        setError("Something went wrong. Try again.");
-      }
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

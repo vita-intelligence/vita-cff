@@ -76,6 +76,10 @@ def proposal_for(customer_with_email):
         organization=customer_with_email.organization,
         customer=customer_with_email,
         public_token=uuid.uuid4(),
+        # Fixed code so tests don't need to peek at the row to
+        # know what to type. The real send path generates a random
+        # one; tests deliberately pin a value.
+        activation_code="123456",
     )
     return proposal
 
@@ -104,7 +108,7 @@ class TestActivation:
     ):
         client = APIClient()
         url = f"/api/portal/activate/{proposal_for.public_token}/"
-        r = client.post(url, {"password": "supersecret-12345"})
+        r = client.post(url, {"password": "supersecret-12345", "code": "123456"})
         assert r.status_code == 200, r.content
         # Cookie issued
         assert "vita_portal_access" in r.cookies
@@ -118,27 +122,28 @@ class TestActivation:
             organization=customer_no_email.organization,
             customer=customer_no_email,
             public_token=uuid.uuid4(),
+            activation_code="123456",
         )
         client = APIClient()
         url = f"/api/portal/activate/{proposal.public_token}/"
-        r = client.post(url, {"password": "supersecret-12345"})
+        r = client.post(url, {"password": "supersecret-12345", "code": "123456"})
         assert r.status_code == 409
         assert r.json()["code"] == "customer_email_missing"
 
     def test_already_activated_returns_409(self, proposal_for):
         client = APIClient()
         url = f"/api/portal/activate/{proposal_for.public_token}/"
-        r = client.post(url, {"password": "supersecret-12345"})
+        r = client.post(url, {"password": "supersecret-12345", "code": "123456"})
         assert r.status_code == 200
         # Second attempt with same token
-        r2 = client.post(url, {"password": "differentpass-12345"})
+        r2 = client.post(url, {"password": "differentpass-12345", "code": "123456"})
         assert r2.status_code == 409
         assert r2.json()["code"] == "account_already_activated"
 
     def test_invalid_token_returns_404(self):
         client = APIClient()
         url = f"/api/portal/activate/{uuid.uuid4()}/"
-        r = client.post(url, {"password": "supersecret-12345"})
+        r = client.post(url, {"password": "supersecret-12345", "code": "123456"})
         assert r.status_code == 404
 
 
@@ -209,7 +214,7 @@ class TestLogin:
     def test_me_returns_payload_after_activation(self, proposal_for):
         client = APIClient()
         url = f"/api/portal/activate/{proposal_for.public_token}/"
-        client.post(url, {"password": "supersecret-12345"})
+        client.post(url, {"password": "supersecret-12345", "code": "123456"})
         # The cookie from activation should authenticate /me/.
         r = client.get("/api/portal/auth/me/")
         assert r.status_code == 200, r.content
@@ -229,7 +234,7 @@ class TestProposalList:
         client = APIClient()
         # Activate as Customer A's client.
         url = f"/api/portal/activate/{proposal_for.public_token}/"
-        client.post(url, {"password": "supersecret-12345"})
+        client.post(url, {"password": "supersecret-12345", "code": "123456"})
 
         # Build Customer B with a proposal — client A should NOT see it.
         actor = UserFactory()

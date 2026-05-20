@@ -11,6 +11,7 @@ import {
   PortalInput,
 } from "@/components/portal/brutalist";
 import { requestPasswordReset } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
 
 
 export function ForgotForm() {
@@ -26,8 +27,8 @@ export function ForgotForm() {
     try {
       await requestPasswordReset(email);
       setSent(true);
-    } catch {
-      setError("Something went wrong. Try again.");
+    } catch (err: unknown) {
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

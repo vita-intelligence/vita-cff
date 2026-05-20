@@ -93,11 +93,16 @@ def _make_proposal_with_spec(*, organization, customer):
 
 def _activate_client(api_client: APIClient, proposal):
     """Walk the activation endpoint so the test session carries the
-    portal cookie."""
+    portal cookie. Sets a fixed activation code on the proposal so
+    the test doesn't need to coordinate with the random generator
+    in ``send_proposal_to_client`` — every call hands the same
+    code to the activation POST."""
 
+    proposal.activation_code = "123456"
+    proposal.save(update_fields=["activation_code"])
     api_client.post(
         f"/api/portal/activate/{proposal.public_token}/",
-        {"password": "supersecret-12345"},
+        {"password": "supersecret-12345", "code": "123456"},
         format="json",
     )
 

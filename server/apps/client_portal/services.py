@@ -76,6 +76,16 @@ class AccountAlreadyActivated(ActivationError):
     code = "account_already_activated"
 
 
+class InvalidActivationCode(ActivationError):
+    """The 6-digit code the client typed doesn't match what was
+    issued in the kiosk email. A wrong code never reveals which of
+    (token, code) was incorrect — the API surfaces the same error
+    code so a guessing attacker can't strip one variable from the
+    other."""
+
+    code = "invalid_activation_code"
+
+
 class InvalidCredentials(Exception):
     code = "invalid_credentials"
 
@@ -139,6 +149,7 @@ def activate_via_token(
     *,
     token: uuid.UUID,
     password: str,
+    code: str,
 ) -> ActivationResult:
     """Activate the portal account for the customer this token
     points at, setting their password to ``password``.
@@ -183,13 +194,34 @@ def activate_via_token(
             "ask the team to add one before resending the kiosk link.",
         )
 
+    # Returners check FIRST so an already-activated account always
+    # routes to the sign-in flow regardless of what code (right or
+    # wrong) the user typed. Without this order, a returning customer
+    # who pastes a stale code would see "code is wrong" — but the
+    # real action they need is to sign in.
     account = ClientAccount.objects.filter(email__iexact=email).first()
-
     if account is not None and account.has_usable_password():
-        # Already activated. The portal login page is the right
-        # next step; the activation page will redirect on this.
         raise AccountAlreadyActivated(
             "This email already has a portal account. Sign in instead.",
+        )
+
+    # Verify the 6-digit code. Constant-time comparison so a guess-
+    # attack can't time-side-channel which digit was wrong. Strip
+    # the client-supplied value so a paste with whitespace still
+    # matches what we stored.
+    import hmac
+    expected = (proposal.activation_code or "").strip()
+    supplied = (code or "").strip()
+    if not expected or len(expected) != 6:
+        # Proposal was never sent (no code generated) — guard so the
+        # activation page can't be raced against a proposal that
+        # hasn't yet hit ``send_proposal_to_client``.
+        raise InvalidActivationCode(
+            "This proposal does not have an active confirmation code."
+        )
+    if not hmac.compare_digest(expected, supplied):
+        raise InvalidActivationCode(
+            "Confirmation code is incorrect."
         )
 
     # Validate first, before we mutate anything — Django's validator
@@ -214,6 +246,13 @@ def activate_via_token(
     account.save(
         update_fields=["password", "is_active", "activated_at", "customer", "updated_at"],
     )
+
+    # One-shot semantics: clear the code after a successful
+    # activation. Re-issuing the kiosk email will mint a new code,
+    # and an attacker with the old DB snapshot can't replay the
+    # old code against a different account on the same proposal.
+    proposal.activation_code = ""
+    proposal.save(update_fields=["activation_code", "updated_at"])
 
     return ActivationResult(
         account=account,

@@ -106,6 +106,18 @@
                 <a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
               </td>
             </tr>
+            {% if activation_code %}
+            <tr>
+              <td style="padding:24px 32px 8px 32px;font-size:13px;color:#5a574f;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
+                After you choose a password, enter this 6-digit code to finish:
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 28px 32px;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
+                <div style="display:inline-block;border:2px solid #1a1a1a;background:#ffffff;padding:14px 28px;font-size:26px;letter-spacing:0.5em;font-weight:700;color:#1a1a1a;font-family:'Courier New',monospace;">{{ activation_code }}</div>
+              </td>
+            </tr>
+            {% endif %}
             {% endif %}
 
             {% if sales_person_name %}

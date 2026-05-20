@@ -448,6 +448,30 @@ class Proposal(models.Model):
         ),
     )
 
+    #: Six-digit confirmation code that the customer must type in
+    #: as the last step of portal activation, in addition to clicking
+    #: the kiosk-email link. The link alone proves access to one
+    #: snapshot of the inbox; requiring a second factor from the
+    #: SAME email body raises the bar against URL-only leaks
+    #: (forwarded URLs, screenshots that crop the body, browser
+    #: history on a shared computer). Regenerated on every
+    #: ``send_proposal_to_client`` so a resent kiosk email
+    #: invalidates the previous code.
+    activation_code = models.CharField(
+        _("activation code"),
+        max_length=6,
+        blank=True,
+        default="",
+        help_text=_(
+            "Zero-padded 6-digit code printed in the kiosk email "
+            "body. The portal activation form asks for it after "
+            "the password step. Cleared once activation succeeds "
+            "so an attacker who later steals the DB row can't "
+            "complete a fresh activation against an already-set "
+            "account."
+        ),
+    )
+
     # PDF render cache — rendering via docx2pdf / LibreOffice drives
     # an external application and takes several seconds per call.
     # Storing the rendered bytes + the digest the generator was run

@@ -12,6 +12,7 @@ import {
   PortalInput,
 } from "@/components/portal/brutalist";
 import { confirmPasswordReset } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
 
 
 export function ResetForm({ token }: { token: string }) {
@@ -37,19 +38,7 @@ export function ResetForm({ token }: { token: string }) {
       await confirmPasswordReset(token, password);
       router.push("/portal");
     } catch (err: unknown) {
-      const e = err as {
-        response?: { data?: { code?: string; messages?: string[] } };
-      };
-      const code = e.response?.data?.code;
-      if (code === "weak_password") {
-        setError(
-          (e.response?.data?.messages || ["Password is too weak."]).join(" "),
-        );
-      } else if (code === "invalid_or_expired_token") {
-        setError("This reset link is no longer valid. Request a new one.");
-      } else {
-        setError("Something went wrong. Try again.");
-      }
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

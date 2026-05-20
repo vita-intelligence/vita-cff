@@ -12,6 +12,7 @@ import {
   PortalTextarea,
 } from "@/components/portal/brutalist";
 import { rejectProposal } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
 
 
 export function ProposalRejectForm({ proposalId }: { proposalId: string }) {
@@ -28,12 +29,7 @@ export function ProposalRejectForm({ proposalId }: { proposalId: string }) {
       await rejectProposal(proposalId, reason);
       router.push(`/portal/proposals/${proposalId}`);
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { code?: string } } };
-      if (e.response?.data?.code === "invalid_proposal_transition") {
-        setError("This proposal can no longer be rejected.");
-      } else {
-        setError("Something went wrong. Try again.");
-      }
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }

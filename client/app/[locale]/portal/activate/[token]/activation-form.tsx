@@ -12,6 +12,10 @@ import {
   PortalInput,
 } from "@/components/portal/brutalist";
 import { activate } from "@/services/portal/api";
+import { portalErrorMessage } from "@/services/portal/errors";
+
+
+type Step = "password" | "code";
 
 
 export function ActivationForm({
@@ -28,8 +32,10 @@ export function ActivationForm({
   proposalCode: string;
 }) {
   const router = useRouter();
+  const [step, setStep] = useState<Step>("password");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [code, setCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -49,7 +55,7 @@ export function ActivationForm({
     );
   }
 
-  async function onSubmit(e: React.FormEvent) {
+  function onPasswordSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     if (password.length < 8) {
@@ -60,25 +66,80 @@ export function ActivationForm({
       setError("Passwords do not match.");
       return;
     }
+    // Password validated locally; defer the actual API call until
+    // the customer also types the 6-digit code on the next screen.
+    // Locking in the password client-side keeps the second step
+    // honest about "you're almost done" — only the code remains.
+    setStep("code");
+  }
+
+  async function onCodeSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    if (!/^\d{6}$/.test(code)) {
+      setError("The code is 6 digits.");
+      return;
+    }
     setSubmitting(true);
     try {
-      await activate(token, password);
+      await activate(token, password, code);
       router.push("/portal");
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { code?: string; messages?: string[] } } };
-      const code = e.response?.data?.code;
-      if (code === "weak_password") {
-        setError(
-          (e.response?.data?.messages || ["Password is too weak."]).join(" "),
-        );
-      } else if (code === "account_already_activated") {
+      const e = err as { response?: { data?: { code?: string } } };
+      if (e?.response?.data?.code === "account_already_activated") {
         router.push("/portal/login");
-      } else {
-        setError("Something went wrong. Try again.");
+        return;
       }
+      setError(portalErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (step === "code") {
+    return (
+      <Card as="section" className="max-w-xl">
+        <H1>Confirm your email</H1>
+        <P>
+          We sent a <strong>6-digit code</strong> to{" "}
+          <strong>{emailMasked}</strong>. Paste it here to finish setting
+          up your account.
+        </P>
+        <ErrorBanner>{error}</ErrorBanner>
+        <form onSubmit={onCodeSubmit} className="flex flex-col gap-4">
+          <PortalInput
+            name="code"
+            type="text"
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            label="6-digit code"
+            value={code}
+            onChange={(e) =>
+              setCode(e.target.value.replace(/\D/g, "").slice(0, 6))
+            }
+            pattern="\d{6}"
+            required
+            className="font-mono text-2xl tracking-[0.5em]"
+            placeholder="000000"
+          />
+          <div className="flex gap-3">
+            <PortalButton type="submit" disabled={submitting}>
+              {submitting ? "Confirming…" : "Confirm & enter portal"}
+            </PortalButton>
+            <PortalButton
+              type="button"
+              variant="secondary"
+              onClick={() => {
+                setError(null);
+                setStep("password");
+              }}
+            >
+              Back
+            </PortalButton>
+          </div>
+        </form>
+      </Card>
+    );
   }
 
   return (
@@ -90,10 +151,11 @@ export function ActivationForm({
         to set up your account. Future updates will use the same login.
       </P>
       <P>
-        We will send a confirmation to <strong>{emailMasked}</strong>.
+        After this step we will confirm the 6-digit code we sent to{" "}
+        <strong>{emailMasked}</strong>.
       </P>
       <ErrorBanner>{error}</ErrorBanner>
-      <form onSubmit={onSubmit} className="flex flex-col gap-4">
+      <form onSubmit={onPasswordSubmit} className="flex flex-col gap-4">
         <PortalInput
           name="password"
           type="password"
@@ -114,9 +176,7 @@ export function ActivationForm({
           required
           minLength={8}
         />
-        <PortalButton type="submit" disabled={submitting}>
-          {submitting ? "Setting up…" : "Set up account"}
-        </PortalButton>
+        <PortalButton type="submit">Next: enter code →</PortalButton>
       </form>
     </Card>
   );

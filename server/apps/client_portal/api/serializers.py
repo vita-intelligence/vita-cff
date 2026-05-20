@@ -25,10 +25,16 @@ class ActivationRequestSerializer(serializers.Serializer):
     Email is NOT a field — we read it off the customer the token
     points at. Asking the client to retype it would let them
     activate a different account than the one they're authorised
-    for.
+    for. ``code`` is the 6-digit confirmation printed in the
+    kiosk email body; we trim whitespace + accept any 6 digits,
+    leading zeros included.
     """
 
     password = serializers.CharField(write_only=True, min_length=8)
+    code = serializers.RegexField(
+        regex=r"^\d{6}$",
+        help_text="Six-digit confirmation code from the kiosk email.",
+    )
 
 
 class LoginRequestSerializer(serializers.Serializer):

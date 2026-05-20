@@ -48,6 +48,7 @@ from apps.client_portal.services import (
     AccountAlreadyActivated,
     ActivationError,
     CustomerEmailMissing,
+    InvalidActivationCode,
     InvalidActivationToken,
     InvalidCredentials,
     activate_via_token,
@@ -145,11 +146,13 @@ class ActivationView(PortalPublicAPIView):
         serializer = ActivationRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         password = serializer.validated_data["password"]
+        code = serializer.validated_data["code"]
 
         try:
             result = activate_via_token(
                 token=_parse_token(token),
                 password=password,
+                code=code,
             )
         except CustomerEmailMissing:
             return _err("customer_email_missing", status.HTTP_409_CONFLICT)
@@ -157,6 +160,11 @@ class ActivationView(PortalPublicAPIView):
             return _err(
                 "account_already_activated",
                 status.HTTP_409_CONFLICT,
+            )
+        except InvalidActivationCode:
+            return _err(
+                "invalid_activation_code",
+                status.HTTP_400_BAD_REQUEST,
             )
         except InvalidActivationToken:
             return _err("invalid_activation_token", status.HTTP_404_NOT_FOUND)

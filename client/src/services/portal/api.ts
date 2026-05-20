@@ -25,10 +25,14 @@ export async function previewActivation(token: string): Promise<ActivationPrevie
 }
 
 
-export async function activate(token: string, password: string): Promise<PortalMeDto> {
+export async function activate(
+  token: string,
+  password: string,
+  code: string,
+): Promise<PortalMeDto> {
   const { data } = await apiClient.post<PortalMeDto>(
     `/api/portal/activate/${token}/`,
-    { password },
+    { password, code },
   );
   return data;
 }
