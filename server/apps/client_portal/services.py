@@ -112,6 +112,28 @@ def _resolve_proposal_by_token(token: uuid.UUID):
     )
 
 
+def _resolve_kiosk_email(proposal) -> str:
+    """Decide which email a ``public_token`` should activate against.
+
+    The compose modal that sends the kiosk email lets staff type any
+    recipient — not necessarily ``Customer.email``. We snapshot the
+    used address on ``Proposal.kiosk_recipient_email`` at send time
+    so the portal activates the EXACT inbox the kiosk email reached.
+    Falls back to ``Customer.email`` when no send has happened yet
+    (e.g. an operator clicks Test Activate in dev before any real
+    send) so the helper never returns empty for a proposal that
+    has at least one valid email on either side.
+    """
+
+    sent_to = (getattr(proposal, "kiosk_recipient_email", "") or "").strip().lower()
+    if sent_to:
+        return sent_to
+    customer = proposal.customer
+    if customer is None:
+        return ""
+    return (customer.email or "").strip().lower()
+
+
 @transaction.atomic
 def activate_via_token(
     *,
@@ -143,7 +165,18 @@ def activate_via_token(
         )
 
     customer = proposal.customer
-    email = (customer.email or "").strip().lower()
+    if customer is None:
+        # ``Proposal.customer`` is nullable on the schema — a draft
+        # without a CRM record can exist. The kiosk email flow only
+        # runs against proposals with a customer attached, but we
+        # guard defensively here so a stray activation link on an
+        # unbound proposal returns a meaningful error instead of a
+        # 500.
+        raise CustomerEmailMissing(
+            "This proposal has no customer attached; ask the team to "
+            "link a customer record before resending the kiosk link.",
+        )
+    email = _resolve_kiosk_email(proposal)
     if not email:
         raise CustomerEmailMissing(
             "The customer attached to this proposal has no email on file; "
@@ -210,7 +243,11 @@ def preview_activation(*, token: uuid.UUID) -> dict[str, Any]:
         )
 
     customer = proposal.customer
-    email = (customer.email or "").strip().lower()
+    if customer is None:
+        raise CustomerEmailMissing(
+            "This proposal has no customer attached.",
+        )
+    email = _resolve_kiosk_email(proposal)
     if not email:
         raise CustomerEmailMissing(
             "The customer attached to this proposal has no email on file.",

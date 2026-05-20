@@ -8,6 +8,7 @@ import {
   PortalShell,
   StatusPill,
 } from "@/components/portal/brutalist";
+import { env } from "@/config/env";
 
 
 interface ProposalListResponse {
@@ -43,7 +44,7 @@ export default async function PortalDashboard({
     redirect("/portal/login");
   }
 
-  const base = process.env.NEXT_PUBLIC_APP_BASE_URL || "";
+  const base = env.NEXT_PUBLIC_API_URL;
   const res = await fetch(`${base}/api/portal/proposals/`, {
     cache: "no-store",
     headers: { Cookie: `vita_portal_access=${portalCookie.value}` },

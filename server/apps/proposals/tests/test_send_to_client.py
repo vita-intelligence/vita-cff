@@ -252,7 +252,11 @@ class TestSendProposalToClient:
         )
         plain = mailoutbox[0].body
         assert "Hi Alex" in plain  # typed body preserved
-        assert f"/p/proposal/{proposal.public_token}" in plain
+        # Kiosk URL points at the portal activation page now —
+        # see ``send_proposal_to_client`` where the URL is built
+        # against ``/portal/activate/<token>`` so first-time
+        # customers land on the password setup flow.
+        assert f"/portal/activate/{proposal.public_token}" in plain
         assert proposal.code in plain
 
     def test_default_subject_used_when_blank(

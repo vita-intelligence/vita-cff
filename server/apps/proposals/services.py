@@ -1878,6 +1878,14 @@ def send_proposal_to_client(
     )
     recipient_clean = (recipient or "").strip()
 
+    # Persist the recipient the kiosk email actually reached. The
+    # portal activation page reads this so a one-off override
+    # ("send to jane.q@acme.com this time") still points the
+    # account-setup flow at the right inbox — not just
+    # ``Customer.email``.
+    proposal.kiosk_recipient_email = recipient_clean
+    proposal.save(update_fields=["kiosk_recipient_email", "updated_at"])
+
     # Email succeeded — record the dispatch *before* the transition so
     # an operator inspecting the audit log can see the message went out
     # even if a later assertion in ``transition_status`` raises and

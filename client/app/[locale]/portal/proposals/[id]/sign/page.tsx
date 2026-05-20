@@ -2,6 +2,7 @@ import { cookies } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 
 import { PortalShell } from "@/components/portal/brutalist";
+import { env } from "@/config/env";
 
 import { ProposalSignForm } from "./sign-form";
 
@@ -18,7 +19,7 @@ export default async function PortalProposalSignPage({
     redirect(`/portal/login`);
   }
 
-  const base = process.env.NEXT_PUBLIC_APP_BASE_URL || "";
+  const base = env.NEXT_PUBLIC_API_URL;
   const res = await fetch(`${base}/api/portal/proposals/${id}/`, {
     cache: "no-store",
     headers: { Cookie: `vita_portal_access=${portalCookie.value}` },

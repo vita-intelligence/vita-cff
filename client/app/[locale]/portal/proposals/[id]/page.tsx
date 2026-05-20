@@ -10,6 +10,7 @@ import {
   StatusPill,
 } from "@/components/portal/brutalist";
 import { MessagesPanel } from "@/components/portal/messages-panel";
+import { env } from "@/config/env";
 
 
 /**
@@ -38,7 +39,7 @@ export default async function PortalProposalPage({
     redirect(`/portal/login`);
   }
 
-  const base = process.env.NEXT_PUBLIC_APP_BASE_URL || "";
+  const base = env.NEXT_PUBLIC_API_URL;
   const headers = { Cookie: `vita_portal_access=${portalCookie.value}` };
   const res = await fetch(`${base}/api/portal/proposals/${id}/`, {
     cache: "no-store",

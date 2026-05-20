@@ -427,6 +427,27 @@ class Proposal(models.Model):
         ),
     )
 
+    #: The address the most recent kiosk email actually reached.
+    #: ``send_proposal_to_client`` records this on every send so the
+    #: customer portal can activate the right account — staff
+    #: sometimes type a one-off override into the compose modal (a
+    #: different person at the customer is reviewing this proposal),
+    #: and the ``Customer.email`` on the CRM record would point the
+    #: portal at the wrong inbox in that case. NULL until the first
+    #: send.
+    kiosk_recipient_email = models.EmailField(
+        _("kiosk recipient email"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Snapshot of the recipient address used the last time "
+            "the proposal was sent to the client. Drives the "
+            "portal-activation lookup so a typed override on the "
+            "compose modal — not just ``Customer.email`` — pins "
+            "the right portal account."
+        ),
+    )
+
     # PDF render cache — rendering via docx2pdf / LibreOffice drives
     # an external application and takes several seconds per call.
     # Storing the rendered bytes + the digest the generator was run
