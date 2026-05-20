@@ -63,6 +63,11 @@ class PortalMessageSerializer(serializers.Serializer):
     portal. ``author_avatar`` is the same opaque base64 data URL
     both sides of the chat use to render the bubble's profile
     picture; empty string means "render initials".
+
+    ``parent`` carries the minimal preview the portal needs to
+    render a quoted-reply block — the parent's id (for the "click
+    to scroll" jump), a short body preview, and the author label.
+    ``null`` when the message is a root, not a reply.
     """
 
     id = serializers.UUIDField()
@@ -74,10 +79,16 @@ class PortalMessageSerializer(serializers.Serializer):
     author_avatar = serializers.CharField(allow_blank=True)
     thread_target_type = serializers.CharField()  # "proposal" | "spec"
     thread_target_id = serializers.UUIDField()
+    parent = serializers.DictField(allow_null=True, required=False)
 
 
 class PostMessageSerializer(serializers.Serializer):
     body = serializers.CharField(min_length=1, max_length=20_000)
+    # Reply target. Optional — root messages omit it. The view
+    # validates the parent belongs to the same spec thread so a
+    # crafted ``parent_id`` cannot reply onto a different
+    # customer's conversation.
+    parent_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +151,30 @@ def _author_payload(comment: Comment) -> dict[str, str]:
     }
 
 
+def _parent_payload(comment: Comment) -> dict[str, Any] | None:
+    """Compose the short preview block surfaced above a quoted-reply
+    bubble. Returns ``None`` for root messages so the wire shape
+    stays compact.
+
+    Body preview is truncated to ~120 chars — enough to recognise
+    the quoted message, short enough not to balloon the payload
+    when 50 messages all reply to one long thread root.
+    """
+
+    parent = comment.parent
+    if parent is None:
+        return None
+    author = _author_payload(parent)
+    body = "" if parent.is_deleted else (parent.body or "")
+    return {
+        "id": str(parent.id),
+        "body_preview": (body[:117] + "…") if len(body) > 120 else body,
+        "author_name": author["name"],
+        "author_kind": author["kind"],
+        "is_deleted": parent.is_deleted,
+    }
+
+
 def _serialise(comment: Comment) -> dict[str, Any]:
     kind, target_id = _target_label(comment)
     author = _author_payload(comment)
@@ -153,6 +188,7 @@ def _serialise(comment: Comment) -> dict[str, Any]:
         "author_avatar": author["avatar"],
         "thread_target_type": kind,
         "thread_target_id": target_id,
+        "parent": _parent_payload(comment),
     }
 
 
@@ -240,7 +276,12 @@ class ProposalMessagesView(PortalAPIView):
                 visibility=Comment.Visibility.SHARED,
                 organization_id=proposal.organization_id,
             )
-            .select_related("client_account__customer", "author")
+            .select_related(
+                "client_account__customer",
+                "author",
+                "parent__client_account__customer",
+                "parent__author",
+            )
             .order_by("created_at")
         )
 
@@ -290,6 +331,35 @@ class SpecMessagePostView(PortalAPIView):
 
         spec_ct = ContentType.objects.get_for_model(SpecificationSheet)
 
+        # Resolve the reply target if one was supplied. Validate it
+        # lives on the SAME spec thread — a crafted ``parent_id``
+        # pointing at another customer's comment must not link
+        # across threads.
+        parent_id = data.validated_data.get("parent_id")
+        parent: Comment | None = None
+        if parent_id:
+            parent = (
+                Comment.objects
+                .filter(
+                    pk=parent_id,
+                    content_type=spec_ct,
+                    object_id=sheet.id,
+                    visibility=Comment.Visibility.SHARED,
+                    organization_id=sheet.organization_id,
+                )
+                .first()
+            )
+            if parent is None:
+                return _err(
+                    "invalid_reply_target",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            # Two-level nesting cap (matches staff side rule). A
+            # reply on a reply collapses to a reply on the root so
+            # the UI never needs to render a deeper tree.
+            if parent.parent_id is not None:
+                parent = parent.parent
+
         with transaction.atomic():
             comment = Comment.objects.create(
                 organization_id=sheet.organization_id,
@@ -299,6 +369,7 @@ class SpecMessagePostView(PortalAPIView):
                 client_account=request.user,
                 visibility=Comment.Visibility.SHARED,
                 body=data.validated_data["body"],
+                parent=parent,
             )
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)

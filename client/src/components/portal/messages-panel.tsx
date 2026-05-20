@@ -171,8 +171,23 @@ function SpecThread({
 }) {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [replyTo, setReplyTo] = useState<PortalMessageDto | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const prevCountRef = useRef(messages.length);
+  // Per-message DOM refs — used by both the "click N new to jump"
+  // pill and the "click a quoted reply preview to jump to the
+  // original" affordance. Map is rebuilt every render, but React's
+  // ref callbacks are stable per element so there's no churn.
+  const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // First unread message id (or null) — populates the "N new" pill
+  // target. We pick the OLDEST unread so jumping lands the user at
+  // the start of unread, not the latest.
+  const firstUnreadId = messages.find((m) => {
+    if (m.author_kind === "client") return false;
+    if (!lastReadAt) return true;
+    return m.created_at > lastReadAt;
+  })?.id;
 
   // Count staff messages that arrived AFTER the user's last-read
   // bump. ``lastReadAt`` is the timestamp we wrote on the backend
@@ -183,6 +198,17 @@ function SpecThread({
     if (!lastReadAt) return true;
     return m.created_at > lastReadAt;
   }).length;
+
+  function scrollToMessage(id: string) {
+    const el = messageRefs.current.get(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Pulse highlight so the user spots the target after the jump.
+    el.classList.add("ring-4", "ring-black");
+    window.setTimeout(() => {
+      el.classList.remove("ring-4", "ring-black");
+    }, 1200);
+  }
 
   // Surface "New" in the document title while the tab is hidden so
   // a customer browsing other tabs sees an unread hint. We pulse it
@@ -229,8 +255,9 @@ function SpecThread({
     setSending(true);
     onError(null);
     try {
-      await postSpecMessage(specId, body);
+      await postSpecMessage(specId, body, replyTo?.id ?? null);
       setDraft("");
+      setReplyTo(null);
       await onChanged();
     } catch {
       onError("Couldn't send. Try again.");
@@ -243,15 +270,19 @@ function SpecThread({
     <div className="border-2 border-black">
       <div className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
         <span>{label}</span>
-        {unread > 0 ? (
-          <span className="border-2 border-white bg-white px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-black">
-            {unread} new
-          </span>
+        {unread > 0 && firstUnreadId ? (
+          <button
+            type="button"
+            onClick={() => scrollToMessage(firstUnreadId)}
+            className="border-2 border-white bg-white px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-black transition-transform hover:translate-x-[-1px] hover:translate-y-[-1px]"
+          >
+            {unread} new ↓
+          </button>
         ) : null}
       </div>
       <div
         ref={scrollRef}
-        className="flex h-96 flex-col gap-3 overflow-y-auto bg-white p-4"
+        className="flex h-96 flex-col gap-4 overflow-y-auto bg-white p-4"
       >
         {messages.length === 0 ? (
           <p className="text-sm">No messages yet. Start the conversation.</p>
@@ -261,21 +292,47 @@ function SpecThread({
               key={m.id}
               message={m}
               seen={isSeenByStaff(m, lastReadAt)}
+              onReply={() => setReplyTo(m)}
+              onJumpToParent={(parentId) => scrollToMessage(parentId)}
+              registerRef={(node) => {
+                if (node) messageRefs.current.set(m.id, node);
+                else messageRefs.current.delete(m.id);
+              }}
             />
           ))
         )}
       </div>
       <form onSubmit={send} className="border-t-2 border-black p-3">
+        {replyTo ? (
+          <div className="mb-2 flex items-start gap-3 border-2 border-black bg-neutral-100 px-3 py-2 text-xs">
+            <div className="min-w-0 flex-1">
+              <div className="mb-0.5 font-bold uppercase tracking-widest">
+                Replying to {replyTo.author_name}
+              </div>
+              <div className="truncate text-neutral-700">
+                {replyTo.is_deleted ? "(deleted)" : replyTo.body}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyTo(null)}
+              className="font-black uppercase tracking-widest hover:underline"
+              aria-label="Cancel reply"
+            >
+              ✕
+            </button>
+          </div>
+        ) : null}
         <PortalTextarea
           name={`compose-${specId}`}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           rows={2}
-          placeholder="Write a message…"
+          placeholder={replyTo ? "Type your reply…" : "Write a message…"}
         />
         <div className="mt-3 flex justify-end">
           <PortalButton type="submit" disabled={sending || !draft.trim()}>
-            {sending ? "Sending…" : "Send"}
+            {sending ? "Sending…" : (replyTo ? "Reply" : "Send")}
           </PortalButton>
         </div>
       </form>
@@ -312,9 +369,15 @@ function initialsOf(name: string): string {
 function MessageBubble({
   message,
   seen,
+  onReply,
+  onJumpToParent,
+  registerRef,
 }: {
   message: PortalMessageDto;
   seen: boolean;
+  onReply: () => void;
+  onJumpToParent: (parentId: string) => void;
+  registerRef: (node: HTMLDivElement | null) => void;
 }) {
   const isClient = message.author_kind === "client";
   const align = isClient ? "items-end" : "items-start";
@@ -331,14 +394,13 @@ function MessageBubble({
   );
   return (
     <div
-      className={`flex w-full items-end gap-3 ${
+      ref={registerRef}
+      className={`group flex w-full items-end gap-3 scroll-mt-4 transition-shadow ${
         isClient ? "flex-row-reverse" : "flex-row"
       }`}
     >
       {avatar}
-      <div
-        className={`flex min-w-0 max-w-[75%] flex-col ${align}`}
-      >
+      <div className={`flex min-w-0 max-w-[75%] flex-col ${align}`}>
         <div
           className={`mb-1 flex items-baseline gap-2 text-[11px] ${
             isClient ? "flex-row-reverse" : "flex-row"
@@ -356,6 +418,25 @@ function MessageBubble({
             })}
           </span>
         </div>
+        {message.parent ? (
+          <button
+            type="button"
+            onClick={() => onJumpToParent(message.parent!.id)}
+            className={`mb-1 max-w-full overflow-hidden border-l-4 border-black bg-white px-3 py-1.5 text-left text-[11px] text-black hover:bg-neutral-100 ${
+              isClient ? "self-end" : "self-start"
+            }`}
+            aria-label="Jump to replied message"
+          >
+            <div className="font-bold uppercase tracking-widest">
+              ↰ {message.parent.author_name}
+            </div>
+            <div className="truncate text-neutral-700">
+              {message.parent.is_deleted
+                ? "(deleted)"
+                : message.parent.body_preview}
+            </div>
+          </button>
+        ) : null}
         <div
           className={`whitespace-pre-wrap break-words px-4 py-2.5 text-sm leading-relaxed shadow-[3px_3px_0_#000] ${bubble}`}
         >
@@ -365,11 +446,20 @@ function MessageBubble({
             message.body
           )}
         </div>
-        {seen ? (
-          <span className="mt-1 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
-            Seen ✓
-          </span>
-        ) : null}
+        <div
+          className={`mt-1 flex items-center gap-3 text-[10px] uppercase tracking-widest text-neutral-500 ${
+            isClient ? "flex-row-reverse" : "flex-row"
+          }`}
+        >
+          <button
+            type="button"
+            onClick={onReply}
+            className="opacity-0 transition-opacity hover:underline group-hover:opacity-100 focus:opacity-100"
+          >
+            ↩ Reply
+          </button>
+          {seen ? <span className="font-bold">Seen ✓</span> : null}
+        </div>
       </div>
     </div>
   );

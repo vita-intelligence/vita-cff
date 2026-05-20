@@ -156,10 +156,13 @@ export async function fetchProposalMessages(
 export async function postSpecMessage(
   sheetId: string,
   body: string,
+  parentId?: string | null,
 ): Promise<PortalMessageDto> {
+  const payload: Record<string, unknown> = { body };
+  if (parentId) payload.parent_id = parentId;
   const { data } = await apiClient.post<PortalMessageDto>(
     `/api/portal/specs/${sheetId}/messages/`,
-    { body },
+    payload,
   );
   return data;
 }

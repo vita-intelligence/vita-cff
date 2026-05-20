@@ -37,6 +37,15 @@ export interface PortalProposalListDto {
 }
 
 
+export interface PortalMessageParentPreview {
+  readonly id: string;
+  readonly body_preview: string;
+  readonly author_name: string;
+  readonly author_kind: "staff" | "client";
+  readonly is_deleted: boolean;
+}
+
+
 export interface PortalMessageDto {
   readonly id: string;
   readonly body: string;
@@ -47,6 +56,7 @@ export interface PortalMessageDto {
   readonly author_avatar: string;
   readonly thread_target_type: "spec" | "proposal" | "other";
   readonly thread_target_id: string;
+  readonly parent: PortalMessageParentPreview | null;
 }
 
 
