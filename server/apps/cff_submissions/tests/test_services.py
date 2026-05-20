@@ -38,8 +38,10 @@ from apps.cff_submissions.models import (
 )
 from apps.cff_submissions.services import (
     CFFAssignmentError,
+    LAZY_POLL_INTERVAL_SECONDS,
     assign_to_project,
     create_project_from_cff,
+    ensure_fresh_submissions,
     import_cff_submissions_for_org,
     unassign,
 )
@@ -185,6 +187,99 @@ class TestImport:
             "email_fc7d": "Email",
             "market_segment": "Market segment",
         }
+
+
+# ---------------------------------------------------------------------------
+# Lazy poll (ensure_fresh_submissions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.django_db
+class TestEnsureFreshSubmissions:
+    """Coverage for the inbox page's on-demand Wix refresh.
+
+    The helper is intentionally swallowing exceptions and updating
+    state via row locks; tests assert the observable contract (does
+    it poll? does the timestamp move?) rather than internal call
+    ordering.
+    """
+
+    def _now_iso(self):
+        from django.utils import timezone
+        return timezone.now().isoformat()
+
+    def _stamp(self, org, seconds_ago):
+        from datetime import timedelta
+        from django.utils import timezone
+        raw = dict(org.wix_cff_config or {})
+        raw["last_poll_at"] = (
+            timezone.now() - timedelta(seconds=seconds_ago)
+        ).isoformat()
+        org.wix_cff_config = raw
+        org.save(update_fields=["wix_cff_config", "updated_at"])
+
+    def test_disabled_org_is_a_no_op(self, db):
+        org = OrganizationFactory()  # no wix_cff_config set
+        with patch(
+            "apps.cff_submissions.services.import_cff_submissions_for_org"
+        ) as mock_import:
+            ensure_fresh_submissions(organization=org)
+        mock_import.assert_not_called()
+
+    def test_fresh_stamp_skips_the_poll(self, org_with_wix):
+        # Stamp at "1 second ago" — well inside the 5-min window.
+        self._stamp(org_with_wix, seconds_ago=1)
+        with patch(
+            "apps.cff_submissions.services.import_cff_submissions_for_org"
+        ) as mock_import:
+            ensure_fresh_submissions(organization=org_with_wix)
+        mock_import.assert_not_called()
+
+    def test_stale_stamp_triggers_poll(self, org_with_wix):
+        self._stamp(
+            org_with_wix,
+            seconds_ago=LAZY_POLL_INTERVAL_SECONDS + 60,
+        )
+        with patch(
+            "apps.cff_submissions.services.import_cff_submissions_for_org"
+        ) as mock_import:
+            ensure_fresh_submissions(organization=org_with_wix)
+        mock_import.assert_called_once()
+
+    def test_missing_stamp_triggers_poll(self, org_with_wix):
+        # The fixture leaves ``last_poll_at`` unset; treat as stale.
+        with patch(
+            "apps.cff_submissions.services.import_cff_submissions_for_org"
+        ) as mock_import:
+            ensure_fresh_submissions(organization=org_with_wix)
+        mock_import.assert_called_once()
+
+    def test_wix_failure_is_swallowed_and_stamp_pre_advances(
+        self, org_with_wix,
+    ):
+        """A Wix outage must NOT bubble up to the caller, and the
+        pre-stamp must move forward so the next visitor doesn't
+        immediately re-poll. The 5-minute pause acts as a circuit
+        breaker against hammering a broken Wix tenant."""
+
+        from apps.cff_submissions.wix_client import WixAPIError
+        from django.utils import timezone
+
+        before = timezone.now()
+        with patch(
+            "apps.cff_submissions.services.import_cff_submissions_for_org",
+            side_effect=WixAPIError(
+                "Wix returned 500", status_code=500, body="oops",
+            ),
+        ):
+            ensure_fresh_submissions(organization=org_with_wix)
+
+        org_with_wix.refresh_from_db()
+        last = org_with_wix.wix_cff_config.get("last_poll_at")
+        assert last is not None
+        # Pre-stamp must be ≥ ``before``: failure path still advances
+        # the cooldown so the next call within 5 min is a no-op.
+        assert datetime.fromisoformat(last) >= before
 
 
 # ---------------------------------------------------------------------------

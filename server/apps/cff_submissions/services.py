@@ -185,6 +185,103 @@ def iter_orgs_with_live_wix_cff() -> Iterable[Organization]:
             yield org
 
 
+#: How stale ``last_poll_at`` must be before
+#: :func:`ensure_fresh_submissions` triggers a synchronous Wix pull.
+#: Five minutes matches the original Celery beat cadence so the
+#: visible "Last sync: X ago" copy still tells the truth.
+LAZY_POLL_INTERVAL_SECONDS = 300
+
+
+def ensure_fresh_submissions(*, organization: Organization) -> None:
+    """Synchronously re-pull from Wix when ``last_poll_at`` is stale.
+
+    Called at the top of inbox-facing GET endpoints so the page
+    always renders at most ~5 minutes behind Wix without needing a
+    background scheduler. The poll runs in the request thread; a
+    cold visitor after a quiet window waits a few seconds for the
+    Wix roundtrip, every subsequent visitor in the same 5-min
+    window hits the local DB.
+
+    Concurrency
+    -----------
+    Two protections layered together:
+
+    * **Row-level lock via ``select_for_update(skip_locked=True)``** —
+      two simultaneous page loads can't both poll. The second
+      request finds the row already locked, skips it, and serves
+      whatever the first request is about to write.
+    * **Pre-stamp ``last_poll_at`` before the HTTP call** — keeps
+      a Wix outage from making every visitor block on a 4-second
+      timeout. The stamp moves forward whether or not Wix
+      responds; the next refresh happens 5 minutes later.
+
+    The transaction is intentionally closed BEFORE the HTTP call.
+    Holding a Postgres row lock across a multi-second Wix request
+    would tie up a database connection and risks slot exhaustion
+    on a busy app (the Dockerfile already calls out a prior
+    incident).
+
+    Failure handling
+    ----------------
+    Any :class:`WixAPIError` / :class:`WixCFFNotConfigured` /
+    :class:`WixCFFDecryptionFailed` is logged and swallowed — the
+    inbox page must never break because Wix is unreachable. The
+    caller still gets whatever's in the DB.
+    """
+
+    if not is_wix_cff_live(organization):
+        return
+
+    now = django_timezone.now()
+    should_poll = False
+
+    with transaction.atomic():
+        # ``skip_locked=True`` means "if someone else already holds
+        # this row, don't wait — assume they're polling". The other
+        # request will write the same data we'd write, so doing it
+        # twice is wasted work.
+        locked = (
+            Organization.objects
+            .select_for_update(skip_locked=True)
+            .filter(pk=organization.pk)
+            .only("id", "wix_cff_config", "updated_at")
+            .first()
+        )
+        if locked is None:
+            return
+        raw = dict(locked.wix_cff_config or {})
+        last = raw.get("last_poll_at")
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(last)
+            except ValueError:
+                last_dt = None
+            if last_dt is not None and (now - last_dt).total_seconds() < LAZY_POLL_INTERVAL_SECONDS:
+                return  # fresh — nothing to do
+        # Pre-stamp inside the lock. Other requests arriving during
+        # the upcoming HTTP call see the fresh timestamp and skip.
+        raw["last_poll_at"] = now.isoformat()
+        locked.wix_cff_config = raw
+        locked.save(update_fields=["wix_cff_config", "updated_at"])
+        should_poll = True
+
+    if not should_poll:
+        return
+
+    try:
+        import_cff_submissions_for_org(organization=organization)
+    except (WixCFFNotConfigured, WixCFFDecryptionFailed, WixAPIError) as exc:
+        # ``import_cff_submissions_for_org`` only re-stamps
+        # ``last_poll_at`` on success; on failure our pre-stamp
+        # stays in place, gating the next attempt to 5 minutes
+        # out. That stops a Wix outage from turning into a thrash
+        # against their API on every page load.
+        logger.warning(
+            "cff.lazy_poll: refresh failed for org %s — %s",
+            organization.id, exc,
+        )
+
+
 def _upsert_submission(
     raw: dict[str, Any],
     *,
@@ -644,6 +741,7 @@ __all__ = [
     "WixCFFNotConfigured",
     "assign_to_project",
     "create_project_from_cff",
+    "ensure_fresh_submissions",
     "get_field_labels",
     "import_cff_submissions_for_org",
     "iter_orgs_with_live_wix_cff",

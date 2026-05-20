@@ -38,6 +38,7 @@ from apps.cff_submissions.services import (
     CFFAssignmentError,
     assign_to_project,
     create_project_from_cff,
+    ensure_fresh_submissions,
     get_field_labels,
     unassign,
     verify_wix_cff_connection,
@@ -113,6 +114,17 @@ class CFFListView(APIView):
     pagination_class = CFFCursorPagination
 
     def get(self, request: Request, org_id: str) -> Response:
+        # Lazy refresh: pull from Wix when ``last_poll_at`` is older
+        # than the 5-min freshness window. Synchronous + bounded by
+        # ``WixClient``'s own timeout; failures fall back to whatever's
+        # in the DB so the inbox never breaks because Wix is down.
+        ensure_fresh_submissions(organization=self.organization)
+        # The lazy poll updates ``wix_cff_config`` on the org row;
+        # refresh from the DB so the ``sync`` block embedded below
+        # reflects the just-completed poll instead of the stale
+        # snapshot the request started with.
+        self.organization.refresh_from_db(fields=["wix_cff_config"])
+
         queryset = (
             CFFSubmission.objects
             .select_related("project", "assigned_by")
@@ -123,7 +135,14 @@ class CFFListView(APIView):
         paginator = CFFCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
         serializer = CFFSubmissionSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        response = paginator.get_paginated_response(serializer.data)
+        # Embed sync metadata in every page so the frontend can keep
+        # the "Last sync" banner in sync with the actual list refresh
+        # without a second round-trip. Same shape as
+        # :class:`CFFSyncStatusView` so the client can ``setQueryData``
+        # the syncStatus cache directly from this payload.
+        response.data["sync"] = _build_sync_payload(self.organization)
+        return response
 
     def _filter(self, queryset, request: Request):
         assigned_raw = request.query_params.get("assigned")
@@ -418,33 +437,43 @@ class CFFSyncStatusView(APIView):
     required_capability = CFFSubmissionsCapability.VIEW
 
     def get(self, request: Request, org_id: str) -> Response:
-        from django.conf import settings as django_settings
-
-        raw = self.organization.wix_cff_config or {}
-        schedule = (
-            django_settings.CELERY_BEAT_SCHEDULE.get(
-                "cff-submissions-poll"
-            )
-            or {}
-        )
-        # ``schedule`` carries a ``crontab`` object or a float; we
-        # only care about the float case here. Anything else
-        # surfaces as null so the UI falls back to its hardcoded
-        # copy without crashing.
-        raw_schedule = schedule.get("schedule")
-        interval = (
-            float(raw_schedule)
-            if isinstance(raw_schedule, (int, float))
-            else None
-        )
         return Response(
-            {
-                "enabled": bool(raw.get("enabled")),
-                "last_poll_at": raw.get("last_poll_at"),
-                "poll_interval_seconds": interval,
-            },
+            _build_sync_payload(self.organization),
             status=status.HTTP_200_OK,
         )
+
+
+def _build_sync_payload(organization: Any) -> dict[str, Any]:
+    """Shape the ``sync`` block consumed by the inbox banner.
+
+    Lives at module scope so both :class:`CFFSyncStatusView` and
+    :class:`CFFListView` produce the same payload. The frontend
+    reuses one query-key for both, so any divergence here would
+    show up as a banner that flickers between two truths when
+    refetched from different sources.
+    """
+
+    from django.conf import settings as django_settings
+
+    raw = organization.wix_cff_config or {}
+    schedule = (
+        django_settings.CELERY_BEAT_SCHEDULE.get("cff-submissions-poll")
+        or {}
+    )
+    # ``schedule`` carries a ``crontab`` object or a float; we only
+    # care about the float case here. Anything else surfaces as null
+    # so the UI falls back to its hardcoded copy without crashing.
+    raw_schedule = schedule.get("schedule")
+    interval = (
+        float(raw_schedule)
+        if isinstance(raw_schedule, (int, float))
+        else None
+    )
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "last_poll_at": raw.get("last_poll_at"),
+        "poll_interval_seconds": interval,
+    }
 
 
 class CFFFieldLabelsView(APIView):

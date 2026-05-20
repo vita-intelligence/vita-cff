@@ -50,14 +50,6 @@ export interface CFFSubmissionDto {
 }
 
 
-/** Cursor-paginated wrapper (DRF ``CursorPagination``). */
-export interface PaginatedCFFSubmissionsDto {
-  readonly next: string | null;
-  readonly previous: string | null;
-  readonly results: ReadonlyArray<CFFSubmissionDto>;
-}
-
-
 export interface CFFSyncStatusDto {
   readonly enabled: boolean;
   /** ISO timestamp of the last successful poll cycle, or ``null``
@@ -68,6 +60,21 @@ export interface CFFSyncStatusDto {
    *  ``CELERY_BEAT_SCHEDULE`` propagates without a frontend
    *  update. ``null`` for non-numeric schedules (cron expressions). */
   readonly poll_interval_seconds: number | null;
+}
+
+
+/** Cursor-paginated wrapper (DRF ``CursorPagination``).
+ *
+ *  ``sync`` carries the just-completed lazy-poll metadata so the
+ *  banner can stay in sync with the actual list refresh without a
+ *  second round-trip. Same shape as :class:`CFFSyncStatusDto`; the
+ *  list hook hydrates the sync-status query cache from this on
+ *  every page load. */
+export interface PaginatedCFFSubmissionsDto {
+  readonly next: string | null;
+  readonly previous: string | null;
+  readonly results: ReadonlyArray<CFFSubmissionDto>;
+  readonly sync?: CFFSyncStatusDto;
 }
 
 

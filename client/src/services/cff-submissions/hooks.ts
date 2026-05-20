@@ -95,6 +95,7 @@ export function useInfiniteCFFSubmissions(
   InfiniteData<PaginatedCFFSubmissionsDto, string | null>,
   ApiError
 > {
+  const queryClient = useQueryClient();
   return useInfiniteQuery<
     PaginatedCFFSubmissionsDto,
     ApiError,
@@ -108,14 +109,28 @@ export function useInfiniteCFFSubmissions(
       projectId: args.projectId,
       pageSize: args.pageSize,
     }),
-    queryFn: ({ pageParam }) =>
-      fetchCFFSubmissionsPage(args.orgId, {
+    queryFn: async ({ pageParam }) => {
+      const page = await fetchCFFSubmissionsPage(args.orgId, {
         cursorUrl: pageParam ?? undefined,
         assigned: args.assigned,
         search: args.search,
         projectId: args.projectId,
         pageSize: args.pageSize,
-      }),
+      });
+      // The list endpoint embeds the just-completed lazy-poll
+      // timestamp so the banner stays coherent with the rows.
+      // Hydrate the sync-status cache directly so the banner
+      // re-renders without a follow-up HTTP roundtrip; the
+      // 1-minute interval refetch on ``useCFFSyncStatus`` would
+      // otherwise leave the banner stale for up to a minute.
+      if (page.sync) {
+        queryClient.setQueryData<CFFSyncStatusDto>(
+          cffQueryKeys.syncStatus(args.orgId),
+          page.sync,
+        );
+      }
+      return page;
+    },
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
