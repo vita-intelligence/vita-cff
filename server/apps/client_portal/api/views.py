@@ -340,31 +340,329 @@ class ProposalListView(PortalAPIView):
         )
 
 
+def _load_owned_proposal(request: Request, proposal_id):
+    """Resolve ``proposal_id`` against the logged-in client's
+    customer, or raise ``NotFound``.
+
+    Used by every proposal-scoped portal endpoint. Same 404 for
+    "doesn't exist" and "belongs to another customer" so existence
+    of proposals across the tenant never leaks.
+    """
+
+    from apps.proposals.models import Proposal
+
+    proposal = (
+        Proposal.objects
+        .select_related("customer", "organization")
+        .filter(pk=proposal_id)
+        .first()
+    )
+    if proposal is None or proposal.customer_id != request.user.customer_id:
+        raise NotFound("Proposal not found.")
+    return proposal
+
+
 class ProposalDetailView(PortalAPIView):
     """``GET /api/portal/proposals/<id>/``.
 
-    Reuses the proposal-detail serializer from the staff side so
-    the portal renders the same shape. Ownership is checked
-    explicitly inside the view (the
-    :class:`ClientOwnsProposal` permission could also do it; doing
-    it here keeps the 404 path consistent with other not-found
-    surfaces).
+    Reuses the kiosk payload renderer from the staff app so the
+    portal renders pixel-identical data to what the old
+    ``PublicProposalKioskView`` produced — the only difference is
+    auth.
     """
 
     def get(self, request: Request, proposal_id: str) -> Response:
-        from apps.proposals.models import Proposal
-        from apps.proposals.api.serializers import ProposalSerializer
-
-        proposal = (
-            Proposal.objects
-            .select_related("customer", "organization")
-            .filter(pk=proposal_id)
-            .first()
+        from apps.proposals.api.views import _render_public_proposal_payload
+        from apps.proposals.services import (
+            ProposalStatus,
+            _ensure_attached_spec_tokens,
+            _promote_attached_specs_to_sent,
         )
-        if proposal is None:
-            raise NotFound("Proposal not found.")
-        if proposal.customer_id != request.user.customer_id:
-            # Same 404 — don't leak existence of proposals belonging
-            # to a different customer.
-            raise NotFound("Proposal not found.")
-        return Response(ProposalSerializer(proposal).data)
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        # Mirror the public-kiosk behaviour: lazily mint per-spec
+        # tokens (needed by the spec preview iframes) and promote
+        # attached specs to ``sent`` when the parent proposal is
+        # also at ``sent``. Idempotent on repeat opens.
+        _ensure_attached_spec_tokens(
+            proposal=proposal, actor=proposal.updated_by,
+        )
+        if proposal.status == ProposalStatus.SENT.value:
+            _promote_attached_specs_to_sent(
+                proposal=proposal, actor=proposal.updated_by,
+            )
+        return Response(_render_public_proposal_payload(proposal))
+
+
+# ---------------------------------------------------------------------------
+# Proposal write paths — sign / sign-spec / reject / finalize
+# ---------------------------------------------------------------------------
+
+
+def _client_signer_fields(request: Request) -> tuple[str, str, str]:
+    """Compose ``(signer_name, signer_email, signer_company)`` from
+    the authenticated client + their customer record.
+
+    Replaces the kiosk-session identity the legacy public endpoints
+    relied on. ``signer_email`` is the ClientAccount login (the
+    address the activation email reached); ``signer_company`` /
+    ``signer_name`` come off the Customer record so they always
+    reflect the latest CRM state, not whatever the client typed
+    into a now-deleted identity modal.
+    """
+
+    account = request.user
+    customer = account.customer
+    return (
+        customer.name or customer.company or "",
+        account.email,
+        customer.company or "",
+    )
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.META.get("REMOTE_ADDR", "") or ""
+
+
+def _user_agent(request: Request) -> str:
+    return (request.META.get("HTTP_USER_AGENT") or "")[:512]
+
+
+class ProposalSignView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/sign/``.
+
+    Captures the client's signature on the proposal itself. Reuses
+    :func:`capture_customer_signature_on_proposal` from the staff
+    service layer — the only thing that changes between the legacy
+    kiosk path and this one is where the signer identity comes from.
+    """
+
+    def post(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.api.views import (
+            _canonical_proposal_payload,
+            _document_hash,
+        )
+        from apps.proposals.services import (
+            InvalidProposalTransition,
+            ProposalAcknowledgementsRequired,
+            SignatureRequired,
+            capture_customer_signature_on_proposal,
+        )
+        from config.signatures import SignatureImageInvalid
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        signer_name, signer_email, signer_company = _client_signer_fields(request)
+
+        payload = request.data or {}
+        signature_image = payload.get("signature_image") or ""
+        try:
+            updated = capture_customer_signature_on_proposal(
+                proposal=proposal,
+                signer_name=signer_name,
+                signer_email=signer_email,
+                signer_company=signer_company,
+                signature_image=signature_image,
+                ack_spec_signing=bool(payload.get("ack_spec_signing")),
+                ack_lead_times=bool(payload.get("ack_lead_times")),
+                ack_terms=bool(payload.get("ack_terms")),
+                ack_rd_terms=bool(payload.get("ack_rd_terms")),
+                sign_ip=_client_ip(request),
+                sign_user_agent=_user_agent(request),
+            )
+        except InvalidProposalTransition:
+            return _err("invalid_proposal_transition", status.HTTP_400_BAD_REQUEST)
+        except ProposalAcknowledgementsRequired:
+            return _err(
+                "proposal_acknowledgements_required",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        except (SignatureRequired, SignatureImageInvalid):
+            return _err("signature_required", status.HTTP_400_BAD_REQUEST)
+
+        post_sign_hash = _document_hash(_canonical_proposal_payload(updated))
+        updated.customer_sign_document_hash = post_sign_hash
+        updated.save(update_fields=["customer_sign_document_hash"])
+
+        return Response(
+            {
+                "id": str(updated.id),
+                "status": updated.status,
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+        )
+
+
+class ProposalSignSpecView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/specs/<sheet_id>/sign/``.
+
+    Per-spec signature capture. The spec-on-proposal guard from the
+    legacy view is preserved by the service layer: a sheet that
+    isn't on this proposal raises ``KioskSpecNotOnProposal`` which
+    we translate to a 404 (no existence leak across the org).
+    """
+
+    def post(
+        self,
+        request: Request,
+        proposal_id: str,
+        sheet_id: str,
+    ) -> Response:
+        from apps.proposals.api.views import (
+            _canonical_spec_payload,
+            _document_hash,
+        )
+        from apps.proposals.services import (
+            KioskSpecNotOnProposal,
+            SignatureRequired,
+            capture_customer_signature_on_attached_spec,
+        )
+        from apps.specifications.services import (
+            InvalidStatusTransition as SpecInvalidStatusTransition,
+        )
+        from config.signatures import SignatureImageInvalid
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        signer_name, signer_email, signer_company = _client_signer_fields(request)
+
+        signature_image = (request.data or {}).get("signature_image") or ""
+        try:
+            updated = capture_customer_signature_on_attached_spec(
+                proposal=proposal,
+                sheet_id=sheet_id,
+                signer_name=signer_name,
+                signer_email=signer_email,
+                signer_company=signer_company,
+                signature_image=signature_image,
+                sign_ip=_client_ip(request),
+                sign_user_agent=_user_agent(request),
+            )
+        except KioskSpecNotOnProposal:
+            raise NotFound("Specification not found on this proposal.")
+        except SpecInvalidStatusTransition:
+            return _err("invalid_status_transition", status.HTTP_400_BAD_REQUEST)
+        except (SignatureRequired, SignatureImageInvalid):
+            return _err("signature_required", status.HTTP_400_BAD_REQUEST)
+
+        post_sign_hash = _document_hash(_canonical_spec_payload(updated))
+        updated.customer_sign_document_hash = post_sign_hash
+        updated.save(update_fields=["customer_sign_document_hash"])
+
+        return Response(
+            {
+                "id": str(updated.id),
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+        )
+
+
+class ProposalRejectView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/reject/``."""
+
+    def post(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.services import (
+            InvalidProposalTransition,
+            capture_customer_rejection_on_proposal,
+        )
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        data = request.data if isinstance(request.data, dict) else {}
+        reason = str(data.get("reason") or "")
+
+        try:
+            updated = capture_customer_rejection_on_proposal(
+                proposal=proposal, reason=reason,
+            )
+        except InvalidProposalTransition:
+            return _err("invalid_proposal_transition", status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "status": updated.status,
+                "customer_rejected_at": (
+                    updated.customer_rejected_at.isoformat()
+                    if updated.customer_rejected_at is not None
+                    else None
+                ),
+            },
+        )
+
+
+class ProposalFinalizeView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/finalize/``."""
+
+    def post(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.services import (
+            InvalidProposalTransition,
+            KioskSignaturesPending,
+            finalize_proposal_kiosk,
+        )
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        try:
+            result = finalize_proposal_kiosk(proposal=proposal)
+        except InvalidProposalTransition:
+            return _err("invalid_proposal_transition", status.HTTP_400_BAD_REQUEST)
+        except KioskSignaturesPending as exc:
+            return Response(
+                {
+                    "code": "kiosk_signatures_pending",
+                    "detail": ["kiosk_signatures_pending"],
+                    "pending": list(exc.args[0]) if exc.args else [],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(result)
+
+
+class ProposalPdfView(PortalAPIView):
+    """``GET /api/portal/proposals/<id>/pdf/``.
+
+    Renders the proposal as HTML for the in-portal preview iframe.
+    Same shape as the legacy public endpoint — the new entry point
+    enforces auth + ownership.
+    """
+
+    def get(self, request: Request, proposal_id: str):
+        from django.http import HttpResponse
+        from apps.proposals.api.views import _render_proposal_html
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        return HttpResponse(_render_proposal_html(proposal))
+
+
+class ProposalDownloadView(PortalAPIView):
+    """``GET /api/portal/proposals/<id>/download/``.
+
+    PDF download. Cached + render-locked via the existing
+    ``cached_render`` helper so peak WeasyPrint memory stays
+    bounded.
+    """
+
+    def get(self, request: Request, proposal_id: str):
+        from django.http import HttpResponse
+        from apps.proposals.api.views import _render_proposal_pdf
+        from config.pdf_cache import cached_render
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        pdf_bytes = cached_render(
+            f"proposal-pdf:{proposal.id}:{int(proposal.updated_at.timestamp())}",
+            lambda: _render_proposal_pdf(proposal),
+        )
+        filename = (
+            f"{(proposal.code or 'proposal').strip().replace(' ', '-')}.pdf"
+        )
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        response["Cache-Control"] = "public, max-age=300, must-revalidate"
+        return response

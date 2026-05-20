@@ -1523,8 +1523,13 @@ def _render_and_send_proposal_email(
     app_base = getattr(
         settings, "APP_BASE_URL", "http://localhost:3000"
     ).rstrip("/")
+    # The kiosk email now points at the customer portal's activation
+    # landing page. Repurposes the existing ``public_token`` as the
+    # one-shot activation credential: first click sets up a portal
+    # account; subsequent clicks land on the sign-in page (the
+    # activation view auto-routes returners to login).
     kiosk_url = (
-        f"{app_base}/p/proposal/{proposal.public_token}"
+        f"{app_base}/portal/activate/{proposal.public_token}"
         if proposal.public_token is not None
         else ""
     )

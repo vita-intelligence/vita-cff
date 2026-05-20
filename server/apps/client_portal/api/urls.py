@@ -13,7 +13,13 @@ from .views import (
     PasswordResetConfirmView,
     PasswordResetRequestView,
     ProposalDetailView,
+    ProposalDownloadView,
+    ProposalFinalizeView,
     ProposalListView,
+    ProposalPdfView,
+    ProposalRejectView,
+    ProposalSignSpecView,
+    ProposalSignView,
 )
 
 
@@ -55,5 +61,35 @@ urlpatterns = [
         "proposals/<uuid:proposal_id>/",
         ProposalDetailView.as_view(),
         name="proposal-detail",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/pdf/",
+        ProposalPdfView.as_view(),
+        name="proposal-pdf",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/download/",
+        ProposalDownloadView.as_view(),
+        name="proposal-download",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/sign/",
+        ProposalSignView.as_view(),
+        name="proposal-sign",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/specs/<uuid:sheet_id>/sign/",
+        ProposalSignSpecView.as_view(),
+        name="proposal-spec-sign",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/reject/",
+        ProposalRejectView.as_view(),
+        name="proposal-reject",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/finalize/",
+        ProposalFinalizeView.as_view(),
+        name="proposal-finalize",
     ),
 ]
