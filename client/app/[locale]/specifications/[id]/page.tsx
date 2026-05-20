@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { getTranslations, setRequestLocale } from "next-intl/server";
 
+import { CFFQuickViewButton } from "@/components/cff/cff-quick-view-button";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirect } from "@/i18n/navigation";
 import {
@@ -100,6 +101,15 @@ export default async function SpecificationDetailPage({
           <span>{tCommon("brand")}</span>
         </footer>
       </div>
+      {/* Floating CFF bubble (bottom-left). Standalone spec sheet
+          pages live outside the ``formulations/[id]`` layout, so
+          the bubble that ships there doesn't inherit here. The
+          component self-hides for sheets whose parent project has
+          no attached CFF, so legacy work shows nothing. */}
+      <CFFQuickViewButton
+        organization={primaryOrg}
+        projectId={sheet.formulation_id}
+      />
     </main>
   );
 }
