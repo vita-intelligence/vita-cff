@@ -104,9 +104,10 @@ class Comment(models.Model):
         ),
     )
 
-    # Identity. Exactly one of (author) or (guest_name+guest_email) is
-    # required — the check constraint below enforces it at the DB level
-    # so a service-layer bug cannot create an orphan row.
+    # Identity. Exactly one of (author), (client_account), or
+    # (guest_name+guest_email) is required — the check constraint
+    # below enforces it at the DB level so a service-layer bug
+    # cannot create an orphan row.
     author = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -114,9 +115,27 @@ class Comment(models.Model):
         blank=True,
         related_name="authored_comments",
         help_text=_(
-            "The authenticated member who wrote the comment. Null for "
-            "kiosk guests (commit 6); authoring is still attributed via "
-            "``guest_name`` / ``guest_email``."
+            "The authenticated staff member who wrote the comment. "
+            "Null for kiosk guests (legacy) and for portal client "
+            "authors (see ``client_account``)."
+        ),
+    )
+    #: Customer-portal author. Set when an authenticated
+    #: :class:`apps.client_portal.models.ClientAccount` posts via
+    #: the portal API. Mutually exclusive with ``author`` — the
+    #: constraint below enforces "exactly one identity path".
+    client_account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="authored_comments",
+        help_text=_(
+            "The portal client who wrote the comment. NULL for "
+            "staff-authored comments and for legacy kiosk-guest "
+            "rows. Adding this as a separate FK (rather than a "
+            "polymorphic GenericFK) keeps the JOIN cheap and the "
+            "staff comments query unchanged."
         ),
     )
     guest_name = models.CharField(
@@ -147,6 +166,29 @@ class Comment(models.Model):
             "SHA-256 of the signed kiosk session cookie. Used by the "
             "rate-limiter + duplicate-submit guard in the public comment "
             "endpoint. Blank for authenticated authors."
+        ),
+    )
+
+    #: Who can see this comment. ``internal`` (the default) means
+    #: staff-only — the customer portal never surfaces these. ``shared``
+    #: means visible to both staff AND the client whose customer this
+    #: comment's target belongs to. Project-level comments default to
+    #: ``internal``; spec sheet comments posted from the portal default
+    #: to ``shared`` (the client started the thread).
+    class Visibility(models.TextChoices):
+        INTERNAL = "internal", _("Internal")
+        SHARED = "shared", _("Shared")
+
+    visibility = models.CharField(
+        _("visibility"),
+        max_length=16,
+        choices=Visibility.choices,
+        default=Visibility.INTERNAL,
+        db_index=True,
+        help_text=_(
+            "``internal`` is staff-only; ``shared`` is visible to "
+            "both the staff team and the portal client whose "
+            "customer this comment's target belongs to."
         ),
     )
 
@@ -245,19 +287,35 @@ class Comment(models.Model):
                     | models.Q(parent__isnull=True)
                 ),
             ),
-            # Identity is mandatory. Either a linked author row OR a
-            # fully populated guest triple. ``author_id IS NOT NULL``
-            # covers every authed write; the else branch requires both
-            # a non-empty name AND email (we never let a guest skip
-            # either, per the kiosk identity-capture flow).
+            # Identity is mandatory. Three valid shapes:
+            #   1. staff author    — ``author`` set
+            #   2. portal client   — ``client_account`` set
+            #   3. legacy kiosk    — both guest_name + guest_email set
+            # Exactly one of (1) and (2) is allowed — the service layer
+            # never sets both, and the DB-level
+            # ``comments_identity_single_path`` constraint below makes
+            # that explicit.
             models.CheckConstraint(
                 name="comments_identity_required",
                 condition=(
                     models.Q(author__isnull=False)
+                    | models.Q(client_account__isnull=False)
                     | (
                         ~models.Q(guest_name="")
                         & ~models.Q(guest_email="")
                     )
+                ),
+            ),
+            # No row can be authored by BOTH a staff user AND a portal
+            # client simultaneously. The frontend chooses the right
+            # identity based on which session cookie it sends; this
+            # constraint catches a service-layer bug that wires both
+            # FKs by mistake.
+            models.CheckConstraint(
+                name="comments_identity_single_path",
+                condition=(
+                    models.Q(author__isnull=True)
+                    | models.Q(client_account__isnull=True)
                 ),
             ),
         ]
@@ -294,6 +352,121 @@ class Comment(models.Model):
                     )
                 }
             )
+
+
+class CommentReadState(models.Model):
+    """Per-thread last-read timestamp for one viewer.
+
+    Powers the "Seen ✓" tick the portal renders on messages older
+    than the other side's last read. Keyed on the *target* a thread
+    belongs to (formulation OR spec sheet OR proposal) rather than a
+    synthetic "thread id" because the comments app keeps threads
+    implicit — they live as ``parent IS NULL`` rows scoped to a
+    polymorphic target. One row per ``(target, viewer)``.
+
+    Viewer is a soft polymorphism: a row is owned by *either* a
+    staff :class:`User` *or* a portal
+    :class:`apps.client_portal.models.ClientAccount`. The CHECK
+    constraint enforces "exactly one viewer set" so a malformed
+    row can't silently masquerade as either side.
+
+    Per-thread (not per-message) is a deliberate scale choice —
+    storage is O(threads × participants) rather than
+    O(messages × participants). Slack and Linear use the same
+    pattern.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="comment_read_states",
+    )
+
+    # Thread target — exactly the same polymorphic shape as
+    # :class:`Comment`. Mirroring the columns (rather than joining
+    # through the comments table) keeps the "is this thread stale
+    # for me?" query a single point lookup.
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    object_id = models.UUIDField(db_index=True)
+
+    # Viewer — exactly one side set.
+    viewer_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="comment_read_states",
+    )
+    viewer_client = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="comment_read_states",
+    )
+
+    last_read_at = models.DateTimeField(
+        help_text=_(
+            "Every comment with ``created_at <= last_read_at`` is "
+            "considered seen by this viewer. The portal / staff UI "
+            "bumps this on thread-open and on every new message "
+            "rendered while the tab is foregrounded."
+        ),
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("comment read state")
+        verbose_name_plural = _("comment read states")
+        indexes = [
+            models.Index(
+                fields=("viewer_user", "content_type", "object_id"),
+                name="crs_user_target_idx",
+            ),
+            models.Index(
+                fields=("viewer_client", "content_type", "object_id"),
+                name="crs_client_target_idx",
+            ),
+        ]
+        constraints = [
+            # Exactly one viewer.
+            models.CheckConstraint(
+                name="crs_one_viewer",
+                condition=(
+                    (
+                        models.Q(viewer_user__isnull=False)
+                        & models.Q(viewer_client__isnull=True)
+                    )
+                    | (
+                        models.Q(viewer_user__isnull=True)
+                        & models.Q(viewer_client__isnull=False)
+                    )
+                ),
+            ),
+            # Unique per (viewer, target).
+            models.UniqueConstraint(
+                fields=("viewer_user", "content_type", "object_id"),
+                condition=models.Q(viewer_user__isnull=False),
+                name="crs_unique_user_target",
+            ),
+            models.UniqueConstraint(
+                fields=("viewer_client", "content_type", "object_id"),
+                condition=models.Q(viewer_client__isnull=False),
+                name="crs_unique_client_target",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        viewer = self.viewer_user_id or self.viewer_client_id or "?"
+        return f"CommentReadState(viewer={viewer}, target={self.object_id})"
 
 
 class CommentMention(models.Model):
