@@ -48,7 +48,7 @@ import {
   StatusPill,
 } from "@/components/portal/brutalist";
 import { MessagesPanel } from "@/components/portal/messages-panel";
-import { SignatureDialog } from "@/components/ui/signature-dialog";
+import { PortalSignatureDialog } from "@/components/portal/portal-signature-dialog";
 import { apiClient } from "@/lib/api";
 import { portalErrorMessage } from "@/services/portal/errors";
 import { SpecSheetContent } from "../../../specifications/[id]/specification-sheet-view";
@@ -439,8 +439,8 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
       {/* ----- 5. Messages ----- */}
       <MessagesPanel proposalId={proposalId} />
 
-      {/* ----- Signature dialog ----- */}
-      <SignatureDialog
+      {/* ----- Signature dialog (brutalist port of staff SignatureDialog) ----- */}
+      <PortalSignatureDialog
         isOpen={pending !== null}
         onOpenChange={(open) => {
           if (!open) {
