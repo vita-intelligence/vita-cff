@@ -23,9 +23,6 @@ export default async function LegacyKioskPage({
 }: {
   params: Promise<{ locale: string; token: string }>;
 }) {
-  const { token } = await params;
-  // Portal lives at /portal (no locale prefix) so the [locale]
-  // segment cannot greedily match the URL prefix ``api`` and shadow
-  // the Django /api/* proxy.
-  permanentRedirect(`/portal/activate/${token}`);
+  const { locale, token } = await params;
+  permanentRedirect(`/${locale}/portal/activate/${token}`);
 }

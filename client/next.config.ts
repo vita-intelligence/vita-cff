@@ -61,6 +61,21 @@ const nextConfig: NextConfig = {
           source: "/ws/:path*",
           destination: `${BACKEND_INTERNAL_URL}/ws/:path*/`,
         },
+        // ``/api/portal/*`` is always served by Django. We put it
+        // at ``beforeFiles`` so it CANNOT be shadowed by any app
+        // route — the customer portal pages live at
+        // ``[locale]/portal/...`` and ``[locale]`` greedily matches
+        // any first URL segment (including ``api``), which without
+        // this rewrite was routing ``POST /api/portal/activate/...``
+        // into ``[locale=api]/portal/activate/[token]/page.tsx``
+        // instead of the backend. There's no Next route handler
+        // under ``/api/portal/*`` to preserve (the AI handler at
+        // ``/api/organizations/.../ai/...`` is unrelated), so a
+        // straight beforeFiles intercept is safe.
+        {
+          source: "/api/portal/:path*",
+          destination: `${BACKEND_INTERNAL_URL}/api/portal/:path*/`,
+        },
       ],
       fallback: [
         {
