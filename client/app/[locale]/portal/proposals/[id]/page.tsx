@@ -84,14 +84,21 @@ export default async function PortalProposalPage({
         <a href={`/api/portal/proposals/${id}/download/`} target="_blank">
           <PortalButton variant="secondary">Download PDF</PortalButton>
         </a>
-        {/*
-          Sign + reject flows are wired on the backend
-          (POST /api/portal/proposals/<id>/sign,
-           POST /api/portal/proposals/<id>/reject,
-           POST /api/portal/proposals/<id>/finalize).
-          The signature canvas + acknowledgement UI lands in the
-          next slice; for now the customer can read + download.
-        */}
+        {/* Only show the sign / decline CTAs while the proposal is in
+            a state that accepts customer action. Signed / rejected /
+            accepted proposals render read-only here; the backend
+            still 400s on a stale request, but hiding the buttons
+            keeps the surface honest. */}
+        {status === "sent" ? (
+          <>
+            <a href={`/portal/proposals/${id}/sign`}>
+              <PortalButton>Sign proposal →</PortalButton>
+            </a>
+            <a href={`/portal/proposals/${id}/reject`}>
+              <PortalButton variant="secondary">Decline</PortalButton>
+            </a>
+          </>
+        ) : null}
       </div>
     </PortalShell>
   );

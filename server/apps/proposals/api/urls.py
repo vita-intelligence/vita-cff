@@ -22,14 +22,6 @@ from apps.proposals.api.views import (
     ProposalSendToClientView,
     ProposalStatusView,
     ProposalTransitionsView,
-    PublicProposalDownloadView,
-    PublicProposalFinalizeView,
-    PublicProposalIdentifyView,
-    PublicProposalKioskView,
-    PublicProposalPdfView,
-    PublicProposalRejectView,
-    PublicProposalSignProposalView,
-    PublicProposalSignSpecView,
 )
 
 app_name = "proposals"
@@ -100,47 +92,15 @@ urlpatterns = [
         ProposalCostPreviewView.as_view(),
         name="proposal-cost-preview",
     ),
-    # ----- Proposal-centric kiosk (token-gated, no org auth) ---------
-    path(
-        "public/proposals/<uuid:token>/",
-        PublicProposalKioskView.as_view(),
-        name="proposal-public-kiosk",
-    ),
-    path(
-        "public/proposals/<uuid:token>/identify/",
-        PublicProposalIdentifyView.as_view(),
-        name="proposal-public-identify",
-    ),
-    path(
-        "public/proposals/<uuid:token>/pdf/",
-        PublicProposalPdfView.as_view(),
-        name="proposal-public-pdf",
-    ),
-    path(
-        "public/proposals/<uuid:token>/download/",
-        PublicProposalDownloadView.as_view(),
-        name="proposal-public-download",
-    ),
-    path(
-        "public/proposals/<uuid:token>/sign/",
-        PublicProposalSignProposalView.as_view(),
-        name="proposal-public-sign",
-    ),
-    path(
-        "public/proposals/<uuid:token>/specs/<uuid:sheet_id>/sign/",
-        PublicProposalSignSpecView.as_view(),
-        name="proposal-public-sign-spec",
-    ),
-    path(
-        "public/proposals/<uuid:token>/reject/",
-        PublicProposalRejectView.as_view(),
-        name="proposal-public-reject",
-    ),
-    path(
-        "public/proposals/<uuid:token>/finalize/",
-        PublicProposalFinalizeView.as_view(),
-        name="proposal-public-finalize",
-    ),
+    # The legacy anonymous kiosk routes (``public/proposals/<token>/*``)
+    # were removed when the customer portal landed. Customer access now
+    # flows through ``apps.client_portal`` — view + sign + reject +
+    # finalize live behind authenticated portal sessions. The
+    # ``PublicProposal*View`` classes remain in
+    # :mod:`apps.proposals.api.views` because their rendering helpers
+    # (``_render_public_proposal_payload``, ``_canonical_proposal_payload``,
+    # ``_document_hash``) are imported by the portal views; the views
+    # themselves are no longer routed.
     # MRPEasy integration. Same ``<org_id>/integrations/<name>/``
     # URL shape the Dynamics integration uses so the settings page
     # and any future integration follow a single discoverable
