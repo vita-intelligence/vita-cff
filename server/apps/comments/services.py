@@ -240,6 +240,18 @@ def create_comment(
         if parent.parent_id is not None:
             raise CommentReplyDepthExceeded()
 
+    # Spec-sheet threads are client-visible by design — the staff
+    # comments bubble explicitly renders a "client-visible thread"
+    # banner above the composer for that target. So a spec comment
+    # defaults to ``shared`` (surfaces in the customer portal),
+    # while formulation / project-level comments stay ``internal``
+    # and only flip to shared via the (future) per-comment toggle.
+    visibility = (
+        Comment.Visibility.SHARED
+        if fk_attr == "specification_sheet"
+        else Comment.Visibility.INTERNAL
+    )
+
     comment = Comment(
         organization=organization,
         content_type=content_type,
@@ -247,6 +259,7 @@ def create_comment(
         parent=parent,
         author=actor,
         body=cleaned,
+        visibility=visibility,
     )
     setattr(comment, fk_attr, target)
     comment.save()

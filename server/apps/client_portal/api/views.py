@@ -634,12 +634,22 @@ class ProposalFinalizeView(PortalAPIView):
         return Response(result)
 
 
+from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_sameorigin
+
+
+@method_decorator(xframe_options_sameorigin, name="dispatch")
 class ProposalPdfView(PortalAPIView):
     """``GET /api/portal/proposals/<id>/pdf/``.
 
     Renders the proposal as HTML for the in-portal preview iframe.
     Same shape as the legacy public endpoint — the new entry point
-    enforces auth + ownership.
+    enforces auth + ownership. The ``xframe_options_sameorigin``
+    decorator overrides Django's default ``X-Frame-Options: DENY``
+    so the portal page (served from the same origin via the Next
+    proxy) can embed the response in an iframe; without it the
+    browser shows a blank "refused to connect" frame and the
+    proposal preview never paints.
     """
 
     def get(self, request: Request, proposal_id: str):

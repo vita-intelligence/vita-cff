@@ -331,25 +331,42 @@ function MessageBubble({
   );
   return (
     <div
-      className={`flex w-full gap-2 ${
+      className={`flex w-full items-end gap-3 ${
         isClient ? "flex-row-reverse" : "flex-row"
       }`}
     >
       {avatar}
-      <div className={`flex max-w-[78%] flex-col ${align}`}>
-        <div className="mb-1 text-[10px] font-bold uppercase tracking-widest">
-          {message.author_name}{" "}
-          <span className="opacity-50">
-            · {new Date(message.created_at).toLocaleString()}
+      <div
+        className={`flex min-w-0 max-w-[75%] flex-col ${align}`}
+      >
+        <div
+          className={`mb-1 flex items-baseline gap-2 text-[11px] ${
+            isClient ? "flex-row-reverse" : "flex-row"
+          }`}
+        >
+          <span className="font-bold text-black">
+            {message.author_name}
+          </span>
+          <span className="text-neutral-500">
+            {new Date(message.created_at).toLocaleString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+              day: "2-digit",
+              month: "short",
+            })}
           </span>
         </div>
         <div
-          className={`whitespace-pre-wrap px-3 py-2 text-sm ${bubble}`}
+          className={`whitespace-pre-wrap break-words px-4 py-2.5 text-sm leading-relaxed shadow-[3px_3px_0_#000] ${bubble}`}
         >
-          {message.is_deleted ? <em>Deleted</em> : message.body}
+          {message.is_deleted ? (
+            <em className="opacity-60">Deleted</em>
+          ) : (
+            message.body
+          )}
         </div>
         {seen ? (
-          <span className="mt-0.5 text-[10px] uppercase tracking-widest text-neutral-600">
+          <span className="mt-1 text-[10px] font-bold uppercase tracking-widest text-neutral-500">
             Seen ✓
           </span>
         ) : null}

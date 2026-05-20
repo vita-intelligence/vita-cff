@@ -200,24 +200,42 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   const canFinalize =
     proposal.status === "sent" && allSigned && !finalized;
 
+  // How many documents have been signed out of the total (proposal +
+  // every attached spec). Drives the progress strip at the top so
+  // the customer can see at a glance how close they are to Finalise.
+  const totalDocs = 1 + proposal.attached_specs.length;
+  const signedDocs =
+    (proposal.has_signature ? 1 : 0)
+    + proposal.attached_specs.filter((s) => s.has_signature).length;
+
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <H1>{proposal.code}</H1>
-        <StatusPill status={finalized ? "accepted" : proposal.status} />
-      </div>
+    <div className="flex flex-col gap-8">
+      {/* ----- Header + progress ----- */}
+      <header className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <H1>{proposal.code}</H1>
+          <StatusPill status={finalized ? "accepted" : proposal.status} />
+        </div>
+        {proposal.status === "sent" && !finalized ? (
+          <ProgressStrip signed={signedDocs} total={totalDocs} />
+        ) : null}
+      </header>
 
       {actionError ? <ErrorBanner>{actionError}</ErrorBanner> : null}
 
-      {/* ----- Proposal document ----- */}
+      {/* ----- Step 1: Proposal ----- */}
       <Card>
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-          <H2>Proposal</H2>
-          {proposal.has_signature ? (
-            <SignedPill at={proposal.customer_signed_at} />
-          ) : null}
-        </div>
-        <div className="border-2 border-black">
+        <StepHeader
+          n={1}
+          title="Read the proposal"
+          done={proposal.has_signature}
+          rightSlot={
+            proposal.has_signature
+              ? <SignedPill at={proposal.customer_signed_at} />
+              : null
+          }
+        />
+        <div className="mt-4 border-2 border-black">
           <iframe
             src={`/api/portal/proposals/${proposalId}/pdf/`}
             title={`Proposal ${proposal.code}`}
@@ -226,37 +244,14 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         </div>
       </Card>
 
-      {/* ----- Attached specs ----- */}
-      {proposal.attached_specs.length > 0 ? (
-        <Card>
-          <H2>Attached specifications ({proposal.attached_specs.length})</H2>
-          <P>
-            Read each specification and sign it. The proposal cannot be
-            finalised until every attached document is signed.
-          </P>
-          <div className="flex flex-col gap-6">
-            {proposal.attached_specs.map((spec, index) => (
-              <SpecBlock
-                key={spec.id}
-                index={index + 1}
-                spec={spec}
-                onSign={() =>
-                  setPending({
-                    kind: "spec",
-                    sheetId: spec.id,
-                    label: `Spec ${spec.code || index + 1}`,
-                  })
-                }
-              />
-            ))}
-          </div>
-        </Card>
-      ) : null}
-
-      {/* ----- Acknowledgements ----- */}
+      {/* ----- Step 2: Acknowledgements + sign proposal ----- */}
       {!proposal.has_signature ? (
         <Card>
-          <H2>Acknowledgements</H2>
+          <StepHeader
+            n={2}
+            title="Acknowledge & sign the proposal"
+            done={false}
+          />
           <P>Tick every statement, then sign below.</P>
           <div className="flex flex-col gap-3">
             <AckRow
@@ -295,13 +290,50 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         </Card>
       ) : null}
 
-      {/* ----- Finalize ----- */}
+      {/* ----- Step 3: Attached specs ----- */}
+      {proposal.attached_specs.length > 0 ? (
+        <Card>
+          <StepHeader
+            n={proposal.has_signature ? 2 : 3}
+            title={`Sign ${proposal.attached_specs.length} specification${proposal.attached_specs.length === 1 ? "" : "s"}`}
+            done={proposal.attached_specs.every((s) => s.has_signature)}
+          />
+          <P>
+            Read each specification and sign it. The proposal cannot be
+            finalised until every attached document is signed.
+          </P>
+          <div className="flex flex-col gap-6">
+            {proposal.attached_specs.map((spec, index) => (
+              <SpecBlock
+                key={spec.id}
+                index={index + 1}
+                spec={spec}
+                onSign={() =>
+                  setPending({
+                    kind: "spec",
+                    sheetId: spec.id,
+                    label: `Spec ${spec.code || index + 1}`,
+                  })
+                }
+              />
+            ))}
+          </div>
+        </Card>
+      ) : null}
+
+      {/* ----- Final step: Finalise ----- */}
       <Card>
-        <H2>Finalise</H2>
+        <StepHeader
+          n={proposal.attached_specs.length > 0
+            ? (proposal.has_signature ? 3 : 4)
+            : (proposal.has_signature ? 2 : 3)}
+          title="Finalise"
+          done={finalized || proposal.status === "accepted"}
+        />
         <P>
-          Click Finalise once you have signed the proposal and every
-          attached specification. This locks the bundle and notifies
-          the Vita team.
+          {finalized || proposal.status === "accepted"
+            ? "This proposal is accepted. The Vita team has been notified."
+            : "Click Finalise once the proposal and every specification are signed."}
         </P>
         {finalized || proposal.status === "accepted" ? (
           <div className="border-2 border-black bg-black px-4 py-3 text-sm font-bold uppercase tracking-widest text-white">
@@ -320,9 +352,9 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         )}
       </Card>
 
-      {/* ----- Decline + messages ----- */}
+      {/* ----- Decline (only while actionable) ----- */}
       {proposal.status === "sent" && !proposal.has_signature ? (
-        <div>
+        <div className="border-t-2 border-dashed border-black pt-4">
           <Link
             href={`/portal/proposals/${proposalId}/reject`}
             className="text-xs font-bold uppercase tracking-widest underline"
@@ -332,6 +364,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         </div>
       ) : null}
 
+      {/* ----- Conversation (separate from sign flow) ----- */}
       <MessagesPanel proposalId={proposalId} />
 
       {/* ----- Signature dialog ----- */}
@@ -350,6 +383,63 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         errorMessage={actionError}
         onConfirm={onSignSubmit}
       />
+    </div>
+  );
+}
+
+
+function StepHeader({
+  n,
+  title,
+  done,
+  rightSlot,
+}: {
+  n: number;
+  title: string;
+  done: boolean;
+  rightSlot?: React.ReactNode;
+}) {
+  return (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <span
+          className={`flex h-8 w-8 items-center justify-center border-2 border-black text-sm font-black ${
+            done ? "bg-black text-white" : "bg-white text-black"
+          }`}
+        >
+          {done ? <CheckCircle2 className="h-4 w-4" /> : n}
+        </span>
+        <H2>{title}</H2>
+      </div>
+      {rightSlot ?? null}
+    </div>
+  );
+}
+
+
+function ProgressStrip({
+  signed,
+  total,
+}: {
+  signed: number;
+  total: number;
+}) {
+  return (
+    <div className="border-2 border-black bg-white p-3">
+      <div className="mb-2 flex items-center justify-between text-[11px] font-bold uppercase tracking-widest">
+        <span>Signing progress</span>
+        <span>
+          {signed} / {total} signed
+        </span>
+      </div>
+      <div className="flex h-2 w-full border-2 border-black">
+        <div
+          className="h-full bg-black transition-all"
+          style={{
+            width: `${total === 0 ? 0 : Math.round((signed / total) * 100)}%`,
+          }}
+        />
+      </div>
     </div>
   );
 }
