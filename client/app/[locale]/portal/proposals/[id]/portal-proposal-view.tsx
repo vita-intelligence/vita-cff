@@ -540,6 +540,18 @@ function ScrollTrackingIframe({
   onProgressChange: (p: number) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  // Stash the latest callback in a ref so the polling effect can
+  // run with an empty dep array. Without this, the parent passes
+  // an inline arrow on every render — the effect's
+  // ``[onProgressChange]`` dep would invalidate every render,
+  // tearing down + re-arming the interval, and the parent's
+  // ``setReadProgress`` inside the callback would trigger the
+  // re-render that started the cycle. React then bails with
+  // "Maximum update depth exceeded".
+  const cbRef = useRef(onProgressChange);
+  useEffect(() => {
+    cbRef.current = onProgressChange;
+  }, [onProgressChange]);
 
   useEffect(() => {
     // Polling pattern lifted from the kiosk view but loosened —
@@ -582,7 +594,7 @@ function ScrollTrackingIframe({
         const ratio = scrollable < 8
           ? 1
           : Math.min(1, scrollTop / scrollable);
-        onProgressChange(ratio);
+        cbRef.current(ratio);
       } catch {
         // Cross-origin iframe (shouldn't happen via the Next
         // proxy, but defensive) — ignore.
@@ -594,7 +606,7 @@ function ScrollTrackingIframe({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [onProgressChange]);
+  }, []);
 
   return (
     <div className="border-2 border-black">
@@ -619,6 +631,15 @@ function ScrollTrackingDiv({
   onProgressChange: (p: number) => void;
 }) {
   const ref = useRef<HTMLDivElement | null>(null);
+  // Same ref-stashed callback pattern as the iframe tracker —
+  // see the comment block above. Without it, the parent's inline
+  // arrow tears the listener down + reattaches it on every
+  // render, which feeds back through ``setReadProgress`` and
+  // triggers React's "Maximum update depth exceeded" guard.
+  const cbRef = useRef(onProgressChange);
+  useEffect(() => {
+    cbRef.current = onProgressChange;
+  }, [onProgressChange]);
 
   useEffect(() => {
     const el = ref.current;
@@ -628,16 +649,16 @@ function ScrollTrackingDiv({
       if (scrollable <= 0) {
         // Content fits in the box without scrolling — treat as fully
         // read. The kiosk does the same.
-        onProgressChange(1);
+        cbRef.current(1);
         return;
       }
-      onProgressChange(Math.min(1, el.scrollTop / scrollable));
+      cbRef.current(Math.min(1, el.scrollTop / scrollable));
     };
     el.addEventListener("scroll", report, { passive: true });
     // Run once after layout to handle the "fits in viewport" case.
     window.requestAnimationFrame(report);
     return () => el.removeEventListener("scroll", report);
-  }, [onProgressChange]);
+  }, []);
 
   return (
     <div ref={ref} className={className}>
