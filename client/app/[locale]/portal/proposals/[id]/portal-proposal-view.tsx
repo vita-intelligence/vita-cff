@@ -55,7 +55,11 @@ interface SpecRecord {
   readonly formulation_version_number: number | null;
   readonly has_signature: boolean;
   readonly customer_signed_at: string | null;
-  readonly rendered: unknown;
+  // Inline-render data for ``SpecSheetContent``. The backend names
+  // the field ``render_context`` (matches the standalone spec
+  // kiosk's payload); we keep that name through to the component
+  // so a future schema change only needs one rename.
+  readonly render_context: unknown;
 }
 
 
@@ -69,7 +73,8 @@ interface PortalProposalDto {
   readonly ack_lead_times: boolean;
   readonly ack_terms: boolean;
   readonly ack_rd_terms: boolean;
-  readonly specs: ReadonlyArray<SpecRecord>;
+  // Backend key is ``attached_specs`` — not ``specs``.
+  readonly attached_specs: ReadonlyArray<SpecRecord>;
 }
 
 
@@ -124,7 +129,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
 
   const allSigned = Boolean(
     proposal?.has_signature
-    && proposal.specs.every((spec) => spec.has_signature),
+    && proposal.attached_specs.every((spec) => spec.has_signature),
   );
 
   async function onSignSubmit(dataUrl: string): Promise<void> {
@@ -222,15 +227,15 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
       </Card>
 
       {/* ----- Attached specs ----- */}
-      {proposal.specs.length > 0 ? (
+      {proposal.attached_specs.length > 0 ? (
         <Card>
-          <H2>Attached specifications ({proposal.specs.length})</H2>
+          <H2>Attached specifications ({proposal.attached_specs.length})</H2>
           <P>
             Read each specification and sign it. The proposal cannot be
             finalised until every attached document is signed.
           </P>
           <div className="flex flex-col gap-6">
-            {proposal.specs.map((spec, index) => (
+            {proposal.attached_specs.map((spec, index) => (
               <SpecBlock
                 key={spec.id}
                 index={index + 1}
@@ -409,7 +414,7 @@ function SpecBlock({
           template to drift. */}
       <div className="max-h-[700px] overflow-y-auto bg-white p-6">
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        <SpecSheetContent rendered={spec.rendered as any} />
+        <SpecSheetContent rendered={spec.render_context as any} />
       </div>
       {!spec.has_signature ? (
         <div className="border-t-2 border-black bg-white px-4 py-3">
