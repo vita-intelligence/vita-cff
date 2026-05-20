@@ -53,4 +53,8 @@ urlpatterns = [
         "api/",
         include("apps.cff_submissions.api.urls", namespace="cff_submissions"),
     ),
+    path(
+        "api/portal/",
+        include("apps.client_portal.api.urls", namespace="client_portal"),
+    ),
 ]

@@ -109,6 +109,7 @@ LOCAL_APPS = [
     "apps.audit",
     "apps.comments",
     "apps.cff_submissions",
+    "apps.client_portal",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -176,6 +177,12 @@ SIMPLE_JWT = {
 # set/clear helpers that read these names.
 AUTH_COOKIE_ACCESS_NAME = "vita_access"
 AUTH_COOKIE_REFRESH_NAME = "vita_refresh"
+# Portal (customer-facing) cookies are deliberately disjoint from
+# the staff ones so the two sessions can coexist in the same
+# browser without trampling each other (e.g. an operator logged
+# into staff app + previewing the portal in another tab).
+PORTAL_AUTH_COOKIE_ACCESS_NAME = "vita_portal_access"
+PORTAL_AUTH_COOKIE_REFRESH_NAME = "vita_portal_refresh"
 AUTH_COOKIE_DOMAIN: str | None = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 AUTH_COOKIE_PATH = "/"
 AUTH_COOKIE_SECURE = _env_bool("AUTH_COOKIE_SECURE", default=not DEBUG)
