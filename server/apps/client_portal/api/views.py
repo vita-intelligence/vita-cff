@@ -243,6 +243,7 @@ def _me_payload(account) -> dict:
             "customer_company": customer.company or "",
             "customer_name": customer.name or "",
             "activated_at": account.activated_at,
+            "avatar_image": account.avatar_image or "",
         }
     ).data
 

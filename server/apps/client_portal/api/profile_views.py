@@ -162,6 +162,46 @@ class EmailChangeConfirmView(PortalAPIView):
         return Response(_payload(request.user))
 
 
+class AvatarUploadSerializer(serializers.Serializer):
+    """Body for the avatar upload endpoint.
+
+    Accepts a data URL (``data:image/...;base64,...``) of bounded
+    size — the client crops + scales before sending so the staff
+    avatar code (which already trusts the data URL is web-displayable)
+    can read this column without a second renderer.
+    """
+
+    avatar_image = serializers.CharField(
+        max_length=2_000_000,
+        allow_blank=True,
+        help_text=(
+            "Base64 data URL, or an empty string to clear the avatar. "
+            "Empty string falls back to initials in the staff comments "
+            "feed; the portal chat does the same."
+        ),
+    )
+
+
+class AvatarView(PortalAPIView):
+    """``POST /api/portal/profile/avatar/`` — set or clear the
+    client's avatar.
+
+    Upload is via base64 data URL (same shape staff uses) so the
+    portal can crop + encode client-side and we never touch
+    multipart parsing. Empty string clears it; the field is
+    nullable in effect because the staff renderer falls back to
+    initials.
+    """
+
+    def post(self, request: Request) -> Response:
+        serializer = AvatarUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        account = request.user
+        account.avatar_image = serializer.validated_data["avatar_image"]
+        account.save(update_fields=["avatar_image", "updated_at"])
+        return Response({"avatar_image": account.avatar_image})
+
+
 class PasswordChangeView(PortalAPIView):
     """``POST /api/portal/profile/password/``."""
 

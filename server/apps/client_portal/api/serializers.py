@@ -62,6 +62,7 @@ class MeSerializer(serializers.Serializer):
     customer_company = serializers.CharField()
     customer_name = serializers.CharField()
     activated_at = serializers.DateTimeField(allow_null=True)
+    avatar_image = serializers.CharField(allow_blank=True)
 
 
 # ---------------------------------------------------------------------------

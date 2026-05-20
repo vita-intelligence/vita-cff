@@ -10,6 +10,7 @@ from .messaging_views import (
     SpecMessageReadView,
 )
 from .profile_views import (
+    AvatarView,
     EmailChangeConfirmView,
     EmailChangeRequestView,
     PasswordChangeView,
@@ -84,6 +85,11 @@ urlpatterns = [
         "profile/password/",
         PasswordChangeView.as_view(),
         name="profile-password",
+    ),
+    path(
+        "profile/avatar/",
+        AvatarView.as_view(),
+        name="profile-avatar",
     ),
 
     path("proposals/", ProposalListView.as_view(), name="proposal-list"),

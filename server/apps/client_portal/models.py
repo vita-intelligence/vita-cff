@@ -119,6 +119,23 @@ class ClientAccount(AbstractBaseUser):
         ),
     )
 
+    avatar_image = models.TextField(
+        _("avatar image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64 data URL the customer uploaded as their profile "
+            "photo. Rendered next to their own messages in the "
+            "portal chat and on the staff comments side so the team "
+            "can match a thread to a face. Mirrors "
+            "``apps.accounts.User.avatar_image`` so the two surfaces "
+            "share the same wire shape (opaque string, displayed via "
+            "``<img src={value}/>``). When we migrate to blob storage "
+            "this column becomes a URL — every consumer already "
+            "treats the value as opaque."
+        ),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

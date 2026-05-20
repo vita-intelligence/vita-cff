@@ -172,6 +172,37 @@ function SpecThread({
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const prevCountRef = useRef(messages.length);
+
+  // Count staff messages that arrived AFTER the user's last-read
+  // bump. ``lastReadAt`` is the timestamp we wrote on the backend
+  // ``update_or_create`` for the client's CommentReadState; anything
+  // newer is "unread" from the client's POV.
+  const unread = messages.filter((m) => {
+    if (m.author_kind === "client") return false;
+    if (!lastReadAt) return true;
+    return m.created_at > lastReadAt;
+  }).length;
+
+  // Surface "New" in the document title while the tab is hidden so
+  // a customer browsing other tabs sees an unread hint. We pulse it
+  // until they bring the portal tab back to focus.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const prev = prevCountRef.current;
+    if (messages.length > prev && document.visibilityState !== "visible") {
+      const original = document.title;
+      document.title = `● New message — ${original}`;
+      const restore = () => {
+        if (document.visibilityState === "visible") {
+          document.title = original;
+          document.removeEventListener("visibilitychange", restore);
+        }
+      };
+      document.addEventListener("visibilitychange", restore);
+    }
+    prevCountRef.current = messages.length;
+  }, [messages.length]);
 
   // Bump the read receipt whenever new messages render. Idempotent
   // on the backend (``update_or_create``) so this is safe to fire
@@ -210,12 +241,17 @@ function SpecThread({
 
   return (
     <div className="border-2 border-black">
-      <div className="border-b-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
-        {label}
+      <div className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-2 text-xs font-bold uppercase tracking-widest text-white">
+        <span>{label}</span>
+        {unread > 0 ? (
+          <span className="border-2 border-white bg-white px-2 py-0.5 text-[10px] font-black uppercase tracking-widest text-black">
+            {unread} new
+          </span>
+        ) : null}
       </div>
       <div
         ref={scrollRef}
-        className="flex max-h-72 flex-col gap-3 overflow-y-auto bg-white p-4"
+        className="flex h-96 flex-col gap-3 overflow-y-auto bg-white p-4"
       >
         {messages.length === 0 ? (
           <p className="text-sm">No messages yet. Start the conversation.</p>
@@ -264,6 +300,15 @@ function isSeenByStaff(
 }
 
 
+function initialsOf(name: string): string {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return "?";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
+
+
 function MessageBubble({
   message,
   seen,
@@ -276,24 +321,69 @@ function MessageBubble({
   const bubble = isClient
     ? "bg-black text-white"
     : "bg-white text-black border-2 border-black";
+  const initials = initialsOf(message.author_name);
+  const avatar = (
+    <Avatar
+      src={message.author_avatar}
+      initials={initials}
+      isClient={isClient}
+    />
+  );
   return (
-    <div className={`flex flex-col ${align}`}>
-      <div className="mb-1 text-[10px] font-bold uppercase tracking-widest">
-        {message.author_name}{" "}
-        <span className="opacity-50">
-          · {new Date(message.created_at).toLocaleString()}
-        </span>
+    <div
+      className={`flex w-full gap-2 ${
+        isClient ? "flex-row-reverse" : "flex-row"
+      }`}
+    >
+      {avatar}
+      <div className={`flex max-w-[78%] flex-col ${align}`}>
+        <div className="mb-1 text-[10px] font-bold uppercase tracking-widest">
+          {message.author_name}{" "}
+          <span className="opacity-50">
+            · {new Date(message.created_at).toLocaleString()}
+          </span>
+        </div>
+        <div
+          className={`whitespace-pre-wrap px-3 py-2 text-sm ${bubble}`}
+        >
+          {message.is_deleted ? <em>Deleted</em> : message.body}
+        </div>
+        {seen ? (
+          <span className="mt-0.5 text-[10px] uppercase tracking-widest text-neutral-600">
+            Seen ✓
+          </span>
+        ) : null}
       </div>
-      <div
-        className={`max-w-[80%] whitespace-pre-wrap px-3 py-2 text-sm ${bubble}`}
-      >
-        {message.is_deleted ? <em>Deleted</em> : message.body}
-      </div>
-      {seen ? (
-        <span className="mt-0.5 text-[10px] uppercase tracking-widest text-neutral-600">
-          Seen ✓
-        </span>
-      ) : null}
     </div>
+  );
+}
+
+
+function Avatar({
+  src,
+  initials,
+  isClient,
+}: {
+  src: string;
+  initials: string;
+  isClient: boolean;
+}) {
+  if (src) {
+    return (
+      <img
+        src={src}
+        alt={initials}
+        className="h-9 w-9 shrink-0 border-2 border-black object-cover"
+      />
+    );
+  }
+  return (
+    <span
+      className={`flex h-9 w-9 shrink-0 items-center justify-center border-2 border-black text-[11px] font-black uppercase ${
+        isClient ? "bg-black text-white" : "bg-white text-black"
+      }`}
+    >
+      {initials}
+    </span>
   );
 }

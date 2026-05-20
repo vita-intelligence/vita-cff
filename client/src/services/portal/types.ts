@@ -19,6 +19,7 @@ export interface PortalMeDto {
   readonly customer_company: string;
   readonly customer_name: string;
   readonly activated_at: string | null;
+  readonly avatar_image: string;
 }
 
 export interface PortalProposalListItemDto {
@@ -43,6 +44,7 @@ export interface PortalMessageDto {
   readonly is_deleted: boolean;
   readonly author_kind: "staff" | "client";
   readonly author_name: string;
+  readonly author_avatar: string;
   readonly thread_target_type: "spec" | "proposal" | "other";
   readonly thread_target_id: string;
 }

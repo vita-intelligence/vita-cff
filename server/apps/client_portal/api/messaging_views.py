@@ -60,7 +60,9 @@ class PortalMessageSerializer(serializers.Serializer):
     ``author`` is a small bag of strings so the portal can render
     "Vita team" for staff and the customer's display name for the
     client without leaking the staff user's email back to the
-    portal.
+    portal. ``author_avatar`` is the same opaque base64 data URL
+    both sides of the chat use to render the bubble's profile
+    picture; empty string means "render initials".
     """
 
     id = serializers.UUIDField()
@@ -69,6 +71,7 @@ class PortalMessageSerializer(serializers.Serializer):
     is_deleted = serializers.BooleanField()
     author_kind = serializers.CharField()  # "staff" | "client"
     author_name = serializers.CharField()
+    author_avatar = serializers.CharField(allow_blank=True)
     thread_target_type = serializers.CharField()  # "proposal" | "spec"
     thread_target_id = serializers.UUIDField()
 
@@ -105,7 +108,9 @@ def _author_payload(comment: Comment) -> dict[str, str]:
     Staff authors render as "Vita team" — we deliberately don't
     leak the operator's name so the client experience is one
     consistent brand voice. Client authors render with the
-    customer company on file.
+    customer company on file. Both sides may carry an
+    ``avatar_image`` (base64 data URL); empty string means the
+    UI falls back to initials.
     """
 
     if comment.client_account_id is not None:
@@ -114,13 +119,25 @@ def _author_payload(comment: Comment) -> dict[str, str]:
             or comment.client_account.customer.name
             or "Customer"
         )
-        return {"kind": "client", "name": company}
+        return {
+            "kind": "client",
+            "name": company,
+            "avatar": comment.client_account.avatar_image or "",
+        }
     if comment.author_id is not None:
-        return {"kind": "staff", "name": "Vita team"}
+        return {
+            "kind": "staff",
+            "name": "Vita team",
+            "avatar": comment.author.avatar_image or "",
+        }
     # Legacy kiosk-guest comments — shouldn't surface in portal
     # because their ``visibility`` defaults to internal, but degrade
     # gracefully if a row ever slips through.
-    return {"kind": "staff", "name": comment.guest_name or "Vita team"}
+    return {
+        "kind": "staff",
+        "name": comment.guest_name or "Vita team",
+        "avatar": "",
+    }
 
 
 def _serialise(comment: Comment) -> dict[str, Any]:
@@ -133,6 +150,7 @@ def _serialise(comment: Comment) -> dict[str, Any]:
         "is_deleted": comment.is_deleted,
         "author_kind": author["kind"],
         "author_name": author["name"],
+        "author_avatar": author["avatar"],
         "thread_target_type": kind,
         "thread_target_id": target_id,
     }
@@ -222,7 +240,7 @@ class ProposalMessagesView(PortalAPIView):
                 visibility=Comment.Visibility.SHARED,
                 organization_id=proposal.organization_id,
             )
-            .select_related("client_account__customer")
+            .select_related("client_account__customer", "author")
             .order_by("created_at")
         )
 

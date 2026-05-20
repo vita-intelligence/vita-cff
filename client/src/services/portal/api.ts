@@ -214,3 +214,12 @@ export async function changePassword(
     new_password: newPassword,
   });
 }
+
+
+export async function updateAvatar(dataUrl: string): Promise<string> {
+  const { data } = await apiClient.post<{ avatar_image: string }>(
+    "/api/portal/profile/avatar/",
+    { avatar_image: dataUrl },
+  );
+  return data.avatar_image;
+}

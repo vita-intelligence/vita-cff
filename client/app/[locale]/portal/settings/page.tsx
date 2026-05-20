@@ -4,9 +4,19 @@ import { redirect } from "next/navigation";
 import { H1, P, PortalShell } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
 
+import { AvatarSection } from "./avatar-section";
 import { EmailSection } from "./email-section";
 import { PasswordSection } from "./password-section";
 import { ProfileSection } from "./profile-section";
+
+
+function initialsOf(profile: { name: string; company: string; email: string }): string {
+  const source = (profile.name || profile.company || profile.email || "").trim();
+  const parts = source.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
+}
 
 
 /**
@@ -47,6 +57,19 @@ export default async function PortalSettingsPage() {
     redirect("/portal/login");
   }
 
+  // Avatar lives on the auth/me payload (the ClientAccount row);
+  // pull it alongside the profile so the section mounts already
+  // populated.
+  const meRes = await fetch(
+    `${env.NEXT_PUBLIC_API_URL}/api/portal/auth/me/`,
+    {
+      cache: "no-store",
+      headers: { Cookie: `vita_portal_access=${portalCookie.value}` },
+    },
+  ).catch(() => null);
+  const me = meRes && meRes.ok ? await meRes.json() : null;
+  const avatarSrc: string = me?.avatar_image ?? "";
+
   return (
     <PortalShell>
       <H1>Settings</H1>
@@ -55,6 +78,10 @@ export default async function PortalSettingsPage() {
         contact you, or rotate your password.
       </P>
       <div className="grid gap-6">
+        <AvatarSection
+          initialAvatar={avatarSrc}
+          initialInitials={initialsOf(initial)}
+        />
         <ProfileSection initial={initial} />
         <EmailSection initialEmail={initial.email} />
         <PasswordSection />
