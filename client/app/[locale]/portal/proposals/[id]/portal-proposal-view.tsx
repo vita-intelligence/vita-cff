@@ -587,6 +587,14 @@ function ScrollTrackingIframe({
           body?.scrollHeight || 0,
         );
         if (scrollHeight <= 0 || clientHeight <= 0) return;
+        // Reject measurements taken before the document has any
+        // meaningful content. Without this guard, a freshly-mounted
+        // iframe that's still rendering its body would report
+        // ``scrollHeight`` close to (or under) ``clientHeight`` and
+        // we'd shortcut to ``ratio = 1`` — leaving the bar pinned
+        // at 100% without the customer scrolling. 240px is below
+        // anything a real proposal document would settle at.
+        if (scrollHeight < 240) return;
         const scrollable = Math.max(0, scrollHeight - clientHeight);
         // ``< 8`` because some templates report 1-2px of phantom
         // overflow from rounding — treat that as "fits, count as
@@ -645,19 +653,37 @@ function ScrollTrackingDiv({
     const el = ref.current;
     if (!el) return;
     const report = () => {
+      // Reject measurements where the content hasn't laid out yet
+      // — same guard as the iframe tracker. SpecSheetContent
+      // mounts client-side; the first ``requestAnimationFrame``
+      // tick used to see ``scrollHeight ≈ 0`` and incorrectly
+      // shortcut to ``1`` (fully read), pinning the bar at 100%
+      // before the customer ever scrolled.
+      if (el.scrollHeight < 240) return;
       const scrollable = el.scrollHeight - el.clientHeight;
       if (scrollable <= 0) {
-        // Content fits in the box without scrolling — treat as fully
-        // read. The kiosk does the same.
+        // Content genuinely fits in the box without scrolling —
+        // treat as fully read. The kiosk does the same.
         cbRef.current(1);
         return;
       }
       cbRef.current(Math.min(1, el.scrollTop / scrollable));
     };
     el.addEventListener("scroll", report, { passive: true });
-    // Run once after layout to handle the "fits in viewport" case.
+    // ResizeObserver re-fires ``report`` whenever the content
+    // grows / shrinks (e.g. an image inside SpecSheetContent
+    // finishes loading and bumps total height). Without it, the
+    // "fits in viewport, count as read" branch would never fire
+    // for short docs whose content rendered AFTER the initial
+    // animation frame.
+    const ro = new ResizeObserver(report);
+    ro.observe(el);
+    // Also kick off an initial measurement.
     window.requestAnimationFrame(report);
-    return () => el.removeEventListener("scroll", report);
+    return () => {
+      el.removeEventListener("scroll", report);
+      ro.disconnect();
+    };
   }, []);
 
   return (
