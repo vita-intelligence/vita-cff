@@ -99,10 +99,14 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
   const [acks, setAcks] = useState({
     spec: false, leadTimes: false, terms: false, rdTerms: false,
   });
-  // Read-progress per document. Keyed by document key: "proposal"
-  // for the cover doc, ``"spec:<id>"`` for each attached spec.
-  // A value >= READ_THRESHOLD unlocks that document's sign button.
-  const [readProgress, setReadProgress] = useState<Record<string, number>>({});
+  // Per-document "have I been read enough?" booleans. Keyed by
+  // ``"proposal"`` for the cover doc, ``"spec:<id>"`` for each
+  // attached spec. The tracker components own the percentage
+  // internally and only call back here when the threshold flips —
+  // this design mirrors the kiosk verbatim and avoids the
+  // "Maximum update depth exceeded" loop the previous
+  // percentage-driven design produced.
+  const [readState, setReadState] = useState<Record<string, boolean>>({});
 
   const load = useCallback(async () => {
     try {
@@ -195,7 +199,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
     return <P>Loading…</P>;
   }
 
-  const proposalReadEnough = (readProgress["proposal"] ?? 0) >= READ_THRESHOLD;
+  const proposalReadEnough = readState["proposal"] ?? false;
   const canSignProposal =
     !proposal.has_signature
     && proposal.status === "sent"
@@ -278,14 +282,10 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         <ScrollTrackingIframe
           src={`/api/portal/proposals/${proposalId}/pdf/`}
           title={`Proposal ${proposal.code}`}
-          onProgressChange={(p) =>
-            setReadProgress((s) => ({ ...s, proposal: Math.max(s["proposal"] ?? 0, p) }))
-          }
-        />
-        <ReadProgressBar
-          value={readProgress["proposal"] ?? 0}
-          onForceRead={() =>
-            setReadProgress((s) => ({ ...s, proposal: 1 }))
+          onAllReadChange={(done) =>
+            setReadState((s) =>
+              s["proposal"] === done ? s : { ...s, proposal: done }
+            )
           }
         />
 
@@ -341,13 +341,12 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
           key={spec.id}
           number={index + 2}
           spec={spec}
-          read={(readProgress[`spec:${spec.id}`] ?? 0) >= READ_THRESHOLD}
-          progress={readProgress[`spec:${spec.id}`] ?? 0}
-          onProgressChange={(p) =>
-            setReadProgress((s) => ({
-              ...s,
-              [`spec:${spec.id}`]: Math.max(s[`spec:${spec.id}`] ?? 0, p),
-            }))
+          read={readState[`spec:${spec.id}`] ?? false}
+          onAllReadChange={(done) =>
+            setReadState((s) => {
+              const key = `spec:${spec.id}`;
+              return s[key] === done ? s : { ...s, [key]: done };
+            })
           }
           onSign={() =>
             setPending({
@@ -477,15 +476,13 @@ function SpecCard({
   number,
   spec,
   read,
-  progress,
-  onProgressChange,
+  onAllReadChange,
   onSign,
 }: {
   number: number;
   spec: SpecRecord;
   read: boolean;
-  progress: number;
-  onProgressChange: (p: number) => void;
+  onAllReadChange: (allRead: boolean) => void;
   onSign: () => void;
 }) {
   return (
@@ -503,15 +500,11 @@ function SpecCard({
       ) : null}
       <ScrollTrackingDiv
         className="max-h-[700px] overflow-y-auto border-2 border-black bg-white p-6"
-        onProgressChange={onProgressChange}
+        onAllReadChange={onAllReadChange}
       >
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
         <SpecSheetContent rendered={spec.render_context as any} />
       </ScrollTrackingDiv>
-      <ReadProgressBar
-        value={progress}
-        onForceRead={() => onProgressChange(1)}
-      />
       {!spec.has_signature ? (
         <div className="mt-6 border-t-2 border-dashed border-black pt-6">
           <PortalButton type="button" disabled={!read} onClick={onSign}>
@@ -533,80 +526,153 @@ function SpecCard({
 function ScrollTrackingIframe({
   src,
   title,
-  onProgressChange,
+  onAllReadChange,
 }: {
   src: string;
   title: string;
-  onProgressChange: (p: number) => void;
+  onAllReadChange: (allRead: boolean) => void;
 }) {
+  // Port of the legacy kiosk's ScrollTrackingIframe — self-owned
+  // progress state, parent only learns about the
+  // crossed-the-threshold boolean. The previous portal
+  // implementation drove parent state directly on every poll;
+  // that caused the parent to recreate inline callbacks each
+  // render, blowing the useEffect dep + producing the
+  // "Maximum update depth exceeded" loop. Owning the state here
+  // ends the round-trip.
+  const [progress, setProgress] = useState(0);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
-  // Stash the latest callback in a ref so the polling effect can
-  // run with an empty dep array. Without this, the parent passes
-  // an inline arrow on every render — the effect's
-  // ``[onProgressChange]`` dep would invalidate every render,
-  // tearing down + re-arming the interval, and the parent's
-  // ``setReadProgress`` inside the callback would trigger the
-  // re-render that started the cycle. React then bails with
-  // "Maximum update depth exceeded".
-  const cbRef = useRef(onProgressChange);
+  const allDone = progress >= READ_THRESHOLD;
+  // Stash the parent callback so the threshold-effect can fire on
+  // ``allDone`` flips without re-running on every callback identity
+  // change.
+  const cbRef = useRef(onAllReadChange);
   useEffect(() => {
-    cbRef.current = onProgressChange;
-  }, [onProgressChange]);
+    cbRef.current = onAllReadChange;
+  }, [onAllReadChange]);
+  useEffect(() => {
+    cbRef.current(allDone);
+  }, [allDone]);
 
   useEffect(() => {
-    // Polling pattern lifted from the kiosk view but loosened —
-    // the original ``readyState/URL`` guards were rejecting too
-    // many real polls (some browsers report ``URL: ""`` for
-    // same-origin iframes loaded via proxy, others report
-    // ``readyState`` as ``interactive`` even after first paint).
-    // Defensive ``Math.max`` across documentElement + body keeps
-    // the scroll math correct on both standards-mode and
-    // quirks-mode documents (which the WeasyPrint-friendly
-    // proposal template might produce depending on the doctype).
     let cancelled = false;
     const tick = () => {
       if (cancelled) return;
       const iframe = iframeRef.current;
-      if (!iframe) return;
-      try {
-        const doc = iframe.contentDocument;
-        const win = iframe.contentWindow;
-        if (!doc || !win) return;
-        const root = doc.documentElement;
-        const body = doc.body;
-        const scrollTop = Math.max(
-          win.scrollY || 0,
-          root?.scrollTop || 0,
-          body?.scrollTop || 0,
-        );
-        const clientHeight = win.innerHeight
-          || root?.clientHeight
-          || 0;
-        const scrollHeight = Math.max(
-          root?.scrollHeight || 0,
-          body?.scrollHeight || 0,
-        );
-        if (scrollHeight <= 0 || clientHeight <= 0) return;
-        // Reject measurements taken before the document has any
-        // meaningful content. Without this guard, a freshly-mounted
-        // iframe that's still rendering its body would report
-        // ``scrollHeight`` close to (or under) ``clientHeight`` and
-        // we'd shortcut to ``ratio = 1`` — leaving the bar pinned
-        // at 100% without the customer scrolling. 240px is below
-        // anything a real proposal document would settle at.
-        if (scrollHeight < 240) return;
-        const scrollable = Math.max(0, scrollHeight - clientHeight);
-        // ``< 8`` because some templates report 1-2px of phantom
-        // overflow from rounding — treat that as "fits, count as
-        // read" instead of leaving the bar stuck below 100%.
-        const ratio = scrollable < 8
-          ? 1
-          : Math.min(1, scrollTop / scrollable);
-        cbRef.current(ratio);
-      } catch {
-        // Cross-origin iframe (shouldn't happen via the Next
-        // proxy, but defensive) — ignore.
+      if (iframe === null) return;
+      const win = iframe.contentWindow;
+      const doc = iframe.contentDocument;
+      if (win === null || doc === null) return;
+      // Three guards (verbatim from the kiosk):
+      //   1. ``readyState === "complete"`` — DOMContentLoaded + every
+      //      subresource has loaded. Before this the iframe's
+      //      ``scrollHeight`` is the height of the fragment parsed
+      //      so far, not the real document.
+      //   2. URL is not ``about:blank`` — the placeholder document
+      //      a fresh iframe carries before the real ``src`` finishes
+      //      loading. Its ``scrollHeight`` matches ``clientHeight``,
+      //      which the "scrollable ≤ 0 → fully read" branch would
+      //      otherwise misread as "already done".
+      //   3. URL is not "" — same reasoning, alternate UA.
+      if (doc.readyState !== "complete") return;
+      const docUrl = doc.URL || "";
+      if (docUrl === "" || docUrl === "about:blank") return;
+
+      const root = doc.documentElement;
+      if (root === null) return;
+
+      const scrollTop = win.scrollY;
+      const clientHeight = win.innerHeight;
+      const scrollHeight = root.scrollHeight;
+      if (scrollHeight <= 0 || clientHeight <= 0) return;
+      const scrollable = Math.max(0, scrollHeight - clientHeight);
+      if (scrollable <= 0) {
+        setProgress(1);
+        return;
       }
+      const fraction = scrollTop / scrollable;
+      setProgress((prev) =>
+        fraction > prev ? Math.min(1, fraction) : prev,
+      );
+    };
+
+    // First tick fires immediately so a fast-loading document
+    // doesn't wait 250ms for the initial measurement.
+    tick();
+    const id = window.setInterval(tick, 250);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [src]);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="border-2 border-black">
+        <iframe
+          ref={iframeRef}
+          src={src}
+          title={title}
+          className="block h-[720px] w-full bg-white"
+        />
+      </div>
+      <ReadProgressBar
+        value={progress}
+        onForceRead={() => setProgress(1)}
+      />
+    </div>
+  );
+}
+
+
+function ScrollTrackingDiv({
+  className,
+  children,
+  onAllReadChange,
+}: {
+  className: string;
+  children: React.ReactNode;
+  onAllReadChange: (allRead: boolean) => void;
+}) {
+  // Mirrors the kiosk's InlineSpecPreview tracking — self-owned
+  // monotone progress state; parent only learns when the
+  // threshold flips. Polling instead of pure scroll listener
+  // because ``ResizeObserver`` + ``scroll`` listeners both miss
+  // the "content grew after I sat at the bottom" edge case
+  // (image loads, height jumps, scroll position no longer at
+  // bottom relative to new total) — 4Hz polling catches it.
+  const [progress, setProgress] = useState(0);
+  const ref = useRef<HTMLDivElement | null>(null);
+  const allDone = progress >= READ_THRESHOLD;
+  const cbRef = useRef(onAllReadChange);
+  useEffect(() => {
+    cbRef.current = onAllReadChange;
+  }, [onAllReadChange]);
+  useEffect(() => {
+    cbRef.current(allDone);
+  }, [allDone]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      const el = ref.current;
+      if (el === null) return;
+      const scrollTop = el.scrollTop;
+      const clientHeight = el.clientHeight;
+      const scrollHeight = el.scrollHeight;
+      if (scrollHeight <= 0 || clientHeight <= 0) return;
+      const scrollable = Math.max(0, scrollHeight - clientHeight);
+      if (scrollable <= 0) {
+        // Content fits in the box without scrolling — fully read
+        // on first measurement.
+        setProgress(1);
+        return;
+      }
+      const fraction = scrollTop / scrollable;
+      setProgress((prev) =>
+        fraction > prev ? Math.min(1, fraction) : prev,
+      );
     };
     tick();
     const id = window.setInterval(tick, 250);
@@ -617,78 +683,14 @@ function ScrollTrackingIframe({
   }, []);
 
   return (
-    <div className="border-2 border-black">
-      <iframe
-        ref={iframeRef}
-        src={src}
-        title={title}
-        className="block h-[720px] w-full bg-white"
+    <div className="flex flex-col gap-2">
+      <div ref={ref} className={className}>
+        {children}
+      </div>
+      <ReadProgressBar
+        value={progress}
+        onForceRead={() => setProgress(1)}
       />
-    </div>
-  );
-}
-
-
-function ScrollTrackingDiv({
-  className,
-  children,
-  onProgressChange,
-}: {
-  className: string;
-  children: React.ReactNode;
-  onProgressChange: (p: number) => void;
-}) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  // Same ref-stashed callback pattern as the iframe tracker —
-  // see the comment block above. Without it, the parent's inline
-  // arrow tears the listener down + reattaches it on every
-  // render, which feeds back through ``setReadProgress`` and
-  // triggers React's "Maximum update depth exceeded" guard.
-  const cbRef = useRef(onProgressChange);
-  useEffect(() => {
-    cbRef.current = onProgressChange;
-  }, [onProgressChange]);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const report = () => {
-      // Reject measurements where the content hasn't laid out yet
-      // — same guard as the iframe tracker. SpecSheetContent
-      // mounts client-side; the first ``requestAnimationFrame``
-      // tick used to see ``scrollHeight ≈ 0`` and incorrectly
-      // shortcut to ``1`` (fully read), pinning the bar at 100%
-      // before the customer ever scrolled.
-      if (el.scrollHeight < 240) return;
-      const scrollable = el.scrollHeight - el.clientHeight;
-      if (scrollable <= 0) {
-        // Content genuinely fits in the box without scrolling —
-        // treat as fully read. The kiosk does the same.
-        cbRef.current(1);
-        return;
-      }
-      cbRef.current(Math.min(1, el.scrollTop / scrollable));
-    };
-    el.addEventListener("scroll", report, { passive: true });
-    // ResizeObserver re-fires ``report`` whenever the content
-    // grows / shrinks (e.g. an image inside SpecSheetContent
-    // finishes loading and bumps total height). Without it, the
-    // "fits in viewport, count as read" branch would never fire
-    // for short docs whose content rendered AFTER the initial
-    // animation frame.
-    const ro = new ResizeObserver(report);
-    ro.observe(el);
-    // Also kick off an initial measurement.
-    window.requestAnimationFrame(report);
-    return () => {
-      el.removeEventListener("scroll", report);
-      ro.disconnect();
-    };
-  }, []);
-
-  return (
-    <div ref={ref} className={className}>
-      {children}
     </div>
   );
 }
