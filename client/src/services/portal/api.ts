@@ -173,6 +173,86 @@ export async function markSpecMessagesRead(sheetId: string): Promise<void> {
 }
 
 
+// --- Specs (standalone surface) -------------------------------------------
+
+
+export interface PortalSpecListItem {
+  readonly id: string;
+  readonly code: string;
+  readonly document_kind: string;
+  readonly status: string;
+  readonly formulation_name: string;
+  readonly formulation_version_number: number | null;
+  readonly has_signature: boolean;
+  readonly customer_signed_at: string | null;
+  readonly proposal: {
+    readonly id: string;
+    readonly code: string;
+    readonly status: string;
+  } | null;
+}
+
+
+export async function fetchSpecs(): Promise<{
+  results: PortalSpecListItem[];
+}> {
+  const { data } = await apiClient.get<{ results: PortalSpecListItem[] }>(
+    "/api/portal/specs/",
+  );
+  return data;
+}
+
+
+export async function fetchSpec(sheetId: string): Promise<
+  PortalSpecListItem & { render_context: unknown }
+> {
+  const { data } = await apiClient.get<
+    PortalSpecListItem & { render_context: unknown }
+  >(`/api/portal/specs/${sheetId}/`);
+  return data;
+}
+
+
+// --- Proposal-level chat (distinct from per-spec threads) -----------------
+
+
+export async function fetchProposalChat(proposalId: string): Promise<{
+  results: PortalMessageDto[];
+  read_state: string | null;
+  proposal_id: string;
+}> {
+  const { data } = await apiClient.get<{
+    results: PortalMessageDto[];
+    read_state: string | null;
+    proposal_id: string;
+  }>(`/api/portal/proposals/${proposalId}/proposal-messages/`);
+  return data;
+}
+
+
+export async function postProposalChatMessage(
+  proposalId: string,
+  body: string,
+  parentId?: string | null,
+): Promise<PortalMessageDto> {
+  const payload: Record<string, unknown> = { body };
+  if (parentId) payload.parent_id = parentId;
+  const { data } = await apiClient.post<PortalMessageDto>(
+    `/api/portal/proposals/${proposalId}/proposal-messages/post/`,
+    payload,
+  );
+  return data;
+}
+
+
+export async function markProposalChatRead(proposalId: string): Promise<void> {
+  await apiClient.post(
+    `/api/portal/proposals/${proposalId}/proposal-messages/read/`,
+    {},
+  );
+}
+
+
 export async function fetchProfile(): Promise<PortalProfileDto> {
   const { data } = await apiClient.get<PortalProfileDto>("/api/portal/profile/");
   return data;

@@ -375,6 +375,192 @@ class SpecMessagePostView(PortalAPIView):
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 
 
+class ProposalChatListView(PortalAPIView):
+    """``GET /api/portal/proposals/<id>/proposal-messages/``.
+
+    Returns the shared comments that target the proposal itself —
+    distinct from the per-spec chat surfaces. The portal page
+    splits these so a busy proposal with N specs doesn't pile a
+    thousand messages into one thread.
+    """
+
+    def get(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.models import Proposal
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        proposal_ct = ContentType.objects.get_for_model(Proposal)
+
+        comments = (
+            Comment.objects
+            .filter(
+                content_type=proposal_ct,
+                object_id=proposal.id,
+                visibility=Comment.Visibility.SHARED,
+                organization_id=proposal.organization_id,
+            )
+            .select_related(
+                "client_account__customer",
+                "author",
+                "parent__client_account__customer",
+                "parent__author",
+            )
+            .order_by("created_at")
+        )
+
+        read_row = (
+            CommentReadState.objects
+            .filter(
+                viewer_client=request.user,
+                content_type=proposal_ct,
+                object_id=proposal.id,
+            )
+            .values("last_read_at")
+            .first()
+        )
+        return Response(
+            {
+                "results": [_serialise(c) for c in comments],
+                "read_state": (
+                    read_row["last_read_at"].isoformat()
+                    if read_row else None
+                ),
+                "proposal_id": str(proposal.id),
+            },
+        )
+
+
+class ProposalChatPostView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/proposal-messages/``."""
+
+    def post(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.models import Proposal
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        try:
+            data = PostMessageSerializer(data=request.data)
+            data.is_valid(raise_exception=True)
+        except ValidationError as exc:
+            return _err(
+                "invalid_message",
+                status.HTTP_400_BAD_REQUEST,
+                detail=exc.detail,
+            )
+
+        proposal_ct = ContentType.objects.get_for_model(Proposal)
+        parent_id = data.validated_data.get("parent_id")
+        parent: Comment | None = None
+        if parent_id:
+            parent = (
+                Comment.objects
+                .filter(
+                    pk=parent_id,
+                    content_type=proposal_ct,
+                    object_id=proposal.id,
+                    visibility=Comment.Visibility.SHARED,
+                    organization_id=proposal.organization_id,
+                )
+                .first()
+            )
+            if parent is None:
+                return _err(
+                    "invalid_reply_target",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            # Two-level cap, same as the spec messaging path.
+            if parent.parent_id is not None:
+                parent = parent.parent
+
+        with transaction.atomic():
+            comment = Comment.objects.create(
+                organization_id=proposal.organization_id,
+                content_type=proposal_ct,
+                object_id=proposal.id,
+                proposal=proposal,
+                client_account=request.user,
+                visibility=Comment.Visibility.SHARED,
+                body=data.validated_data["body"],
+                parent=parent,
+            )
+
+        return Response(_serialise(comment), status=status.HTTP_201_CREATED)
+
+
+class ProposalChatReadView(PortalAPIView):
+    """``POST /api/portal/proposals/<id>/proposal-messages/read/``."""
+
+    def post(self, request: Request, proposal_id: str) -> Response:
+        from apps.proposals.models import Proposal
+
+        proposal = _load_owned_proposal(request, proposal_id)
+        proposal_ct = ContentType.objects.get_for_model(Proposal)
+        CommentReadState.objects.update_or_create(
+            viewer_client=request.user,
+            content_type=proposal_ct,
+            object_id=proposal.id,
+            defaults={
+                "organization_id": proposal.organization_id,
+                "last_read_at": timezone.now(),
+            },
+        )
+        return Response({"detail": "ok"})
+
+
+class SpecMessageThreadView(PortalAPIView):
+    """``GET + POST /api/portal/specs/<sheet_id>/messages/``.
+
+    Single resource: ``GET`` lists shared comments scoped to one
+    spec (used by the standalone spec-detail page);
+    ``POST`` creates a new comment via :class:`SpecMessagePostView`
+    so we keep one URL path with two verbs and don't break the
+    existing test contract.
+    """
+
+    def post(self, request: Request, sheet_id: str) -> Response:
+        return SpecMessagePostView().post(request, sheet_id)
+
+    def get(self, request: Request, sheet_id: str) -> Response:
+        from apps.specifications.models import SpecificationSheet
+
+        sheet = _load_owned_spec(request, sheet_id)
+        spec_ct = ContentType.objects.get_for_model(SpecificationSheet)
+        comments = (
+            Comment.objects
+            .filter(
+                content_type=spec_ct,
+                object_id=sheet.id,
+                visibility=Comment.Visibility.SHARED,
+                organization_id=sheet.organization_id,
+            )
+            .select_related(
+                "client_account__customer",
+                "author",
+                "parent__client_account__customer",
+                "parent__author",
+            )
+            .order_by("created_at")
+        )
+        read_row = (
+            CommentReadState.objects
+            .filter(
+                viewer_client=request.user,
+                content_type=spec_ct,
+                object_id=sheet.id,
+            )
+            .values("last_read_at")
+            .first()
+        )
+        return Response(
+            {
+                "results": [_serialise(c) for c in comments],
+                "read_state": (
+                    {str(sheet.id): read_row["last_read_at"].isoformat()}
+                    if read_row
+                    else {}
+                ),
+            },
+        )
+
+
 class SpecMessageReadView(PortalAPIView):
     """``POST /api/portal/specs/<sheet_id>/messages/read/``.
 

@@ -5,9 +5,16 @@ from __future__ import annotations
 from django.urls import path
 
 from .messaging_views import (
+    ProposalChatListView,
+    ProposalChatPostView,
+    ProposalChatReadView,
     ProposalMessagesView,
-    SpecMessagePostView,
     SpecMessageReadView,
+    SpecMessageThreadView,
+)
+from .specs_views import (
+    SpecDetailView,
+    SpecListView,
 )
 from .profile_views import (
     AvatarView,
@@ -139,14 +146,45 @@ urlpatterns = [
         ProposalMessagesView.as_view(),
         name="proposal-messages",
     ),
+    # Both ``GET`` (list comments) and ``POST`` (create comment)
+    # share this URL. The standalone spec page fetches via GET;
+    # the existing customer-portal tests + spec chat panel post
+    # to the same URL.
     path(
         "specs/<uuid:sheet_id>/messages/",
-        SpecMessagePostView.as_view(),
-        name="spec-message-post",
+        SpecMessageThreadView.as_view(),
+        name="spec-message-thread",
     ),
     path(
         "specs/<uuid:sheet_id>/messages/read/",
         SpecMessageReadView.as_view(),
         name="spec-message-read",
+    ),
+
+    # Standalone specs surface — list + detail.
+    path("specs/", SpecListView.as_view(), name="spec-list"),
+    path(
+        "specs/<uuid:sheet_id>/",
+        SpecDetailView.as_view(),
+        name="spec-detail",
+    ),
+
+    # Proposal-level chat — distinct from the per-spec threads
+    # above so a proposal's "questions about this deal" don't
+    # pile into a single spec's conversation.
+    path(
+        "proposals/<uuid:proposal_id>/proposal-messages/",
+        ProposalChatListView.as_view(),
+        name="proposal-chat-list",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/proposal-messages/post/",
+        ProposalChatPostView.as_view(),
+        name="proposal-chat-post",
+    ),
+    path(
+        "proposals/<uuid:proposal_id>/proposal-messages/read/",
+        ProposalChatReadView.as_view(),
+        name="proposal-chat-read",
     ),
 ]

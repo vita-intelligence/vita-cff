@@ -10,6 +10,13 @@
  * matching CSS variable here too.
  */
 @theme {
+  /* Portal palette — customer-facing brutalist surface */
+  /* ``paper`` is a warm off-white that gives cards on the portal
+   * something to sit against. Pure white would make every card
+   * disappear into the background; a touch of beige creates the
+   * subtle tonal step that reads "designed". */
+  --color-paper: #faf8f4;
+
   /* Ink palette — primary monochrome surfaces */
   --color-ink-0: #ffffff;
   --color-ink-50: #fafafa;

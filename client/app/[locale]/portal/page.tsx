@@ -1,109 +1,149 @@
 import { cookies } from "next/headers";
-import Link from "next/link";
 import { redirect } from "next/navigation";
+import { ArrowRight, FileText, FlaskConical, Settings as SettingsIcon } from "lucide-react";
 
 import {
   Card,
-  H1,
+  Eyebrow,
+  PageHeader,
   PortalShell,
-  StatusPill,
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
 
 
-interface ProposalListResponse {
-  results: Array<{
-    id: string;
-    code: string;
-    title: string;
-    status: string;
-    updated_at: string;
-    created_at: string;
-  }>;
-}
-
-
 /**
- * Dashboard — the post-login landing page.
+ * Portal hub.
  *
- * Server component. Reads the portal cookie via ``next/headers`` and
- * forwards it to the backend ``/api/portal/proposals/`` so the
- * response carries only proposals tied to the logged-in customer.
- * Unauthenticated visitors are bounced to ``/portal/login`` before
- * any markup ships.
+ * Previously this route doubled as the proposals list. After
+ * customer feedback ("a lot of confusion, too much info") the
+ * page restructure splits navigation into a hub of section
+ * cards: Proposals / Specifications / Settings. Each card
+ * surfaces a small counter so the customer can see "I have N
+ * proposals" without clicking through.
  */
-export default async function PortalDashboard() {
+export default async function PortalHub() {
   const jar = await cookies();
   const portalCookie = jar.get("vita_portal_access");
   if (!portalCookie) {
     redirect("/portal/login");
   }
 
+  const headers = { Cookie: `vita_portal_access=${portalCookie.value}` };
   const base = env.NEXT_PUBLIC_API_URL;
-  const res = await fetch(`${base}/api/portal/proposals/`, {
-    cache: "no-store",
-    headers: { Cookie: `vita_portal_access=${portalCookie.value}` },
-  }).catch(() => null);
 
-  if (!res || res.status === 401 || res.status === 403) {
+  const [meRes, propRes, specRes] = await Promise.all([
+    fetch(`${base}/api/portal/auth/me/`, { cache: "no-store", headers }).catch(() => null),
+    fetch(`${base}/api/portal/proposals/`, { cache: "no-store", headers }).catch(() => null),
+    fetch(`${base}/api/portal/specs/`, { cache: "no-store", headers }).catch(() => null),
+  ]);
+
+  if (!meRes || meRes.status === 401 || meRes.status === 403) {
     redirect("/portal/login");
   }
 
-  const meRes = await fetch(`${base}/api/portal/auth/me/`, {
-    cache: "no-store",
-    headers: { Cookie: `vita_portal_access=${portalCookie.value}` },
-  }).catch(() => null);
-  const me = meRes && meRes.ok ? await meRes.json() : null;
+  const me = meRes.ok ? await meRes.json() : null;
+  const proposals = propRes && propRes.ok ? await propRes.json() : { results: [] };
+  const specs = specRes && specRes.ok ? await specRes.json() : { results: [] };
 
-  const data: ProposalListResponse = res && res.ok
-    ? await res.json()
-    : { results: [] };
+  const proposalCount: number = proposals.results?.length ?? 0;
+  const specCount: number = specs.results?.length ?? 0;
+  const signedProposals: number = (proposals.results || []).filter(
+    (p: { status: string }) => p.status === "accepted",
+  ).length;
 
   return (
-    <PortalShell>
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-        <H1>{me?.customer_company || "Your proposals"}</H1>
-        <Link
-          href="/portal/settings"
-          className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest shadow-[4px_4px_0_#000] hover:bg-neutral-100"
-        >
-          Settings →
-        </Link>
+    <PortalShell active="home">
+      <PageHeader
+        eyebrow="Welcome"
+        title={me?.customer_company || "Your portal"}
+        subtitle="Everything Vita has shared with you, in one place. Open a card below to dive in."
+      />
+
+      <div className="grid gap-6 sm:grid-cols-2">
+        <HubCard
+          href="/portal/proposals"
+          icon={<FileText className="h-7 w-7" />}
+          eyebrow="01 / Proposals"
+          title="Your proposals"
+          stat={proposalCount === 0 ? "No proposals yet" : `${proposalCount} total · ${signedProposals} signed`}
+          accent
+        />
+        <HubCard
+          href="/portal/specs"
+          icon={<FlaskConical className="h-7 w-7" />}
+          eyebrow="02 / Specifications"
+          title="Specification sheets"
+          stat={specCount === 0 ? "No specs yet" : `${specCount} attached`}
+        />
       </div>
-      {data.results.length === 0 ? (
-        <Card className="max-w-2xl">
-          <p className="text-sm">
-            No proposals yet. As soon as Vita sends one, it will appear here.
-          </p>
+
+      <div className="mt-8">
+        <Card hover className="block">
+          <a href="/portal/settings" className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-4">
+              <span className="border-2 border-black bg-white p-3 text-black">
+                <SettingsIcon className="h-5 w-5" />
+              </span>
+              <div>
+                <Eyebrow>Settings</Eyebrow>
+                <div className="mt-1 text-lg font-black uppercase tracking-tight">
+                  Your details, password & avatar
+                </div>
+              </div>
+            </div>
+            <ArrowRight className="h-5 w-5" />
+          </a>
         </Card>
-      ) : (
-        <div className="grid gap-4">
-          {data.results.map((p) => (
-            <Link
-              key={p.id}
-              href={`/portal/proposals/${p.id}`}
-              className="block"
-            >
-              <Card className="hover:translate-x-[-2px] hover:translate-y-[-2px] hover:shadow-[8px_8px_0_#000] transition-transform">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <div className="text-lg font-black">
-                      {p.code || "Proposal"}
-                    </div>
-                    {p.title ? (
-                      <div className="text-sm">{p.title}</div>
-                    ) : null}
-                  </div>
-                  <StatusPill status={p.status} />
-                </div>
-                <div className="mt-3 text-[11px] uppercase tracking-widest">
-                  Updated {new Date(p.updated_at).toLocaleString()}
-                </div>
-              </Card>
-            </Link>
-          ))}
-        </div>
-      )}
+      </div>
     </PortalShell>
+  );
+}
+
+
+function HubCard({
+  href,
+  icon,
+  eyebrow,
+  title,
+  stat,
+  accent = false,
+}: {
+  href: string;
+  icon: React.ReactNode;
+  eyebrow: string;
+  title: string;
+  stat: string;
+  accent?: boolean;
+}) {
+  // Inverted ``accent`` styling for the primary card (Proposals)
+  // because that's where the customer wants to land first.
+  return (
+    <Card hover accent={accent} className="block">
+      <a href={href} className="flex h-full flex-col gap-6">
+        <div className="flex items-start justify-between">
+          <span
+            className={`inline-flex h-12 w-12 items-center justify-center border-2 ${
+              accent ? "border-white bg-white text-black" : "border-black bg-paper text-black"
+            }`}
+          >
+            {icon}
+          </span>
+          <ArrowRight className="h-5 w-5" />
+        </div>
+        <div>
+          <div className={accent ? "text-white/70" : "text-neutral-500"}>
+            <span className="text-[10px] font-bold uppercase tracking-[0.2em]">
+              {eyebrow}
+            </span>
+          </div>
+          <h2 className="mt-2 text-2xl font-black uppercase leading-tight tracking-tight">
+            {title}
+          </h2>
+          <p className={`mt-3 text-sm ${accent ? "text-white/80" : "text-neutral-700"}`}>
+            {stat}
+          </p>
+        </div>
+      </a>
+    </Card>
   );
 }

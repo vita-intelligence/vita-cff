@@ -87,10 +87,29 @@ class CommentPermissionDenied(Exception):
 # ---------------------------------------------------------------------------
 
 
+def _proposal_model():
+    """Lazy import — ``apps.proposals.models`` pulls a wide dep
+    graph (services + render layer), and the comments app needs
+    to load before those are ready during initial migrations."""
+
+    from apps.proposals.models import Proposal
+    return Proposal
+
+
 _SUPPORTED_TARGETS: dict[type, str] = {
     Formulation: "formulation",
     SpecificationSheet: "specification_sheet",
 }
+
+
+def _supported_targets_dict() -> dict[type, str]:
+    """Like ``_SUPPORTED_TARGETS`` but resolved lazily so the
+    Proposal model can be added without an import cycle."""
+
+    return {
+        **_SUPPORTED_TARGETS,
+        _proposal_model(): "proposal",
+    }
 
 
 def _resolve_target(target) -> tuple[ContentType, Any, str]:
@@ -102,7 +121,7 @@ def _resolve_target(target) -> tuple[ContentType, Any, str]:
     polymorphic ``Comment`` row with its denormalised FK populated.
     """
 
-    for model_cls, fk_attr in _SUPPORTED_TARGETS.items():
+    for model_cls, fk_attr in _supported_targets_dict().items():
         if isinstance(target, model_cls):
             return (
                 ContentType.objects.get_for_model(model_cls),
@@ -240,15 +259,14 @@ def create_comment(
         if parent.parent_id is not None:
             raise CommentReplyDepthExceeded()
 
-    # Spec-sheet threads are client-visible by design — the staff
-    # comments bubble explicitly renders a "client-visible thread"
-    # banner above the composer for that target. So a spec comment
-    # defaults to ``shared`` (surfaces in the customer portal),
-    # while formulation / project-level comments stay ``internal``
-    # and only flip to shared via the (future) per-comment toggle.
+    # Client-visible target classes — comments on these default to
+    # ``shared`` so the customer portal can read them. Anything
+    # else (formulation / project workspace chatter) stays
+    # ``internal`` and only flips via the per-comment toggle.
+    CLIENT_VISIBLE_BY_DEFAULT = {"specification_sheet", "proposal"}
     visibility = (
         Comment.Visibility.SHARED
-        if fk_attr == "specification_sheet"
+        if fk_attr in CLIENT_VISIBLE_BY_DEFAULT
         else Comment.Visibility.INTERNAL
     )
 

@@ -90,6 +90,19 @@ class Comment(models.Model):
         blank=True,
         related_name="comments",
     )
+    #: Denormalised FK for proposal-level threads. Populated when
+    #: a comment targets a :class:`apps.proposals.models.Proposal`
+    #: row directly (the customer portal's "messages about this
+    #: proposal" surface). Mirrors the ``formulation`` + ``specification_sheet``
+    #: fast-path columns — list queries hit this directly instead of
+    #: joining through ``django_content_type``.
+    proposal = models.ForeignKey(
+        "proposals.Proposal",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="comments",
+    )
 
     parent = models.ForeignKey(
         "self",
