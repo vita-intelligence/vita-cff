@@ -63,3 +63,14 @@ export {
   type UpdateProposalLineRequestDto,
   type UpdateProposalRequestDto,
 } from "./types";
+export {
+  fetchPipelineBoard,
+  fetchPipelineColumnPage,
+} from "./pipeline";
+export type {
+  PipelineBoardDto,
+  PipelineCardDto,
+  PipelineColumnDto,
+  PipelineColumnPageDto,
+  PipelineScope,
+} from "./pipeline";

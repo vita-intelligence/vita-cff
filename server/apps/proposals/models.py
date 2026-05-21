@@ -549,6 +549,20 @@ class Proposal(models.Model):
                 fields=("organization", "valid_until"),
                 name="proposals_org_valid_idx",
             ),
+            # CRM-style pipeline board (``/pipeline``). Each kanban
+            # column queries ``WHERE org=X AND status=Y AND
+            # sales_person=Z ORDER BY -updated_at LIMIT 25``; the
+            # composite turns that into a single index range scan
+            # even when one sales rep has thousands of proposals
+            # spread across statuses. The existing
+            # ``proposals_org_stat_upd_idx`` still serves the
+            # ``view_all`` scope (no sales-person filter); the
+            # ``proposals_org_sales_idx`` still serves the staff
+            # roster filter that doesn't pin a status.
+            models.Index(
+                fields=("organization", "status", "sales_person", "-updated_at"),
+                name="proposals_pipeline_col_idx",
+            ),
         ]
 
     def __str__(self) -> str:

@@ -536,6 +536,7 @@ class TestModuleRegistry:
             "view_approvals",
             "view_signed",
             "manual_close",
+            "view_all",
         }
         cff = next(r for r in rows if r["key"] == "cff_submissions")
         assert set(cff["capabilities"]) == {"view", "assign_project"}

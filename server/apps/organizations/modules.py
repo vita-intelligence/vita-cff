@@ -164,6 +164,19 @@ class ProposalsCapability:
     #: declares a customer outcome. Usually granted to commercial
     #: leads or directors.
     MANUAL_CLOSE = "manual_close"
+    #: See the org-wide commercial pipeline (``/pipeline``) across
+    #: *every* sales person's proposals — not just the ones assigned
+    #: to the caller. The pipeline endpoint silently scopes to
+    #: ``sales_person=request.user`` when this cap is missing, so a
+    #: rank-and-file rep sees their own funnel and a commercial
+    #: lead / director with this grant sees the whole team.
+    #:
+    #: Backfilled only to memberships that already hold
+    #: :attr:`MembersCapability.EDIT_PERMISSIONS` (i.e. owners) so
+    #: the upgrade does not silently broaden anyone else's view —
+    #: admins explicitly grant it to managers via the members admin
+    #: grid.
+    VIEW_ALL = "view_all"
 
 
 class AuditCapability:
@@ -285,6 +298,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             ProposalsCapability.VIEW_APPROVALS,
             ProposalsCapability.VIEW_SIGNED,
             ProposalsCapability.MANUAL_CLOSE,
+            ProposalsCapability.VIEW_ALL,
         ),
     ),
     AUDIT_MODULE: Module(

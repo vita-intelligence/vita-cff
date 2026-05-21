@@ -8,6 +8,10 @@ from apps.proposals.api.mrpeasy_views import (
     MrpeasyPriceLookupView,
     MrpeasyTestConnectionView,
 )
+from apps.proposals.api.pipeline_views import (
+    PipelineBoardView,
+    PipelineColumnView,
+)
 from apps.proposals.api.views import (
     ProposalAuditView,
     ProposalCompleteRequiredFieldsView,
@@ -31,6 +35,21 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/",
         ProposalListCreateView.as_view(),
         name="proposal-list",
+    ),
+    # CRM-style pipeline board. Mounted ABOVE the ``<uuid:proposal_id>``
+    # routes so ``pipeline`` is matched before Django attempts to
+    # parse it as a UUID. The bundled board endpoint returns every
+    # column in one round-trip; the per-column endpoint serves
+    # "Load more" via opaque keyset cursor.
+    path(
+        "organizations/<uuid:org_id>/proposals/pipeline/",
+        PipelineBoardView.as_view(),
+        name="proposal-pipeline-board",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/pipeline/<str:column_status>/",
+        PipelineColumnView.as_view(),
+        name="proposal-pipeline-column",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/",

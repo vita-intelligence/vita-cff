@@ -185,7 +185,8 @@
       "sign": "Sign proposal",
       "view_approvals": "View approvals queue",
       "view_signed": "View signed documents",
-      "manual_close": "Manually close (accept / reject)"
+      "manual_close": "Manually close (accept / reject)",
+      "view_all": "View whole-team pipeline"
     },
     "audit": {
       "view": "View audit log"
@@ -231,7 +232,8 @@
       "sign": "Apply your signature to a proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). The customer signature on the public kiosk is gated by the link, not by this capability.",
       "view_approvals": "Open the proposals tab of the org-wide approvals inbox showing every proposal waiting for a signature.",
       "view_signed": "Open the proposals tab of the customer-signed archive showing what's been sent out and what's come back signed.",
-      "manual_close": "Override the kiosk flow and manually mark a Sent proposal as Accepted or Rejected (e.g. when the customer responded by phone or email). Usually granted to commercial leads or the director."
+      "manual_close": "Override the kiosk flow and manually mark a Sent proposal as Accepted or Rejected (e.g. when the customer responded by phone or email). Usually granted to commercial leads or the director.",
+      "view_all": "See the whole team's pipeline (every sales person's proposals) on the Pipeline page. Without this grant the page silently scopes to the caller's own proposals. Usually granted to commercial leads, sales managers, and directors."
     },
     "audit": {
       "view": "Read the org-wide log of every write across catalogues, projects, spec sheets, trial batches, and QC."
@@ -277,7 +279,8 @@
       "sign": "Internal signature slot on Proposal detail (Scientist / R&D Manager / Product Manager / Director). Paired with Projects → Sign spec sheet.",
       "view_approvals": "Paired with Projects → View approvals queue. Granting either covers the full /approvals page (both tabs).",
       "view_signed": "Paired with Projects → View signed documents. Granting either covers the full /signed page (both tabs).",
-      "manual_close": "Manual override on a Sent proposal: flip it to Accepted or Rejected from the staff UI when the customer responded by phone or email instead of via the kiosk."
+      "manual_close": "Manual override on a Sent proposal: flip it to Accepted or Rejected from the staff UI when the customer responded by phone or email instead of via the kiosk.",
+      "view_all": "Pipeline page (/pipeline) → 'All' scope toggle. Drops the default ``sales_person = current user`` filter so the whole team's pipeline becomes visible."
     },
     "audit": {
       "view": "Settings → Audit log (org-wide immutable trail of every write across catalogues, projects, spec sheets, trial batches, QC, comments, and integration changes)."
@@ -295,7 +298,7 @@
     "formulations_label": "Common roles",
     "formulations": "Scientist: View, Edit, Sign spec sheet, Comments view + write. R&D Manager / Director: everything above + Approve & send + Comments moderate. Read-only stakeholder: View only. (Sales typically does not need any Projects capability — they live in the Proposals module instead.)",
     "proposals_label": "Common roles",
-    "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Manually close. Director: everything above + Approve + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
+    "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Manually close + View whole-team pipeline. Director: everything above + Approve + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
     "audit_label": "Common roles",
     "audit": "Compliance and QA leads. Owners get it implicitly.",
     "cff_submissions_label": "Common roles",

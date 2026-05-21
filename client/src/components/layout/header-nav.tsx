@@ -16,6 +16,7 @@ export interface HeaderNavItem {
     | "/catalogues"
     | "/formulations"
     | "/proposals"
+    | "/pipeline"
     | "/customers"
     | "/cff"
     | "/approvals"

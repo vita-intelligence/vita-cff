@@ -15,6 +15,7 @@ export type ProtectedNavKey =
   | "catalogues"
   | "formulations"
   | "proposals"
+  | "pipeline"
   | "customers"
   | "cff"
   | "approvals"
@@ -147,11 +148,15 @@ export async function ProtectedHeader({
     });
   }
   if (canSeeProposals) {
-    // Customers + Proposals share the ``proposals`` module gate —
-    // sales-only roles see both even without any Projects
-    // capability. Customers comes first (the address book the
-    // proposal draws from); Proposals lands at the very end of the
-    // nav since it's the final step of the sales cycle.
+    // Customers + Proposals + Pipeline share the ``proposals``
+    // module gate — sales-only roles see them even without any
+    // Projects capability. Customers comes first (the address book
+    // the proposal draws from); Proposals is the document surface;
+    // Pipeline is the CRM-style funnel view of where every deal is
+    // sitting. ``view_all`` gates org-wide visibility inside the
+    // page itself — the nav entry stays available to every
+    // ``proposals.view`` holder because they can still see their
+    // own pipeline.
     navItems.push({
       key: "customers",
       href: "/customers",
@@ -162,50 +167,69 @@ export async function ProtectedHeader({
       href: "/proposals",
       label: tNav("main.proposals"),
     });
+    navItems.push({
+      key: "pipeline",
+      href: "/pipeline",
+      label: tNav("main.pipeline"),
+    });
   }
 
+  // Full-bleed top bar — escapes whatever ``max-w-*`` container the
+  // host page imposes (pages use a mix of ``5xl``/``6xl``/``7xl``/
+  // bespoke pixel caps, which used to make the nav visibly different
+  // widths page-to-page). The ``calc(50% - 50vw)`` trick centres the
+  // header on the viewport regardless of the parent's width.
+  //
+  // The ``-mt-6 md:-mt-12`` cancels the host page's top padding
+  // (``py-6 md:py-12`` — the convention shared by every staff page)
+  // so the nav sits flush at the top of the viewport. Inside the
+  // bar, the inner row caps at ``max-w-[1600px]`` so the brand /
+  // nav / avatar cluster stays visually anchored on wide monitors
+  // rather than drifting to extreme edges.
   return (
-    <header className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-3 md:gap-6">
-        <span className="text-sm font-semibold tracking-tight text-ink-1000">
-          {tCommon("brand")}
-        </span>
-        <HeaderNav
-          items={navItems}
-          active={active}
-          menuLabel={tNav("menu.open")}
-          closeLabel={tNav("menu.close")}
-          settingsLabel={tNav("menu.settings")}
-          signOutLabel={tNav("account.sign_out")}
-          fullName={user.full_name}
-          email={user.email}
-        />
-      </div>
-      {/*
-        Desktop gets the avatar dropdown; mobile folds Settings and
-        Sign-out into the hamburger drawer itself, so the avatar is
-        redundant there and would just steal tap targets.
-
-        The messenger bell sits next to the avatar so the "new
-        message" surface is always one click away regardless of the
-        page the user is on. The bell renders on both desktop and
-        mobile — chat traffic is most relevant when the user is
-        otherwise distracted, so the affordance must follow them
-        everywhere.
-      */}
-      <div className="flex items-center gap-1 md:gap-2">
-        <MessengerBell />
-        <div className="hidden md:flex">
-          <UserMenu
+    <header
+      className="-mt-6 mb-6 w-[100vw] border-b border-ink-200 bg-white md:-mt-12 md:mb-8"
+      style={{ marginLeft: "calc(50% - 50vw)" }}
+    >
+      <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3 px-4 py-3 sm:px-6 md:px-10 md:py-4">
+        <div className="flex items-center gap-3 md:gap-6">
+          <span className="text-sm font-semibold tracking-tight text-ink-1000">
+            {tCommon("brand")}
+          </span>
+          <HeaderNav
+            items={navItems}
+            active={active}
+            menuLabel={tNav("menu.open")}
+            closeLabel={tNav("menu.close")}
+            settingsLabel={tNav("menu.settings")}
+            signOutLabel={tNav("account.sign_out")}
             fullName={user.full_name}
             email={user.email}
-            avatarUrl={user.avatar_image || ""}
-            labels={{
-              settings: tNav("menu.settings"),
-              signOut: tNav("account.sign_out"),
-              openMenu: tNav("menu.open_user"),
-            }}
           />
+        </div>
+        {/*
+          Desktop gets the avatar dropdown; mobile folds Settings and
+          Sign-out into the hamburger drawer itself, so the avatar is
+          redundant there and would just steal tap targets.
+
+          The messenger bell sits next to the avatar so the "new
+          message" surface is always one click away regardless of the
+          page the user is on.
+        */}
+        <div className="flex items-center gap-1 md:gap-2">
+          <MessengerBell />
+          <div className="hidden md:flex">
+            <UserMenu
+              fullName={user.full_name}
+              email={user.email}
+              avatarUrl={user.avatar_image || ""}
+              labels={{
+                settings: tNav("menu.settings"),
+                signOut: tNav("account.sign_out"),
+                openMenu: tNav("menu.open_user"),
+              }}
+            />
+          </div>
         </div>
       </div>
     </header>

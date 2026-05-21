@@ -1,0 +1,22 @@
+{
+  "title": "Sales pipeline",
+  "subtitle": "Every proposal in motion, grouped by lifecycle stage. Click a card to open the proposal.",
+  "scope_label": "Pipeline scope",
+  "scope_mine": "Mine",
+  "scope_all": "All",
+  "column_empty": "Nothing here yet.",
+  "column_no_value": "No headline value yet.",
+  "load_more": "Load more",
+  "loading_more": "Loading…",
+  "valid_until": "Valid until",
+  "unassigned": "Unassigned",
+  "no_code": "No code",
+  "error_load": "Couldn't load the pipeline. Refresh to retry.",
+  "totals_open_value": "Open pipeline value",
+  "totals_open_count": "{count, plural, =0 {No live proposals} =1 {# live proposal} other {# live proposals}}",
+  "totals_won_value": "Won this period",
+  "totals_realised_hint": "Accepted proposals — realised revenue.",
+  "totals_total_count": "Proposals in board",
+  "totals_total_hint": "Across every stage, including won and lost.",
+  "totals_mixed_currency_hint": "Multiple currencies present — headline is an approximation."
+}
