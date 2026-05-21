@@ -10,7 +10,7 @@ export default async function PortalResetPasswordPage({
 }) {
   const { token } = await params;
   return (
-    <PortalShell>
+    <PortalShell minimal>
       <ResetForm token={token} />
     </PortalShell>
   );

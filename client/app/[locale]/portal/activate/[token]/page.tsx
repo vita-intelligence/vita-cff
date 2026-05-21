@@ -44,7 +44,7 @@ export default async function ActivatePage({
     // friendly "ask the team" message rather than a 404 — the
     // visitor IS the right person; the setup just isn't complete.
     return (
-      <PortalShell>
+      <PortalShell minimal>
         <ActivationMissingState />
       </PortalShell>
     );
@@ -55,7 +55,7 @@ export default async function ActivatePage({
     // bare 404. The error is logged in the backend by the time
     // they see this.
     return (
-      <PortalShell>
+      <PortalShell minimal>
         <ActivationMissingState />
       </PortalShell>
     );
@@ -68,7 +68,7 @@ export default async function ActivatePage({
   };
 
   return (
-    <PortalShell>
+    <PortalShell minimal>
       <ActivationForm
         token={token}
         customerCompany={preview.customer_company}

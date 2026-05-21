@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 
 from django.db import transaction
-from django.db.models import Q, QuerySet
+from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
@@ -35,6 +35,25 @@ from apps.organizations.models import Organization
 
 class CustomerNotFound(Exception):
     code = "customer_not_found"
+
+
+class CustomerHasPortalAccount(Exception):
+    """Raised when trying to delete a customer that still has at
+    least one :class:`ClientAccount` pointing at it.
+
+    A linked portal account means the customer has activated (or
+    been issued) a login for the customer portal — deleting the
+    Customer row would orphan their sessions and break their
+    proposal / spec access. The staff side has to revoke or move
+    the portal account first.
+
+    The frontend maps this to a 409 with a clear error toast;
+    deletion is silently refused without this guard because the
+    DB-level ``on_delete=PROTECT`` raises ``ProtectedError`` which
+    surfaces as an opaque 500.
+    """
+
+    code = "customer_has_portal_account"
 
 
 class CustomerCreationDisabledByDynamics(Exception):
@@ -93,6 +112,39 @@ class DynamicsConfigInvalid(Exception):
     code = "dynamics_config_invalid"
 
 
+def _with_portal_account_annotation(qs: QuerySet[Customer]) -> QuerySet[Customer]:
+    """Annotate each row with two booleans the FE renders:
+
+    * ``_has_portal_account`` — any :class:`ClientAccount` exists
+      for this customer (pending OR activated).
+    * ``_portal_account_activated`` — at least one of those
+      accounts has set a password (``activated_at IS NOT NULL``).
+
+    Two ``Exists`` subqueries are cheaper than a join + GROUP BY
+    and they cap at one row each, so the cost stays bounded on
+    customers with multiple linked accounts.
+
+    Lazy import keeps the cff / customers apps importable in any
+    order during migrations — the client portal app pulls a wider
+    auth dep graph that would otherwise tie the customers app
+    boot to it.
+    """
+
+    from apps.client_portal.models import ClientAccount
+
+    return qs.annotate(
+        _has_portal_account=Exists(
+            ClientAccount.objects.filter(customer_id=OuterRef("pk"))
+        ),
+        _portal_account_activated=Exists(
+            ClientAccount.objects.filter(
+                customer_id=OuterRef("pk"),
+                activated_at__isnull=False,
+            )
+        ),
+    )
+
+
 def list_customers(
     *,
     organization: Organization,
@@ -104,6 +156,10 @@ def list_customers(
     across name / company / email so the proposal picker's
     typeahead finds a client regardless of which field the user
     types first.
+
+    Every row is annotated with portal-account presence so the
+    customers list page can render a "Has portal login" badge
+    and hide the delete affordance without a second round-trip.
     """
 
     queryset = Customer.objects.filter(organization=organization)
@@ -115,15 +171,22 @@ def list_customers(
                 | Q(company__icontains=term)
                 | Q(email__icontains=term)
             )
-    return queryset.order_by("company", "name")
+    return _with_portal_account_annotation(queryset).order_by(
+        "company", "name",
+    )
 
 
 def get_customer(
     *, organization: Organization, customer_id: Any
 ) -> Customer:
-    obj = Customer.objects.filter(
-        organization=organization, id=customer_id
-    ).first()
+    obj = (
+        _with_portal_account_annotation(
+            Customer.objects.filter(
+                organization=organization, id=customer_id,
+            )
+        )
+        .first()
+    )
     if obj is None:
         raise CustomerNotFound()
     return obj
@@ -209,6 +272,14 @@ def update_customer(
 
 @transaction.atomic
 def delete_customer(*, customer: Customer, actor: Any) -> None:
+    # Block the delete BEFORE the DB write so the operator gets a
+    # clean error instead of an opaque ``ProtectedError`` from the
+    # ``ClientAccount.customer`` FK's ``on_delete=PROTECT``. The
+    # check here matches the FK guard exactly — if any client
+    # account points at this customer we refuse.
+    if customer.client_accounts.exists():
+        raise CustomerHasPortalAccount()
+
     before = snapshot(customer)
     target_id = str(customer.pk)
     organization = customer.organization

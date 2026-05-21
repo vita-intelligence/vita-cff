@@ -15,6 +15,17 @@ export interface CustomerDto {
    *  chip on the picker + the customers list. */
   readonly dynamics_id: string | null;
   readonly dynamics_synced_at: string | null;
+  /** ``true`` when at least one ``ClientAccount`` row exists for
+   *  this customer — covers both pending (issued but not yet
+   *  activated) and fully-activated portal logins. Drives the
+   *  "Portal login" badge on the customers list and the
+   *  delete-affordance guard (a customer with a portal account
+   *  cannot be deleted from the staff side). */
+  readonly has_portal_account: boolean;
+  /** ``true`` when at least one of the customer's portal accounts
+   *  has set a password (``activated_at`` populated). Used to
+   *  distinguish "Active" from "Pending" on the badge tooltip. */
+  readonly portal_account_activated: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }

@@ -5,7 +5,7 @@ import { ForgotForm } from "./forgot-form";
 
 export default function PortalForgotPasswordPage() {
   return (
-    <PortalShell>
+    <PortalShell minimal>
       <ForgotForm />
     </PortalShell>
   );

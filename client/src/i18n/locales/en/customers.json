@@ -17,8 +17,15 @@
     "edit": "Edit",
     "delete": "Delete",
     "delete_confirm": "Delete this customer? Linked proposals keep their snapshot but lose the address-book link.",
+    "delete_blocked_portal_account": "This customer has an active portal login. Revoke the portal account from the customer's portal settings before deleting.",
     "cancel": "Cancel",
     "save": "Save"
+  },
+  "portal_account": {
+    "active": "Portal · Active",
+    "active_hint": "This customer has an active portal login and can sign in to view their proposals and specs.",
+    "pending": "Portal · Pending",
+    "pending_hint": "An activation link has been issued but the customer hasn't set their password yet."
   },
   "form": {
     "title_create": "New customer",

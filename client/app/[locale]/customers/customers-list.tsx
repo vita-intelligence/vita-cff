@@ -1,6 +1,15 @@
 "use client";
 
-import { Info, Loader2, Plus, Search, Trash2, Users } from "lucide-react";
+import {
+  Info,
+  Loader2,
+  Lock,
+  Plus,
+  Search,
+  ShieldCheck,
+  Trash2,
+  Users,
+} from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
@@ -164,7 +173,15 @@ export function CustomersList({
                     </button>
                   </td>
                   <td className="px-3 py-2.5 text-ink-700">
-                    {customer.name || "—"}
+                    <div className="flex items-center gap-2">
+                      <span>{customer.name || "—"}</span>
+                      {customer.has_portal_account ? (
+                        <PortalAccountBadge
+                          activated={customer.portal_account_activated}
+                          tCustomers={tCustomers}
+                        />
+                      ) : null}
+                    </div>
                   </td>
                   <td className="px-3 py-2.5 text-ink-700">
                     {customer.email || "—"}
@@ -173,23 +190,48 @@ export function CustomersList({
                     {customer.phone || "—"}
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        if (!confirm(tCustomers("actions.delete_confirm")))
-                          return;
-                        setError(null);
-                        try {
-                          await deleteMutation.mutateAsync(customer.id);
-                        } catch (err) {
-                          setError(extractApiErrorMessage(err, tErrors));
-                        }
-                      }}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
-                      aria-label={tCustomers("actions.delete")}
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
+                    {customer.has_portal_account ? (
+                      // Customer is wired to one or more portal
+                      // logins — deleting would orphan their
+                      // sessions + proposal / spec access. Keep
+                      // the slot a stable width with the same
+                      // icon so the row layout doesn't shift
+                      // between "deletable" and "protected"
+                      // states, and tooltip the reason so the
+                      // operator knows what to do (revoke the
+                      // login from the portal admin first).
+                      <span
+                        title={tCustomers(
+                          "actions.delete_blocked_portal_account",
+                        )}
+                        aria-label={tCustomers(
+                          "actions.delete_blocked_portal_account",
+                        )}
+                        className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-ink-300"
+                      >
+                        <Lock className="h-4 w-4" />
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (
+                            !confirm(tCustomers("actions.delete_confirm"))
+                          )
+                            return;
+                          setError(null);
+                          try {
+                            await deleteMutation.mutateAsync(customer.id);
+                          } catch (err) {
+                            setError(extractApiErrorMessage(err, tErrors));
+                          }
+                        }}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
+                        aria-label={tCustomers("actions.delete")}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -406,5 +448,49 @@ function Field({
       <span className="text-xs font-medium text-ink-700">{label}</span>
       {children}
     </label>
+  );
+}
+
+
+/**
+ * Inline chip on a customer row that signals "this customer has a
+ * portal login". Two tonal states:
+ *
+ *   * ``activated`` — they've completed activation (set a
+ *     password). Shown in success-tone (green) with a shield
+ *     icon. The customer can sign in.
+ *   * ``pending`` — an account row exists but ``activated_at``
+ *     is still null. Shown in muted-tone (amber) — the team
+ *     issued the activation link but the customer hasn't
+ *     finished sign-up yet.
+ *
+ * Either way the row's delete affordance is locked, since the
+ * client-portal FK ``on_delete=PROTECT`` would otherwise refuse
+ * the delete deeper in the stack.
+ */
+function PortalAccountBadge({
+  activated,
+  tCustomers,
+}: {
+  activated: boolean;
+  tCustomers: ReturnType<typeof useTranslations<"customers">>;
+}) {
+  const tone = activated
+    ? "bg-success/10 text-success ring-success/30"
+    : "bg-amber-100 text-amber-800 ring-amber-300";
+  const label = activated
+    ? tCustomers("portal_account.active")
+    : tCustomers("portal_account.pending");
+  const tooltip = activated
+    ? tCustomers("portal_account.active_hint")
+    : tCustomers("portal_account.pending_hint");
+  return (
+    <span
+      title={tooltip}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset ${tone}`}
+    >
+      <ShieldCheck className="h-3 w-3" aria-hidden />
+      {label}
+    </span>
   );
 }

@@ -1,12 +1,13 @@
 /**
- * Suspense fallback for ``/portal/proposals/[id]/*``. The customer
- * lands here from the portal hub or the bell dropdown; same orb +
- * skeleton treatment the staff detail routes use so the visual
- * language stays consistent across both surfaces.
+ * Suspense fallback for ``/portal/proposals/[id]/*``. Uses the
+ * brutalist skeleton so the loader speaks the same design
+ * language as the rest of the customer surface (black squares,
+ * hard offset shadows, uppercase tracking) — the staff orb
+ * sibling stays on the staff-side detail routes.
  */
-import { DetailPageSkeleton } from "@/components/loading/detail-page-skeleton";
+import { PortalLoadingSkeleton } from "@/components/loading/portal-loading-skeleton";
 
 
 export default function PortalProposalDetailLoading() {
-  return <DetailPageSkeleton label="Loading proposal" />;
+  return <PortalLoadingSkeleton label="Loading proposal" />;
 }

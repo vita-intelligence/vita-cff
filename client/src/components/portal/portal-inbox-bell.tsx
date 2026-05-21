@@ -157,7 +157,12 @@ export function PortalInboxBell() {
           </div>
           <div className="max-h-[60vh] overflow-y-auto">
             {loading && threads === null ? (
-              <div className="p-6 text-sm text-neutral-600">Loading…</div>
+              // Brutalist micro-loader for the bell dropdown.
+              // Uppercase tracked label keeps the typography in
+              // family with the dropdown's header bar above.
+              <div className="p-6 text-center text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+                Loading…
+              </div>
             ) : !threads || threads.length === 0 ? (
               <div className="p-6 text-sm text-neutral-700">
                 No messages yet. New replies from the Vita team will appear

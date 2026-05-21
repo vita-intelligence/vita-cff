@@ -8,6 +8,23 @@ from apps.customers.models import Customer
 
 
 class CustomerReadSerializer(serializers.ModelSerializer):
+    # Portal-account presence flags. Sourced from the annotation
+    # added by :func:`apps.customers.services._with_portal_account_annotation`,
+    # so every call site that ships a Customer to the FE goes
+    # through ``list_customers`` / ``get_customer``. The FE renders
+    # a "Portal login" badge from ``has_portal_account`` and gates
+    # the delete affordance on the same flag.
+    has_portal_account = serializers.BooleanField(
+        source="_has_portal_account",
+        read_only=True,
+        default=False,
+    )
+    portal_account_activated = serializers.BooleanField(
+        source="_portal_account_activated",
+        read_only=True,
+        default=False,
+    )
+
     class Meta:
         model = Customer
         fields = (
@@ -25,6 +42,8 @@ class CustomerReadSerializer(serializers.ModelSerializer):
             # locally-created customers.
             "dynamics_id",
             "dynamics_synced_at",
+            "has_portal_account",
+            "portal_account_activated",
             "created_at",
             "updated_at",
         )

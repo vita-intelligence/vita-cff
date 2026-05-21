@@ -97,3 +97,39 @@ body {
   background-color: var(--color-ink-1000);
   color: var(--color-ink-0);
 }
+
+
+/*
+ * Modern-brutalist loader keyframes. Used by
+ * :component:`PortalLoadingSkeleton` (and any future loader that
+ * wants the same vocabulary). Defined here once so the animations
+ * are reusable across the surface without rebuilding the rules
+ * inline.
+ *
+ * ``brutalist-marquee`` translates a duplicated text strip by
+ * exactly half its width — the two halves cycle into each
+ * other's positions for a seamless infinite scroll. The text
+ * block in the component must render its content twice end-to-end
+ * so the math holds.
+ *
+ * ``brutalist-scan`` is a hard left-to-right scanner. Linear-ish
+ * easing for that mechanical feel; cubic on the trail-in so the
+ * leading edge feels weighted.
+ */
+@keyframes brutalist-marquee {
+  from {
+    transform: translate3d(0, 0, 0);
+  }
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes brutalist-scan {
+  0% {
+    transform: translateX(-130%);
+  }
+  100% {
+    transform: translateX(330%);
+  }
+}

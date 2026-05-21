@@ -77,74 +77,88 @@ const NAV_ITEMS: ReadonlyArray<{
 export function PortalShell({
   children,
   active,
+  minimal = false,
 }: {
   children: ReactNode;
   /** Highlights the matching navbar link. Pass ``"home"`` on the
    *  ``/portal`` hub so no link lights up. */
   active?: PortalNavSection;
+  /** Strip the chrome that depends on an authed session — the nav
+   *  links + the inbox bell + the mobile-nav row + the toast
+   *  stack. Use on pre-auth surfaces (login, forgot-password,
+   *  reset, activate) where those affordances would 401 on every
+   *  request OR confuse the visitor with a section nav they can't
+   *  use until they sign in. Only the logo + the footer remain. */
+  minimal?: boolean;
 }) {
   return (
     <div className="min-h-dvh bg-paper text-black antialiased">
       <header className="sticky top-0 z-30 border-b-2 border-black bg-paper/95 backdrop-blur supports-[backdrop-filter]:bg-paper/80">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <PortalLogo />
-          <div className="flex items-center gap-4">
-            <nav className="hidden items-center gap-1 sm:flex">
+          {minimal ? null : (
+            <div className="flex items-center gap-4">
+              <nav className="hidden items-center gap-1 sm:flex">
+                {NAV_ITEMS.map((item) => {
+                  const isActive = active === item.key;
+                  return (
+                    <a
+                      key={item.key}
+                      href={item.href}
+                      className={`relative px-3 py-2 text-[11px] font-bold uppercase tracking-[0.2em] transition-colors ${
+                        isActive
+                          ? "text-black"
+                          : "text-neutral-500 hover:text-black"
+                      }`}
+                    >
+                      {item.label}
+                      {isActive ? (
+                        <span
+                          aria-hidden="true"
+                          className="absolute inset-x-3 bottom-1 h-0.5 bg-black"
+                        />
+                      ) : null}
+                    </a>
+                  );
+                })}
+              </nav>
+              {/* Bell stays visible on every breakpoint — the customer's
+                  primary notification surface. The mobile nav row below
+                  still shows the section links. */}
+              <PortalInboxBell />
+            </div>
+          )}
+        </div>
+        {minimal ? null : (
+          <div className="sm:hidden border-t border-black/10 bg-paper/95">
+            <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6 py-2">
               {NAV_ITEMS.map((item) => {
                 const isActive = active === item.key;
                 return (
                   <a
                     key={item.key}
                     href={item.href}
-                    className={`relative px-3 py-2 text-[11px] font-bold uppercase tracking-[0.2em] transition-colors ${
-                      isActive
-                        ? "text-black"
-                        : "text-neutral-500 hover:text-black"
+                    className={`shrink-0 border-2 border-black px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] ${
+                      isActive ? "bg-black text-white" : "bg-white text-black"
                     }`}
                   >
                     {item.label}
-                    {isActive ? (
-                      <span
-                        aria-hidden="true"
-                        className="absolute inset-x-3 bottom-1 h-0.5 bg-black"
-                      />
-                    ) : null}
                   </a>
                 );
               })}
-            </nav>
-            {/* Bell stays visible on every breakpoint — the customer's
-                primary notification surface. The mobile nav row below
-                still shows the section links. */}
-            <PortalInboxBell />
+            </div>
           </div>
-        </div>
-        <div className="sm:hidden border-t border-black/10 bg-paper/95">
-          <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6 py-2">
-            {NAV_ITEMS.map((item) => {
-              const isActive = active === item.key;
-              return (
-                <a
-                  key={item.key}
-                  href={item.href}
-                  className={`shrink-0 border-2 border-black px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] ${
-                    isActive ? "bg-black text-white" : "bg-white text-black"
-                  }`}
-                >
-                  {item.label}
-                </a>
-              );
-            })}
-          </div>
-        </div>
+        )}
       </header>
       <main className="mx-auto max-w-6xl px-6 py-10">{children}</main>
       {/* Global top-right toast stack — mounted at shell level so an
           incoming WS event surfaces regardless of which portal page
           the customer is on. Per-thread WSes (proposal / spec chat
           panels) push into the store; the stack renders them with
-          the brutalist card treatment + auto-dismiss timer. */}
-      <PortalToastStack />
+          the brutalist card treatment + auto-dismiss timer. Hidden
+          on ``minimal`` (pre-auth) shells where there's no signed-in
+          customer to receive thread events. */}
+      {minimal ? null : <PortalToastStack />}
       <footer className="mt-16 border-t-2 border-black">
         <div className="mx-auto flex max-w-6xl flex-col justify-between gap-3 px-6 py-6 text-[11px] uppercase tracking-[0.2em] text-neutral-700 sm:flex-row">
           <span>Vita Manufacture · vitamanufacture.co.uk</span>

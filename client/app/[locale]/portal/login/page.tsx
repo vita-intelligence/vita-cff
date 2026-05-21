@@ -5,7 +5,7 @@ import { PortalLoginForm } from "./portal-login-form";
 
 export default function PortalLoginPage() {
   return (
-    <PortalShell>
+    <PortalShell minimal>
       <PortalLoginForm />
     </PortalShell>
   );

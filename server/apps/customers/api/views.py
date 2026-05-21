@@ -27,6 +27,7 @@ from apps.customers.dynamics import (
 )
 from apps.customers.services import (
     CustomerCreationDisabledByDynamics,
+    CustomerHasPortalAccount,
     CustomerNotFound,
     DataverseFailure,
     DynamicsConfigInvalid,
@@ -151,7 +152,17 @@ class CustomerDetailView(APIView):
         self, request: Request, org_id: str, customer_id: str
     ) -> Response:
         customer = self._load(customer_id)
-        delete_customer(customer=customer, actor=request.user)
+        try:
+            delete_customer(customer=customer, actor=request.user)
+        except CustomerHasPortalAccount as exc:
+            # 409 (not 400) because the row is well-formed — the
+            # request is just impossible against the current state.
+            # The error code lets the FE render a clear toast and
+            # keep the row + delete button intact.
+            return Response(
+                {"detail": [exc.code]},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

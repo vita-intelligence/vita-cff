@@ -347,7 +347,13 @@ export function ProposalChatPanel({
         className="flex h-[420px] flex-col gap-4 overflow-y-auto bg-paper p-5"
       >
         {messages === null ? (
-          <p className="text-sm">Loading…</p>
+          // Brutalist in-panel loader: stark uppercase tracked
+          // label sitting in the panel's paper background so the
+          // chat reads as "still loading" without breaking the
+          // surrounding design language.
+          <p className="text-center text-[11px] font-bold uppercase tracking-[0.2em] text-neutral-600">
+            Loading messages…
+          </p>
         ) : messages.length === 0 ? (
           <p className="text-sm text-neutral-700">
             No messages yet. Send a note to the Vita team about the proposal

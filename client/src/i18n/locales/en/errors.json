@@ -38,6 +38,7 @@
     "clone_target_is_source": "You can't replace a project with itself. Pick a different target or switch to 'New project'.",
     "invalid_clone_mode": "Duplicate failed: unknown mode. Refresh and try again.",
     "customer_creation_disabled_by_dynamics": "This workspace manages customers via Microsoft Dynamics. Add the contact in Dynamics and import it from the customer picker instead.",
+    "customer_has_portal_account": "This customer has an active portal login. Revoke the portal account first, then try deleting again.",
     "specification_deletion_locked": "This spec sheet has been signed by the director or customer. Revert it to draft first — that clears the signatures — and then delete.",
     "mrpeasy_auth_failed": "MRPEasy rejected the credentials. Double-check the API key and secret in MRPEasy → Settings → Integration → API access.",
     "mrpeasy_unreachable": "Couldn't reach MRPEasy. Check that app.mrpeasy.com is up and your network can reach it.",

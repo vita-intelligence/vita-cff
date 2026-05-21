@@ -1,11 +1,12 @@
 /**
- * Suspense fallback for ``/portal/specs/[id]/*``. Matches the
- * portal proposal detail loader so navigating between the two
- * customer surfaces feels uniform.
+ * Suspense fallback for ``/portal/specs/[id]/*``. Brutalist
+ * skeleton so the loader matches the customer surface's design
+ * language — same treatment as the portal proposal detail
+ * loader.
  */
-import { DetailPageSkeleton } from "@/components/loading/detail-page-skeleton";
+import { PortalLoadingSkeleton } from "@/components/loading/portal-loading-skeleton";
 
 
 export default function PortalSpecDetailLoading() {
-  return <DetailPageSkeleton label="Loading specification" />;
+  return <PortalLoadingSkeleton label="Loading specification" />;
 }
