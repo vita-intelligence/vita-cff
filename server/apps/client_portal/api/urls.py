@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from django.urls import path
 
+from .cff_views import (
+    PortalCFFDetailView,
+    PortalCFFListView,
+    PortalCFFMessagesReadView,
+    PortalCFFMessagesView,
+)
 from .inbox_views import (
     PortalInboxListView,
     PortalInboxUnreadCountView,
@@ -200,5 +206,27 @@ urlpatterns = [
         "proposals/<uuid:proposal_id>/proposal-messages/read/",
         ProposalChatReadView.as_view(),
         name="proposal-chat-read",
+    ),
+
+    # CFF (Custom Formulation Request) — customer-facing intake
+    # surface. The customer sees CFFs they own (email match OR
+    # project link via :func:`apps.cff_submissions.services
+    # .list_customer_cffs`) plus a shared comment thread on each
+    # so they can follow up on the request they submitted.
+    path("cffs/", PortalCFFListView.as_view(), name="cff-list"),
+    path(
+        "cffs/<uuid:submission_id>/",
+        PortalCFFDetailView.as_view(),
+        name="cff-detail",
+    ),
+    path(
+        "cffs/<uuid:submission_id>/messages/",
+        PortalCFFMessagesView.as_view(),
+        name="cff-messages",
+    ),
+    path(
+        "cffs/<uuid:submission_id>/messages/read/",
+        PortalCFFMessagesReadView.as_view(),
+        name="cff-messages-read",
     ),
 ]

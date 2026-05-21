@@ -89,6 +89,29 @@ class CFFSubmission(models.Model):
         ),
     )
 
+    #: Denormalised customer email lifted from ``raw_payload``. Wix
+    #: stores form responses under opaque slugs (``email_fc7d``); the
+    #: importer walks the submissions dict for any ``email_*`` key and
+    #: copies the first non-empty value here so we can do
+    #: indexed lookups by email. Powers "show this customer their own
+    #: CFFs" on the portal — the customer portal account matches a
+    #: customer by ``Customer.email``, so the denormalised column is
+    #: the indexable side of that join.
+    #:
+    #: Empty string (not ``NULL``) when the submission has no email
+    #: field at all — keeps the column non-nullable so we can index
+    #: it without a partial index.
+    submitter_email = models.EmailField(
+        max_length=320,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_(
+            "Customer-typed email harvested from raw_payload at "
+            "import time. Empty when the form has no email slug."
+        ),
+    )
+
     project = models.ForeignKey(
         "formulations.Formulation",
         null=True,

@@ -277,7 +277,17 @@ def create_comment(
     # ``shared`` so the customer portal can read them. Anything
     # else (formulation / project workspace chatter) stays
     # ``internal`` and only flips via the per-comment toggle.
-    CLIENT_VISIBLE_BY_DEFAULT = {"specification_sheet", "proposal"}
+    CLIENT_VISIBLE_BY_DEFAULT = {
+        "specification_sheet",
+        "proposal",
+        # CFF intake threads default to shared so the customer can
+        # follow up on the request they submitted. Existing
+        # internal CFF comments are preserved at their original
+        # visibility — the per-comment toggle on the staff side
+        # still lets a triager flip something internal if they
+        # need to discuss something the customer shouldn't see.
+        "cff_submission",
+    }
     visibility = (
         Comment.Visibility.SHARED
         if fk_attr in CLIENT_VISIBLE_BY_DEFAULT

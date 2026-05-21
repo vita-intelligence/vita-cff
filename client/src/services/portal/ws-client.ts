@@ -1,7 +1,8 @@
 /**
  * WebSocket client for the customer portal.
  *
- * Connects to ``/ws/portal/<kind>/<id>/`` (proposal or specification),
+ * Connects to ``/ws/portal/<kind>/<id>/`` (proposal, specification,
+ * or cff_submission),
  * authenticated by the ``vita_portal_access`` cookie the browser
  * sends automatically. The server-side consumer joins the same
  * group as the staff comments consumer, so live presence + typing
@@ -36,7 +37,7 @@ const TERMINAL_CODES = new Set<number>([
 ]);
 
 
-export type PortalEntityKind = "proposal" | "specification";
+export type PortalEntityKind = "proposal" | "specification" | "cff_submission";
 
 
 /** Identity payload the backend stamps on every presence / typing

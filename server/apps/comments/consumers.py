@@ -636,7 +636,7 @@ class PortalCommentConsumer(AsyncJsonWebsocketConsumer):
         # crafted URL pointing at ``formulation`` closes with
         # ``CLOSE_BAD_TARGET`` rather than running the proposal /
         # spec authorisation gate against a row it does not match.
-        if kind not in {"proposal", "specification"}:
+        if kind not in {"proposal", "specification", "cff_submission"}:
             await self.close(code=CLOSE_BAD_TARGET)
             return
 
@@ -836,6 +836,51 @@ def _authorise_portal(
             proposal__customer_id=customer_id,
             specification_sheet_id=entity_id,
         ).exists():
+            return ("ok", _portal_viewer_snapshot(client_account))
+        return ("missing", None)
+
+    if kind == "cff_submission":
+        # Customer reaches a CFF through one of two paths — the
+        # union we landed on for the portal CFF surface:
+        #
+        #   * Email match: ``CFFSubmission.submitter_email`` (lifted
+        #     from raw_payload at import time) equals the customer's
+        #     own email, case-insensitive. Catches the
+        #     unassigned-intake case which is most CFFs.
+        #   * Project link: the CFF is assigned to a project that
+        #     has at least one proposal owned by this customer.
+        #     Catches the case where the customer used a different
+        #     email originally but the team has since wired the CFF
+        #     into one of their projects.
+        from apps.cff_submissions.models import CFFSubmission
+        from apps.customers.models import Customer
+
+        # Customer.email is the canonical address the activation
+        # flow seeded the portal account from. Empty string when the
+        # original Customer row had no email — guard so we don't
+        # match every CFF with an empty submitter_email.
+        customer_email = (
+            Customer.objects.filter(id=customer_id)
+            .values_list("email", flat=True)
+            .first()
+            or ""
+        ).strip()
+        qs = CFFSubmission.objects.filter(id=entity_id)
+        if customer_email:
+            via_email_match = qs.filter(
+                submitter_email__iexact=customer_email
+            ).exists()
+            if via_email_match:
+                return ("ok", _portal_viewer_snapshot(client_account))
+        # ``project`` is the Formulation. To get to a Proposal we
+        # walk Formulation.versions → Proposal.formulation_version,
+        # then ``customer_id`` on the proposal itself. See
+        # :func:`apps.cff_submissions.services.list_customer_cffs`
+        # for the matching ORM clause.
+        via_project_link = qs.filter(
+            project__versions__proposals__customer_id=customer_id,
+        ).exists()
+        if via_project_link:
             return ("ok", _portal_viewer_snapshot(client_account))
         return ("missing", None)
 

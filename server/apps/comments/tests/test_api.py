@@ -404,16 +404,17 @@ class TestCFFSubmissionComments:
         assert body["body"].startswith("Triage: looks like a fit")
         assert body["target_type"] == "cff_submission"
         assert body["target_id"] == str(submission.id)
-        # CFF is internal triage — staff-only — so the default
-        # visibility on the persisted row must NOT be ``shared``.
-        # The wire shape (CommentReadSerializer) doesn't expose
-        # ``visibility`` today, so we assert against the DB row
-        # directly. Comment also carries the denormalised FK that
-        # the inbox + WS broadcast layers route off.
+        # CFF comments now default to ``shared`` (alongside proposal
+        # + spec) so the customer can read + reply on the request
+        # they originally submitted. Staff can still flip an
+        # individual comment internal via the per-comment toggle
+        # for sensitive triage notes. Comment also carries the
+        # denormalised ``cff_submission_id`` the inbox + WS broadcast
+        # layers route off.
         from apps.comments.models import Comment
         comment = Comment.objects.get(id=body["id"])
         assert comment.cff_submission_id == submission.id
-        assert comment.visibility == Comment.Visibility.INTERNAL
+        assert comment.visibility == Comment.Visibility.SHARED
 
     def test_list_returns_only_this_threads_comments(
         self, owner_client,

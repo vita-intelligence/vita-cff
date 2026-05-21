@@ -1,6 +1,12 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { ArrowRight, FileText, FlaskConical, Settings as SettingsIcon } from "lucide-react";
+import {
+  ArrowRight,
+  ClipboardList,
+  FileText,
+  FlaskConical,
+  Settings as SettingsIcon,
+} from "lucide-react";
 
 import {
   Card,
@@ -31,10 +37,11 @@ export default async function PortalHub() {
   const headers = { Cookie: `vita_portal_access=${portalCookie.value}` };
   const base = env.NEXT_PUBLIC_API_URL;
 
-  const [meRes, propRes, specRes] = await Promise.all([
+  const [meRes, propRes, specRes, cffRes] = await Promise.all([
     fetch(`${base}/api/portal/auth/me/`, { cache: "no-store", headers }).catch(() => null),
     fetch(`${base}/api/portal/proposals/`, { cache: "no-store", headers }).catch(() => null),
     fetch(`${base}/api/portal/specs/`, { cache: "no-store", headers }).catch(() => null),
+    fetch(`${base}/api/portal/cffs/`, { cache: "no-store", headers }).catch(() => null),
   ]);
 
   if (!meRes || meRes.status === 401 || meRes.status === 403) {
@@ -44,11 +51,23 @@ export default async function PortalHub() {
   const me = meRes.ok ? await meRes.json() : null;
   const proposals = propRes && propRes.ok ? await propRes.json() : { results: [] };
   const specs = specRes && specRes.ok ? await specRes.json() : { results: [] };
+  const cffs = cffRes && cffRes.ok ? await cffRes.json() : { results: [] };
 
   const proposalCount: number = proposals.results?.length ?? 0;
   const specCount: number = specs.results?.length ?? 0;
+  const cffCount: number = cffs.results?.length ?? 0;
   const signedProposals: number = (proposals.results || []).filter(
     (p: { status: string }) => p.status === "accepted",
+  ).length;
+  // Open = anything Wix hasn't marked closed/archived. Lets the
+  // customer see at-a-glance how many of their requests are still
+  // in-flight vs. historical record. Match Wix's lowercased status
+  // strings so a typo in casing doesn't drop the row from the count.
+  const openCFFs: number = (cffs.results || []).filter(
+    (c: { status?: string }) => {
+      const s = (c.status || "").toLowerCase();
+      return s !== "closed" && s !== "archived";
+    },
   ).length;
 
   return (
@@ -59,7 +78,7 @@ export default async function PortalHub() {
         subtitle="Everything Vita has shared with you, in one place. Open a card below to dive in."
       />
 
-      <div className="grid gap-6 sm:grid-cols-2">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
         <HubCard
           href="/portal/proposals"
           icon={<FileText className="h-7 w-7" />}
@@ -74,6 +93,17 @@ export default async function PortalHub() {
           eyebrow="02 / Specifications"
           title="Specification sheets"
           stat={specCount === 0 ? "No specs yet" : `${specCount} attached`}
+        />
+        <HubCard
+          href="/portal/cffs"
+          icon={<ClipboardList className="h-7 w-7" />}
+          eyebrow="03 / Requests"
+          title="Custom formulation requests"
+          stat={
+            cffCount === 0
+              ? "No requests yet"
+              : `${cffCount} total · ${openCFFs} open`
+          }
         />
       </div>
 

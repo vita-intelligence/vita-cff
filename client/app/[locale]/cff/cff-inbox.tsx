@@ -357,11 +357,21 @@ function CFFRow({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {/* Primary triage action for an unassigned row: create the
-              project and route everything from this CFF straight
-              there. The "attach to existing" path lives in the
-              detail modal for the rare case the project already
-              exists. */}
+          {/* Triage actions for an unassigned row. ``Create project``
+              spins up a new project from the CFF (the common path);
+              ``Attach to existing`` opens the project picker for the
+              rare case the project already exists (e.g. the customer
+              re-submitted a CFF for an in-flight project). Both
+              hidden once the row is already attached. */}
+          {onAssign && !row.project ? (
+            <button
+              type="button"
+              onClick={onAssign}
+              className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+            >
+              {t("assign.open")}
+            </button>
+          ) : null}
           {onCreateProject && !row.project ? (
             <button
               type="button"

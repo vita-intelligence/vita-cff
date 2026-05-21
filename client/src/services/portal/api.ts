@@ -253,6 +253,98 @@ export async function markProposalChatRead(proposalId: string): Promise<void> {
 }
 
 
+// --- CFF (Custom Formulation Request) — customer-facing -----------------
+//
+// The customer sees CFFs they own — by email match against the form they
+// submitted OR through a project link (their proposal is on the project a
+// CFF was assigned to). See ``apps.cff_submissions.services.list_customer_cffs``
+// for the ownership union; the wire shape mirrors what that endpoint emits.
+
+
+export interface PortalCFFListItem {
+  readonly id: string;
+  readonly submitted_at: string;
+  readonly status: string;
+  readonly has_project: boolean;
+  readonly project_code: string | null;
+  /** Single-line preview pulled from the customer's own answers
+   *  (market segment / product type / brief) so the list reads
+   *  as more than a row of timestamps. Empty string when the
+   *  importer couldn't find a usable slug. */
+  readonly summary: string;
+}
+
+
+export interface PortalCFFDetail extends PortalCFFListItem {
+  readonly wix_form_id: string;
+  /** Full ``raw_payload`` from Wix so the customer can re-read
+   *  their own submission verbatim. Shape varies by form
+   *  version — render with the same heuristic dl approach the
+   *  staff CFF page uses. */
+  readonly raw_payload: {
+    readonly submissions?: Record<string, unknown>;
+    readonly [k: string]: unknown;
+  };
+}
+
+
+export async function fetchCFFs(): Promise<{
+  results: PortalCFFListItem[];
+}> {
+  const { data } = await apiClient.get<{ results: PortalCFFListItem[] }>(
+    "/api/portal/cffs/",
+  );
+  return data;
+}
+
+
+export async function fetchCFF(submissionId: string): Promise<PortalCFFDetail> {
+  const { data } = await apiClient.get<PortalCFFDetail>(
+    `/api/portal/cffs/${submissionId}/`,
+  );
+  return data;
+}
+
+
+export async function fetchCFFMessages(
+  submissionId: string,
+): Promise<{
+  results: PortalMessageDto[];
+  read_state: string | null;
+  cff_id: string;
+}> {
+  const { data } = await apiClient.get<{
+    results: PortalMessageDto[];
+    read_state: string | null;
+    cff_id: string;
+  }>(`/api/portal/cffs/${submissionId}/messages/`);
+  return data;
+}
+
+
+export async function postCFFMessage(
+  submissionId: string,
+  body: string,
+  parentId?: string | null,
+): Promise<PortalMessageDto> {
+  const payload: Record<string, unknown> = { body };
+  if (parentId) payload.parent_id = parentId;
+  const { data } = await apiClient.post<PortalMessageDto>(
+    `/api/portal/cffs/${submissionId}/messages/`,
+    payload,
+  );
+  return data;
+}
+
+
+export async function markCFFMessagesRead(submissionId: string): Promise<void> {
+  await apiClient.post(
+    `/api/portal/cffs/${submissionId}/messages/read/`,
+    {},
+  );
+}
+
+
 // --- Inbox (bell badge + dropdown) ----------------------------------------
 
 

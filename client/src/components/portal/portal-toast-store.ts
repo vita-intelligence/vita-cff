@@ -23,10 +23,13 @@ import { create } from "zustand";
 
 
 /** Thread the toast points at. Used both as the visual subject of
- *  the toast row and as the click-through target. ``proposal`` and
- *  ``specification`` are the only two portal-facing thread kinds
- *  the FE renders. */
-export type PortalToastKind = "proposal" | "specification";
+ *  the toast row and as the click-through target. Matches the
+ *  ``PortalEntityKind`` union the WS client accepts — keep them in
+ *  sync. */
+export type PortalToastKind =
+  | "proposal"
+  | "specification"
+  | "cff_submission";
 
 
 export interface PortalToast {

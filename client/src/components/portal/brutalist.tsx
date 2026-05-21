@@ -60,7 +60,12 @@ export function PortalLogo({ href = "/portal" }: { href?: string }) {
 }
 
 
-export type PortalNavSection = "home" | "proposals" | "specs" | "settings";
+export type PortalNavSection =
+  | "home"
+  | "proposals"
+  | "specs"
+  | "cff"
+  | "settings";
 
 
 const NAV_ITEMS: ReadonlyArray<{
@@ -70,6 +75,7 @@ const NAV_ITEMS: ReadonlyArray<{
 }> = [
   { key: "proposals", href: "/portal/proposals", label: "Proposals" },
   { key: "specs", href: "/portal/specs", label: "Specifications" },
+  { key: "cff", href: "/portal/cffs", label: "Requests" },
   { key: "settings", href: "/portal/settings", label: "Settings" },
 ];
 

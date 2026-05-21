@@ -58,10 +58,12 @@ websocket_urlpatterns = [
     # consumer joins the SAME ``comments.<kind>.<entity_id>`` group
     # the staff route joins, so staff sees the customer's presence /
     # typing and vice versa. ``entity_kind`` is restricted to the
-    # surfaces the portal actually exposes — proposals + specs.
+    # surfaces the portal actually exposes — proposals, specs, and
+    # CFF intake threads (the customer can read + reply on the
+    # request they originally submitted).
     re_path(
         r"^ws/portal/"
-        r"(?P<entity_kind>proposal|specification)/"
+        r"(?P<entity_kind>proposal|specification|cff_submission)/"
         r"(?P<entity_id>[0-9a-fA-F-]{36})/?$",
         PortalCommentConsumer.as_asgi(),
         name="ws-portal-comments",

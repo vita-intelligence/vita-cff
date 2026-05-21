@@ -269,10 +269,103 @@ def _gather_spec_threads(client_account) -> list[dict[str, Any]]:
     return rows
 
 
+def _gather_cff_threads(client_account) -> list[dict[str, Any]]:
+    """Build the inbox rows for every CFF this customer owns that
+    has at least one shared comment.
+
+    Ownership follows the same union rule as
+    :func:`apps.cff_submissions.services.list_customer_cffs` —
+    email match OR project link — so the bell never surfaces a
+    CFF the customer can't actually open.
+    """
+
+    from apps.cff_submissions.models import CFFSubmission
+    from apps.cff_submissions.services import list_customer_cffs
+
+    # Only the CFFs that own at least one shared comment matter
+    # here — the dropdown is "your conversations", not "your full
+    # CFF history". Walks the ownership queryset and prunes to
+    # rows with at least one ``shared`` non-deleted comment.
+    cffs = (
+        list_customer_cffs(client_account=client_account)
+        .filter(
+            comments__visibility=Comment.Visibility.SHARED,
+            comments__is_deleted=False,
+        )
+        .distinct()
+    )
+    cff_ids = [c.id for c in cffs]
+    if not cff_ids:
+        return []
+
+    cff_ct = ContentType.objects.get_for_model(CFFSubmission)
+    read_rows = (
+        CommentReadState.objects
+        .filter(
+            viewer_client=client_account,
+            content_type=cff_ct,
+            object_id__in=cff_ids,
+        )
+        .values_list("object_id", "last_read_at")
+    )
+    last_read_by_id = {str(pk): ts for pk, ts in read_rows}
+
+    rows: list[dict[str, Any]] = []
+    for cff in cffs:
+        latest = (
+            Comment.objects
+            .filter(
+                cff_submission=cff,
+                visibility=Comment.Visibility.SHARED,
+                is_deleted=False,
+            )
+            .select_related("author", "client_account__customer")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = last_read_by_id.get(str(cff.id), _UNIX_EPOCH)
+        unread = (
+            Comment.objects
+            .filter(
+                cff_submission=cff,
+                visibility=Comment.Visibility.SHARED,
+                is_deleted=False,
+                created_at__gt=last_read,
+            )
+            .exclude(client_account=client_account)
+            .count()
+        )
+        # CFF rows don't have a clean human title — the Wix
+        # form-submission ID is opaque. Use the project code when
+        # the CFF has been routed to one, otherwise a short id
+        # slice so the row still has *something* to read against.
+        title = (
+            f"CFF · {cff.project.code or cff.project.name}"
+            if cff.project_id is not None and cff.project is not None
+            else f"CFF · {str(cff.id)[:8]}"
+        )
+        rows.append(
+            {
+                "entity_kind": "cff_submission",
+                "entity_id": str(cff.id),
+                "entity_title": title,
+                "deep_link": f"/portal/cffs/{cff.id}",
+                "unread_count": unread,
+                "last_message_at": latest.created_at.isoformat(),
+                "last_message_preview": _preview(latest),
+                "last_message_author": _author_snapshot(latest),
+            }
+        )
+    return rows
+
+
 def _all_threads(client_account) -> list[dict[str, Any]]:
     rows = (
         _gather_proposal_threads(client_account)
         + _gather_spec_threads(client_account)
+        + _gather_cff_threads(client_account)
     )
     rows.sort(key=lambda r: r["last_message_at"], reverse=True)
     return rows

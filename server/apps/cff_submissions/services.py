@@ -58,6 +58,61 @@ SALES_PERSON_EMAIL_SLUG_PREFIXES: tuple[str, ...] = (
 )
 
 
+#: Slug prefix list for the customer's OWN email — the email they
+#: typed into the form's contact field. Used at import time to
+#: populate :attr:`CFFSubmission.submitter_email`, which the portal
+#: then matches against ``Customer.email`` to surface "your CFFs" on
+#: the customer's own login.
+#:
+#: ``email`` is the canonical Wix prefix; the trailing variants
+#: cover older form versions some tenants migrated from. The
+#: importer takes the first non-empty match.
+SUBMITTER_EMAIL_SLUG_PREFIXES: tuple[str, ...] = (
+    "email_address",
+    "email",
+)
+
+
+def extract_submitter_email(raw_payload: Any) -> str:
+    """Pull the customer's own email out of a Wix raw_payload.
+
+    Mirrors :func:`_extract_sales_person_email` but skips any slug
+    that's an account-manager / sales-person field — those are the
+    Vita employee's email, NOT the customer's. Order of operations
+    matters: we walk the submissions dict in insertion order and
+    return the first value matching a customer-email prefix that is
+    NOT also an account-manager slug.
+
+    Returns an empty string (not ``None``) so the caller can store
+    it directly on the model's non-nullable
+    :attr:`~CFFSubmission.submitter_email` field without coercing.
+    """
+
+    submissions = (
+        raw_payload.get("submissions")
+        if isinstance(raw_payload, dict)
+        else None
+    )
+    if not isinstance(submissions, dict):
+        return ""
+    for slug, value in submissions.items():
+        # Skip Vita-side account-manager email slugs — those carry
+        # the team's email, not the customer's. The customer email
+        # is the un-prefixed ``email_*`` slug.
+        if any(
+            slug.startswith(prefix)
+            for prefix in SALES_PERSON_EMAIL_SLUG_PREFIXES
+        ):
+            continue
+        if not any(
+            slug.startswith(prefix) for prefix in SUBMITTER_EMAIL_SLUG_PREFIXES
+        ):
+            continue
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Errors surfaced to the API + task layer
 # ---------------------------------------------------------------------------
@@ -340,6 +395,13 @@ def _upsert_submission(
         "wix_created_date": created_date,
         "wix_updated_date": updated_date,
         "raw_payload": raw,
+        # Lifted from raw_payload on every upsert so a Wix-side
+        # edit that changes the customer's email re-syncs into the
+        # denormalised column. Stored lowercase via the field's own
+        # ``EmailField`` validators? — Django's EmailField doesn't
+        # lowercase; we leave the original casing and rely on the
+        # ``__iexact`` lookups the portal does.
+        "submitter_email": extract_submitter_email(raw),
     }
 
     obj, was_created = CFFSubmission.objects.update_or_create(
@@ -783,6 +845,91 @@ def create_project_from_cff(
     )
 
 
+# ---------------------------------------------------------------------------
+# Customer portal — "show this customer their own CFFs"
+# ---------------------------------------------------------------------------
+
+
+def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
+    """Return every CFFSubmission the logged-in portal customer
+    should be able to read.
+
+    Ownership rule (union of two paths — :func:`PortalCommentConsumer
+    ._authorise_portal` enforces the same rule on the WS side):
+
+    * **Email match** — ``CFFSubmission.submitter_email`` matches
+      the parent ``Customer.email`` case-insensitively. The
+      denormalised email column is populated at import time from
+      the customer's own form entry, so this catches every CFF the
+      customer submitted with their portal-account email — even
+      the ones still in the unassigned-intake state.
+    * **Project link** — the CFF was assigned to a project that
+      has at least one proposal owned by this customer's
+      :class:`Customer` row. Catches the case where the customer
+      typed a different email originally (typo, work vs personal)
+      but the team has since wired the CFF into one of their
+      projects.
+
+    Defaults are conservative: an empty ``customer.email`` skips
+    the email-match branch entirely so we don't return every CFF
+    with an empty ``submitter_email``. Returns a queryset (not a
+    list) so the caller can paginate / annotate / ``.select_related``
+    as needed.
+    """
+
+    from apps.customers.models import Customer
+
+    customer_id = getattr(client_account, "customer_id", None)
+    if not customer_id:
+        return CFFSubmission.objects.none()
+
+    customer = Customer.objects.filter(id=customer_id).first()
+    if customer is None:
+        return CFFSubmission.objects.none()
+
+    # Both legs scope to the customer's organisation. Without this
+    # a stray CFF in a sibling tenant could theoretically match
+    # (no real risk today since portal accounts are 1:1 with a
+    # single tenant, but the explicit scope keeps the invariant
+    # readable in the query plan).
+    org_id = customer.organization_id
+
+    from django.db.models import Q
+
+    email_filter = Q(pk__in=[])  # always-empty seed
+    if customer.email:
+        email_filter = Q(submitter_email__iexact=customer.email)
+
+    # CFFSubmission.project → Formulation. From there the path to
+    # a Proposal is via the formulation's saved versions: each
+    # Proposal pins against a ``FormulationVersion`` (the snapshot
+    # it quotes), and FormulationVersion has ``formulation`` FK
+    # back to Formulation. Reverse-related-name walk:
+    # ``formulation.versions.proposals.customer_id``.
+    project_filter = Q(
+        project__versions__proposals__customer_id=customer_id,
+    )
+
+    return (
+        CFFSubmission.objects
+        .filter(organization_id=org_id)
+        .filter(email_filter | project_filter)
+        .distinct()
+        .order_by("-wix_created_date")
+    )
+
+
+def get_customer_cff(*, client_account, submission_id) -> CFFSubmission | None:
+    """Single-row variant of :func:`list_customer_cffs`. Returns
+    ``None`` when the CFF doesn't exist OR fails the ownership
+    union, so the portal view can map both to a single 404 without
+    leaking which case it hit."""
+
+    return list_customer_cffs(client_account=client_account).filter(
+        id=submission_id,
+    ).first()
+
+
 __all__ = [
     "CFFAssignmentError",
     "CreateFromCFFResult",
@@ -794,9 +941,12 @@ __all__ = [
     "assign_to_project",
     "create_project_from_cff",
     "ensure_fresh_submissions",
+    "extract_submitter_email",
+    "get_customer_cff",
     "get_field_labels",
     "import_cff_submissions_for_org",
     "iter_orgs_with_live_wix_cff",
+    "list_customer_cffs",
     "refresh_field_labels",
     "unassign",
     "verify_wix_cff_connection",
