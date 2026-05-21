@@ -27,6 +27,7 @@ export {
   useWixCFFConfig,
 } from "./hooks";
 export type {
+  CFFAssignmentDto,
   CFFAuthorDto,
   CFFFieldLabelsDto,
   CFFProjectRefDto,

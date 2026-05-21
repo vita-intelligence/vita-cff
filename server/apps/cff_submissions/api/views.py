@@ -65,7 +65,16 @@ from .serializers import (
     AssignToProjectRequestSerializer,
     CFFSubmissionSerializer,
     CreateProjectFromCFFRequestSerializer,
+    UnassignFromProjectRequestSerializer,
 )
+
+
+#: Prefetch tuple that hydrates the ``assignments`` collection used by
+#: :class:`CFFSubmissionSerializer`. Pulled into a constant so every
+#: view path (list, detail, assign-refresh, unassign-refresh,
+#: create-from-cff refresh) loads the same chain and the serializer
+#: never N+1s on a freshly-saved row.
+_CFF_PREFETCH = ("assignments__project", "assignments__assigned_by")
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +136,7 @@ class CFFListView(APIView):
 
         queryset = (
             CFFSubmission.objects
-            .select_related("project", "assigned_by")
+            .prefetch_related(*_CFF_PREFETCH)
             .filter(organization=self.organization)
         )
         queryset = self._filter(queryset, request)
@@ -148,14 +157,29 @@ class CFFListView(APIView):
         assigned_raw = request.query_params.get("assigned")
         if assigned_raw is not None:
             value = assigned_raw.strip().lower()
+            # ``assignments__isnull`` traverses the through-table
+            # reverse FK: ``False`` means "at least one row", ``True``
+            # means "no rows" — which is exactly the assigned vs
+            # unassigned semantics under the new M2M shape. The
+            # ``.distinct()`` guards against a CFF linked to multiple
+            # projects being returned once per link.
             if value in {"true", "1", "yes"}:
-                queryset = queryset.filter(project__isnull=False)
+                queryset = queryset.filter(assignments__isnull=False).distinct()
             elif value in {"false", "0", "no"}:
-                queryset = queryset.filter(project__isnull=True)
+                queryset = queryset.filter(assignments__isnull=True)
 
         project_id = request.query_params.get("project_id")
         if project_id:
-            queryset = queryset.filter(project_id=project_id)
+            # "Show every CFF linked to this project". One-to-many on
+            # the through-table; ``.distinct()`` here is defensive —
+            # the (submission, project) unique constraint prevents
+            # duplicates today but a future schema change shouldn't
+            # quietly turn the filter into a duplicate factory.
+            queryset = (
+                queryset
+                .filter(assignments__project_id=project_id)
+                .distinct()
+            )
 
         search = (request.query_params.get("search") or "").strip()
         if search:
@@ -183,7 +207,7 @@ class CFFDetailView(APIView):
         try:
             return (
                 CFFSubmission.objects
-                .select_related("project", "assigned_by")
+                .prefetch_related(*_CFF_PREFETCH)
                 .get(id=submission_id, organization=self.organization)
             )
         except CFFSubmission.DoesNotExist as exc:
@@ -239,19 +263,35 @@ class CFFAssignView(APIView):
         # Refresh to pick up the join + audit fields the service set.
         submission = (
             CFFSubmission.objects
-            .select_related("project", "assigned_by")
+            .prefetch_related(*_CFF_PREFETCH)
             .get(id=submission.id)
         )
         return Response(CFFSubmissionSerializer(submission).data)
 
 
 class CFFUnassignView(APIView):
-    """``POST /api/organizations/<org>/cff-submissions/<id>/unassign/``."""
+    """``POST /api/organizations/<org>/cff-submissions/<id>/unassign/``.
+
+    Body shape (all fields optional):
+
+    * ``project_id`` — when supplied, detach **only** that one
+      project link, leaving the rest of the CFF's assignments
+      intact. Used by the per-row detach action on the detail
+      modal.
+    * Omitted / ``null`` — detach **every** link the CFF holds.
+      Matches the legacy single-FK ``unassign`` behaviour and is
+      what the inbox-row "back to triage" button calls.
+    """
 
     permission_classes = (HasCFFPermission,)
     required_capability = CFFSubmissionsCapability.ASSIGN_PROJECT
 
     def post(self, request: Request, org_id: str, submission_id: str) -> Response:
+        body = request.data if isinstance(request.data, dict) else {}
+        serializer = UnassignFromProjectRequestSerializer(data=body)
+        serializer.is_valid(raise_exception=True)
+        project_id = serializer.validated_data.get("project_id")
+
         try:
             submission = CFFSubmission.objects.get(
                 id=submission_id, organization=self.organization,
@@ -259,10 +299,22 @@ class CFFUnassignView(APIView):
         except CFFSubmission.DoesNotExist as exc:
             raise NotFound() from exc
 
-        unassign(submission=submission, actor=request.user)
+        project: Formulation | None = None
+        if project_id is not None:
+            try:
+                project = Formulation.objects.get(
+                    id=project_id, organization=self.organization,
+                )
+            except Formulation.DoesNotExist as exc:
+                # Project missing or belongs to a different org.
+                # Same 404 shape as the assign endpoint so the
+                # client error path is uniform.
+                raise NotFound() from exc
+
+        unassign(submission=submission, actor=request.user, project=project)
         submission = (
             CFFSubmission.objects
-            .select_related("project", "assigned_by")
+            .prefetch_related(*_CFF_PREFETCH)
             .get(id=submission.id)
         )
         return Response(CFFSubmissionSerializer(submission).data)
@@ -322,12 +374,10 @@ class CFFCreateProjectView(APIView):
         except CFFSubmission.DoesNotExist as exc:
             raise NotFound() from exc
 
-        if submission.project_id is not None:
-            return Response(
-                {"detail": ["cff_already_assigned"]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
+        # No "already assigned" guard. Under the M2M shape a CFF can
+        # spawn additional projects later in its lifecycle — a
+        # follow-up call here simply appends a new link via
+        # :func:`create_project_from_cff` → :func:`assign_to_project`.
         serializer = CreateProjectFromCFFRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
@@ -394,12 +444,12 @@ class CFFCreateProjectView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Refresh through the same select_related path the detail
-        # endpoint uses so the response carries the project +
-        # assigned_by audit info the inbox needs.
+        # Refresh through the same prefetch path the detail endpoint
+        # uses so the response carries the freshly-added assignment
+        # row's project + assigned_by audit info the inbox needs.
         submission = (
             CFFSubmission.objects
-            .select_related("project", "assigned_by")
+            .prefetch_related(*_CFF_PREFETCH)
             .get(id=result.submission.id)
         )
 

@@ -86,8 +86,16 @@ def workspace(db):
     }
 
 
-def _make_row(*, org, project=None) -> CFFSubmission:
-    return CFFSubmission.objects.create(
+def _make_row(*, org, project=None, projects=None) -> CFFSubmission:
+    """Create a CFF row, optionally pre-linked to one or many projects.
+
+    ``project=`` / ``projects=`` accept the same data the old single-
+    FK API expected — they're translated into the M2M through-table
+    so the tests don't have to reach into :class:`CFFProjectAssignment`
+    directly for the common case of "pre-assigned fixture row".
+    """
+
+    row = CFFSubmission.objects.create(
         organization=org,
         wix_submission_id=uuid.uuid4(),
         wix_form_id=FORM_ID,
@@ -96,8 +104,15 @@ def _make_row(*, org, project=None) -> CFFSubmission:
         wix_created_date=datetime(2026, 5, 1, tzinfo=timezone.utc),
         wix_updated_date=datetime(2026, 5, 1, tzinfo=timezone.utc),
         raw_payload={"submissions": {"email_fc7d": "client@example.com"}},
-        project=project,
     )
+    pre_links: list = []
+    if project is not None:
+        pre_links.append(project)
+    if projects:
+        pre_links.extend(projects)
+    if pre_links:
+        row.projects.add(*pre_links)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -166,8 +181,54 @@ class TestAssign:
             url, {"project_id": str(workspace["project"].id)}, format="json",
         )
         assert response.status_code == status.HTTP_200_OK
-        workspace["unassigned"].refresh_from_db()
-        assert workspace["unassigned"].project_id == workspace["project"].id
+        assert (
+            list(workspace["unassigned"].projects.values_list("id", flat=True))
+            == [workspace["project"].id]
+        )
+
+    def test_assign_appends_a_second_project(self, workspace):
+        """Multi-project assignment: attaching a second project keeps
+        the first link intact rather than replacing it. This is the
+        headline of the M2M migration — without the additive
+        semantics the inbox-row "attach to existing" action would
+        silently detach the original assignment."""
+
+        second_project = FormulationFactory(organization=workspace["org"])
+        url = reverse(
+            "cff_submissions:assign",
+            kwargs={
+                "org_id": workspace["org"].id,
+                "submission_id": workspace["assigned"].id,
+            },
+        )
+        client = _login(APIClient(), workspace["triager"])
+        response = client.post(
+            url, {"project_id": str(second_project.id)}, format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        linked = set(
+            workspace["assigned"].projects.values_list("id", flat=True)
+        )
+        assert linked == {workspace["project"].id, second_project.id}
+
+    def test_assign_is_idempotent_on_same_pair(self, workspace):
+        """Re-attaching an already-linked (CFF, project) pair must
+        not raise on the unique constraint; the service ``get_or_creates``
+        the row and touches the audit fields instead."""
+
+        url = reverse(
+            "cff_submissions:assign",
+            kwargs={
+                "org_id": workspace["org"].id,
+                "submission_id": workspace["assigned"].id,
+            },
+        )
+        client = _login(APIClient(), workspace["triager"])
+        response = client.post(
+            url, {"project_id": str(workspace["project"].id)}, format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        assert workspace["assigned"].assignments.count() == 1
 
     def test_viewer_cannot_assign(self, workspace):
         url = reverse(
@@ -199,7 +260,14 @@ class TestAssign:
         )
         assert response.status_code == status.HTTP_404_NOT_FOUND
 
-    def test_unassign(self, workspace):
+    def test_unassign_without_project_clears_every_link(self, workspace):
+        """No ``project_id`` in the body → detach all assignments.
+        Same semantics the legacy single-FK unassign offered."""
+
+        second_project = FormulationFactory(organization=workspace["org"])
+        workspace["assigned"].projects.add(second_project)
+        assert workspace["assigned"].assignments.count() == 2
+
         url = reverse(
             "cff_submissions:unassign",
             kwargs={
@@ -210,8 +278,31 @@ class TestAssign:
         client = _login(APIClient(), workspace["triager"])
         response = client.post(url)
         assert response.status_code == status.HTTP_200_OK
-        workspace["assigned"].refresh_from_db()
-        assert workspace["assigned"].project_id is None
+        assert workspace["assigned"].assignments.count() == 0
+
+    def test_unassign_one_project_keeps_the_others(self, workspace):
+        """``project_id`` supplied → detach only that link. Used by
+        the per-row remove action on the detail modal."""
+
+        second_project = FormulationFactory(organization=workspace["org"])
+        workspace["assigned"].projects.add(second_project)
+
+        url = reverse(
+            "cff_submissions:unassign",
+            kwargs={
+                "org_id": workspace["org"].id,
+                "submission_id": workspace["assigned"].id,
+            },
+        )
+        client = _login(APIClient(), workspace["triager"])
+        response = client.post(
+            url, {"project_id": str(workspace["project"].id)}, format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        remaining = list(
+            workspace["assigned"].projects.values_list("id", flat=True)
+        )
+        assert remaining == [second_project.id]
 
 
 # ---------------------------------------------------------------------------

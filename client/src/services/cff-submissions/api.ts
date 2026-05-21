@@ -93,12 +93,22 @@ export async function assignCFFToProject(
 }
 
 
+/**
+ * Detach a CFF from one (or every) linked project.
+ *
+ * ``projectId`` is the per-row "remove from this project" action on
+ * the detail modal. Omitted, the call falls back to the legacy
+ * single-FK behaviour and detaches every link the CFF holds — used
+ * by the inbox-row "send back to triage" button.
+ */
 export async function unassignCFF(
   orgId: string,
   submissionId: string,
+  projectId?: string,
 ): Promise<CFFSubmissionDto> {
   const { data } = await apiClient.post<CFFSubmissionDto>(
     cffEndpoints.unassign(orgId, submissionId),
+    projectId ? { project_id: projectId } : {},
   );
   return data;
 }

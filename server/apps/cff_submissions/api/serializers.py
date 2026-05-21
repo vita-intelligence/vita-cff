@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from apps.cff_submissions.models import CFFSubmission
+from apps.cff_submissions.models import CFFProjectAssignment, CFFSubmission
 
 
 class CFFAuthorSerializer(serializers.Serializer):
-    """Minimal author shape used in the ``assigned_by`` field."""
+    """Minimal author shape used inside an assignment row."""
 
     id = serializers.UUIDField()
     full_name = serializers.CharField()
@@ -28,6 +28,31 @@ class CFFProjectRefSerializer(serializers.Serializer):
     name = serializers.CharField()
 
 
+class CFFAssignmentSerializer(serializers.Serializer):
+    """One link from the CFF↔project M2M, with its own audit fields.
+
+    A CFF can hold zero, one, or many of these in its ``assignments``
+    list. The empty list is the "still in triage" state — the inbox
+    filter chips key on it. The frontend uses the list shape to
+    render multiple project chips per row and offers a per-link
+    detach action.
+    """
+
+    project = CFFProjectRefSerializer()
+    assigned_by = serializers.SerializerMethodField()
+    assigned_at = serializers.DateTimeField()
+
+    def get_assigned_by(self, obj: CFFProjectAssignment) -> dict | None:
+        if obj.assigned_by_id is None:
+            return None
+        user = obj.assigned_by
+        return {
+            "id": str(user.id),
+            "full_name": user.get_full_name() or user.email,
+            "email": user.email,
+        }
+
+
 class CFFSubmissionSerializer(serializers.ModelSerializer):
     """List / detail wire shape for a CFF row.
 
@@ -36,10 +61,15 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
     doesn't require a backend update. The companion
     ``field_labels`` lookup (served by a sibling endpoint) maps
     Wix's slugs to human labels.
+
+    ``assignments`` is the full per-link audit collection. The
+    derived ``is_assigned`` boolean is surfaced separately so the
+    inbox can branch on it without iterating the list (relevant on
+    very wide pages where every row has the field).
     """
 
-    project = CFFProjectRefSerializer(read_only=True)
-    assigned_by = serializers.SerializerMethodField()
+    assignments = serializers.SerializerMethodField()
+    is_assigned = serializers.SerializerMethodField()
 
     class Meta:
         model = CFFSubmission
@@ -52,22 +82,61 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             "wix_created_date",
             "wix_updated_date",
             "raw_payload",
-            "project",
-            "assigned_by",
-            "assigned_at",
+            "assignments",
+            "is_assigned",
             "imported_at",
             "last_synced_at",
         )
 
-    def get_assigned_by(self, obj: CFFSubmission) -> dict | None:
-        if obj.assigned_by_id is None:
-            return None
-        user = obj.assigned_by
-        return {
-            "id": str(user.id),
-            "full_name": user.get_full_name() or user.email,
-            "email": user.email,
-        }
+    def get_assignments(self, obj: CFFSubmission) -> list[dict]:
+        """Materialise the prefetched assignment set.
+
+        Callers are expected to ``prefetch_related`` the chain
+        ``assignments__project`` / ``assignments__assigned_by``
+        upstream so this method is a pure walk over an already-loaded
+        collection. Falls back to a fresh query if a caller forgot —
+        correctness over performance, the inbox path always
+        prefetches.
+        """
+
+        rows = list(obj.assignments.all())
+        return [
+            {
+                "project": {
+                    "id": str(row.project_id),
+                    "code": row.project.code or "",
+                    "name": row.project.name,
+                },
+                "assigned_by": (
+                    {
+                        "id": str(row.assigned_by.id),
+                        "full_name": (
+                            row.assigned_by.get_full_name()
+                            or row.assigned_by.email
+                        ),
+                        "email": row.assigned_by.email,
+                    }
+                    if row.assigned_by_id is not None
+                    else None
+                ),
+                "assigned_at": row.assigned_at,
+            }
+            for row in rows
+        ]
+
+    def get_is_assigned(self, obj: CFFSubmission) -> bool:
+        """``True`` when the CFF has at least one project link.
+
+        Reads the prefetched ``assignments`` cache when present —
+        otherwise the cached list is empty after a fresh insert and
+        we fall back to the ``exists()`` query the model property
+        provides.
+        """
+
+        cache = getattr(obj, "_prefetched_objects_cache", None) or {}
+        if "assignments" in cache:
+            return bool(cache["assignments"])
+        return obj.is_assigned
 
 
 class AssignToProjectRequestSerializer(serializers.Serializer):
@@ -78,6 +147,19 @@ class AssignToProjectRequestSerializer(serializers.Serializer):
     """
 
     project_id = serializers.UUIDField()
+
+
+class UnassignFromProjectRequestSerializer(serializers.Serializer):
+    """Body for ``POST /cff-submissions/<id>/unassign/``.
+
+    ``project_id`` is optional:
+
+    * Omitted (or ``null``) → detach **every** link the CFF holds.
+      Same behaviour as the legacy single-FK unassign call.
+    * Supplied → detach only that one link.
+    """
+
+    project_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class CreateProjectFromCFFRequestSerializer(serializers.Serializer):

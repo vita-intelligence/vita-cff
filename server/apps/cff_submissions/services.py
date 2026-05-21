@@ -41,7 +41,12 @@ from .integration import (
     stamp_last_poll,
     stamp_last_tested,
 )
-from .models import CFFSubmission, CFFSubmissionStatus, WixFormSchemaCache
+from .models import (
+    CFFProjectAssignment,
+    CFFSubmission,
+    CFFSubmissionStatus,
+    WixFormSchemaCache,
+)
 from .wix_client import WixAPIError, WixClient
 
 logger = logging.getLogger(__name__)
@@ -562,12 +567,17 @@ def assign_to_project(
     actor: Any,
     can_assign_sales_person: bool = False,
 ) -> CFFSubmission:
-    """Attach ``submission`` to ``project``.
+    """Attach ``submission`` to ``project`` (additive — does not
+    detach any existing links).
 
     Both must belong to the same organisation. Assigning a CFF to a
     project in a different tenant is a hard error, not best-effort.
-    Re-assigning to the same project updates ``assigned_at`` so the
-    audit trail reflects the latest decision.
+    Re-attaching the same pair is idempotent: the existing
+    :class:`CFFProjectAssignment` row is touched (``assigned_at``
+    refreshed, ``assigned_by`` set to the current actor) so the
+    audit log still reflects the latest decision, but no duplicate
+    link is created — the unique constraint on (submission, project)
+    would reject one anyway.
 
     When ``can_assign_sales_person`` is true AND the project does not
     already have a sales person, this also runs the same
@@ -588,12 +598,24 @@ def assign_to_project(
             "Project belongs to a different organisation than the CFF."
         )
 
-    submission.project = project
-    submission.assigned_by = actor
-    submission.assigned_at = django_timezone.now()
-    submission.save(
-        update_fields=("project", "assigned_by", "assigned_at", "last_synced_at"),
+    assignment, created = CFFProjectAssignment.objects.get_or_create(
+        submission=submission,
+        project=project,
+        defaults={"assigned_by": actor},
     )
+    if not created:
+        # Touch the existing row so the audit trail reflects the
+        # most recent operator + timestamp. ``assigned_at`` carries
+        # ``auto_now_add=True`` so a plain ``save()`` won't update
+        # it — we go through the queryset path instead.
+        CFFProjectAssignment.objects.filter(pk=assignment.pk).update(
+            assigned_by=actor,
+            assigned_at=django_timezone.now(),
+        )
+    # Bump ``last_synced_at`` so the inbox list refresh shows the
+    # row as recently touched. The legacy single-FK path used to do
+    # this implicitly via ``update_fields``; keep parity now.
+    submission.save(update_fields=("last_synced_at",))
 
     # Empty-slot auto-assign. ``sales_person_id`` is read off the
     # already-loaded project row so we don't refetch — the value is
@@ -640,17 +662,35 @@ def unassign(
     *,
     submission: CFFSubmission,
     actor: Any,
+    project: Formulation | None = None,
 ) -> CFFSubmission:
-    """Detach a CFF from its project. ``actor`` is recorded as the
-    last touch so the audit trail reflects who broke the link, not
-    who made it."""
+    """Detach a CFF from a project link.
 
-    submission.project = None
-    submission.assigned_by = actor
-    submission.assigned_at = django_timezone.now()
-    submission.save(
-        update_fields=("project", "assigned_by", "assigned_at", "last_synced_at"),
-    )
+    Two modes:
+
+    * ``project=None`` (default) — remove **every** link the CFF has.
+      Equivalent to the legacy single-FK ``unassign`` behaviour, and
+      what the inbox-row "unassign" button calls when the operator
+      just wants to send the CFF back to triage.
+    * ``project=<Formulation>`` — remove only that one link. Used by
+      the per-row "remove from this project" action on the detail
+      modal, so the other links the CFF holds keep their audit rows
+      intact.
+
+    Passing a project that isn't currently linked is a silent no-op —
+    the queryset delete touches zero rows. ``actor`` isn't recorded
+    on the row (the row is gone) but the surrounding audit log
+    captures who initiated the call.
+
+    The CFF's ``last_synced_at`` is still bumped so the inbox list
+    sort reflects the recency of this operation.
+    """
+
+    qs = CFFProjectAssignment.objects.filter(submission=submission)
+    if project is not None:
+        qs = qs.filter(project=project)
+    qs.delete()
+    submission.save(update_fields=("last_synced_at",))
     return submission
 
 
@@ -900,14 +940,18 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
     if customer.email:
         email_filter = Q(submitter_email__iexact=customer.email)
 
-    # CFFSubmission.project → Formulation. From there the path to
-    # a Proposal is via the formulation's saved versions: each
-    # Proposal pins against a ``FormulationVersion`` (the snapshot
-    # it quotes), and FormulationVersion has ``formulation`` FK
-    # back to Formulation. Reverse-related-name walk:
-    # ``formulation.versions.proposals.customer_id``.
+    # CFFSubmission ↔ Formulation is now M2M (``projects``). From
+    # any linked formulation the path to a Proposal is via that
+    # formulation's saved versions: each Proposal pins against a
+    # ``FormulationVersion`` (the snapshot it quotes), and
+    # FormulationVersion has a ``formulation`` FK back to
+    # Formulation. Reverse-related-name walk:
+    # ``cff.projects.versions.proposals.customer_id``. Django turns
+    # the M2M traversal into a join, so a CFF linked to *any*
+    # project owned by this customer matches — exactly the
+    # semantics the portal wants.
     project_filter = Q(
-        project__versions__proposals__customer_id=customer_id,
+        projects__versions__proposals__customer_id=customer_id,
     )
 
     return (

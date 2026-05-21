@@ -33,7 +33,8 @@
   },
   "badge": {
     "unassigned": "Not attached to any project",
-    "assigned_to": "Attached to {project}"
+    "assigned_to": "Attached to {project}",
+    "assigned_to_n": "Attached to {count} projects"
   },
   "detail": {
     "title": "CFF submission",
@@ -64,21 +65,22 @@
   "assign": {
     "open": "Attach to existing project",
     "open_disabled": "You don't have permission to assign CFFs",
-    "title": "Attach CFF to project",
-    "body": "Pick the project this submission belongs to. The customer details are kept on the CFF so the team can refer back to the original request.",
+    "title": "Manage project links",
+    "body": "Pick the project this submission belongs to. A single CFF can be linked to multiple projects — assignments are additive, so attaching a new one keeps the existing links intact.",
     "select_label": "Project",
     "select_placeholder": "Search projects by code or name…",
     "no_projects": "No matching projects. Create one first, then come back here.",
     "submit": "Attach",
-    "cancel": "Cancel",
+    "cancel": "Close",
     "sending": "Attaching…",
-    "unassign_open": "Unassign",
-    "unassign_confirm_title": "Detach this CFF from {project}?",
+    "linked_section": "Currently linked",
+    "linked_empty": "Not linked to any project yet.",
+    "unassign_link_label": "Detach from this project",
     "unassign_confirm_body": "The CFF stays in your inbox; the project keeps its data but loses the back-link to this request.",
     "unassign_submit": "Detach",
     "unassign_sending": "Detaching…",
     "toast_assigned": "Attached to {project}.",
-    "toast_unassigned": "Detached from the project.",
+    "toast_unassigned": "Detached from {project}.",
     "error_generic": "Couldn't update the assignment. Please try again."
   },
   "create_project": {

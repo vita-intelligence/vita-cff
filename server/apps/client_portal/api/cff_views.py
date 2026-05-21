@@ -86,12 +86,22 @@ class PortalCFFListItemSerializer(serializers.Serializer):
     summary = serializers.SerializerMethodField()
 
     def get_has_project(self, obj) -> bool:
-        return obj.project_id is not None
+        # CFFs can now be linked to multiple projects via the
+        # ``CFFProjectAssignment`` through-table. The portal cares
+        # only about the binary "is this CFF on the workshop floor
+        # yet" signal — same headline the v1 single-FK shape gave.
+        return obj.projects.exists()
 
     def get_project_code(self, obj) -> str | None:
-        if obj.project_id is None:
+        # Surface a single code for the list-row pill. When a CFF
+        # spans multiple workspaces we pick the first by name (the
+        # M2M's default ordering) — the customer rarely needs to see
+        # the full set in a flat row; the detail page can expand it
+        # later if there's ever demand.
+        first = obj.projects.order_by("name").first()
+        if first is None:
             return None
-        return obj.project.code or obj.project.name or None
+        return first.code or first.name or None
 
     def get_summary(self, obj) -> str:
         return _summary_line(obj)
@@ -206,7 +216,10 @@ class PortalCFFListView(PortalAPIView):
     def get(self, request: Request) -> Response:
         rows = list(
             list_customer_cffs(client_account=request.user)
-            .select_related("project")
+            # Pre-load the M2M so ``get_has_project`` and
+            # ``get_project_code`` don't fan out to one query per
+            # row when the list view renders.
+            .prefetch_related("projects")
         )
         return Response(
             {"results": PortalCFFListItemSerializer(rows, many=True).data},

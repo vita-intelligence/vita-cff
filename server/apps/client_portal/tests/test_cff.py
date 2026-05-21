@@ -86,7 +86,14 @@ def _make_cff(
     project=None,
     raw_payload=None,
 ):
-    return CFFSubmission.objects.create(
+    """Build a CFF row, optionally linked to one project.
+
+    The legacy ``project=`` argument is translated to an
+    ``M2M.add`` call so the existing tests keep their concise shape
+    after the through-table migration.
+    """
+
+    cff = CFFSubmission.objects.create(
         organization=org,
         wix_submission_id=uuid.uuid4(),
         wix_form_id=uuid.uuid4(),
@@ -98,8 +105,10 @@ def _make_cff(
             "submissions": {"email_fc7d": submitter_email or "x@example.com"},
         },
         submitter_email=submitter_email,
-        project=project,
     )
+    if project is not None:
+        cff.projects.add(project)
+    return cff
 
 
 def _login_portal(client: APIClient, account: ClientAccount) -> None:

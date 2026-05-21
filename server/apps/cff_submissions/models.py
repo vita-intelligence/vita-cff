@@ -4,8 +4,18 @@ Customers fill in a public Wix-hosted form at vitamanufacture.co.uk. The
 Celery beat task in this app polls Wix every few minutes and upserts
 each submission into :class:`CFFSubmission`. A team member with the
 ``cff_submissions.assign_project`` capability later attaches a
-submission to a :class:`apps.formulations.Formulation` (project), at
-which point the actual product workspace gets created or wired up.
+submission to one or more :class:`apps.formulations.Formulation` rows
+(projects), at which point the actual product workspace gets created
+or wired up.
+
+The CFF-to-project relationship is many-to-many. One real-world CFF
+can fan out into multiple workspaces — a single customer brief may
+spawn a flavour-A project and a flavour-B project, or a follow-up CFF
+may need to be attached to an existing in-flight project on top of
+its new sibling. The link is materialised by
+:class:`CFFProjectAssignment` (the M2M through-table) so each link
+carries its own audit trail — *who* attached the CFF to *which*
+project and *when*.
 
 Schema is denormalised on purpose — the full Wix payload lives in
 ``raw_payload`` JSONB so the UI can render arbitrary form fields
@@ -112,26 +122,18 @@ class CFFSubmission(models.Model):
         ),
     )
 
-    project = models.ForeignKey(
+    #: Many-to-many link to the workspaces this CFF has been
+    #: attached to. Materialised through :class:`CFFProjectAssignment`
+    #: so each link carries its own audit (``assigned_by`` /
+    #: ``assigned_at``). The empty set is the "still in triage queue"
+    #: state — the inbox's headline filter keys on it.
+    projects = models.ManyToManyField(
         "formulations.Formulation",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
+        through="CFFProjectAssignment",
+        through_fields=("submission", "project"),
         related_name="cff_submissions",
-        help_text=_(
-            "Project this CFF was assigned to. Null = unassigned, "
-            "which is the headline state surfaced by the UI."
-        ),
-    )
-    assigned_by = models.ForeignKey(
-        "accounts.User",
-        null=True,
         blank=True,
-        on_delete=models.SET_NULL,
-        related_name="+",
-        help_text=_("User who attached this CFF to its project."),
     )
-    assigned_at = models.DateTimeField(null=True, blank=True)
 
     imported_at = models.DateTimeField(auto_now_add=True)
     last_synced_at = models.DateTimeField(
@@ -144,11 +146,11 @@ class CFFSubmission(models.Model):
         verbose_name_plural = _("CFF submissions")
         ordering = ("-wix_created_date",)
         indexes = [
-            # Primary list view: org + assigned/unassigned + recency.
-            # Composite indexes on (org, project) and (org, created)
-            # cover the "unassigned in my org, newest first" filter
-            # which is the default UI view.
-            models.Index(fields=["organization", "project"]),
+            # Primary list view filters by org + recency. The
+            # assigned/unassigned filter joins through
+            # ``CFFProjectAssignment``, which carries its own
+            # ``(submission, project)`` index — see that model's
+            # Meta — so we don't duplicate it here.
             models.Index(fields=["organization", "-wix_created_date"]),
             models.Index(fields=["organization", "-wix_updated_date"]),
         ]
@@ -158,7 +160,80 @@ class CFFSubmission(models.Model):
 
     @property
     def is_assigned(self) -> bool:
-        return self.project_id is not None
+        """``True`` when this CFF has at least one project link.
+
+        Callers that already have the assignment set loaded (via
+        ``prefetch_related``) get an in-memory check; otherwise this
+        triggers one ``EXISTS`` query. List endpoints should annotate
+        ``has_assignments`` upstream to avoid the N+1.
+        """
+
+        return self.assignments.exists()
+
+
+class CFFProjectAssignment(models.Model):
+    """One CFF ↔ project link with its own audit trail.
+
+    Through-model for :attr:`CFFSubmission.projects`. Each row is
+    immutable apart from being created or deleted — re-assigning the
+    same CFF to the same project after a detach creates a new row so
+    the audit log keeps history. ``assigned_at`` is stamped at
+    insert; ``assigned_by`` is the user who triggered the link
+    (nullable because the importer or a system path may create one).
+    """
+
+    submission = models.ForeignKey(
+        CFFSubmission,
+        on_delete=models.CASCADE,
+        related_name="assignments",
+        help_text=_("CFF being attached."),
+    )
+    project = models.ForeignKey(
+        "formulations.Formulation",
+        on_delete=models.CASCADE,
+        related_name="cff_assignments",
+        help_text=_("Project the CFF is being attached to."),
+    )
+    assigned_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text=_(
+            "User who created this link. ``NULL`` for system-driven "
+            "links (importer back-fill, future webhook paths)."
+        ),
+    )
+    assigned_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text=_("Stamped on insert. Use the most recent row to "
+                    "answer 'when was this CFF last touched'."),
+    )
+
+    class Meta:
+        verbose_name = _("CFF project assignment")
+        verbose_name_plural = _("CFF project assignments")
+        constraints = [
+            # One link per (CFF, project) pair. Re-attaching after a
+            # detach is supported via delete + insert — the service
+            # layer uses ``get_or_create`` so a redundant re-attach
+            # is a no-op rather than a constraint violation.
+            models.UniqueConstraint(
+                fields=("submission", "project"),
+                name="cff_assignment_unique_per_pair",
+            ),
+        ]
+        indexes = [
+            # Reverse lookup: "every CFF linked to project X". Covers
+            # the project-detail-page sidebar and the
+            # ``?project_id=`` list filter.
+            models.Index(fields=("project", "-assigned_at")),
+        ]
+        ordering = ("-assigned_at",)
+
+    def __str__(self) -> str:
+        return f"CFF {self.submission_id} → project {self.project_id}"
 
 
 class WixFormSchemaCache(models.Model):

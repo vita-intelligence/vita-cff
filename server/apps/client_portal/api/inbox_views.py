@@ -338,12 +338,16 @@ def _gather_cff_threads(client_account) -> list[dict[str, Any]]:
             .count()
         )
         # CFF rows don't have a clean human title — the Wix
-        # form-submission ID is opaque. Use the project code when
-        # the CFF has been routed to one, otherwise a short id
-        # slice so the row still has *something* to read against.
+        # form-submission ID is opaque. Use a linked project's code
+        # when the CFF has been routed to at least one, otherwise a
+        # short id slice so the row still has *something* to read
+        # against. A CFF can sit across multiple projects under the
+        # M2M shape; pick the first by name so the title is stable
+        # across re-renders even when the link set grows.
+        first_project = cff.projects.order_by("name").first()
         title = (
-            f"CFF · {cff.project.code or cff.project.name}"
-            if cff.project_id is not None and cff.project is not None
+            f"CFF · {first_project.code or first_project.name}"
+            if first_project is not None
             else f"CFF · {str(cff.id)[:8]}"
         )
         rows.append(

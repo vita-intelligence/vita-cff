@@ -149,16 +149,26 @@ export function useInfiniteCFFSubmissions(
  * pre-population (when the user opens the page from the inbox)
  * paints with the cached row instantly while the network request
  * refreshes in the background.
+ *
+ * ``initialData`` lets a caller seed the cache with a row they
+ * already hold (e.g. the inbox list passes the clicked row when
+ * opening the assign modal, so the modal can render instantly and
+ * still pick up live updates as the assign/unassign mutations seed
+ * the detail cache via :func:`useAssignCFFToProject` etc).
  */
 export function useCFFSubmission(
   orgId: string,
   submissionId: string,
-  options: { readonly enabled?: boolean } = {},
+  options: {
+    readonly enabled?: boolean;
+    readonly initialData?: CFFSubmissionDto;
+  } = {},
 ): UseQueryResult<CFFSubmissionDto, ApiError> {
   return useQuery<CFFSubmissionDto, ApiError>({
     queryKey: cffQueryKeys.detail(orgId, submissionId),
     queryFn: () => fetchCFFSubmission(orgId, submissionId),
     enabled: (options.enabled ?? true) && Boolean(orgId && submissionId),
+    initialData: options.initialData,
   });
 }
 
@@ -211,7 +221,19 @@ export function useAssignCFFToProject(
   return useMutation<CFFSubmissionDto, ApiError, AssignVars>({
     mutationFn: ({ submissionId, projectId }) =>
       assignCFFToProject(orgId, submissionId, projectId),
-    onSuccess: () => {
+    onSuccess: (fresh, { submissionId }) => {
+      // The mutation already returns the freshly-serialised row.
+      // Seeding the detail-query cache directly is cheaper than a
+      // round-trip refetch — and crucially makes the assign modal's
+      // "Currently linked" section update *immediately*, since that
+      // section reads from the detail query, not the list.
+      queryClient.setQueryData(
+        cffQueryKeys.detail(orgId, submissionId),
+        fresh,
+      );
+      // The list is paginated + cursor-driven, so a setQueryData
+      // patch would have to walk every cached page. Cheaper to just
+      // invalidate and let TanStack refetch the visible page.
       queryClient.invalidateQueries({
         queryKey: [...cffQueryKeys.all, orgId, "list"],
       });
@@ -222,6 +244,15 @@ export function useAssignCFFToProject(
 
 interface UnassignVars {
   readonly submissionId: string;
+  /**
+   * ``projectId`` is optional:
+   *
+   * * Supplied — detach only that one (CFF, project) link.
+   * * Omitted — detach **every** link the CFF holds. Used by the
+   *   inbox-row "back to triage" button to mirror the legacy
+   *   single-FK unassign behaviour.
+   */
+  readonly projectId?: string;
 }
 
 
@@ -230,8 +261,16 @@ export function useUnassignCFF(
 ): UseMutationResult<CFFSubmissionDto, ApiError, UnassignVars> {
   const queryClient = useQueryClient();
   return useMutation<CFFSubmissionDto, ApiError, UnassignVars>({
-    mutationFn: ({ submissionId }) => unassignCFF(orgId, submissionId),
-    onSuccess: () => {
+    mutationFn: ({ submissionId, projectId }) =>
+      unassignCFF(orgId, submissionId, projectId),
+    onSuccess: (fresh, { submissionId }) => {
+      // Seed the detail query with the post-detach row so the
+      // assign modal's chip list reflows in place. Same reasoning
+      // as the assign mutation above.
+      queryClient.setQueryData(
+        cffQueryKeys.detail(orgId, submissionId),
+        fresh,
+      );
       queryClient.invalidateQueries({
         queryKey: [...cffQueryKeys.all, orgId, "list"],
       });
@@ -261,7 +300,14 @@ export function useCreateProjectFromCFF(
   >({
     mutationFn: ({ submissionId, payload }) =>
       createProjectFromCFF(orgId, submissionId, payload),
-    onSuccess: () => {
+    onSuccess: (response, { submissionId }) => {
+      // Push the freshly-serialised CFF row into the detail cache
+      // so an open detail page reflects the just-created project
+      // link without a round-trip.
+      queryClient.setQueryData(
+        cffQueryKeys.detail(orgId, submissionId),
+        response.submission,
+      );
       // Invalidate the CFF list (so the row now shows as assigned)
       // AND the formulations list (so the new project shows up
       // there too). The proposals queue inherits the sales person

@@ -357,13 +357,14 @@ function CFFRow({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {/* Triage actions for an unassigned row. ``Create project``
-              spins up a new project from the CFF (the common path);
-              ``Attach to existing`` opens the project picker for the
-              rare case the project already exists (e.g. the customer
-              re-submitted a CFF for an in-flight project). Both
-              hidden once the row is already attached. */}
-          {onAssign && !row.project ? (
+          {/* Triage actions stay visible regardless of how many
+              projects the CFF is already linked to. ``Create project``
+              spins up a fresh workspace and appends the link;
+              ``Attach to existing`` opens the picker so the operator
+              can wire the CFF into another in-flight project. The
+              "send back to triage" path lives inside the assign
+              modal so a stray click on the row doesn't drop links. */}
+          {onAssign ? (
             <button
               type="button"
               onClick={onAssign}
@@ -372,7 +373,7 @@ function CFFRow({
               {t("assign.open")}
             </button>
           ) : null}
-          {onCreateProject && !row.project ? (
+          {onCreateProject ? (
             <button
               type="button"
               onClick={onCreateProject}
@@ -434,19 +435,39 @@ function AssignmentBadge({
   row: CFFSubmissionDto;
   t: ReturnType<typeof useTranslations>;
 }) {
-  if (row.project) {
+  // Unassigned is the headline triage state — same amber badge as
+  // before. ``is_assigned`` is the backend-computed flag so we don't
+  // have to walk the ``assignments`` array on every row.
+  if (!row.is_assigned) {
+    return (
+      <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+        <AlertTriangle className="mr-1 h-2.5 w-2.5" />
+        {t("badge.unassigned")}
+      </span>
+    );
+  }
+  // One link → render its code/name directly so the row reads the
+  // same as it did before the M2M migration. Many → fall back to a
+  // count chip ("3 projects") and let the detail page surface the
+  // full list.
+  // ``.length === 1`` doesn't narrow ``[0]`` away from ``undefined``
+  // under ``noUncheckedIndexedAccess``; destructure the lookup result
+  // and bail to the multi-chip path if for some reason the access
+  // misses (it can't here, but the type checker can't see that).
+  const single = row.assignments.length === 1 ? row.assignments[0] : null;
+  if (single) {
+    const project = single.project;
     return (
       <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
         {t("badge.assigned_to", {
-          project: row.project.code || row.project.name,
+          project: project.code || project.name,
         })}
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
-      <AlertTriangle className="mr-1 h-2.5 w-2.5" />
-      {t("badge.unassigned")}
+    <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
+      {t("badge.assigned_to_n", { count: row.assignments.length })}
     </span>
   );
 }

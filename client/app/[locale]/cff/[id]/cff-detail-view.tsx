@@ -215,17 +215,26 @@ export function CFFDetailView({
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <StatusPill status={submission.wix_status} t={t} />
-              {submission.project ? (
-                <Link
-                  href={`/formulations/${submission.project.id}`}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-900 ring-1 ring-inset ring-blue-200 hover:bg-blue-100"
-                >
-                  <ExternalLink className="h-3 w-3" />
-                  {t("badge.assigned_to", {
-                    project:
-                      submission.project.code || submission.project.name,
-                  })}
-                </Link>
+              {/* Linked-project chips. Each assignment renders its own
+                  pill linking to that project — the M2M lets one CFF
+                  fan out to multiple workspaces and the operator
+                  needs visible jump-off points for every one of them.
+                  Falls back to the amber "unassigned" pill when the
+                  CFF is still in triage. */}
+              {submission.is_assigned ? (
+                submission.assignments.map((assignment) => (
+                  <Link
+                    key={assignment.project.id}
+                    href={`/formulations/${assignment.project.id}`}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-900 ring-1 ring-inset ring-blue-200 hover:bg-blue-100"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    {t("badge.assigned_to", {
+                      project:
+                        assignment.project.code || assignment.project.name,
+                    })}
+                  </Link>
+                ))
               ) : (
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 ring-1 ring-inset ring-amber-200">
                   {t("badge.unassigned")}

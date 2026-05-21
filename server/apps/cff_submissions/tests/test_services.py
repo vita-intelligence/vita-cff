@@ -298,11 +298,51 @@ class TestAssignment:
         assign_to_project(
             submission=submission, project=project, actor=actor,
         )
-        submission.refresh_from_db()
+        link = submission.assignments.get(project=project)
 
-        assert submission.project_id == project.id
-        assert submission.assigned_by_id == actor.id
-        assert submission.assigned_at is not None
+        assert link.project_id == project.id
+        assert link.assigned_by_id == actor.id
+        assert link.assigned_at is not None
+
+    def test_assign_appends_a_second_project(self, db):
+        """Many-to-many semantics: a second assign-to-project call
+        adds another row instead of replacing the existing link."""
+
+        org = OrganizationFactory()
+        submission = _make_submission_row(org=org)
+        first = FormulationFactory(organization=org)
+        second = FormulationFactory(organization=org)
+        actor = UserFactory()
+
+        assign_to_project(submission=submission, project=first, actor=actor)
+        assign_to_project(submission=submission, project=second, actor=actor)
+
+        linked = set(submission.projects.values_list("id", flat=True))
+        assert linked == {first.id, second.id}
+
+    def test_reassigning_same_pair_is_idempotent(self, db):
+        """Re-attaching the same (CFF, project) pair must not raise
+        on the unique constraint — the service ``get_or_create``s
+        the row and refreshes the audit timestamp."""
+
+        org = OrganizationFactory()
+        submission = _make_submission_row(org=org)
+        project = FormulationFactory(organization=org)
+        first_actor = UserFactory()
+        second_actor = UserFactory()
+
+        assign_to_project(
+            submission=submission, project=project, actor=first_actor,
+        )
+        assign_to_project(
+            submission=submission, project=project, actor=second_actor,
+        )
+
+        link = submission.assignments.get(project=project)
+        # No duplicate row created; second actor wins the audit slot
+        # because they're the most recent operator.
+        assert submission.assignments.count() == 1
+        assert link.assigned_by_id == second_actor.id
 
     def test_cross_org_assignment_is_rejected(self, db):
         org = OrganizationFactory()
@@ -316,22 +356,43 @@ class TestAssignment:
                 submission=submission, project=foreign_project, actor=actor,
             )
 
-    def test_unassign_clears_project_but_keeps_actor_audit(self, db):
+    def test_unassign_without_project_clears_every_link(self, db):
+        """Default behaviour (legacy parity): omitting ``project=``
+        drops every assignment the CFF holds. The detach action is
+        not itself recorded on a surviving row — the audit lives on
+        the deleted rows' history outside the relational table."""
+
         org = OrganizationFactory()
         submission = _make_submission_row(org=org)
-        project = FormulationFactory(organization=org)
+        first = FormulationFactory(organization=org)
+        second = FormulationFactory(organization=org)
         first_actor = UserFactory()
         second_actor = UserFactory()
 
-        assign_to_project(
-            submission=submission, project=project, actor=first_actor,
-        )
+        assign_to_project(submission=submission, project=first, actor=first_actor)
+        assign_to_project(submission=submission, project=second, actor=first_actor)
         unassign(submission=submission, actor=second_actor)
-        submission.refresh_from_db()
 
-        assert submission.project_id is None
-        # Detach is itself an audited write — last actor wins.
-        assert submission.assigned_by_id == second_actor.id
+        assert submission.assignments.count() == 0
+
+    def test_unassign_one_project_keeps_other_links(self, db):
+        """Passing ``project=`` removes only that one link so a CFF
+        attached to multiple projects can be detached from a single
+        one without nuking the rest."""
+
+        org = OrganizationFactory()
+        submission = _make_submission_row(org=org)
+        first = FormulationFactory(organization=org)
+        second = FormulationFactory(organization=org)
+        actor = UserFactory()
+
+        assign_to_project(submission=submission, project=first, actor=actor)
+        assign_to_project(submission=submission, project=second, actor=actor)
+        unassign(submission=submission, actor=actor, project=first)
+
+        assert list(submission.projects.values_list("id", flat=True)) == [
+            second.id,
+        ]
 
     def test_attach_auto_assigns_sales_person_when_project_has_none(
         self, db,
@@ -367,7 +428,9 @@ class TestAssignment:
         submission.refresh_from_db()
 
         assert project.sales_person_id == sales_rep.id
-        assert submission.project_id == project.id
+        assert list(submission.projects.values_list("id", flat=True)) == [
+            project.id,
+        ]
 
     def test_attach_does_not_overwrite_existing_sales_person(self, db):
         # Empty-slot guard: a CFF re-attached to a project that
@@ -492,8 +555,9 @@ class TestCreateProjectFromCFF:
         assert result.project.organization_id == org.id
         assert result.project.name == "Vit C Capsule"
         assert result.project.sales_person_id == sales_rep.id
-        result.submission.refresh_from_db()
-        assert result.submission.project_id == result.project.id
+        assert list(
+            result.submission.projects.values_list("id", flat=True)
+        ) == [result.project.id]
         assert result.auto_assigned_sales_person_id == str(sales_rep.id)
         assert result.cff_sales_person_email_hint == "rep@vita.test"
 
@@ -522,8 +586,9 @@ class TestCreateProjectFromCFF:
         # The email harvested from the CFF is still surfaced so the
         # UI can show "tried to match: nobody@vita.test".
         assert result.cff_sales_person_email_hint == "nobody@vita.test"
-        result.submission.refresh_from_db()
-        assert result.submission.project_id == result.project.id
+        assert list(
+            result.submission.projects.values_list("id", flat=True)
+        ) == [result.project.id]
 
     def test_case_insensitive_email_match(self, db):
         org = OrganizationFactory()

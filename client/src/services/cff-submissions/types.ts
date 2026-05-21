@@ -31,6 +31,22 @@ export interface CFFAuthorDto {
 }
 
 
+/**
+ * One CFF↔project link as it appears in
+ * :class:`CFFSubmissionDto.assignments`.
+ *
+ * Each link carries its own audit row (who attached the CFF to this
+ * project and when). A CFF can hold zero, one, or many of these —
+ * the empty array is the "still in triage" state the inbox keys on
+ * via :attr:`CFFSubmissionDto.is_assigned`.
+ */
+export interface CFFAssignmentDto {
+  readonly project: CFFProjectRefDto;
+  readonly assigned_by: CFFAuthorDto | null;
+  readonly assigned_at: string;
+}
+
+
 export interface CFFSubmissionDto {
   readonly id: string;
   readonly wix_submission_id: string;
@@ -42,9 +58,14 @@ export interface CFFSubmissionDto {
   /** Raw Wix payload — the UI walks ``submissions`` to render the
    *  form fields with labels from the schema cache. */
   readonly raw_payload: Record<string, unknown>;
-  readonly project: CFFProjectRefDto | null;
-  readonly assigned_by: CFFAuthorDto | null;
-  readonly assigned_at: string | null;
+  /** Every project this CFF is currently linked to, ordered by the
+   *  backend (most recent assignment first). Replaces the single
+   *  ``project`` FK the v1 schema exposed. */
+  readonly assignments: ReadonlyArray<CFFAssignmentDto>;
+  /** Derived flag — ``true`` when ``assignments.length > 0``. The
+   *  backend pre-computes it so the inbox can render the binary
+   *  Assigned / Unassigned chip without walking the array. */
+  readonly is_assigned: boolean;
   readonly imported_at: string;
   readonly last_synced_at: string;
 }

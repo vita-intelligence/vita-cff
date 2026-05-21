@@ -413,13 +413,25 @@ export function CFFDetailModal({
 
         {/* ---- Body ---- */}
         <div className="flex-1 overflow-y-auto bg-ink-50 px-6 py-5">
-          {/* Assignment ribbon */}
-          {submission.project ? (
-            <div className="mb-4 rounded-xl bg-blue-50 px-3 py-2 text-xs text-blue-900 ring-1 ring-inset ring-blue-200">
-              {t("badge.assigned_to", {
-                project:
-                  submission.project.code || submission.project.name,
-              })}
+          {/* Assignment ribbon — renders one blue chip per linked
+              project (the M2M lets a single CFF fan out to many
+              workspaces), or the amber "still in triage" banner when
+              the assignment set is empty. The dedicated assign modal
+              is the place for per-link detach; here we just surface
+              the current state at a glance. */}
+          {submission.is_assigned ? (
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              {submission.assignments.map((assignment) => (
+                <span
+                  key={assignment.project.id}
+                  className="inline-flex items-center rounded-full bg-blue-50 px-3 py-1 text-xs text-blue-900 ring-1 ring-inset ring-blue-200"
+                >
+                  {t("badge.assigned_to", {
+                    project:
+                      assignment.project.code || assignment.project.name,
+                  })}
+                </span>
+              ))}
             </div>
           ) : (
             <div className="mb-4 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-inset ring-amber-200">
@@ -498,12 +510,14 @@ export function CFFDetailModal({
 
         {/* ---- Footer ---- */}
         <footer className="flex items-center justify-end gap-2 border-t border-ink-100 bg-white px-6 py-3">
-          {canAssign && !submission.project ? (
+          {canAssign ? (
             <>
-              {/* Secondary path: attach to a project that already
-                  exists. Lives behind the primary "create" so
-                  triagers don't accidentally bury a new request in
-                  an unrelated project. */}
+              {/* Both triage actions stay visible regardless of
+                  current assignment state. Under the M2M model a CFF
+                  can spawn additional projects or be wired into more
+                  existing ones at any point — hiding the buttons
+                  after the first link is created would lock the
+                  triager out of that follow-up path. */}
               <button
                 type="button"
                 onClick={onAssign}
