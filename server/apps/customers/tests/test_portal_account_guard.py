@@ -6,11 +6,14 @@ Two contracts under test:
   returned row with ``has_portal_account`` + ``portal_account_activated``
   flags, so the customers list page can render a "Portal login"
   badge + gate the delete affordance without a second round-trip.
-* :func:`delete_customer` refuses to delete a customer that has
-  any linked :class:`ClientAccount`, raising
-  :class:`CustomerHasPortalAccount`. Without the guard the
-  ``on_delete=PROTECT`` on ``ClientAccount.customer`` would fire
-  a ``ProtectedError`` and the FE would see an opaque 500.
+* :func:`delete_customer` refuses to delete a customer with an
+  **activated** :class:`ClientAccount`, raising
+  :class:`CustomerHasPortalAccount`. Unactivated stubs (the kiosk /
+  invite flows pre-create those before the customer claims them)
+  are swept on delete instead of blocking it — operators need to
+  be able to remove unverified rows. Without the activated-only
+  gate the ``on_delete=PROTECT`` on ``ClientAccount.customer`` would
+  still fire a ``ProtectedError`` for live logins.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from apps.customers.services import (
     delete_customer,
     get_customer,
     list_customers,
+    update_customer,
 )
 from apps.organizations.tests.factories import OrganizationFactory
 
@@ -113,18 +117,57 @@ class TestDeleteGuard:
             Customer.objects.filter(pk=customer.pk).exists() is False
         )
 
-    def test_delete_with_portal_account_raises(self):
-        # The guard fires for any linked client account — including
-        # a never-activated one — so we don't fall through to the
-        # FK's ``ProtectedError`` and surface an opaque 500.
+    def test_delete_with_pending_portal_account_succeeds(self):
+        """An unactivated stub account is swept on delete.
+
+        The kiosk + customer-portal-invite flows can both leave a
+        :class:`ClientAccount` row with ``activated_at`` still null
+        when the customer hasn't yet claimed the invite. Those
+        stubs are useless to the customer and the staff member
+        rightly expects to be able to remove the underlying record.
+        """
+
+        org = OrganizationFactory()
+        customer = _make_customer(
+            org=org, name="Pending", email="pending@example.com",
+        )
+        stub = ClientAccount.objects.create_account(
+            email=customer.email,
+            customer=customer,
+            password="any-password-12345",
+        )
+        # No ``activated_at`` stamp — the row stays in the "issued
+        # but not claimed" state.
+        actor = UserFactory()
+
+        delete_customer(customer=customer, actor=actor)
+
+        assert Customer.objects.filter(pk=customer.pk).exists() is False
+        # The stub is gone too — the customer FK is on_delete=PROTECT
+        # so the only way the customer delete could succeed is by
+        # removing the stub first.
+        assert ClientAccount.objects.filter(pk=stub.pk).exists() is False
+
+    def test_delete_with_activated_portal_account_raises(self):
+        """An activated account is the one case we still refuse.
+
+        The customer is actively using the portal; deleting the CRM
+        row would orphan their sessions + proposal access. Surfaces
+        :class:`CustomerHasPortalAccount` so the FE renders a clean
+        toast instead of a generic 500.
+        """
+
         org = OrganizationFactory()
         customer = _make_customer(
             org=org, name="Protected", email="protected@example.com",
         )
-        ClientAccount.objects.create_account(
+        account = ClientAccount.objects.create_account(
             email=customer.email,
             customer=customer,
             password="any-password-12345",
+        )
+        ClientAccount.objects.filter(pk=account.pk).update(
+            activated_at="2026-01-01T00:00:00Z",
         )
         actor = UserFactory()
 
@@ -135,3 +178,67 @@ class TestDeleteGuard:
         assert (
             Customer.objects.filter(pk=customer.pk).exists() is True
         )
+
+
+class TestEmailChangeInvalidatesInvites:
+    """Editing the customer's email must invalidate any open portal
+    invite issued against the previous address. Without this, the
+    code we mailed to the old inbox + the link the staff already
+    shared could still complete activation against a stale email
+    long after the operator "moved" the customer to a new one.
+    """
+
+    def test_changing_email_invalidates_open_invites(self):
+        from unittest.mock import patch
+        from apps.client_portal.invite_services import create_invite
+        from apps.client_portal.models import CustomerPortalInvite
+
+        org = OrganizationFactory()
+        customer = _make_customer(
+            org=org, name="Jane", email="jane@old.example.com",
+        )
+        with patch(
+            "apps.client_portal.invite_services.send_portal_invite_email"
+        ):
+            issued = create_invite(customer=customer, actor=UserFactory())
+
+        update_customer(
+            customer=customer,
+            actor=UserFactory(),
+            email="jane@new.example.com",
+        )
+
+        invite = CustomerPortalInvite.objects.get(pk=issued.invite.pk)
+        assert invite.invalidated_at is not None
+        # ``email_snapshot`` keeps the original inbox the code was
+        # delivered to — the *invalidation* is what protects the
+        # account, not a rewrite of the snapshot.
+        assert invite.email_snapshot == "jane@old.example.com"
+
+    def test_unchanged_email_leaves_invite_alone(self):
+        """A no-op email update (or an update to a different field
+        like ``phone``) must not collateral-invalidate the open
+        invite — otherwise a staff typo-fix on the phone column
+        would force a re-issue."""
+
+        from unittest.mock import patch
+        from apps.client_portal.invite_services import create_invite
+        from apps.client_portal.models import CustomerPortalInvite
+
+        org = OrganizationFactory()
+        customer = _make_customer(
+            org=org, name="Jane", email="jane@same.example.com",
+        )
+        with patch(
+            "apps.client_portal.invite_services.send_portal_invite_email"
+        ):
+            issued = create_invite(customer=customer, actor=UserFactory())
+
+        update_customer(
+            customer=customer,
+            actor=UserFactory(),
+            phone="555-1234",
+        )
+
+        invite = CustomerPortalInvite.objects.get(pk=issued.invite.pk)
+        assert invite.invalidated_at is None

@@ -155,6 +155,71 @@ def send_email_change_code(
     msg.send(fail_silently=False)
 
 
+def send_portal_invite_email(
+    *,
+    to_email: str,
+    code: str,
+    customer_company: str = "",
+) -> None:
+    """Send the 6-digit verification code for a customer-portal invite.
+
+    Sibling to :func:`send_portal_activation_email` but for the
+    customers-page-issued flow: only the *code* is mailed here, not
+    a clickable link, because the staff member shares the URL by
+    hand. Receiving this email is what proves to us the customer
+    actually controls the address on file.
+    """
+
+    if not to_email:
+        logger.warning(
+            "portal.invite_email: skipped — no recipient address.",
+        )
+        return
+
+    subject = "Vita NPD — your portal activation code"
+    company_line = (
+        f"Hi {customer_company},"
+        if customer_company
+        else "Hi,"
+    )
+    text = (
+        f"{company_line}\n\n"
+        "Your team at Vita has issued a portal invite for you.\n"
+        "Open the link they shared and enter this 6-digit code\n"
+        "to finish setting up your account:\n\n"
+        f"  {code}\n\n"
+        "The code expires in 7 days. If you didn't expect this\n"
+        "email, you can safely ignore it.\n\n"
+        "— The Vita team\n"
+    )
+    html = (
+        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
+        'color: #000; background: #fff; padding: 24px;">'
+        f'<p style="font-size: 14px; line-height: 1.5;">{company_line}</p>'
+        '<p style="font-size: 14px; line-height: 1.5;">'
+        "Your team at Vita has issued a portal invite for you. Open the "
+        "link they shared and enter this 6-digit code to finish setting "
+        "up your account:</p>"
+        '<div style="margin: 24px 0; padding: 14px 28px; border: 2px solid #000; '
+        'display: inline-block; font-family: \'Courier New\', monospace; '
+        f'font-size: 26px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
+        '<p style="font-size: 12px; line-height: 1.5; color: #555;">'
+        "The code expires in 7 days. If you didn't expect this email, "
+        "you can safely ignore it.</p>"
+        '<p style="font-size: 12px; color: #555;">— The Vita team</p>'
+        "</div>"
+    )
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html, "text/html")
+    msg.send(fail_silently=False)
+
+
 def send_portal_password_reset_email(
     *,
     to_email: str,

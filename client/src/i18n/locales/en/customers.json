@@ -19,7 +19,14 @@
     "delete_confirm": "Delete this customer? Linked proposals keep their snapshot but lose the address-book link.",
     "delete_blocked_portal_account": "This customer has an active portal login. Revoke the portal account from the customer's portal settings before deleting.",
     "cancel": "Cancel",
-    "save": "Save"
+    "save": "Save",
+    "invite_open": "Copy portal invite link",
+    "invite_reissue": "Re-issue portal invite link",
+    "invite_no_email": "Add an email for this customer before issuing a portal invite.",
+    "invite_already_activated": "This customer already has an active portal login.",
+    "invite_copied": "Invite link copied — we've emailed the 6-digit code to {email}.",
+    "invite_clipboard_failed": "Invite created, but the clipboard write failed. Link: {url}",
+    "invite_failed": "Couldn't issue the invite. Please try again."
   },
   "portal_account": {
     "active": "Portal · Active",

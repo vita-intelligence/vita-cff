@@ -14,6 +14,10 @@ from .inbox_views import (
     PortalInboxListView,
     PortalInboxUnreadCountView,
 )
+from .invite_views import (
+    InviteActivateView,
+    InvitePreviewView,
+)
 from .messaging_views import (
     ProposalChatListView,
     ProposalChatPostView,
@@ -67,6 +71,22 @@ urlpatterns = [
         "activate/<str:token>/preview/",
         ActivationPreviewView.as_view(),
         name="activate-preview",
+    ),
+
+    # Customer-portal invites — staff issues these from the customers
+    # page (see :class:`apps.customers.api.views.CustomerPortalInviteView`)
+    # and the customer redeems on this pair. Same shape as the kiosk
+    # activate endpoints above so the FE can route both through one
+    # post-activation handler.
+    path(
+        "invites/<str:token>/preview/",
+        InvitePreviewView.as_view(),
+        name="invite-preview",
+    ),
+    path(
+        "invites/<str:token>/activate/",
+        InviteActivateView.as_view(),
+        name="invite-activate",
     ),
 
     # Auth (cookie-issuing / clearing — public).

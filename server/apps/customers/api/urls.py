@@ -5,6 +5,7 @@ from django.urls import path
 from apps.customers.api.views import (
     CustomerDetailView,
     CustomerListCreateView,
+    CustomerPortalInviteView,
     DynamicsCustomerImportView,
     DynamicsCustomerSearchView,
     DynamicsIntegrationView,
@@ -32,6 +33,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/customers/<uuid:customer_id>/",
         CustomerDetailView.as_view(),
         name="customer-detail",
+    ),
+    # Staff-issued portal invite for a single customer. Public
+    # redemption lives on the client_portal app at
+    # ``/api/portal/invites/<token>/{preview,activate}/``.
+    path(
+        "organizations/<uuid:org_id>/customers/<uuid:customer_id>/portal-invites/",
+        CustomerPortalInviteView.as_view(),
+        name="customer-portal-invite",
     ),
     path(
         "organizations/<uuid:org_id>/integrations/dynamics/",

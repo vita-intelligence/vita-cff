@@ -11,12 +11,27 @@ from rest_framework import serializers
 
 
 class ActivationPreviewSerializer(serializers.Serializer):
-    """Response for ``GET /api/portal/activate/<token>/``."""
+    """Response for ``GET /api/portal/activate/<token>/`` and the
+    sibling ``GET /api/portal/invites/<token>/preview/`` endpoint.
+
+    The kiosk path carries a ``proposal_code`` (the customer is
+    being walked into a specific quote) — the customer-portal-invite
+    path doesn't, since it's bound to a customer record rather than
+    a proposal. The field is therefore optional on the wire; the FE
+    falls back to the customer company when it's empty.
+
+    ``expired`` is similarly only populated on the invite path —
+    the kiosk preview never expires (the token lives for the
+    lifetime of the proposal).
+    """
 
     customer_company = serializers.CharField()
     email_masked = serializers.CharField()
     already_activated = serializers.BooleanField()
-    proposal_code = serializers.CharField()
+    proposal_code = serializers.CharField(
+        required=False, allow_blank=True, default="",
+    )
+    expired = serializers.BooleanField(required=False, default=False)
 
 
 class ActivationRequestSerializer(serializers.Serializer):

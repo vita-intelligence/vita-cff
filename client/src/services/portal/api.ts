@@ -40,6 +40,26 @@ export async function activate(
 }
 
 
+/**
+ * Redeem a staff-issued :class:`CustomerPortalInvite` and finish
+ * activation. Same response shape as :func:`activate`; the only
+ * difference is the URL — the public preview/redemption pair lives
+ * under ``/api/portal/invites/<token>/`` and operates against a
+ * customer record rather than a proposal token.
+ */
+export async function activateInvite(
+  token: string,
+  password: string,
+  code: string,
+): Promise<PortalMeDto> {
+  const { data } = await apiClient.post<PortalMeDto>(
+    `/api/portal/invites/${token}/activate/`,
+    { password, code },
+  );
+  return data;
+}
+
+
 export async function login(email: string, password: string): Promise<PortalMeDto> {
   const { data } = await apiClient.post<PortalMeDto>(
     "/api/portal/auth/login/",

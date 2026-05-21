@@ -254,11 +254,33 @@ def update_customer(
     *, customer: Customer, actor: Any, **changes: Any
 ) -> Customer:
     before = snapshot(customer)
+    old_email = (customer.email or "").strip().lower()
+
     for key, value in changes.items():
         if key in _UPDATABLE_FIELDS and value is not None:
             setattr(customer, key, value)
     customer.updated_by = actor
     customer.save()
+
+    # If the email actually changed, invalidate any open portal
+    # invites — they were issued against the previous address (their
+    # ``email_snapshot`` is pinned at creation time) and would let
+    # anyone holding the old link + code activate the account at the
+    # stale email. The customers page hides re-issue affordances when
+    # an activated account already exists, so this only fires for the
+    # "still unverified" cases the user explicitly asked us to keep
+    # editable.
+    new_email = (customer.email or "").strip().lower()
+    if new_email != old_email:
+        from apps.client_portal.models import CustomerPortalInvite
+        from django.utils import timezone
+
+        CustomerPortalInvite.objects.filter(
+            customer=customer,
+            used_at__isnull=True,
+            invalidated_at__isnull=True,
+        ).update(invalidated_at=timezone.now())
+
     record_audit(
         organization=customer.organization,
         actor=actor,
@@ -272,13 +294,32 @@ def update_customer(
 
 @transaction.atomic
 def delete_customer(*, customer: Customer, actor: Any) -> None:
-    # Block the delete BEFORE the DB write so the operator gets a
-    # clean error instead of an opaque ``ProtectedError`` from the
-    # ``ClientAccount.customer`` FK's ``on_delete=PROTECT``. The
-    # check here matches the FK guard exactly — if any client
-    # account points at this customer we refuse.
-    if customer.client_accounts.exists():
+    """Delete ``customer`` and any unactivated portal stubs hanging
+    off them.
+
+    The gate is on **activated** accounts only. The kiosk flow
+    pre-creates :class:`ClientAccount` rows ahead of the customer
+    actually setting a password, and the customers-page invite flow
+    can leave a similar unverified stub. Those stubs were never
+    "real" portal logins, so deleting the customer record sweeps
+    them out of the way before the FK guard can refuse the delete.
+
+    Activated accounts (``activated_at`` populated) are still
+    protected — that's the case where the customer is using the
+    portal in earnest and a delete would orphan a live session.
+    """
+
+    activated_qs = customer.client_accounts.filter(
+        activated_at__isnull=False,
+    )
+    if activated_qs.exists():
         raise CustomerHasPortalAccount()
+
+    # Sweep any unactivated stubs first so the FK's
+    # ``on_delete=PROTECT`` doesn't refuse the customer delete. Open
+    # ``CustomerPortalInvite`` rows are already CASCADE'd by the FK,
+    # so we don't need to clean them up here.
+    customer.client_accounts.filter(activated_at__isnull=True).delete()
 
     before = snapshot(customer)
     target_id = str(customer.pk)

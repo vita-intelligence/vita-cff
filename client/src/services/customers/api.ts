@@ -4,6 +4,7 @@ import { customersEndpoints } from "./endpoints";
 import type {
   CreateCustomerRequestDto,
   CustomerDto,
+  CustomerPortalInviteResponseDto,
   DynamicsContactSuggestion,
   DynamicsIntegrationConfigDto,
   DynamicsIntegrationConfigUpdateDto,
@@ -60,6 +61,25 @@ export async function deleteCustomer(
   customerId: string,
 ): Promise<void> {
   await apiClient.delete(customersEndpoints.detail(orgId, customerId));
+}
+
+
+/**
+ * Mint a fresh portal-activation invite for one customer. The
+ * backend also emails the 6-digit verification code to the
+ * customer's on-file address — the staff caller only ever sees the
+ * activation URL (the code stays out of band so a screen-share or
+ * accidental Slack paste of the dev-tools response doesn't leak it).
+ */
+export async function createCustomerPortalInvite(
+  orgId: string,
+  customerId: string,
+): Promise<CustomerPortalInviteResponseDto> {
+  const { data } = await apiClient.post<CustomerPortalInviteResponseDto>(
+    customersEndpoints.portalInvite(orgId, customerId),
+    {},
+  );
+  return data;
 }
 
 

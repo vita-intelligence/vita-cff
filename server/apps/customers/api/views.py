@@ -45,6 +45,11 @@ from apps.customers.services import (
     test_dynamics_connection,
     update_customer,
 )
+from apps.client_portal.invite_services import (
+    InviteEmailMissing,
+    InviteError,
+    create_invite,
+)
 from apps.formulations.api.permissions import HasFormulationsPermission
 from apps.organizations.models import Membership
 from apps.organizations.modules import FormulationsCapability
@@ -164,6 +169,81 @@ class CustomerDetailView(APIView):
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class CustomerPortalInviteView(APIView):
+    """``POST /api/organizations/<org>/customers/<id>/portal-invites/``.
+
+    Mints a fresh :class:`apps.client_portal.models.CustomerPortalInvite`
+    for the targeted customer, emails the 6-digit verification code
+    to their on-file address, and returns the activation URL the
+    staff caller will share by hand.
+
+    Permission: same gate as the customer-edit endpoint —
+    :class:`HasFormulationsPermission` with
+    :attr:`FormulationsCapability.EDIT`. Issuing an invite is a
+    privilege change on the customer record (it minted the right
+    to log in), so view-only roles must not be able to drive it.
+
+    Already-activated customers are surfaced as a 409 so the
+    customers page can hide the CTA proactively but still recover
+    gracefully if a race lets the request through anyway.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, customer_id: str
+    ) -> Response:
+        try:
+            customer = get_customer(
+                organization=self.organization, customer_id=customer_id,
+            )
+        except CustomerNotFound as exc:
+            raise NotFound() from exc
+
+        # Block when an *activated* portal account already exists —
+        # the customer should be using sign-in / password-reset
+        # rather than a fresh invite. An unactivated stub (created
+        # implicitly by the kiosk path but never claimed) is fine
+        # to invite again; the activate flow handles that branch.
+        from apps.client_portal.models import ClientAccount
+
+        email = (customer.email or "").strip().lower()
+        if email:
+            existing = (
+                ClientAccount.objects
+                .filter(email__iexact=email)
+                .first()
+            )
+            if existing is not None and existing.has_usable_password():
+                return Response(
+                    {"detail": ["portal_account_already_activated"]},
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+        try:
+            issued = create_invite(customer=customer, actor=request.user)
+        except InviteEmailMissing:
+            return Response(
+                {"detail": ["customer_email_missing"]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except InviteError as exc:
+            return Response(
+                {"detail": [getattr(exc, "code", "invite_failed")]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "activation_url": issued.activation_url,
+                "expires_at": issued.invite.expires_at,
+                "email_snapshot": issued.invite.email_snapshot,
+            },
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ---------------------------------------------------------------------------

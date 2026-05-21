@@ -5,6 +5,8 @@ export const customersEndpoints = {
   },
   detail: (orgId: string, customerId: string) =>
     `/api/organizations/${orgId}/customers/${customerId}/`,
+  portalInvite: (orgId: string, customerId: string) =>
+    `/api/organizations/${orgId}/customers/${customerId}/portal-invites/`,
   // Microsoft Dynamics integration — admin config + picker search +
   // on-demand import.
   dynamicsConfig: (orgId: string) =>

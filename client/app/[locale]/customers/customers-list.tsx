@@ -2,8 +2,10 @@
 
 import {
   Info,
+  Link2,
   Loader2,
   Lock,
+  Pencil,
   Plus,
   Search,
   ShieldCheck,
@@ -18,6 +20,7 @@ import { Button, Modal } from "@heroui/react";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useCreateCustomer,
+  useCreateCustomerPortalInvite,
   useCustomers,
   useDeleteCustomer,
   useUpdateCustomer,
@@ -62,11 +65,54 @@ export function CustomersList({
 
   const customersQuery = useCustomers(orgId, debouncedSearch);
   const deleteMutation = useDeleteCustomer(orgId);
+  const inviteMutation = useCreateCustomerPortalInvite(orgId);
   const customers = customersQuery.data ?? [];
 
   const [editing, setEditing] = useState<CustomerDto | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Toast-style transient banner for the post-invite success state.
+  // Lives at section level rather than per row so the operator
+  // still sees it after we close the loading affordance — the row
+  // refetches and re-renders, which would lose any row-scoped
+  // state we tried to attach.
+  const [inviteBanner, setInviteBanner] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  async function handleIssueInvite(customer: CustomerDto) {
+    setError(null);
+    setInviteBanner(null);
+    try {
+      const response = await inviteMutation.mutateAsync(customer.id);
+      const url = response.activation_url;
+      try {
+        // ``navigator.clipboard`` requires a secure context (https or
+        // localhost) — in dev that's the dev-server's localhost, in
+        // prod the customers page is always behind https. If the
+        // browser refuses the write we surface the raw URL in the
+        // banner instead of silently failing.
+        await navigator.clipboard.writeText(url);
+        setInviteBanner({
+          kind: "success",
+          message: tCustomers("actions.invite_copied", {
+            email: response.email_snapshot,
+          }),
+        });
+      } catch {
+        setInviteBanner({
+          kind: "success",
+          message: tCustomers("actions.invite_clipboard_failed", { url }),
+        });
+      }
+    } catch (err) {
+      setInviteBanner({
+        kind: "error",
+        message: extractApiErrorMessage(err, tErrors),
+      });
+    }
+  }
 
   return (
     <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
@@ -132,6 +178,20 @@ export function CustomersList({
         </p>
       ) : null}
 
+      {inviteBanner ? (
+        <p
+          role={inviteBanner.kind === "error" ? "alert" : "status"}
+          className={
+            "mt-4 rounded-xl px-3 py-2 text-sm font-medium ring-1 ring-inset " +
+            (inviteBanner.kind === "success"
+              ? "bg-success/10 text-success ring-success/20"
+              : "bg-danger/10 text-danger ring-danger/20")
+          }
+        >
+          {inviteBanner.message}
+        </p>
+      ) : null}
+
       {customersQuery.isLoading ? (
         <p className="mt-6 text-sm text-ink-500">
           {tCustomers("loading")}
@@ -190,48 +250,78 @@ export function CustomersList({
                     {customer.phone || "—"}
                   </td>
                   <td className="px-3 py-2.5 text-right">
-                    {customer.has_portal_account ? (
-                      // Customer is wired to one or more portal
-                      // logins — deleting would orphan their
-                      // sessions + proposal / spec access. Keep
-                      // the slot a stable width with the same
-                      // icon so the row layout doesn't shift
-                      // between "deletable" and "protected"
-                      // states, and tooltip the reason so the
-                      // operator knows what to do (revoke the
-                      // login from the portal admin first).
-                      <span
-                        title={tCustomers(
-                          "actions.delete_blocked_portal_account",
-                        )}
-                        aria-label={tCustomers(
-                          "actions.delete_blocked_portal_account",
-                        )}
-                        className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-ink-300"
-                      >
-                        <Lock className="h-4 w-4" />
-                      </span>
-                    ) : (
+                    <div className="flex items-center justify-end gap-1">
+                      {/* Explicit Edit affordance. The company name
+                          on the left is also clickable for the same
+                          action, but a visible pencil button makes
+                          the edit path discoverable for operators
+                          who don't think to click the company text. */}
                       <button
                         type="button"
-                        onClick={async () => {
-                          if (
-                            !confirm(tCustomers("actions.delete_confirm"))
-                          )
-                            return;
-                          setError(null);
-                          try {
-                            await deleteMutation.mutateAsync(customer.id);
-                          } catch (err) {
-                            setError(extractApiErrorMessage(err, tErrors));
-                          }
-                        }}
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
-                        aria-label={tCustomers("actions.delete")}
+                        onClick={() => setEditing(customer)}
+                        title={tCustomers("actions.edit")}
+                        aria-label={tCustomers("actions.edit")}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-orange-50 hover:text-orange-700"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Pencil className="h-4 w-4" />
                       </button>
-                    )}
+                      {/* Portal-invite control. Three visible states:
+                          - already activated → disabled (lock icon
+                            on the right covers the same signal).
+                          - pending / no portal row + has email → enabled
+                            "Copy invite link" — staff issues + clipboard.
+                          - no email → disabled with a tooltip pointing
+                            the operator at the missing field. */}
+                      <InvitePortalButton
+                        customer={customer}
+                        busy={
+                          inviteMutation.isPending &&
+                          inviteMutation.variables === customer.id
+                        }
+                        onIssue={handleIssueInvite}
+                        tCustomers={tCustomers}
+                      />
+                      {customer.has_portal_account &&
+                      customer.portal_account_activated ? (
+                        // Active portal login — deleting would orphan
+                        // their sessions + proposal / spec access.
+                        // Lock the slot to keep the row layout stable
+                        // and tooltip the reason so the operator knows
+                        // what to do (revoke the login from the portal
+                        // admin first).
+                        <span
+                          title={tCustomers(
+                            "actions.delete_blocked_portal_account",
+                          )}
+                          aria-label={tCustomers(
+                            "actions.delete_blocked_portal_account",
+                          )}
+                          className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-ink-300"
+                        >
+                          <Lock className="h-4 w-4" />
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (
+                              !confirm(tCustomers("actions.delete_confirm"))
+                            )
+                              return;
+                            setError(null);
+                            try {
+                              await deleteMutation.mutateAsync(customer.id);
+                            } catch (err) {
+                              setError(extractApiErrorMessage(err, tErrors));
+                            }
+                          }}
+                          className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-danger/10 hover:text-danger"
+                          aria-label={tCustomers("actions.delete")}
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -468,6 +558,87 @@ function Field({
  * client-portal FK ``on_delete=PROTECT`` would otherwise refuse
  * the delete deeper in the stack.
  */
+/**
+ * Per-row action that mints a new :class:`CustomerPortalInvite` and
+ * copies the activation URL to the clipboard. Three visible states,
+ * picked by the customer's portal-account flags + email:
+ *
+ * * Already activated (``portal_account_activated``) — rendered as a
+ *   greyed-out icon with an explanatory tooltip. Clicking would 409
+ *   server-side; we hide the action to avoid even surfacing the
+ *   option.
+ * * No email on the customer — same greyed-out icon, different
+ *   tooltip pointing the operator at the missing field.
+ * * Otherwise — enabled. Pending customers (``has_portal_account`` is
+ *   true but ``activated`` is false) get an "re-issue" tooltip so a
+ *   second click looks intentional rather than redundant.
+ *
+ * The actual clipboard write + banner live on the parent so the
+ * post-success message survives the row re-render that the
+ * mutation's cache invalidation triggers.
+ */
+function InvitePortalButton({
+  customer,
+  busy,
+  onIssue,
+  tCustomers,
+}: {
+  customer: CustomerDto;
+  busy: boolean;
+  onIssue: (customer: CustomerDto) => void | Promise<void>;
+  tCustomers: ReturnType<typeof useTranslations<"customers">>;
+}) {
+  const hasEmail = Boolean(customer.email);
+  const alreadyActivated =
+    customer.has_portal_account && customer.portal_account_activated;
+
+  if (alreadyActivated) {
+    return (
+      <span
+        title={tCustomers("actions.invite_already_activated")}
+        aria-label={tCustomers("actions.invite_already_activated")}
+        className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-ink-300"
+      >
+        <Link2 className="h-4 w-4" />
+      </span>
+    );
+  }
+
+  if (!hasEmail) {
+    return (
+      <span
+        title={tCustomers("actions.invite_no_email")}
+        aria-label={tCustomers("actions.invite_no_email")}
+        className="inline-flex h-8 w-8 cursor-not-allowed items-center justify-center rounded-md text-ink-300"
+      >
+        <Link2 className="h-4 w-4" />
+      </span>
+    );
+  }
+
+  const label = customer.has_portal_account
+    ? tCustomers("actions.invite_reissue")
+    : tCustomers("actions.invite_open");
+
+  return (
+    <button
+      type="button"
+      onClick={() => void onIssue(customer)}
+      disabled={busy}
+      title={label}
+      aria-label={label}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-md text-ink-500 hover:bg-orange-50 hover:text-orange-700 disabled:opacity-50"
+    >
+      {busy ? (
+        <Loader2 className="h-4 w-4 animate-spin" />
+      ) : (
+        <Link2 className="h-4 w-4" />
+      )}
+    </button>
+  );
+}
+
+
 function PortalAccountBadge({
   activated,
   tCustomers,

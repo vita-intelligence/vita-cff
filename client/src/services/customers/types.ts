@@ -44,6 +44,23 @@ export type UpdateCustomerRequestDto = CreateCustomerRequestDto;
 
 
 /**
+ * Response from ``POST /api/organizations/<org>/customers/<id>/
+ * portal-invites/``.
+ *
+ * The 6-digit verification code is **not** in the payload — it goes
+ * out over email to the customer's own inbox so it stays out of band
+ * from the URL the staff caller is about to paste somewhere. The
+ * staff-side UI just copies ``activation_url`` to the clipboard and
+ * shows a hint that the customer also needs to check their email.
+ */
+export interface CustomerPortalInviteResponseDto {
+  readonly activation_url: string;
+  readonly expires_at: string;
+  readonly email_snapshot: string;
+}
+
+
+/**
  * One Dynamics contact returned by the search endpoint. Same shape
  * as :class:`DynamicsContact` on the server. The picker resolves
  * these to local :class:`CustomerDto` rows via the import endpoint

@@ -12,6 +12,7 @@ import { rootQueryKey } from "@/lib/query";
 import {
   clearDynamicsConfig,
   createCustomer,
+  createCustomerPortalInvite,
   deleteCustomer,
   fetchCustomer,
   fetchCustomers,
@@ -25,6 +26,7 @@ import {
 import type {
   CreateCustomerRequestDto,
   CustomerDto,
+  CustomerPortalInviteResponseDto,
   DynamicsContactSuggestion,
   DynamicsIntegrationConfigDto,
   DynamicsIntegrationConfigUpdateDto,
@@ -115,6 +117,31 @@ export function useDeleteCustomer(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (customerId) => deleteCustomer(orgId, customerId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "customers", orgId],
+      });
+    },
+  });
+}
+
+
+/**
+ * Mint a portal-activation invite for the targeted customer and
+ * return the activation URL the staff caller will share by hand.
+ *
+ * Backed by ``POST /api/organizations/<org>/customers/<id>/
+ * portal-invites/``. The 6-digit code never appears in the
+ * response — the backend emails it to the customer's on-file
+ * address. After success the list cache is invalidated so any
+ * "Has portal account" badge reflows.
+ */
+export function useCreateCustomerPortalInvite(
+  orgId: string,
+): UseMutationResult<CustomerPortalInviteResponseDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<CustomerPortalInviteResponseDto, ApiError, string>({
+    mutationFn: (customerId) => createCustomerPortalInvite(orgId, customerId),
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: [rootQueryKey, "customers", orgId],

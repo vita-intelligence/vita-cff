@@ -311,3 +311,117 @@ class ClientPasswordResetToken(models.Model):
             and self.invalidated_at is None
             and self.expires_at > now
         )
+
+
+class CustomerPortalInvite(models.Model):
+    """Staff-issued invitation for a :class:`Customer` to activate
+    a portal account without first being sent a proposal.
+
+    Sibling to the proposal-driven kiosk flow: same activate page
+    shape (set a password, type a 6-digit code mailed to the
+    customer's address), but the invite is bound to a customer
+    record directly so it works for clients we haven't yet quoted.
+    Staff issues an invite from the customers page and shares the
+    resulting URL by whatever channel they prefer (Slack, email,
+    text) — only the **code** is sent by us, which is also what
+    proves the customer actually controls the email on file.
+
+    Lifecycle mirrors :class:`EmailChangeRequest`:
+
+    * ``used_at`` set when the customer successfully activates.
+    * ``invalidated_at`` set when a fresher invite supersedes this
+      one (operator re-issued because the customer lost the email).
+    * ``expires_at`` defaults to 7 days from creation.
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    customer = models.ForeignKey(
+        "customers.Customer",
+        related_name="portal_invites",
+        on_delete=models.CASCADE,
+        help_text=_(
+            "Customer the invite activates. ``on_delete=CASCADE`` "
+            "so deleting the CRM row sweeps any open invites with "
+            "it — they'd never be redeemable anyway."
+        ),
+    )
+    token = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        help_text=_(
+            "URL token shared with the customer. The full UUID is "
+            "the secret — there is no plaintext-hash split here "
+            "because the customer needs the raw token in the link."
+        ),
+    )
+    code_hash = models.CharField(
+        max_length=64,
+        help_text=_(
+            "SHA-256 of the plaintext 6-digit code mailed to the "
+            "customer's address. Stored hashed so a DB dump can't "
+            "be turned into a working activation."
+        ),
+    )
+    email_snapshot = models.EmailField(
+        help_text=_(
+            "Customer's email at the moment of invite creation. "
+            "Pinned here so a later edit to ``Customer.email`` "
+            "doesn't desync the activate page from the inbox the "
+            "code was actually sent to."
+        ),
+    )
+    created_by = models.ForeignKey(
+        "accounts.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        help_text=_("Staff member who issued the invite."),
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    invalidated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Set when a fresher invite superseded this one. "
+            "Distinct from ``used_at`` so the audit log can tell a "
+            "re-issued (abandoned) invite apart from a consumed one."
+        ),
+    )
+
+    class Meta:
+        verbose_name = _("customer portal invite")
+        verbose_name_plural = _("customer portal invites")
+        indexes = [
+            models.Index(fields=("customer", "-created_at")),
+            models.Index(fields=("expires_at",)),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"CustomerPortalInvite(customer={self.customer_id}, "
+            f"created={self.created_at:%Y-%m-%dT%H:%M:%SZ})"
+        )
+
+    @property
+    def is_consumable(self) -> bool:
+        """``True`` when this invite can still drive an activation.
+
+        Matches the lifecycle invariants of the sibling token /
+        request rows: not yet used, not superseded by a fresher
+        invite, and the expiry window hasn't passed.
+        """
+
+        now = timezone.now()
+        return (
+            self.used_at is None
+            and self.invalidated_at is None
+            and self.expires_at > now
+        )

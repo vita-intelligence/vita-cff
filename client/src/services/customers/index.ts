@@ -2,6 +2,7 @@ export { customersEndpoints } from "./endpoints";
 export {
   clearDynamicsConfig,
   createCustomer,
+  createCustomerPortalInvite,
   deleteCustomer,
   fetchCustomer,
   fetchCustomers,
@@ -17,6 +18,7 @@ export {
   dynamicsQueryKeys,
   useClearDynamicsConfig,
   useCreateCustomer,
+  useCreateCustomerPortalInvite,
   useCustomer,
   useCustomers,
   useDeleteCustomer,
@@ -30,6 +32,7 @@ export {
 export type {
   CreateCustomerRequestDto,
   CustomerDto,
+  CustomerPortalInviteResponseDto,
   DynamicsContactSuggestion,
   DynamicsIntegrationConfigDto,
   DynamicsIntegrationConfigUpdateDto,
