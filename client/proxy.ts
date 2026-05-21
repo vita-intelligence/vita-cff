@@ -188,6 +188,25 @@ export default async function proxy(
 
   const response = intlMiddleware(request);
 
+  // Strip the leaked container port from any absolute ``Location``
+  // header next-intl emits for its locale-canonicalisation redirects.
+  //
+  // Behind Azure App Service the container binds to the internal
+  // port (3000 — see ``Dockerfile.PORT``) and Next.js builds
+  // absolute redirect URLs from ``request.url``, which carries that
+  // bound port through. The browser then chases the redirect to
+  // ``https://npd.vitaintelligent.com:3000/...`` — a port Azure
+  // doesn't expose externally — and the customer's tab sits on
+  // ``ERR_CONNECTION_TIMED_OUT``. The kiosk activation link landed
+  // squarely in this trap, since hitting ``/en/portal/activate/<t>``
+  // triggers exactly that 307. Trimming any explicit ``:3000`` on
+  // ``Location`` is the smallest surgical fix that survives until
+  // next-intl learns to honour ``X-Forwarded-Host`` properly.
+  const loc = response.headers.get("location");
+  if (loc && /:3000(\/|$)/.test(loc)) {
+    response.headers.set("location", loc.replace(/:3000(?=\/|$)/, ""));
+  }
+
   // Append the raw Set-Cookie headers so the browser persists the
   // rotated tokens. ``append`` (not ``set``) because we emit two
   // cookies and they must both reach the client.
