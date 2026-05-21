@@ -80,17 +80,24 @@ export function CommentsPanel({
   layout = "natural",
 }: Props) {
   const tComments = useTranslations("comments");
-  // Client kiosks render comments from spec sheets only; everything
-  // else (formulations, future QC surfaces) is internal-only. If the
-  // caller passes ``visibility`` explicitly that wins — useful for
-  // forcing internal on a sheet still in draft.
-  // Spec sheets + proposals are client-facing surfaces — comments
-  // posted here default to "shared with the customer" so staff
-  // replies actually reach the portal. Formulation threads stay
-  // internal-only unless the caller passes ``visibility`` explicitly.
+  // Spec sheets, proposals, and CFF submissions are all customer-
+  // facing surfaces — the portal mounts a matching shared-comment
+  // thread on each, so the staff side has to default to
+  // ``visibility="client"`` for replies to actually reach the
+  // customer. Without this CFFs in particular were a silent one-way
+  // leak: the customer's portal posts arrive shared (and we see
+  // them because staff sees every visibility), but our replies
+  // were stamped internal and the customer never saw them.
+  //
+  // Formulation threads stay internal-only unless the caller passes
+  // ``visibility`` explicitly — those are team workspaces with no
+  // customer-facing twin. Callers can still force ``internal`` on a
+  // customer-facing surface in flight (e.g. an unsent spec draft).
   const effectiveVisibility: "internal" | "client" =
     visibility ??
-    (entityKind === "specification" || entityKind === "proposal"
+    (entityKind === "specification" ||
+    entityKind === "proposal" ||
+    entityKind === "cff_submission"
       ? "client"
       : "internal");
   const isFill = layout === "fill";

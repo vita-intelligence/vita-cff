@@ -54,11 +54,13 @@ const DOCK_STATE_KEY = "vita-npd:cff-detail:dock-collapsed";
 //: view even when the dock is collapsed.
 const DOCK_HEADER_HEIGHT_PX = 56;
 
-//: Expanded dock height — leaves enough viewport above for the
-//: header / quick-contact strip / first few response rows to stay
-//: scannable while the chat is open. ``vh`` so the proportion
-//: holds on laptops and ultrawide alike.
-const DOCK_EXPANDED_VH = 55;
+//: Expanded dock height. Bumped from 55vh after operators flagged
+//: it as too cramped to read more than a couple of messages without
+//: scrolling — the CFF page is chat-first in practice, so we trade
+//: a sliver of the page's top strip for a usable conversation
+//: surface. The page header / quick-contact row still peek above
+//: the dock so the operator can re-orient without collapsing it.
+const DOCK_EXPANDED_VH = 75;
 
 
 export function CFFDetailView({
