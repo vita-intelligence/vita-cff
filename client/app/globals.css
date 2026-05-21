@@ -91,6 +91,14 @@ body {
   color: var(--color-ink-1000);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  /* Defence against rogue horizontal overflow on mobile — a
+   * brutalist offset shadow, an off-screen drawer transform, or
+   * a single long URL inside text shouldn't make the entire
+   * page scrollable sideways. ``overflow-x: clip`` is the modern
+   * replacement for ``overflow-x: hidden`` (it doesn't create a
+   * scroll container, so it doesn't break ``position: sticky``
+   * children the way ``overflow: hidden`` does). */
+  overflow-x: clip;
 }
 
 ::selection {

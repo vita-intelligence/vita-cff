@@ -317,7 +317,7 @@ export function SpecChatPanel({
 
   return (
     <Card className="!p-0">
-      <header className="flex items-center justify-between border-b-2 border-black bg-black px-6 py-4 text-white">
+      <header className="flex items-center justify-between gap-2 border-b-2 border-black bg-black px-4 py-3 text-white sm:px-6 sm:py-4">
         <div className="flex flex-col gap-0.5">
           <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/60">
             Conversation
@@ -339,7 +339,7 @@ export function SpecChatPanel({
 
       <div
         ref={scrollRef}
-        className="flex h-[420px] flex-col gap-4 overflow-y-auto bg-paper p-5"
+        className="flex h-[clamp(340px,55dvh,520px)] flex-col gap-4 overflow-y-auto bg-paper p-4 sm:p-5"
       >
         {messages === null ? (
           // Brutalist in-panel loader matching the proposal chat

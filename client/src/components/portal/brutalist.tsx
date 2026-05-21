@@ -24,6 +24,8 @@
 import { CheckCircle2, ChevronLeft } from "lucide-react";
 
 import { PortalInboxBell } from "@/components/portal/portal-inbox-bell";
+import { PortalMobileDrawer } from "@/components/portal/portal-mobile-drawer";
+import { PortalSignOutButton } from "@/components/portal/portal-sign-out-button";
 import { PortalToastStack } from "@/components/portal/portal-toast-stack";
 
 import type {
@@ -100,10 +102,12 @@ export function PortalShell({
   return (
     <div className="min-h-dvh bg-paper text-black antialiased">
       <header className="sticky top-0 z-30 border-b-2 border-black bg-paper/95 backdrop-blur supports-[backdrop-filter]:bg-paper/80">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-4">
           <PortalLogo />
           {minimal ? null : (
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2 sm:gap-4">
+              {/* Desktop inline nav — hidden below sm where the
+                  hamburger-driven drawer takes over. */}
               <nav className="hidden items-center gap-1 sm:flex">
                 {NAV_ITEMS.map((item) => {
                   const isActive = active === item.key;
@@ -128,35 +132,23 @@ export function PortalShell({
                   );
                 })}
               </nav>
-              {/* Bell stays visible on every breakpoint — the customer's
-                  primary notification surface. The mobile nav row below
-                  still shows the section links. */}
+              {/* The bell is the primary notification surface — kept
+                  visible on every breakpoint. */}
               <PortalInboxBell />
+              {/* Desktop-only sign-out (the drawer hosts its own
+                  full-width sign-out CTA on mobile). Icon-only so it
+                  doesn't crowd the bell + nav. */}
+              <div className="hidden sm:block">
+                <PortalSignOutButton />
+              </div>
+              {/* Mobile hamburger trigger — the drawer component
+                  renders both the trigger and the slide-in panel. */}
+              <PortalMobileDrawer items={NAV_ITEMS} active={active} />
             </div>
           )}
         </div>
-        {minimal ? null : (
-          <div className="sm:hidden border-t border-black/10 bg-paper/95">
-            <div className="mx-auto flex max-w-6xl gap-1 overflow-x-auto px-6 py-2">
-              {NAV_ITEMS.map((item) => {
-                const isActive = active === item.key;
-                return (
-                  <a
-                    key={item.key}
-                    href={item.href}
-                    className={`shrink-0 border-2 border-black px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.2em] ${
-                      isActive ? "bg-black text-white" : "bg-white text-black"
-                    }`}
-                  >
-                    {item.label}
-                  </a>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </header>
-      <main className="mx-auto max-w-6xl px-6 py-10">{children}</main>
+      <main className="mx-auto max-w-6xl px-4 py-8 sm:px-6 sm:py-10">{children}</main>
       {/* Global top-right toast stack — mounted at shell level so an
           incoming WS event surfaces regardless of which portal page
           the customer is on. Per-thread WSes (proposal / spec chat
@@ -185,7 +177,7 @@ export function PortalShell({
 
 export function H1({ children }: { children: ReactNode }) {
   return (
-    <h1 className="font-black uppercase leading-[0.95] tracking-[-0.02em] text-4xl sm:text-5xl">
+    <h1 className="font-black uppercase leading-[0.95] tracking-[-0.02em] text-3xl sm:text-4xl md:text-5xl">
       {children}
     </h1>
   );
@@ -291,12 +283,16 @@ export function Card({
    *  attention cards on the dashboard. */
   accent?: boolean;
 }) {
-  const base = "relative border-2 border-black p-6 sm:p-7";
+  const base = "relative border-2 border-black p-4 sm:p-6 md:p-7";
+  // Mobile keeps a smaller 3/3 offset so the card doesn't read as
+  // lopsided in a narrow column; sm+ steps back up to the full
+  // 6/6 brutalist offset on larger viewports where the visual
+  // weight has room to land.
   const colour = accent
-    ? "bg-black text-white shadow-[6px_6px_0_#000]"
-    : "bg-white text-black shadow-[6px_6px_0_#000]";
+    ? "bg-black text-white shadow-[3px_3px_0_#000] sm:shadow-[6px_6px_0_#000]"
+    : "bg-white text-black shadow-[3px_3px_0_#000] sm:shadow-[6px_6px_0_#000]";
   const interactivity = hover
-    ? "transition-transform duration-150 hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[8px_8px_0_#000] focus-within:-translate-x-[2px] focus-within:-translate-y-[2px] focus-within:shadow-[8px_8px_0_#000]"
+    ? "transition-transform duration-150 hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[5px_5px_0_#000] sm:hover:shadow-[8px_8px_0_#000] focus-within:-translate-x-[2px] focus-within:-translate-y-[2px] focus-within:shadow-[5px_5px_0_#000] sm:focus-within:shadow-[8px_8px_0_#000]"
     : "";
   return (
     <As className={`${base} ${colour} ${interactivity} ${className}`}>

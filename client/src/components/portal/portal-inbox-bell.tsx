@@ -135,9 +135,9 @@ export function PortalInboxBell() {
             ? `Notifications: ${unread} unread`
             : "Notifications"
         }
-        className="relative border-2 border-black bg-white p-2 text-black transition-transform hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0_#000]"
+        className="relative inline-flex h-10 w-10 items-center justify-center border-2 border-black bg-white text-black shadow-[3px_3px_0_#000] transition-transform hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[4px_4px_0_#000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-[2px_2px_0_#000]"
       >
-        <Bell className="h-4 w-4" />
+        <Bell className="h-5 w-5" />
         {unread > 0 ? (
           <span className="absolute -right-2 -top-2 inline-flex min-w-[20px] items-center justify-center border-2 border-black bg-black px-1 py-0.5 text-[10px] font-black uppercase tracking-widest text-white">
             {unread > 99 ? "99+" : unread}

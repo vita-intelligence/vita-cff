@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Archivo, JetBrains_Mono } from "next/font/google";
 import { hasLocale, NextIntlClientProvider } from "next-intl";
 import { getMessages, setRequestLocale } from "next-intl/server";
@@ -31,6 +31,22 @@ export const metadata: Metadata = {
     template: `%s — ${site.name}`,
   },
   description: site.description,
+};
+
+
+// Viewport meta — without this, mobile Safari + Chrome render the
+// page at a virtual 980px width then scale it down, which means
+// every Tailwind ``sm:`` / ``md:`` breakpoint is evaluated against
+// 980px (so the desktop layout shows, just squeezed). ``width=
+// device-width, initial-scale=1`` makes the CSS pixel width match
+// the device's actual pixel width, which is what enables the
+// responsive breakpoints. ``viewportFit: "cover"`` lets brutalist
+// full-bleed bars reach into iPhone safe-areas; pages that need
+// padding from the notch use ``env(safe-area-inset-*)``.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export function generateStaticParams() {
