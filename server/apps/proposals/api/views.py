@@ -291,6 +291,7 @@ def _render_proposal_pdf(proposal) -> bytes:
     return HTML(string=html_string).write_pdf()
 
 from apps.organizations.modules import ProposalsCapability
+from apps.proposals.api.pagination import ProposalCursorPagination
 from apps.proposals.api.permissions import HasProposalsPermission
 from config.pdf_cache import cached_render
 from apps.proposals.api.serializers import (
@@ -451,12 +452,18 @@ class ProposalListCreateView(APIView):
             valid_until_from=valid_until_from,
             valid_until_to=valid_until_to,
         )
-        # List variant blanks the three signature image blobs (the
-        # row count + signed-by metadata stay; only the base64 PNG
-        # bytes are stripped). The detail endpoint returns the
+        # Cursor pagination. Without it the bare ``APIView`` opts out
+        # of DRF's global ``PAGE_SIZE`` and ships every proposal in
+        # the org as one response — the org-wide list page on a busy
+        # tenant was reading dozens of MB per open. List variant also
+        # blanks the three signature image blobs and drops the
+        # ``lines`` nested array (replaced with a cheap
+        # ``lines_count``); the detail endpoint still returns the
         # full payload so the audit panel sees everything.
-        serializer = ProposalListSerializer(queryset, many=True)
-        return Response(serializer.data, status=status.HTTP_200_OK)
+        paginator = ProposalCursorPagination()
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        serializer = ProposalListSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
 
     def post(self, request: Request, org_id: str) -> Response:
         serializer = ProposalCreateSerializer(data=request.data)

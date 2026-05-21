@@ -16,7 +16,10 @@ import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
-import { useProposals, type ProposalDto } from "@/services/proposals";
+import {
+  useProposalsPage,
+  type ProposalListItemDto,
+} from "@/services/proposals";
 import {
   useInfiniteSpecifications,
   type SpecificationSheetDto,
@@ -69,15 +72,29 @@ export function SignedDocuments({
   // Empty orgId disables the underlying hook (see the
   // ``enabled: Boolean(orgId)`` guard) so we don't fire a fetch the
   // caller would only get back as 403.
-  const approvedProposals = useProposals(canViewProposals ? orgId : "", {
-    status: "approved",
-  });
-  const sentProposals = useProposals(canViewProposals ? orgId : "", {
-    status: "sent",
-  });
-  const signedProposals = useProposals(canViewProposals ? orgId : "", {
-    status: "accepted",
-  });
+  //
+  // ``pageSize: 500`` matches the backend's ``max_page_size`` — the
+  // signed archive is a single-screen "grouped by lifecycle stage"
+  // overview (no "load more"). We ask for the largest first page
+  // the server will emit so every realistic archive depth fits in
+  // one round-trip per status bucket. If a tenant ever exceeds
+  // 500 in any one bucket, switch this caller to
+  // :func:`useInfiniteProposals` and paginate UI-side.
+  const approvedProposals = useProposalsPage(
+    canViewProposals ? orgId : "",
+    { status: "approved" },
+    500,
+  );
+  const sentProposals = useProposalsPage(
+    canViewProposals ? orgId : "",
+    { status: "sent" },
+    500,
+  );
+  const signedProposals = useProposalsPage(
+    canViewProposals ? orgId : "",
+    { status: "accepted" },
+    500,
+  );
   const approvedSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "approved",
     pageSize: 100,
@@ -92,11 +109,13 @@ export function SignedDocuments({
   });
 
   const proposalsApproved = canViewProposals
-    ? approvedProposals.data ?? []
+    ? approvedProposals.data?.results ?? []
     : [];
-  const proposalsSent = canViewProposals ? sentProposals.data ?? [] : [];
+  const proposalsSent = canViewProposals
+    ? sentProposals.data?.results ?? []
+    : [];
   const proposalsSigned = canViewProposals
-    ? signedProposals.data ?? []
+    ? signedProposals.data?.results ?? []
     : [];
   // ``Unlinked first`` ranking — specs without a ``linked_proposal``
   // are the action items (no quote has been raised against the sheet
@@ -381,7 +400,7 @@ function ProposalsSection({
   hint?: string;
   icon: React.ReactNode;
   emptyMessage: string;
-  proposals: readonly ProposalDto[];
+  proposals: readonly ProposalListItemDto[];
   loading: boolean;
   errored: boolean;
   mode: CardMode;
@@ -493,7 +512,7 @@ function ProposalCard({
   proposal,
   mode,
 }: {
-  proposal: ProposalDto;
+  proposal: ProposalListItemDto;
   mode: CardMode;
 }) {
   const t = useTranslations("signed");
@@ -505,10 +524,10 @@ function ProposalCard({
     proposal.customer_name ||
     t("card.no_customer");
   const productLabel = t(
-    proposal.lines.length === 1
+    proposal.lines_count === 1
       ? "card.products_one"
       : "card.products_other",
-    { count: proposal.lines.length },
+    { count: proposal.lines_count },
   );
 
   // Pick the timestamp that matches the lifecycle stage being shown.

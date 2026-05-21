@@ -12,7 +12,9 @@
     "delete": "Delete",
     "delete_confirm": "Delete this proposal? This cannot be undone.",
     "no_matches_filtered": "No proposals match the current filters",
-    "no_matches_hint": "Adjust the filters or clear them to see every proposal."
+    "no_matches_hint": "Adjust the filters or clear them to see every proposal.",
+    "row_count": "Showing {count, plural, one {# proposal} other {# proposals}}",
+    "scroll_hint": "Scroll for more"
   },
   "filters": {
     "search_placeholder": "Search by code, customer, or company…",

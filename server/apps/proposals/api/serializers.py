@@ -221,16 +221,45 @@ class ProposalReadSerializer(serializers.ModelSerializer):
 
 
 class ProposalListSerializer(ProposalReadSerializer):
-    """List-endpoint variant that strips the three signature-image
-    blobs from the response.
+    """List-endpoint variant: strips the three signature-image blobs
+    AND drops the nested ``lines`` array.
 
-    A 50-row page returning ``prepared_by`` + ``director`` +
-    ``customer_signature`` with their base64 PNG ``image`` keys is
-    ~1 MB of wire payload that the list UI doesn't display. Detail
-    endpoints still use the full :class:`ProposalReadSerializer`.
-    Each signature dict is still emitted (so the list shows "Signed
-    on X" pills) — only the ``image`` byte stream is removed.
+    Wire-size optimisations applied here vs. the detail serializer:
+
+    * ``prepared_by`` / ``director`` / ``customer_signature`` keep
+      their name + timestamp keys (the list shows "Signed on X" pills)
+      but the base64 PNG ``image`` payload is blanked — on a 50-row
+      page that alone is ~1 MB of bytes the list never renders.
+    * ``lines`` (full :class:`ProposalLineReadSerializer` per row,
+      including the line's formulation chain) is removed and
+      replaced with a scalar ``lines_count``. The list UI only ever
+      reads ``proposal.lines.length`` to render the "N products"
+      badge — shipping the array is wasted payload + the entry point
+      for an N+1 follow-up per line. ``len(obj.lines.all())`` reads
+      from the prefetched cache populated by
+      :func:`apps.proposals.services.list_proposals` so no extra
+      query fires per row.
+
+    Totals (``subtotal`` / ``total_excl_vat``) still iterate the
+    prefetched lines cache server-side, so the badge stays accurate
+    without the client receiving the line objects themselves.
+    Detail endpoints continue to use the full
+    :class:`ProposalReadSerializer` so the signature pad, audit
+    panel, and lines table all see everything.
     """
+
+    lines_count = serializers.IntegerField(read_only=True)
+
+    class Meta(ProposalReadSerializer.Meta):
+        # Inherit the parent's field list verbatim except drop the
+        # nested ``lines`` array; add the cheap ``lines_count``
+        # replacement at the same position so the wire shape stays
+        # stable for clients that introspect key order.
+        fields = tuple(
+            f if f != "lines" else "lines_count"
+            for f in ProposalReadSerializer.Meta.fields
+        )
+        read_only_fields = fields
 
     def get_prepared_by(self, obj: Proposal) -> dict | None:
         signed = super().get_prepared_by(obj)
@@ -243,6 +272,16 @@ class ProposalListSerializer(ProposalReadSerializer):
     def get_customer_signature(self, obj: Proposal) -> dict | None:
         signed = super().get_customer_signature(obj)
         return None if signed is None else {**signed, "image": ""}
+
+    def to_representation(self, instance: Proposal) -> dict:
+        # ``lines_count`` is a declared scalar field, so DRF expects
+        # to read ``instance.lines_count`` — which doesn't exist as a
+        # model attribute. Inject it from the prefetched ``lines``
+        # cache (populated upstream by ``list_proposals``) before
+        # serialisation. ``len(.all())`` walks the cached list when
+        # prefetch_related is active; no extra query.
+        instance.lines_count = len(instance.lines.all())  # type: ignore[attr-defined]
+        return super().to_representation(instance)
 
 
 class ProposalCreateSerializer(serializers.Serializer):

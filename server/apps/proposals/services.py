@@ -482,6 +482,15 @@ def list_proposals(
         "sales_person",
         "prepared_by_user",
         "director_user",
+    ).prefetch_related(
+        # ``Proposal.subtotal`` / ``Proposal.total_excl_vat`` (both
+        # exposed by every list + detail serializer) iterate
+        # ``self.lines.all()``. Without this prefetch each row in a
+        # 50-item page fires its own lines query — classic N+1. One
+        # extra batched IN-query for the whole page is dramatically
+        # cheaper, and the list endpoint also reads ``len(obj.lines.
+        # all())`` from this same cache to populate ``lines_count``.
+        "lines",
     ).order_by("-updated_at")
 
 

@@ -51,6 +51,14 @@ export interface CreateProposalLineRequestDto {
 
 export type UpdateProposalLineRequestDto = Partial<CreateProposalLineRequestDto>;
 
+/**
+ * Detail-endpoint shape — what ``GET /proposals/<id>/`` returns.
+ *
+ * The org-wide list endpoint serves the lighter :type:`ProposalListItemDto`
+ * (no nested ``lines`` array, no signature image blobs) — see that
+ * type below. Callers reading from list endpoints should consume the
+ * list type so they pull only the fields the UI actually needs.
+ */
 export interface ProposalDto {
   readonly id: string;
   readonly code: string;
@@ -116,6 +124,42 @@ export interface ProposalDto {
   readonly created_at: string;
   readonly updated_at: string;
 }
+
+/**
+ * Row shape returned by the org-wide / per-project / status-filtered
+ * list endpoints. Two deliberate trims vs. :type:`ProposalDto`:
+ *
+ *   * No ``lines`` array — the list UI only reads ``lines_count`` to
+ *     render the "N products" badge. Shipping the array per row was
+ *     the dominant wire-size cost on the proposals page (and the
+ *     entry point for an N+1 query per line's formulation chain).
+ *   * Signature image data URLs are blanked. The list cards still
+ *     show "Signed on X" pills (the name + timestamp keys are kept),
+ *     but the base64 PNG bytes are stripped — they're only ever
+ *     rendered on the detail page.
+ *
+ * Every other key lines up with :type:`ProposalDto` so the existing
+ * row renderers continue to work after the swap.
+ */
+export interface ProposalListItemDto
+  extends Omit<ProposalDto, "lines"> {
+  readonly lines_count: number;
+}
+
+
+/**
+ * Cursor-paginated envelope from ``GET /proposals/`` — same shape
+ * the formulations + catalogues list endpoints emit. ``next`` /
+ * ``previous`` are opaque URLs the client walks verbatim; the
+ * pagination class lives at
+ * :class:`apps.proposals.api.pagination.ProposalCursorPagination`.
+ */
+export interface PaginatedProposalsDto {
+  readonly next: string | null;
+  readonly previous: string | null;
+  readonly results: readonly ProposalListItemDto[];
+}
+
 
 export interface CreateProposalRequestDto {
   readonly formulation_version_id: string;

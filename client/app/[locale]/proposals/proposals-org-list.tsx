@@ -8,7 +8,14 @@ import {
   Trash2,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
 
 import { Button, Modal } from "@heroui/react";
 
@@ -18,8 +25,8 @@ import {
   PROPOSAL_TEMPLATE_TYPES,
   useCreateProposal,
   useDeleteProposal,
-  useProposals,
-  type ProposalDto,
+  useInfiniteProposals,
+  type ProposalListItemDto,
   type ProposalStatus,
   type ProposalTemplateType,
 } from "@/services/proposals";
@@ -62,7 +69,14 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
   // Backend queries on ``applied`` only — the pending state stays
   // local to the bar until the user hits Apply.
   const applied = filters.applied;
-  const proposalsQuery = useProposals(orgId, {
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetching,
+    isFetchingNextPage,
+    isLoading,
+  } = useInfiniteProposals(orgId, {
     statuses: applied.statuses,
     search: applied.search || undefined,
     salesPersonId: applied.salesPersonId || undefined,
@@ -72,17 +86,73 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
   const deleteMutation = useDeleteProposal(orgId);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const proposals = proposalsQuery.data ?? [];
+  // Flatten the cursor pages into a single roster. ``useMemo`` keeps
+  // the array reference stable across re-renders that didn't touch
+  // the data — the row components are otherwise free to re-render
+  // on every parent paint, which is wasted work when only the
+  // filter bar's pending state changed.
+  const proposals: readonly ProposalListItemDto[] = useMemo(
+    () => data?.pages.flatMap((page) => page.results) ?? [],
+    [data],
+  );
 
-  const handleDelete = async (proposalId: string) => {
-    if (!confirm(tProposals("list.delete_confirm"))) return;
-    setDeleteError(null);
-    try {
-      await deleteMutation.mutateAsync(proposalId);
-    } catch (err) {
-      setDeleteError(extractApiErrorMessage(err, tErrors));
-    }
-  };
+  const handleDelete = useCallback(
+    async (proposalId: string) => {
+      if (!confirm(tProposals("list.delete_confirm"))) return;
+      setDeleteError(null);
+      try {
+        await deleteMutation.mutateAsync(proposalId);
+      } catch (err) {
+        setDeleteError(extractApiErrorMessage(err, tErrors));
+      }
+    },
+    [deleteMutation, tErrors, tProposals],
+  );
+
+  // IntersectionObserver-driven infinite scroll. A sentinel ``<li>``
+  // rendered just past the last row triggers ``fetchNextPage`` when
+  // it enters the viewport — the standard pagination pattern,
+  // without the layout fragility a window virtualiser would add for
+  // what is realistically a few-hundred-row list. The real perf win
+  // is server-side (pagination + dropped ``lines`` array); on the
+  // client, plain DOM rows perform fine until the page count is in
+  // the thousands, at which point swapping in a virtualiser is a
+  // localised change.
+  const sentinelRef = useRef<HTMLLIElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    if (!hasNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (
+            entry.isIntersecting &&
+            hasNextPage &&
+            !isFetchingNextPage &&
+            !isFetching
+          ) {
+            void fetchNextPage();
+            // One trigger per observe cycle — the next page's render
+            // re-mounts the sentinel below the new tail, which then
+            // arms a fresh observation. Avoids back-to-back fires
+            // while React is still committing the new rows.
+            break;
+          }
+        }
+      },
+      // ``rootMargin: 200px`` so the load fires while the sentinel
+      // is still ~200px below the viewport edge — the next page lands
+      // on screen before the user actually reaches the bottom, so
+      // scrolling feels continuous rather than stutter-loading at
+      // each cursor boundary.
+      { rootMargin: "200px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, isFetching, fetchNextPage]);
+
+  const showEmpty = !isLoading && proposals.length === 0;
 
   return (
     <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
@@ -111,11 +181,11 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         </p>
       ) : null}
 
-      {proposalsQuery.isLoading ? (
+      {isLoading ? (
         <p className="mt-6 text-sm text-ink-500">
           {tProposals("list.loading")}
         </p>
-      ) : proposals.length === 0 ? (
+      ) : showEmpty ? (
         <div className="mt-6 rounded-xl bg-ink-50 px-4 py-8 text-center ring-1 ring-inset ring-ink-200">
           <PoundSterling className="mx-auto h-6 w-6 text-ink-400" />
           <p className="mt-2 text-sm text-ink-500">
@@ -130,16 +200,42 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
           ) : null}
         </div>
       ) : (
-        <ul className="mt-4 divide-y divide-ink-100">
-          {proposals.map((proposal) => (
-            <OrgProposalRow
-              key={proposal.id}
-              proposal={proposal}
-              onDelete={handleDelete}
-              deletePending={deleteMutation.isPending}
-            />
-          ))}
-        </ul>
+        <>
+          <ul className="mt-4 divide-y divide-ink-100">
+            {proposals.map((proposal) => (
+              <OrgProposalRow
+                key={proposal.id}
+                proposal={proposal}
+                onDelete={handleDelete}
+                deletePending={deleteMutation.isPending}
+              />
+            ))}
+            {/* Sentinel — rendered only while another page is
+                available. IntersectionObserver above watches this
+                node and calls ``fetchNextPage`` when it enters the
+                viewport (with a 200px head-start), so the next page
+                lands before the user reaches the visible bottom. */}
+            {hasNextPage ? (
+              <li
+                ref={sentinelRef}
+                aria-hidden
+                className="h-1"
+              />
+            ) : null}
+          </ul>
+          <div className="mt-3 flex items-center justify-between text-xs text-ink-500">
+            <span>
+              {tProposals("list.row_count", { count: proposals.length })}
+              {hasNextPage ? ` · ${tProposals("list.scroll_hint")}` : ""}
+            </span>
+            {isFetchingNextPage ? (
+              <span className="inline-flex items-center gap-1 text-ink-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                {tProposals("list.loading")}
+              </span>
+            ) : null}
+          </div>
+        </>
       )}
     </section>
   );
@@ -151,7 +247,7 @@ function OrgProposalRow({
   onDelete,
   deletePending,
 }: {
-  proposal: ProposalDto;
+  proposal: ProposalListItemDto;
   onDelete: (id: string) => void;
   deletePending: boolean;
 }) {
@@ -198,9 +294,9 @@ function OrgProposalRow({
             `template_type.${proposal.template_type}` as "template_type.custom",
           )}
           {" · "}
-          {proposal.lines.length}{" "}
+          {proposal.lines_count}{" "}
           {tProposals("list.products_count", {
-            count: proposal.lines.length,
+            count: proposal.lines_count,
           })}
           {total !== null ? ` · ${total} ${proposal.currency}` : ""}
         </span>

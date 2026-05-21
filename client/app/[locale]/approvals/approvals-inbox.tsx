@@ -5,7 +5,10 @@ import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
-import { useProposals, type ProposalDto } from "@/services/proposals";
+import {
+  useProposalsPage,
+  type ProposalListItemDto,
+} from "@/services/proposals";
 import {
   useInfiniteSpecifications,
   type SpecificationSheetDto,
@@ -53,15 +56,26 @@ export function ApprovalsInbox({
   // guard on each hook — that's the cheapest way to skip a fetch
   // the caller is not allowed to make without plumbing a new
   // ``enabled`` option through every consumer of these hooks.
-  const proposalsQuery = useProposals(canViewProposals ? orgId : "", {
-    status: "in_review",
-  });
+  //
+  // ``pageSize: 500`` is the backend's ``max_page_size`` — the
+  // director's approval queue is intentionally a single-screen view
+  // (no "load more" affordance), so we pull the entire ``in_review``
+  // roster in one round-trip. The endpoint is now paginated; this
+  // call asks for the largest first page the server is willing to
+  // emit, which in practice covers every realistic queue depth.
+  const proposalsQuery = useProposalsPage(
+    canViewProposals ? orgId : "",
+    { status: "in_review" },
+    500,
+  );
   const specsQuery = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "in_review",
     pageSize: 100,
   });
 
-  const proposals = canViewProposals ? proposalsQuery.data ?? [] : [];
+  const proposals = canViewProposals
+    ? proposalsQuery.data?.results ?? []
+    : [];
   const specs = useMemo(
     () =>
       canViewSpecs
@@ -165,7 +179,7 @@ function ProposalsPanel({
   loading,
   errored,
 }: {
-  proposals: readonly ProposalDto[];
+  proposals: readonly ProposalListItemDto[];
   loading: boolean;
   errored: boolean;
 }) {
@@ -244,7 +258,7 @@ function EmptyState({ message }: { message: string }) {
 }
 
 
-function ProposalCard({ proposal }: { proposal: ProposalDto }) {
+function ProposalCard({ proposal }: { proposal: ProposalListItemDto }) {
   const t = useTranslations("approvals");
   const format = useFormatter();
   // Pin a stable ``now`` so the SSR-rendered relative time matches
@@ -257,10 +271,10 @@ function ProposalCard({ proposal }: { proposal: ProposalDto }) {
     proposal.customer_name ||
     t("card.no_customer");
   const productLabel = t(
-    proposal.lines.length === 1
+    proposal.lines_count === 1
       ? "card.products_one"
       : "card.products_other",
-    { count: proposal.lines.length },
+    { count: proposal.lines_count },
   );
 
   return (

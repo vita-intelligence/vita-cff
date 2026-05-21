@@ -3,9 +3,12 @@
  */
 
 import {
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
+  type InfiniteData,
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
 } from "@tanstack/react-query";
@@ -24,7 +27,7 @@ import {
   fetchProposalAudit,
   fetchProposalLines,
   fetchProposalTransitions,
-  fetchProposals,
+  fetchProposalsPage,
   patchProposalLine,
   sendProposalTestEmail,
   sendProposalToClient,
@@ -35,6 +38,7 @@ import type {
   CostPreviewDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
+  PaginatedProposalsDto,
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
@@ -45,32 +49,65 @@ import type {
 } from "./types";
 
 
+/**
+ * Args accepted by the list + infinite-list hooks. Single source of
+ * truth for the filter shape — the cache key derives from this so a
+ * field added here is automatically a cache-distinguishing key.
+ */
+export interface ProposalsListArgs {
+  readonly formulationId?: string;
+  /** Director approval inbox uses the single-value form. */
+  readonly status?: string;
+  /** Multi-select status (list bar). */
+  readonly statuses?: readonly string[];
+  readonly search?: string;
+  readonly salesPersonId?: string;
+  readonly validUntilFrom?: string;
+  readonly validUntilTo?: string;
+}
+
+
+/** Build the order-insensitive cache fragment for a filter set. Used
+ *  by both the single-page and infinite query keys so re-ordering
+ *  status chips (or omitting an unused filter) doesn't fragment the
+ *  cache. */
+function listKeyFragment(args: ProposalsListArgs): readonly unknown[] {
+  return [
+    args.formulationId ?? "__all__",
+    args.status ?? "__any__",
+    [...(args.statuses ?? [])].sort().join(","),
+    args.search ?? "",
+    args.salesPersonId ?? "",
+    args.validUntilFrom ?? "",
+    args.validUntilTo ?? "",
+  ] as const;
+}
+
+
 export const proposalsQueryKeys = {
   all: [rootQueryKey, "proposals"] as const,
-  list: (
-    orgId: string,
-    formulationId?: string,
-    status?: string,
-    filters?: {
-      statuses?: readonly string[];
-      search?: string;
-      salesPersonId?: string;
-      validUntilFrom?: string;
-      validUntilTo?: string;
-    },
-  ) =>
+  /** Single-page list cache. Pair with :func:`useProposalsPage` —
+   *  the small surfaces (approvals inbox, signed archive, per-project
+   *  history) that pull one large page rather than streaming. */
+  list: (orgId: string, args: ProposalsListArgs, pageSize?: number) =>
     [
       rootQueryKey,
       "proposals",
       orgId,
-      formulationId ?? "__all__",
-      status ?? "__any__",
-      // Sorted+joined so chip-toggle order doesn't fragment the cache.
-      [...(filters?.statuses ?? [])].sort().join(","),
-      filters?.search ?? "",
-      filters?.salesPersonId ?? "",
-      filters?.validUntilFrom ?? "",
-      filters?.validUntilTo ?? "",
+      "list",
+      ...listKeyFragment(args),
+      pageSize ?? "default",
+    ] as const,
+  /** Infinite (cursor) list cache. Pair with
+   *  :func:`useInfiniteProposals` — the org-wide list page that
+   *  virtualises rows and auto-loads the next cursor. */
+  infinite: (orgId: string, args: ProposalsListArgs) =>
+    [
+      rootQueryKey,
+      "proposals",
+      orgId,
+      "infinite",
+      ...listKeyFragment(args),
     ] as const,
   detail: (orgId: string, proposalId: string) =>
     [rootQueryKey, "proposals", orgId, proposalId] as const,
@@ -102,47 +139,66 @@ export const proposalsQueryKeys = {
 };
 
 
-export function useProposals(
+/**
+ * Cursor-paginated infinite-scroll fetch for the org-wide proposals
+ * list. Mirrors :func:`useInfiniteFormulations`: the caller supplies
+ * filters + page size, the hook re-keys on those so switching
+ * filters starts a clean paged cache, and ``next`` / ``previous``
+ * URLs from the server are walked verbatim.
+ *
+ * For short, single-screen surfaces (approvals inbox, signed
+ * archive, per-project history) use :func:`useProposalsPage` with a
+ * large ``pageSize`` instead — those views don't want infinite-scroll
+ * UX, they want every row visible at once.
+ */
+export function useInfiniteProposals(
   orgId: string,
-  args: {
-    formulationId?: string;
-    /** Director approval inbox uses the single-value form. */
-    status?: string;
-    /** Multi-select status (list bar). */
-    statuses?: readonly string[];
-    search?: string;
-    salesPersonId?: string;
-    validUntilFrom?: string;
-    validUntilTo?: string;
-  } = {},
-): UseQueryResult<ProposalDto[], ApiError> {
-  const {
-    formulationId,
-    status,
-    statuses,
-    search,
-    salesPersonId,
-    validUntilFrom,
-    validUntilTo,
-  } = args;
-  return useQuery<ProposalDto[], ApiError>({
-    queryKey: proposalsQueryKeys.list(orgId, formulationId, status, {
-      statuses,
-      search,
-      salesPersonId,
-      validUntilFrom,
-      validUntilTo,
-    }),
-    queryFn: () =>
-      fetchProposals(orgId, {
-        formulationId,
-        status,
-        statuses,
-        search,
-        salesPersonId,
-        validUntilFrom,
-        validUntilTo,
+  args: ProposalsListArgs & { readonly pageSize?: number } = {},
+): UseInfiniteQueryResult<
+  InfiniteData<PaginatedProposalsDto, string | null>,
+  ApiError
+> {
+  const { pageSize, ...filters } = args;
+  return useInfiniteQuery<
+    PaginatedProposalsDto,
+    ApiError,
+    InfiniteData<PaginatedProposalsDto, string | null>,
+    readonly unknown[],
+    string | null
+  >({
+    queryKey: proposalsQueryKeys.infinite(orgId, filters),
+    queryFn: ({ pageParam }) =>
+      fetchProposalsPage(orgId, {
+        ...filters,
+        pageSize,
+        cursorUrl: pageParam ?? undefined,
       }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next,
+    getPreviousPageParam: (first) => first.previous,
+    enabled: Boolean(orgId),
+  });
+}
+
+
+/**
+ * Single-page fetch — for surfaces that render every row on one
+ * screen and don't need a "load more" affordance. Pass a large
+ * ``pageSize`` (up to the backend's ``max_page_size`` of 500) to
+ * pull the whole roster in one round-trip.
+ *
+ * The returned ``data.results`` is the array clients want; use
+ * :func:`useInfiniteProposals` instead when you need cursor
+ * traversal.
+ */
+export function useProposalsPage(
+  orgId: string,
+  args: ProposalsListArgs = {},
+  pageSize?: number,
+): UseQueryResult<PaginatedProposalsDto, ApiError> {
+  return useQuery<PaginatedProposalsDto, ApiError>({
+    queryKey: proposalsQueryKeys.list(orgId, args, pageSize),
+    queryFn: () => fetchProposalsPage(orgId, { ...args, pageSize }),
     enabled: Boolean(orgId),
   });
 }

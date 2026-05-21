@@ -24,8 +24,8 @@ import {
   fetchCostPreview,
   useCreateProposal,
   useDeleteProposal,
-  useProposals,
-  type ProposalDto,
+  useProposalsPage,
+  type ProposalListItemDto,
   type ProposalStatus,
   type ProposalTemplateType,
 } from "@/services/proposals";
@@ -58,11 +58,16 @@ export function ProposalsList({
   const tProposals = useTranslations("proposals");
   const tErrors = useTranslations("errors");
 
-  const proposalsQuery = useProposals(orgId, { formulationId });
+  // ``pageSize: 500`` matches the backend cap — a single project's
+  // proposal history rarely exceeds a handful, so this single
+  // request is effectively "give me everything". The endpoint is
+  // now paginated; if a project ever accrues more than the cap,
+  // swap this for :func:`useInfiniteProposals`.
+  const proposalsQuery = useProposalsPage(orgId, { formulationId }, 500);
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const deleteMutation = useDeleteProposal(orgId);
 
-  const proposals = proposalsQuery.data ?? [];
+  const proposals = proposalsQuery.data?.results ?? [];
   // A project carries at most one "open" proposal — defined as
   // anything except ``rejected``. ``accepted`` counts because the
   // deal is closed: if the client wants to re-order, the team
@@ -155,7 +160,7 @@ function ProposalRow({
   onDelete,
   deletePending,
 }: {
-  proposal: ProposalDto;
+  proposal: ProposalListItemDto;
   canDelete: boolean;
   onDelete: (id: string) => void;
   deletePending: boolean;

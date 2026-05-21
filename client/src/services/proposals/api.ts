@@ -9,6 +9,7 @@ import type {
   CostPreviewDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
+  PaginatedProposalsDto,
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
@@ -19,24 +20,63 @@ import type {
 } from "./types";
 
 
-export async function fetchProposals(
+/**
+ * Query args accepted by :func:`fetchProposalsPage`. Mirrors the
+ * filter set the org-wide list bar exposes, plus the pagination
+ * controls owned by the cursor pagination class on the backend.
+ */
+export interface FetchProposalsPageArgs {
+  readonly formulationId?: string;
+  /** Single-value status filter — used by the director approval
+   *  inbox, the signed archive (one query per lifecycle state), and
+   *  any other "give me everything in status X" view. */
+  readonly status?: string;
+  /** Multi-select status filter — used by the org-wide list bar's
+   *  chip strip. */
+  readonly statuses?: readonly string[];
+  readonly search?: string;
+  /** UUID, or ``"unassigned"`` for the no-owner bucket. */
+  readonly salesPersonId?: string;
+  /** ISO ``YYYY-MM-DD``. Inclusive bound. */
+  readonly validUntilFrom?: string;
+  /** ISO ``YYYY-MM-DD``. Inclusive bound. */
+  readonly validUntilTo?: string;
+  /** Cap per response. Default 50 (matches the cursor page size).
+   *  Short surfaces (approvals inbox, signed archive) bump this to
+   *  ~500 so the entire roster lands in one page without an
+   *  infinite-scroll harness. */
+  readonly pageSize?: number;
+  /** Full ``next`` / ``previous`` URL from a prior cursor response.
+   *  When set, every other arg is ignored and the request is sent
+   *  verbatim — the cursor opaquely encodes them. */
+  readonly cursorUrl?: string | null;
+}
+
+
+/**
+ * Fetch one cursor page of proposals. The list endpoint is now
+ * paginated server-side (was returning the org's full roster on
+ * every open — the source of the "slow proposals page" report); the
+ * frontend walks ``next`` / ``previous`` to stream forward or jumps
+ * straight to a large ``pageSize`` for short surfaces.
+ */
+export async function fetchProposalsPage(
   orgId: string,
-  args: {
-    formulationId?: string;
-    /** Single-value status (used by the director approval inbox). */
-    status?: string;
-    /** Multi-select status for the org-wide list bar. */
-    statuses?: readonly string[];
-    search?: string;
-    /** UUID, or ``"unassigned"`` for the no-owner bucket. */
-    salesPersonId?: string;
-    /** ISO ``YYYY-MM-DD``. Inclusive bound. */
-    validUntilFrom?: string;
-    /** ISO ``YYYY-MM-DD``. Inclusive bound. */
-    validUntilTo?: string;
-  } = {},
-): Promise<ProposalDto[]> {
+  args: FetchProposalsPageArgs = {},
+): Promise<PaginatedProposalsDto> {
+  // Cursor-URL path: the server's encoded link already carries every
+  // filter + the cursor position, so we re-issue it as-is and ignore
+  // any other arg the caller might have re-passed.
+  if (args.cursorUrl) {
+    const url = new URL(args.cursorUrl, "http://placeholder.local");
+    const { data } = await apiClient.get<PaginatedProposalsDto>(
+      `${url.pathname}${url.search}`,
+    );
+    return data;
+  }
+
   const params = new URLSearchParams();
+  if (args.pageSize) params.set("page_size", String(args.pageSize));
   if (args.formulationId) params.set("formulation_id", args.formulationId);
   if (args.status) params.set("status", args.status);
   if (args.statuses) {
@@ -51,7 +91,7 @@ export async function fetchProposals(
   const url = qs
     ? `${proposalsEndpoints.list(orgId)}?${qs}`
     : proposalsEndpoints.list(orgId);
-  const { data } = await apiClient.get<ProposalDto[]>(url);
+  const { data } = await apiClient.get<PaginatedProposalsDto>(url);
   return data;
 }
 
