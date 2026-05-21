@@ -13,10 +13,10 @@ import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
 import { CFFAssignModal } from "@/components/cff/cff-assign-modal";
-import { CFFDetailModal } from "@/components/cff/cff-detail-modal";
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
+import { Link } from "@/i18n/navigation";
 import { NewFormulationButton } from "../formulations/new-formulation-button";
 import {
-  useCFFFieldLabels,
   useCFFSyncStatus,
   useInfiniteCFFSubmissions,
   type CFFSubmissionDto,
@@ -52,11 +52,14 @@ export function CFFInbox({
 
   const [filter, setFilter] = useState<Filter>("unassigned");
   const [search, setSearch] = useState("");
-  const [openDetail, setOpenDetail] = useState<CFFSubmissionDto | null>(null);
+  // Detail view now lives on a dedicated route — the inbox no
+  // longer mounts the floating-window modal. Assign / Create-
+  // project actions stay inline as modals because they're
+  // one-tap actions that shouldn't pull the operator off the
+  // inbox queue.
   const [openAssign, setOpenAssign] = useState<CFFSubmissionDto | null>(null);
   const [openCreate, setOpenCreate] = useState<CFFSubmissionDto | null>(null);
 
-  const labelsQuery = useCFFFieldLabels(orgId);
   const listQuery = useInfiniteCFFSubmissions({
     orgId,
     assigned:
@@ -78,6 +81,9 @@ export function CFFInbox({
           search={search}
           onFilter={setFilter}
           onSearch={setSearch}
+          isFetching={
+            listQuery.isFetching && !listQuery.isFetchingNextPage
+          }
           t={t}
         />
 
@@ -93,7 +99,6 @@ export function CFFInbox({
               <CFFRow
                 key={row.id}
                 row={row}
-                onOpen={() => setOpenDetail(row)}
                 onAssign={
                   canAssign ? () => setOpenAssign(row) : undefined
                 }
@@ -123,23 +128,6 @@ export function CFFInbox({
         ) : null}
       </section>
 
-      {openDetail ? (
-        <CFFDetailModal
-          orgId={orgId}
-          submission={openDetail}
-          fieldLabels={labelsQuery.data?.field_labels_by_form ?? {}}
-          canAssign={canAssign}
-          onClose={() => setOpenDetail(null)}
-          onAssign={() => {
-            setOpenAssign(openDetail);
-            setOpenDetail(null);
-          }}
-          onCreateProject={() => {
-            setOpenCreate(openDetail);
-            setOpenDetail(null);
-          }}
-        />
-      ) : null}
       {openAssign ? (
         <CFFAssignModal
           orgId={orgId}
@@ -248,12 +236,18 @@ function FilterBar({
   search,
   onFilter,
   onSearch,
+  isFetching,
   t,
 }: {
   filter: Filter;
   search: string;
   onFilter: (v: Filter) => void;
   onSearch: (v: string) => void;
+  /** ``true`` while the list query is in flight (and not just
+   *  loading the next infinite page). Drives the in-input
+   *  spinner so the user gets a cue while the typed query is
+   *  resolving against the server. */
+  isFetching: boolean;
   t: ReturnType<typeof useTranslations>;
 }) {
   return (
@@ -289,7 +283,15 @@ function FilterBar({
           placeholder={t("filter.search_placeholder")}
           className="w-full rounded-lg bg-white py-2 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
         />
-        {search ? (
+        {/* Right-edge slot — spinner takes priority over the
+            clear ``X`` so a slow connection gets a clear "still
+            working" signal. */}
+        {isFetching ? (
+          <Loader2
+            aria-hidden
+            className="absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-orange-500"
+          />
+        ) : search ? (
           <button
             type="button"
             onClick={() => onSearch("")}
@@ -312,13 +314,11 @@ function FilterBar({
 
 function CFFRow({
   row,
-  onOpen,
   onAssign,
   onCreateProject,
   t,
 }: {
   row: CFFSubmissionDto;
-  onOpen: () => void;
   onAssign?: () => void;
   onCreateProject?: () => void;
   t: ReturnType<typeof useTranslations>;
@@ -371,14 +371,22 @@ function CFFRow({
               {t("create_project.open")}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={onOpen}
+          {/* Detail view lives on its own route. Spec / project
+              detail still use the floating modal for quick-view,
+              but the CFF surface always navigates to the dedicated
+              page so the chat dock + comment history have a stable
+              URL to deep-link to from the inbox bell. */}
+          <Link
+            href={`/cff/${row.id}`}
+            prefetch={false}
             className="inline-flex items-center gap-1 rounded-lg bg-ink-50 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100"
           >
             {t("list.open")}
-            <ChevronRight className="h-3 w-3" />
-          </button>
+            <LinkIconSlot
+              idleIcon={<ChevronRight className="h-3 w-3" />}
+              spinnerSizeClassName="h-3 w-3"
+            />
+          </Link>
         </div>
       </article>
     </li>

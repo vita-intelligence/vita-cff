@@ -44,6 +44,7 @@
  */
 
 import {
+  ExternalLink,
   FileText,
   GripHorizontal,
   Image as ImageIcon,
@@ -56,6 +57,7 @@ import {
 import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { Link } from "@/i18n/navigation";
 import type { CFFSubmissionDto } from "@/services/cff-submissions";
 
 
@@ -378,15 +380,35 @@ export function CFFDetailModal({
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label={t("detail.close")}
-          data-no-drag
-          className="rounded-md p-1 text-ink-500 transition-colors hover:bg-ink-100"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        <div className="flex shrink-0 items-center gap-1" data-no-drag>
+          {/* Escape hatch to the standalone CFF page. The page is
+              the comments-first surface where the team can have a
+              durable discussion thread linked into the messenger
+              inbox; the modal stays the rich triage view. Opens in
+              a new tab so the operator's modal-driven flow is not
+              interrupted. */}
+          <Link
+            href={`/cff/${submission.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={t("detail.open_full_page")}
+            aria-label={t("detail.open_full_page")}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-ink-500 transition-colors hover:bg-ink-100 hover:text-ink-1000"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">
+              {t("detail.open_full_page")}
+            </span>
+          </Link>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("detail.close")}
+            className="rounded-md p-1 text-ink-500 transition-colors hover:bg-ink-100"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
       </header>
 
         {/* ---- Body ---- */}

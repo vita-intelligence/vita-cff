@@ -13,6 +13,7 @@ from apps.comments.api.public_views import (
     PublicSpecificationIdentifyView,
 )
 from apps.comments.api.views import (
+    CFFSubmissionCommentsView,
     CommentDetailView,
     CommentFlagView,
     CommentResolveView,
@@ -54,6 +55,17 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/comments/",
         ProposalCommentsView.as_view(),
         name="proposal-comments",
+    ),
+    # CFF (Custom Formulation Request) internal triage chat. Lives
+    # under the comments namespace (not cff-submissions) so the
+    # comment infrastructure — read pointers, inbox fan-out,
+    # mentions — slots in without forking the per-entity comment
+    # contract. Capability gated to ``cff_submissions.view`` via
+    # the :class:`HasCFFPermission` class on the view itself.
+    path(
+        "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/comments/",
+        CFFSubmissionCommentsView.as_view(),
+        name="cff-submission-comments",
     ),
     path(
         "organizations/<uuid:org_id>/comments/<uuid:comment_id>/",

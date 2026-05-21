@@ -19,6 +19,7 @@ import {
   ChevronLeft,
   ChevronRight,
   GripVertical,
+  Loader2,
   Minus,
   Search,
   X,
@@ -287,6 +288,14 @@ export function CatalogueTable({
   // right on the sweet spot between "responsive" and "spammy" — any
   // faster and a fast typist triggers several overlapping fetches.
   const [searchInput, setSearchInput] = useState("");
+  //: Tracks the row the operator just clicked so the table lights
+  //: up a spinner on that row while ``router.push`` resolves the
+  //: next segment. Cleared when this component unmounts on the
+  //: actual navigation. Without this the operator clicks, sees
+  //: nothing for the duration of the server round-trip, and may
+  //: click again — the second click then races with the in-flight
+  //: navigation.
+  const [pendingRowId, setPendingRowId] = useState<string | null>(null);
   const debouncedSearch = useDebouncedValue(searchInput, 300);
   const normalisedSearch = debouncedSearch.trim();
 
@@ -742,7 +751,16 @@ export function CatalogueTable({
           aria-label={tItems("search.placeholder")}
           className="h-full w-full rounded-lg bg-ink-0 pl-10 pr-10 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none transition-shadow placeholder:text-ink-400 focus:ring-2 focus:ring-orange-400 [&::-webkit-search-cancel-button]:hidden"
         />
-        {searchInput ? (
+        {/* In-flight cue takes priority over the clear ``X``
+            during a search so the user knows the typed query is
+            still resolving. Falls back to ``X`` once the fetch
+            settles. */}
+        {isFetching && !isFetchingNextPage ? (
+          <Loader2
+            aria-hidden
+            className="absolute right-3 h-4 w-4 animate-spin text-orange-500"
+          />
+        ) : searchInput ? (
           <button
             type="button"
             aria-label={tItems("search.clear")}
@@ -1017,15 +1035,21 @@ export function CatalogueTable({
               {virtualRows.map((virtualRow) => {
                 const row = rows[virtualRow.index]!;
                 const selected = row.getIsSelected();
+                const isPending = pendingRowId === row.original.id;
                 return (
                   <tr
                     key={row.id}
-                    onClick={() =>
-                      router.push(`/catalogues/${slug}/${row.original.id}`)
-                    }
+                    onClick={() => {
+                      if (pendingRowId !== null) return;
+                      setPendingRowId(row.original.id);
+                      router.push(
+                        `/catalogues/${slug}/${row.original.id}`,
+                      );
+                    }}
+                    aria-busy={isPending}
                     className={`cursor-pointer border-b border-ink-100 transition-colors hover:bg-ink-50 ${
                       selected ? "bg-orange-50/60" : ""
-                    }`}
+                    } ${isPending ? "bg-ink-50" : ""}`}
                   >
                     {row.getVisibleCells().map((cell) => {
                       const align =

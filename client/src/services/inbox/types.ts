@@ -9,7 +9,11 @@
 
 import type { CommentDto } from "@/services/comments";
 
-export type InboxEntityKind = "formulation" | "specification";
+export type InboxEntityKind =
+  | "formulation"
+  | "specification"
+  | "proposal"
+  | "cff_submission";
 
 export interface InboxOrganizationDto {
   readonly id: string;

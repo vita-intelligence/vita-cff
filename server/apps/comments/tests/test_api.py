@@ -334,3 +334,167 @@ class TestMentionableMembers:
 def _ct(instance):
     from django.contrib.contenttypes.models import ContentType
     return ContentType.objects.get_for_model(instance.__class__)
+
+
+# ---------------------------------------------------------------------------
+# CFF (Custom Formulation Request) submission comments — internal
+# triage thread keyed off the new ``cff_submission`` polymorphic
+# target. The endpoint differs from the formulation / spec / proposal
+# variants in two ways:
+#
+#   1. Different capability gate — ``cff_submissions.view`` rather
+#      than ``formulations.comments_view``.
+#   2. Default visibility — ``internal`` rather than ``shared`` (the
+#      customer who filled the CFF never sees this thread).
+# ---------------------------------------------------------------------------
+
+
+def _cff_comments_url(org_id, submission_id) -> str:
+    return reverse(
+        "comments:cff-submission-comments",
+        kwargs={"org_id": org_id, "submission_id": submission_id},
+    )
+
+
+def _make_cff_submission(org):
+    """Build a minimal CFFSubmission row for the test. Lives here
+    so the test module stays self-contained — the CFF app's
+    ``_make_submission_row`` helper is private to its own test
+    file."""
+
+    import uuid
+    from datetime import datetime, timezone
+
+    from apps.cff_submissions.models import (
+        CFFSubmission,
+        CFFSubmissionStatus,
+    )
+
+    return CFFSubmission.objects.create(
+        organization=org,
+        wix_submission_id=uuid.uuid4(),
+        # ``wix_form_id`` is a ``UUIDField`` on the model — Wix
+        # form ids are real UUIDs even though they look like
+        # opaque slugs on the wire. A plain string would fail
+        # validation here.
+        wix_form_id=uuid.uuid4(),
+        wix_namespace="wix.form_app.form",
+        wix_status=CFFSubmissionStatus.CONFIRMED,
+        wix_created_date=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        wix_updated_date=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        raw_payload={"submissions": {"email_fc7d": "client@example.com"}},
+    )
+
+
+class TestCFFSubmissionComments:
+    def test_owner_posts_cff_comment(self, owner_client) -> None:
+        # Owners short-circuit every capability check via the
+        # ``has_capability`` path, so this also covers the happy
+        # case for the ``cff_submissions.view`` gate.
+        client, _user, org = owner_client
+        submission = _make_cff_submission(org)
+
+        response = client.post(
+            _cff_comments_url(str(org.id), str(submission.id)),
+            {"body": "Triage: looks like a fit for the burner range."},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED
+        body = response.json()
+        assert body["body"].startswith("Triage: looks like a fit")
+        assert body["target_type"] == "cff_submission"
+        assert body["target_id"] == str(submission.id)
+        # CFF is internal triage — staff-only — so the default
+        # visibility on the persisted row must NOT be ``shared``.
+        # The wire shape (CommentReadSerializer) doesn't expose
+        # ``visibility`` today, so we assert against the DB row
+        # directly. Comment also carries the denormalised FK that
+        # the inbox + WS broadcast layers route off.
+        from apps.comments.models import Comment
+        comment = Comment.objects.get(id=body["id"])
+        assert comment.cff_submission_id == submission.id
+        assert comment.visibility == Comment.Visibility.INTERNAL
+
+    def test_list_returns_only_this_threads_comments(
+        self, owner_client,
+    ) -> None:
+        # Posting on submission A must not surface on submission B's
+        # thread — the per-row filter is the same denormalised FK
+        # column the broadcast layer uses, so a regression on one
+        # would point at a typo on the other.
+        client, _user, org = owner_client
+        sub_a = _make_cff_submission(org)
+        sub_b = _make_cff_submission(org)
+        client.post(
+            _cff_comments_url(str(org.id), str(sub_a.id)),
+            {"body": "on A"}, format="json",
+        )
+        client.post(
+            _cff_comments_url(str(org.id), str(sub_b.id)),
+            {"body": "on B"}, format="json",
+        )
+
+        response = client.get(_cff_comments_url(str(org.id), str(sub_a.id)))
+        assert response.status_code == status.HTTP_200_OK
+        bodies = [c["body"] for c in response.json()["results"]]
+        assert bodies == ["on A"]
+
+    def test_member_without_cff_view_is_forbidden(
+        self, api_client: APIClient,
+    ) -> None:
+        # ``cff_submissions.view`` is the gate; a member without it
+        # should hit 403 (or 404 if the permission class collapses
+        # the leak surface — either way, NOT 201).
+        owner = UserFactory(email="cff-owner@x.test", password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="CFF Co")
+        submission = _make_cff_submission(org)
+
+        member = UserFactory(
+            email="cff-member@x.test", password=DEFAULT_TEST_PASSWORD,
+        )
+        # Grant formulations.view + comments_view (the "old" gate) —
+        # the response must still refuse because the CFF endpoint
+        # checks the CFF module specifically.
+        MembershipFactory(
+            user=member,
+            organization=org,
+            permissions={"formulations": ["view", "comments_view"]},
+        )
+        _login(api_client, member)
+
+        response = api_client.post(
+            _cff_comments_url(str(org.id), str(submission.id)),
+            {"body": "should fail"},
+            format="json",
+        )
+        assert response.status_code in (
+            status.HTTP_403_FORBIDDEN,
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    def test_member_with_cff_view_can_post(
+        self, api_client: APIClient,
+    ) -> None:
+        # A commercial / triage role with ONLY the CFF capability
+        # (no formulations module access) can still comment — this
+        # is the access-axis decision behind the new permission gate.
+        owner = UserFactory(email="cff-owner2@x.test", password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="CFF Co 2")
+        submission = _make_cff_submission(org)
+
+        triager = UserFactory(
+            email="cff-triager@x.test", password=DEFAULT_TEST_PASSWORD,
+        )
+        MembershipFactory(
+            user=triager,
+            organization=org,
+            permissions={"cff_submissions": ["view"]},
+        )
+        _login(api_client, triager)
+
+        response = api_client.post(
+            _cff_comments_url(str(org.id), str(submission.id)),
+            {"body": "from triage"},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_201_CREATED

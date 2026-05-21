@@ -219,7 +219,16 @@ class CFFAssignView(APIView):
 
         try:
             assign_to_project(
-                submission=submission, project=project, actor=request.user,
+                submission=submission,
+                project=project,
+                actor=request.user,
+                # Mirror the new-project flow: pick up the customer's
+                # typed ``vita_manufacture_account_manager_email`` and
+                # set the project's sales person if the slot is empty.
+                # ``assign_to_project`` itself enforces the empty-slot
+                # guard so a project that already has someone on it
+                # won't get silently reassigned.
+                can_assign_sales_person=True,
             )
         except CFFAssignmentError as exc:
             return Response(

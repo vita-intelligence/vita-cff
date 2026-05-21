@@ -15,6 +15,7 @@ import {
 import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import {
   useProposalsPage,
@@ -568,7 +569,10 @@ function ProposalCard({
           href={`/proposals/${proposal.id}`}
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          <ExternalLink className="h-4 w-4" />
+          <LinkIconSlot
+            idleIcon={<ExternalLink className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
           {t("card.open")}
         </Link>
       </div>
@@ -647,7 +651,10 @@ function SpecCard({
           href={`/specifications/${sheet.id}`}
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          <ExternalLink className="h-4 w-4" />
+          <LinkIconSlot
+            idleIcon={<ExternalLink className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
           {t("card.open")}
         </Link>
       </div>

@@ -209,6 +209,9 @@ class ThreadMarkReadView(APIView):
             entity = Formulation.objects.filter(id=entity_id).first()
         elif entity_kind == ThreadEntityKind.SPECIFICATION.value:
             entity = SpecificationSheet.objects.filter(id=entity_id).first()
+        elif entity_kind == ThreadEntityKind.CFF_SUBMISSION.value:
+            from apps.cff_submissions.models import CFFSubmission
+            entity = CFFSubmission.objects.filter(id=entity_id).first()
         else:  # PROPOSAL
             from apps.proposals.models import Proposal
             entity = Proposal.objects.filter(id=entity_id).first()
@@ -223,6 +226,25 @@ class ThreadMarkReadView(APIView):
         membership = get_membership(user, organization)
         if membership is None:
             raise NotFound()
+        # CFF threads gate on the CFF module's ``view`` capability.
+        # The formulations-module read-state gate (``view`` +
+        # ``comments_view``) is for entity kinds that live inside the
+        # projects workspace; CFFs are upstream of that and a
+        # commercial role may legitimately have CFF access without
+        # being on the projects module.
+        if entity_kind == ThreadEntityKind.CFF_SUBMISSION.value:
+            from apps.organizations.modules import (
+                CFF_SUBMISSIONS_MODULE,
+                CFFSubmissionsCapability,
+            )
+            if not has_capability(
+                membership,
+                CFF_SUBMISSIONS_MODULE,
+                CFFSubmissionsCapability.VIEW,
+            ):
+                raise NotFound()
+            return organization
+
         # Mirror the inbox listing gate: require BOTH ``view`` and
         # ``comments_view`` so a caller with only ``comments_view``
         # can't seed a read-state row for a thread they would

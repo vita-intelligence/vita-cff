@@ -4,6 +4,7 @@ import { Button } from "@heroui/react";
 import { ShieldCheck } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
@@ -46,7 +47,10 @@ export function ValidationLink({
         href={`/formulations/${formulationId}/trial-batches/${batchId}/validation/${v.id}`}
         className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50"
       >
-        <ShieldCheck className="h-4 w-4" />
+        <LinkIconSlot
+          idleIcon={<ShieldCheck className="h-4 w-4" />}
+          spinnerSizeClassName="h-4 w-4"
+        />
         {tV("link.open")}
       </Link>
     );

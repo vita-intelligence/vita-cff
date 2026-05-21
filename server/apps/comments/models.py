@@ -103,6 +103,20 @@ class Comment(models.Model):
         blank=True,
         related_name="comments",
     )
+    #: Denormalised FK for CFF-level threads. CFF (Custom Formulation
+    #: Form) submissions are internal triage artefacts — the team
+    #: discusses how to route an inbound request before it becomes a
+    #: project. Comments here default to ``internal`` visibility
+    #: because the customer who submitted the CFF never sees it; only
+    #: org members with the ``cff_submissions.view`` capability can
+    #: read this thread.
+    cff_submission = models.ForeignKey(
+        "cff_submissions.CFFSubmission",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="comments",
+    )
 
     parent = models.ForeignKey(
         "self",
@@ -643,6 +657,7 @@ class ThreadEntityKind(models.TextChoices):
     FORMULATION = "formulation", _("Formulation")
     SPECIFICATION = "specification", _("Specification")
     PROPOSAL = "proposal", _("Proposal")
+    CFF_SUBMISSION = "cff_submission", _("CFF Submission")
 
 
 class ThreadReadState(models.Model):

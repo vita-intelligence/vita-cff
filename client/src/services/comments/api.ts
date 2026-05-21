@@ -19,7 +19,8 @@ import type {
 export type CommentEntityKind =
   | "formulation"
   | "specification"
-  | "proposal";
+  | "proposal"
+  | "cff_submission";
 
 interface ThreadKey {
   readonly orgId: string;
@@ -35,6 +36,8 @@ function threadUrl(key: ThreadKey): string {
       return commentsEndpoints.specificationThread(key.orgId, key.entityId);
     case "proposal":
       return commentsEndpoints.proposalThread(key.orgId, key.entityId);
+    case "cff_submission":
+      return commentsEndpoints.cffSubmissionThread(key.orgId, key.entityId);
   }
 }
 

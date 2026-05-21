@@ -20,6 +20,7 @@ import {
 import { Button, Modal } from "@heroui/react";
 
 import { Link, useRouter } from "@/i18n/navigation";
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   PROPOSAL_TEMPLATE_TYPES,
@@ -169,7 +170,11 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
       </header>
 
       <div className="mt-4">
-        <ProposalsFilterBar orgId={orgId} filters={filters} />
+        <ProposalsFilterBar
+          orgId={orgId}
+          filters={filters}
+          isFetching={isFetching}
+        />
       </div>
 
       {deleteError ? (
@@ -305,9 +310,10 @@ function OrgProposalRow({
         <StatusChip status={proposal.status} />
         <Link
           href={`/proposals/${proposal.id}`}
+          prefetch={false}
           className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <LinkIconSlot idleIcon={<ExternalLink className="h-3.5 w-3.5" />} />
           {tProposals("list.view")}
         </Link>
         {isTerminal ? null : (

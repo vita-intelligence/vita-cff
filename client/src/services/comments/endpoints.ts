@@ -14,6 +14,13 @@ export const commentsEndpoints = {
   // ``comments.0007_comment_proposal``).
   proposalThread: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/comments/`,
+  // CFF internal-triage chat. Mounted under the comments namespace
+  // so the read pointer + inbox fan-out plumbing slots in unchanged
+  // — the only difference vs. the formulation / spec / proposal
+  // routes is the backend's capability gate (``cff_submissions.view``
+  // instead of ``formulations.comments_view``).
+  cffSubmissionThread: (orgId: string, submissionId: string) =>
+    `/api/organizations/${orgId}/cff-submissions/${submissionId}/comments/`,
   detail: (orgId: string, commentId: string) =>
     `/api/organizations/${orgId}/comments/${commentId}/`,
   resolve: (orgId: string, commentId: string) =>

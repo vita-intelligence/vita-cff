@@ -81,7 +81,12 @@ class CommentConsumer(AsyncJsonWebsocketConsumer):
 
         kwargs = self.scope["url_route"]["kwargs"]
         kind: str = kwargs.get("entity_kind", "")
-        if kind not in {"formulation", "specification", "proposal"}:
+        if kind not in {
+            "formulation",
+            "specification",
+            "proposal",
+            "cff_submission",
+        }:
             await self.close(code=CLOSE_BAD_TARGET)
             return
 
@@ -262,6 +267,10 @@ def _authorise(
 
     from apps.formulations.models import Formulation
     from apps.organizations.models import Organization
+    from apps.organizations.modules import (
+        CFF_SUBMISSIONS_MODULE,
+        CFFSubmissionsCapability,
+    )
     from apps.organizations.services import (
         get_membership,
         has_capability,
@@ -283,12 +292,25 @@ def _authorise(
     if not is_organization_accessible(organization, user):
         return "inactive"
 
-    if not has_capability(
-        membership,
-        FORMULATIONS_MODULE,
-        FormulationsCapability.COMMENTS_VIEW,
-    ):
-        return "forbidden"
+    # Capability gate. CFF threads use the CFF module's ``view``
+    # capability instead of the formulations comments_view —
+    # commercial / triage roles routinely have CFF access without
+    # being on the projects module, and we don't want to lock the
+    # CFF chat behind a permission they don't need.
+    if kind == "cff_submission":
+        if not has_capability(
+            membership,
+            CFF_SUBMISSIONS_MODULE,
+            CFFSubmissionsCapability.VIEW,
+        ):
+            return "forbidden"
+    else:
+        if not has_capability(
+            membership,
+            FORMULATIONS_MODULE,
+            FormulationsCapability.COMMENTS_VIEW,
+        ):
+            return "forbidden"
 
     # Entity-in-org check — matches the REST loader 404 guard.
     if kind == "formulation":
@@ -297,6 +319,11 @@ def _authorise(
         ).exists()
     elif kind == "specification":
         exists = SpecificationSheet.objects.filter(
+            organization=organization, id=entity_id
+        ).exists()
+    elif kind == "cff_submission":
+        from apps.cff_submissions.models import CFFSubmission
+        exists = CFFSubmission.objects.filter(
             organization=organization, id=entity_id
         ).exists()
     else:  # proposal

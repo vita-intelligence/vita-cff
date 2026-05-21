@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowRight, CheckCircle2 } from "lucide-react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import {
   Card,
   EmptyState,
@@ -90,7 +91,10 @@ export default async function PortalSpecsListPage() {
                   ) : (
                     <StatusPill status={s.status} />
                   )}
-                  <ArrowRight className="h-5 w-5" />
+                  <LinkIconSlot
+                    idleIcon={<ArrowRight className="h-5 w-5" />}
+                    spinnerSizeClassName="h-5 w-5"
+                  />
                 </div>
               </Link>
             </Card>

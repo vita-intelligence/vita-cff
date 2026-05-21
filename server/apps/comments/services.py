@@ -96,6 +96,16 @@ def _proposal_model():
     return Proposal
 
 
+def _cff_submission_model():
+    """Lazy import — ``apps.cff_submissions.models`` would pull
+    the Wix client + Celery tasks at module load; deferring to
+    first-use keeps the comments app importable during migration
+    bootstrap when the cff_submissions app may not yet be ready."""
+
+    from apps.cff_submissions.models import CFFSubmission
+    return CFFSubmission
+
+
 _SUPPORTED_TARGETS: dict[type, str] = {
     Formulation: "formulation",
     SpecificationSheet: "specification_sheet",
@@ -104,11 +114,15 @@ _SUPPORTED_TARGETS: dict[type, str] = {
 
 def _supported_targets_dict() -> dict[type, str]:
     """Like ``_SUPPORTED_TARGETS`` but resolved lazily so the
-    Proposal model can be added without an import cycle."""
+    Proposal + CFFSubmission models can be added without an import
+    cycle. The fk_attr for each entry maps to the matching column on
+    :class:`Comment` so :func:`create_comment` can ``setattr`` the
+    denormalised FK."""
 
     return {
         **_SUPPORTED_TARGETS,
         _proposal_model(): "proposal",
+        _cff_submission_model(): "cff_submission",
     }
 
 
@@ -342,6 +356,9 @@ def _mark_thread_read_for_author(*, comment: Comment, actor) -> None:
     elif comment.proposal_id is not None:
         kind = ThreadEntityKind.PROPOSAL.value
         entity_id = comment.proposal_id
+    elif comment.cff_submission_id is not None:
+        kind = ThreadEntityKind.CFF_SUBMISSION.value
+        entity_id = comment.cff_submission_id
     else:
         # Targets we don't (yet) surface in the inbox — nothing to
         # update.
@@ -911,7 +928,14 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
     """
 
     organizations = _accessible_organizations_for_user(user)
-    if not organizations:
+    # CFF threads have their own capability axis — a commercial /
+    # triage role may have ``cff_submissions.view`` without holding
+    # ``formulations.view`` (CFF is upstream of the project
+    # workspace). Surface CFF threads from any org that grants CFF
+    # view, even when the formulations gate would otherwise exclude
+    # it from the main inbox list.
+    cff_organizations = _cff_accessible_organizations_for_user(user)
+    if not organizations and not cff_organizations:
         return []
 
     # Read pointers loaded up front so per-thread access is O(1).
@@ -937,6 +961,16 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
         )
         threads.extend(
             _inbox_threads_for_proposals(
+                organization=organization, pointers=pointers
+            )
+        )
+
+    # CFF threads — independent capability gate so we walk the
+    # cff-accessible set rather than the formulations-accessible
+    # one. Same per-thread shape, same pointer map.
+    for organization in cff_organizations:
+        threads.extend(
+            _inbox_threads_for_cff_submissions(
                 organization=organization, pointers=pointers
             )
         )
@@ -1074,6 +1108,114 @@ def _inbox_threads_for_proposals(
                 entity_id=str(proposal.id),
                 entity_title=title,
                 entity_code=(getattr(proposal, "code", "") or "").strip(),
+                unread_count=unread,
+                last_message_at=latest.created_at,
+                last_message_preview=_preview_for_comment(latest),
+                last_message_author=_author_snapshot(latest),
+            )
+        )
+    return rows
+
+
+def _cff_accessible_organizations_for_user(user) -> list[Organization]:
+    """Return every organisation in which ``user`` may see CFF chats.
+
+    Parallels :func:`_accessible_organizations_for_user` but gates on
+    the CFF module's ``view`` capability instead of the formulations
+    pair. CFF triage is its own role (commercial / customer-success
+    members often need to read inbound requests without holding
+    projects rights), so the inbox includes their CFF threads even
+    when the user is excluded from the formulations gate above.
+    """
+
+    from apps.organizations.models import Membership
+    from apps.organizations.modules import (
+        CFF_SUBMISSIONS_MODULE,
+        CFFSubmissionsCapability,
+    )
+    from apps.organizations.services import has_capability
+
+    memberships = (
+        Membership.objects.filter(user=user)
+        .select_related("organization")
+    )
+    eligible: list[Organization] = []
+    for membership in memberships:
+        if not has_capability(
+            membership,
+            CFF_SUBMISSIONS_MODULE,
+            CFFSubmissionsCapability.VIEW,
+        ):
+            continue
+        if not membership.organization.is_active and not getattr(
+            user, "is_superuser", False
+        ):
+            continue
+        eligible.append(membership.organization)
+    return eligible
+
+
+def _inbox_threads_for_cff_submissions(
+    *,
+    organization: Organization,
+    pointers: dict[tuple[str, str], _dt.datetime],
+) -> list[InboxThread]:
+    """Build the inbox rows for every CFF submission in
+    ``organization`` that has at least one non-deleted comment.
+
+    Same query / preview / pointer shape as the formulation +
+    proposal helpers so the FE renders CFF chats identically in
+    the bell dropdown — the only difference is the title source
+    (CFF rows carry the customer-typed company / email rather
+    than an internal code).
+    """
+
+    CFFSubmission = _cff_submission_model()
+    cffs = (
+        CFFSubmission.objects.filter(
+            organization=organization,
+            comments__isnull=False,
+            comments__is_deleted=False,
+        )
+        .annotate(last_at=Max("comments__created_at"))
+        .distinct()
+        .order_by("-last_at")
+    )
+    rows: list[InboxThread] = []
+    for cff in cffs:
+        latest = (
+            Comment.objects.filter(
+                cff_submission=cff, is_deleted=False
+            )
+            .select_related("author")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = pointers.get(
+            ("cff_submission", str(cff.id)), _UNIX_EPOCH
+        )
+        unread = Comment.objects.filter(
+            cff_submission=cff,
+            is_deleted=False,
+            created_at__gt=last_read,
+        ).count()
+        # CFF row has no team-side title — best fall-backs are the
+        # customer's company / email from the raw payload preview
+        # the inbox view already computes, but we don't have access
+        # to that here. Use the short id slice — the FE rehydrates
+        # the title from its own CFF list cache when the dropdown
+        # opens. (Same fallback pattern the messenger toast uses.)
+        title = f"CFF · {str(cff.id)[:8]}"
+        rows.append(
+            InboxThread(
+                organization_id=str(organization.id),
+                organization_name=organization.name,
+                entity_kind=ThreadEntityKind.CFF_SUBMISSION.value,
+                entity_id=str(cff.id),
+                entity_title=title,
+                entity_code="",
                 unread_count=unread,
                 last_message_at=latest.created_at,
                 last_message_preview=_preview_for_comment(latest),

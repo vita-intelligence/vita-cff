@@ -4,6 +4,7 @@ import { CheckCircle2, ClipboardCheck, FileSignature, Inbox } from "lucide-react
 import { useFormatter, useNow, useTranslations } from "next-intl";
 import { useMemo, useState } from "react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import {
   useProposalsPage,
@@ -297,7 +298,10 @@ function ProposalCard({ proposal }: { proposal: ProposalListItemDto }) {
           href={`/proposals/${proposal.id}?action=approve`}
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
         >
-          <CheckCircle2 className="h-4 w-4" />
+          <LinkIconSlot
+            idleIcon={<CheckCircle2 className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
           {t("card.open")}
         </Link>
       </div>
@@ -335,7 +339,10 @@ function SpecificationCard({ sheet }: { sheet: SpecificationSheetDto }) {
           href={`/specifications/${sheet.id}?action=approve`}
           className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
         >
-          <CheckCircle2 className="h-4 w-4" />
+          <LinkIconSlot
+            idleIcon={<CheckCircle2 className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
           {t("card.open")}
         </Link>
       </div>

@@ -38,6 +38,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.comments.api.pagination import CommentCursorPagination
+from apps.cff_submissions.api.permissions import HasCFFPermission
 from apps.comments.api.permissions import HasCommentsPermission
 from apps.comments.api.serializers import (
     CommentCreateSerializer,
@@ -111,6 +112,23 @@ def _load_specification(organization, sheet_id) -> SpecificationSheet:
     if sheet is None:
         raise NotFound()
     return sheet
+
+
+def _load_cff_submission(organization, submission_id):
+    """Resolve a CFFSubmission in the caller's org or 404. Same
+    leak-proof contract as the other loaders — a stranger guessing
+    at UUIDs sees the same response as a member hitting a deleted
+    row."""
+
+    from apps.cff_submissions.models import CFFSubmission
+    submission = (
+        CFFSubmission.objects.filter(
+            organization=organization, id=submission_id,
+        ).first()
+    )
+    if submission is None:
+        raise NotFound()
+    return submission
 
 
 def _read_response(comment) -> Response:
@@ -264,6 +282,50 @@ class ProposalCommentsView(_EntityCommentListBase):
 
     def _target(self, request: Request, **url_kwargs) -> Any:
         return _load_proposal(self.organization, url_kwargs["proposal_id"])
+
+
+class CFFSubmissionCommentsView(_EntityCommentListBase):
+    """``GET``/``POST`` ``/cff-submissions/<id>/comments/``.
+
+    Internal triage chat scoped to one CFF (Custom Formulation
+    Request) submission — staff discusses how to route the inbound
+    request before it becomes a project. The customer who submitted
+    the CFF never sees this thread; default visibility on
+    :func:`apps.comments.services.create_comment` is ``internal``
+    for ``cff_submission`` targets (the only client-visible
+    defaults are ``specification_sheet`` + ``proposal``).
+
+    Gates on the ``cff_submissions`` module rather than the
+    formulations comments capability — same access axis as the
+    rest of the CFF surface, so commercial roles that triage the
+    intake can also comment without holding the projects module.
+    """
+
+    target_kind = "cff_submission"
+    # Swap the formulations gate the base class assumes for the CFF
+    # one — :class:`HasCFFPermission` checks
+    # ``cff_submissions.view`` against ``view.required_capability``.
+    permission_classes = (HasCFFPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # CFF threads don't (yet) split read vs write at the
+        # capability layer — any member with ``cff_submissions.view``
+        # can both read and post. If a future role needs to be
+        # read-only here, add a ``COMMENT_WRITE`` capability to
+        # :class:`CFFSubmissionsCapability` and split this branch
+        # by ``request.method``.
+        from apps.organizations.modules import CFFSubmissionsCapability
+        self.required_capability = CFFSubmissionsCapability.VIEW
+        # Skip the parent's ``initial`` (which would otherwise
+        # overwrite ``required_capability`` with a formulations
+        # value) and go straight to ``APIView.initial`` so the
+        # permission check fires against our CFF gate.
+        APIView.initial(self, request, *args, **kwargs)
+
+    def _target(self, request: Request, **url_kwargs) -> Any:
+        return _load_cff_submission(
+            self.organization, url_kwargs["submission_id"]
+        )
 
 
 # ---------------------------------------------------------------------------

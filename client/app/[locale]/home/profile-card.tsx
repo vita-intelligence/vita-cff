@@ -1,5 +1,6 @@
 import { ArrowRight, User2 } from "lucide-react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import type { UserDto } from "@/services/accounts/types";
 
@@ -33,7 +34,12 @@ export function ProfileCard({
           </p>
           <p className="mt-1 truncate text-sm text-ink-500">{user.email}</p>
         </div>
-        <ArrowRight className="h-4 w-4 shrink-0 text-ink-400 transition-transform group-hover:translate-x-0.5 group-hover:text-orange-700" />
+        <span className="shrink-0 text-ink-400 transition-transform group-hover:translate-x-0.5 group-hover:text-orange-700">
+          <LinkIconSlot
+            idleIcon={<ArrowRight className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
+        </span>
       </div>
     </Link>
   );

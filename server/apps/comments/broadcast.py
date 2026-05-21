@@ -46,6 +46,8 @@ def group_name_for_comment(comment: Comment) -> str | None:
         return f"comments.specification.{comment.specification_sheet_id}"
     if comment.proposal_id is not None:
         return f"comments.proposal.{comment.proposal_id}"
+    if comment.cff_submission_id is not None:
+        return f"comments.cff_submission.{comment.cff_submission_id}"
     return None
 
 
@@ -70,6 +72,8 @@ def _entity_kind_and_id(comment: Comment) -> tuple[str, str] | None:
         return ("specification", str(comment.specification_sheet_id))
     if comment.proposal_id is not None:
         return ("proposal", str(comment.proposal_id))
+    if comment.cff_submission_id is not None:
+        return ("cff_submission", str(comment.cff_submission_id))
     return None
 
 
@@ -184,6 +188,8 @@ def _fan_out_inbox_message(*, comment: Comment, payload: dict[str, Any]) -> None
     # at import time so circular-import surprises don't bite when the
     # broadcaster is itself imported from services.
     from apps.organizations.modules import (
+        CFF_SUBMISSIONS_MODULE,
+        CFFSubmissionsCapability,
         FORMULATIONS_MODULE,
         FormulationsCapability,
     )
@@ -218,29 +224,43 @@ def _fan_out_inbox_message(*, comment: Comment, payload: dict[str, Any]) -> None
         logger.exception("Failed to load org memberships for inbox fan-out")
         return
 
+    # CFF threads use a different capability axis — commercial /
+    # triage roles often have ``cff_submissions.view`` without
+    # holding the projects view + comments_view pair, and we want
+    # them to receive inbox events for CFF chats they triage.
+    is_cff_thread = entity_kind == "cff_submission"
+
     for membership in memberships:
         user_id = str(membership.user_id)
         if user_id == author_id:
             continue
-        # Audience gate mirrors the inbox REST eligibility check
-        # (see :func:`apps.comments.services._accessible_organizations_for_user`).
-        # Requires BOTH ``view`` (so the user could otherwise reach
-        # the project page) AND ``comments_view`` (so the chat
-        # surface is theirs to see) — without the ``view`` check
-        # the inbox would leak chats from projects the user cannot
-        # otherwise navigate to in the app.
-        if not has_capability(
-            membership,
-            FORMULATIONS_MODULE,
-            FormulationsCapability.VIEW,
-        ):
-            continue
-        if not has_capability(
-            membership,
-            FORMULATIONS_MODULE,
-            FormulationsCapability.COMMENTS_VIEW,
-        ):
-            continue
+        if is_cff_thread:
+            if not has_capability(
+                membership,
+                CFF_SUBMISSIONS_MODULE,
+                CFFSubmissionsCapability.VIEW,
+            ):
+                continue
+        else:
+            # Audience gate mirrors the inbox REST eligibility check
+            # (see :func:`apps.comments.services._accessible_organizations_for_user`).
+            # Requires BOTH ``view`` (so the user could otherwise reach
+            # the project page) AND ``comments_view`` (so the chat
+            # surface is theirs to see) — without the ``view`` check
+            # the inbox would leak chats from projects the user cannot
+            # otherwise navigate to in the app.
+            if not has_capability(
+                membership,
+                FORMULATIONS_MODULE,
+                FormulationsCapability.VIEW,
+            ):
+                continue
+            if not has_capability(
+                membership,
+                FORMULATIONS_MODULE,
+                FormulationsCapability.COMMENTS_VIEW,
+            ):
+                continue
         try:
             async_to_sync(channel_layer.group_send)(
                 inbox_group_name(user_id),
@@ -281,6 +301,9 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
         # routes on this field.
         target_type = "proposal"
         target_id = str(comment.proposal_id)
+    elif comment.cff_submission_id is not None:
+        target_type = "cff_submission"
+        target_id = str(comment.cff_submission_id)
     else:
         target_type = "unknown"
         target_id = None

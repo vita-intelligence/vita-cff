@@ -25,7 +25,7 @@
  *   text + date changes into a single navigation + single query.
  */
 
-import { ListFilter, RotateCcw, Search, Sparkles, X } from "lucide-react";
+import { ListFilter, Loader2, RotateCcw, Search, Sparkles, X } from "lucide-react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import {
@@ -229,9 +229,16 @@ export type ProjectsFiltersHandle = ReturnType<typeof useProjectsFiltersState>;
 export function ProjectsFilterBar({
   orgId,
   filters,
+  isFetching = false,
 }: {
   orgId: string;
   filters: ProjectsFiltersHandle;
+  /** Mirrors :prop:`isFetching` from the parent list query. When
+   *  ``true`` we surface a small spinner inside the search input —
+   *  the user types, hits Apply, then sees the cue while results
+   *  stream in. Without this the bar feels silent on slow
+   *  connections. */
+  isFetching?: boolean;
 }) {
   const t = useTranslations("formulations");
   const tProject = useTranslations("project_overview");
@@ -276,7 +283,17 @@ export function ProjectsFilterBar({
               aria-label={t("search_placeholder")}
               className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
             />
-            {pending.search ? (
+            {/* Either the clear ``X`` (when the user has typed
+                something) OR the in-flight spinner (when the
+                query is still running). They occupy the same
+                right-edge slot so the input geometry never shifts
+                between idle / typing / fetching. */}
+            {isFetching ? (
+              <Loader2
+                aria-hidden
+                className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
+              />
+            ) : pending.search ? (
               <button
                 type="button"
                 onClick={() => filters.setSearch("")}

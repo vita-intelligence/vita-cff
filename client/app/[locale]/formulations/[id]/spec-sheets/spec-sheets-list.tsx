@@ -3,6 +3,7 @@
 import { CheckCircle2, ExternalLink, FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import {
   useFormulationVersions,
@@ -95,7 +96,12 @@ function SpecSheetCard({ sheet }: { sheet: SpecificationSheetDto }) {
       >
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-2">
-            <FileText className="mt-0.5 h-4 w-4 flex-shrink-0 text-ink-400" />
+            <span className="mt-0.5 flex-shrink-0 text-ink-400">
+              <LinkIconSlot
+                idleIcon={<FileText className="h-4 w-4" />}
+                spinnerSizeClassName="h-4 w-4"
+              />
+            </span>
             <div>
               <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {sheet.code || tSpec("untitled")}

@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import type {
   ProductValidationDto,
@@ -97,7 +98,10 @@ function QCCard({
         </div>
         <div className="flex items-center justify-between text-xs text-ink-500">
           <SignatureSummary validation={validation} tV={tV} />
-          <ExternalLink className="h-3 w-3" />
+          <LinkIconSlot
+            idleIcon={<ExternalLink className="h-3 w-3" />}
+            spinnerSizeClassName="h-3 w-3"
+          />
         </div>
       </Link>
     </li>

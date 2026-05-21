@@ -498,6 +498,7 @@ def assign_to_project(
     submission: CFFSubmission,
     project: Formulation,
     actor: Any,
+    can_assign_sales_person: bool = False,
 ) -> CFFSubmission:
     """Attach ``submission`` to ``project``.
 
@@ -505,6 +506,19 @@ def assign_to_project(
     project in a different tenant is a hard error, not best-effort.
     Re-assigning to the same project updates ``assigned_at`` so the
     audit trail reflects the latest decision.
+
+    When ``can_assign_sales_person`` is true AND the project does not
+    already have a sales person, this also runs the same
+    Account-Manager-Email → team-member resolution path that
+    :func:`create_project_from_cff` does, so attaching a CFF to a
+    bare project carries the customer-typed sales lead onto the
+    project automatically. The empty-slot guard is deliberate: a
+    deliberate manual assignment on the project must not be
+    silently overwritten by a later CFF attach. Callers that do
+    their own sales-person resolution downstream (notably
+    :func:`create_project_from_cff`, which always resolves on the
+    fresh project) keep this disabled so the two paths don't
+    double-assign.
     """
 
     if project.organization_id != submission.organization_id:
@@ -518,6 +532,44 @@ def assign_to_project(
     submission.save(
         update_fields=("project", "assigned_by", "assigned_at", "last_synced_at"),
     )
+
+    # Empty-slot auto-assign. ``sales_person_id`` is read off the
+    # already-loaded project row so we don't refetch — the value is
+    # accurate as of the start of this atomic block, which is
+    # exactly the moment that should arbitrate "is anyone already
+    # on this project". Capability check on the actor is performed
+    # by :func:`assign_sales_person` itself (raises
+    # ``SalesPersonNotMember`` if the resolved user isn't a member,
+    # which we treat as "no match" and proceed).
+    if can_assign_sales_person and project.sales_person_id is None:
+        # Lazy import — same justification as
+        # :func:`create_project_from_cff`. The formulations service
+        # pulls a wide dep graph that cff-side unit tests
+        # deliberately don't load.
+        from apps.formulations.services import (
+            SalesPersonNotMember,
+            assign_sales_person,
+        )
+
+        sales_email = _extract_sales_person_email(submission)
+        if sales_email:
+            resolved_user = _resolve_sales_person(
+                organization=submission.organization,
+                email=sales_email,
+            )
+            if resolved_user is not None:
+                try:
+                    assign_sales_person(
+                        formulation=project,
+                        sales_person=resolved_user,
+                        actor=actor,
+                    )
+                except SalesPersonNotMember:
+                    # Belt-and-braces against a TOCTOU between the
+                    # membership lookup and the assign call. Treat
+                    # as "no match" — the attach still succeeded.
+                    pass
+
     return submission
 
 

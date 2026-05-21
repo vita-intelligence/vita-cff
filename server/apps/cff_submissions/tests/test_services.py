@@ -333,6 +333,129 @@ class TestAssignment:
         # Detach is itself an audited write — last actor wins.
         assert submission.assigned_by_id == second_actor.id
 
+    def test_attach_auto_assigns_sales_person_when_project_has_none(
+        self, db,
+    ):
+        # The Account Manager Email on the CFF must flow onto an
+        # existing bare project on attach — same behaviour as the
+        # "Create project from CFF" path, but for the
+        # "Assign to existing project" trigger.
+        org = OrganizationFactory()
+        actor = org.created_by
+        sales_rep = UserFactory(email="rep@vita.test")
+        Membership.objects.create(user=sales_rep, organization=org)
+
+        project = FormulationFactory(organization=org)
+        # Pre-condition: the project has no sales person — this is the
+        # "empty slot" case the auto-assign should fill.
+        assert project.sales_person_id is None
+
+        submission = _make_submission_row(
+            org=org,
+            extra_fields={
+                "vita_manufacture_account_manager_email": "rep@vita.test",
+            },
+        )
+
+        assign_to_project(
+            submission=submission,
+            project=project,
+            actor=actor,
+            can_assign_sales_person=True,
+        )
+        project.refresh_from_db()
+        submission.refresh_from_db()
+
+        assert project.sales_person_id == sales_rep.id
+        assert submission.project_id == project.id
+
+    def test_attach_does_not_overwrite_existing_sales_person(self, db):
+        # Empty-slot guard: a CFF re-attached to a project that
+        # already has someone on it must NOT silently take it over.
+        # Manual assignment wins; the CFF's Account Manager Email is
+        # only ever a fallback for the empty case.
+        org = OrganizationFactory()
+        actor = org.created_by
+        original_rep = UserFactory(email="original@vita.test")
+        cff_rep = UserFactory(email="cff@vita.test")
+        Membership.objects.create(user=original_rep, organization=org)
+        Membership.objects.create(user=cff_rep, organization=org)
+
+        project = FormulationFactory(
+            organization=org, sales_person=original_rep,
+        )
+        submission = _make_submission_row(
+            org=org,
+            extra_fields={
+                "vita_manufacture_account_manager_email": "cff@vita.test",
+            },
+        )
+
+        assign_to_project(
+            submission=submission,
+            project=project,
+            actor=actor,
+            can_assign_sales_person=True,
+        )
+        project.refresh_from_db()
+
+        # The original assignment survives — the CFF is the
+        # secondary signal here, not the source of truth.
+        assert project.sales_person_id == original_rep.id
+
+    def test_attach_no_member_match_leaves_sales_person_empty(self, db):
+        # The customer typed an email that doesn't belong to any team
+        # member — attach still succeeds, project stays bare, the
+        # triager can assign by hand. We avoid raising here because
+        # the customer's typo shouldn't break the workflow.
+        org = OrganizationFactory()
+        actor = org.created_by
+        project = FormulationFactory(organization=org)
+
+        submission = _make_submission_row(
+            org=org,
+            extra_fields={
+                "vita_manufacture_account_manager_email": "nobody@vita.test",
+            },
+        )
+
+        assign_to_project(
+            submission=submission,
+            project=project,
+            actor=actor,
+            can_assign_sales_person=True,
+        )
+        project.refresh_from_db()
+
+        assert project.sales_person_id is None
+
+    def test_attach_does_not_auto_assign_when_flag_is_default(self, db):
+        # ``can_assign_sales_person`` defaults to False so the
+        # internal call from :func:`create_project_from_cff` (which
+        # runs its own sales-person resolution on a freshly-created
+        # project) doesn't double-assign. Direct callers that don't
+        # opt in keep the legacy "attach only" behaviour.
+        org = OrganizationFactory()
+        actor = org.created_by
+        sales_rep = UserFactory(email="rep@vita.test")
+        Membership.objects.create(user=sales_rep, organization=org)
+
+        project = FormulationFactory(organization=org)
+        submission = _make_submission_row(
+            org=org,
+            extra_fields={
+                "vita_manufacture_account_manager_email": "rep@vita.test",
+            },
+        )
+
+        # No ``can_assign_sales_person`` arg — defaults to False.
+        assign_to_project(
+            submission=submission, project=project, actor=actor,
+        )
+        project.refresh_from_db()
+
+        assert project.sales_person_id is None
+
 
 # ---------------------------------------------------------------------------
 # Create project from CFF (sales-person auto-assignment)

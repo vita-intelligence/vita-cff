@@ -16,6 +16,7 @@ export {
   cffQueryKeys,
   useAssignCFFToProject,
   useCFFFieldLabels,
+  useCFFSubmission,
   useCFFSyncStatus,
   useClearWixCFFConfig,
   useCreateProjectFromCFF,

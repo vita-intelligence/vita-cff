@@ -21,6 +21,7 @@
 import {
   Calendar,
   ListFilter,
+  Loader2,
   RotateCcw,
   Search,
   Sparkles,
@@ -230,9 +231,14 @@ export type ProposalsFiltersHandle = ReturnType<typeof useProposalsFiltersState>
 export function ProposalsFilterBar({
   orgId,
   filters,
+  isFetching = false,
 }: {
   orgId: string;
   filters: ProposalsFiltersHandle;
+  /** Forwarded from the parent's list query so the search input
+   *  shows a spinner while results are in flight. Mirrors the
+   *  projects filter bar's contract. */
+  isFetching?: boolean;
 }) {
   const t = useTranslations("proposals");
   // Reuse the project filter copy where it makes sense (sales
@@ -273,7 +279,16 @@ export function ProposalsFilterBar({
               aria-label={t("filters.search_placeholder")}
               className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
             />
-            {pending.search ? (
+            {/* Right-edge slot: in-flight spinner takes priority
+                over the clear ``X`` so the input geometry stays
+                stable through every "user typing → fetching →
+                idle" cycle. */}
+            {isFetching ? (
+              <Loader2
+                aria-hidden
+                className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
+              />
+            ) : pending.search ? (
               <button
                 type="button"
                 onClick={() => filters.setSearch("")}

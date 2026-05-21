@@ -181,8 +181,13 @@ export interface EntityKey {
   // Mirrors :type:`CommentEntityKind` in ``../comments/api.ts`` —
   // every supported polymorphic target on the backend (proposals
   // joined the set when the customer-portal "about this proposal"
-  // chat surface shipped).
-  readonly kind: "formulation" | "specification" | "proposal";
+  // chat surface shipped; cff_submission joined when the staff
+  // CFF detail page added internal-triage comments).
+  readonly kind:
+    | "formulation"
+    | "specification"
+    | "proposal"
+    | "cff_submission";
   readonly entityId: string;
 }
 

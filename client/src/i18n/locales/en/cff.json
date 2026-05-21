@@ -48,7 +48,17 @@
     "section_attachments": "Attachments",
     "section_other": "Other responses",
     "section_meta": "Source data",
+    "section_responses": "Customer responses",
     "no_fields": "No fields captured.",
+    "no_responses": "The customer did not fill in any fields.",
+    "loading": "Loading CFF…",
+    "load_failed": "Couldn't load this CFF. It may have been deleted, or you may not have access.",
+    "back_to_inbox": "Back to CFF inbox",
+    "open_full_page": "Open full page",
+    "dock_title": "Discussion",
+    "dock_subtitle": "Internal — visible to the Vita NPD team only",
+    "dock_open": "Open",
+    "dock_close": "Close",
     "resize_handle": "Resize CFF window"
   },
   "assign": {

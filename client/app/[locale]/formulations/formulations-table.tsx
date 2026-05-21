@@ -15,6 +15,7 @@ import {
   ArrowUpDown,
   CheckCircle2,
   FlaskConical,
+  Loader2,
   PlayCircle,
   Plus,
   Search,
@@ -62,6 +63,13 @@ export function FormulationsTable({
   const tProject = useTranslations("project_overview");
   const tCommon = useTranslations("common");
   const router = useRouter();
+  //: Tracks which row the operator just clicked so the table can
+  //: light up a spinner on THAT row while ``router.push`` resolves.
+  //: Without this the operator clicks, sees nothing for ~500ms,
+  //: and clicks again — the second click is silently swallowed by
+  //: the in-flight navigation and the row feels broken. Cleared
+  //: automatically when this component unmounts on navigation.
+  const [pendingRowId, setPendingRowId] = useState<string | null>(null);
 
   const [sorting, setSorting] = useState<SortingState>([
     { id: "updated_at", desc: true },
@@ -222,7 +230,11 @@ export function FormulationsTable({
   const headerGroups = table.getHeaderGroups();
 
   const filterBar = (
-    <ProjectsFilterBar orgId={orgId} filters={filters} />
+    <ProjectsFilterBar
+      orgId={orgId}
+      filters={filters}
+      isFetching={isFetching}
+    />
   );
 
   if (!isFetching && rows.length === 0) {
@@ -329,26 +341,61 @@ export function FormulationsTable({
               ) : null}
               {virtualRows.map((virtualRow) => {
                 const row = rows[virtualRow.index]!;
+                const isPending = pendingRowId === row.id;
                 return (
                   <tr
                     key={row.id}
-                    onClick={() =>
-                      router.push(`/formulations/${row.original.id}`)
-                    }
-                    className="cursor-pointer border-b border-ink-100 transition-colors hover:bg-ink-50"
+                    onClick={() => {
+                      // Acknowledge the click instantly so the row
+                      // shows a spinner while ``router.push``
+                      // resolves the next segment. Block re-clicks
+                      // on a row that's already navigating so a
+                      // double-tap doesn't spawn a queued
+                      // second navigation.
+                      if (pendingRowId !== null) return;
+                      setPendingRowId(row.id);
+                      router.push(`/formulations/${row.original.id}`);
+                    }}
+                    aria-busy={isPending}
+                    className={`cursor-pointer border-b border-ink-100 transition-colors hover:bg-ink-50 ${
+                      isPending ? "bg-ink-50" : ""
+                    }`}
                   >
-                    {row.getVisibleCells().map((cell) => {
+                    {row.getVisibleCells().map((cell, cellIndex) => {
                       const align =
                         (cell.column.columnDef.meta as
                           | { align?: "start" | "end" }
                           | undefined)?.align === "end"
                           ? "text-right"
                           : "text-left";
+                      // Inject the pending spinner inline with the
+                      // first column's content. Layout-stable: the
+                      // spinner slot is always rendered (just
+                      // ``opacity-0`` when idle) so the row's
+                      // geometry never shifts while waiting.
+                      const isFirstCell = cellIndex === 0;
                       return (
                         <td key={cell.id} className={`px-5 py-4 ${align}`}>
-                          {flexRender(
-                            cell.column.columnDef.cell,
-                            cell.getContext(),
+                          {isFirstCell ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2
+                                aria-hidden
+                                className={`h-3.5 w-3.5 shrink-0 animate-spin text-orange-500 transition-opacity ${
+                                  isPending ? "opacity-100" : "opacity-0"
+                                }`}
+                              />
+                              <div className="min-w-0 flex-1">
+                                {flexRender(
+                                  cell.column.columnDef.cell,
+                                  cell.getContext(),
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            flexRender(
+                              cell.column.columnDef.cell,
+                              cell.getContext(),
+                            )
                           )}
                         </td>
                       );

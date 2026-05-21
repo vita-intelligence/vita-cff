@@ -1,5 +1,6 @@
 import { ArrowRight, Building2 } from "lucide-react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Chip } from "@/components/ui/chip";
 import { Link } from "@/i18n/navigation";
 import type { OrganizationDto } from "@/services/organizations/types";
@@ -42,7 +43,12 @@ export function OrganizationCard({
         <p className="text-xl font-semibold tracking-tight text-ink-1000 sm:text-2xl">
           {organization.name}
         </p>
-        <ArrowRight className="h-4 w-4 shrink-0 text-ink-400 transition-transform group-hover:translate-x-0.5 group-hover:text-orange-700" />
+        <span className="shrink-0 text-ink-400 transition-transform group-hover:translate-x-0.5 group-hover:text-orange-700">
+          <LinkIconSlot
+            idleIcon={<ArrowRight className="h-4 w-4" />}
+            spinnerSizeClassName="h-4 w-4"
+          />
+        </span>
       </div>
     </Link>
   );

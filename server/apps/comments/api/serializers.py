@@ -86,6 +86,10 @@ class CommentReadSerializer(serializers.ModelSerializer):
             return "formulation"
         if obj.specification_sheet_id is not None:
             return "specification"
+        if obj.proposal_id is not None:
+            return "proposal"
+        if obj.cff_submission_id is not None:
+            return "cff_submission"
         return "unknown"
 
     def get_target_id(self, obj: Comment) -> str | None:
@@ -93,6 +97,10 @@ class CommentReadSerializer(serializers.ModelSerializer):
             return str(obj.formulation_id)
         if obj.specification_sheet_id is not None:
             return str(obj.specification_sheet_id)
+        if obj.proposal_id is not None:
+            return str(obj.proposal_id)
+        if obj.cff_submission_id is not None:
+            return str(obj.cff_submission_id)
         return None
 
     def get_author(self, obj: Comment) -> dict:

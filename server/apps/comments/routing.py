@@ -31,7 +31,7 @@ websocket_urlpatterns = [
     # ``entity_kind=proposal`` lands on the right consumer.
     re_path(
         r"^ws/org/(?P<org_id>[0-9a-fA-F-]{36})/"
-        r"(?P<entity_kind>formulation|specification|proposal)/"
+        r"(?P<entity_kind>formulation|specification|proposal|cff_submission)/"
         r"(?P<entity_id>[0-9a-fA-F-]{36})/?$",
         CommentConsumer.as_asgi(),
         name="ws-comments-entity",

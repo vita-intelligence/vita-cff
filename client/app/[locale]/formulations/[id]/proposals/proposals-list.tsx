@@ -12,6 +12,7 @@ import { useEffect, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
 
+import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
@@ -193,7 +194,10 @@ function ProposalRow({
           href={`/proposals/${proposal.id}`}
           className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          <ExternalLink className="h-3.5 w-3.5" />
+          <LinkIconSlot
+            idleIcon={<ExternalLink className="h-3.5 w-3.5" />}
+            spinnerSizeClassName="h-3.5 w-3.5"
+          />
           {tProposals("list.view")}
         </Link>
         {canDelete ? (

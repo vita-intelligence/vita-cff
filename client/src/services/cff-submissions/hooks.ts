@@ -25,6 +25,7 @@ import {
   clearWixCFFConfig,
   createProjectFromCFF,
   fetchCFFFieldLabels,
+  fetchCFFSubmission,
   fetchCFFSubmissionsPage,
   fetchCFFSyncStatus,
   fetchWixCFFConfig,
@@ -65,6 +66,8 @@ export const cffQueryKeys = {
         pageSize: filters.pageSize ?? null,
       },
     ] as const,
+  detail: (orgId: string, submissionId: string) =>
+    [...cffQueryKeys.all, orgId, "detail", submissionId] as const,
   fieldLabels: (orgId: string) =>
     [...cffQueryKeys.all, orgId, "field-labels"] as const,
   config: (orgId: string) =>
@@ -136,6 +139,26 @@ export function useInfiniteCFFSubmissions(
     getPreviousPageParam: (first) => first.previous,
     enabled: args.enabled ?? true,
     refetchOnWindowFocus: true,
+  });
+}
+
+
+/**
+ * Single-CFF fetch — backs the standalone ``/cff/[id]`` detail
+ * page. Reuses the same row shape as the inbox list so cache
+ * pre-population (when the user opens the page from the inbox)
+ * paints with the cached row instantly while the network request
+ * refreshes in the background.
+ */
+export function useCFFSubmission(
+  orgId: string,
+  submissionId: string,
+  options: { readonly enabled?: boolean } = {},
+): UseQueryResult<CFFSubmissionDto, ApiError> {
+  return useQuery<CFFSubmissionDto, ApiError>({
+    queryKey: cffQueryKeys.detail(orgId, submissionId),
+    queryFn: () => fetchCFFSubmission(orgId, submissionId),
+    enabled: (options.enabled ?? true) && Boolean(orgId && submissionId),
   });
 }
 
