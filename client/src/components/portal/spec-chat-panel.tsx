@@ -27,21 +27,57 @@ import {
 } from "@/services/portal/api";
 import { apiClient } from "@/lib/api";
 import type { PortalMessageDto } from "@/services/portal/types";
+import {
+  openPortalCommentsSocket,
+  type PortalSocketHandle,
+} from "@/services/portal/ws-client";
+import { usePortalToastStore } from "@/components/portal/portal-toast-store";
 
 
+//: Polling is the safety net behind the WebSocket — corporate
+//: proxies and some VPN clients drop the WS upgrade, so we keep a
+//: long-interval poll as a fallback. On a healthy connection the
+//: WS branch beats the poll every time.
 const POLL_MS = 30_000;
 
+//: Self-clearing TTL for the peer typing indicator. Mirrors the
+//: proposal chat panel + the staff presence store's stale-typist
+//: drop window.
+const TYPING_TTL_MS = 4_000;
 
-export function SpecChatPanel({ sheetId }: { sheetId: string }) {
+
+export function SpecChatPanel({
+  sheetId,
+  sheetCode,
+}: {
+  sheetId: string;
+  /** Display label used as the toast's subject row (e.g. "SPEC-0042").
+   *  Falls back to a short id slice when omitted so the toast still
+   *  carries some context — the deep link uses the id either way. */
+  sheetCode?: string;
+}) {
   const [messages, setMessages] = useState<PortalMessageDto[] | null>(null);
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState<PortalMessageDto | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  //: Peer typing indicator — name of whoever is actively typing,
+  //: or ``null`` to hide the row. WS-driven via the portal comments
+  //: socket; the staff inline panel emits ``typing.start`` /
+  //: ``typing.stop`` into the shared group.
+  const [typingPeerName, setTypingPeerName] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const refMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevCountRef = useRef(0);
+  //: WS handle + typing-side timers, same shape as the proposal
+  //: chat panel. The factory ref-counts on (kind, entityId), so a
+  //: sibling component mounted on the same spec page would share
+  //: this socket rather than open a duplicate.
+  const socketRef = useRef<PortalSocketHandle | null>(null);
+  const typingTimerRef = useRef<number | null>(null);
+  const sendStopTimerRef = useRef<number | null>(null);
+  const typingActiveRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -90,6 +126,123 @@ export function SpecChatPanel({ sheetId }: { sheetId: string }) {
     return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [load]);
 
+  // Toast store push — fires from the WS handler on every incoming
+  // ``comment.created`` so the customer sees a top-right brutalist
+  // card alongside the chat refresh. Author masked as "Vita team"
+  // to match the in-thread bubble + bell preview voice.
+  const pushToast = usePortalToastStore((s) => s.pushToast);
+
+  // WS layer — joins ``comments.specification.<sheetId>`` (same
+  // group the staff inline comments panel uses). Live comment.*
+  // broadcasts trigger an immediate reload, and peer typing events
+  // drive the "Vita team is typing…" indicator.
+  useEffect(() => {
+    const handle = openPortalCommentsSocket("specification", sheetId, {
+      onCommentEvent: (kind, payload) => {
+        if (
+          kind === "created" ||
+          kind === "updated" ||
+          kind === "deleted"
+        ) {
+          void load();
+        }
+        // Toast only on ``created`` — updates / deletes are silent
+        // corrections and don't warrant a "new message" pop.
+        if (kind !== "created") return;
+        const p = (payload ?? {}) as {
+          body?: string;
+          author?: { kind?: string; name?: string };
+        };
+        // Temporary diagnostic — mirrors the proposal chat panel
+        // so a browser-console trace captures both threads while
+        // we verify the toast pipeline end-to-end.
+        if (typeof console !== "undefined") {
+          console.debug(
+            "[portal-toast] spec candidate",
+            { authorKind: p.author?.kind, hasBody: Boolean(p.body) },
+          );
+        }
+        // Skip non-staff posts — the customer's own message and
+        // kiosk guest replies shouldn't surface as "new staff
+        // message" notifications.
+        if (p.author?.kind !== "member") return;
+        const body = (p.body ?? "").trim();
+        const preview = body.length > 140 ? `${body.slice(0, 137)}…` : body;
+        if (typeof console !== "undefined") {
+          console.debug("[portal-toast] spec push", { preview });
+        }
+        pushToast({
+          kind: "specification",
+          entityId: sheetId,
+          entityTitle: sheetCode || sheetId.slice(0, 8),
+          authorName: "Vita team",
+          bodyPreview: preview,
+        });
+      },
+      onPeerTypingStart: (viewer) => {
+        setTypingPeerName(viewer.name || "Vita team");
+        if (typingTimerRef.current !== null) {
+          window.clearTimeout(typingTimerRef.current);
+        }
+        typingTimerRef.current = window.setTimeout(() => {
+          setTypingPeerName(null);
+          typingTimerRef.current = null;
+        }, TYPING_TTL_MS);
+      },
+      onPeerTypingStop: () => {
+        if (typingTimerRef.current !== null) {
+          window.clearTimeout(typingTimerRef.current);
+          typingTimerRef.current = null;
+        }
+        setTypingPeerName(null);
+      },
+    });
+    socketRef.current = handle;
+    return () => {
+      handle.release();
+      socketRef.current = null;
+      if (typingTimerRef.current !== null) {
+        window.clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      if (sendStopTimerRef.current !== null) {
+        window.clearTimeout(sendStopTimerRef.current);
+        sendStopTimerRef.current = null;
+      }
+    };
+  }, [sheetId, sheetCode, load, pushToast]);
+
+  // Outbound typing helpers — edge-triggered ``typing.start`` on
+  // the first keystroke after idle, debounced ``typing.stop`` after
+  // 2s of silence or when the send completes.
+  const announceTyping = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    if (!typingActiveRef.current) {
+      socket.sendTyping(true);
+      typingActiveRef.current = true;
+    }
+    if (sendStopTimerRef.current !== null) {
+      window.clearTimeout(sendStopTimerRef.current);
+    }
+    sendStopTimerRef.current = window.setTimeout(() => {
+      socket.sendTyping(false);
+      typingActiveRef.current = false;
+      sendStopTimerRef.current = null;
+    }, 2_000);
+  }, []);
+
+  const clearOwnTyping = useCallback(() => {
+    if (sendStopTimerRef.current !== null) {
+      window.clearTimeout(sendStopTimerRef.current);
+      sendStopTimerRef.current = null;
+    }
+    if (typingActiveRef.current) {
+      socketRef.current?.sendTyping(false);
+      typingActiveRef.current = false;
+    }
+  }, []);
+
   // Title-bar pulse on new staff message while tab is hidden.
   useEffect(() => {
     if (typeof document === "undefined" || !messages) return;
@@ -127,6 +280,10 @@ export function SpecChatPanel({ sheetId }: { sheetId: string }) {
     if (!body) return;
     setSending(true);
     setError(null);
+    // Cancel any pending ``typing.stop`` and send one immediately —
+    // staff side should not see "Customer is typing…" after the
+    // message is actually on the wire.
+    clearOwnTyping();
     try {
       await postSpecMessage(sheetId, body, replyTo?.id ?? null);
       setDraft("");
@@ -211,6 +368,16 @@ export function SpecChatPanel({ sheetId }: { sheetId: string }) {
         )}
       </div>
 
+      {/* Live typing indicator — same shape + behaviour as the
+          proposal chat panel. Renders only while a peer is actively
+          typing; collapses otherwise so the chat height stays
+          steady. */}
+      {typingPeerName ? (
+        <div className="border-t-2 border-black bg-paper px-5 py-2 text-[11px] uppercase tracking-[0.2em] text-neutral-700">
+          {typingPeerName} is typing…
+        </div>
+      ) : null}
+
       <ErrorBanner>{error}</ErrorBanner>
 
       <form onSubmit={send} className="border-t-2 border-black p-4">
@@ -237,7 +404,18 @@ export function SpecChatPanel({ sheetId }: { sheetId: string }) {
         <PortalTextarea
           name="compose"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            // Edge-trigger typing pings — start on first keystroke,
+            // debounce a stop after 2s of silence. The helper
+            // dedups against ``typingActiveRef`` so we don't
+            // re-emit ``typing.start`` per character.
+            if (e.target.value.length > 0) {
+              announceTyping();
+            } else {
+              clearOwnTyping();
+            }
+          }}
           rows={2}
           placeholder={replyTo ? "Type your reply…" : "Write a message…"}
         />

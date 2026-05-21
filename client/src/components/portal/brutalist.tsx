@@ -24,6 +24,7 @@
 import { CheckCircle2, ChevronLeft } from "lucide-react";
 
 import { PortalInboxBell } from "@/components/portal/portal-inbox-bell";
+import { PortalToastStack } from "@/components/portal/portal-toast-stack";
 
 import type {
   AnchorHTMLAttributes,
@@ -138,6 +139,12 @@ export function PortalShell({
         </div>
       </header>
       <main className="mx-auto max-w-6xl px-6 py-10">{children}</main>
+      {/* Global top-right toast stack — mounted at shell level so an
+          incoming WS event surfaces regardless of which portal page
+          the customer is on. Per-thread WSes (proposal / spec chat
+          panels) push into the store; the stack renders them with
+          the brutalist card treatment + auto-dismiss timer. */}
+      <PortalToastStack />
       <footer className="mt-16 border-t-2 border-black">
         <div className="mx-auto flex max-w-6xl flex-col justify-between gap-3 px-6 py-6 text-[11px] uppercase tracking-[0.2em] text-neutral-700 sm:flex-row">
           <span>Vita Manufacture · vitamanufacture.co.uk</span>

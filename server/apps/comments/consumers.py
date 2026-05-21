@@ -563,6 +563,291 @@ class PublicCommentConsumer(AsyncJsonWebsocketConsumer):
 
 
 # ---------------------------------------------------------------------------
+# Portal consumer — connects via the ``vita_portal_access`` cookie
+# (resolved to a :class:`ClientAccount` by the middleware), joins the
+# SAME ``comments.<kind>.<entity_id>`` group as the authed staff
+# consumer so the two sides see each other's presence + typing + new
+# comments live. Mirrors :class:`PublicCommentConsumer` (kiosk variant)
+# in shape; differs only in the auth path and the
+# entity-belongs-to-customer authorisation gate.
+# ---------------------------------------------------------------------------
+
+
+class PortalCommentConsumer(AsyncJsonWebsocketConsumer):
+    """Customer-side variant of :class:`CommentConsumer`.
+
+    URL pattern (see :mod:`apps.comments.routing`)::
+
+        ws/portal/<entity_kind>/<entity_id>/
+
+    ``entity_kind`` is ``proposal`` or ``specification``. Formulations
+    are intentionally excluded — the portal never exposes the
+    recipe-level workspace, and the catalogues live behind staff-only
+    capabilities. The customer's :class:`ClientAccount` (resolved by
+    the middleware) is the auth identity; their ``customer_id`` scopes
+    every entity check.
+
+    Joins ``comments.<kind>.<entity_id>`` — the exact same group the
+    staff :class:`CommentConsumer` joins for that entity. So staff
+    presence ("Sarah is viewing") and typing pings ("Sarah is
+    typing…") fan out to the portal viewer, and the customer's
+    presence + typing land on the staff side too.
+    """
+
+    async def connect(self) -> None:
+        client_account = self.scope.get("client_account")
+        if client_account is None or not getattr(
+            client_account, "is_active", False
+        ):
+            await self.close(code=CLOSE_UNAUTHENTICATED)
+            return
+
+        kwargs = self.scope["url_route"]["kwargs"]
+        kind: str = kwargs.get("entity_kind", "")
+        # Portal customers never see formulation-level threads — those
+        # are the scientist's workspace. Restricting kind here means a
+        # crafted URL pointing at ``formulation`` closes with
+        # ``CLOSE_BAD_TARGET`` rather than running the proposal /
+        # spec authorisation gate against a row it does not match.
+        if kind not in {"proposal", "specification"}:
+            await self.close(code=CLOSE_BAD_TARGET)
+            return
+
+        entity_id = kwargs.get("entity_id")
+        if not _looks_like_uuid(entity_id):
+            await self.close(code=CLOSE_BAD_TARGET)
+            return
+
+        verdict, viewer = await _authorise_portal(
+            client_account, kind, str(entity_id)
+        )
+        if verdict == "unauthenticated":
+            await self.close(code=CLOSE_UNAUTHENTICATED)
+            return
+        if verdict == "missing":
+            # Includes the "entity exists but belongs to a different
+            # customer" case. Same close code as a genuinely unknown
+            # id so the response shape carries no information about
+            # whether the row exists in a tenant the caller cannot
+            # see.
+            await self.close(code=CLOSE_BAD_TARGET)
+            return
+        # ``verdict == "ok"`` — fall through. ``viewer`` is the
+        # pre-baked snapshot from the sync helper; building it inside
+        # ``connect`` would dereference ``client_account.customer``
+        # from the async context and raise ``SynchronousOnlyOperation``.
+
+        self.group_name = f"comments.{kind}.{entity_id}"
+        self.entity_kind = kind
+        self.entity_id = str(entity_id)
+        self.viewer = viewer
+        self.client_account_id = str(client_account.id)
+
+        await self.channel_layer.group_add(self.group_name, self.channel_name)
+        await self.accept()
+
+        # Same peer-driven presence dance as the staff + kiosk
+        # consumers. Announce ourselves, then ask existing watchers
+        # to re-announce so the customer sees the full roster.
+        await self.channel_layer.group_send(
+            self.group_name,
+            {"type": "presence.joined", "viewer": self.viewer},
+        )
+        await self.channel_layer.group_send(
+            self.group_name,
+            {
+                "type": "presence.roster_request",
+                "requester_channel": self.channel_name,
+            },
+        )
+
+    async def disconnect(self, code: int) -> None:  # type: ignore[override]
+        group = getattr(self, "group_name", None)
+        if group:
+            viewer = getattr(self, "viewer", None)
+            if viewer is not None:
+                await self.channel_layer.group_send(
+                    group,
+                    {"type": "presence.left", "viewer": viewer},
+                )
+            await self.channel_layer.group_discard(group, self.channel_name)
+
+    async def receive_json(self, content: Any, **kwargs: Any) -> None:  # type: ignore[override]
+        if not isinstance(content, dict):
+            return
+        message_type = content.get("type")
+        if message_type == "ping":
+            await self.send_json({"type": "pong"})
+            return
+        if message_type == "typing.start":
+            await self.channel_layer.group_send(
+                self.group_name,
+                {"type": "typing.started", "viewer": self.viewer},
+            )
+            return
+        if message_type == "typing.stop":
+            await self.channel_layer.group_send(
+                self.group_name,
+                {"type": "typing.stopped", "viewer": self.viewer},
+            )
+            return
+        # Unknown topics: silently drop. Same posture as the staff +
+        # kiosk consumers — a buggy / malicious client should not be
+        # able to hammer the consumer with malformed events.
+
+    # ---- Server → client broadcasts. Bodies duplicate
+    # :class:`CommentConsumer` / :class:`PublicCommentConsumer`
+    # rather than share via a mixin: the three connect contracts
+    # differ enough that the indirection costs more than the
+    # duplication while the handler list stays small.
+
+    async def presence_joined(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "presence.joined", "viewer": event.get("viewer", {})}
+        )
+
+    async def presence_left(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "presence.left", "viewer": event.get("viewer", {})}
+        )
+
+    async def presence_roster_request(self, event: dict) -> None:
+        if event.get("requester_channel") == self.channel_name:
+            return
+        await self.channel_layer.group_send(
+            self.group_name,
+            {"type": "presence.joined", "viewer": self.viewer},
+        )
+
+    async def typing_started(self, event: dict) -> None:
+        viewer = event.get("viewer", {})
+        if viewer.get("id") == self.viewer.get("id"):
+            return
+        await self.send_json({"type": "typing.start", "viewer": viewer})
+
+    async def typing_stopped(self, event: dict) -> None:
+        viewer = event.get("viewer", {})
+        if viewer.get("id") == self.viewer.get("id"):
+            return
+        await self.send_json({"type": "typing.stop", "viewer": viewer})
+
+    async def comment_created(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "comment.created", "payload": event.get("payload", {})}
+        )
+
+    async def comment_updated(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "comment.updated", "payload": event.get("payload", {})}
+        )
+
+    async def comment_deleted(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "comment.deleted", "payload": event.get("payload", {})}
+        )
+
+    async def comment_resolved(self, event: dict) -> None:
+        await self.send_json(
+            {"type": "comment.resolved", "payload": event.get("payload", {})}
+        )
+
+
+@database_sync_to_async
+def _authorise_portal(
+    client_account, kind: str, entity_id: str
+) -> tuple[str, dict[str, Any] | None]:
+    """Confirm the entity belongs to one of the customer's proposals
+    AND build the viewer snapshot the consumer broadcasts on connect.
+
+    Returns ``(verdict, viewer)`` where ``verdict`` is one of:
+
+    * ``"ok"`` — caller may join the group. ``viewer`` is the
+      pre-baked snapshot the consumer uses for every presence /
+      typing broadcast, built here so the ``customer`` FK
+      dereference runs inside this sync hop rather than from
+      ``connect``'s async context (which would raise
+      ``SynchronousOnlyOperation``).
+    * ``"missing"`` — entity unknown OR belongs to a different
+      customer (one shared verdict keeps the response uninformative
+      about which case applies).
+    * ``"unauthenticated"`` — the :class:`ClientAccount` is somehow
+      not active or has no parent customer.
+
+    ``viewer`` is ``None`` for every non-ok verdict.
+    """
+
+    if not getattr(client_account, "is_active", False):
+        return ("unauthenticated", None)
+    customer_id = getattr(client_account, "customer_id", None)
+    if not customer_id:
+        return ("unauthenticated", None)
+
+    from apps.proposals.models import Proposal, ProposalLine
+
+    if kind == "proposal":
+        exists = Proposal.objects.filter(
+            customer_id=customer_id, id=entity_id
+        ).exists()
+        if not exists:
+            return ("missing", None)
+        return ("ok", _portal_viewer_snapshot(client_account))
+
+    if kind == "specification":
+        # Mirrors :func:`_gather_spec_threads` (inbox view) — a spec
+        # can be reached by the portal customer through one of two
+        # paths:
+        #   * Legacy 1-to-1 attachment via ``Proposal.specification_sheet``;
+        #   * Modern per-line attachment via ``ProposalLine.specification_sheet``.
+        # Either match grants access. Both checks scope by the
+        # customer's id so a guessed sheet UUID does not leak across
+        # tenants.
+        if Proposal.objects.filter(
+            customer_id=customer_id, specification_sheet_id=entity_id
+        ).exists():
+            return ("ok", _portal_viewer_snapshot(client_account))
+        if ProposalLine.objects.filter(
+            proposal__customer_id=customer_id,
+            specification_sheet_id=entity_id,
+        ).exists():
+            return ("ok", _portal_viewer_snapshot(client_account))
+        return ("missing", None)
+
+    return ("missing", None)
+
+
+def _portal_viewer_snapshot(account) -> dict[str, Any]:
+    """Shape the viewer identity payload that presence + typing
+    broadcasts carry from the portal side.
+
+    Uses a ``client:<uuid>`` id prefix (parallel to the kiosk
+    consumer's ``guest:<uuid>``) so the FE presence store can render
+    a "Customer" badge / different tint without inspecting the rest
+    of the payload. Name resolution mirrors the staff inbox + chat
+    panels: ``customer.company`` first, then ``customer.name``, then
+    the account email, then a generic fallback. No email is exposed
+    to peers — keeps the payload to the same minimal shape the staff
+    snapshot uses.
+
+    Must be invoked from a sync context: ``account.customer`` is a
+    lazy FK and dereferencing it from the async event loop raises
+    ``SynchronousOnlyOperation``. :func:`_authorise_portal` is the
+    one wrapper that calls this.
+    """
+
+    customer = getattr(account, "customer", None)
+    name = ""
+    if customer is not None:
+        name = (customer.company or "").strip() or (customer.name or "").strip()
+    if not name:
+        name = (getattr(account, "email", "") or "").strip() or "Customer"
+    return {
+        "id": f"client:{getattr(account, 'id', '')}",
+        "name": name,
+        "avatar_url": getattr(account, "avatar_image", "") or "",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Kiosk auth helper — runs inside ``database_sync_to_async`` so the
 # signing decode and the ``KioskSession`` lookup happen in one
 # worker-thread hop without blocking the event loop.

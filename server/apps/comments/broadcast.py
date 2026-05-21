@@ -272,6 +272,15 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
     elif comment.specification_sheet_id is not None:
         target_type = "specification"
         target_id = str(comment.specification_sheet_id)
+    elif comment.proposal_id is not None:
+        # Proposal-target comments rolled out after the original
+        # broadcast shape was frozen, so without this branch every
+        # proposal comment ships as ``target_type: "unknown"`` —
+        # harmless for the portal toast (it derives kind from the
+        # WS subscription) but breaks any downstream consumer that
+        # routes on this field.
+        target_type = "proposal"
+        target_id = str(comment.proposal_id)
     else:
         target_type = "unknown"
         target_id = None

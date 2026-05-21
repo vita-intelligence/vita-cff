@@ -26,21 +26,70 @@ import {
   postProposalChatMessage,
 } from "@/services/portal/api";
 import type { PortalMessageDto } from "@/services/portal/types";
+import {
+  openPortalCommentsSocket,
+  type PortalSocketHandle,
+} from "@/services/portal/ws-client";
+import { usePortalToastStore } from "@/components/portal/portal-toast-store";
 
 
+//: Polling is now the safety net behind the WebSocket — kept long
+//: so we don't add load on a healthy connection, but the polling
+//: branch still rescues the UI on browsers / proxies that drop the
+//: WS upgrade (corporate firewalls, some VPN clients).
 const POLL_MS = 30_000;
 
+//: Auto-clear the "Vita team is typing…" indicator if no follow-up
+//: ``typing.stop`` lands within this window. Mirrors the staff
+//: presence-store's stale-typist TTL — the server never retransmits
+//: a stop, so receivers must drop the indicator on their own.
+const TYPING_TTL_MS = 4_000;
 
-export function ProposalChatPanel({ proposalId }: { proposalId: string }) {
+
+export function ProposalChatPanel({
+  proposalId,
+  proposalCode,
+}: {
+  proposalId: string;
+  /** Display label used as the toast's subject row (e.g. "PROP-0042").
+   *  Falls back to a short id slice when omitted so the toast still
+   *  carries some context — the deep link uses the id either way. */
+  proposalCode?: string;
+}) {
   const [messages, setMessages] = useState<PortalMessageDto[] | null>(null);
   const [lastReadAt, setLastReadAt] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [replyTo, setReplyTo] = useState<PortalMessageDto | null>(null);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  //: Live typing indicator: name of the peer currently typing (one
+  //: at a time is fine for portal UX — the customer doesn't need a
+  //: roster), or ``null`` when the indicator should hide. WS-driven
+  //: with a self-clearing TTL on the receiver side.
+  const [typingPeerName, setTypingPeerName] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const refMap = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevCountRef = useRef(0);
+  //: Hold the WS handle across renders so the typing-sender
+  //: callback and the cleanup effect see the same connection. The
+  //: factory ref-counts on (kind, entityId) so a sibling component
+  //: would share the underlying socket rather than open a duplicate.
+  const socketRef = useRef<PortalSocketHandle | null>(null);
+  //: TTL timer for the typing indicator. The server never re-sends
+  //: ``typing.stop`` after a one-off ``typing.start``, so we expire
+  //: stale indicators ourselves. Re-armed every time a fresh start
+  //: arrives.
+  const typingTimerRef = useRef<number | null>(null);
+  //: Debounce timer for OUR outbound ``typing.stop``. We send a
+  //: ``typing.start`` on the first keystroke, then a ``typing.stop``
+  //: after a brief idle period — without this we'd flood the channel
+  //: with one start per character.
+  const sendStopTimerRef = useRef<number | null>(null);
+  //: Tracks whether we've sent a ``typing.start`` that hasn't been
+  //: matched with a ``typing.stop`` yet. Without this guard, every
+  //: keystroke would re-emit ``typing.start`` (no-op for receivers
+  //: but wasted traffic).
+  const typingActiveRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -69,6 +118,137 @@ export function ProposalChatPanel({ proposalId }: { proposalId: string }) {
     document.addEventListener("visibilitychange", onVis);
     return () => { stop(); document.removeEventListener("visibilitychange", onVis); };
   }, [load]);
+
+  // Toast store push — fires from the WS handler below on every
+  // incoming ``comment.created`` so the customer gets a top-right
+  // brutalist toast in addition to the chat refresh. Toast author
+  // always renders as "Vita team" (the portal masks individual
+  // staff identities behind one brand voice — matches the in-
+  // thread bubble + bell preview).
+  const pushToast = usePortalToastStore((s) => s.pushToast);
+
+  // WebSocket: live ``comment.created`` triggers an immediate reload
+  // (faster than the 30s poll), and peer ``typing.start`` / ``stop``
+  // drive the "Vita team is typing…" indicator. The socket joins
+  // the same group the staff comments consumer uses for this
+  // proposal, so the staff side simultaneously sees the customer's
+  // typing pings and presence on their inline comments panel.
+  useEffect(() => {
+    const handle = openPortalCommentsSocket("proposal", proposalId, {
+      onCommentEvent: (kind, payload) => {
+        // ``deleted`` should also refresh — a staff member could
+        // retract a SHARED comment and the customer's open view
+        // would otherwise still show it.
+        if (
+          kind === "created" ||
+          kind === "updated" ||
+          kind === "deleted"
+        ) {
+          void load();
+        }
+        // Toast only on ``created`` — updates / deletes shouldn't
+        // pop a "new message" card; they're silent corrections.
+        if (kind !== "created") return;
+        const p = (payload ?? {}) as {
+          body?: string;
+          author?: { kind?: string; name?: string };
+        };
+        // Temporary diagnostic: surface every comment.created the
+        // proposal chat panel sees so the user can trace the
+        // toast-not-appearing case via their browser console.
+        // Remove once the toast pipeline is confirmed end-to-end.
+        if (typeof console !== "undefined") {
+          console.debug(
+            "[portal-toast] proposal candidate",
+            { authorKind: p.author?.kind, hasBody: Boolean(p.body) },
+          );
+        }
+        // Skip non-staff posts — ``kind === "member"`` is the
+        // server-side label for staff users (set whenever
+        // ``comment.author_id`` is populated by the comments
+        // service). ``"guest"`` covers BOTH kiosk guests AND the
+        // customer's own ``client_account``-authored comments
+        // (the broadcast serialiser doesn't currently distinguish
+        // those), so we strictly require ``"member"`` to avoid
+        // popping a toast for the customer's own send.
+        if (p.author?.kind !== "member") return;
+        const body = (p.body ?? "").trim();
+        const preview = body.length > 140 ? `${body.slice(0, 137)}…` : body;
+        if (typeof console !== "undefined") {
+          console.debug("[portal-toast] proposal push", { preview });
+        }
+        pushToast({
+          kind: "proposal",
+          entityId: proposalId,
+          entityTitle: proposalCode || proposalId.slice(0, 8),
+          authorName: "Vita team",
+          bodyPreview: preview,
+        });
+      },
+      onPeerTypingStart: (viewer) => {
+        setTypingPeerName(viewer.name || "Vita team");
+        if (typingTimerRef.current !== null) {
+          window.clearTimeout(typingTimerRef.current);
+        }
+        typingTimerRef.current = window.setTimeout(() => {
+          setTypingPeerName(null);
+          typingTimerRef.current = null;
+        }, TYPING_TTL_MS);
+      },
+      onPeerTypingStop: () => {
+        if (typingTimerRef.current !== null) {
+          window.clearTimeout(typingTimerRef.current);
+          typingTimerRef.current = null;
+        }
+        setTypingPeerName(null);
+      },
+    });
+    socketRef.current = handle;
+    return () => {
+      handle.release();
+      socketRef.current = null;
+      if (typingTimerRef.current !== null) {
+        window.clearTimeout(typingTimerRef.current);
+        typingTimerRef.current = null;
+      }
+      if (sendStopTimerRef.current !== null) {
+        window.clearTimeout(sendStopTimerRef.current);
+        sendStopTimerRef.current = null;
+      }
+    };
+  }, [proposalId, proposalCode, load, pushToast]);
+
+  // Outbound typing pings — fired from the draft input below.
+  // Edge-triggered: ``typing.start`` only on the first keystroke
+  // after idle, ``typing.stop`` after a short debounce or when
+  // the message lands.
+  const announceTyping = useCallback(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    if (!typingActiveRef.current) {
+      socket.sendTyping(true);
+      typingActiveRef.current = true;
+    }
+    if (sendStopTimerRef.current !== null) {
+      window.clearTimeout(sendStopTimerRef.current);
+    }
+    sendStopTimerRef.current = window.setTimeout(() => {
+      socket.sendTyping(false);
+      typingActiveRef.current = false;
+      sendStopTimerRef.current = null;
+    }, 2_000);
+  }, []);
+
+  const clearOwnTyping = useCallback(() => {
+    if (sendStopTimerRef.current !== null) {
+      window.clearTimeout(sendStopTimerRef.current);
+      sendStopTimerRef.current = null;
+    }
+    if (typingActiveRef.current) {
+      socketRef.current?.sendTyping(false);
+      typingActiveRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     if (typeof document === "undefined" || !messages) return;
@@ -104,6 +284,11 @@ export function ProposalChatPanel({ proposalId }: { proposalId: string }) {
     if (!body) return;
     setSending(true);
     setError(null);
+    // Tell the staff side we're no longer typing — the message
+    // itself is on the way. Without this the staff inline panel
+    // would show "Customer is typing…" for the next 2s of debounce
+    // even though we just sent.
+    clearOwnTyping();
     try {
       await postProposalChatMessage(proposalId, body, replyTo?.id ?? null);
       setDraft("");
@@ -188,6 +373,16 @@ export function ProposalChatPanel({ proposalId }: { proposalId: string }) {
         )}
       </div>
 
+      {/* Live typing indicator — WS-driven, self-clearing after
+          {TYPING_TTL_MS}ms of silence. Renders only while a peer is
+          actively typing; otherwise the row collapses so the
+          conversation height stays steady. */}
+      {typingPeerName ? (
+        <div className="border-t-2 border-black bg-paper px-5 py-2 text-[11px] uppercase tracking-[0.2em] text-neutral-700">
+          {typingPeerName} is typing…
+        </div>
+      ) : null}
+
       <ErrorBanner>{error}</ErrorBanner>
 
       <form onSubmit={send} className="border-t-2 border-black p-4">
@@ -214,7 +409,17 @@ export function ProposalChatPanel({ proposalId }: { proposalId: string }) {
         <PortalTextarea
           name="compose"
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value);
+            // Fire typing.start on the first keystroke and arm the
+            // 2s-idle ``typing.stop``. The helper de-dupes so we
+            // don't re-emit ``typing.start`` per character.
+            if (e.target.value.length > 0) {
+              announceTyping();
+            } else {
+              clearOwnTyping();
+            }
+          }}
           rows={2}
           placeholder={replyTo ? "Type your reply…" : "Write a message about this proposal…"}
         />

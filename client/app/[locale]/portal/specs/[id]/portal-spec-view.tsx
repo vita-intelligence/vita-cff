@@ -150,7 +150,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
         )}
       </Card>
 
-      <SpecChatPanel sheetId={sheetId} />
+      <SpecChatPanel sheetId={sheetId} sheetCode={spec.code} />
 
       <PortalSignatureDialog
         isOpen={pending}

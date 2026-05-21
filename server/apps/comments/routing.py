@@ -13,20 +13,25 @@ from django.urls import re_path
 
 from apps.comments.consumers import (
     CommentConsumer,
+    PortalCommentConsumer,
     PublicCommentConsumer,
     UserInboxConsumer,
 )
 
 
 # URL structure mirrors the REST endpoints so the client can compute
-# the WS URL from the entity id it already has on the page. The
-# ``<entity_kind>`` segment is constrained to the two supported values
-# so any other path closes with ``CLOSE_BAD_TARGET`` at the consumer
-# rather than landing in an unmatched route.
+# the WS URL from the entity id it already has on the page. Each
+# ``<entity_kind>`` segment is constrained to the values that consumer
+# accepts so a crafted path closes with ``CLOSE_BAD_TARGET`` at the
+# consumer rather than landing in an unmatched route.
 websocket_urlpatterns = [
+    # Note: the staff consumer accepts ``proposal`` too — the regex
+    # below mirrors what :class:`CommentConsumer.connect` will let
+    # through after authorisation, so a staff URL with
+    # ``entity_kind=proposal`` lands on the right consumer.
     re_path(
         r"^ws/org/(?P<org_id>[0-9a-fA-F-]{36})/"
-        r"(?P<entity_kind>formulation|specification)/"
+        r"(?P<entity_kind>formulation|specification|proposal)/"
         r"(?P<entity_id>[0-9a-fA-F-]{36})/?$",
         CommentConsumer.as_asgi(),
         name="ws-comments-entity",
@@ -47,5 +52,18 @@ websocket_urlpatterns = [
         r"^ws/public/specification/(?P<token>[0-9a-fA-F-]{36})/?$",
         PublicCommentConsumer.as_asgi(),
         name="ws-public-comments",
+    ),
+    # Customer portal route. Uses the ``vita_portal_access`` cookie
+    # the middleware resolves to a :class:`ClientAccount`. The
+    # consumer joins the SAME ``comments.<kind>.<entity_id>`` group
+    # the staff route joins, so staff sees the customer's presence /
+    # typing and vice versa. ``entity_kind`` is restricted to the
+    # surfaces the portal actually exposes — proposals + specs.
+    re_path(
+        r"^ws/portal/"
+        r"(?P<entity_kind>proposal|specification)/"
+        r"(?P<entity_id>[0-9a-fA-F-]{36})/?$",
+        PortalCommentConsumer.as_asgi(),
+        name="ws-portal-comments",
     ),
 ]

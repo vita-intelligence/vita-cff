@@ -2,18 +2,29 @@
 
 Two responsibilities:
 
-1. **Cookie auth** — the browser stores the access-token JWT in an
-   ``httpOnly`` cookie (``AUTH_COOKIE_ACCESS_NAME``). The REST layer
-   reads that same cookie through
-   :class:`apps.accounts.auth.authentication.CookieJWTAuthentication`;
-   the WebSocket scope has to read it a little differently because
-   the cookie header lives under ``scope["headers"]`` as a raw
-   bytestring.
+1. **Cookie auth** — the browser may carry up to two JWT cookies:
+
+   * ``AUTH_COOKIE_ACCESS_NAME`` (``vita_access``) → staff identity,
+     resolved against ``settings.AUTH_USER_MODEL``. Lands at
+     ``scope["user"]``.
+   * ``PORTAL_AUTH_COOKIE_ACCESS_NAME`` (``vita_portal_access``) →
+     customer identity, resolved against
+     :class:`apps.client_portal.models.ClientAccount`. Lands at
+     ``scope["client_account"]``.
+
+   Both can be present simultaneously when a user is signed into both
+   the staff app and the customer portal in the same browser; the
+   consumer is responsible for picking the right slot for its route
+   (staff routes gate on ``scope["user"]``, portal routes on
+   ``scope["client_account"]``). The two JWTs sign against the same
+   simplejwt secret but their ``user_id`` claim resolves to disjoint
+   tables, so a staff token cannot be smuggled into a portal route.
 
 2. **Channels-safe user resolution** — Django ORM calls must happen
    inside ``database_sync_to_async`` when the consumer is running in
    the async context. The middleware does the JWT verify synchronously
-   (no DB) and defers the actual :class:`User` fetch to a sync task.
+   (no DB) and defers the actual :class:`User` / :class:`ClientAccount`
+   fetch to a sync task.
 """
 
 from __future__ import annotations
@@ -75,6 +86,49 @@ def _load_user_from_token(raw_token: str):
         return None
 
 
+@database_sync_to_async
+def _load_client_account_from_token(raw_token: str):
+    """Resolve a ``vita_portal_access`` JWT to a
+    :class:`ClientAccount` row, or ``None`` if anything fails.
+
+    Mirrors :class:`apps.client_portal.auth.PortalCookieJWTAuthentication`:
+    the token's ``user_id`` claim looks up directly against the
+    ``client_portal_clientaccount`` table — never the staff users
+    table — so a staff JWT smuggled into the portal cookie would
+    resolve to "row not found" and short-circuit at ``DoesNotExist``.
+    Verification is silent (``None`` on every failure mode) because
+    the WS layer cannot surface DRF-style 401 codes from a
+    middleware — the consumer is the layer that closes with the
+    explicit ``4401`` instead.
+    """
+
+    from rest_framework_simplejwt.authentication import JWTAuthentication
+    from rest_framework_simplejwt.exceptions import (
+        InvalidToken,
+        TokenError,
+    )
+    from rest_framework_simplejwt.settings import api_settings as jwt_settings
+
+    from apps.client_portal.models import ClientAccount
+
+    backend = JWTAuthentication()
+    try:
+        validated = backend.get_validated_token(raw_token)
+    except (TokenError, InvalidToken):
+        return None
+
+    account_id = validated.get(jwt_settings.USER_ID_CLAIM)
+    if not account_id:
+        return None
+    try:
+        account = ClientAccount.objects.get(pk=account_id)
+    except ClientAccount.DoesNotExist:
+        return None
+    if not getattr(account, "is_active", True):
+        return None
+    return account
+
+
 class CookieJWTAuthMiddleware:
     """ASGI middleware that populates ``scope["user"]`` from a JWT cookie.
 
@@ -111,7 +165,27 @@ class CookieJWTAuthMiddleware:
         if raw_token:
             user = await _load_user_from_token(raw_token)
 
+        # Portal identity: a separate JWT cookie set by the customer
+        # portal's auth flow. Resolves to a :class:`ClientAccount`
+        # (not a staff user). Routes consuming the portal cookie gate
+        # on ``scope["client_account"]``; staff routes stay on
+        # ``scope["user"]``. The two slots are independent — a stale
+        # / missing portal cookie does not affect the staff side and
+        # vice versa.
+        portal_cookie_name = getattr(
+            settings, "PORTAL_AUTH_COOKIE_ACCESS_NAME", None
+        )
+        portal_raw_token = (
+            cookies.get(portal_cookie_name) if portal_cookie_name else None
+        )
+        client_account = None
+        if portal_raw_token:
+            client_account = await _load_client_account_from_token(
+                portal_raw_token
+            )
+
         scope = dict(scope)
         scope["user"] = user or AnonymousUser()
+        scope["client_account"] = client_account
         scope["cookies"] = cookies
         return await self.inner(scope, receive, send)

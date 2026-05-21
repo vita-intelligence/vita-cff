@@ -418,7 +418,10 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
       </Card>
 
       {/* Conversation */}
-      <ProposalChatPanel proposalId={proposalId} />
+      <ProposalChatPanel
+        proposalId={proposalId}
+        proposalCode={proposal.code}
+      />
 
       <PortalSignatureDialog
         isOpen={pending}

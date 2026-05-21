@@ -46,6 +46,7 @@ from apps.client_portal.api.views import (
     _err,
     _load_owned_proposal,
 )
+from apps.comments.broadcast import schedule_comment_broadcast
 from apps.comments.models import Comment, CommentReadState
 
 
@@ -371,6 +372,14 @@ class SpecMessagePostView(PortalAPIView):
                 body=data.validated_data["body"],
                 parent=parent,
             )
+            # Real-time fan-out to every open watcher of this spec —
+            # staff inline comments panel, customer's other tabs,
+            # kiosk session. The helper registers its own
+            # ``on_commit`` hook so a rollback suppresses the
+            # broadcast. Without this, customer-posted messages
+            # would never push live; the staff side would only catch
+            # them on the next 30s poll.
+            schedule_comment_broadcast(comment, "created")
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 
@@ -481,6 +490,12 @@ class ProposalChatPostView(PortalAPIView):
                 body=data.validated_data["body"],
                 parent=parent,
             )
+            # Same broadcast hop the staff comment write path takes
+            # via :func:`apps.comments.services.create_comment`. Lands
+            # on ``comments.proposal.<id>`` so any open staff /
+            # customer WS attached to this proposal sees the message
+            # instantly instead of waiting for the next 30s poll.
+            schedule_comment_broadcast(comment, "created")
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 
