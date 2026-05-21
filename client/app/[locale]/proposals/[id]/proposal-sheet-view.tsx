@@ -26,7 +26,7 @@ import { useFormatter, useTranslations } from "next-intl";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@heroui/react";
+import { Button, Modal } from "@heroui/react";
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useCustomers, type CustomerDto } from "@/services/customers";
@@ -165,12 +165,11 @@ export function ProposalSheetView({
   // the Approve button to a viewer who shouldn't see it.
   const canApprove = hasProposalsCap("approve");
   // ``manual_close`` gates the staff-side "mark as accepted /
-  // rejected" override on a ``sent`` proposal. No UI button exposes
-  // that action today (the customer kiosk drives it), but the
-  // capability is checked server-side so any future button or
-  // direct admin call lands behind the gate. Computed here so we
-  // can wire the affordance the moment it's added.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  // rejected" override on a ``sent`` proposal. Today the rejected
+  // edge is exposed via the "Reject on behalf of client" button
+  // below; the accepted edge is still kiosk-only. Backend enforces
+  // the same gate via :class:`ProposalStatusView.initial`; the UI
+  // check here is for affordance.
   const canManualClose = hasProposalsCap("manual_close");
   const [editOpen, setEditOpen] = useState(false);
   //: Missing-fields modal state — set by a 400 response on a status
@@ -183,6 +182,13 @@ export function ProposalSheetView({
     false | "in_review" | "approved"
   >(false);
   const [sendToClientOpen, setSendToClientOpen] = useState(false);
+  // "Reject on behalf of the client" dialog. Only mounted when the
+  // proposal is at ``sent`` (the manual-close gate enforces the
+  // same on the backend), and only fully enabled for closers
+  // (``proposals.manual_close``). Captures an optional free-text
+  // reason that lands in ``customer_rejection_reason`` so the
+  // rejection panel renders the same as a kiosk-driven reject.
+  const [rejectOnBehalfOpen, setRejectOnBehalfOpen] = useState(false);
   // Proposal body is rendered server-side (Django template → DOCX
   // → PDF via LibreOffice when available, raw HTML fallback
   // otherwise) and streamed into an iframe here. The iframe src
@@ -266,6 +272,7 @@ export function ProposalSheetView({
   const handleTransition = async (
     nextStatus: ProposalStatus,
     signatureImage?: string,
+    notes?: string,
   ) => {
     setError(null);
     setMissingFields(null);
@@ -273,6 +280,7 @@ export function ProposalSheetView({
       await transitionMutation.mutateAsync({
         status: nextStatus,
         signature_image: signatureImage ?? "",
+        notes: notes ?? "",
       });
     } catch (err) {
       // The backend surfaces ``missing_required_fields: [...]`` on a
@@ -351,6 +359,29 @@ export function ProposalSheetView({
             </Button>
           </div>
         );
+      case "sent": {
+        // Manual close-out override. The kiosk path is still the
+        // primary route (customer Accepts / Declines from their own
+        // link), but staff often gets the outcome by phone or email
+        // — surfacing a "Reject on behalf of client" affordance lets
+        // the closer terminate the proposal in place rather than
+        // chasing the customer to click Decline themselves. The
+        // accepted side is intentionally still kiosk-only since it
+        // produces a signed PDF that demands the customer's actual
+        // signature.
+        if (!canManualClose) return null;
+        return (
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setRejectOnBehalfOpen(true)}
+            className="h-10 rounded-lg border-danger/30 px-4 text-sm font-medium text-danger hover:bg-danger/5"
+          >
+            <X className="mr-1.5 h-4 w-4" />
+            {tProposals("detail.actions.reject_on_behalf")}
+          </Button>
+        );
+      }
       case "approved": {
         // ``customer_email`` is the only hard prerequisite for
         // sending — the compose modal pre-fills it but we still
@@ -614,6 +645,17 @@ export function ProposalSheetView({
         onMissingRequiredFields={(missing) =>
           setMissingFields(Array.from(missing))
         }
+      />
+
+      <RejectOnBehalfDialog
+        isOpen={rejectOnBehalfOpen}
+        busy={transitionMutation.isPending}
+        onOpenChange={setRejectOnBehalfOpen}
+        onConfirm={async (reason) => {
+          await handleTransition("rejected", undefined, reason);
+          setRejectOnBehalfOpen(false);
+        }}
+        tProposals={tProposals}
       />
     </div>
   );
@@ -2858,5 +2900,100 @@ function LinkedResourcesPanel({
         ))}
       </div>
     </section>
+  );
+}
+
+
+/**
+ * "Reject on behalf of client" dialog.
+ *
+ * Mirrors the kiosk's decline modal so a closer who's heard a
+ * verbal no by phone/email can terminate the proposal in place and
+ * recreate it later. The reason field is optional — same shape as
+ * the customer-facing form — and round-trips to
+ * ``customer_rejection_reason`` so the existing :class:`RejectionPanel`
+ * picks it up as if the customer had typed it themselves.
+ */
+function RejectOnBehalfDialog({
+  isOpen,
+  busy,
+  onOpenChange,
+  onConfirm,
+  tProposals,
+}: {
+  isOpen: boolean;
+  busy: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConfirm: (reason: string) => Promise<void> | void;
+  tProposals: ReturnType<typeof useTranslations<"proposals">>;
+}) {
+  const [reason, setReason] = useState("");
+
+  // Reset the textarea every time the modal closes so a stray draft
+  // from a cancelled attempt doesn't bleed into the next one.
+  useEffect(() => {
+    if (!isOpen) setReason("");
+  }, [isOpen]);
+
+  return (
+    <Modal
+      isOpen={isOpen}
+      onOpenChange={(open) => {
+        if (busy) return;
+        onOpenChange(open);
+      }}
+    >
+      <Modal.Backdrop>
+        <Modal.Container size="md">
+          <Modal.Dialog className="overflow-hidden rounded-2xl bg-ink-0 p-0 shadow-lg ring-1 ring-ink-200">
+            <Modal.Header className="border-b border-ink-200 px-6 py-4">
+              <Modal.Heading className="text-base font-semibold text-ink-1000">
+                {tProposals("detail.reject_on_behalf.title")}
+              </Modal.Heading>
+            </Modal.Header>
+            <Modal.Body className="flex flex-col gap-3 px-6 py-5">
+              <p className="text-sm text-ink-700">
+                {tProposals("detail.reject_on_behalf.body")}
+              </p>
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium text-ink-700">
+                  {tProposals("detail.reject_on_behalf.reason_label")}
+                </span>
+                <textarea
+                  rows={4}
+                  value={reason}
+                  onChange={(e) => setReason(e.target.value)}
+                  placeholder={tProposals(
+                    "detail.reject_on_behalf.reason_placeholder",
+                  )}
+                  className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                />
+              </label>
+            </Modal.Body>
+            <Modal.Footer className="flex items-center justify-end gap-2 border-t border-ink-200 bg-ink-50 px-6 py-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => onOpenChange(false)}
+                isDisabled={busy}
+                className="h-10 rounded-lg px-4 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-0"
+              >
+                {tProposals("detail.reject_on_behalf.cancel")}
+              </Button>
+              <Button
+                type="button"
+                onClick={() => void onConfirm(reason.trim())}
+                isDisabled={busy}
+                className="h-10 rounded-lg bg-danger px-4 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {busy
+                  ? tProposals("detail.reject_on_behalf.confirming")
+                  : tProposals("detail.reject_on_behalf.confirm")}
+              </Button>
+            </Modal.Footer>
+          </Modal.Dialog>
+        </Modal.Container>
+      </Modal.Backdrop>
+    </Modal>
   );
 }

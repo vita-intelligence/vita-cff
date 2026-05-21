@@ -259,3 +259,63 @@ class TestManualCloseCapability:
         assert response.status_code == status.HTTP_200_OK
         proposal.refresh_from_db()
         assert proposal.status == ProposalStatus.REJECTED.value
+        # Manual reject must populate the same audit columns the
+        # kiosk path writes — without them the rejection panel on
+        # the staff proposal page wouldn't render and the
+        # sales-person email wouldn't carry a reason.
+        assert proposal.customer_rejected_at is not None
+        assert proposal.customer_rejection_reason == ""
+
+    @pytest.mark.django_db(transaction=True)
+    def test_closer_manual_reject_stores_reason_and_queues_email(
+        self, api_client: APIClient,
+    ) -> None:
+        """The ``notes`` body field is the closer's free-text reason
+        — it must round-trip onto ``customer_rejection_reason`` (so
+        the rejection panel surfaces it) and the rejection-email
+        task must be queued on commit (so the sales person is told
+        the deal closed).
+        """
+
+        from unittest.mock import patch
+
+        owner = UserFactory()
+        closer = UserFactory(password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=owner, name="Closer Co")
+        MembershipFactory(
+            user=closer,
+            organization=org,
+            permissions={
+                "proposals": ["view", "edit", "manual_close"]
+            },
+        )
+        proposal = ProposalFactory(
+            organization=org,
+            created_by=owner,
+            updated_by=owner,
+            status=ProposalStatus.SENT.value,
+        )
+        _login(api_client, closer)
+
+        with patch(
+            "apps.proposals.tasks.send_proposal_rejection_notification_task.delay"
+        ) as mock_task:
+            response = api_client.post(
+                _status_url(str(org.id), str(proposal.id)),
+                {
+                    "status": ProposalStatus.REJECTED.value,
+                    "notes": "Customer told us by phone — pivoting away from this SKU.",
+                },
+                format="json",
+            )
+        assert response.status_code == status.HTTP_200_OK
+        proposal.refresh_from_db()
+        assert proposal.status == ProposalStatus.REJECTED.value
+        assert (
+            proposal.customer_rejection_reason
+            == "Customer told us by phone — pivoting away from this SKU."
+        )
+        # The notification queue must have been hit exactly once —
+        # the on_commit hook fires when the test's atomic block
+        # commits (APIClient transactions commit at the response).
+        mock_task.assert_called_once_with(str(proposal.id))

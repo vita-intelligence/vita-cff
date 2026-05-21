@@ -1451,6 +1451,23 @@ def transition_status(
     ):
         proposal.public_token = uuid.uuid4()
 
+    # Staff-driven manual reject: stamp the same audit columns the
+    # kiosk path writes via :func:`capture_customer_rejection_on_proposal`
+    # so the downstream surfaces (rejection panel on the proposal
+    # page, the customer-rejection email to the sales person) work
+    # regardless of who triggered the close. ``notes`` carries the
+    # optional reason the closer typed into the dialog; it lands in
+    # ``customer_rejection_reason`` (the field the panel + email
+    # already read) so we don't fork a parallel "staff_rejection_*"
+    # column set.
+    is_manual_reject = (
+        to_status == ProposalStatus.REJECTED.value
+        and proposal.customer_rejected_at is None
+    )
+    if is_manual_reject:
+        proposal.customer_rejected_at = timezone.now()
+        proposal.customer_rejection_reason = (notes or "").strip()
+
     proposal.status = to_status
     proposal.updated_by = actor
     proposal.save()
@@ -1478,6 +1495,28 @@ def transition_status(
         before=before,
         after=snapshot(proposal),
     )
+
+    # Best-effort email-out for the manual reject. Same delivery
+    # contract as the kiosk path: queued via ``transaction.on_commit``
+    # so a roll-back upstream suppresses the notification, and
+    # swallowed in eager mode so an SMTP blip can't undo the
+    # rejection itself.
+    if is_manual_reject:
+        proposal_id = proposal.id
+
+        def _dispatch_manual_rejection_email() -> None:
+            from apps.proposals.tasks import (
+                send_proposal_rejection_notification_task,
+            )
+
+            try:
+                send_proposal_rejection_notification_task.delay(
+                    str(proposal_id)
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        transaction.on_commit(_dispatch_manual_rejection_email)
     return proposal
 
 

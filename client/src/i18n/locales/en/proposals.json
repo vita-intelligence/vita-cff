@@ -110,7 +110,17 @@
       "back_to_draft": "Back to draft",
       "mark_sent": "Mark as sent to client",
       "send_to_client": "Send to client",
-      "send_disabled_no_email": "Add a customer email to the proposal before sending."
+      "send_disabled_no_email": "Add a customer email to the proposal before sending.",
+      "reject_on_behalf": "Reject on behalf of client"
+    },
+    "reject_on_behalf": {
+      "title": "Reject this proposal on behalf of the client?",
+      "body": "Use this when the client has told you by phone or email that they're not moving ahead. The proposal is closed as 'rejected' so you can clone it or start a fresh one. This cannot be undone.",
+      "reason_label": "Reason (optional)",
+      "reason_placeholder": "Briefly say why — we'll surface this on the proposal's rejection panel and in the notification to the assigned sales person.",
+      "cancel": "Cancel",
+      "confirm": "Reject proposal",
+      "confirming": "Rejecting…"
     },
     "send_to_client": {
       "title": "Send proposal {code} to the client",
