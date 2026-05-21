@@ -12,7 +12,19 @@ export type CommentTargetKind =
   | "specification"
   | "unknown";
 
-export type CommentAuthorKind = "member" | "guest" | "system";
+/**
+ * Comment author classification surfaced by the staff REST + WS
+ * payloads. The wire values come from the Django serialisers in
+ * ``apps.comments``:
+ *
+ * * ``member`` — a staff teammate (``apps.accounts.User``).
+ * * ``client`` — a customer-portal author (``ClientAccount``). The
+ *   ``org_label`` carries the bound Customer's company name so the
+ *   bubble can render "Jane Doe — Acme Ltd.".
+ * * ``guest`` — a legacy kiosk visitor.
+ * * ``system`` — synthetic shape used for deleted-comment tombstones.
+ */
+export type CommentAuthorKind = "member" | "client" | "guest" | "system";
 
 export interface CommentAuthorDto {
   readonly id: string | null;

@@ -328,6 +328,26 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
             "org_label": "",
             "avatar_url": user.avatar_image or "",
         }
+    elif comment.client_account_id and comment.client_account is not None:
+        # Portal-authored comment. Mirrors the REST serializer in
+        # ``apps.comments.api.serializers`` — see the matching branch
+        # there for why ``ClientAccount`` resolves its display name
+        # off the bound :class:`Customer`.
+        client = comment.client_account
+        customer = client.customer
+        display_name = (
+            (customer.name or "").strip()
+            or (customer.company or "").strip()
+            or client.email
+        )
+        author = {
+            "id": str(client.id),
+            "kind": "client",
+            "name": display_name,
+            "email": client.email,
+            "org_label": (customer.company or "").strip(),
+            "avatar_url": client.avatar_image or "",
+        }
     else:
         author = {
             "id": None,

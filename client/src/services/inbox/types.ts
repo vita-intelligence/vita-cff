@@ -22,7 +22,10 @@ export interface InboxOrganizationDto {
 
 export interface InboxAuthorDto {
   readonly name: string;
-  readonly kind: "member" | "guest" | "system";
+  /** ``client`` is the customer-portal author kind — the inbox row
+   *  surfaces it so the staff dropdown can tell apart "Jane replied"
+   *  (the customer) from "Mike replied" (a teammate). */
+  readonly kind: "member" | "client" | "guest" | "system";
 }
 
 export interface InboxThreadDto {

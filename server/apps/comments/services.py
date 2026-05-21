@@ -152,6 +152,12 @@ def _resolve_target(target) -> tuple[ContentType, Any, str]:
 
 _COMMENT_SELECT_RELATED: tuple[str, ...] = (
     "author",
+    # Portal-side authors live on ``client_account`` (with the
+    # customer name + company hanging off the bound :class:`Customer`).
+    # Pre-loading the chain here keeps the staff-side serializer
+    # render path off the N+1 cliff.
+    "client_account",
+    "client_account__customer",
     "resolved_by",
     "deleted_by",
     "parent",
@@ -882,6 +888,17 @@ def _author_snapshot(comment: Comment) -> InboxAuthor:
         user = comment.author
         full = (user.get_full_name() or user.email or "").strip()
         return InboxAuthor(name=full, kind="member")
+    if comment.client_account_id and comment.client_account is not None:
+        # Portal-authored comment. ClientAccount has no ``full_name``
+        # field — the canonical display label is the bound Customer's
+        # contact name, with the company as the next-best fallback.
+        customer = comment.client_account.customer
+        name = (
+            (customer.name or "").strip()
+            or (customer.company or "").strip()
+            or comment.client_account.email
+        )
+        return InboxAuthor(name=name, kind="client")
     return InboxAuthor(
         name=(comment.guest_name or comment.guest_email or "").strip(),
         kind="guest",
@@ -1030,7 +1047,7 @@ def _inbox_threads_for_formulations(
             Comment.objects.filter(
                 formulation=formulation, is_deleted=False
             )
-            .select_related("author")
+            .select_related("author", "client_account__customer")
             .order_by("-created_at")
             .first()
         )
@@ -1088,7 +1105,7 @@ def _inbox_threads_for_proposals(
             Comment.objects.filter(
                 proposal=proposal, is_deleted=False
             )
-            .select_related("author")
+            .select_related("author", "client_account__customer")
             .order_by("-created_at")
             .first()
         )
@@ -1197,7 +1214,7 @@ def _inbox_threads_for_cff_submissions(
             Comment.objects.filter(
                 cff_submission=cff, is_deleted=False
             )
-            .select_related("author")
+            .select_related("author", "client_account__customer")
             .order_by("-created_at")
             .first()
         )
@@ -1259,7 +1276,7 @@ def _inbox_threads_for_specifications(
             Comment.objects.filter(
                 specification_sheet=sheet, is_deleted=False
             )
-            .select_related("author")
+            .select_related("author", "client_account__customer")
             .order_by("-created_at")
             .first()
         )

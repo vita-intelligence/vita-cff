@@ -230,13 +230,21 @@ export function CommentCard({
           {!isSelf ? (
             <div className="mb-0.5 flex flex-wrap items-center gap-1.5 text-[11px] font-semibold text-ink-700">
               <span>{displayName}</span>
-              {comment.author.kind === "guest" &&
+              {/* Customer-side authors arrive with one of two kinds:
+                   ``"client"`` (portal-authenticated ClientAccount,
+                   the modern path) or ``"guest"`` (legacy kiosk).
+                   Both should get the org chip + the "client" pill
+                   so a teammate scanning the thread can tell at a
+                   glance which bubbles are from outside the company. */}
+              {(comment.author.kind === "client" ||
+                comment.author.kind === "guest") &&
               comment.author.org_label ? (
                 <span className="rounded-full bg-ink-0 px-1.5 py-[1px] text-[9px] font-medium text-ink-600 ring-1 ring-ink-200">
                   {comment.author.org_label}
                 </span>
               ) : null}
-              {comment.author.kind === "guest" ? (
+              {comment.author.kind === "client" ||
+              comment.author.kind === "guest" ? (
                 <span className="rounded-full bg-orange-50 px-1.5 py-[1px] text-[9px] font-medium uppercase tracking-wide text-orange-700">
                   client
                 </span>

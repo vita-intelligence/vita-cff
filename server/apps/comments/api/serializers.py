@@ -15,14 +15,22 @@ from apps.comments.models import Comment
 
 
 class CommentAuthorSerializer(serializers.Serializer):
-    """Flat projection of either an authenticated author or a guest.
+    """Flat projection of any comment author the staff UI may meet.
 
     The shape mirrors what the spec-sheet sales-person menu uses so
     the frontend already has a component for it.
+
+    ``kind`` is one of:
+
+    * ``"member"`` — a staff :class:`apps.accounts.User`.
+    * ``"client"`` — a customer-portal :class:`ClientAccount`. Carries
+      the bound Customer's company as ``org_label``.
+    * ``"guest"`` — a legacy kiosk visitor (no auth row).
+    * ``"system"`` — synthetic author for deleted-comment tombstones.
     """
 
     id = serializers.CharField(required=False, allow_null=True)
-    kind = serializers.CharField()  # "member" or "guest"
+    kind = serializers.CharField()
     name = serializers.CharField()
     email = serializers.CharField(required=False, allow_blank=True)
     org_label = serializers.CharField(required=False, allow_blank=True)
@@ -126,6 +134,27 @@ class CommentReadSerializer(serializers.ModelSerializer):
                 # a future migration to blob storage replaces it with
                 # a real URL without touching any consumer.
                 "avatar_url": user.avatar_image or "",
+            }
+        if obj.client_account_id and obj.client_account is not None:
+            # Customer-portal author. ``ClientAccount`` has no name
+            # column of its own — the display label lives on the bound
+            # :class:`Customer` (contact name + company). Without this
+            # branch the staff-side renderer falls through to the guest
+            # block below and the chat bubble shows ``"—"``.
+            client = obj.client_account
+            customer = client.customer
+            display_name = (
+                (customer.name or "").strip()
+                or (customer.company or "").strip()
+                or client.email
+            )
+            return {
+                "id": str(client.id),
+                "kind": "client",
+                "name": display_name,
+                "email": client.email,
+                "org_label": (customer.company or "").strip(),
+                "avatar_url": client.avatar_image or "",
             }
         return {
             "id": None,
