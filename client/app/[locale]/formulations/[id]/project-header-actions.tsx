@@ -31,9 +31,11 @@ import { translateCode } from "@/lib/errors/translate";
 import { useMemberships } from "@/services/members";
 import type { OrganizationDto } from "@/services/organizations/types";
 import {
+  useAssignLeadScientist,
   useAssignSalesPerson,
   useDeleteFormulation,
   useUpdateFormulation,
+  type LeadScientistDto,
   type ProjectStatus,
   type SalesPersonDto,
 } from "@/services/formulations";
@@ -71,12 +73,14 @@ export function ProjectHeaderActions({
   formulationCode,
   projectStatus,
   salesPerson,
+  leadScientist,
 }: {
   organization: OrganizationDto;
   formulationId: string;
   formulationCode: string;
   projectStatus: ProjectStatus;
   salesPerson: SalesPersonDto | null;
+  leadScientist: LeadScientistDto | null;
 }) {
   const tProject = useTranslations("project_overview");
 
@@ -87,9 +91,21 @@ export function ProjectHeaderActions({
     "formulations",
     "assign_sales_person",
   );
+  const canAssignScientist = hasFlatCapability(
+    organization,
+    "formulations",
+    "assign_lead_scientist",
+  );
 
   return (
     <div className="flex flex-wrap items-center gap-2">
+      <LeadScientistMenu
+        orgId={organization.id}
+        formulationId={formulationId}
+        leadScientist={leadScientist}
+        canAssign={canAssignScientist}
+        tProject={tProject}
+      />
       <SalesPersonMenu
         orgId={organization.id}
         formulationId={formulationId}
@@ -395,6 +411,184 @@ function SalesPersonMenu({
                     </span>
                     {isActive ? (
                       <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Lead scientist (R&D lead on the project)
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Mirror of :func:`SalesPersonMenu` for the R&D lead pointer. Same
+ * pill / dropdown / clear affordance, distinct icon (a flask) and
+ * blue tint so the two chips never collide visually in the header.
+ *
+ * The picker pulls memberships tagged with the ``"scientist"`` group
+ * — the same group concept the sales picker uses with ``"sales"`` —
+ * so each menu surfaces the right candidate roster without
+ * cross-pollinating commercial and R&D rosters.
+ */
+function LeadScientistMenu({
+  orgId,
+  formulationId,
+  leadScientist,
+  canAssign,
+  tProject,
+}: {
+  orgId: string;
+  formulationId: string;
+  leadScientist: LeadScientistDto | null;
+  canAssign: boolean;
+  tProject: ReturnType<typeof useTranslations<"project_overview">>;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useClickOutside(containerRef, () => setOpen(false));
+
+  const membershipsQuery = useMemberships(orgId, {
+    enabled: open && canAssign,
+    group: "scientist",
+  });
+
+  const assign = useAssignLeadScientist(orgId, formulationId);
+
+  const members = useMemo(() => {
+    const rows = membershipsQuery.data ?? [];
+    const seen = new Set<string>();
+    const out: { id: string; name: string; email: string }[] = [];
+    for (const row of rows) {
+      if (seen.has(row.user.id)) continue;
+      seen.add(row.user.id);
+      const name =
+        (row.user.full_name && row.user.full_name.trim()) || row.user.email;
+      out.push({ id: row.user.id, name, email: row.user.email });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }, [membershipsQuery.data]);
+
+  const pillLabel = leadScientist
+    ? leadScientist.name
+    : tProject("lead_scientist.unassigned");
+
+  const pillClasses = leadScientist
+    ? "bg-info/10 text-info ring-info/20"
+    : "bg-ink-50 text-ink-600 ring-ink-200";
+
+  if (!canAssign) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${pillClasses}`}
+        title={
+          leadScientist
+            ? `${tProject("lead_scientist.label")}: ${leadScientist.name}`
+            : tProject("lead_scientist.unassigned")
+        }
+      >
+        <FlaskConical className="h-3.5 w-3.5" />
+        {pillLabel}
+      </span>
+    );
+  }
+
+  const handleAssign = async (userId: string | null) => {
+    setOpen(false);
+    if (userId === (leadScientist?.id ?? null)) return;
+    try {
+      await assign.mutateAsync({ user_id: userId });
+      router.refresh();
+    } catch {
+      // Error surfaces via the mutation; menu is already closed.
+    }
+  };
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={assign.isPending}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-opacity hover:opacity-90 disabled:opacity-60 ${pillClasses}`}
+      >
+        <FlaskConical className="h-3.5 w-3.5" />
+        {pillLabel}
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-2 flex w-72 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
+        >
+          <div className="flex items-center justify-between px-2 py-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              {tProject("lead_scientist.label")}
+            </span>
+            {leadScientist ? (
+              <button
+                type="button"
+                onClick={() => handleAssign(null)}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-ink-500 hover:bg-ink-50 hover:text-danger"
+              >
+                <X className="h-3 w-3" />
+                {tProject("lead_scientist.clear")}
+              </button>
+            ) : null}
+          </div>
+          {membershipsQuery.isLoading ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProject("lead_scientist.loading")}
+            </p>
+          ) : members.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-ink-500">
+              {tProject("lead_scientist.empty")}
+            </p>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              {members.map((member) => {
+                const isActive = member.id === leadScientist?.id;
+                return (
+                  <button
+                    key={member.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={isActive}
+                    disabled={assign.isPending}
+                    onClick={() => handleAssign(member.id)}
+                    className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-ink-50 disabled:opacity-60 ${
+                      isActive ? "bg-info/10" : ""
+                    }`}
+                  >
+                    <FlaskConical className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" />
+                    <span className="flex min-w-0 flex-col">
+                      <span
+                        className={`truncate text-sm ${
+                          isActive
+                            ? "font-semibold text-ink-1000"
+                            : "text-ink-800"
+                        }`}
+                      >
+                        {member.name}
+                      </span>
+                      <span className="truncate text-[11px] text-ink-500">
+                        {member.email}
+                      </span>
+                    </span>
+                    {isActive ? (
+                      <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-info" />
                     ) : null}
                   </button>
                 );

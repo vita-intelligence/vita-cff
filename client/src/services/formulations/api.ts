@@ -6,6 +6,7 @@ import { apiClient } from "@/lib/api";
 
 import { formulationsEndpoints } from "./endpoints";
 import type {
+  AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
@@ -211,6 +212,26 @@ export async function assignFormulationSalesPerson(
 ): Promise<FormulationDto> {
   const { data } = await apiClient.put<FormulationDto>(
     formulationsEndpoints.salesPerson(orgId, formulationId),
+    payload,
+  );
+  return data;
+}
+
+
+/**
+ * Set or clear the project's R&D lead.
+ *
+ * ``user_id: null`` clears the assignment. The backend validates
+ * that the target user is a member of the same organization and
+ * returns a 400 with ``lead_scientist_not_member`` otherwise.
+ */
+export async function assignFormulationLeadScientist(
+  orgId: string,
+  formulationId: string,
+  payload: AssignLeadScientistRequestDto,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.put<FormulationDto>(
+    formulationsEndpoints.leadScientist(orgId, formulationId),
     payload,
   );
   return data;

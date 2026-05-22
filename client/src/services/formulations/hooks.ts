@@ -17,6 +17,7 @@ import type { ApiError } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
 
 import {
+  assignFormulationLeadScientist,
   assignFormulationSalesPerson,
   cloneFormulation,
   computeFormulationTotals,
@@ -34,6 +35,7 @@ import {
   updateFormulation,
 } from "./api";
 import type {
+  AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
@@ -305,6 +307,35 @@ export function useAssignSalesPerson(
       );
       // The overview card shows the sales person too, so kick that
       // cache as well. Totals are unaffected — leave them alone.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.list(orgId),
+      });
+    },
+  });
+}
+
+
+/**
+ * Mirror of :func:`useAssignSalesPerson` for the R&D lead pointer.
+ * Same cache invalidations because the overview snapshot now carries
+ * ``lead_scientist`` alongside ``sales_person``.
+ */
+export function useAssignLeadScientist(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<FormulationDto, ApiError, AssignLeadScientistRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, AssignLeadScientistRequestDto>({
+    mutationFn: (payload) =>
+      assignFormulationLeadScientist(orgId, formulationId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        updated,
+      );
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.overview(orgId, formulationId),
       });

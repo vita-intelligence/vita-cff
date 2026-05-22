@@ -288,6 +288,16 @@ class SalesPersonNotMember(Exception):
     code = "sales_person_not_member"
 
 
+class LeadScientistNotMember(Exception):
+    """Candidate user is not a member of the formulation's organization.
+
+    Mirror of :class:`SalesPersonNotMember` for the R&D lead pointer.
+    Same cross-tenant guard, same shape on the wire.
+    """
+
+    code = "lead_scientist_not_member"
+
+
 class InvalidCloneMode(Exception):
     """The ``mode`` argument to :func:`clone_formulation` is neither
     ``new`` nor ``replace``. Service-level guard so a bad caller
@@ -2035,10 +2045,11 @@ def list_formulations(
     serializer's echo blocks.
 
     The serializer renders ~12 M2M picks per row plus the formulation
-    lines and the sales_person FK; without the prefetch + select_related
-    list a 50-item page fires ~1,800 queries and stalls the connection
-    pool under modest concurrent load. With the prefetch the page
-    settles to a handful of queries regardless of result-set size.
+    lines, the sales_person FK, and the lead_scientist FK; without
+    the prefetch + select_related list a 50-item page fires ~1,800
+    queries and stalls the connection pool under modest concurrent
+    load. With the prefetch the page settles to a handful of queries
+    regardless of result-set size.
 
     ``search`` is an optional, whitespace-trimmed substring matched
     case-insensitively against both ``name`` and ``code``. Empty / blank
@@ -2081,7 +2092,7 @@ def list_formulations(
 
     queryset = (
         Formulation.objects.filter(organization=organization)
-        .select_related("sales_person", "organization")
+        .select_related("sales_person", "lead_scientist", "organization")
         .prefetch_related(*_FORMULATION_LIST_PREFETCH)
     )
     if search:
@@ -3138,6 +3149,45 @@ def assign_sales_person(
         organization=formulation.organization,
         actor=actor,
         action="formulation.assign_sales_person",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
+
+
+@transaction.atomic
+def assign_lead_scientist(
+    *,
+    formulation: Formulation,
+    lead_scientist: Any | None,
+    actor: Any,
+) -> Formulation:
+    """Set or clear the project's R&D lead.
+
+    Mirror of :func:`assign_sales_person`. Same membership guard,
+    same audit contract, same no-op pass-through. Authorization
+    lives one layer up (``formulations.assign_lead_scientist``).
+    """
+
+    if lead_scientist is not None:
+        is_member = Membership.objects.filter(
+            user=lead_scientist,
+            organization=formulation.organization,
+        ).exists()
+        if not is_member:
+            raise LeadScientistNotMember()
+
+    before = snapshot(formulation)
+    formulation.lead_scientist = lead_scientist
+    formulation.updated_by = actor
+    formulation.save(
+        update_fields=["lead_scientist", "updated_by", "updated_at"]
+    )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.assign_lead_scientist",
         target=formulation,
         before=before,
         after=snapshot(formulation),

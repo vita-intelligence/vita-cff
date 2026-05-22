@@ -443,6 +443,20 @@ class Formulation(models.Model):
         null=True,
         blank=True,
     )
+    # R&D lead on the project. Mirrors :attr:`sales_person` exactly —
+    # advisory pointer, no capability inheritance, ``SET_NULL`` on
+    # the member leaving the org. Assignment gated on the
+    # ``formulations.assign_lead_scientist`` capability and the
+    # candidate must be a member of the same organization. Other R&D
+    # members can still edit the workspace; this field only signals
+    # who is responsible for steering the recipe work.
+    lead_scientist = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="lead_scientist_formulations",
+        null=True,
+        blank=True,
+    )
     approved_version_number = models.PositiveIntegerField(
         _("approved version number"),
         null=True,

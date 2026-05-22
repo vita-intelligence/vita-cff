@@ -7,6 +7,7 @@ from apps.formulations.api.views import (
     FormulationCloneView,
     FormulationComputeView,
     FormulationDetailView,
+    FormulationLeadScientistView,
     FormulationLinesView,
     FormulationListCreateView,
     FormulationOverviewView,
@@ -57,6 +58,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",
         FormulationSalesPersonView.as_view(),
         name="formulation-sales-person",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/lead-scientist/",
+        FormulationLeadScientistView.as_view(),
+        name="formulation-lead-scientist",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/approved-version/",

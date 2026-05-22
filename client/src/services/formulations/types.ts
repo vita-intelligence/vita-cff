@@ -184,6 +184,16 @@ export interface SalesPersonDto {
   readonly email: string;
 }
 
+/** R&D lead on the project. Identical shape to
+ *  :class:`SalesPersonDto` so the same chip component can render
+ *  either pointer. Separate type keeps the field's intent legible at
+ *  every call site. */
+export interface LeadScientistDto {
+  readonly id: string;
+  readonly name: string;
+  readonly email: string;
+}
+
 /** Light echo of a gummy-base raw-material item picked for this
  *  formulation. Zero or more items can be picked; the total base
  *  weight is split equally across them. When the list is empty the
@@ -286,12 +296,17 @@ export interface FormulationDto {
   readonly project_type: ProjectType;
   readonly approved_version_number: number | null;
   readonly sales_person: SalesPersonDto | null;
+  readonly lead_scientist: LeadScientistDto | null;
   readonly lines: readonly FormulationLineDto[];
   readonly created_at: string;
   readonly updated_at: string;
 }
 
 export interface AssignSalesPersonRequestDto {
+  readonly user_id: string | null;
+}
+
+export interface AssignLeadScientistRequestDto {
   readonly user_id: string | null;
 }
 
@@ -565,6 +580,7 @@ export interface ProjectOverviewDto {
   readonly created_at: string;
   readonly owner_name: string;
   readonly sales_person: SalesPersonDto | null;
+  readonly lead_scientist: LeadScientistDto | null;
   readonly latest_version: number | null;
   readonly latest_version_label: string;
   readonly latest_version_saved_at: string | null;

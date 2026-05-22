@@ -52,8 +52,10 @@ from apps.formulations.services import (
     InvalidPremixSweetenerItem,
     InvalidSweetenerItem,
     InvalidTabletSize,
+    LeadScientistNotMember,
     RawMaterialNotInOrg,
     SalesPersonNotMember,
+    assign_lead_scientist,
     assign_sales_person,
     clone_formulation,
     compute_formulation_totals,
@@ -471,6 +473,70 @@ class FormulationSalesPersonView(APIView):
         except SalesPersonNotMember:
             return Response(
                 {"user_id": ["sales_person_not_member"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            FormulationReadSerializer(formulation).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class FormulationLeadScientistView(APIView):
+    """``PUT`` ``/.../formulations/<id>/lead-scientist/``.
+
+    Mirror of :class:`FormulationSalesPersonView` for the R&D lead
+    pointer. Only callers with
+    ``formulations.assign_lead_scientist`` reach this URL, even if
+    they also hold the project ``edit`` grant. Body shape:
+    ``{"user_id": "<uuid>" | null}`` — ``null`` clears the
+    assignment.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.ASSIGN_LEAD_SCIENTIST
+
+    def put(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        raw_user_id = payload.get("user_id", object())
+        if raw_user_id is object():
+            return Response(
+                {"user_id": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lead_scientist = None
+        if raw_user_id is not None:
+            from django.contrib.auth import get_user_model
+
+            User = get_user_model()
+            lead_scientist = User.objects.filter(id=raw_user_id).first()
+            if lead_scientist is None:
+                # Same cross-tenant guard as the sales-person view —
+                # don't leak existence through a distinct error code.
+                return Response(
+                    {"user_id": ["lead_scientist_not_member"]},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        try:
+            assign_lead_scientist(
+                formulation=formulation,
+                lead_scientist=lead_scientist,
+                actor=request.user,
+            )
+        except LeadScientistNotMember:
+            return Response(
+                {"user_id": ["lead_scientist_not_member"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

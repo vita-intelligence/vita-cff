@@ -81,6 +81,14 @@ class FormulationsCapability:
     #: delegated to non-technical staff without giving them write
     #: access to the formulation itself.
     ASSIGN_SALES_PERSON = "assign_sales_person"
+    #: Assign / clear the lead scientist on a project. Mirrors
+    #: :attr:`ASSIGN_SALES_PERSON` but for the R&D side: a triage
+    #: lead can route a fresh project to the scientist who will own
+    #: the recipe work without inheriting full ``EDIT`` rights on
+    #: the formulation. The assignment is advisory only — it does
+    #: not gate edit access, since other R&D members still need to
+    #: collaborate on the same workspace.
+    ASSIGN_LEAD_SCIENTIST = "assign_lead_scientist"
     #: Toggle individual sections on or off for the customer-facing
     #: spec sheet. Split from ``EDIT`` so the client-visibility
     #: decision sits with commercial / QA leads while scientists
@@ -199,10 +207,11 @@ class CFFSubmissionsCapability:
     Split from the Projects module on purpose — commercial / triage
     roles often need to read the intake and route it without holding
     formulation-edit rights, and granting "view CFFs" via
-    ``formulations.view`` would over-share. When a future
-    ``formulations.assign_scientist`` capability lands, the admin UI
-    pairs it with :attr:`ASSIGN_PROJECT` on the same roles so the
-    triage workflow stays coherent.
+    ``formulations.view`` would over-share. The admin UI pairs
+    :attr:`ASSIGN_PROJECT` with
+    :attr:`FormulationsCapability.ASSIGN_LEAD_SCIENTIST` on the same
+    roles so the triage workflow stays coherent — one click routes
+    the CFF to a project and nominates the scientist on it.
     """
 
     VIEW = "view"
@@ -273,6 +282,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.VIEW_APPROVALS,
             FormulationsCapability.VIEW_SIGNED,
             FormulationsCapability.ASSIGN_SALES_PERSON,
+            FormulationsCapability.ASSIGN_LEAD_SCIENTIST,
             FormulationsCapability.MANAGE_SPEC_VISIBILITY,
             FormulationsCapability.SIGN_SPEC,
             FormulationsCapability.COMMENTS_VIEW,

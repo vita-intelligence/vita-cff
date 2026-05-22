@@ -23,6 +23,25 @@ def _code(value: str) -> ErrorDetail:
     return ErrorDetail(value, code=value)
 
 
+def _user_chip(user) -> dict[str, str] | None:
+    """Flat ``{id, email, name}`` projection of a user FK for the
+    project read serializer's owner chips (sales person, lead
+    scientist). ``name`` falls back to email so accounts without a
+    display name still render something human-readable.
+    """
+
+    if user is None:
+        return None
+    full_name = getattr(user, "full_name", "") or getattr(
+        user, "get_full_name", lambda: ""
+    )()
+    return {
+        "id": str(user.id),
+        "email": user.email,
+        "name": (full_name or user.email).strip(),
+    }
+
+
 class FormulationLineReadSerializer(serializers.ModelSerializer):
     item_name = serializers.CharField(source="item.name", read_only=True)
     item_internal_code = serializers.CharField(
@@ -100,6 +119,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
 class FormulationReadSerializer(serializers.ModelSerializer):
     lines = FormulationLineReadSerializer(many=True, read_only=True)
     sales_person = serializers.SerializerMethodField()
+    lead_scientist = serializers.SerializerMethodField()
     gummy_base_item_ids = serializers.SerializerMethodField()
     gummy_base_items = serializers.SerializerMethodField()
     flavouring_item_ids = serializers.SerializerMethodField()
@@ -173,6 +193,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "project_type",
             "approved_version_number",
             "sales_person",
+            "lead_scientist",
             "lines",
             "created_at",
             "updated_at",
@@ -435,19 +456,12 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     def get_sales_person(
         self, obj: Formulation
     ) -> dict[str, str] | None:
-        user = obj.sales_person
-        if user is None:
-            return None
-        # Flat, predictable shape so the frontend can render a chip
-        # without a second request. ``name`` falls back to email so
-        # accounts without a display name still render something
-        # human-readable.
-        full_name = getattr(user, "full_name", "") or getattr(user, "get_full_name", lambda: "")()
-        return {
-            "id": str(user.id),
-            "email": user.email,
-            "name": (full_name or user.email).strip(),
-        }
+        return _user_chip(obj.sales_person)
+
+    def get_lead_scientist(
+        self, obj: Formulation
+    ) -> dict[str, str] | None:
+        return _user_chip(obj.lead_scientist)
 
 
 class FormulationWriteSerializer(serializers.Serializer):

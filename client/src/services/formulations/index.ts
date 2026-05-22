@@ -1,5 +1,6 @@
 export { formulationsEndpoints } from "./endpoints";
 export {
+  assignFormulationLeadScientist,
   assignFormulationSalesPerson,
   cloneFormulation,
   computeFormulationTotals,
@@ -18,6 +19,7 @@ export {
 } from "./api";
 export {
   formulationsQueryKeys,
+  useAssignLeadScientist,
   useAssignSalesPerson,
   useCloneFormulation,
   useCreateFormulation,
@@ -98,12 +100,14 @@ export {
   type ProjectType,
   type FormulationsListQuery,
   type LineItemAttributes,
+  type AssignLeadScientistRequestDto,
   type AssignSalesPersonRequestDto,
   type CloneFormulationRequestDto,
   type PaginatedFormulationsDto,
   type ReplaceLinesRequestDto,
   type RollbackRequestDto,
   type SaveVersionRequestDto,
+  type LeadScientistDto,
   type SalesPersonDto,
   type TabletSizeOption,
   type UpdateFormulationRequestDto,

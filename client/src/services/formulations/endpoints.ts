@@ -18,6 +18,8 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
   salesPerson: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
+  leadScientist: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/lead-scientist/`,
   approvedVersion: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/approved-version/`,
   clone: (orgId: string, formulationId: string) =>

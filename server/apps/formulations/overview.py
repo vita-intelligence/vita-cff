@@ -116,6 +116,19 @@ class SalesPersonSnapshot:
 
 
 @dataclass
+class LeadScientistSnapshot:
+    """Flat projection of the formulation's R&D lead.
+
+    Mirror of :class:`SalesPersonSnapshot` — same shape so the
+    project shell can render either chip identically.
+    """
+
+    id: str
+    name: str
+    email: str
+
+
+@dataclass
 class ProjectOverview:
     id: str
     code: str
@@ -128,6 +141,7 @@ class ProjectOverview:
     created_at: str
     owner_name: str
     sales_person: SalesPersonSnapshot | None
+    lead_scientist: LeadScientistSnapshot | None
     latest_version: int | None
     latest_version_label: str
     latest_version_saved_at: str | None
@@ -177,6 +191,20 @@ def _sales_person_snapshot(
         return None
     full = (user.get_full_name() or "").strip()
     return SalesPersonSnapshot(
+        id=str(user.id),
+        name=full or user.email,
+        email=user.email,
+    )
+
+
+def _lead_scientist_snapshot(
+    formulation: Formulation,
+) -> LeadScientistSnapshot | None:
+    user = formulation.lead_scientist
+    if user is None:
+        return None
+    full = (user.get_full_name() or "").strip()
+    return LeadScientistSnapshot(
         id=str(user.id),
         name=full or user.email,
         email=user.email,
@@ -550,6 +578,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         created_at=formulation.created_at.isoformat(),
         owner_name=_owner_name(formulation),
         sales_person=_sales_person_snapshot(formulation),
+        lead_scientist=_lead_scientist_snapshot(formulation),
         latest_version=latest.version_number if latest else None,
         latest_version_label=latest.label if latest else "",
         latest_version_saved_at=(

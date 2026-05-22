@@ -150,6 +150,7 @@ function CompactHeader({
         formulationCode={overview.code}
         projectStatus={overview.project_status}
         salesPerson={overview.sales_person}
+        leadScientist={overview.lead_scientist}
       />
     </header>
   );
