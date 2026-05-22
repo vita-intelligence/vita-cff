@@ -13,6 +13,14 @@
     "approvals": "Approvals",
     "signed": "Signed"
   },
+  "groups": {
+    "rnd": "R&D",
+    "proposal": "Proposal"
+  },
+  "tooltips": {
+    "pipeline": "Pipeline",
+    "signed": "Signed"
+  },
   "account": {
     "profile": "Profile",
     "settings": "Settings",

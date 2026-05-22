@@ -1,6 +1,11 @@
 import { getTranslations } from "next-intl/server";
 
-import { HeaderNav, type HeaderNavItem } from "@/components/layout/header-nav";
+import {
+  HeaderNav,
+  type HeaderNavGroup,
+  type HeaderNavItem,
+} from "@/components/layout/header-nav";
+import { HeaderSideIcons } from "@/components/layout/header-side-icons";
 import { UserMenu } from "@/components/layout/user-menu";
 import { MessengerBell } from "@/components/messenger";
 import {
@@ -94,17 +99,23 @@ export async function ProtectedHeader({
     hasFlatCapability(primaryOrg, "formulations", "view_signed") ||
     hasFlatCapability(primaryOrg, "proposals", "view_signed");
 
-  // Nav order follows the chronological lifecycle of a customer
-  // request through the workspace:
+  // The primary nav is split into three visual buckets so a member
+  // can find a surface without scanning a long flat row of pills:
   //
-  //   1. Dashboard       — landing page, always first.
-  //   2. Catalogues      — reference data underpinning everything below.
-  //   3. CFF             — INTAKE: customer fills the public form.
-  //   4. Projects        — work begins: formulations, versions, specs.
-  //   5. Approvals       — REVIEW: documents waiting for sign-off.
-  //   6. Signed          — closed-loop archive of signed documents.
-  //   7. Customers       — address book that proposals draw from.
-  //   8. Proposals       — END of the sales cycle: quote → sign.
+  //   1. ``navItems``  — top-level peers that don't slot into a
+  //      lifecycle stage. Dashboard is always first; Catalogues is
+  //      cross-stage reference data underpinning everything below,
+  //      so it stays at the same level rather than getting buried
+  //      inside one of the dropdowns.
+  //
+  //   2. ``navGroups`` — collapsible dropdowns per lifecycle stage:
+  //         R&D       — CFFs (intake), Projects (work), Approvals (review)
+  //         Proposal  — Customers (address book), Proposals (document)
+  //
+  //   3. ``sideItems`` — utility destinations that render as icons in
+  //      the right cluster next to the messenger bell. Pipeline and
+  //      Signed live here because they are read-mostly "where am I?"
+  //      views consulted across stages, not authoring surfaces.
   //
   // Specifications intentionally omitted — every spec sheet belongs
   // to a project, so it's surfaced inside the project workspace's
@@ -119,58 +130,81 @@ export async function ProtectedHeader({
       label: tNav("main.catalogues"),
     });
   }
+
+  const rndItems: HeaderNavItem[] = [];
   if (canSeeCFF) {
-    navItems.push({
+    rndItems.push({
       key: "cff",
       href: "/cff",
       label: tNav("main.cff"),
     });
   }
   if (canSeeFormulations) {
-    navItems.push({
+    rndItems.push({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
     });
   }
   if (canSeeApprovals) {
-    navItems.push({
+    rndItems.push({
       key: "approvals",
       href: "/approvals",
       label: tNav("main.approvals"),
     });
   }
-  if (canSeeSigned) {
-    navItems.push({
-      key: "signed",
-      href: "/signed",
-      label: tNav("main.signed"),
-    });
-  }
+
+  // Customers + Proposals share the ``proposals`` module gate —
+  // sales-only roles see them even without any Projects capability.
+  // Customers comes first (the address book the proposal draws
+  // from); Proposals is the document surface.
+  const proposalItems: HeaderNavItem[] = [];
   if (canSeeProposals) {
-    // Customers + Proposals + Pipeline share the ``proposals``
-    // module gate — sales-only roles see them even without any
-    // Projects capability. Customers comes first (the address book
-    // the proposal draws from); Proposals is the document surface;
-    // Pipeline is the CRM-style funnel view of where every deal is
-    // sitting. ``view_all`` gates org-wide visibility inside the
-    // page itself — the nav entry stays available to every
-    // ``proposals.view`` holder because they can still see their
-    // own pipeline.
-    navItems.push({
+    proposalItems.push({
       key: "customers",
       href: "/customers",
       label: tNav("main.customers"),
     });
-    navItems.push({
+    proposalItems.push({
       key: "proposals",
       href: "/proposals",
       label: tNav("main.proposals"),
     });
-    navItems.push({
+  }
+
+  const navGroups: HeaderNavGroup[] = [];
+  if (rndItems.length > 0) {
+    navGroups.push({
+      key: "rnd",
+      label: tNav("groups.rnd"),
+      items: rndItems,
+    });
+  }
+  if (proposalItems.length > 0) {
+    navGroups.push({
+      key: "proposal",
+      label: tNav("groups.proposal"),
+      items: proposalItems,
+    });
+  }
+
+  // Pipeline rides the ``proposals.view`` gate (CRM-style funnel
+  // view of where every deal sits); Signed is the closed-loop
+  // archive of signed documents, gated by either module's
+  // ``view_signed`` cap.
+  const sideItems: HeaderNavItem[] = [];
+  if (canSeeProposals) {
+    sideItems.push({
       key: "pipeline",
       href: "/pipeline",
-      label: tNav("main.pipeline"),
+      label: tNav("tooltips.pipeline"),
+    });
+  }
+  if (canSeeSigned) {
+    sideItems.push({
+      key: "signed",
+      href: "/signed",
+      label: tNav("tooltips.signed"),
     });
   }
 
@@ -198,6 +232,8 @@ export async function ProtectedHeader({
           </span>
           <HeaderNav
             items={navItems}
+            groups={navGroups}
+            sideItems={sideItems}
             active={active}
             menuLabel={tNav("menu.open")}
             closeLabel={tNav("menu.close")}
@@ -212,11 +248,13 @@ export async function ProtectedHeader({
           Sign-out into the hamburger drawer itself, so the avatar is
           redundant there and would just steal tap targets.
 
-          The messenger bell sits next to the avatar so the "new
-          message" surface is always one click away regardless of the
-          page the user is on.
+          Side-icon shortcuts (Pipeline, Signed) sit between the
+          primary nav and the messenger bell so the utility cluster
+          reads as one row of icons rather than getting mixed in with
+          the lifecycle pills.
         */}
         <div className="flex items-center gap-1 md:gap-2">
+          <HeaderSideIcons items={sideItems} active={active} />
           <MessengerBell />
           <div className="hidden md:flex">
             <UserMenu
