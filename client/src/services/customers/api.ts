@@ -153,3 +153,24 @@ export async function importCustomerFromDynamics(
   );
   return data;
 }
+
+
+/**
+ * Re-point an existing Customer's primary contact at a different
+ * Dataverse person under the same account. Called by the picker
+ * after the import endpoint returned ``409 account_already_linked``
+ * and the operator confirmed they wanted to swap rather than open
+ * the existing row as-is. Wire shape mirrors the import endpoint
+ * so the picker can forward the same suggestion payload.
+ */
+export async function swapDynamicsPrimaryContact(
+  orgId: string,
+  customerId: string,
+  contact: DynamicsContactSuggestion,
+): Promise<CustomerDto> {
+  const { data } = await apiClient.put<CustomerDto>(
+    `/api/organizations/${orgId}/customers/${customerId}/dynamics-primary-contact/`,
+    contact,
+  );
+  return data;
+}

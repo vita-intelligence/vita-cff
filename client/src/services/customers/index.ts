@@ -10,6 +10,7 @@ export {
   importCustomerFromDynamics,
   saveDynamicsConfig,
   searchDynamicsContacts,
+  swapDynamicsPrimaryContact,
   testDynamicsConnection,
   updateCustomer,
 } from "./api";

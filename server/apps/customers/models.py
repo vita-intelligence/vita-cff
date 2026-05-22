@@ -81,21 +81,60 @@ class Customer(models.Model):
         ),
     )
 
-    #: Microsoft Dynamics 365 source-of-truth identifier (Dataverse
-    #: GUID of the underlying ``contact`` or ``account`` row). NULL
-    #: for customers entered manually on Vita; set when an operator
-    #: imports a customer from the Dynamics picker. Lets ongoing
-    #: imports dedupe — the same Dynamics record always resolves to
-    #: the same local Customer row — and gives us a clean filter
-    #: (``WHERE dynamics_id IS NOT NULL``) for one-shot rollback.
+    #: Legacy Dataverse GUID — could be a contact or an account
+    #: depending on what the operator picked at import time. Kept on
+    #: the schema for rows minted before the account/contact split
+    #: landed; new rows now use the explicit
+    #: :attr:`dynamics_account_id` + :attr:`dynamics_contact_id`
+    #: pair below. The import resolver falls back to this column so
+    #: legacy rows continue to dedupe on the same Dataverse record.
     dynamics_id = models.UUIDField(
         _("dynamics id"),
         null=True,
         blank=True,
         db_index=True,
         help_text=_(
-            "Dataverse contact / account GUID this customer mirrors. "
-            "Blank for locally-created customers."
+            "Legacy Dataverse GUID — populated for customers imported "
+            "before the account/contact split. New imports populate "
+            "dynamics_account_id / dynamics_contact_id instead."
+        ),
+    )
+    #: The parent **account** GUID — the business this customer
+    #: represents. New imports anchor on this column so the same
+    #: business never gets two local rows just because the
+    #: operator picked it once as an account and once as a person.
+    #: The unique constraint below enforces this org-scoped.
+    #:
+    #: Stays ``NULL`` for legacy rows and for the rare contact that
+    #: has no parent account (e.g. a freelancer). Those continue to
+    #: resolve via :attr:`dynamics_id`.
+    dynamics_account_id = models.UUIDField(
+        _("dynamics account id"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "Dataverse account GUID — the company this customer "
+            "represents. New imports key on this so the same "
+            "business never duplicates into two local rows."
+        ),
+    )
+    #: The Dataverse contact GUID currently acting as the primary
+    #: person on this customer. The Customer's own ``name`` / ``email``
+    #: / ``phone`` / addresses are a snapshot of this contact's
+    #: Dataverse record at the last import or swap. Operators can
+    #: "swap primary contact" later to move the snapshot to a
+    #: different person under the same account.
+    dynamics_contact_id = models.UUIDField(
+        _("dynamics contact id"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "Dataverse contact GUID for the current primary contact. "
+            "Snapshot of this contact's details lives in name / email "
+            "/ phone / addresses. Swap moves the snapshot to a new "
+            "contact under the same account."
         ),
     )
     #: Timestamp of the last successful pull from Dynamics. Updated
@@ -129,13 +168,25 @@ class Customer(models.Model):
             models.Index(fields=("organization", "-updated_at")),
         ]
         constraints = [
-            # One local Customer per Dynamics record per org. Lets
-            # the import service do an atomic get-or-create keyed on
-            # ``dynamics_id`` without racing.
+            # Legacy uniqueness on the catch-all dynamics_id. Still
+            # honoured for rows that exist with that column set; new
+            # imports populate dynamics_account_id below instead and
+            # never write dynamics_id, so the two constraints don't
+            # fight.
             models.UniqueConstraint(
                 fields=("organization", "dynamics_id"),
                 condition=~models.Q(dynamics_id=None),
                 name="customers_unique_dynamics_per_org",
+            ),
+            # One local Customer per Dataverse account per org. The
+            # account is the "this is the same business" identity —
+            # anchoring new imports on this prevents the duplicate
+            # trap where the same company gets picked once as a
+            # contact and once as an account.
+            models.UniqueConstraint(
+                fields=("organization", "dynamics_account_id"),
+                condition=~models.Q(dynamics_account_id=None),
+                name="customers_unique_dynamics_account_per_org",
             ),
         ]
 

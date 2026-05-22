@@ -5,6 +5,7 @@ import { useTranslations } from "next-intl";
 import { useEffect, useState } from "react";
 
 import {
+  swapDynamicsPrimaryContact,
   useCustomers,
   useDynamicsContactSearch,
   useImportCustomerFromDynamics,
@@ -111,6 +112,21 @@ export function CustomerPicker({
 
   const importMutation = useImportCustomerFromDynamics(orgId);
   const [importError, setImportError] = useState<string | null>(null);
+  // When the import endpoint refuses with 409 ``account_already_linked``
+  // we surface a modal so the operator can either swap the primary
+  // contact on the existing customer or just open that customer
+  // as-is. Modal state holds the originally-picked suggestion + the
+  // existing customer's identifying info so the copy reads cleanly.
+  const [accountLinkConflict, setAccountLinkConflict] = useState<
+    | {
+        readonly suggestion: DynamicsContactSuggestion;
+        readonly existingCustomerId: string;
+        readonly currentContactName: string;
+        readonly currentContactEmail: string;
+      }
+    | null
+  >(null);
+  const [swapPending, setSwapPending] = useState(false);
 
   // Coarse "is anything pending" guard — used to lock the whole
   // dropdown while an import is in flight so a slow connection
@@ -132,7 +148,41 @@ export function CustomerPicker({
       onChange(customer);
       setOpen(false);
     } catch (err) {
-      // Surface the failure inline rather than silently swallowing.
+      // ``account_already_linked`` 409 — the operator picked a
+      // contact under an account that is already in their address
+      // book with a different primary contact. Surface the
+      // "swap?" modal instead of treating this as a generic
+      // failure. The error payload carries the existing row's id +
+      // the current primary contact's display info so the modal
+      // can read cleanly.
+      const apiError = err as {
+        response?: {
+          status?: number;
+          data?: {
+            code?: string;
+            existing_customer_id?: string;
+            current_contact_name?: string;
+            current_contact_email?: string;
+          };
+        };
+      };
+      if (
+        apiError?.response?.status === 409
+        && apiError.response.data?.code === "account_already_linked"
+        && apiError.response.data.existing_customer_id
+      ) {
+        setAccountLinkConflict({
+          suggestion: contact,
+          existingCustomerId:
+            apiError.response.data.existing_customer_id,
+          currentContactName:
+            apiError.response.data.current_contact_name ?? "",
+          currentContactEmail:
+            apiError.response.data.current_contact_email ?? "",
+        });
+        return;
+      }
+      // Surface other failures inline rather than silently swallowing.
       // The previous "swallow and let them pick a local row" rule
       // assumed users with healthy connections; on flaky networks
       // the silent path turned into a rage-click loop with no
@@ -146,6 +196,45 @@ export function CustomerPicker({
     } finally {
       setImportingId(null);
     }
+  };
+
+  const handleConfirmSwap = async () => {
+    if (!accountLinkConflict || swapPending) return;
+    setSwapPending(true);
+    try {
+      const customer = await swapDynamicsPrimaryContact(
+        orgId,
+        accountLinkConflict.existingCustomerId,
+        accountLinkConflict.suggestion,
+      );
+      onChange(customer);
+      setAccountLinkConflict(null);
+      setOpen(false);
+    } catch (err) {
+      setImportError(
+        err instanceof Error && err.message
+          ? err.message
+          : tCustomers("picker.dynamics_import_failed"),
+      );
+    } finally {
+      setSwapPending(false);
+    }
+  };
+
+  const handleOpenExistingFromConflict = () => {
+    if (!accountLinkConflict) return;
+    // Resolve the existing local row from the already-loaded
+    // matches list when possible; otherwise we still close the
+    // modal and let the operator search for it. The address-book
+    // entry is reachable through the local search above.
+    const found = matches.find(
+      (m) => m.id === accountLinkConflict.existingCustomerId,
+    );
+    if (found) {
+      onChange(found);
+      setOpen(false);
+    }
+    setAccountLinkConflict(null);
   };
 
   return (
@@ -344,6 +433,104 @@ export function CustomerPicker({
       {hint ? (
         <p className="text-xs text-ink-500">{hint}</p>
       ) : null}
+      {accountLinkConflict ? (
+        <AccountAlreadyLinkedModal
+          suggestion={accountLinkConflict.suggestion}
+          currentContactName={accountLinkConflict.currentContactName}
+          currentContactEmail={accountLinkConflict.currentContactEmail}
+          swapPending={swapPending}
+          onSwap={handleConfirmSwap}
+          onOpenExisting={handleOpenExistingFromConflict}
+          onCancel={() => setAccountLinkConflict(null)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+
+/**
+ * Modal surfaced when the Dynamics import endpoint refuses with
+ * ``409 account_already_linked``. The operator picked a contact
+ * whose parent account is already linked to a local customer with
+ * a *different* primary contact. The right resolution is rarely
+ * "create a second local row" — it's "swap the primary contact on
+ * the existing row" or "open the existing row as-is". This modal
+ * surfaces both, plus a cancel.
+ */
+function AccountAlreadyLinkedModal({
+  suggestion,
+  currentContactName,
+  currentContactEmail,
+  swapPending,
+  onSwap,
+  onOpenExisting,
+  onCancel,
+}: {
+  suggestion: DynamicsContactSuggestion;
+  currentContactName: string;
+  currentContactEmail: string;
+  swapPending: boolean;
+  onSwap: () => void;
+  onOpenExisting: () => void;
+  onCancel: () => void;
+}) {
+  const tCustomers = useTranslations("customers");
+  const companyLabel = suggestion.company || tCustomers("picker.this_account");
+  const currentLabel =
+    currentContactName || currentContactEmail || tCustomers("picker.no_primary");
+  const incomingLabel =
+    suggestion.name || suggestion.email || suggestion.dynamics_id;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-1000/40 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl ring-1 ring-ink-200">
+        <h2 className="text-base font-semibold text-ink-1000">
+          {tCustomers("picker.account_already_linked_title")}
+        </h2>
+        <p className="mt-2 text-sm text-ink-700">
+          {tCustomers("picker.account_already_linked_body", {
+            company: companyLabel,
+            current: currentLabel,
+            incoming: incomingLabel,
+          })}
+        </p>
+        <div className="mt-5 flex flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={swapPending}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50 disabled:opacity-50"
+          >
+            {tCustomers("picker.account_already_linked_cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={onOpenExisting}
+            disabled={swapPending}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+          >
+            {tCustomers("picker.account_already_linked_open_existing")}
+          </button>
+          <button
+            type="button"
+            onClick={onSwap}
+            disabled={swapPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-2 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+          >
+            {swapPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : null}
+            {tCustomers("picker.account_already_linked_swap")}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

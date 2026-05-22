@@ -73,6 +73,14 @@ export interface DynamicsContactSuggestion {
   readonly email: string;
   readonly phone: string;
   readonly address: string;
+  /** Parent Dataverse account GUID. ``null`` when the picked row
+   *  is a contact with no parent account (rare — freelancer
+   *  records). The import endpoint anchors on this so the same
+   *  business never duplicates into two local customers. */
+  readonly account_id: string | null;
+  /** Dataverse contact GUID. ``null`` when the picked row is an
+   *  account directly (no specific person chosen yet). */
+  readonly contact_id: string | null;
 }
 
 

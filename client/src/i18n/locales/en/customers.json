@@ -57,6 +57,13 @@
     "dynamics_managed_hint": "This workspace imports customers from Microsoft Dynamics. If the contact isn't here, add it in Dynamics first.",
     "importing": "Importing customer from Dynamics…",
     "dynamics_import_failed": "Couldn't import that contact. Check your connection and try again.",
-    "dismiss": "Dismiss"
+    "dismiss": "Dismiss",
+    "this_account": "this account",
+    "no_primary": "no primary contact set",
+    "account_already_linked_title": "Account already linked",
+    "account_already_linked_body": "{company} is already in your customers (current primary contact: {current}). Would you like to switch the primary contact to {incoming}?",
+    "account_already_linked_swap": "Switch primary contact",
+    "account_already_linked_open_existing": "Open existing customer",
+    "account_already_linked_cancel": "Cancel"
   }
 }

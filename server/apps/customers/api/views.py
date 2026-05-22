@@ -38,7 +38,11 @@ from apps.customers.services import (
     create_customer,
     delete_customer,
     get_customer,
+    AccountAlreadyLinked,
+    DynamicsContactEmailCollision,
+    PrimaryContactAccountMismatch,
     import_customer_from_dynamics,
+    swap_primary_contact,
     list_customers,
     search_dynamics_contacts,
     serialize_dynamics_config_for_api,
@@ -462,6 +466,11 @@ class DynamicsCustomerSearchView(APIView):
                         "email": c.email,
                         "phone": c.phone,
                         "address": c.address,
+                        # New explicit GUIDs the picker must forward
+                        # to the import endpoint so the account-first
+                        # resolution can deduplicate properly.
+                        "account_id": c.account_id,
+                        "contact_id": c.contact_id,
                     }
                     for c in contacts
                 ],
@@ -506,6 +515,12 @@ class DynamicsCustomerImportView(APIView):
                 {"dynamics_id": ["required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # ``account_id`` / ``contact_id`` were added to the search
+        # payload so the picker can pass them through here. Old
+        # clients that don't send them still work — the resolver
+        # falls back to the legacy ``dynamics_id`` lookup.
+        account_id = (body.get("account_id") or "").strip() or None
+        contact_id = (body.get("contact_id") or "").strip() or None
         contact = DynamicsContact(
             dynamics_id=dynamics_id,
             name=str(body.get("name") or "").strip(),
@@ -513,6 +528,8 @@ class DynamicsCustomerImportView(APIView):
             email=str(body.get("email") or "").strip(),
             phone=str(body.get("phone") or "").strip(),
             address=str(body.get("address") or "").strip(),
+            account_id=account_id,
+            contact_id=contact_id,
         )
         try:
             customer = import_customer_from_dynamics(
@@ -525,7 +542,94 @@ class DynamicsCustomerImportView(APIView):
                 {"detail": ["dynamics_payload_invalid"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except AccountAlreadyLinked as exc:
+            # 409 carrying the existing row's id + the current
+            # primary contact's display info so the FE can render
+            # "ACME is already in your customers (current contact:
+            # Linda Brown). Switch primary contact to Steve?"
+            return Response(
+                {
+                    "code": "account_already_linked",
+                    "detail": ["account_already_linked"],
+                    "existing_customer_id": str(exc.existing_customer_id),
+                    "current_contact_name": exc.current_contact_name,
+                    "current_contact_email": exc.current_contact_email,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except DynamicsContactEmailCollision:
+            return Response(
+                {
+                    "code": "dynamics_contact_email_collision",
+                    "detail": ["dynamics_contact_email_collision"],
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             CustomerReadSerializer(customer).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class DynamicsCustomerSwapPrimaryContactView(APIView):
+    """``PUT /api/organizations/<org>/customers/<id>/dynamics-primary-contact/``.
+
+    Re-points an existing Customer's primary contact at a different
+    Dataverse person under the same account. The FE calls this
+    after the import endpoint refused with ``account_already_linked``
+    and the operator confirmed they wanted to swap rather than open
+    the existing row as-is.
+
+    Body shape matches the Dynamics import endpoint so the FE can
+    forward the same ``DynamicsContact`` payload the picker emitted.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def put(
+        self, request: Request, org_id: str, customer_id: str
+    ) -> Response:
+        try:
+            customer = get_customer(
+                organization=self.organization, customer_id=customer_id,
+            )
+        except CustomerNotFound as exc:
+            raise NotFound() from exc
+
+        body = request.data if isinstance(request.data, dict) else {}
+        account_id = (body.get("account_id") or "").strip() or None
+        contact_id = (body.get("contact_id") or "").strip() or None
+        contact = DynamicsContact(
+            dynamics_id=str(body.get("dynamics_id") or "").strip(),
+            name=str(body.get("name") or "").strip(),
+            company=str(body.get("company") or "").strip(),
+            email=str(body.get("email") or "").strip(),
+            phone=str(body.get("phone") or "").strip(),
+            address=str(body.get("address") or "").strip(),
+            account_id=account_id,
+            contact_id=contact_id,
+        )
+        try:
+            updated = swap_primary_contact(
+                customer=customer,
+                actor=request.user,
+                contact=contact,
+            )
+        except PrimaryContactAccountMismatch:
+            return Response(
+                {
+                    "code": "primary_contact_account_mismatch",
+                    "detail": ["primary_contact_account_mismatch"],
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except DynamicsConfigInvalid:
+            return Response(
+                {"detail": ["dynamics_payload_invalid"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            CustomerReadSerializer(updated).data,
+            status=status.HTTP_200_OK,
         )

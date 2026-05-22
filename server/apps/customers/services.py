@@ -143,6 +143,47 @@ class CustomerEmailAlreadyExists(Exception):
         self.existing_customer_id = existing_customer_id
 
 
+class AccountAlreadyLinked(Exception):
+    """The Dataverse account this contact belongs to is already
+    linked to a local Customer, but the current primary contact
+    on that local row is a *different* Dataverse person than the
+    one the operator just picked.
+
+    The right resolution is rarely "create a second Customer" —
+    it's almost always "swap the primary contact pointer on the
+    existing row". The API layer maps this to a 409 carrying the
+    existing customer's id + the current contact's display name
+    so the FE can present a "switch primary contact?" affordance
+    instead of silently picking either branch.
+    """
+
+    code = "account_already_linked"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        existing_customer_id: Any,
+        current_contact_name: str,
+        current_contact_email: str,
+    ) -> None:
+        super().__init__(message)
+        self.existing_customer_id = existing_customer_id
+        self.current_contact_name = current_contact_name
+        self.current_contact_email = current_contact_email
+
+
+class PrimaryContactAccountMismatch(Exception):
+    """The :func:`swap_primary_contact` service was asked to point
+    a Customer's primary contact at a Dataverse person that
+    belongs to a different account than the Customer is anchored
+    on. Almost certainly a bug in the FE swap modal — the picker
+    should only surface contacts under the same account.
+    """
+
+    code = "primary_contact_account_mismatch"
+
+
 def _with_portal_account_annotation(qs: QuerySet[Customer]) -> QuerySet[Customer]:
     """Annotate each row with two booleans the FE renders:
 
@@ -654,19 +695,62 @@ def import_customer_from_dynamics(
             "Dynamics contact payload is missing the source id."
         )
 
-    existing = (
-        Customer.objects.select_for_update()
-        .filter(organization=organization, dynamics_id=contact.dynamics_id)
-        .first()
-    )
+    # Resolution order:
+    #
+    #   1. New account-anchored lookup — if the picked entity has a
+    #      parent account GUID, every Customer that represents the
+    #      same company resolves to the same local row.
+    #   2. Legacy ``dynamics_id`` lookup — for rows minted before
+    #      the account/contact split. Keeps old refreshes working.
+    #   3. Adopt-by-email — the manual-row-then-Dynamics-imports
+    #      case.
+    #   4. Create new.
+    existing: Customer | None = None
+    if contact.account_id:
+        existing = (
+            Customer.objects.select_for_update()
+            .filter(
+                organization=organization,
+                dynamics_account_id=contact.account_id,
+            )
+            .first()
+        )
+        if existing is not None and contact.contact_id:
+            # Account match, but the operator picked a different
+            # contact than the row's current primary. Refuse — the
+            # right resolution is swap_primary_contact, not silently
+            # rewriting the snapshot. ``existing.dynamics_contact_id``
+            # may be ``None`` (row was anchored on an account pick
+            # with no contact yet) — in that case we *accept* the
+            # contact and refresh the row below, treating this as
+            # "set primary contact for the first time".
+            current_contact_id = existing.dynamics_contact_id
+            if (
+                current_contact_id is not None
+                and str(current_contact_id) != contact.contact_id
+            ):
+                raise AccountAlreadyLinked(
+                    "This account is already linked to a local "
+                    "customer with a different primary contact.",
+                    existing_customer_id=existing.id,
+                    current_contact_name=existing.name or "",
+                    current_contact_email=existing.email or "",
+                )
 
-    # Adopt-by-email path — only runs when the Dataverse GUID
-    # doesn't match anything yet. Catches the common
-    # manually-created-then-Dynamics-came-along case: staff typed
-    # the customer locally before integration was wired up; later
-    # Dynamics is enabled and imports the same person. Without this
-    # path, we'd create a second row with the same email — exactly
-    # the duplicate-customer trap the audit flagged.
+    if existing is None:
+        existing = (
+            Customer.objects.select_for_update()
+            .filter(organization=organization, dynamics_id=contact.dynamics_id)
+            .first()
+        )
+
+    # Adopt-by-email path — only runs when no GUID-based lookup hit.
+    # Catches the common manually-created-then-Dynamics-came-along
+    # case: staff typed the customer locally before integration was
+    # wired up; later Dynamics is enabled and imports the same
+    # person. Without this path, we'd create a second row with the
+    # same email — exactly the duplicate-customer trap the audit
+    # flagged.
     if existing is None and (contact.email or "").strip():
         candidate = (
             Customer.objects.select_for_update()
@@ -677,14 +761,25 @@ def import_customer_from_dynamics(
             .first()
         )
         if candidate is not None:
-            if candidate.dynamics_id is None:
-                # Adopt — attach the Dataverse GUID to the manual
-                # row. The local FKs (proposals, client_accounts,
-                # CFFs) stay where they are; we only set the link.
-                candidate.dynamics_id = contact.dynamics_id
-                # The save below records this via the standard
-                # refresh path so the audit row also captures the
-                # adoption.
+            if (
+                candidate.dynamics_id is None
+                and candidate.dynamics_account_id is None
+            ):
+                # Adopt — attach the Dataverse GUIDs to the manual
+                # row. Two shapes land here:
+                #   * Modern picks with an account_id → set the
+                #     new account/contact pair; the canonical link
+                #     going forward is the account-first path.
+                #   * Legacy picks with no account_id (e.g. a
+                #     freelancer contact with no parent account)
+                #     → fall back to setting the catch-all
+                #     ``dynamics_id`` so future imports of the
+                #     same record still dedupe via that column.
+                if contact.account_id:
+                    candidate.dynamics_account_id = contact.account_id
+                    candidate.dynamics_contact_id = contact.contact_id
+                else:
+                    candidate.dynamics_id = contact.dynamics_id
                 existing = candidate
             else:
                 # Two Dataverse contacts can't share an email
@@ -729,17 +824,33 @@ def import_customer_from_dynamics(
         if dataverse_address and not (existing.delivery_address or "").strip():
             existing.delivery_address = dataverse_address
 
+        # Ensure the row carries the canonical account+contact GUIDs
+        # going forward. Two cases land here:
+        #   * Account-first match — these are already set on the row.
+        #   * Legacy ``dynamics_id`` match or adopt-by-email — we
+        #     SET them now so the next import resolves via the
+        #     account-first path (which is what kills the duplicates).
+        if (
+            contact.account_id
+            and existing.dynamics_account_id is None
+        ):
+            existing.dynamics_account_id = contact.account_id
+        if (
+            contact.contact_id
+            and existing.dynamics_contact_id is None
+        ):
+            existing.dynamics_contact_id = contact.contact_id
+
         existing.dynamics_synced_at = timezone.now()
         existing.updated_by = actor
-        # Always include ``dynamics_id`` in update_fields because the
-        # adopt path may have just set it; in the canonical refresh
-        # path this is a no-op write.
         existing.save(
             update_fields=(
                 *_DYNAMICS_IDENTITY_FIELDS,
                 "email",
                 *_DYNAMICS_SOFT_FIELDS,
                 "dynamics_id",
+                "dynamics_account_id",
+                "dynamics_contact_id",
                 "dynamics_synced_at",
                 "updated_by",
                 "updated_at",
@@ -755,6 +866,14 @@ def import_customer_from_dynamics(
         )
         return existing
 
+    # New rows use the explicit account+contact pair as the canonical
+    # link. Set ``dynamics_id`` only when there is no account_id —
+    # that's the freelancer-ish contact-with-no-parent case where the
+    # contact GUID is the only stable identifier we have to dedupe
+    # against future imports.
+    new_dynamics_id = (
+        contact.dynamics_id if contact.account_id is None else None
+    )
     customer = Customer.objects.create(
         organization=organization,
         name=contact.name,
@@ -764,7 +883,9 @@ def import_customer_from_dynamics(
         invoice_address=contact.address,
         delivery_address=contact.address,
         notes="",
-        dynamics_id=contact.dynamics_id,
+        dynamics_id=new_dynamics_id,
+        dynamics_account_id=contact.account_id,
+        dynamics_contact_id=contact.contact_id,
         dynamics_synced_at=timezone.now(),
         created_by=actor,
         updated_by=actor,
@@ -774,6 +895,103 @@ def import_customer_from_dynamics(
         actor=actor,
         action="customer.dynamics_imported",
         target=customer,
+        after=snapshot(customer),
+    )
+    return customer
+
+
+@transaction.atomic
+def swap_primary_contact(
+    *,
+    customer: Customer,
+    actor: Any,
+    contact: DynamicsContact,
+) -> Customer:
+    """Re-point a Customer's primary contact at a different person
+    under the same Dataverse account.
+
+    This is what the FE calls when the import endpoint refused with
+    :class:`AccountAlreadyLinked`. The operator explicitly opted to
+    swap the snapshot to the new contact — we update the local
+    row's contact-tracking fields + the snapshot (name / email /
+    phone / addresses) and audit-log the swap. The
+    :attr:`Customer.dynamics_account_id` itself never changes — by
+    definition the new contact must belong to the same account.
+
+    Same portal-locked + fill-empty rules apply as the canonical
+    Dynamics import:
+
+    * ``email`` stays put when an activated portal account is
+      bound to this customer (portal login owns its address).
+    * ``phone`` / addresses fill blanks only — never overwrite a
+      locally-curated value.
+    * ``name`` always refreshes to the new contact's name (it is
+      the identity field operators want to see swap).
+    """
+
+    if not contact.contact_id:
+        raise DynamicsConfigInvalid(
+            "Swap payload is missing the contact GUID.",
+        )
+    if not contact.account_id:
+        raise PrimaryContactAccountMismatch()
+    if (
+        customer.dynamics_account_id is None
+        or str(customer.dynamics_account_id) != str(contact.account_id)
+    ):
+        # The contact lives under a different account than the
+        # local row is anchored on. Refuse — the FE should only
+        # surface contacts under the same account in the swap
+        # picker; a mismatch here is a bug we want to fail loud.
+        raise PrimaryContactAccountMismatch()
+
+    before = snapshot(customer)
+
+    # Identity field — always overwrite to the new contact's name.
+    customer.name = contact.name
+    customer.dynamics_contact_id = contact.contact_id
+
+    # Email — portal-locked when an activated account is bound.
+    from apps.client_portal.models import ClientAccount  # local import
+
+    portal_locked = ClientAccount.objects.filter(
+        customer=customer,
+        activated_at__isnull=False,
+    ).exists()
+    if not portal_locked:
+        customer.email = contact.email
+
+    # Soft fields — patch blanks only.
+    dataverse_phone = (contact.phone or "").strip()
+    if dataverse_phone and not (customer.phone or "").strip():
+        customer.phone = dataverse_phone
+    dataverse_address = (contact.address or "").strip()
+    if dataverse_address and not (customer.invoice_address or "").strip():
+        customer.invoice_address = dataverse_address
+    if dataverse_address and not (customer.delivery_address or "").strip():
+        customer.delivery_address = dataverse_address
+
+    customer.dynamics_synced_at = timezone.now()
+    customer.updated_by = actor
+    customer.save(
+        update_fields=(
+            "name",
+            "email",
+            "phone",
+            "invoice_address",
+            "delivery_address",
+            "dynamics_contact_id",
+            "dynamics_synced_at",
+            "updated_by",
+            "updated_at",
+        ),
+    )
+    record_audit(
+        organization=customer.organization,
+        actor=actor,
+        action="customer.primary_contact_swapped",
+        target=customer,
+        before=before,
         after=snapshot(customer),
     )
     return customer

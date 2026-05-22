@@ -45,9 +45,23 @@ class DynamicsContact:
 
     Field naming follows the local :class:`Customer` model so the
     import service can map fields 1:1 without a translation layer.
-    ``dynamics_id`` is the Dataverse GUID (string form) — stored as
-    ``Customer.dynamics_id`` so a second import of the same record
-    dedupes to the same local row.
+
+    Two Dataverse identifiers travel together now:
+
+    * :attr:`account_id` — the **company** GUID (Dataverse account
+      row). New imports anchor on this so the same business can
+      never duplicate into two local rows whether the operator
+      picked the contact or the account. ``None`` only when the
+      picked entity is a contact with no parent account (rare —
+      freelancer-ish records).
+    * :attr:`contact_id` — the **person** GUID (Dataverse contact
+      row). ``None`` when the picked entity was an account row
+      directly with no contact selected.
+
+    :attr:`dynamics_id` is the legacy combined field — whatever
+    GUID the search row carried. Kept so old call sites that only
+    know about the single GUID still work; new code should prefer
+    the explicit ``account_id`` / ``contact_id`` pair.
     """
 
     dynamics_id: str
@@ -56,6 +70,8 @@ class DynamicsContact:
     email: str
     phone: str
     address: str
+    account_id: str | None = None
+    contact_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -489,14 +505,27 @@ class HttpDataverseClient:
                 row.get("telephone1") or row.get("mobilephone") or ""
             ).strip()
             company = _lookup_formatted(row, "_parentcustomerid_value")
+            contact_id = str(row.get("contactid") or "").strip()
+            # Parent account GUID (the company this contact belongs
+            # to). ``_parentcustomerid_value`` is the FK column; when
+            # the contact has no parent account on file, this is
+            # blank and we leave ``account_id`` as ``None``. The
+            # import resolver falls back to the legacy
+            # ``dynamics_id`` path for such records.
+            account_id_raw = str(
+                row.get("_parentcustomerid_value") or ""
+            ).strip()
+            account_id = account_id_raw or None
             contacts.append(
                 DynamicsContact(
-                    dynamics_id=str(row.get("contactid") or "").strip(),
+                    dynamics_id=contact_id,
                     name=name,
                     company=company,
                     email=str(row.get("emailaddress1") or "").strip(),
                     phone=phone,
                     address=address,
+                    account_id=account_id,
+                    contact_id=contact_id or None,
                 )
             )
         return [c for c in contacts if c.dynamics_id]
@@ -565,14 +594,21 @@ class HttpDataverseClient:
                 row.get("address1_postalcode"),
                 row.get("address1_country"),
             )
+            account_id = str(row.get("accountid") or "").strip()
             contacts.append(
                 DynamicsContact(
-                    dynamics_id=str(row.get("accountid") or "").strip(),
+                    dynamics_id=account_id,
                     name=_lookup_formatted(row, "_primarycontactid_value"),
                     company=str(row.get("name") or "").strip(),
                     email=str(row.get("emailaddress1") or "").strip(),
                     phone=str(row.get("telephone1") or "").strip(),
                     address=address,
+                    # Account rows carry only the account GUID; the
+                    # primary-contact GUID is intentionally left blank
+                    # so the import treats this as "no contact picked
+                    # yet" (the operator picked the company directly).
+                    account_id=account_id or None,
+                    contact_id=None,
                 )
             )
         return [c for c in contacts if c.dynamics_id]

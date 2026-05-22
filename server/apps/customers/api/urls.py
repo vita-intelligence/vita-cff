@@ -8,6 +8,7 @@ from apps.customers.api.views import (
     CustomerPortalInviteView,
     DynamicsCustomerImportView,
     DynamicsCustomerSearchView,
+    DynamicsCustomerSwapPrimaryContactView,
     DynamicsIntegrationView,
     DynamicsTestConnectionView,
 )
@@ -41,6 +42,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/customers/<uuid:customer_id>/portal-invites/",
         CustomerPortalInviteView.as_view(),
         name="customer-portal-invite",
+    ),
+    path(
+        "organizations/<uuid:org_id>/customers/<uuid:customer_id>/dynamics-primary-contact/",
+        DynamicsCustomerSwapPrimaryContactView.as_view(),
+        name="customer-dynamics-primary-contact",
     ),
     path(
         "organizations/<uuid:org_id>/integrations/dynamics/",

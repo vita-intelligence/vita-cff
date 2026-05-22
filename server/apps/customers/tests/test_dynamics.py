@@ -548,3 +548,216 @@ class TestImportCustomerFromDynamics:
         assert Customer.objects.filter(
             dynamics_id=self._contact().dynamics_id
         ).count() == 2
+
+
+# ---------------------------------------------------------------------------
+# Service: account-first resolution + swap_primary_contact
+# ---------------------------------------------------------------------------
+
+
+class TestAccountAnchoredImport:
+    """Picking the same Dataverse account from two different angles
+    (the account row directly, or a contact under that account)
+    must resolve to the same local Customer — never two rows.
+    """
+
+    ACCOUNT_GUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    CONTACT_GUID_A = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    CONTACT_GUID_B = "cccccccc-cccc-cccc-cccc-cccccccccccc"
+
+    def _contact_a(self) -> DynamicsContact:
+        return DynamicsContact(
+            dynamics_id=self.CONTACT_GUID_A,
+            name="Linda Brown",
+            company="ACME",
+            email="linda@acme.example",
+            phone="+44 0",
+            address="HQ",
+            account_id=self.ACCOUNT_GUID,
+            contact_id=self.CONTACT_GUID_A,
+        )
+
+    def _contact_b(self) -> DynamicsContact:
+        return DynamicsContact(
+            dynamics_id=self.CONTACT_GUID_B,
+            name="Steve Smith",
+            company="ACME",
+            email="steve@acme.example",
+            phone="+44 1",
+            address="HQ",
+            account_id=self.ACCOUNT_GUID,
+            contact_id=self.CONTACT_GUID_B,
+        )
+
+    def test_first_import_creates_account_anchored_row(self) -> None:
+        org = OrganizationFactory()
+        customer = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+        assert (
+            str(customer.dynamics_account_id) == self.ACCOUNT_GUID
+        )
+        assert (
+            str(customer.dynamics_contact_id) == self.CONTACT_GUID_A
+        )
+        # ``dynamics_id`` left NULL — new rows under the
+        # account/contact split don't write the legacy column.
+        assert customer.dynamics_id is None
+
+    def test_picking_account_then_contact_dedupes_to_same_row(
+        self,
+    ) -> None:
+        # Account row imports first (operator picked "ACME"). Then
+        # the same operator picks a contact under that account
+        # ("Linda"). Both must resolve to the same Customer row.
+        from apps.customers.dynamics import DynamicsContact
+
+        org = OrganizationFactory()
+        account_pick = DynamicsContact(
+            dynamics_id=self.ACCOUNT_GUID,
+            name="",
+            company="ACME",
+            email="info@acme.example",
+            phone="+44 100",
+            address="HQ",
+            account_id=self.ACCOUNT_GUID,
+            contact_id=None,
+        )
+        first = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=account_pick,
+        )
+        # Account row sets account_id, leaves contact_id NULL —
+        # the picker hasn't selected a person yet.
+        assert first.dynamics_contact_id is None
+
+        # Now pick Linda. Same account → same Customer row.
+        second = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+        assert second.pk == first.pk
+        # Contact ID now landed on the row.
+        second.refresh_from_db()
+        assert (
+            str(second.dynamics_contact_id) == self.CONTACT_GUID_A
+        )
+
+    def test_different_contact_same_account_refuses(
+        self,
+    ) -> None:
+        from apps.customers.services import AccountAlreadyLinked
+
+        org = OrganizationFactory()
+        first = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+
+        # Operator picks Steve (different contact, same account).
+        # The resolver refuses — the right action is swap, not a
+        # silent overwrite of Linda's snapshot.
+        with pytest.raises(AccountAlreadyLinked) as excinfo:
+            import_customer_from_dynamics(
+                organization=org,
+                actor=org.created_by,
+                contact=self._contact_b(),
+            )
+        assert excinfo.value.existing_customer_id == first.id
+        # Display info for the modal — current primary's name +
+        # email so the FE can render "swap from Linda Brown
+        # (linda@acme.example) to Steve Smith?"
+        assert "Linda" in excinfo.value.current_contact_name
+
+    def test_swap_primary_contact_repoints_row(self) -> None:
+        from apps.customers.services import swap_primary_contact
+
+        org = OrganizationFactory()
+        customer = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+
+        updated = swap_primary_contact(
+            customer=customer,
+            actor=org.created_by,
+            contact=self._contact_b(),
+        )
+        updated.refresh_from_db()
+        # Account stayed put; contact pointer + snapshot moved.
+        assert (
+            str(updated.dynamics_account_id) == self.ACCOUNT_GUID
+        )
+        assert (
+            str(updated.dynamics_contact_id) == self.CONTACT_GUID_B
+        )
+        assert updated.name == "Steve Smith"
+        assert updated.email == "steve@acme.example"
+
+    def test_swap_to_different_account_refused(self) -> None:
+        from apps.customers.services import (
+            PrimaryContactAccountMismatch,
+            swap_primary_contact,
+        )
+
+        org = OrganizationFactory()
+        customer = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+
+        # Try to swap to a contact under a different account —
+        # service must refuse to keep the account anchor stable.
+        wrong_account = DynamicsContact(
+            dynamics_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+            name="Wrong",
+            company="Other Co",
+            email="wrong@other.example",
+            phone="",
+            address="",
+            account_id="eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+            contact_id="dddddddd-dddd-dddd-dddd-dddddddddddd",
+        )
+        with pytest.raises(PrimaryContactAccountMismatch):
+            swap_primary_contact(
+                customer=customer,
+                actor=org.created_by,
+                contact=wrong_account,
+            )
+
+    def test_swap_respects_portal_locked_email(self) -> None:
+        # When the Customer has an activated portal account, the
+        # email stays put even on a swap — same rule as the
+        # canonical Dynamics refresh.
+        from apps.client_portal.models import ClientAccount
+        from apps.customers.services import swap_primary_contact
+        from django.utils import timezone
+
+        org = OrganizationFactory()
+        customer = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact_a(),
+        )
+        ClientAccount.objects.create(
+            email=customer.email,
+            customer=customer,
+            activated_at=timezone.now(),
+        )
+
+        swap_primary_contact(
+            customer=customer,
+            actor=org.created_by,
+            contact=self._contact_b(),
+        )
+        customer.refresh_from_db()
+        # Name swapped, email locked.
+        assert customer.name == "Steve Smith"
+        assert customer.email == "linda@acme.example"
