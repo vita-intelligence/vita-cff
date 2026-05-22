@@ -142,3 +142,108 @@ class Customer(models.Model):
     def __str__(self) -> str:
         pieces = [self.company, self.name]
         return " · ".join(p for p in pieces if p) or str(self.id)
+
+
+class CustomerEmailAliasSource(models.TextChoices):
+    """How a given alias row was created.
+
+    Kept as a TextChoices so future sources (e.g. Dynamics-side
+    historical addresses, staff-side merge consolidation) can be
+    added without touching the schema.
+    """
+
+    PORTAL_EMAIL_CHANGE = "portal_email_change", _("Portal email change")
+
+
+class CustomerEmailAlias(models.Model):
+    """Historical email addresses associated with a :class:`Customer`.
+
+    Pure additive structure — never replaces or rewrites the
+    canonical :attr:`Customer.email`. Captures *prior* addresses so
+    portal-side queries that join by email (notably
+    :func:`apps.cff_submissions.services.list_customer_cffs`) can
+    union across the current and historical addresses. Without this,
+    when a customer changes their portal email, every CFF they
+    submitted under the previous address silently disappears from
+    their portal view — the denormalised ``submitter_email`` on the
+    CFF row is frozen at intake by design, and a single-email join
+    can't span the change.
+
+    Writes are deliberately additive: each unique
+    ``(customer, lower(email))`` pair gets at most one row, so a
+    customer who flips between two addresses doesn't accumulate
+    duplicates. The constraint also lets the writer use
+    ``get_or_create`` without racing.
+
+    Lifecycle:
+
+    * Created when :func:`apps.client_portal.profile_services
+      .confirm_email_change` flips a customer's email — the *prior*
+      address is archived here before the canonical row is updated.
+    * Never auto-deleted. The whole point is permanence: the
+      customer's old CFFs should remain reachable forever, including
+      after multiple subsequent email rotations.
+
+    Existing customers whose email changed *before* this table
+    existed have no aliases (we don't backfill historical changes —
+    we don't know what the prior address was without the audit log,
+    and even there it's per-event noise). Going forward every change
+    leaves a row.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    customer = models.ForeignKey(
+        Customer,
+        on_delete=models.CASCADE,
+        related_name="email_aliases",
+        help_text=_(
+            "The customer this prior email belonged to. ``CASCADE`` "
+            "because aliases are intrinsic to their owner; deleting "
+            "the customer drops them too."
+        ),
+    )
+    email = models.EmailField(
+        _("email"),
+        help_text=_(
+            "Lower-case-normalised historical address. Always "
+            "different from the customer's current ``email`` — the "
+            "writer skips creating an alias for the customer's own "
+            "canonical address."
+        ),
+    )
+    source = models.CharField(
+        _("source"),
+        max_length=32,
+        choices=CustomerEmailAliasSource.choices,
+        default=CustomerEmailAliasSource.PORTAL_EMAIL_CHANGE,
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("customer email alias")
+        verbose_name_plural = _("customer email aliases")
+        ordering = ("-created_at",)
+        constraints = [
+            # One row per (customer, email) pair. A customer who
+            # ping-pongs between two addresses accumulates a single
+            # alias per past address rather than a new row on every
+            # cycle. The ``Lower`` wrapper guarantees the dedup is
+            # case-insensitive — ``Alex@…`` and ``alex@…`` are the
+            # same alias.
+            models.UniqueConstraint(
+                models.functions.Lower("email"),
+                "customer",
+                name="customer_email_alias_unique_per_customer",
+            ),
+        ]
+        indexes = [
+            # Lookup the join uses on the portal side — find every
+            # customer that has historically used a given address.
+            models.Index(
+                models.functions.Lower("email"),
+                name="cust_email_alias_lower_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.email} → {self.customer_id}"

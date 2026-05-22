@@ -379,6 +379,10 @@ class TestImportCustomerFromDynamics:
         ).count() == 1
 
     def test_reimport_refreshes_identity_fields(self) -> None:
+        # New rule: ``name`` / ``company`` always refresh (identity
+        # — Dataverse owns this); ``email`` refreshes only when no
+        # activated portal account exists; ``phone`` / addresses
+        # only fill when locally blank (manual fixes are protected).
         org = OrganizationFactory()
         first = import_customer_from_dynamics(
             organization=org,
@@ -406,9 +410,124 @@ class TestImportCustomerFromDynamics:
         second.refresh_from_db()
         assert second.name == "James Brown II"
         assert second.company == "ACME Wellness"
+        # Email refreshed because no portal account is bound to
+        # this customer in this test.
         assert second.email == "james.brown@acme.example"
+        # Phone + address were ALREADY populated by the first
+        # import — the new fill-empty rule means the second import
+        # leaves them alone. Locally-curated values stay sacred.
+        assert second.phone == self._contact().phone
+        assert second.invoice_address == self._contact().address
         # Notes survived — locally-edited fields are protected.
         assert second.notes == "Prefers email"
+
+    def test_reimport_preserves_portal_locked_email(self) -> None:
+        # New rule: when a ``ClientAccount`` is activated against
+        # this Customer, Dataverse can't overwrite ``email``. The
+        # portal login owns that field once a customer has set a
+        # password.
+        from apps.client_portal.models import ClientAccount
+        from django.utils import timezone
+
+        org = OrganizationFactory()
+        first = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=self._contact(),
+        )
+        ClientAccount.objects.create(
+            email="j@acme.example",
+            customer=first,
+            activated_at=timezone.now(),
+        )
+
+        renamed = DynamicsContact(
+            dynamics_id=self._contact().dynamics_id,
+            name="James Brown II",
+            company="ACME Wellness",
+            email="james.brown@acme.example",
+            phone="+44 20 1111 1111",
+            address="221B Baker St, London, UK",
+        )
+        second = import_customer_from_dynamics(
+            organization=org,
+            actor=org.created_by,
+            contact=renamed,
+        )
+        second.refresh_from_db()
+        # Identity fields still refresh.
+        assert second.name == "James Brown II"
+        assert second.company == "ACME Wellness"
+        # Email locked — the portal login is the canonical address.
+        assert second.email == "j@acme.example"
+
+    def test_dynamics_fills_blank_soft_fields(self) -> None:
+        # If a local row was created manually with phone/address
+        # blank, a subsequent Dynamics import does FILL those blanks
+        # — the rule is "patch empties, never overwrite".
+        from apps.accounts.tests.factories import UserFactory
+
+        org = OrganizationFactory()
+        actor = UserFactory()
+        Customer.objects.create(
+            organization=org,
+            name="James Brown",
+            company="ACME",
+            email="j@acme.example",
+            phone="",
+            invoice_address="",
+            delivery_address="",
+            dynamics_id=None,
+            created_by=actor,
+            updated_by=actor,
+        )
+
+        customer = import_customer_from_dynamics(
+            organization=org,
+            actor=actor,
+            contact=self._contact(),
+        )
+
+        customer.refresh_from_db()
+        # Adopt path attached the dynamics_id to the existing row,
+        # and the soft fields filled because they were blank.
+        assert str(customer.dynamics_id) == self._contact().dynamics_id
+        assert customer.phone == self._contact().phone
+        assert customer.invoice_address == self._contact().address
+
+    def test_adopt_existing_local_row_by_email(self) -> None:
+        # Common real-world case: staff created the customer
+        # manually before integration was wired up. Later Dynamics
+        # imports the same person. The audit's adopt path attaches
+        # the dynamics_id to the existing row instead of creating a
+        # second one.
+        from apps.accounts.tests.factories import UserFactory
+
+        org = OrganizationFactory()
+        actor = UserFactory()
+        manual = Customer.objects.create(
+            organization=org,
+            name="James Brown",
+            company="ACME",
+            email="j@acme.example",
+            dynamics_id=None,
+            created_by=actor,
+            updated_by=actor,
+        )
+
+        adopted = import_customer_from_dynamics(
+            organization=org,
+            actor=actor,
+            contact=self._contact(),
+        )
+
+        # Same row, now linked to Dataverse.
+        assert adopted.pk == manual.pk
+        assert str(adopted.dynamics_id) == self._contact().dynamics_id
+        # Single row in the org for this email — no duplicate.
+        assert Customer.objects.filter(
+            organization=org, email__iexact="j@acme.example",
+        ).count() == 1
 
     def test_other_org_does_not_collide(self) -> None:
         org_a = OrganizationFactory()

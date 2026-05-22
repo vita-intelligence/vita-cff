@@ -277,11 +277,65 @@ def confirm_email_change(
     account.email = pending.new_email
     account.save(update_fields=["email", "updated_at"])
 
-    from apps.customers.models import Customer
+    from apps.customers.models import (
+        Customer,
+        CustomerEmailAlias,
+        CustomerEmailAliasSource,
+    )
 
     customer = Customer.objects.select_for_update().get(pk=account.customer_id)
+    # Archive the *previous* address into the alias table before
+    # overwriting. The portal-side CFF query unions across the
+    # canonical email + every alias, so a customer rotating their
+    # login email never loses visibility of CFFs they submitted
+    # under prior addresses. ``get_or_create`` keeps the writer
+    # idempotent — if a customer flips back to an old address and
+    # then changes again, we get one alias per past address rather
+    # than one per flip.
+    #
+    # Skip when:
+    #   * The new email IS the customer's current canonical email
+    #     (no-op rotation, defensive).
+    #   * The "old" address was empty — there's nothing to
+    #     archive (a freshly-imported customer who set their email
+    #     for the first time via the portal).
+    prior_email = (customer.email or "").strip()
+    new_email_normalised = (pending.new_email or "").strip()
+    if prior_email and prior_email.lower() != new_email_normalised.lower():
+        # ``get_or_create`` lookups can't use ``__iexact``, so we
+        # split: look up case-insensitively first, only create when
+        # nothing matches. The unique constraint on
+        # ``(lower(email), customer)`` would catch any race anyway.
+        prior_email_lower = prior_email.lower()
+        existing_alias = (
+            CustomerEmailAlias.objects
+            .filter(customer=customer, email__iexact=prior_email_lower)
+            .first()
+        )
+        if existing_alias is None:
+            CustomerEmailAlias.objects.create(
+                customer=customer,
+                email=prior_email_lower,
+                source=CustomerEmailAliasSource.PORTAL_EMAIL_CHANGE,
+            )
+
     customer.email = pending.new_email
     customer.save(update_fields=["email", "updated_at"])
+
+    # Invalidate any open staff-issued portal invites for this
+    # customer. They were minted against the *previous* address
+    # (their ``email_snapshot`` is frozen at create time) and would
+    # let anyone holding the old code activate against the stale
+    # email if a fresh invite were never issued. Mirrors the same
+    # invalidation block the staff-side ``update_customer`` runs on
+    # email change so both paths converge on one rule.
+    from apps.client_portal.models import CustomerPortalInvite
+
+    CustomerPortalInvite.objects.filter(
+        customer=customer,
+        used_at__isnull=True,
+        invalidated_at__isnull=True,
+    ).update(invalidated_at=timezone.now())
 
     pending.used_at = timezone.now()
     pending.save(update_fields=["used_at"])

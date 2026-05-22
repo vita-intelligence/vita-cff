@@ -936,9 +936,31 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
 
     from django.db.models import Q
 
-    email_filter = Q(pk__in=[])  # always-empty seed
+    # Build the set of addresses this customer has ever used so a
+    # portal-side email change doesn't silently hide historical CFFs.
+    # Canonical ``Customer.email`` plus every row in
+    # :class:`CustomerEmailAlias` — the alias table archives prior
+    # addresses each time the customer rotates their portal email
+    # (see :func:`apps.client_portal.profile_services
+    # .confirm_email_change`).
+    #
+    # We lower-case everything and dedupe so a customer who
+    # ping-pongs between cases still hits exactly one branch of the
+    # OR, and ``submitter_email__iexact`` per address handles the
+    # case-insensitivity on the join side too.
+    candidate_emails: set[str] = set()
     if customer.email:
-        email_filter = Q(submitter_email__iexact=customer.email)
+        candidate_emails.add(customer.email.strip().lower())
+    candidate_emails.update(
+        alias.lower()
+        for alias in customer.email_aliases
+        .values_list("email", flat=True)
+        if alias and alias.strip()
+    )
+
+    email_filter = Q(pk__in=[])  # always-empty seed
+    for addr in candidate_emails:
+        email_filter |= Q(submitter_email__iexact=addr)
 
     # CFFSubmission ↔ Formulation is now M2M (``projects``). From
     # any linked formulation the path to a Proposal is via that

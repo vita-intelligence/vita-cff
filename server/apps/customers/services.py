@@ -112,6 +112,37 @@ class DynamicsConfigInvalid(Exception):
     code = "dynamics_config_invalid"
 
 
+class DynamicsContactEmailCollision(Exception):
+    """A Dataverse contact tried to import with an email that an
+    existing local Customer already holds — and that local row is
+    already linked to a *different* Dynamics contact.
+
+    The integration refuses to silently pick a winner. The operator
+    has to reconcile on the Dynamics side (merge contacts, or fix
+    whichever address is wrong) before the import will land.
+    """
+
+    code = "dynamics_contact_email_collision"
+
+
+class CustomerEmailAlreadyExists(Exception):
+    """An operator tried to create a new Customer at an email
+    another row in the same org already uses.
+
+    Forward-only safeguard: existing duplicates in the database
+    keep working untouched, but no new rows can be added to the
+    pile. The API layer maps this to a 409 with the conflicting
+    customer's id so the FE can offer "open existing customer"
+    instead of letting the operator create a second row.
+    """
+
+    code = "customer_email_already_exists"
+
+    def __init__(self, message: str, *, existing_customer_id: Any) -> None:
+        super().__init__(message)
+        self.existing_customer_id = existing_customer_id
+
+
 def _with_portal_account_annotation(qs: QuerySet[Customer]) -> QuerySet[Customer]:
     """Annotate each row with two booleans the FE renders:
 
@@ -215,6 +246,32 @@ def create_customer(
     # so the picker still works.
     if is_dynamics_live(organization):
         raise CustomerCreationDisabledByDynamics()
+
+    # Forward-only duplicate guard. Existing rows that share an
+    # email keep coexisting (the audit doesn't touch them), but no
+    # NEW row can land at an email another row in this org already
+    # uses. Surface the conflicting row's id so the FE can offer
+    # "open existing customer" instead of forcing the operator to
+    # search by hand. Case-insensitive match because address books
+    # historically carry mixed-case dupes ("Alex@..." vs "alex@..."
+    # are the same person).
+    cleaned_email = (email or "").strip()
+    if cleaned_email:
+        conflicting = (
+            Customer.objects
+            .filter(
+                organization=organization,
+                email__iexact=cleaned_email,
+            )
+            .only("id")
+            .first()
+        )
+        if conflicting is not None:
+            raise CustomerEmailAlreadyExists(
+                "Another customer in this organization already uses "
+                "this email.",
+                existing_customer_id=conflicting.id,
+            )
 
     customer = Customer.objects.create(
         organization=organization,
@@ -525,14 +582,23 @@ def search_dynamics_contacts(
     return client.search_contacts(query=query, limit=limit)
 
 
-#: Fields the import service overwrites with the freshest Dynamics
-#: data on every re-import. Everything else (notably ``notes``,
-#: which scientists / sales edit locally) stays untouched so we
-#: never silently overwrite human-curated context.
-_DYNAMICS_OVERWRITABLE_FIELDS = (
+#: Identity fields Dynamics is legitimately authoritative on —
+#: re-imports always refresh these from the Dataverse payload because
+#: the same Dynamics contact getting renamed is a normal operation
+#: the CRM owns. Email is deliberately *not* here; see the in-line
+#: rule in :func:`import_customer_from_dynamics` for why.
+_DYNAMICS_IDENTITY_FIELDS = (
     "name",
     "company",
-    "email",
+)
+
+#: Soft-overwrite fields: Dynamics fills these only when the local
+#: value is blank. Switched from aggressive overwrite to fill-empty
+#: because the previous behaviour silently wiped manual fixes (a
+#: scientist correcting a phone typo would see their edit undone on
+#: the next sync). Aligns with the proposal-create back-fill rule —
+#: the address book stays authoritative once a value is set.
+_DYNAMICS_SOFT_FIELDS = (
     "phone",
     "invoice_address",
     "delivery_address",
@@ -546,20 +612,41 @@ def import_customer_from_dynamics(
     actor: Any,
     contact: DynamicsContact,
 ) -> Customer:
-    """Idempotent import: get-or-create a local :class:`Customer`
-    keyed on the Dynamics GUID.
+    """Idempotent import keyed on Dynamics GUID, with two new
+    safety rules layered on the historical behaviour:
 
-    * If the org already has a Customer with this ``dynamics_id``:
-      refresh the identity fields from the Dynamics payload (so a
-      renamed contact updates), bump ``dynamics_synced_at``, and
-      return that row. Never overwrites ``notes`` or any
-      locally-edited field outside :data:`_DYNAMICS_OVERWRITABLE_FIELDS`.
+    1. **Email is portal-protected.** When the resolved local
+       Customer has an activated :class:`ClientAccount`, the
+       ``email`` column is never overwritten from Dataverse. The
+       portal login owns that field once a customer has set a
+       password — letting Dynamics stomp it would silently
+       desynchronise the staff-visible address from the address
+       the customer actually logs in with. Customers without a
+       portal account still get the freshest Dynamics email.
 
-    * Otherwise: create a new Customer with ``dynamics_id`` set
-      and identity fields populated from Dynamics.
+    2. **Phone + addresses fill empties only.** Switched from
+       aggressive overwrite to "patch blanks only" so a manual
+       fix by sales/scientists (correcting a typo, fixing a
+       stale shipping address) doesn't get silently undone on
+       the next sync. Identity fields (``name``, ``company``)
+       keep aggressive overwrite — that's what Dynamics is
+       legitimately authoritative on.
 
-    Atomic. Audit-logged in both branches so a 1-row rollback is
-    one query (``DELETE WHERE id = X``).
+    Resolution order:
+
+    * Match by ``(organization, dynamics_id)`` first — the
+       canonical refresh path.
+    * If no match, also look up by ``(organization,
+      lower(email))``. If a local row exists with no
+      ``dynamics_id``, **adopt** it — attach ``dynamics_id`` to
+      the existing row so we don't accumulate a duplicate. A
+      collision with a *different* dynamics_id on the same email
+      is refused (two Dataverse contacts can't legitimately share
+      an email locally).
+    * Otherwise create a new Customer.
+
+    Atomic. Audit-logged in every branch so a 1-row rollback is
+    one query.
     """
 
     if not contact.dynamics_id:
@@ -572,19 +659,87 @@ def import_customer_from_dynamics(
         .filter(organization=organization, dynamics_id=contact.dynamics_id)
         .first()
     )
+
+    # Adopt-by-email path — only runs when the Dataverse GUID
+    # doesn't match anything yet. Catches the common
+    # manually-created-then-Dynamics-came-along case: staff typed
+    # the customer locally before integration was wired up; later
+    # Dynamics is enabled and imports the same person. Without this
+    # path, we'd create a second row with the same email — exactly
+    # the duplicate-customer trap the audit flagged.
+    if existing is None and (contact.email or "").strip():
+        candidate = (
+            Customer.objects.select_for_update()
+            .filter(
+                organization=organization,
+                email__iexact=contact.email.strip(),
+            )
+            .first()
+        )
+        if candidate is not None:
+            if candidate.dynamics_id is None:
+                # Adopt — attach the Dataverse GUID to the manual
+                # row. The local FKs (proposals, client_accounts,
+                # CFFs) stay where they are; we only set the link.
+                candidate.dynamics_id = contact.dynamics_id
+                # The save below records this via the standard
+                # refresh path so the audit row also captures the
+                # adoption.
+                existing = candidate
+            else:
+                # Two Dataverse contacts can't share an email
+                # locally — refuse rather than silently picking a
+                # winner. Operator has to reconcile on the
+                # Dynamics side.
+                raise DynamicsContactEmailCollision(
+                    "Another local customer already links to a "
+                    "different Dynamics contact at this email.",
+                )
+
     if existing is not None:
         before = snapshot(existing)
+
+        # Identity fields — always refresh from Dataverse.
         existing.name = contact.name
         existing.company = contact.company
-        existing.email = contact.email
-        existing.phone = contact.phone
-        existing.invoice_address = contact.address
-        existing.delivery_address = contact.address
+
+        # Email — portal-protected. If the customer has any
+        # activated portal account on this row, the local email is
+        # the login identity and we never touch it from Dynamics.
+        # Without an activated account, the local email is just
+        # the address book entry and Dataverse owns it.
+        from apps.client_portal.models import ClientAccount  # local import
+
+        portal_locked = ClientAccount.objects.filter(
+            customer=existing,
+            activated_at__isnull=False,
+        ).exists()
+        if not portal_locked:
+            existing.email = contact.email
+
+        # Soft fields — patch blanks only. A locally-curated value
+        # wins over the Dataverse value forever; Dataverse only
+        # fills the gap when local is empty.
+        dataverse_phone = (contact.phone or "").strip()
+        if dataverse_phone and not (existing.phone or "").strip():
+            existing.phone = dataverse_phone
+        dataverse_address = (contact.address or "").strip()
+        if dataverse_address and not (existing.invoice_address or "").strip():
+            existing.invoice_address = dataverse_address
+        if dataverse_address and not (existing.delivery_address or "").strip():
+            existing.delivery_address = dataverse_address
+
         existing.dynamics_synced_at = timezone.now()
         existing.updated_by = actor
+        # Always include ``dynamics_id`` in update_fields because the
+        # adopt path may have just set it; in the canonical refresh
+        # path this is a no-op write.
         existing.save(
             update_fields=(
-                *_DYNAMICS_OVERWRITABLE_FIELDS,
+                *_DYNAMICS_IDENTITY_FIELDS,
+                "email",
+                *_DYNAMICS_SOFT_FIELDS,
+                "dynamics_id",
                 "dynamics_synced_at",
                 "updated_by",
                 "updated_at",

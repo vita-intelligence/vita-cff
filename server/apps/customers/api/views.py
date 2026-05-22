@@ -27,6 +27,7 @@ from apps.customers.dynamics import (
 )
 from apps.customers.services import (
     CustomerCreationDisabledByDynamics,
+    CustomerEmailAlreadyExists,
     CustomerHasPortalAccount,
     CustomerNotFound,
     DataverseFailure,
@@ -104,6 +105,23 @@ class CustomerListCreateView(APIView):
             # response when a stale client tries to POST anyway.
             return Response(
                 {"code": "customer_creation_disabled_by_dynamics"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CustomerEmailAlreadyExists as exc:
+            # 409 with the conflicting row's id so the modal can
+            # surface a "this email is already on customer X — open
+            # them" affordance rather than the operator hunting
+            # through the list. Existing duplicates in the database
+            # are untouched by the audit; we only block *new* ones
+            # from landing.
+            return Response(
+                {
+                    "code": "customer_email_already_exists",
+                    "detail": ["customer_email_already_exists"],
+                    "existing_customer_id": str(
+                        exc.existing_customer_id
+                    ),
+                },
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(
