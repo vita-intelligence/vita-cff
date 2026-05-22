@@ -19,6 +19,7 @@
   },
   "tooltips": {
     "pipeline": "Pipeline",
+    "rd_pipeline": "R&D pipeline",
     "signed": "Signed"
   },
   "account": {

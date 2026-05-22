@@ -15,6 +15,7 @@ export type HeaderNavHref =
   | "/formulations"
   | "/proposals"
   | "/pipeline"
+  | "/rd-pipeline"
   | "/customers"
   | "/cff"
   | "/approvals"

@@ -21,6 +21,7 @@ export type ProtectedNavKey =
   | "formulations"
   | "proposals"
   | "pipeline"
+  | "rd_pipeline"
   | "customers"
   | "cff"
   | "approvals"
@@ -189,15 +190,24 @@ export async function ProtectedHeader({
   }
 
   // Pipeline rides the ``proposals.view`` gate (CRM-style funnel
-  // view of where every deal sits); Signed is the closed-loop
-  // archive of signed documents, gated by either module's
-  // ``view_signed`` cap.
+  // view of where every deal sits); R&D pipeline rides
+  // ``formulations.view`` (kanban of where every project sits in
+  // the build → spec → proposal lifecycle); Signed is the
+  // closed-loop archive of signed documents, gated by either
+  // module's ``view_signed`` cap.
   const sideItems: HeaderNavItem[] = [];
   if (canSeeProposals) {
     sideItems.push({
       key: "pipeline",
       href: "/pipeline",
       label: tNav("tooltips.pipeline"),
+    });
+  }
+  if (canSeeFormulations) {
+    sideItems.push({
+      key: "rd_pipeline",
+      href: "/rd-pipeline",
+      label: tNav("tooltips.rd_pipeline"),
     });
   }
   if (canSeeSigned) {

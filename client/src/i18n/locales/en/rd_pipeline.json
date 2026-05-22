@@ -1,0 +1,18 @@
+{
+  "title": "R&D pipeline",
+  "subtitle": "Every live project, grouped by lifecycle stage. Click a card to open the project.",
+  "scope_aria": "R&D pipeline scope",
+  "scope_mine": "Mine",
+  "scope_all": "All",
+  "column_empty": "Nothing here yet.",
+  "load_more": "Load more",
+  "total_count": "{count, plural, =0 {No projects on the board} =1 {# project on the board} other {# projects on the board}}",
+  "error_load": "Couldn't load the R&D pipeline. Refresh to retry.",
+  "stages": {
+    "builder": "Builder",
+    "spec_drafting": "Spec drafting",
+    "spec_approved": "Spec approved",
+    "proposal": "Proposal",
+    "closed": "Closed"
+  }
+}

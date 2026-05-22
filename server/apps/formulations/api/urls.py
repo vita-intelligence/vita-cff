@@ -2,6 +2,10 @@
 
 from django.urls import path
 
+from apps.formulations.api.rd_pipeline_views import (
+    RDPipelineBoardView,
+    RDPipelineColumnView,
+)
 from apps.formulations.api.views import (
     FormulationApprovedVersionView,
     FormulationCloneView,
@@ -73,5 +77,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/clone/",
         FormulationCloneView.as_view(),
         name="formulation-clone",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/rd-pipeline/",
+        RDPipelineBoardView.as_view(),
+        name="formulation-rd-pipeline",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/rd-pipeline/<str:stage>/",
+        RDPipelineColumnView.as_view(),
+        name="formulation-rd-pipeline-column",
     ),
 ]

@@ -502,6 +502,17 @@ class Formulation(models.Model):
                 fields=("organization", "sales_person"),
                 name="formulations_org_sales_idx",
             ),
+            # Mirror of the sales-person index for the R&D kanban —
+            # the ``scope=mine`` view of ``/rd-pipeline`` filters on
+            # ``WHERE organization=X AND lead_scientist=Y`` and would
+            # otherwise scan every project row in the tenant before
+            # evaluating the stage-EXISTS predicates. Big tenants
+            # would feel this within months; cheaper to ship the
+            # index up-front than chase a slow-page report later.
+            models.Index(
+                fields=("organization", "lead_scientist"),
+                name="formulations_org_lead_sci_idx",
+            ),
         ]
 
     def __str__(self) -> str:

@@ -89,6 +89,17 @@ class FormulationsCapability:
     #: not gate edit access, since other R&D members still need to
     #: collaborate on the same workspace.
     ASSIGN_LEAD_SCIENTIST = "assign_lead_scientist"
+    #: See the org-wide R&D kanban (``/rd-pipeline``) across *every*
+    #: scientist's projects — not just the ones assigned to the
+    #: caller. The pipeline endpoint silently scopes to
+    #: ``lead_scientist=request.user`` when this cap is missing, so
+    #: a rank-and-file scientist sees their own funnel and a triage
+    #: lead / R&D director with this grant sees the whole team.
+    #:
+    #: Mirrors :attr:`ProposalsCapability.VIEW_ALL` on the sales side.
+    #: Owners bypass capability checks anyway; admins explicitly
+    #: grant this to managers via the members admin grid.
+    VIEW_ALL_RD_PIPELINE = "view_all_rd_pipeline"
     #: Toggle individual sections on or off for the customer-facing
     #: spec sheet. Split from ``EDIT`` so the client-visibility
     #: decision sits with commercial / QA leads while scientists
@@ -283,6 +294,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.VIEW_SIGNED,
             FormulationsCapability.ASSIGN_SALES_PERSON,
             FormulationsCapability.ASSIGN_LEAD_SCIENTIST,
+            FormulationsCapability.VIEW_ALL_RD_PIPELINE,
             FormulationsCapability.MANAGE_SPEC_VISIBILITY,
             FormulationsCapability.SIGN_SPEC,
             FormulationsCapability.COMMENTS_VIEW,

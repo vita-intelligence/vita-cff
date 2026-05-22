@@ -1,6 +1,6 @@
 "use client";
 
-import { Kanban, FileSignature } from "lucide-react";
+import { FlaskConical, Kanban, FileSignature } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import { Link } from "@/i18n/navigation";
@@ -18,6 +18,7 @@ import type { ProtectedNavKey } from "./protected-header";
  */
 const SIDE_ICONS: Partial<Record<ProtectedNavKey, LucideIcon>> = {
   pipeline: Kanban,
+  rd_pipeline: FlaskConical,
   signed: FileSignature,
 };
 
