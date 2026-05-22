@@ -720,6 +720,17 @@ def create_proposal(
         target=proposal,
         after=snapshot(proposal),
     )
+
+    # Back-fill the customer record's missing contact fields from
+    # whatever the operator typed on the proposal (or seeded from
+    # Dynamics through the create form). If the address book row
+    # had a blank email / phone / invoice / delivery, copy the
+    # proposal's value in so downstream surfaces (portal invites,
+    # password reset, future proposals' auto-seed) all see one
+    # complete record. Never overwrites a non-empty field — the
+    # address book stays authoritative once set.
+    _backfill_customer_from_proposal(proposal=proposal, actor=actor)
+
     return proposal
 
 
@@ -1480,6 +1491,17 @@ def transition_status(
     if to_status == ProposalStatus.SENT.value:
         _promote_attached_specs_to_sent(proposal=proposal, actor=actor)
 
+    # Inverse on the rejection path: revert promoted specs back to
+    # ``APPROVED`` so the team can spawn a fresh proposal against
+    # the same recipe. Without this, the project gets stuck — the
+    # proposal builder requires specs at ``APPROVED`` and would
+    # refuse to bundle a sheet still sitting at ``SENT`` from the
+    # dead deal.
+    if to_status == ProposalStatus.REJECTED.value:
+        _revert_attached_specs_after_rejection(
+            proposal=proposal, actor=actor
+        )
+
     ProposalStatusTransition.objects.create(
         proposal=proposal,
         from_status=from_status,
@@ -2184,6 +2206,148 @@ def _promote_attached_specs_to_sent(
     return promoted
 
 
+def _revert_attached_specs_after_rejection(
+    *, proposal: Proposal, actor: Any
+) -> list[SpecificationSheet]:
+    """Inverse of :func:`_promote_attached_specs_to_sent`.
+
+    When a proposal is rejected (customer kiosk OR staff manual)
+    the specs that rode the send to ``SENT`` are dead weight on a
+    dead deal — and worse, they block the team from issuing a
+    fresh proposal against the same recipe because the proposal
+    builder requires specs at ``APPROVED``. This function walks
+    each attached sheet and reverts it to ``APPROVED`` so the team
+    can spawn another attempt.
+
+    Two specs are deliberately left alone:
+
+    * ``ACCEPTED`` — the customer has signed the spec. Signed
+      documents are legally binding regardless of the proposal's
+      fate; we never tear that down.
+    * ``SENT`` but bound to ANOTHER non-terminal proposal — the
+      sibling deal is still in flight and needs the spec at
+      ``SENT`` to keep its kiosk render valid. Pulling the rug
+      mid-flight would break the parallel proposal.
+
+    Returns the list of reverted sheets so callers can audit the
+    cleanup count.
+    """
+
+    from apps.specifications.services import SpecificationStatus
+
+    reverted: list[SpecificationSheet] = []
+    for sheet in _attached_spec_sheets(proposal):
+        if sheet.status != SpecificationStatus.SENT:
+            # Only specs we promoted via send sit at ``SENT``; the
+            # rest (``DRAFT`` / ``APPROVED`` / ``IN_REVIEW`` /
+            # ``ACCEPTED`` / ``REJECTED``) keep whatever state
+            # their own lifecycle put them in.
+            continue
+        # Look for ANY other proposal that still references this
+        # spec and is not terminal. ``REJECTED`` doesn't count
+        # (it's just been declared dead — same regime we're in
+        # now); ``ACCEPTED`` doesn't count (signed; the spec
+        # itself moves to ``ACCEPTED`` so it wouldn't be at
+        # ``SENT`` to begin with).
+        attached_via_line = Proposal.objects.filter(
+            lines__specification_sheet=sheet,
+        )
+        attached_via_legacy = Proposal.objects.filter(
+            specification_sheet=sheet,
+        )
+        other_live_exists = (
+            (attached_via_line | attached_via_legacy)
+            .exclude(id=proposal.id)
+            .exclude(
+                status__in=(
+                    ProposalStatus.REJECTED.value,
+                    ProposalStatus.ACCEPTED.value,
+                ),
+            )
+            .exists()
+        )
+        if other_live_exists:
+            continue
+
+        before = {"status": sheet.status}
+        sheet.status = SpecificationStatus.APPROVED
+        sheet.updated_by = actor
+        sheet.save(
+            update_fields=["status", "updated_by", "updated_at"]
+        )
+        record_audit(
+            organization=sheet.organization,
+            actor=actor,
+            action="spec_sheet.reverted_after_proposal_rejection",
+            target=sheet,
+            before=before,
+            after={
+                "status": sheet.status,
+                "proposal_id": str(proposal.id),
+            },
+        )
+        reverted.append(sheet)
+    return reverted
+
+
+def _backfill_customer_from_proposal(
+    *, proposal: Proposal, actor: Any
+) -> None:
+    """Fill in any blank customer contact fields with whatever the
+    proposal carries.
+
+    The address book is the source of truth ONCE a value is set —
+    we only patch blanks, never overwrite. Mirrors the on-send
+    email back-fill (:func:`send_proposal_to_client`) but for the
+    broader set of contact fields, and on the create path so the
+    address book gets populated as the team works rather than only
+    on the first dispatch. Touches email, phone, invoice_address,
+    delivery_address; never the identity fields (name, company)
+    since those are how the operator picked the customer in the
+    first place.
+    """
+
+    customer = proposal.customer
+    if customer is None:
+        return
+
+    field_pairs = (
+        ("email", (proposal.customer_email or "").strip()),
+        ("phone", (proposal.customer_phone or "").strip()),
+        ("invoice_address", (proposal.invoice_address or "").strip()),
+        ("delivery_address", (proposal.delivery_address or "").strip()),
+    )
+    candidates: dict[str, str] = {}
+    for field, value in field_pairs:
+        if not value:
+            continue
+        if (getattr(customer, field) or "").strip():
+            continue
+        candidates[field] = value
+
+    if not candidates:
+        return
+
+    before = {k: getattr(customer, k) or "" for k in candidates}
+    for field, value in candidates.items():
+        setattr(customer, field, value)
+    customer.updated_by = actor
+    customer.save(
+        update_fields=[*candidates.keys(), "updated_by", "updated_at"],
+    )
+    record_audit(
+        organization=customer.organization,
+        actor=actor,
+        action="customer.backfilled_from_proposal",
+        target=customer,
+        before=before,
+        after={
+            **candidates,
+            "source_proposal_id": str(proposal.id),
+        },
+    )
+
+
 def get_proposal_by_public_token(token: Any) -> Proposal:
     """Resolve a proposal by its public kiosk token.
 
@@ -2459,6 +2623,14 @@ def capture_customer_rejection_on_proposal(
         target=proposal,
         before=before,
         after=snapshot(proposal),
+    )
+
+    # Free the attached specs so the team can spawn another
+    # proposal against the same recipe. Same helper the staff
+    # manual-reject path uses; see its docstring for the
+    # "leave ACCEPTED / sibling-live specs alone" rules.
+    _revert_attached_specs_after_rejection(
+        proposal=proposal, actor=proposal.updated_by,
     )
 
     # Notify the sales person *after* the transaction commits — the
