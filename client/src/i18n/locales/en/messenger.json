@@ -14,7 +14,9 @@
     "unread_plural": "{count} unread",
     "view_all_unread": "Mark all as read",
     "kind_formulation": "Project",
-    "kind_specification": "Spec sheet"
+    "kind_specification": "Spec sheet",
+    "kind_proposal": "Proposal",
+    "kind_cff_submission": "CFF"
   },
   "panel": {
     "close": "Close chat",
@@ -22,7 +24,9 @@
     "open_full_page": "Open full page",
     "title_fallback": "Chat",
     "kind_formulation": "Project",
-    "kind_specification": "Spec sheet"
+    "kind_specification": "Spec sheet",
+    "kind_proposal": "Proposal",
+    "kind_cff_submission": "CFF"
   },
   "notifications": {
     "permission_prompt_title": "Get notified for new messages",

@@ -470,6 +470,7 @@ export function KioskCommentsPanel({ token }: Props) {
                       currentUserEmail={identity?.email ?? null}
                       canModerate={false}
                       canWrite={false}
+                      canPinAnyThread={false}
                       isReply={!isRoot}
                       replyToAuthor={replyToAuthor}
                       replyToExcerpt={replyToExcerpt}

@@ -49,10 +49,22 @@ export function FloatingChatPanel({ window }: FloatingChatPanelProps) {
     ? hasFlatCapability(organization, "formulations", "comments_moderate")
     : false;
 
-  const kindLabel =
-    window.entityKind === "formulation"
-      ? tKinds("kind_formulation")
-      : tKinds("kind_specification");
+  const kindLabel = ((): string => {
+    // Exhaustive switch so a future entity-kind addition surfaces
+    // as a TS error rather than silently labelling itself as a
+    // spec sheet (the pre-fix fallback that caused proposal /
+    // CFF threads to read "Spec sheet" in the floating chat).
+    switch (window.entityKind) {
+      case "formulation":
+        return tKinds("kind_formulation");
+      case "specification":
+        return tKinds("kind_specification");
+      case "proposal":
+        return tKinds("kind_proposal");
+      case "cff_submission":
+        return tKinds("kind_cff_submission");
+    }
+  })();
 
   const fullPageHref = buildFullPageHref(window.entityKind, window.entityId);
 
@@ -120,8 +132,21 @@ export function FloatingChatPanel({ window }: FloatingChatPanelProps) {
 
 
 function buildFullPageHref(kind: InboxEntityKind, id: string): string {
-  if (kind === "formulation") {
-    return `/formulations/${id}`;
+  // Each entity kind lives at its own top-level route. The original
+  // implementation only branched on "formulation" and fell through
+  // to /specifications/<id> for everything else, which silently
+  // mis-linked proposal + CFF threads (a proposal id was being
+  // looked up as a spec sheet id → 404). Keep the switch exhaustive
+  // so a future kind addition surfaces as a TS error instead of
+  // another silent mis-link.
+  switch (kind) {
+    case "formulation":
+      return `/formulations/${id}`;
+    case "specification":
+      return `/specifications/${id}`;
+    case "proposal":
+      return `/proposals/${id}`;
+    case "cff_submission":
+      return `/cff/${id}`;
   }
-  return `/specifications/${id}`;
 }

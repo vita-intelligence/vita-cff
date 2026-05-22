@@ -46,6 +46,15 @@ interface Props {
   readonly currentUserEmail?: string | null;
   readonly canModerate: boolean;
   readonly canWrite: boolean;
+  /** Whether the viewer can pin / resolve / flag threads *they
+   *  didn't author*. Split from :prop:`canModerate` because
+   *  resolve / flag are non-destructive housekeeping actions every
+   *  staff team member should be able to perform on a client
+   *  thread, while :prop:`canModerate` (which still gates
+   *  destructive delete-of-others) stays restricted to moderators
+   *  and owners. Authors keep full rights on their own threads
+   *  regardless. */
+  readonly canPinAnyThread: boolean;
   /** ``true`` when this card represents a reply — flips off the
    *  root-only action set (flag / resolve / reopen) since we never
    *  resolve individual replies. */
@@ -80,6 +89,7 @@ export function CommentCard({
   currentUserEmail,
   canModerate,
   canWrite,
+  canPinAnyThread,
   isReply = false,
   replyToAuthor,
   replyToExcerpt,
@@ -108,19 +118,19 @@ export function CommentCard({
     !comment.is_deleted &&
     !comment.is_resolved &&
     onToggleFlag != null &&
-    (canModerate || isAuthor);
+    (canPinAnyThread || isAuthor);
   const canResolveHere =
     !isReply &&
     !comment.is_deleted &&
     comment.needs_resolution &&
     onToggleResolve != null &&
-    (canModerate || isAuthor);
+    (canPinAnyThread || isAuthor);
   const canReopen =
     !isReply &&
     !comment.is_deleted &&
     comment.is_resolved &&
     onToggleResolve != null &&
-    (canModerate || isAuthor);
+    (canPinAnyThread || isAuthor);
 
   // Deleted tombstone — thin, no bubble, aligned with the author.
   if (comment.is_deleted) {

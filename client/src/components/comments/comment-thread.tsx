@@ -28,6 +28,7 @@ interface Props {
   readonly currentUserEmail?: string | null;
   readonly canWrite: boolean;
   readonly canModerate: boolean;
+  readonly canPinAnyThread: boolean;
   /** Click handler for the per-card "Reply" action. Receives the
    *  root comment id plus the metadata the panel needs to render
    *  its "Replying to {author}: {excerpt}" chip above the shared
@@ -79,6 +80,7 @@ export function CommentThread({
   currentUserEmail,
   canWrite,
   canModerate,
+  canPinAnyThread,
   onStartReply,
   onJumpToParent,
   onEdit,
@@ -108,6 +110,7 @@ export function CommentThread({
         currentUserEmail={currentUserEmail}
         canModerate={canModerate}
         canWrite={canWrite}
+        canPinAnyThread={canPinAnyThread}
         onEdit={onEdit}
         onDelete={onDelete}
         onToggleResolve={onToggleResolve}
@@ -128,6 +131,7 @@ export function CommentThread({
           currentUserEmail={currentUserEmail}
           canModerate={canModerate}
           canWrite={canWrite}
+          canPinAnyThread={canPinAnyThread}
           isReply
           replyToAuthor={rootAuthorLabel}
           replyToExcerpt={quoteExcerpt}

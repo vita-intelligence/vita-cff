@@ -16,10 +16,32 @@ import { Loader2 } from "lucide-react";
 import {
   useInboxList,
   useMarkThreadRead,
+  type InboxEntityKind,
   type InboxThreadDto,
 } from "@/services/inbox";
 
 import { useMessengerStore } from "./messenger-store";
+
+
+function kindLabelFor(
+  kind: InboxEntityKind,
+  t: ReturnType<typeof useTranslations<"messenger.dropdown">>,
+): string {
+  // Exhaustive switch so a future kind addition becomes a TS
+  // error instead of silently rendering as "Spec sheet" (the
+  // pre-fix fallback that mis-labelled proposal + CFF threads
+  // in the messenger drop-down).
+  switch (kind) {
+    case "formulation":
+      return t("kind_formulation");
+    case "specification":
+      return t("kind_specification");
+    case "proposal":
+      return t("kind_proposal");
+    case "cff_submission":
+      return t("kind_cff_submission");
+  }
+}
 
 
 export interface MessengerDropdownProps {
@@ -91,9 +113,7 @@ export function MessengerDropdown({ onClose }: MessengerDropdownProps) {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <span className="truncate text-[10px] font-semibold uppercase tracking-wider text-ink-500">
-                        {thread.entity_kind === "formulation"
-                          ? t("kind_formulation")
-                          : t("kind_specification")}
+                        {kindLabelFor(thread.entity_kind, t)}
                       </span>
                       {thread.entity_code ? (
                         <span className="truncate text-[11px] font-mono text-ink-600">

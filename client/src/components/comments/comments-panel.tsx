@@ -47,6 +47,13 @@ interface Props {
   readonly canRead: boolean;
   readonly canWrite: boolean;
   readonly canModerate: boolean;
+  /** Whether the viewer can resolve / flag / reopen a thread they
+   *  did NOT author. Defaults to ``canWrite`` so any staff team
+   *  member who can post can also pin a client message — the
+   *  housekeeping action they routinely need. Set to ``false``
+   *  explicitly on customer-facing surfaces (kiosk) where clients
+   *  must not flip the state of staff conversations. */
+  readonly canPinAnyThread?: boolean;
   readonly currentUserId: string | null;
   readonly initialFirstPage?: PaginatedCommentsDto | null;
   /** Who is expected to see this thread. ``"internal"`` means
@@ -74,12 +81,20 @@ export function CommentsPanel({
   canRead,
   canWrite,
   canModerate,
+  canPinAnyThread,
   currentUserId,
   initialFirstPage = null,
   visibility,
   layout = "natural",
 }: Props) {
   const tComments = useTranslations("comments");
+  // Default the "can pin / resolve any thread" gate to ``canWrite``.
+  // Every staff team member who can post a comment should also be
+  // able to resolve a client thread — a non-destructive housekeeping
+  // action, not a moderator privilege. Customer-facing surfaces
+  // (kiosk) pass this explicitly as ``false`` so clients can't flip
+  // staff conversations.
+  const effectivePinAny = canPinAnyThread ?? canWrite;
   // Spec sheets, proposals, and CFF submissions are all customer-
   // facing surfaces — the portal mounts a matching shared-comment
   // thread on each, so the staff side has to default to
@@ -620,6 +635,7 @@ export function CommentsPanel({
                     currentUserId={currentUserId}
                     canModerate={canModerate}
                     canWrite={canWrite}
+                    canPinAnyThread={effectivePinAny}
                     isReply={!isRoot}
                     replyToAuthor={replyToAuthor}
                     replyToExcerpt={replyToExcerpt}
