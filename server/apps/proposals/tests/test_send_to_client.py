@@ -274,7 +274,9 @@ class TestSendProposalToClient:
         )
 
         assert len(mailoutbox) == 1
-        assert mailoutbox[0].subject == f"Your proposal from Vita NPD — {proposal.code}"
+        assert mailoutbox[0].subject == (
+            f"Your proposal from Vita Manufacture — {proposal.code}"
+        )
 
 
 class TestSendProposalTestEmail:
@@ -373,3 +375,169 @@ class TestSendProposalTestEmail:
         # the test path, no matter who the proposal's sales person is.
         assert not mailoutbox[0].cc
         assert not mailoutbox[0].bcc
+
+
+# ---------------------------------------------------------------------------
+# Customer email back-fill on send
+# ---------------------------------------------------------------------------
+
+
+class TestCustomerEmailBackfill:
+    """Pin the back-fill rule: a successful send populates the
+    linked Customer's empty ``email`` field with the recipient.
+
+    The previous behaviour was that customers without an email on
+    the address-book row could still receive a proposal (the
+    proposal carried its own ``customer_email``), but downstream
+    flows (portal invite, password reset, email-change confirmation)
+    all read the address book and broke — customers complained
+    they weren't "registered" even though they'd had email
+    delivered to them. The back-fill closes that gap on the first
+    successful send.
+    """
+
+    def test_backfills_empty_customer_email(
+        self, settings, mailoutbox
+    ) -> None:
+        from apps.customers.models import Customer
+
+        settings.EMAIL_BACKEND = (
+            "django.core.mail.backends.locmem.EmailBackend"
+        )
+        proposal = _approved_proposal()
+        actor = proposal.organization.created_by
+        customer = Customer.objects.create(
+            organization=proposal.organization,
+            name="Backfill Buyer",
+            company="Backfill Co",
+            email="",  # the gap we're closing
+            created_by=actor,
+            updated_by=actor,
+        )
+        proposal.customer = customer
+        proposal.save(update_fields=["customer"])
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="alex@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+
+        customer.refresh_from_db()
+        assert customer.email == "alex@buyer.test"
+
+    def test_does_not_overwrite_existing_customer_email(
+        self, settings, mailoutbox
+    ) -> None:
+        # When the customer already carries an email the address
+        # book stays authoritative — sending to a different CC must
+        # NOT silently rotate the record.
+        from apps.customers.models import Customer
+
+        settings.EMAIL_BACKEND = (
+            "django.core.mail.backends.locmem.EmailBackend"
+        )
+        proposal = _approved_proposal()
+        actor = proposal.organization.created_by
+        customer = Customer.objects.create(
+            organization=proposal.organization,
+            name="Canonical Buyer",
+            company="Canonical Co",
+            email="canonical@buyer.test",
+            created_by=actor,
+            updated_by=actor,
+        )
+        proposal.customer = customer
+        proposal.save(update_fields=["customer"])
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="different@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+
+        customer.refresh_from_db()
+        assert customer.email == "canonical@buyer.test"
+
+
+# ---------------------------------------------------------------------------
+# Proposal email no longer carries the activation code
+# ---------------------------------------------------------------------------
+
+
+class TestProposalEmailCodeRemoved:
+    """The proposal-send email is now link-only.
+
+    Activation codes are delivered just-in-time by a separate OTP
+    email when the customer reaches the activation page (see
+    :func:`apps.client_portal.services.request_activation_code`).
+    A proposal send must:
+      * NOT include a code in either HTML or plain-text bodies.
+      * Reset any stale code on the proposal row so a resend
+        forces the customer to request a fresh code.
+    """
+
+    def test_proposal_email_contains_no_code(
+        self, settings, mailoutbox
+    ) -> None:
+        settings.EMAIL_BACKEND = (
+            "django.core.mail.backends.locmem.EmailBackend"
+        )
+        proposal = _approved_proposal()
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="new@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+
+        proposal.refresh_from_db()
+        # No code persisted, no timestamp.
+        assert proposal.activation_code == ""
+        assert proposal.activation_code_sent_at is None
+        # No code language anywhere in the email body.
+        sent = mailoutbox[0]
+        assert "6-digit" not in sent.body
+        assert "activation code" not in sent.body
+        html = next(
+            alt[0] for alt in sent.alternatives if alt[1] == "text/html"
+        )
+        assert "activation code" not in html.lower()
+
+    def test_resend_clears_prior_code(
+        self, settings, mailoutbox
+    ) -> None:
+        # If a proposal has a stale code on the row (e.g. minted by
+        # an earlier request-code call), resending the proposal
+        # email must clear it so the customer starts fresh.
+        from django.utils import timezone
+
+        settings.EMAIL_BACKEND = (
+            "django.core.mail.backends.locmem.EmailBackend"
+        )
+        proposal = _approved_proposal()
+        proposal.activation_code = "999999"
+        proposal.activation_code_sent_at = timezone.now()
+        proposal.save(
+            update_fields=[
+                "activation_code", "activation_code_sent_at",
+            ],
+        )
+
+        send_proposal_to_client(
+            proposal=proposal,
+            actor=proposal.organization.created_by,
+            recipient="alex@buyer.test",
+            subject="x",
+            body_text="y",
+        )
+
+        proposal.refresh_from_db()
+        assert proposal.activation_code == ""
+        assert proposal.activation_code_sent_at is None

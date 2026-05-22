@@ -90,6 +90,32 @@ class InvalidCredentials(Exception):
     code = "invalid_credentials"
 
 
+class ActivationCodeRateLimited(ActivationError):
+    """Customer requested a new activation code within the 60-second
+    cooldown after the previous one. Carries ``retry_after_seconds``
+    so the FE can render a precise countdown instead of guessing.
+    """
+
+    code = "activation_code_rate_limited"
+
+    def __init__(self, message: str, retry_after_seconds: int) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+#: How long a freshly-minted activation code stays valid. Standard
+#: OTP TTL — long enough that a customer can stroll to their inbox
+#: but short enough that a leaked code expires before it could be
+#: exploited.
+ACTIVATION_CODE_TTL_SECONDS = 600  # 10 minutes
+
+#: Minimum seconds between two consecutive activation-code sends for
+#: the same proposal. Prevents both accidental hammering (customer
+#: double-clicks "Send code") and abusive "code spam" against an
+#: inbox.
+ACTIVATION_CODE_RESEND_COOLDOWN_SECONDS = 60
+
+
 # ---------------------------------------------------------------------------
 # Activation
 # ---------------------------------------------------------------------------
@@ -210,14 +236,31 @@ def activate_via_token(
     # the client-supplied value so a paste with whitespace still
     # matches what we stored.
     import hmac
+    from datetime import timedelta
+
     expected = (proposal.activation_code or "").strip()
     supplied = (code or "").strip()
     if not expected or len(expected) != 6:
-        # Proposal was never sent (no code generated) — guard so the
-        # activation page can't be raced against a proposal that
-        # hasn't yet hit ``send_proposal_to_client``.
+        # No code currently outstanding — either the customer
+        # hasn't hit "Send code" yet, or the previous code was
+        # consumed by a prior successful activation. Same error
+        # shape as a wrong code so an enumeration probe can't tell
+        # "no code minted" apart from "wrong code".
         raise InvalidActivationCode(
             "This proposal does not have an active confirmation code."
+        )
+    # TTL check — codes older than 10 minutes are dead. Forces a
+    # leaked code to expire on its own even if the proposal row
+    # isn't touched. ``activation_code_sent_at`` is ``None`` only
+    # for rows minted before the JIT-code migration; treat that
+    # case as "expired" too so the customer requests a fresh code.
+    sent_at = proposal.activation_code_sent_at
+    if sent_at is None or (
+        timezone.now() - sent_at
+        > timedelta(seconds=ACTIVATION_CODE_TTL_SECONDS)
+    ):
+        raise InvalidActivationCode(
+            "This confirmation code has expired. Request a fresh one."
         )
     if not hmac.compare_digest(expected, supplied):
         raise InvalidActivationCode(
@@ -252,7 +295,14 @@ def activate_via_token(
     # and an attacker with the old DB snapshot can't replay the
     # old code against a different account on the same proposal.
     proposal.activation_code = ""
-    proposal.save(update_fields=["activation_code", "updated_at"])
+    proposal.activation_code_sent_at = None
+    proposal.save(
+        update_fields=[
+            "activation_code",
+            "activation_code_sent_at",
+            "updated_at",
+        ],
+    )
 
     return ActivationResult(
         account=account,
@@ -260,6 +310,127 @@ def activate_via_token(
         customer_company=customer.company or customer.name or "",
         proposal_id=str(proposal.id),
     )
+
+
+@transaction.atomic
+def request_activation_code(*, token: uuid.UUID) -> dict[str, Any]:
+    """Mint + email a fresh 6-digit activation code for a proposal.
+
+    Drives the just-in-time OTP flow on ``/portal/activate/<token>``:
+    the page auto-fires this on mount (and on every "Resend" click)
+    so the customer gets the code in their inbox at the exact moment
+    they're about to type it. The code is delivered in a dedicated,
+    code-only email — separate from the proposal-send email — so a
+    forwarded proposal can't leak both halves of the credential pair.
+
+    Side effects (atomic):
+        * Generate a fresh ``secrets.randbelow(1_000_000)`` 6-digit
+          code and stamp it onto ``proposal.activation_code``.
+        * Set ``proposal.activation_code_sent_at`` to ``timezone.now()``.
+        * Email the code via
+          :func:`send_proposal_activation_code_email` on commit.
+
+    Returns the masked recipient + the next allowed resend time so
+    the FE can render a precise cooldown countdown.
+
+    Raises:
+        :class:`InvalidActivationToken` — token isn't on any proposal.
+        :class:`CustomerEmailMissing` — proposal has no resolvable
+            recipient email.
+        :class:`AccountAlreadyActivated` — the recipient already
+            holds an activated portal account; the activation page
+            should route them to sign-in instead of asking for a
+            code they don't need.
+        :class:`ActivationCodeRateLimited` — a previous code was
+            sent within the cooldown window; ``retry_after_seconds``
+            on the exception tells the FE how long to wait.
+    """
+
+    proposal = _resolve_proposal_by_token(token)
+    if proposal is None:
+        raise InvalidActivationToken(
+            "No proposal matches this activation link."
+        )
+
+    customer = proposal.customer
+    if customer is None:
+        raise CustomerEmailMissing(
+            "This proposal has no customer attached; ask the team to "
+            "link a customer record before resending the kiosk link.",
+        )
+    email = _resolve_kiosk_email(proposal)
+    if not email:
+        raise CustomerEmailMissing(
+            "The customer attached to this proposal has no email on "
+            "file; ask the team to add one before resending the link.",
+        )
+
+    # Returners never need a code — short-circuit before generating
+    # or emailing anything. The FE preview should route them to
+    # /portal/login on its own; this is defence-in-depth.
+    account = ClientAccount.objects.filter(email__iexact=email).first()
+    if account is not None and account.has_usable_password():
+        raise AccountAlreadyActivated(
+            "This email already has a portal account. Sign in instead.",
+        )
+
+    # Cooldown gate. ``activation_code_sent_at`` is ``None`` only on
+    # the very first request for a freshly-sent proposal, so the
+    # gate's empty path lets the first send through immediately.
+    now = timezone.now()
+    if proposal.activation_code_sent_at is not None:
+        elapsed = (now - proposal.activation_code_sent_at).total_seconds()
+        if elapsed < ACTIVATION_CODE_RESEND_COOLDOWN_SECONDS:
+            retry_after = int(
+                ACTIVATION_CODE_RESEND_COOLDOWN_SECONDS - elapsed
+            ) + 1
+            raise ActivationCodeRateLimited(
+                "Please wait before requesting another code.",
+                retry_after_seconds=retry_after,
+            )
+
+    new_code = f"{secrets.randbelow(1_000_000):06d}"
+    proposal.activation_code = new_code
+    proposal.activation_code_sent_at = now
+    proposal.save(
+        update_fields=[
+            "activation_code",
+            "activation_code_sent_at",
+            "updated_at",
+        ],
+    )
+
+    # Mail after commit so a delivery failure never leaves a code
+    # row the customer can't see in their inbox — but the customer
+    # can still hit Resend (after the cooldown) to retry.
+    proposal_id = proposal.id
+    customer_company = customer.company or customer.name or ""
+    proposal_code = proposal.code or ""
+
+    def _dispatch() -> None:
+        from apps.client_portal.email import (
+            send_proposal_activation_code_email,
+        )
+
+        try:
+            send_proposal_activation_code_email(
+                to_email=email,
+                code=new_code,
+                proposal_code=proposal_code,
+                customer_company=customer_company,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "portal.activation_code_email_failed",
+                extra={"proposal_id": str(proposal_id)},
+            )
+
+    transaction.on_commit(_dispatch)
+
+    return {
+        "email_masked": _mask_email(email),
+        "retry_after_seconds": ACTIVATION_CODE_RESEND_COOLDOWN_SECONDS,
+    }
 
 
 def preview_activation(*, token: uuid.UUID) -> dict[str, Any]:

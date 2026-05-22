@@ -40,6 +40,36 @@ export async function activate(
 }
 
 
+export interface ActivationCodeRequestResult {
+  readonly sent: boolean;
+  readonly email_masked: string;
+  /** Seconds the FE should wait before re-enabling the "Resend code"
+   *  button. The server enforces the same cooldown on its side. */
+  readonly retry_after_seconds: number;
+}
+
+
+/**
+ * Ask the backend to mint + email a fresh 6-digit activation code
+ * for the proposal that owns ``token``. Auto-fired on the code step
+ * of the activation form, and on every "Resend code" click.
+ *
+ * Returns the cooldown the FE should use for its countdown. The
+ * backend separately enforces the same window — a hammered Resend
+ * click yields a 429 with ``retry_after_seconds`` so the FE can
+ * resync.
+ */
+export async function requestActivationCode(
+  token: string,
+): Promise<ActivationCodeRequestResult> {
+  const { data } = await apiClient.post<ActivationCodeRequestResult>(
+    `/api/portal/activate/${token}/request-code/`,
+    {},
+  );
+  return data;
+}
+
+
 /**
  * Redeem a staff-issued :class:`CustomerPortalInvite` and finish
  * activation. Same response shape as :func:`activate`; the only

@@ -220,6 +220,79 @@ def send_portal_invite_email(
     msg.send(fail_silently=False)
 
 
+def send_proposal_activation_code_email(
+    *,
+    to_email: str,
+    code: str,
+    proposal_code: str,
+    customer_company: str = "",
+) -> None:
+    """Send the just-in-time 6-digit activation code for a proposal.
+
+    Standalone OTP email — no link, no cover letter, no other CTA.
+    Sent by :func:`apps.client_portal.services.request_activation_code`
+    each time the customer hits "Send code" or "Resend" on the
+    activation page (rate-limited to one every 60 seconds, with a
+    10-minute TTL on the code itself).
+
+    Designed to land in the inbox immediately recognisable as an
+    OTP: short subject, the code is the headline, no "could be
+    anything" cover copy.
+    """
+
+    if not to_email:
+        logger.warning(
+            "portal.activation_code_email: skipped — no recipient address.",
+        )
+        return
+
+    subject = f"Your Vita Manufacture verification code · {code}"
+    company_line = (
+        f"Hi {customer_company},"
+        if customer_company
+        else "Hi,"
+    )
+    text = (
+        f"{company_line}\n\n"
+        f"Your 6-digit verification code for proposal "
+        f"{proposal_code} is:\n\n"
+        f"  {code}\n\n"
+        "Enter it on the activation page within the next 10 minutes.\n"
+        "If you didn't request this, ignore the email — the code is\n"
+        "useless without the activation link.\n\n"
+        "— Vita Manufacture\n"
+    )
+    html = (
+        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
+        'color: #1a1a1a; background: #ffffff; padding: 32px; max-width: 480px;">'
+        f'<p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.5;">'
+        f'{company_line}</p>'
+        '<p style="margin: 0 0 20px 0; font-size: 14px; line-height: 1.5;">'
+        "Your 6-digit verification code for proposal "
+        f"<strong>{proposal_code}</strong> is:</p>"
+        '<div style="margin: 0 auto 24px auto; padding: 18px 32px; '
+        'border: 2px solid #1a1a1a; display: inline-block; '
+        'font-family: \'Courier New\', monospace; '
+        f'font-size: 32px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
+        '<p style="margin: 0 0 12px 0; font-size: 12px; line-height: 1.5; color: #5a574f;">'
+        "Enter it on the activation page within the next 10 minutes. "
+        "If you didn't request this, ignore the email — the code is "
+        "useless without the activation link.</p>"
+        '<p style="margin: 16px 0 0 0; font-size: 12px; color: #8a857c;">'
+        "— Vita Manufacture</p>"
+        "</div>"
+    )
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html, "text/html")
+    msg.send(fail_silently=False)
+
+
 def send_portal_password_reset_email(
     *,
     to_email: str,

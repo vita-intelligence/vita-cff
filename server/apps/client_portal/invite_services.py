@@ -85,6 +85,19 @@ class InviteEmailMissing(InviteError):
     code = "invite_email_missing"
 
 
+class CustomerAlreadyActivated(InviteError):
+    """Raised by :func:`create_invite` when the target email already
+    belongs to an activated :class:`ClientAccount`.
+
+    Sending a fresh code to a customer who's already onboarded is
+    confusing (they don't need one) and useless (they can just sign
+    in). The staff modal catches this and surfaces "this customer
+    already has a portal account — share the login URL instead".
+    """
+
+    code = "customer_already_activated"
+
+
 @dataclass(frozen=True)
 class IssuedInvite:
     """Returned by :func:`create_invite` — what the API hands back
@@ -164,6 +177,19 @@ def create_invite(
         raise InviteEmailMissing(
             "The customer has no email on file; add one before issuing "
             "a portal invite."
+        )
+
+    # Refuse to mint a new invite if the customer already has an
+    # activated portal account. The invite flow is for *registration*
+    # — a returner doesn't need a code, only a sign-in URL. Surfacing
+    # this as a 400 with a distinct code lets the staff modal show a
+    # precise message + a "share login link" affordance instead of
+    # silently emailing a useless code into the void.
+    existing = ClientAccount.objects.filter(email__iexact=email).first()
+    if existing is not None and existing.has_usable_password():
+        raise CustomerAlreadyActivated(
+            "This customer already has a portal account. Share the "
+            "sign-in URL instead of issuing a new invite.",
         )
 
     now = timezone.now()
@@ -352,6 +378,7 @@ def activate_via_invite(
 
 __all__ = [
     "INVITE_TTL",
+    "CustomerAlreadyActivated",
     "InvalidInviteToken",
     "InviteAlreadyUsed",
     "InviteEmailMissing",

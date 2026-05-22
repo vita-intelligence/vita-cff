@@ -22,6 +22,7 @@ import uuid
 
 import pytest
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.tests.factories import UserFactory
@@ -78,8 +79,10 @@ def proposal_for(customer_with_email):
         public_token=uuid.uuid4(),
         # Fixed code so tests don't need to peek at the row to
         # know what to type. The real send path generates a random
-        # one; tests deliberately pin a value.
+        # one via ``request_activation_code``; tests pin a known
+        # value + a fresh ``sent_at`` so the TTL guard passes.
         activation_code="123456",
+        activation_code_sent_at=timezone.now(),
     )
     return proposal
 
@@ -123,6 +126,7 @@ class TestActivation:
             customer=customer_no_email,
             public_token=uuid.uuid4(),
             activation_code="123456",
+            activation_code_sent_at=timezone.now(),
         )
         client = APIClient()
         url = f"/api/portal/activate/{proposal.public_token}/"

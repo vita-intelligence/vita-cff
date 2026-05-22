@@ -516,8 +516,22 @@ EMAIL_USE_SSL = os.environ.get("EMAIL_USE_SSL", "False").strip().lower() in {
 # handshake would block the request thread indefinitely — long enough
 # to look like a hang under modest load.
 EMAIL_TIMEOUT = int(os.environ.get("EMAIL_TIMEOUT", "20"))
+# Customer-facing emails ("review your proposal", invite codes,
+# password reset) need a display name the recipient instantly
+# recognises as the company they're working with. Anything starting
+# with "DoNotReply" — or even just a bare ``no-reply@…`` with no
+# friendly prefix — reads as automated junk and gets ignored. The
+# default carries the parent-company brand because that's what
+# customers know; the in-app ``Vita NPD`` identity is staff-facing
+# and stays inside the product.
+#
+# Override on App Service via the ``DEFAULT_FROM_EMAIL`` env var if
+# the inbox should display a different sender (e.g. transactional
+# emails routed through a third-party domain). Keep the full
+# ``Display Name <address@domain>`` shape — bare addresses surface
+# as their local part in most inboxes.
 DEFAULT_FROM_EMAIL = os.environ.get(
-    "DEFAULT_FROM_EMAIL", "Vita NPD <no-reply@vita.npd>"
+    "DEFAULT_FROM_EMAIL", "Vita Manufacture <no-reply@vita.npd>"
 )
 # Base URL the notification templates embed in deep links back to the
 # app. Defaults to the dev frontend origin so the console email still

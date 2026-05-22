@@ -17,6 +17,7 @@ import uuid
 
 import pytest
 from django.contrib.contenttypes.models import ContentType
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.accounts.tests.factories import UserFactory
@@ -99,7 +100,10 @@ def _activate_client(api_client: APIClient, proposal):
     code to the activation POST."""
 
     proposal.activation_code = "123456"
-    proposal.save(update_fields=["activation_code"])
+    proposal.activation_code_sent_at = timezone.now()
+    proposal.save(
+        update_fields=["activation_code", "activation_code_sent_at"],
+    )
     api_client.post(
         f"/api/portal/activate/{proposal.public_token}/",
         {"password": "supersecret-12345", "code": "123456"},

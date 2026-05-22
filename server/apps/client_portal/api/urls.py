@@ -38,6 +38,7 @@ from .profile_views import (
     ProfileView,
 )
 from .views import (
+    ActivationCodeRequestView,
     ActivationPreviewView,
     ActivationView,
     LoginView,
@@ -71,6 +72,11 @@ urlpatterns = [
         "activate/<str:token>/preview/",
         ActivationPreviewView.as_view(),
         name="activate-preview",
+    ),
+    path(
+        "activate/<str:token>/request-code/",
+        ActivationCodeRequestView.as_view(),
+        name="activate-request-code",
     ),
 
     # Customer-portal invites — staff issues these from the customers

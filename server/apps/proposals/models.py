@@ -448,27 +448,49 @@ class Proposal(models.Model):
         ),
     )
 
-    #: Six-digit confirmation code that the customer must type in
-    #: as the last step of portal activation, in addition to clicking
-    #: the kiosk-email link. The link alone proves access to one
-    #: snapshot of the inbox; requiring a second factor from the
-    #: SAME email body raises the bar against URL-only leaks
-    #: (forwarded URLs, screenshots that crop the body, browser
-    #: history on a shared computer). Regenerated on every
-    #: ``send_proposal_to_client`` so a resent kiosk email
-    #: invalidates the previous code.
+    #: Six-digit confirmation code the customer types as the last
+    #: step of portal activation, in addition to clicking the
+    #: kiosk-email link. Generated on demand by the activation page —
+    #: the customer hits "Send code" (or the page auto-fires on the
+    #: code step) and the code is delivered in a dedicated email,
+    #: separate from the proposal-send email. Previously bundled into
+    #: the proposal body, which was a deliverability + UX trap:
+    #: customers couldn't find the code at the bottom of a long
+    #: cover letter, and a forwarded proposal email leaked the code.
+    #: The just-in-time delivery raises the bar on both.
     activation_code = models.CharField(
         _("activation code"),
         max_length=6,
         blank=True,
         default="",
         help_text=_(
-            "Zero-padded 6-digit code printed in the kiosk email "
-            "body. The portal activation form asks for it after "
-            "the password step. Cleared once activation succeeds "
-            "so an attacker who later steals the DB row can't "
-            "complete a fresh activation against an already-set "
-            "account."
+            "Zero-padded 6-digit code mailed to the customer when "
+            "they reach the activation page. Cleared once activation "
+            "succeeds so an attacker who later steals the DB row "
+            "can't complete a fresh activation against an "
+            "already-set account."
+        ),
+    )
+    #: When the current :attr:`activation_code` was minted + mailed.
+    #: Drives two behaviours:
+    #:   * **TTL** — codes older than 10 minutes are refused at
+    #:     verify-time so a leaked code expires by itself even if
+    #:     the proposal row isn't touched.
+    #:   * **Resend rate-limit** — the request-code endpoint refuses
+    #:     a fresh send within 60s of the previous one. Both the
+    #:     server (defensive) and the FE (UX countdown) read this
+    #:     to compute the cooldown.
+    #: ``null`` means "no code has ever been requested for this
+    #: proposal" — the verify step treats that identically to an
+    #: expired code.
+    activation_code_sent_at = models.DateTimeField(
+        _("activation code sent at"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "UTC timestamp the activation code was last mailed. "
+            "Codes older than 10 minutes are refused; resends "
+            "within 60 seconds are refused."
         ),
     )
 

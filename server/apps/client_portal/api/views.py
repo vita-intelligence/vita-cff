@@ -46,6 +46,7 @@ from apps.client_portal.permissions import (
 )
 from apps.client_portal.services import (
     AccountAlreadyActivated,
+    ActivationCodeRateLimited,
     ActivationError,
     CustomerEmailMissing,
     InvalidActivationCode,
@@ -55,6 +56,7 @@ from apps.client_portal.services import (
     authenticate_client,
     confirm_password_reset,
     preview_activation,
+    request_activation_code,
     request_password_reset,
 )
 from apps.client_portal.api.serializers import (
@@ -134,6 +136,49 @@ class ActivationPreviewView(PortalPublicAPIView):
         except InvalidActivationToken:
             return _err("invalid_activation_token", status.HTTP_404_NOT_FOUND)
         return Response(ActivationPreviewSerializer(payload).data)
+
+
+class ActivationCodeRequestView(PortalPublicAPIView):
+    """``POST /api/portal/activate/<token>/request-code/``.
+
+    Mints + emails a fresh just-in-time 6-digit activation code for
+    the proposal that owns ``token``. Called by the activation page
+    when the customer advances to the code step (auto-fire) and on
+    every "Resend code" click. Rate-limited to one send per 60s per
+    proposal; codes expire after 10 minutes.
+    """
+
+    def post(self, request: Request, token: str) -> Response:
+        try:
+            payload = request_activation_code(token=_parse_token(token))
+        except CustomerEmailMissing:
+            return _err("customer_email_missing", status.HTTP_409_CONFLICT)
+        except AccountAlreadyActivated:
+            # Returner — the FE should route to login; defence-in-depth
+            # for the case the FE hasn't yet read the preview.
+            return _err(
+                "account_already_activated",
+                status.HTTP_409_CONFLICT,
+            )
+        except ActivationCodeRateLimited as exc:
+            return _err(
+                "activation_code_rate_limited",
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+        except InvalidActivationToken:
+            return _err("invalid_activation_token", status.HTTP_404_NOT_FOUND)
+        except ActivationError as exc:
+            return _err(exc.code, status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            {
+                "sent": True,
+                "email_masked": payload["email_masked"],
+                "retry_after_seconds": payload["retry_after_seconds"],
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 class ActivationView(PortalPublicAPIView):

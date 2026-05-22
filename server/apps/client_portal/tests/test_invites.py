@@ -23,6 +23,7 @@ from rest_framework.test import APIClient
 from apps.accounts.tests.factories import UserFactory
 from apps.client_portal.invite_services import (
     INVITE_TTL,
+    CustomerAlreadyActivated,
     _hash_code,
     create_invite,
 )
@@ -195,6 +196,27 @@ class TestStaffIssue:
         r = client.post(_staff_invite_url(org, customer))
         assert r.status_code == 409
         assert r.json()["detail"] == ["portal_account_already_activated"]
+
+    def test_service_refuses_activated_customer_defensively(
+        self, org, customer,
+    ):
+        # Service-layer guard: the view already 409s before this fires
+        # in the happy path, but the service must independently refuse
+        # so a future caller (admin script, parallel race) can't
+        # silently mint a code for a returner who doesn't need it.
+        ClientAccount.objects.create_account(
+            email=customer.email,
+            customer=customer,
+            password="goodpassword-12345",
+        )
+
+        with pytest.raises(CustomerAlreadyActivated):
+            create_invite(customer=customer, actor=org.created_by)
+
+        # No invite row written — the refusal happens before persist.
+        assert not CustomerPortalInvite.objects.filter(
+            customer=customer
+        ).exists()
 
 
 # ---------------------------------------------------------------------------

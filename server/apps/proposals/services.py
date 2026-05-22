@@ -1582,15 +1582,25 @@ def _render_and_send_proposal_email(
         else ""
     )
 
-    # Generate a fresh 6-digit activation code. Regenerated on
-    # every send so a resent email invalidates the previous code.
-    # Stored on the proposal row so the portal can verify what
-    # the customer types as the second factor of activation.
-    # ``secrets.randbelow`` gives cryptographically uniform values;
-    # zero-padded so the customer always reads exactly six digits.
-    import secrets as _secrets
-    activation_code = f"{_secrets.randbelow(1_000_000):06d}"
-    proposal.activation_code = activation_code
+    # Activation code is NOT generated here any more. The proposal
+    # email carries only the kiosk button — the 6-digit code is
+    # delivered just-in-time by a separate email when the customer
+    # actually needs to type it on the activation page (see
+    # :func:`apps.client_portal.services.request_activation_code`).
+    # Two reasons the code moved out of this email:
+    #   * Customers couldn't find the code buried below a long
+    #     cover letter and kept replying "I don't have a code".
+    #   * A forwarded proposal email used to leak the code as well
+    #     as the link; with separate delivery the link by itself is
+    #     useless without a fresh code that only the inbox owner can
+    #     retrieve at activation time.
+    #
+    # Clear any stale code/timestamp left over from a prior send so
+    # the resend always starts the customer from a clean slate —
+    # they must request a fresh code on the activation page.
+    activation_code = ""
+    proposal.activation_code = ""
+    proposal.activation_code_sent_at = None
 
     # Cover-letter signoff name. Falls back through sales person →
     # primary project's owner → empty so the email never carries a
@@ -1639,13 +1649,11 @@ def _render_and_send_proposal_email(
         plain_lines.append(body_text.rstrip())
         plain_lines.append("")
     if kiosk_url:
+        # Plain-text mirrors the HTML: link only, no code. The code
+        # arrives in a separate JIT email when the customer hits the
+        # activation page.
         plain_lines.append("Open the proposal here:")
         plain_lines.append(kiosk_url)
-        plain_lines.append("")
-        plain_lines.append(
-            "Activation code (enter it after setting your password):"
-        )
-        plain_lines.append(activation_code)
         plain_lines.append("")
     if sales_person_name:
         plain_lines.append("Kind regards,")
@@ -1653,11 +1661,11 @@ def _render_and_send_proposal_email(
         if sales_person_email:
             plain_lines.append(sales_person_email)
         plain_lines.append("")
-    plain_lines.append(f"— Vita NPD · {proposal.code}")
+    plain_lines.append(f"— Vita Manufacture · {proposal.code}")
     plain_body = "\n".join(plain_lines)
 
     final_subject = (subject or "").strip() or (
-        f"Your proposal from Vita NPD — {proposal.code}"
+        f"Your proposal from Vita Manufacture — {proposal.code}"
     )
 
     # ``Reply-To`` points at the sales person, not at the
@@ -1951,7 +1959,10 @@ def send_proposal_to_client(
     proposal.kiosk_recipient_email = recipient_clean
     proposal.save(
         update_fields=[
-            "kiosk_recipient_email", "activation_code", "updated_at",
+            "kiosk_recipient_email",
+            "activation_code",
+            "activation_code_sent_at",
+            "updated_at",
         ],
     )
 
@@ -1972,6 +1983,33 @@ def send_proposal_to_client(
             "subject": final_subject,
         },
     )
+
+    # Back-fill ``customer.email`` from the recipient we just emailed
+    # if the customer record had nothing on file. Mitigates the
+    # "customer claims they're not registered" trap: the proposal
+    # carried a working address all along, but the address book row
+    # was blank, which broke every downstream flow that reads
+    # ``customer.email`` (portal invites, email-change confirmations,
+    # password reset). We only fill the gap — never overwrite an
+    # existing address — so the address book stays the source of
+    # truth when the operator has explicitly set one.
+    customer = proposal.customer
+    if (
+        customer is not None
+        and not (customer.email or "").strip()
+        and recipient_clean
+    ):
+        before_customer = {"email": customer.email or ""}
+        customer.email = recipient_clean
+        customer.save(update_fields=["email", "updated_at"])
+        record_audit(
+            organization=proposal.organization,
+            actor=actor,
+            action="customer.email_backfilled_from_proposal",
+            target=customer,
+            before=before_customer,
+            after={"email": recipient_clean, "source_proposal_id": str(proposal.id)},
+        )
 
     # Now flip status to ``sent``. Reuses the canonical transition path
     # so attached specs get promoted, the status-transition row is

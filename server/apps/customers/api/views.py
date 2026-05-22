@@ -46,6 +46,7 @@ from apps.customers.services import (
     update_customer,
 )
 from apps.client_portal.invite_services import (
+    CustomerAlreadyActivated,
     InviteEmailMissing,
     InviteError,
     create_invite,
@@ -225,6 +226,16 @@ class CustomerPortalInviteView(APIView):
 
         try:
             issued = create_invite(customer=customer, actor=request.user)
+        except CustomerAlreadyActivated:
+            # Defense-in-depth: the view-level guard above caught the
+            # common case, but a parallel request could have activated
+            # the account between that check and the service call.
+            # Surface the same 409 the view emits so the FE handles
+            # one shape regardless of which layer fired.
+            return Response(
+                {"detail": ["portal_account_already_activated"]},
+                status=status.HTTP_409_CONFLICT,
+            )
         except InviteEmailMissing:
             return Response(
                 {"detail": ["customer_email_missing"]},
