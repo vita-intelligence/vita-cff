@@ -47,10 +47,10 @@ export default function WorkspaceLockedPage() {
                 {tLock("contact_label")}
               </p>
               <a
-                href="mailto:support@vitanpd.com"
+                href="mailto:contact@vitaintelligent.com"
                 className="text-sm font-medium text-orange-700 hover:text-orange-800 hover:underline"
               >
-                support@vitanpd.com
+                contact@vitaintelligent.com
               </a>
             </div>
           </div>
