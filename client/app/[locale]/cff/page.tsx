@@ -6,6 +6,7 @@ import {
   getCurrentUserServer,
   getActiveOrganizationServer,
 } from "@/lib/auth/server";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import { redirect } from "@/i18n/navigation";
 
 import { CFFInbox } from "./cff-inbox";
@@ -31,7 +32,7 @@ export default async function CFFPage({
   setRequestLocale(locale);
 
   const user = await getCurrentUserServer();
-  if (!user) redirect({ href: "/sign-in", locale });
+  if (!user) { await redirectToLogin(locale); }
 
   const organization = await getActiveOrganizationServer();
   if (!organization) redirect({ href: "/home", locale });

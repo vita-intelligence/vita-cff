@@ -2,6 +2,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
+import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getActiveOrganizationServer,
   getCurrentUserServer,
@@ -25,7 +26,9 @@ export default async function CustomersPage({
   setRequestLocale(locale);
 
   const user = await getCurrentUserServer();
-  if (!user) redirect({ href: "/sign-in", locale });
+  if (!user) {
+    await redirectToLogin(locale);
+  }
 
   const organization = await getActiveOrganizationServer();
   if (!organization) redirect({ href: "/home", locale });
