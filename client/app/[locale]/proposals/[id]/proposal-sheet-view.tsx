@@ -4,10 +4,17 @@ import {
   ArrowLeft,
   CheckCircle2,
   ChevronDown,
+  Clock,
   Download,
+  Eye,
   ExternalLink,
+  FileDown,
+  FileSignature,
   FlaskConical,
+  KeyRound,
   Link2,
+  LogIn,
+  MailOpen,
   Pencil,
   Plus,
   RefreshCw,
@@ -43,9 +50,11 @@ import {
   useDeleteProposalLine,
   usePatchProposalLine,
   useProposal,
+  useProposalActivity,
   useProposalAudit,
   useTransitionProposalStatus,
   useUpdateProposal,
+  type ProposalActivityEventDto,
   type ProposalAuditDocumentDto,
   type ProposalAuditSpecDto,
   type ProposalDto,
@@ -537,6 +546,8 @@ export function ProposalSheetView({
       />
 
       <InternalApprovalsPanel proposal={proposal} tProposals={tProposals} />
+
+      <CustomerActivityPanel orgId={orgId} proposalId={proposalId} />
 
       <SignatureEvidencePanel
         orgId={orgId}
@@ -2481,6 +2492,362 @@ function InternalApprovalsPanel({
         ))}
       </dl>
     </section>
+  );
+}
+
+
+/**
+ * Customer-side activity timeline for the proposal.
+ *
+ * Answers the simplest question staff have today and can't:
+ * *did the customer open the link we sent them, and where in the
+ * flow did they stop?* The panel renders even on a draft proposal
+ * (it just renders the "Not yet opened" empty state), so it's a
+ * single place to glance at customer engagement without inferring
+ * it from sign timestamps or chasing a reply email.
+ *
+ * Backed by :func:`useProposalActivity` which hits the
+ * ``/activity/`` endpoint server-side; the staff capability check
+ * lives there. The component itself is dumb — render whatever the
+ * server returned, in newest-first order, with a kind-keyed icon
+ * + label and a relative-time stamp.
+ */
+function CustomerActivityPanel({
+  orgId,
+  proposalId,
+}: {
+  orgId: string;
+  proposalId: string;
+}) {
+  const format = useFormatter();
+  const activityQuery = useProposalActivity(orgId, proposalId);
+
+  // Aggregate the flat event list into per-(kind, target) groups so
+  // a customer who refreshes the proposal page 12 times produces ONE
+  // row, not 12. Groups stay sorted by most-recent activity so the
+  // freshest signal floats to the top of the panel regardless of
+  // how chatty older interactions were.
+  const groups = useMemo(
+    () => aggregateActivityEvents(activityQuery.data?.events ?? []),
+    [activityQuery.data?.events],
+  );
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-100 pb-3">
+        <div className="flex flex-col">
+          <h2 className="text-sm font-semibold text-ink-1000">
+            Customer activity
+          </h2>
+          <p className="text-[11px] text-ink-500">
+            What the customer has done on the portal for this proposal.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => activityQuery.refetch()}
+          isDisabled={activityQuery.isFetching}
+          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-60"
+        >
+          <RefreshCw
+            className={`h-3.5 w-3.5 ${
+              activityQuery.isFetching ? "animate-spin" : ""
+            }`}
+          />
+          Refresh
+        </Button>
+      </header>
+
+      {activityQuery.isLoading ? (
+        <p className="mt-3 text-xs text-ink-500">Loading activity…</p>
+      ) : activityQuery.error ? (
+        <p
+          role="alert"
+          className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger ring-1 ring-inset ring-danger/20"
+        >
+          Couldn't load activity for this proposal.
+        </p>
+      ) : groups.length > 0 ? (
+        <>
+          <ActivitySummaryHeader
+            events={activityQuery.data?.events ?? []}
+            format={format}
+          />
+          <ul className="mt-3 flex flex-col gap-2">
+            {groups.map((group) => (
+              <ActivityGroupRow
+                key={group.key}
+                group={group}
+                format={format}
+              />
+            ))}
+          </ul>
+        </>
+      ) : (
+        <div className="mt-3 flex items-center gap-2 rounded-lg bg-ink-50 px-3 py-3 text-xs text-ink-600">
+          <Clock className="h-3.5 w-3.5 text-ink-400" aria-hidden />
+          <span>
+            Not yet opened. The activity log will populate as soon as the
+            customer clicks the link.
+          </span>
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+/** Cosmetic metadata per portal-event kind — keep keys in lockstep
+ *  with :class:`apps.client_portal.models.PortalEvent.Kind` server
+ *  side. Unknown kinds fall back to the raw string so a backend
+ *  that ships a new kind before the FE updates still renders. */
+const ACTIVITY_KIND_LABEL: Record<string, string> = {
+  link_opened: "Opened activation link",
+  activation_code_requested: "Requested verification code",
+  activated: "Activated account",
+  signed_in: "Signed in",
+  signed_out: "Signed out",
+  proposal_viewed: "Opened proposal",
+  proposal_pdf_downloaded: "Downloaded PDF",
+  proposal_signed: "Signed proposal",
+  proposal_rejected: "Rejected proposal",
+  spec_viewed: "Opened spec",
+  spec_signed: "Signed spec",
+};
+
+function ActivityKindIcon({ kind }: { kind: string }) {
+  const cls = "h-3.5 w-3.5";
+  switch (kind) {
+    case "link_opened":
+      return <MailOpen className={`${cls} text-ink-500`} aria-hidden />;
+    case "activation_code_requested":
+      return <KeyRound className={`${cls} text-ink-500`} aria-hidden />;
+    case "activated":
+      return <CheckCircle2 className={`${cls} text-success`} aria-hidden />;
+    case "signed_in":
+      return <LogIn className={`${cls} text-ink-500`} aria-hidden />;
+    case "signed_out":
+      return <LogIn className={`${cls} text-ink-400`} aria-hidden />;
+    case "proposal_viewed":
+    case "spec_viewed":
+      return <Eye className={`${cls} text-ink-500`} aria-hidden />;
+    case "proposal_pdf_downloaded":
+      return <FileDown className={`${cls} text-ink-500`} aria-hidden />;
+    case "proposal_signed":
+    case "spec_signed":
+      return <FileSignature className={`${cls} text-success`} aria-hidden />;
+    case "proposal_rejected":
+      return <XCircle className={`${cls} text-danger`} aria-hidden />;
+    default:
+      return <Clock className={`${cls} text-ink-400`} aria-hidden />;
+  }
+}
+
+
+/** One row in the aggregated activity list. A "group" is every
+ *  event the customer fired for the same ``(kind, target)`` pair —
+ *  e.g. every "Opened proposal" rolls into one row regardless of
+ *  refresh count, but two different spec sheets stay distinct. */
+interface ActivityGroup {
+  readonly key: string;
+  readonly kind: string;
+  readonly target: ProposalActivityEventDto["target"];
+  /** All event timestamps inside this group, newest-first. */
+  readonly timestamps: readonly string[];
+  /** Account email observed on at least one event in the group. */
+  readonly accountEmail: string | null;
+}
+
+function aggregateActivityEvents(
+  events: readonly ProposalActivityEventDto[],
+): ActivityGroup[] {
+  const byKey = new Map<string, ActivityGroup>();
+  for (const event of events) {
+    const targetKey = event.target ? `${event.target.kind}:${event.target.id}` : "";
+    const key = `${event.kind}::${targetKey}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      // Events arrive newest-first, so the *first* push of any
+      // group is also the freshest. Subsequent pushes are older
+      // and naturally append after.
+      (existing.timestamps as string[]).push(event.created_at);
+      continue;
+    }
+    byKey.set(key, {
+      key,
+      kind: event.kind,
+      target: event.target,
+      timestamps: [event.created_at] as string[],
+      accountEmail: event.client_account?.email ?? null,
+    });
+  }
+  // Sort groups by their newest timestamp (timestamps[0]) DESC so
+  // the most recently active row sits at the top — matches how
+  // the rest of the staff inbox views surface "what just happened".
+  return Array.from(byKey.values()).sort((a, b) =>
+    a.timestamps[0]! < b.timestamps[0]! ? 1 : -1,
+  );
+}
+
+
+function describeActivityGroup(group: ActivityGroup): string {
+  const base = ACTIVITY_KIND_LABEL[group.kind] ?? group.kind;
+  if (group.target?.kind === "spec") {
+    const name = group.target.formulation_name || group.target.code || "spec";
+    return `${base}: ${name}`;
+  }
+  return base;
+}
+
+
+function ActivityGroupRow({
+  group,
+  format,
+}: {
+  group: ActivityGroup;
+  format: ReturnType<typeof useFormatter>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const count = group.timestamps.length;
+  const newest = new Date(group.timestamps[0]!);
+  const oldest = new Date(group.timestamps[group.timestamps.length - 1]!);
+  const label = describeActivityGroup(group);
+  const isRepeated = count > 1;
+
+  return (
+    <li className="rounded-lg bg-ink-50/60 ring-1 ring-inset ring-ink-100">
+      <button
+        type="button"
+        onClick={() => (isRepeated ? setExpanded((v) => !v) : undefined)}
+        aria-expanded={isRepeated ? expanded : undefined}
+        disabled={!isRepeated}
+        className="flex w-full items-start gap-3 px-3 py-2 text-left"
+      >
+        <span className="mt-0.5 shrink-0">
+          <ActivityKindIcon kind={group.kind} />
+        </span>
+        <div className="flex-1 min-w-0">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-ink-1000">
+            <span className="truncate">{label}</span>
+            {isRepeated ? (
+              <span className="inline-flex h-4 items-center rounded bg-ink-200/70 px-1.5 text-[10px] font-semibold tabular-nums text-ink-700">
+                ×{count}
+              </span>
+            ) : null}
+          </p>
+          {group.accountEmail ? (
+            <p className="truncate text-[11px] text-ink-500">
+              {group.accountEmail}
+            </p>
+          ) : null}
+        </div>
+        <span className="flex shrink-0 items-center gap-1 text-[11px] text-ink-500">
+          <time
+            dateTime={group.timestamps[0]}
+            title={format.dateTime(newest, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          >
+            {format.relativeTime(newest, new Date())}
+          </time>
+          {isRepeated ? (
+            <ChevronDown
+              className={`h-3.5 w-3.5 text-ink-400 transition-transform ${
+                expanded ? "rotate-180" : ""
+              }`}
+              aria-hidden
+            />
+          ) : null}
+        </span>
+      </button>
+      {isRepeated && expanded ? (
+        <div className="border-t border-ink-100 px-3 pb-2 pt-2">
+          <p className="text-[10px] uppercase tracking-wide text-ink-500">
+            First seen{" "}
+            {format.dateTime(oldest, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+          </p>
+          <ol className="mt-1 flex flex-col gap-0.5">
+            {group.timestamps.map((ts, idx) => {
+              const when = new Date(ts);
+              return (
+                <li
+                  key={`${ts}-${idx}`}
+                  className="flex items-center justify-between text-[11px] text-ink-500"
+                >
+                  <span className="tabular-nums">#{count - idx}</span>
+                  <time dateTime={ts} title={ts}>
+                    {format.dateTime(when, {
+                      dateStyle: "short",
+                      timeStyle: "short",
+                    })}
+                  </time>
+                </li>
+              );
+            })}
+          </ol>
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+
+function ActivitySummaryHeader({
+  events,
+  format,
+}: {
+  events: readonly ProposalActivityEventDto[];
+  format: ReturnType<typeof useFormatter>;
+}) {
+  // Events arrive newest-first from the API. The summary line is
+  // load-bearing: it's the single glanceable signal a PM needs to
+  // see at the top of the card without expanding anything ("they
+  // opened it · they just looked again 5 minutes ago").
+  if (events.length === 0) return null;
+  const newest = new Date(events[0]!.created_at);
+  const oldest = new Date(events[events.length - 1]!.created_at);
+
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-500">
+      <span className="inline-flex items-center gap-1">
+        <Clock className="h-3 w-3 text-ink-400" aria-hidden />
+        <span>
+          Last seen{" "}
+          <time
+            dateTime={events[0]!.created_at}
+            title={format.dateTime(newest, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}
+            className="font-medium text-ink-700"
+          >
+            {format.relativeTime(newest, new Date())}
+          </time>
+        </span>
+      </span>
+      <span className="text-ink-300">·</span>
+      <span>
+        First seen{" "}
+        <time
+          dateTime={events[events.length - 1]!.created_at}
+          title={format.dateTime(oldest, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          })}
+        >
+          {format.relativeTime(oldest, new Date())}
+        </time>
+      </span>
+      <span className="text-ink-300">·</span>
+      <span className="tabular-nums">
+        {events.length} event{events.length === 1 ? "" : "s"}
+      </span>
+    </div>
   );
 }
 

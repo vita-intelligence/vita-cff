@@ -33,6 +33,13 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/download/`,
   audit: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/audit/`,
+  //: Customer-side portal activity timeline — list of PortalEvent rows
+  //: (link opened, signed in, proposal viewed, …) the customer has
+  //: produced for this proposal. Used by the "Customer activity" card
+  //: on the staff proposal detail page to answer the "did they even
+  //: open it?" question the audit endpoint can't.
+  activity: (orgId: string, proposalId: string) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/activity/`,
   lines: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/lines/`,
   lineDetail: (orgId: string, proposalId: string, lineId: string) =>

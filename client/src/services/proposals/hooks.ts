@@ -24,6 +24,7 @@ import {
   deleteProposalLine,
   fetchCostPreview,
   fetchProposal,
+  fetchProposalActivity,
   fetchProposalAudit,
   fetchProposalLines,
   fetchProposalTransitions,
@@ -39,6 +40,7 @@ import type {
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
   PaginatedProposalsDto,
+  ProposalActivityDto,
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
@@ -126,6 +128,14 @@ export const proposalsQueryKeys = {
       orgId,
       proposalId,
       "audit",
+    ] as const,
+  activity: (orgId: string, proposalId: string) =>
+    [
+      rootQueryKey,
+      "proposals",
+      orgId,
+      proposalId,
+      "activity",
     ] as const,
   costPreview: (orgId: string, versionId: string, margin?: string) =>
     [
@@ -245,6 +255,35 @@ export function useProposalAudit(
     queryFn: () => fetchProposalAudit(orgId, proposalId),
     enabled: Boolean(orgId && proposalId && enabled),
     staleTime: 0,
+  });
+}
+
+
+/**
+ * Customer-portal activity timeline for one proposal.
+ *
+ * Distinct from :func:`useProposalAudit` — that one renders the
+ * e-signature trail and is only meaningful once the customer has
+ * signed. This one renders the *engagement* trail: did they open
+ * the link, did they sign in, did they view the proposal, where in
+ * the flow did they stop. Enabled by default — even an unsent
+ * proposal is allowed to return an empty list rather than gate the
+ * hook so the panel renders a clean "Not yet opened" empty state
+ * whenever it mounts.
+ */
+export function useProposalActivity(
+  orgId: string,
+  proposalId: string,
+  enabled: boolean = true,
+): UseQueryResult<ProposalActivityDto, ApiError> {
+  return useQuery<ProposalActivityDto, ApiError>({
+    queryKey: proposalsQueryKeys.activity(orgId, proposalId),
+    queryFn: () => fetchProposalActivity(orgId, proposalId),
+    enabled: Boolean(orgId && proposalId && enabled),
+    // Activity is append-only and customer-driven — poll-on-focus
+    // gives staff a fresh read when they tab back without forcing
+    // every render to re-fetch.
+    staleTime: 30_000,
   });
 }
 

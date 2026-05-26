@@ -10,6 +10,7 @@ import type {
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
   PaginatedProposalsDto,
+  ProposalActivityDto,
   ProposalAuditDto,
   ProposalDto,
   ProposalLineDto,
@@ -246,6 +247,25 @@ export async function fetchProposalAudit(
 ): Promise<ProposalAuditDto> {
   const { data } = await apiClient.get<ProposalAuditDto>(
     proposalsEndpoints.audit(orgId, proposalId),
+  );
+  return data;
+}
+
+
+/**
+ * Fetch the customer-side portal activity timeline for a proposal.
+ *
+ * Backed by :class:`apps.proposals.api.views.ProposalActivityView`.
+ * Returns up to the last 200 :class:`PortalEvent` rows newest-first,
+ * plus a per-kind summary the panel uses for the compact "first /
+ * last seen" header line.
+ */
+export async function fetchProposalActivity(
+  orgId: string,
+  proposalId: string,
+): Promise<ProposalActivityDto> {
+  const { data } = await apiClient.get<ProposalActivityDto>(
+    proposalsEndpoints.activity(orgId, proposalId),
   );
   return data;
 }

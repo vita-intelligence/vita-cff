@@ -364,3 +364,56 @@ export interface ProposalAuditDto {
   readonly proposal: ProposalAuditDocumentDto;
   readonly specs: readonly ProposalAuditSpecDto[];
 }
+
+
+/**
+ * Customer-portal activity event recorded against the proposal —
+ * one row per observable thing the customer did (clicked the
+ * activation link, signed in, opened the proposal, …). Kinds match
+ * :class:`apps.client_portal.models.PortalEvent.Kind` server-side;
+ * leaving the field as ``string`` so the FE can render an unknown
+ * kind as plain text rather than crashing if the backend adds a
+ * new one before the FE bundle ships.
+ */
+/**
+ * Optional pointer to the specific artifact this event acted on.
+ * Today only ``spec`` events carry a target (so the FE can render
+ * "Opened spec: Strawberry Powder" instead of just "Opened spec");
+ * left as a discriminated union so a future ``signature`` /
+ * ``download`` target can land without re-shaping the DTO.
+ */
+export type ProposalActivityTarget =
+  | {
+      readonly kind: "spec";
+      readonly id: string;
+      readonly code: string;
+      readonly formulation_name: string;
+    };
+
+export interface ProposalActivityEventDto {
+  readonly id: string;
+  readonly kind: string;
+  readonly created_at: string;
+  readonly client_account: {
+    readonly id: string;
+    readonly email: string;
+  } | null;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly target: ProposalActivityTarget | null;
+}
+
+export interface ProposalActivitySummarySlot {
+  readonly first_at: string | null;
+  readonly last_at: string | null;
+  readonly count: number;
+}
+
+export interface ProposalActivityDto {
+  readonly events: readonly ProposalActivityEventDto[];
+  /** Per-kind rollup so the panel header can show
+   *  "First opened: 2h ago · Last opened: 12m ago" without
+   *  iterating ``events`` on the client. */
+  readonly summary: Readonly<
+    Record<string, ProposalActivitySummarySlot>
+  >;
+}
