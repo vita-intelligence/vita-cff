@@ -10,6 +10,7 @@ import {
   getFormulationServer,
   getTrialBatchRenderServer,
   getTrialBatchServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -34,7 +35,7 @@ export default async function TrialBatchDetailPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
   if (level === "none") {

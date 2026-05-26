@@ -10,6 +10,7 @@ import {
   getAttributeDefinitionsServer,
   getCataloguesServer,
   getCurrentUserServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -34,7 +35,7 @@ export default async function CatalogueFieldsPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   const catalogues = (await getCataloguesServer(primaryOrg.id)) ?? [];
   const catalogue = catalogues.find((c) => c.slug === slug);

@@ -4,7 +4,7 @@ import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getFormulationServer,
-  getUserOrganizationsServer,
+  getActiveOrganizationServer,
 } from "@/lib/auth/server";
 
 import { CFFQuickViewButton } from "@/components/cff/cff-quick-view-button";
@@ -44,8 +44,7 @@ export default async function ProjectLayout({
     return <>{children}</>;
   }
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const organization = organizations[0];
+  const organization = await getActiveOrganizationServer();
   if (!organization) {
     return <>{children}</>;
   }

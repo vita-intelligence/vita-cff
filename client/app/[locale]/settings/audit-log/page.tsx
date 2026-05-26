@@ -5,8 +5,8 @@ import { redirect } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
+  getActiveOrganizationServer,
   getCurrentUserServer,
-  getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
 import { SettingsShell } from "../settings-shell";
@@ -39,8 +39,7 @@ export default async function SettingsAuditLogPage({
   }
   const currentUser = user!;
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const primaryOrg = organizations[0] ?? null;
+  const primaryOrg = await getActiveOrganizationServer();
   if (!primaryOrg) {
     redirect({ href: "/settings/organization", locale });
   }

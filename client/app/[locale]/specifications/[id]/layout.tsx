@@ -5,7 +5,7 @@ import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
   getSpecificationServer,
-  getUserOrganizationsServer,
+  getActiveOrganizationServer,
 } from "@/lib/auth/server";
 
 
@@ -41,8 +41,7 @@ export default async function SpecificationLayout({
     return <>{children}</>;
   }
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const organization = organizations[0];
+  const organization = await getActiveOrganizationServer();
   if (!organization) {
     return <>{children}</>;
   }

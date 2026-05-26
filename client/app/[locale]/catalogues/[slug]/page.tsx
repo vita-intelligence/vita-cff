@@ -11,6 +11,7 @@ import {
   getCatalogueItemsFirstPageServer,
   getCataloguesServer,
   getCurrentUserServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -41,7 +42,7 @@ export default async function CatalogueDetailPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   // Fan out the four independent SSR fetches that drive this page.
   // They previously chained sequentially and added ~4 round-trips

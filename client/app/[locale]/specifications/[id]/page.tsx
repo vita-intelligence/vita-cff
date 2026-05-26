@@ -13,6 +13,7 @@ import {
   getCurrentUserServer,
   getRenderedSpecificationServer,
   getSpecificationServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -36,7 +37,7 @@ export default async function SpecificationDetailPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   // Spec sheets piggy-back on the ``formulations`` module — there is
   // no standalone ``specifications`` entry in the capability registry.

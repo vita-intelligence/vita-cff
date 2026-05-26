@@ -9,6 +9,7 @@ import {
   getCurrentUserServer,
   getFormulationServer,
   getTrialBatchServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
   getValidationServer,
   getValidationStatsServer,
@@ -40,7 +41,7 @@ export default async function ProductValidationPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
   if (level === "none") {

@@ -6,13 +6,17 @@ import {
   type HeaderNavItem,
 } from "@/components/layout/header-nav";
 import { HeaderSideIcons } from "@/components/layout/header-side-icons";
+import { OrgSwitcher } from "@/components/layout/org-switcher";
 import { UserMenu } from "@/components/layout/user-menu";
 import { MessengerBell } from "@/components/messenger";
 import {
   hasAnyRowScopedCapability,
   hasFlatCapability,
 } from "@/lib/auth/capabilities";
-import { getUserOrganizationsServer } from "@/lib/auth/server";
+import {
+  getActiveOrganizationServer,
+  getUserOrganizationsServer,
+} from "@/lib/auth/server";
 import type { UserDto } from "@/services/accounts/types";
 
 export type ProtectedNavKey =
@@ -59,7 +63,7 @@ export async function ProtectedHeader({
   // ``getUserOrganizationsServer`` is ``react.cache``-wrapped, so
   // this re-call is free when the outer page already fetched orgs.
   const organizations = (await getUserOrganizationsServer()) ?? [];
-  const primaryOrg = organizations[0] ?? null;
+  const primaryOrg = await getActiveOrganizationServer();
 
   const canSeeCatalogues = hasAnyRowScopedCapability(
     primaryOrg,
@@ -264,6 +268,14 @@ export async function ProtectedHeader({
           the lifecycle pills.
         */}
         <div className="flex items-center gap-1 md:gap-2">
+          {primaryOrg ? (
+            <div className="hidden md:flex">
+              <OrgSwitcher
+                organizations={organizations}
+                activeOrgId={primaryOrg.id}
+              />
+            </div>
+          ) : null}
           <HeaderSideIcons items={sideItems} active={active} />
           <MessengerBell />
           <div className="hidden md:flex">

@@ -3,8 +3,8 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
+  getActiveOrganizationServer,
   getCurrentUserServer,
-  getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
 import { SettingsShell } from "../settings-shell";
@@ -26,8 +26,7 @@ export default async function SettingsIntegrationsPage({
   }
   const currentUser = user!;
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const primaryOrg = organizations[0] ?? null;
+  const primaryOrg = await getActiveOrganizationServer();
   const allowedTabs = computeAllowedSettingsTabs(primaryOrg);
 
   const tCommon = await getTranslations("common");

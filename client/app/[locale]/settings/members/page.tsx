@@ -9,7 +9,7 @@ import {
   getInvitationsServer,
   getMembershipsServer,
   getModulesServer,
-  getUserOrganizationsServer,
+  getActiveOrganizationServer,
 } from "@/lib/auth/server";
 
 import { SettingsShell } from "../settings-shell";
@@ -41,8 +41,7 @@ export default async function SettingsMembersPage({
   }
   const currentUser = user!;
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const primaryOrg = organizations[0] ?? null;
+  const primaryOrg = await getActiveOrganizationServer();
 
   const tCommon = await getTranslations("common");
 

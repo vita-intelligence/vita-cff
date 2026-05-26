@@ -4,6 +4,7 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getCurrentUserServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -32,7 +33,7 @@ export default async function HomePage({
   const currentUser = user!;
 
   const organizations = (await getUserOrganizationsServer()) ?? [];
-  const primaryOrg = organizations[0];
+  const primaryOrg = await getActiveOrganizationServer();
   const hasOrg = Boolean(primaryOrg);
 
   const tCommon = await getTranslations("common");

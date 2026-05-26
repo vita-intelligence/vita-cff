@@ -16,6 +16,7 @@ import {
   getCurrentUserServer,
   getFormulationServer,
   getProjectOverviewServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 import type { OrganizationDto } from "@/services/organizations/types";
@@ -74,7 +75,7 @@ export async function loadProjectForTab(
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   const level = resolveFormulationsPermission(primaryOrg);
   if (level === "none") {

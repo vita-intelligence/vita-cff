@@ -13,6 +13,7 @@ import {
   getCatalogueItemServer,
   getCataloguesServer,
   getCurrentUserServer,
+  getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
@@ -36,7 +37,7 @@ export default async function CatalogueItemDetailPage({
   if (organizations.length === 0) {
     redirect({ href: "/home", locale });
   }
-  const primaryOrg = organizations[0]!;
+  const primaryOrg = (await getActiveOrganizationServer())!;
 
   // Fan out the four independent fetches. The catalogue list, item,
   // attribute definitions, and translation bundles all stand alone;

@@ -202,9 +202,20 @@ export default async function proxy(
   // triggers exactly that 307. Trimming any explicit ``:3000`` on
   // ``Location`` is the smallest surgical fix that survives until
   // next-intl learns to honour ``X-Forwarded-Host`` properly.
+  //
+  // Local dev hits the dev server directly on ``localhost:3000`` —
+  // the inbound ``Host`` header carries that port. Stripping it in
+  // that case would redirect the browser to ``http://localhost/``
+  // (port 80, nothing listening) and surface the symptom we are
+  // trying to fix in prod. So we only strip when the request did
+  // NOT come in via ``:3000`` — i.e. we are behind a reverse proxy
+  // that already terminated the port mapping.
   const loc = response.headers.get("location");
   if (loc && /:3000(\/|$)/.test(loc)) {
-    response.headers.set("location", loc.replace(/:3000(?=\/|$)/, ""));
+    const inboundHost = request.headers.get("host") ?? "";
+    if (!/:3000$/.test(inboundHost)) {
+      response.headers.set("location", loc.replace(/:3000(?=\/|$)/, ""));
+    }
   }
 
   // Append the raw Set-Cookie headers so the browser persists the

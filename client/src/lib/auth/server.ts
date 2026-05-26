@@ -49,6 +49,16 @@ import type {
 
 const ACCESS_COOKIE = "vita_access";
 const REFRESH_COOKIE = "vita_refresh";
+/**
+ * Opaque marker for which membership the caller has switched into.
+ *
+ * Optional by design: when absent (the overwhelming case — most
+ * users have a single org), every server helper falls back to the
+ * first organization the bootstrap returns, preserving the original
+ * "single-org" behavior bit-for-bit. The cookie only takes effect
+ * once a user explicitly picks an org from the header switcher.
+ */
+export const ACTIVE_ORG_COOKIE = "vita_active_org";
 
 
 /**
@@ -298,6 +308,41 @@ export const getUserOrganizationsServer = cache(
     if (bootstrap) return [...bootstrap.organizations];
     // See :func:`getCurrentUserServer` rationale for the fallback.
     return serverFetch<OrganizationDto[]>(organizationsEndpoints.list);
+  },
+);
+
+/**
+ * Read the caller's *currently active* organization for this render.
+ *
+ * Resolution order:
+ *   1. ``ACTIVE_ORG_COOKIE`` — opaque org UUID written by the header
+ *      switcher's server action. Honoured only if the caller still
+ *      has a membership on that org (cookies can outlive memberships
+ *      when an admin revokes access from another tab, so we re-verify
+ *      against the bootstrap-loaded org list every render).
+ *   2. ``organizations[0]`` — the historical default. Single-org
+ *      users (the overwhelming majority) never set the cookie and
+ *      see exactly the behavior they did before the switcher landed.
+ *
+ * Returns ``null`` when the caller has zero orgs (fresh signup
+ * before workspace activation) or the bootstrap round-trip failed,
+ * mirroring the contract of :func:`getUserOrganizationsServer`.
+ */
+export const getActiveOrganizationServer = cache(
+  async (): Promise<OrganizationDto | null> => {
+    const organizations = await getUserOrganizationsServer();
+    if (!organizations || organizations.length === 0) return null;
+    const cookieStore = await cookies();
+    const cookieOrgId = cookieStore.get(ACTIVE_ORG_COOKIE)?.value;
+    if (cookieOrgId) {
+      const match = organizations.find((o) => o.id === cookieOrgId);
+      if (match) return match;
+      // Cookie points at an org the caller no longer belongs to.
+      // Fall through to the default so the page still renders — the
+      // server action will overwrite the stale cookie on the next
+      // switch, and a single-org user never reaches this branch.
+    }
+    return organizations[0] ?? null;
   },
 );
 

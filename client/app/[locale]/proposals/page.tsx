@@ -4,7 +4,7 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
 import {
   getCurrentUserServer,
-  getUserOrganizationsServer,
+  getActiveOrganizationServer,
 } from "@/lib/auth/server";
 import { redirect } from "@/i18n/navigation";
 
@@ -32,8 +32,7 @@ export default async function OrgProposalsPage({
   const user = await getCurrentUserServer();
   if (!user) redirect({ href: "/sign-in", locale });
 
-  const organizations = (await getUserOrganizationsServer()) ?? [];
-  const organization = organizations[0];
+  const organization = await getActiveOrganizationServer();
   if (!organization) redirect({ href: "/home", locale });
 
   // Gate on the dedicated proposals module so commercial roles can
