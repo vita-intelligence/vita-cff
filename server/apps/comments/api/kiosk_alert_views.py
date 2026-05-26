@@ -35,10 +35,11 @@ from apps.comments.kiosk_alerts import (
     CustomNoteTooLong,
     KioskAlertResult,
     NoIdentifiedClients,
+    collect_recipient_emails,
     latest_alert_for_sheet,
     notify_kiosk_clients,
 )
-from apps.comments.models import KioskAlert, KioskSession
+from apps.comments.models import KioskAlert
 from apps.organizations.modules import FormulationsCapability
 from apps.specifications.models import SpecificationSheet
 
@@ -120,16 +121,12 @@ def _summary_payload(sheet: SpecificationSheet) -> dict[str, Any]:
     out."""
 
     latest = latest_alert_for_sheet(sheet)
-    recipient_count = (
-        KioskSession.objects.filter(
-            public_token=sheet.public_token,
-            revoked_at__isnull=True,
-        )
-        .exclude(guest_email="")
-        .values("guest_email")
-        .distinct()
-        .count()
-    )
+    # Single source of truth for "who can be notified" — same helper
+    # the send path uses, so the button never reads "1 recipient"
+    # and the send then reports "no identified clients" (the old
+    # KioskSession-based count had drifted out of sync with the
+    # authenticated portal model post-cutover).
+    recipient_count = len(collect_recipient_emails(sheet))
     return {
         "recipient_count": recipient_count,
         "last_alert": _latest_alert_payload(latest),

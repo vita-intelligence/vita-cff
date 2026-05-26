@@ -109,7 +109,7 @@ def notify_kiosk_clients(
     if len(cleaned_note) > CUSTOM_NOTE_MAX_LENGTH:
         raise CustomNoteTooLong()
 
-    emails = _collect_recipient_emails(sheet)
+    emails = collect_recipient_emails(sheet)
     if not emails:
         raise NoIdentifiedClients()
 
@@ -208,20 +208,64 @@ def latest_alert_for_sheet(sheet: SpecificationSheet) -> KioskAlert | None:
 # ---------------------------------------------------------------------------
 
 
-def _collect_recipient_emails(sheet: SpecificationSheet) -> list[str]:
-    """Distinct, lowercased, non-empty emails from every identified
-    kiosk session attached to this sheet that hasn't been revoked.
+def collect_recipient_emails(sheet: SpecificationSheet) -> list[str]:
+    """Distinct, lowercased emails of every customer-portal account
+    that can be notified about ``sheet``.
 
-    The lowercase normalisation is the dedupe key — two sessions for
-    ``Bob@Acme.com`` and ``bob@acme.com`` collapse to one send."""
+    Walks the modern authenticated portal model:
+
+        Spec sheet
+          → Proposal(s) that reference it (per-line OR legacy 1:1)
+          → ``proposal.customer``
+          → :class:`apps.client_portal.models.ClientAccount` rows on that
+            customer
+
+    Replaces the legacy ``KioskSession``-based lookup, which silently
+    started returning zero results once the anonymous public kiosk
+    was retired in favour of authenticated portal sessions. The
+    new query routes through portal accounts, which is who can
+    actually open the link in a "you have new updates" email today.
+
+    The lowercase normalisation is the dedupe key — two accounts
+    that differ only in case collapse to one send.
+    """
+
+    # Local imports keep this module load-order independent of the
+    # proposals + client_portal apps. They import service code from
+    # here in the other direction on some paths.
+    from apps.client_portal.models import ClientAccount
+    from apps.proposals.models import Proposal
+
+    # A spec can be attached to a proposal two ways: the modern
+    # per-line FK (``ProposalLine.specification_sheet``) and the
+    # legacy one-to-one (``Proposal.specification_sheet``). We
+    # collect both so a pre-cutover spec still finds its proposal.
+    proposal_ids = set(
+        Proposal.objects.filter(lines__specification_sheet=sheet)
+        .values_list("id", flat=True)
+    )
+    proposal_ids.update(
+        Proposal.objects.filter(specification_sheet=sheet)
+        .values_list("id", flat=True)
+    )
+    if not proposal_ids:
+        return []
+
+    customer_ids = set(
+        Proposal.objects.filter(id__in=proposal_ids)
+        .exclude(customer__isnull=True)
+        .values_list("customer_id", flat=True)
+    )
+    if not customer_ids:
+        return []
 
     raw = (
-        KioskSession.objects.filter(
-            public_token=sheet.public_token,
-            revoked_at__isnull=True,
+        ClientAccount.objects.filter(
+            customer_id__in=customer_ids,
+            is_active=True,
         )
-        .exclude(guest_email="")
-        .values_list("guest_email", flat=True)
+        .exclude(email="")
+        .values_list("email", flat=True)
     )
     seen: set[str] = set()
     out: list[str] = []
@@ -232,6 +276,12 @@ def _collect_recipient_emails(sheet: SpecificationSheet) -> list[str]:
         seen.add(normalised)
         out.append(normalised)
     return out
+
+
+# Back-compat alias for any in-tree callers that still reach for the
+# underscored name. The new code path uses ``collect_recipient_emails``
+# directly; remove the alias once the rename is grep-clean.
+_collect_recipient_emails = collect_recipient_emails
 
 
 def _emails_in_cooldown(

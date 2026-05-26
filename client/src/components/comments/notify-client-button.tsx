@@ -72,7 +72,7 @@ export function NotifyClientButton({
   const lastSentLabel = useMemo(() => {
     const sentAt = summary.data?.last_alert?.sent_at;
     if (!sentAt) return null;
-    return formatter.relativeTime(new Date(sentAt));
+    return formatter.relativeTime(new Date(sentAt), new Date());
   }, [summary.data, formatter]);
 
   const handleSubmit = async () => {
