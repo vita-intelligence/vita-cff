@@ -41,6 +41,8 @@ import { CommentsPanel } from "@/components/comments";
 import {
   commentsQueryKeys,
   openCommentsSocket,
+  shouldNotifyForComment,
+  type CommentDto,
   type CommentsSocketHandle,
 } from "@/services/comments";
 
@@ -97,7 +99,10 @@ export function ProjectCommentsBubble({
   // re-claim handlers when the panel closes — see effect below.
   const bubbleHandlersFactory = useCallback(() => {
     return {
-      onCommentEvent: (kind: "created" | "updated" | "deleted" | "resolved") => {
+      onCommentEvent: (
+        kind: "created" | "updated" | "deleted" | "resolved",
+        payload: unknown,
+      ) => {
         // Keep TanStack cache fresh — mirrors what CommentsPanel
         // would do if it owned the subscription right now.
         queryClient.invalidateQueries({
@@ -113,13 +118,26 @@ export function ProjectCommentsBubble({
         // repaints) but don't ping.
         if (kind !== "created") return;
         if (isOpenRef.current) return;
+        // Relevance gate. Project chats are 100% internal team
+        // surfaces — without this, every teammate's reply chimed
+        // every other teammate, which is the exact noise the user
+        // asked to stop. Now only @-mentions trigger the badge +
+        // chime here. (Formulation threads can't receive customer
+        // posts so the customer-author branch is dead code today,
+        // but the helper checks it anyway so the rule stays
+        // consistent across surfaces.)
+        if (
+          !shouldNotifyForComment(payload as CommentDto | null, currentUserId)
+        ) {
+          return;
+        }
         setUnread((prev) => Math.min(prev + 1, 999));
         if (!mutedRef.current) {
           playChime();
         }
       },
     };
-  }, [orgId, formulationId, queryClient]);
+  }, [orgId, formulationId, queryClient, currentUserId]);
 
   // Open the WebSocket on mount. Lifetime tracks the layout, not
   // any individual tab page, so a teammate posting a comment while

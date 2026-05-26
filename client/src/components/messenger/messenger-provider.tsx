@@ -41,6 +41,7 @@ import {
   type InboxWsMessageDto,
 } from "@/services/inbox";
 import { useCurrentUser } from "@/services/accounts";
+import { shouldNotifyForComment } from "@/services/comments";
 
 import { FloatingChatStack } from "./floating-chat-stack";
 import { MessengerToastStack } from "./messenger-toast-stack";
@@ -271,6 +272,17 @@ function onIncomingMessage({
   if (typeof document === "undefined") return;
   const authorId = envelope.comment?.author?.id ?? null;
   if (authorId && currentUserId && authorId === currentUserId) return;
+
+  // Relevance gate. Without this, every internal team message
+  // chimed everyone in the org — noisy enough that staff started
+  // muting the bell, which then made them miss the customer
+  // replies that actually need a fast response. With the gate,
+  // chime / toast / OS notification only fire when the message
+  // is a customer reply or it @-mentions the current user. The
+  // bell badge + inbox unread counts still update (via the
+  // cache invalidation in ``handleInboxMessage`` upstream of
+  // this function), they just stop being noisy.
+  if (!shouldNotifyForComment(envelope.comment, currentUserId)) return;
 
   const authorName = envelope.comment?.author?.name || "";
   const bodyPreview = envelope.comment?.body?.trim().slice(0, 140) || "";

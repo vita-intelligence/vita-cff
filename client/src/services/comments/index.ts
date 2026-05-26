@@ -38,6 +38,7 @@ export {
   type CommentsSocketHandle,
   type CommentsSocketHandlers,
 } from "./ws-client";
+export { shouldNotifyForComment } from "./notifications";
 export {
   acceptKioskSpecification,
   type KioskAcceptInput,
