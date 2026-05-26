@@ -425,3 +425,111 @@ class CustomerPortalInvite(models.Model):
             and self.invalidated_at is None
             and self.expires_at > now
         )
+
+
+class PortalEvent(models.Model):
+    """A single customer action recorded on the client portal.
+
+    Append-only by design — every row is the trace of one thing the
+    customer did (clicked the activation link, requested an OTP,
+    signed a proposal, …). Staff use the rollup to answer the simple
+    question that today we can only guess at: *did the customer
+    actually open the proposal we sent them?*
+
+    Mirrors :class:`apps.audit.models.AuditLog` in shape (org-scoped,
+    JSON metadata, append-only) but lives next to the portal because
+    every event originates from a portal request — keeping it here
+    means the producers and the table are in the same app and the
+    audit log stays focused on staff-side mutations.
+
+    FK posture:
+
+    - ``proposal`` is nullable so future portal-wide events untied
+      to a specific proposal (e.g. password-reset clicks) can land
+      in the same table without a schema split.
+    - ``client_account`` is nullable because pre-activation events
+      have no account yet. After ``activated``, every subsequent
+      event the same session fires carries it.
+    - Both FKs are ``SET_NULL`` so deleting a proposal or churning
+      a client account never destroys the audit trail. Staff can
+      still see what happened historically.
+
+    Schema-on-read JSON ``metadata`` so we don't migrate for each
+    new attribute we want to capture. Per-``kind`` schema is the
+    producer's responsibility; readers ``.get()`` defensively.
+    """
+
+    class Kind(models.TextChoices):
+        # Pre-activation — fired before the customer has an account.
+        LINK_OPENED = "link_opened", _("Activation link opened")
+        ACTIVATION_CODE_REQUESTED = (
+            "activation_code_requested",
+            _("Verification code requested"),
+        )
+        ACTIVATED = "activated", _("Account activated")
+        # Authenticated session events.
+        SIGNED_IN = "signed_in", _("Signed in")
+        SIGNED_OUT = "signed_out", _("Signed out")
+        # Proposal interactions.
+        PROPOSAL_VIEWED = "proposal_viewed", _("Proposal opened")
+        PROPOSAL_PDF_DOWNLOADED = (
+            "proposal_pdf_downloaded",
+            _("Proposal PDF downloaded"),
+        )
+        PROPOSAL_SIGNED = "proposal_signed", _("Proposal signed")
+        PROPOSAL_REJECTED = "proposal_rejected", _("Proposal rejected")
+        # Spec sheet interactions.
+        SPEC_VIEWED = "spec_viewed", _("Spec sheet opened")
+        SPEC_SIGNED = "spec_signed", _("Spec sheet signed")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="portal_events",
+    )
+    proposal = models.ForeignKey(
+        "proposals.Proposal",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="portal_events",
+    )
+    client_account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="portal_events",
+    )
+
+    kind = models.CharField(max_length=40, choices=Kind.choices)
+    metadata = models.JSONField(default=dict, blank=True)
+
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    #: Truncated to 255 — UAs longer than that are almost always
+    #: bot fingerprints, not real customer browsers.
+    user_agent = models.CharField(max_length=255, blank=True)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("portal event")
+        verbose_name_plural = _("portal events")
+        ordering = ("-created_at",)
+        indexes = [
+            # Primary query path: "show me everything that happened
+            # on this proposal, newest first" — the staff panel.
+            models.Index(fields=("organization", "proposal", "-created_at")),
+            # Secondary: "has this proposal ever fired event X?"
+            # (e.g. ``proposal_viewed`` → "first opened at").
+            models.Index(fields=("proposal", "kind")),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"PortalEvent(kind={self.kind}, "
+            f"proposal={self.proposal_id}, "
+            f"at={self.created_at:%Y-%m-%dT%H:%M:%SZ})"
+        )

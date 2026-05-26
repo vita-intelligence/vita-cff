@@ -27,6 +27,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.models import PortalEvent
+from apps.client_portal.services import record_portal_event
 
 
 def _client_proposals_qs(account):
@@ -174,4 +176,12 @@ class SpecDetailView(PortalAPIView):
 
         payload = _serialise_spec(sheet, proposal)
         payload["render_context"] = spec_render_context(sheet)
+        record_portal_event(
+            organization=proposal.organization,
+            proposal=proposal,
+            client_account=request.user,
+            kind=PortalEvent.Kind.SPEC_VIEWED,
+            metadata={"spec_id": str(sheet.id)},
+            request=request,
+        )
         return Response(payload)

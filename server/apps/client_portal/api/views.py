@@ -44,6 +44,7 @@ from apps.client_portal.permissions import (
     ClientOwnsProposal,
     IsClientAccount,
 )
+from apps.client_portal.models import PortalEvent
 from apps.client_portal.services import (
     AccountAlreadyActivated,
     ActivationCodeRateLimited,
@@ -56,6 +57,7 @@ from apps.client_portal.services import (
     authenticate_client,
     confirm_password_reset,
     preview_activation,
+    record_portal_event,
     request_activation_code,
     request_password_reset,
 )
@@ -252,6 +254,12 @@ class LoginView(PortalPublicAPIView):
         access, refresh = tokens_for_client(account)
         response = Response(_me_payload(account))
         set_portal_auth_cookies(response, access, refresh)
+        record_portal_event(
+            organization=account.customer.organization,
+            client_account=account,
+            kind=PortalEvent.Kind.SIGNED_IN,
+            request=request,
+        )
         return response
 
 
@@ -266,6 +274,18 @@ class LogoutView(PortalPublicAPIView):
     """
 
     def post(self, request: Request) -> Response:
+        # Best-effort sign-out trace. ``request.user`` may be
+        # anonymous when the cookie was already expired — we read
+        # the membership defensively so a stale-session logout
+        # still drops the cookies cleanly without raising here.
+        account = request.user if getattr(request.user, "is_authenticated", False) else None
+        if account is not None:
+            record_portal_event(
+                organization=account.customer.organization,
+                client_account=account,
+                kind=PortalEvent.Kind.SIGNED_OUT,
+                request=request,
+            )
         response = Response(status=status.HTTP_204_NO_CONTENT)
         clear_portal_auth_cookies(response)
         return response
@@ -445,6 +465,13 @@ class ProposalDetailView(PortalAPIView):
             _promote_attached_specs_to_sent(
                 proposal=proposal, actor=proposal.updated_by,
             )
+        record_portal_event(
+            organization=proposal.organization,
+            proposal=proposal,
+            client_account=request.user,
+            kind=PortalEvent.Kind.PROPOSAL_VIEWED,
+            request=request,
+        )
         return Response(_render_public_proposal_payload(proposal))
 
 
@@ -540,6 +567,14 @@ class ProposalSignView(PortalAPIView):
         updated.customer_sign_document_hash = post_sign_hash
         updated.save(update_fields=["customer_sign_document_hash"])
 
+        record_portal_event(
+            organization=updated.organization,
+            proposal=updated,
+            client_account=request.user,
+            kind=PortalEvent.Kind.PROPOSAL_SIGNED,
+            request=request,
+        )
+
         return Response(
             {
                 "id": str(updated.id),
@@ -608,6 +643,15 @@ class ProposalSignSpecView(PortalAPIView):
         updated.customer_sign_document_hash = post_sign_hash
         updated.save(update_fields=["customer_sign_document_hash"])
 
+        record_portal_event(
+            organization=proposal.organization,
+            proposal=proposal,
+            client_account=request.user,
+            kind=PortalEvent.Kind.SPEC_SIGNED,
+            metadata={"spec_id": str(updated.id)},
+            request=request,
+        )
+
         return Response(
             {
                 "id": str(updated.id),
@@ -639,6 +683,15 @@ class ProposalRejectView(PortalAPIView):
             )
         except InvalidProposalTransition:
             return _err("invalid_proposal_transition", status.HTTP_400_BAD_REQUEST)
+
+        record_portal_event(
+            organization=updated.organization,
+            proposal=updated,
+            client_account=request.user,
+            kind=PortalEvent.Kind.PROPOSAL_REJECTED,
+            metadata={"reason": reason} if reason else None,
+            request=request,
+        )
 
         return Response(
             {
@@ -729,4 +782,11 @@ class ProposalDownloadView(PortalAPIView):
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
         response["Content-Disposition"] = f'attachment; filename="{filename}"'
         response["Cache-Control"] = "public, max-age=300, must-revalidate"
+        record_portal_event(
+            organization=proposal.organization,
+            proposal=proposal,
+            client_account=request.user,
+            kind=PortalEvent.Kind.PROPOSAL_PDF_DOWNLOADED,
+            request=request,
+        )
         return response

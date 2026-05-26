@@ -13,6 +13,7 @@ from apps.proposals.api.pipeline_views import (
     PipelineColumnView,
 )
 from apps.proposals.api.views import (
+    ProposalActivityView,
     ProposalAuditView,
     ProposalCompleteRequiredFieldsView,
     ProposalCostPreviewView,
@@ -95,6 +96,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/audit/",
         ProposalAuditView.as_view(),
         name="proposal-audit",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/activity/",
+        ProposalActivityView.as_view(),
+        name="proposal-activity",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/lines/",

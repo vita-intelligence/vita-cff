@@ -1377,6 +1377,143 @@ class ProposalAuditView(APIView):
         )
 
 
+class ProposalActivityView(APIView):
+    """``GET`` ``/api/organizations/<org>/proposals/<id>/activity/``.
+
+    Customer-side activity timeline for one proposal. Answers the
+    question "did the customer actually engage with the proposal we
+    sent them, and where in the flow did they stop?" — which today
+    we can only guess at by waiting for a signature or a complaint.
+
+    The rows come from :class:`apps.client_portal.models.PortalEvent`
+    and read newest-first so the staff panel can render "most recent
+    activity" at the top without re-sorting on the client.
+
+    Gated on the basic ``proposals.view`` capability — the same
+    surface that opens the proposal detail page in the first place,
+    on the reasoning that anyone able to see the proposal is by
+    definition allowed to see whether the customer has read it.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.VIEW
+
+    def _load(self, proposal_id: str):
+        try:
+            return get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+    def get(
+        self, request: Request, org_id: str, proposal_id: str
+    ) -> Response:
+        from apps.client_portal.models import PortalEvent
+        from apps.specifications.models import SpecificationSheet
+
+        proposal = self._load(proposal_id)
+
+        # Pull at most 200 rows. The portal event log is append-only
+        # and grows linearly with customer interactions; 200 covers
+        # every realistic proposal in the codebase today (the
+        # heaviest signed deals see ~30 events) while bounding the
+        # response time should someone fat-finger a refresh loop.
+        events = list(
+            PortalEvent.objects
+            .filter(organization=self.organization, proposal=proposal)
+            .select_related("client_account", "client_account__customer")
+            .order_by("-created_at")[:200]
+        )
+
+        # Spec rows on the FE need to render *which* spec the
+        # customer touched, not just "spec viewed". Collect every
+        # spec_id referenced in the batch and resolve them in a
+        # single follow-up query so the panel can group / label
+        # rows by spec without an N+1 fan-out. The ``id__in``
+        # filter rides the primary-key index — even a 200-event
+        # response stays sub-millisecond.
+        spec_kinds = {
+            PortalEvent.Kind.SPEC_VIEWED,
+            PortalEvent.Kind.SPEC_SIGNED,
+        }
+        spec_ids: set[str] = set()
+        for event in events:
+            if event.kind in spec_kinds:
+                spec_id = (event.metadata or {}).get("spec_id")
+                if spec_id:
+                    spec_ids.add(str(spec_id))
+        spec_targets: dict[str, dict[str, str]] = {}
+        if spec_ids:
+            sheets = (
+                SpecificationSheet.objects
+                .filter(id__in=spec_ids, organization=self.organization)
+                .select_related("formulation_version__formulation")
+                .only(
+                    "id",
+                    "code",
+                    "formulation_version__formulation__name",
+                )
+            )
+            for sheet in sheets:
+                spec_targets[str(sheet.id)] = {
+                    "kind": "spec",
+                    "id": str(sheet.id),
+                    "code": sheet.code or "",
+                    "formulation_name": (
+                        sheet.formulation_version.formulation.name
+                        if sheet.formulation_version_id
+                        else ""
+                    ),
+                }
+
+        # Roll-up: "first time event X fired" and "most recent time".
+        # The staff card uses these to render a compact summary
+        # ("First opened: 2h ago · Last opened: 12m ago") so a busy
+        # PM can scan the timeline without expanding the full list.
+        summary: dict[str, dict[str, str | int | None]] = {}
+        for event in events:
+            slot = summary.setdefault(
+                event.kind,
+                {"first_at": None, "last_at": None, "count": 0},
+            )
+            ts = event.created_at.isoformat()
+            slot["last_at"] = slot["last_at"] or ts  # events are DESC: first row IS the latest
+            slot["first_at"] = ts  # …and the last row processed is the earliest
+            slot["count"] = (slot["count"] or 0) + 1  # type: ignore[operator]
+
+        return Response(
+            {
+                "events": [
+                    {
+                        "id": str(event.id),
+                        "kind": event.kind,
+                        "created_at": event.created_at.isoformat(),
+                        "client_account": (
+                            {
+                                "id": str(event.client_account.id),
+                                "email": event.client_account.email,
+                            }
+                            if event.client_account is not None
+                            else None
+                        ),
+                        "metadata": event.metadata or {},
+                        "target": (
+                            spec_targets.get(
+                                str((event.metadata or {}).get("spec_id"))
+                            )
+                            if event.kind in spec_kinds
+                            else None
+                        ),
+                    }
+                    for event in events
+                ],
+                "summary": summary,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Proposal-centric kiosk (public, token-gated, no org auth)
 #

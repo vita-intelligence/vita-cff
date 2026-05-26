@@ -39,6 +39,7 @@ from apps.client_portal.models import (
     PORTAL_PASSWORD_RESET_TOKEN_TTL,
     ClientAccount,
     ClientPasswordResetToken,
+    PortalEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -304,6 +305,13 @@ def activate_via_token(
         ],
     )
 
+    record_portal_event(
+        organization=proposal.organization,
+        proposal=proposal,
+        client_account=account,
+        kind=PortalEvent.Kind.ACTIVATED,
+    )
+
     return ActivationResult(
         account=account,
         customer_id=str(customer.id),
@@ -427,6 +435,13 @@ def request_activation_code(*, token: uuid.UUID) -> dict[str, Any]:
 
     transaction.on_commit(_dispatch)
 
+    record_portal_event(
+        organization=proposal.organization,
+        proposal=proposal,
+        client_account=account,
+        kind=PortalEvent.Kind.ACTIVATION_CODE_REQUESTED,
+    )
+
     return {
         "email_masked": _mask_email(email),
         "retry_after_seconds": ACTIVATION_CODE_RESEND_COOLDOWN_SECONDS,
@@ -464,6 +479,16 @@ def preview_activation(*, token: uuid.UUID) -> dict[str, Any]:
         )
 
     account = ClientAccount.objects.filter(email__iexact=email).first()
+    # Log the very first observable signal that the customer engaged
+    # with the link we emailed them. Fires on every preview hit, but
+    # the staff panel rolls these up by "first" / "most recent" so a
+    # noisy ack from a curious refresh doesn't muddy the read.
+    record_portal_event(
+        organization=proposal.organization,
+        proposal=proposal,
+        client_account=account,
+        kind=PortalEvent.Kind.LINK_OPENED,
+    )
     return {
         "customer_company": customer.company or customer.name or "",
         "email_masked": _mask_email(email),
@@ -666,3 +691,85 @@ def ensure_pending_account(*, customer) -> ClientAccount | None:
         customer=customer,
         password=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Portal event log
+# ---------------------------------------------------------------------------
+
+
+def record_portal_event(
+    *,
+    organization,
+    kind: str,
+    proposal=None,
+    client_account=None,
+    request=None,
+    metadata: dict | None = None,
+) -> None:
+    """Append a single :class:`PortalEvent` row.
+
+    Every portal view that wants to be visible in the staff activity
+    panel calls this once. The call is wrapped in a broad
+    ``try / except`` so a logging-side failure (DB blip, schema drift
+    mid-deploy, …) never escapes into the customer flow: the
+    customer keeps signing / viewing / activating, and we lose at
+    most one row of telemetry.
+
+    ``request`` is optional but recommended — when supplied we
+    snapshot the client IP (respecting ``X-Forwarded-For`` from the
+    Azure App Service front door) and a 255-char-truncated
+    User-Agent. Both are useful for the "is this really the
+    customer or a forwarded preview bot?" forensic question.
+
+    The org argument is required because every event MUST be
+    queryable per tenant; without it the staff panel would have to
+    join through ``proposal`` to filter, and that join becomes
+    expensive once volume picks up.
+    """
+
+    try:
+        ip_address = _extract_client_ip(request) if request is not None else None
+        user_agent = _extract_user_agent(request) if request is not None else ""
+        PortalEvent.objects.create(
+            organization=organization,
+            proposal=proposal,
+            client_account=client_account,
+            kind=kind,
+            metadata=metadata or {},
+            ip_address=ip_address,
+            user_agent=user_agent,
+        )
+    except Exception:  # noqa: BLE001 — telemetry must never crash the flow
+        logger.exception(
+            "[portal-event] failed to record kind=%s proposal=%s account=%s",
+            kind,
+            getattr(proposal, "id", None),
+            getattr(client_account, "id", None),
+        )
+
+
+def _extract_client_ip(request) -> str | None:
+    """Pull the real client IP out of the request.
+
+    Azure App Service terminates TLS at the front door and forwards
+    the original address in ``X-Forwarded-For`` (comma-separated; the
+    first entry is the real client, the rest are intermediate hops).
+    Fall back to ``REMOTE_ADDR`` when the header is absent (local dev,
+    direct hits during tests). Returns ``None`` if neither parses to
+    something that fits the ``GenericIPAddressField`` column —
+    saving a malformed value would just raise on insert and cost us
+    the row.
+    """
+
+    forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    if forwarded:
+        candidate = forwarded.split(",", 1)[0].strip()
+        if candidate:
+            return candidate or None
+    remote = request.META.get("REMOTE_ADDR")
+    return remote or None
+
+
+def _extract_user_agent(request) -> str:
+    return (request.META.get("HTTP_USER_AGENT") or "")[:255]
