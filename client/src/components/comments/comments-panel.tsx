@@ -71,6 +71,15 @@ interface Props {
    *  scroller in between — used by the floating project comments
    *  bubble so chrome stays put while the conversation scrolls. */
   readonly layout?: "natural" | "fill";
+  /** Optional visibility scope for both the read and the write path.
+   *  Omitting it preserves the historical contract: the GET returns
+   *  every comment the caller can see, and the POST visibility is
+   *  auto-derived by the backend. Pass ``"internal"`` to mount a
+   *  staff-only thread on a customer-facing entity (the new
+   *  proposal-page internal bubble does this) or ``"shared"`` to
+   *  scope an existing customer-conversation panel so an internal
+   *  comment never bleeds back into it. */
+  readonly visibilityFilter?: "internal" | "shared";
 }
 
 
@@ -86,6 +95,7 @@ export function CommentsPanel({
   initialFirstPage = null,
   visibility,
   layout = "natural",
+  visibilityFilter,
 }: Props) {
   const tComments = useTranslations("comments");
   // Default the "can pin / resolve any thread" gate to ``canWrite``.
@@ -125,6 +135,7 @@ export function CommentsPanel({
     includeResolved,
     enabled: canRead,
     initialFirstPage,
+    visibilityFilter,
   });
 
   const createMutation = useCreateComment(orgId, entityKind, entityId);
@@ -793,10 +804,26 @@ export function CommentsPanel({
             focusToken={composerFocusToken}
             onSubmit={async (body) => {
               const parentId = replyingTo?.rootId ?? null;
+              // Map the panel's ``client | internal`` visibility to
+              // the backend's ``shared | internal`` enum. Sending
+              // it explicitly only when the caller has scoped this
+              // panel via ``visibilityFilter`` (or passed
+              // ``visibility``) — otherwise the backend's
+              // entity-kind default keeps running, which preserves
+              // the contract every existing mount relies on.
+              const visibilityOut: "internal" | "shared" | undefined =
+                visibilityFilter
+                  ? visibilityFilter
+                  : effectiveVisibility === "client"
+                    ? "shared"
+                    : "internal";
+              const sendVisibility = visibilityFilter || visibility
+                ? visibilityOut
+                : undefined;
               await createMutation.mutateAsync({
                 payload: parentId
-                  ? { body, parent_id: parentId }
-                  : { body },
+                  ? { body, parent_id: parentId, visibility: sendVisibility }
+                  : { body, visibility: sendVisibility },
               });
               // Clear the reply target after a successful send so
               // the next message is a fresh top-level post unless

@@ -195,11 +195,19 @@ class _EntityCommentListBase(APIView):
         include_deleted = _parse_bool(
             request.query_params.get("include_deleted"), default=True
         )
+        # Optional visibility scope. Omitting the param returns every
+        # comment the caller can see (the historical contract every
+        # existing fetcher relies on). The proposal-page internal
+        # bubble passes ``?visibility=internal`` so its read stays
+        # disjoint from the shared customer thread.
+        raw_visibility = (request.query_params.get("visibility") or "").strip()
+        visibility = raw_visibility if raw_visibility in {"internal", "shared"} else None
         queryset = list_thread(
             organization=self.organization,
             target=target,
             include_resolved=include_resolved,
             include_deleted=include_deleted,
+            visibility=visibility,
         )
         paginator = CommentCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
@@ -232,6 +240,7 @@ class _EntityCommentListBase(APIView):
                 target=target,
                 body=data["body"],
                 parent=parent,
+                visibility=data.get("visibility"),
             )
         except CommentBodyBlank as exc:
             return _translate_body_blank(exc)

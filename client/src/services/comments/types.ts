@@ -74,6 +74,12 @@ export interface PaginatedCommentsDto {
 export interface CreateCommentRequestDto {
   readonly body: string;
   readonly parent_id?: string | null;
+  /** Optional visibility override. Omitting it keeps the historical
+   *  auto-derive on the backend (proposals/specs/CFFs default to
+   *  ``shared``, formulations default to ``internal``). The new
+   *  proposal-page internal bubble posts ``"internal"`` explicitly
+   *  so its comments never reach the customer portal. */
+  readonly visibility?: "internal" | "shared";
 }
 
 export interface EditCommentRequestDto {

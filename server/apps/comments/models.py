@@ -708,6 +708,30 @@ class ThreadReadState(models.Model):
     )
     entity_id = models.UUIDField(_("entity id"), db_index=True)
 
+    #: Visibility lane this pointer refers to. The inbox renders each
+    #: customer-facing entity as up to two rows (one ``shared`` row for
+    #: the customer conversation, one ``internal`` row for the staff
+    #: bubble), and each lane needs its own read pointer — otherwise
+    #: opening the internal bubble would silently mark the customer
+    #: reply "read" too. The empty-string default acts as the legacy
+    #: "any-visibility" pointer: existing pre-migration rows keep that
+    #: value and the inbox builder falls back to it whenever a lane-
+    #: specific pointer hasn't been written yet, preserving the old
+    #: contract for any client / server path that hasn't been
+    #: upgraded to send visibility explicitly.
+    visibility = models.CharField(
+        _("visibility lane"),
+        max_length=16,
+        choices=[
+            ("", _("Any (legacy)")),
+            ("internal", _("Internal")),
+            ("shared", _("Shared")),
+        ],
+        default="",
+        blank=True,
+        db_index=True,
+    )
+
     #: Timestamp of the most recent comment the user has acknowledged.
     #: All comments on the thread with ``created_at > last_read_at`` are
     #: counted as unread. The column is monotonic non-decreasing — the
@@ -723,11 +747,14 @@ class ThreadReadState(models.Model):
         verbose_name = _("thread read state")
         verbose_name_plural = _("thread read states")
         constraints = [
-            # One row per (user, thread). The upsert in the service
-            # layer relies on this constraint to convert a duplicate
-            # write into an update without a SELECT-then-INSERT race.
+            # One row per (user, thread, visibility lane). The upsert
+            # in the service layer relies on this constraint to convert
+            # a duplicate write into an update without a SELECT-then-
+            # INSERT race; the visibility column ensures the legacy
+            # "any-visibility" pointer (visibility="") and the new
+            # lane-specific pointers can co-exist for the same thread.
             models.UniqueConstraint(
-                fields=("user", "entity_kind", "entity_id"),
+                fields=("user", "entity_kind", "entity_id", "visibility"),
                 name="thread_read_state_unique",
             ),
         ]

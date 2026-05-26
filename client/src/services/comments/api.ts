@@ -45,6 +45,12 @@ export interface FetchCommentsPageArgs {
   readonly cursorUrl?: string | null;
   readonly includeResolved?: boolean;
   readonly pageSize?: number;
+  /** Optional visibility scope. Omitting returns every comment the
+   *  caller can see (the historical contract every existing
+   *  fetcher relies on). The internal-proposal bubble passes
+   *  ``"internal"`` so its read stays disjoint from the shared
+   *  customer thread. */
+  readonly visibility?: "internal" | "shared";
 }
 
 export async function fetchCommentsPage(
@@ -61,6 +67,7 @@ export async function fetchCommentsPage(
   const params: Record<string, string> = {};
   if (args.includeResolved === false) params.include_resolved = "false";
   if (args.pageSize) params.page_size = String(args.pageSize);
+  if (args.visibility) params.visibility = args.visibility;
   const { data } = await apiClient.get<PaginatedCommentsDto>(threadUrl(key), {
     params,
   });

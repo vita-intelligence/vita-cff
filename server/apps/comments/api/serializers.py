@@ -199,6 +199,18 @@ def _validate_body(value: str) -> str:
 class CommentCreateSerializer(serializers.Serializer):
     body = serializers.CharField(max_length=10_000, allow_blank=True)
     parent_id = serializers.UUIDField(required=False, allow_null=True)
+    #: Optional visibility override. Omitting it (the default for
+    #: every caller before the internal-proposal-chat shipped) keeps
+    #: the auto-derive in :func:`apps.comments.services.create_comment`
+    #: intact, so legacy clients keep posting ``shared`` on
+    #: proposals / specs / CFFs and ``internal`` on formulations.
+    #: The proposal-page bubble passes ``"internal"`` explicitly so
+    #: staff can chat about a deal without the customer seeing it.
+    visibility = serializers.ChoiceField(
+        choices=("internal", "shared"),
+        required=False,
+        allow_null=True,
+    )
 
     def validate_body(self, value: str) -> str:
         return _validate_body(value)

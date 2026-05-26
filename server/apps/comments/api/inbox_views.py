@@ -80,6 +80,13 @@ def _serialise_inbox_thread(thread: InboxThread) -> dict[str, Any]:
             "name": thread.last_message_author.name,
             "kind": thread.last_message_author.kind,
         },
+        # Lane discriminator — ``"internal"`` for staff-only threads
+        # (proposal bubble, formulation project chat) and ``"shared"``
+        # for the customer-facing conversation on proposals / specs /
+        # CFFs. The same ``(entity_kind, entity_id)`` pair can produce
+        # both, and the FE keys rows on ``(kind, id, visibility)`` so
+        # they render as separate inbox entries.
+        "visibility": thread.visibility,
     }
 
 
@@ -169,17 +176,32 @@ class ThreadMarkReadView(APIView):
 
         timestamp = _parse_at(request.data) if request.data else None
 
+        # Optional ``visibility`` lane discriminator. Pre-split
+        # clients omit the field and write to the legacy
+        # ``visibility=""`` row — same row they have always written
+        # to — so the deploy can't strand a tab that hasn't loaded
+        # the new bundle yet. The new client passes
+        # ``"internal"`` / ``"shared"`` so the inbox row badge for
+        # that lane clears without touching its sibling lane.
+        raw_visibility: str | None = None
+        if isinstance(request.data, dict):
+            value = request.data.get("visibility")
+            if isinstance(value, str) and value in {"internal", "shared", ""}:
+                raw_visibility = value
+
         state = mark_thread_read(
             user=request.user,
             entity_kind=entity_kind,
             entity_id=entity_id,
             at=timestamp,
+            visibility=raw_visibility,
         )
         return Response(
             {
                 "entity_kind": state.entity_kind,
                 "entity_id": str(state.entity_id),
                 "organization_id": str(organization.id),
+                "visibility": state.visibility,
                 "last_read_at": state.last_read_at.isoformat(),
             },
             status=status.HTTP_200_OK,

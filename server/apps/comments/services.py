@@ -182,6 +182,7 @@ def list_thread(
     target,
     include_resolved: bool = True,
     include_deleted: bool = True,
+    visibility: str | None = None,
 ) -> QuerySet[Comment]:
     """Return the comment thread attached to ``target`` oldest-first.
 
@@ -192,6 +193,14 @@ def list_thread(
       so threading remains readable; the UI renders a tombstone in
       place of the body. Kept as a knob for admin tooling that may
       want a hard filter later.
+    * ``visibility`` — when supplied (``"internal"`` / ``"shared"``)
+      the thread is filtered to that visibility class. Omitting
+      returns every comment the caller can see (the historical
+      contract — formulation / project chats and the single
+      proposal "Conversation" panel both rely on this). The new
+      proposal-page internal bubble passes ``"internal"`` so its
+      thread stays disjoint from the customer-visible conversation
+      they share with the kiosk.
     """
 
     content_type, object_id, _fk = _resolve_target(target)
@@ -214,6 +223,10 @@ def list_thread(
         )
     if not include_deleted:
         queryset = queryset.filter(is_deleted=False)
+    if visibility == "shared":
+        queryset = queryset.filter(visibility=Comment.Visibility.SHARED)
+    elif visibility == "internal":
+        queryset = queryset.filter(visibility=Comment.Visibility.INTERNAL)
     return queryset
 
 
@@ -259,6 +272,7 @@ def create_comment(
     target,
     body: str,
     parent: Comment | None = None,
+    visibility: str | None = None,
 ) -> Comment:
     """Post a new root comment or a reply.
 
@@ -266,6 +280,15 @@ def create_comment(
     :class:`CommentReplyDepthExceeded`; the root-only rule is enforced
     here as well as at the model layer so a bad service caller
     surfaces the same ``api_code`` as a bad request to the view.
+
+    ``visibility`` is optional. When omitted the historical auto-
+    derive runs: client-visible target classes (proposals, specs,
+    CFFs) default to ``shared`` so the customer portal can read
+    them; formulation / project chatter stays ``internal``. Pass
+    ``"internal"`` explicitly to keep a comment off the customer
+    portal even on a client-visible target — that is what the new
+    proposal-page internal bubble does so staff can chat about a
+    deal without leaking onto the kiosk.
     """
 
     cleaned = _clean_body(body)
@@ -294,11 +317,19 @@ def create_comment(
         # need to discuss something the customer shouldn't see.
         "cff_submission",
     }
-    visibility = (
-        Comment.Visibility.SHARED
-        if fk_attr in CLIENT_VISIBLE_BY_DEFAULT
-        else Comment.Visibility.INTERNAL
-    )
+    if visibility is None:
+        resolved_visibility = (
+            Comment.Visibility.SHARED
+            if fk_attr in CLIENT_VISIBLE_BY_DEFAULT
+            else Comment.Visibility.INTERNAL
+        )
+    else:
+        resolved_visibility = (
+            Comment.Visibility.SHARED
+            if visibility == "shared"
+            else Comment.Visibility.INTERNAL
+        )
+    visibility = resolved_visibility
 
     comment = Comment(
         organization=organization,
@@ -379,10 +410,26 @@ def _mark_thread_read_for_author(*, comment: Comment, actor) -> None:
         # Targets we don't (yet) surface in the inbox — nothing to
         # update.
         return
+    # Auto-ack the author's own post in the SAME visibility lane the
+    # comment was written into. Without the ``visibility`` column in
+    # the lookup, ``update_or_create`` would now match the legacy
+    # ``""`` row AND the lane-specific row when both exist, raising
+    # ``MultipleObjectsReturned`` (a 500 the FE saw as "Request
+    # failed with status code 500" on every new internal-bubble post).
+    # Targeting the same lane also keeps the "my own message doesn't
+    # show as unread" promise lane-aware: posting in the internal
+    # bubble no longer silently clears unread on the sibling
+    # customer-conversation row.
+    lane = (
+        "internal"
+        if comment.visibility == Comment.Visibility.INTERNAL
+        else "shared"
+    )
     ThreadReadState.objects.update_or_create(
         user=actor,
         entity_kind=kind,
         entity_id=entity_id,
+        visibility=lane,
         defaults={"last_read_at": comment.created_at},
     )
 
@@ -778,6 +825,16 @@ class InboxThread:
     show 'CFF-128 · Morning Vital Boost', the unread count for the
     badge, and a single-line preview of the latest message so the
     user can decide whether to open the thread.
+
+    ``visibility`` is ``"internal"`` for staff-only lanes and
+    ``"shared"`` for customer-conversation lanes. Customer-facing
+    entities (proposal / spec / cff_submission) can produce one row
+    per non-empty lane — the inbox separates the customer reply
+    waiting on us from the team's internal discussion of the same
+    deal. Formulations are always tagged ``"internal"`` (they have
+    no customer-facing thread). Pre-aggregator clients that ignore
+    the field still render a flat list — every row remains a valid
+    ``(entity_kind, entity_id)`` thread, just with extra metadata.
     """
 
     organization_id: str
@@ -790,6 +847,7 @@ class InboxThread:
     last_message_at: _dt.datetime
     last_message_preview: str
     last_message_author: InboxAuthor
+    visibility: str = "internal"
 
 
 def _accessible_organizations_for_user(user) -> list[Organization]:
@@ -912,8 +970,9 @@ def mark_thread_read(
     entity_kind: str,
     entity_id: Any,
     at: _dt.datetime | None = None,
+    visibility: str | None = None,
 ) -> ThreadReadState:
-    """Upsert the read pointer for ``(user, entity_kind, entity_id)``.
+    """Upsert the read pointer for ``(user, entity_kind, entity_id, visibility)``.
 
     Caller is responsible for authorising the user against the entity
     — the view layer does this via the same membership + capability
@@ -925,6 +984,14 @@ def mark_thread_read(
     this thread" case). Callers can pass an explicit timestamp when
     "I have read up to the message at T" is the right semantic
     (e.g. a scroll-to-bottom event tied to a specific message).
+
+    ``visibility`` selects which lane the pointer applies to. Omitting
+    it (or passing an empty string) targets the legacy "any-visibility"
+    row that exists for every pre-migration thread — every old client
+    that POSTs ``…/read/`` without the new field keeps writing to the
+    same row it always has. Pass ``"internal"`` or ``"shared"`` to
+    track the staff-bubble and customer-conversation lanes
+    independently for the same proposal / spec / CFF.
     """
 
     if entity_kind not in ThreadEntityKind.values:
@@ -932,11 +999,17 @@ def mark_thread_read(
             f"Unsupported entity_kind for thread read state: {entity_kind!r}"
         )
 
+    if visibility not in (None, "", "internal", "shared"):
+        raise ValueError(
+            f"Unsupported visibility for thread read state: {visibility!r}"
+        )
+
     timestamp = at or timezone.now()
     state, _created = ThreadReadState.objects.update_or_create(
         user=user,
         entity_kind=entity_kind,
         entity_id=entity_id,
+        visibility=visibility or "",
         defaults={"last_read_at": timestamp},
     )
     return state
@@ -966,11 +1039,18 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
         return []
 
     # Read pointers loaded up front so per-thread access is O(1).
+    # Keyed by ``(entity_kind, entity_id, visibility)``: the inbox now
+    # emits up to two rows per customer-facing entity (one per
+    # visibility lane) and each lane needs its own pointer. Rows from
+    # before the visibility split was added live in the ``""`` slot
+    # and act as a fallback when no lane-specific pointer has been
+    # written yet — see the helpers below for the lookup.
     pointer_rows = ThreadReadState.objects.filter(user=user).values_list(
-        "entity_kind", "entity_id", "last_read_at"
+        "entity_kind", "entity_id", "visibility", "last_read_at"
     )
-    pointers: dict[tuple[str, str], _dt.datetime] = {
-        (kind, str(eid)): ts for kind, eid, ts in pointer_rows
+    pointers: dict[tuple[str, str, str], _dt.datetime] = {
+        (kind, str(eid), vis or ""): ts
+        for kind, eid, vis, ts in pointer_rows
     }
 
     threads: list[InboxThread] = []
@@ -1023,10 +1103,32 @@ def compute_total_unread(*, user) -> int:
 # ---- internals -------------------------------------------------------------
 
 
+def _lookup_pointer(
+    pointers: dict[tuple[str, str, str], _dt.datetime],
+    *,
+    entity_kind: str,
+    entity_id: str,
+    visibility: str,
+) -> _dt.datetime:
+    """Lane-aware pointer lookup with legacy fallback.
+
+    Try the lane-specific pointer first; fall back to the
+    ``visibility=""`` ("any-visibility") row written by every
+    pre-split mark-read. Returns the unix epoch when neither
+    pointer exists — matches the existing "everything is unread"
+    semantics for a thread the user has never opened.
+    """
+
+    specific = pointers.get((entity_kind, entity_id, visibility))
+    if specific is not None:
+        return specific
+    return pointers.get((entity_kind, entity_id, ""), _UNIX_EPOCH)
+
+
 def _inbox_threads_for_formulations(
     *,
     organization: Organization,
-    pointers: dict[tuple[str, str], _dt.datetime],
+    pointers: dict[tuple[str, str, str], _dt.datetime],
 ) -> list[InboxThread]:
     """Build the inbox rows for every formulation in ``organization``
     that has at least one non-deleted comment."""
@@ -1053,7 +1155,17 @@ def _inbox_threads_for_formulations(
         )
         if latest is None:
             continue
-        last_read = pointers.get(("formulation", str(formulation.id)), _UNIX_EPOCH)
+        # Formulations are an internal-only surface (no customer
+        # portal twin) so this lane is always ``"internal"`` and
+        # never splits into two rows. The lookup falls back to the
+        # legacy ``""`` pointer for users whose pre-split read
+        # state hasn't been written to the lane-specific row yet.
+        last_read = _lookup_pointer(
+            pointers,
+            entity_kind="formulation",
+            entity_id=str(formulation.id),
+            visibility="internal",
+        )
         unread = Comment.objects.filter(
             formulation=formulation,
             is_deleted=False,
@@ -1071,22 +1183,37 @@ def _inbox_threads_for_formulations(
                 last_message_at=latest.created_at,
                 last_message_preview=_preview_for_comment(latest),
                 last_message_author=_author_snapshot(latest),
+                visibility="internal",
             )
         )
     return rows
 
 
+# Visibility lanes the inbox splits a customer-facing entity into.
+# Order matters only insofar as the natural ordering of the produced
+# rows — but the caller sorts by ``last_message_at`` afterwards so
+# the lane order here is purely cosmetic.
+_SPLIT_LANES: tuple[tuple[str, str], ...] = (
+    ("internal", Comment.Visibility.INTERNAL),
+    ("shared", Comment.Visibility.SHARED),
+)
+
+
 def _inbox_threads_for_proposals(
     *,
     organization: Organization,
-    pointers: dict[tuple[str, str], _dt.datetime],
+    pointers: dict[tuple[str, str, str], _dt.datetime],
 ) -> list[InboxThread]:
     """Build the inbox rows for every proposal in ``organization``
-    that has at least one non-deleted comment. Mirrors the
-    formulation / specification helpers — same query shape, same
-    pointer lookup, same preview snapshot — so the bell + dropdown
-    surface customer-portal proposal chat alongside the project
-    threads without any further plumbing on the FE."""
+    that has at least one non-deleted comment.
+
+    Splits each proposal into up to two rows — one per visibility
+    lane that actually has content. A proposal with both internal
+    bubble messages and a customer reply produces two rows so the
+    staff inbox cleanly separates "the customer is waiting on us"
+    from "the team is discussing this deal internally". A proposal
+    with only one lane in use produces only one row.
+    """
 
     Proposal = _proposal_model()
     proposals = (
@@ -1101,24 +1228,6 @@ def _inbox_threads_for_proposals(
     )
     rows: list[InboxThread] = []
     for proposal in proposals:
-        latest = (
-            Comment.objects.filter(
-                proposal=proposal, is_deleted=False
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
-            continue
-        last_read = pointers.get(
-            ("proposal", str(proposal.id)), _UNIX_EPOCH
-        )
-        unread = Comment.objects.filter(
-            proposal=proposal,
-            is_deleted=False,
-            created_at__gt=last_read,
-        ).count()
         # Proposals carry a ``code`` (e.g. ``PROP-0123``) — best
         # title for the dropdown. Fall back to the customer
         # company so a code-less draft still reads sensibly.
@@ -1127,20 +1236,47 @@ def _inbox_threads_for_proposals(
             or (getattr(proposal, "customer_company", "") or "").strip()
             or (getattr(proposal, "customer_name", "") or "").strip()
         )
-        rows.append(
-            InboxThread(
-                organization_id=str(organization.id),
-                organization_name=organization.name,
-                entity_kind=ThreadEntityKind.PROPOSAL.value,
-                entity_id=str(proposal.id),
-                entity_title=title,
-                entity_code=(getattr(proposal, "code", "") or "").strip(),
-                unread_count=unread,
-                last_message_at=latest.created_at,
-                last_message_preview=_preview_for_comment(latest),
-                last_message_author=_author_snapshot(latest),
+        code = (getattr(proposal, "code", "") or "").strip()
+        for lane_label, lane_value in _SPLIT_LANES:
+            latest = (
+                Comment.objects.filter(
+                    proposal=proposal,
+                    is_deleted=False,
+                    visibility=lane_value,
+                )
+                .select_related("author", "client_account__customer")
+                .order_by("-created_at")
+                .first()
             )
-        )
+            if latest is None:
+                continue  # this lane is empty for this proposal
+            last_read = _lookup_pointer(
+                pointers,
+                entity_kind="proposal",
+                entity_id=str(proposal.id),
+                visibility=lane_label,
+            )
+            unread = Comment.objects.filter(
+                proposal=proposal,
+                is_deleted=False,
+                visibility=lane_value,
+                created_at__gt=last_read,
+            ).count()
+            rows.append(
+                InboxThread(
+                    organization_id=str(organization.id),
+                    organization_name=organization.name,
+                    entity_kind=ThreadEntityKind.PROPOSAL.value,
+                    entity_id=str(proposal.id),
+                    entity_title=title,
+                    entity_code=code,
+                    unread_count=unread,
+                    last_message_at=latest.created_at,
+                    last_message_preview=_preview_for_comment(latest),
+                    last_message_author=_author_snapshot(latest),
+                    visibility=lane_label,
+                )
+            )
     return rows
 
 
@@ -1185,16 +1321,17 @@ def _cff_accessible_organizations_for_user(user) -> list[Organization]:
 def _inbox_threads_for_cff_submissions(
     *,
     organization: Organization,
-    pointers: dict[tuple[str, str], _dt.datetime],
+    pointers: dict[tuple[str, str, str], _dt.datetime],
 ) -> list[InboxThread]:
     """Build the inbox rows for every CFF submission in
     ``organization`` that has at least one non-deleted comment.
 
-    Same query / preview / pointer shape as the formulation +
-    proposal helpers so the FE renders CFF chats identically in
-    the bell dropdown — the only difference is the title source
-    (CFF rows carry the customer-typed company / email rather
-    than an internal code).
+    Splits each CFF into up to two rows — one per visibility lane
+    with content — so a staff internal triage exchange never piles
+    on top of the customer's actual question. Today CFF threads
+    default to ``shared``; the moment a triager flips a comment
+    ``internal`` (or future internal-only chat lands on CFFs) the
+    inbox surfaces it as its own row instead of mixing.
     """
 
     CFFSubmission = _cff_submission_model()
@@ -1210,55 +1347,67 @@ def _inbox_threads_for_cff_submissions(
     )
     rows: list[InboxThread] = []
     for cff in cffs:
-        latest = (
-            Comment.objects.filter(
-                cff_submission=cff, is_deleted=False
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
-            continue
-        last_read = pointers.get(
-            ("cff_submission", str(cff.id)), _UNIX_EPOCH
-        )
-        unread = Comment.objects.filter(
-            cff_submission=cff,
-            is_deleted=False,
-            created_at__gt=last_read,
-        ).count()
-        # CFF row has no team-side title — best fall-backs are the
-        # customer's company / email from the raw payload preview
-        # the inbox view already computes, but we don't have access
-        # to that here. Use the short id slice — the FE rehydrates
-        # the title from its own CFF list cache when the dropdown
-        # opens. (Same fallback pattern the messenger toast uses.)
+        # CFF row has no team-side title — the FE rehydrates the
+        # title from its own CFF list cache when the dropdown opens.
+        # (Same fallback pattern the messenger toast uses.)
         title = f"CFF · {str(cff.id)[:8]}"
-        rows.append(
-            InboxThread(
-                organization_id=str(organization.id),
-                organization_name=organization.name,
-                entity_kind=ThreadEntityKind.CFF_SUBMISSION.value,
-                entity_id=str(cff.id),
-                entity_title=title,
-                entity_code="",
-                unread_count=unread,
-                last_message_at=latest.created_at,
-                last_message_preview=_preview_for_comment(latest),
-                last_message_author=_author_snapshot(latest),
+        for lane_label, lane_value in _SPLIT_LANES:
+            latest = (
+                Comment.objects.filter(
+                    cff_submission=cff,
+                    is_deleted=False,
+                    visibility=lane_value,
+                )
+                .select_related("author", "client_account__customer")
+                .order_by("-created_at")
+                .first()
             )
-        )
+            if latest is None:
+                continue
+            last_read = _lookup_pointer(
+                pointers,
+                entity_kind="cff_submission",
+                entity_id=str(cff.id),
+                visibility=lane_label,
+            )
+            unread = Comment.objects.filter(
+                cff_submission=cff,
+                is_deleted=False,
+                visibility=lane_value,
+                created_at__gt=last_read,
+            ).count()
+            rows.append(
+                InboxThread(
+                    organization_id=str(organization.id),
+                    organization_name=organization.name,
+                    entity_kind=ThreadEntityKind.CFF_SUBMISSION.value,
+                    entity_id=str(cff.id),
+                    entity_title=title,
+                    entity_code="",
+                    unread_count=unread,
+                    last_message_at=latest.created_at,
+                    last_message_preview=_preview_for_comment(latest),
+                    last_message_author=_author_snapshot(latest),
+                    visibility=lane_label,
+                )
+            )
     return rows
 
 
 def _inbox_threads_for_specifications(
     *,
     organization: Organization,
-    pointers: dict[tuple[str, str], _dt.datetime],
+    pointers: dict[tuple[str, str, str], _dt.datetime],
 ) -> list[InboxThread]:
     """Build the inbox rows for every specification sheet in
-    ``organization`` that has at least one non-deleted comment."""
+    ``organization`` that has at least one non-deleted comment.
+
+    Splits each spec into up to two rows by visibility lane — same
+    shape as proposals / CFFs. Today the spec page's inline panel
+    already writes ``shared`` (the customer kiosk twin reads it),
+    so a staff-internal thread on the same spec would otherwise
+    mix into a single inbox row; this keeps them apart cleanly.
+    """
 
     sheets = (
         SpecificationSheet.objects.filter(
@@ -1272,39 +1421,48 @@ def _inbox_threads_for_specifications(
     )
     rows: list[InboxThread] = []
     for sheet in sheets:
-        latest = (
-            Comment.objects.filter(
-                specification_sheet=sheet, is_deleted=False
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
-        if latest is None:
-            continue
-        last_read = pointers.get(
-            ("specification", str(sheet.id)), _UNIX_EPOCH
-        )
-        unread = Comment.objects.filter(
-            specification_sheet=sheet,
-            is_deleted=False,
-            created_at__gt=last_read,
-        ).count()
         # Specifications have no name field — fall back to client
         # company / code so the dropdown always shows *something*.
         title = (sheet.code or sheet.client_company or "").strip()
-        rows.append(
-            InboxThread(
-                organization_id=str(organization.id),
-                organization_name=organization.name,
-                entity_kind=ThreadEntityKind.SPECIFICATION.value,
-                entity_id=str(sheet.id),
-                entity_title=title,
-                entity_code=(sheet.code or "").strip(),
-                unread_count=unread,
-                last_message_at=latest.created_at,
-                last_message_preview=_preview_for_comment(latest),
-                last_message_author=_author_snapshot(latest),
+        code = (sheet.code or "").strip()
+        for lane_label, lane_value in _SPLIT_LANES:
+            latest = (
+                Comment.objects.filter(
+                    specification_sheet=sheet,
+                    is_deleted=False,
+                    visibility=lane_value,
+                )
+                .select_related("author", "client_account__customer")
+                .order_by("-created_at")
+                .first()
             )
-        )
+            if latest is None:
+                continue
+            last_read = _lookup_pointer(
+                pointers,
+                entity_kind="specification",
+                entity_id=str(sheet.id),
+                visibility=lane_label,
+            )
+            unread = Comment.objects.filter(
+                specification_sheet=sheet,
+                is_deleted=False,
+                visibility=lane_value,
+                created_at__gt=last_read,
+            ).count()
+            rows.append(
+                InboxThread(
+                    organization_id=str(organization.id),
+                    organization_name=organization.name,
+                    entity_kind=ThreadEntityKind.SPECIFICATION.value,
+                    entity_id=str(sheet.id),
+                    entity_title=title,
+                    entity_code=code,
+                    unread_count=unread,
+                    last_message_at=latest.created_at,
+                    last_message_preview=_preview_for_comment(latest),
+                    last_message_author=_author_snapshot(latest),
+                    visibility=lane_label,
+                )
+            )
     return rows

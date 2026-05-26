@@ -56,13 +56,14 @@ export const commentsQueryKeys = {
     kind: CommentEntityKind,
     entityId: string,
     includeResolved: boolean,
+    visibility?: "internal" | "shared",
   ) =>
     [
       ...commentsQueryKeys.all,
       orgId,
       kind,
       entityId,
-      { includeResolved },
+      { includeResolved, visibility: visibility ?? "all" },
     ] as const,
   mentionable: (orgId: string, q: string) =>
     [...commentsQueryKeys.all, orgId, "mentionable", q] as const,
@@ -82,6 +83,11 @@ export interface UseInfiniteCommentsArgs {
   readonly includeResolved?: boolean;
   readonly enabled?: boolean;
   readonly initialFirstPage?: PaginatedCommentsDto | null;
+  /** Optional visibility scope. Omitting returns every comment the
+   *  caller can see (the historical contract). The new
+   *  internal-proposal bubble passes ``"internal"`` so its read
+   *  stays disjoint from the shared customer conversation. */
+  readonly visibilityFilter?: "internal" | "shared";
 }
 
 export function useInfiniteComments(
@@ -103,6 +109,7 @@ export function useInfiniteComments(
       args.kind,
       args.entityId,
       includeResolved,
+      args.visibilityFilter,
     ),
     queryFn: ({ pageParam }) =>
       fetchCommentsPage(
@@ -110,6 +117,7 @@ export function useInfiniteComments(
         {
           cursorUrl: pageParam ?? undefined,
           includeResolved,
+          visibility: args.visibilityFilter,
         },
       ),
     initialPageParam: null as string | null,

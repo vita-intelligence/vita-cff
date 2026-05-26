@@ -75,6 +75,7 @@ interface MarkReadVars {
   readonly entityKind: InboxEntityKind;
   readonly entityId: string;
   readonly at?: string;
+  readonly visibility?: "internal" | "shared";
 }
 
 export function useMarkThreadRead(): UseMutationResult<

@@ -39,6 +39,14 @@ export interface InboxThreadDto {
   readonly last_message_at: string;
   readonly last_message_preview: string;
   readonly last_message_author: InboxAuthorDto;
+  /** Lane discriminator. ``"internal"`` is the staff-only bubble
+   *  (proposal internal chat, formulation project chat).
+   *  ``"shared"`` is the customer-conversation slot that surfaces
+   *  on the kiosk twin. The same ``(entity_kind, entity_id)`` pair
+   *  can produce both — keys rows on
+   *  ``(entity_kind, entity_id, visibility)`` so the two lanes
+   *  render as distinct inbox entries. */
+  readonly visibility: "internal" | "shared";
 }
 
 export interface InboxListResponseDto {
@@ -54,6 +62,7 @@ export interface ThreadMarkReadResponseDto {
   readonly entity_kind: InboxEntityKind;
   readonly entity_id: string;
   readonly organization_id: string;
+  readonly visibility?: "internal" | "shared" | "";
   readonly last_read_at: string;
 }
 

@@ -39,6 +39,7 @@ import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useCustomers, type CustomerDto } from "@/services/customers";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 
+import { ProposalCommentsBubble } from "./proposal-comments-bubble";
 import { SendToClientModal } from "./send-to-client-modal";
 import { Link } from "@/i18n/navigation";
 import { apiClient, ApiError } from "@/lib/api";
@@ -125,6 +126,11 @@ function ProposalConversation({
         canRead={canRead}
         canWrite={canWrite}
         canModerate={canModerate}
+        // Scope to shared so the customer-facing conversation never
+        // surfaces an internal-bubble post next to a customer reply.
+        // Pre-bubble proposals are 100% shared anyway, so this is a
+        // no-op for legacy data and a hard guard for new comments.
+        visibilityFilter="shared"
       />
     </section>
   );
@@ -613,6 +619,26 @@ export function ProposalSheetView({
           orgId={orgId}
           proposalId={proposalId}
           currentUserId={currentUserQuery.data.id}
+          canRead={hasProposalsCap("view") || myMembership?.is_owner === true}
+          canWrite={hasProposalsCap("view") || myMembership?.is_owner === true}
+          canModerate={myMembership?.is_owner === true}
+        />
+      ) : null}
+
+      {/* Floating internal chat — same UX shape as the project
+          bubble on the formulation pages, but scoped to the
+          proposal entity and ``visibilityFilter="internal"`` so
+          the customer never sees it. Lives next to the
+          ``ProposalConversation`` panel above (which is the
+          customer-facing thread) so the staff has two distinct
+          surfaces and no chance of replying internal-only to a
+          customer message by accident. */}
+      {currentUserQuery.data ? (
+        <ProposalCommentsBubble
+          orgId={orgId}
+          proposalId={proposalId}
+          currentUserId={currentUserQuery.data.id}
+          proposalLabel={proposal.code || "Proposal"}
           canRead={hasProposalsCap("view") || myMembership?.is_owner === true}
           canWrite={hasProposalsCap("view") || myMembership?.is_owner === true}
           canModerate={myMembership?.is_owner === true}

@@ -11,8 +11,9 @@
 
 import { useTranslations } from "next-intl";
 import { useMemo } from "react";
-import { Loader2 } from "lucide-react";
+import { ArrowRight, Loader2 } from "lucide-react";
 
+import { Link } from "@/i18n/navigation";
 import {
   useInboxList,
   useMarkThreadRead,
@@ -69,9 +70,13 @@ export function MessengerDropdown({ onClose }: MessengerDropdownProps) {
       title: thread.entity_title || thread.entity_code,
     });
     if (thread.unread_count > 0) {
+      // Pass the lane so opening the internal-bubble entry from
+      // the bell doesn't accidentally clear the unread count on
+      // the sibling customer-conversation row for the same entity.
       markRead.mutate({
         entityKind: thread.entity_kind,
         entityId: thread.entity_id,
+        visibility: thread.visibility,
       });
     }
     onClose();
@@ -96,11 +101,13 @@ export function MessengerDropdown({ onClose }: MessengerDropdownProps) {
             <span>{t("loading")}</span>
           </div>
         ) : threads.length === 0 ? (
-          <p className="p-6 text-center text-sm text-ink-500">{t("empty")}</p>
+          <p className="px-6 py-6 text-center text-sm text-ink-500">{t("empty")}</p>
         ) : (
           <ul className="divide-y divide-ink-100">
             {threads.map((thread) => (
-              <li key={`${thread.entity_kind}:${thread.entity_id}`}>
+              <li
+                key={`${thread.entity_kind}:${thread.entity_id}:${thread.visibility}`}
+              >
                 <button
                   type="button"
                   onClick={() => handleOpen(thread)}
@@ -118,6 +125,11 @@ export function MessengerDropdown({ onClose }: MessengerDropdownProps) {
                       {thread.entity_code ? (
                         <span className="truncate text-[11px] font-mono text-ink-600">
                           {thread.entity_code}
+                        </span>
+                      ) : null}
+                      {thread.visibility === "internal" ? (
+                        <span className="shrink-0 rounded bg-ink-1000 px-1 text-[9px] font-semibold uppercase tracking-wide text-ink-0">
+                          Internal
                         </span>
                       ) : null}
                     </div>
@@ -151,6 +163,24 @@ export function MessengerDropdown({ onClose }: MessengerDropdownProps) {
           </ul>
         )}
       </div>
+      {/* Always-rendered footer that routes to the full mailbox.
+          Stays visible even when the list is empty / loading so the
+          path to /inbox is one click away regardless of dropdown
+          state. ``onClose`` fires alongside the navigation so the
+          dropdown doesn't hover over the destination page on slow
+          route transitions. */}
+      <Link
+        href="/inbox"
+        onClick={onClose}
+        className="
+          flex items-center justify-center gap-1.5 border-t border-ink-200
+          bg-ink-0 px-3 py-2 text-xs font-medium text-ink-700
+          transition-colors hover:bg-ink-50 hover:text-ink-1000
+        "
+      >
+        See all messages
+        <ArrowRight className="h-3 w-3" aria-hidden />
+      </Link>
     </div>
   );
 }
