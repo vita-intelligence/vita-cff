@@ -118,6 +118,15 @@ INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
 # Authentication
 AUTH_USER_MODEL = "accounts.User"
 
+# Self-service staff registration is OFF by default — new staff accounts
+# must come in via the invitation flow (``/api/invitations/<token>/accept/``).
+# Flip ``STAFF_REGISTRATION_ENABLED=1`` in App Service Configuration to
+# temporarily reopen the public ``/api/auth/register/`` endpoint without
+# a redeploy. The customer-portal activation flows are unaffected.
+STAFF_REGISTRATION_ENABLED = _env_bool(
+    "STAFF_REGISTRATION_ENABLED", default=False
+)
+
 
 # Django REST Framework
 # Secure-by-default: every endpoint is authenticated unless it explicitly opts

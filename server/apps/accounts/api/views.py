@@ -44,12 +44,24 @@ from apps.accounts.services import (
 
 
 class RegisterView(APIView):
-    """POST ``/api/auth/register/`` — create a new user account."""
+    """POST ``/api/auth/register/`` — create a new user account.
+
+    Gated by :setting:`STAFF_REGISTRATION_ENABLED`. When the flag is
+    off (the default), the endpoint short-circuits with HTTP 403 and
+    new staff onboarding must go through the invitation flow
+    (``/api/invitations/<token>/accept/``). The portal-side activation
+    endpoints under ``apps.client_portal`` are unaffected by this gate.
+    """
 
     permission_classes = (AllowAny,)
     authentication_classes: tuple = ()
 
     def post(self, request: Request) -> Response:
+        if not getattr(settings, "STAFF_REGISTRATION_ENABLED", False):
+            return Response(
+                {"detail": "registration_disabled"},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         serializer = RegisterSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()

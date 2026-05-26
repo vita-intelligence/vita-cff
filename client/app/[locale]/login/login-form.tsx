@@ -7,6 +7,7 @@ import { useSearchParams } from "next/navigation";
 import { Controller, useForm } from "react-hook-form";
 
 import { FormField } from "@/components/ui/form-field";
+import { env } from "@/config/env";
 import { Link, useRouter } from "@/i18n/navigation";
 import {
   extractApiErrorMessage,
@@ -138,15 +139,17 @@ export function LoginForm() {
         {tAuth("login.submit")}
       </Button>
 
-      <p className="text-center text-sm text-ink-500">
-        {tAuth("register.already_have_account")}{" "}
-        <Link
-          href="/register"
-          className="font-medium text-orange-700 underline-offset-4 hover:text-orange-800 hover:underline"
-        >
-          {tAuth("register.submit")}
-        </Link>
-      </p>
+      {env.NEXT_PUBLIC_STAFF_REGISTRATION_ENABLED ? (
+        <p className="text-center text-sm text-ink-500">
+          {tAuth("register.already_have_account")}{" "}
+          <Link
+            href="/register"
+            className="font-medium text-orange-700 underline-offset-4 hover:text-orange-800 hover:underline"
+          >
+            {tAuth("register.submit")}
+          </Link>
+        </p>
+      ) : null}
     </form>
   );
 }
