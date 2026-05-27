@@ -156,19 +156,12 @@ export const SignaturePad = forwardRef<SignaturePadHandle, Props>(
             />
           ) : null}
         </div>
-        <div className="flex items-center justify-between text-[11px] text-ink-500">
-          <span>Draw your signature above.</span>
-          <button
-            type="button"
-            className="font-medium text-orange-600 hover:text-orange-700 disabled:opacity-40"
-            onClick={() => {
-              padRef.current?.clear();
-              onChange(null);
-            }}
-            disabled={disabled}
-          >
-            Clear
-          </button>
+        {/* Caption only — Clear is provided by the wrapping dialog
+            (both staff and portal variants render their own button)
+            so we drop the inline one here to avoid the double-Clear
+            you can see in the kiosk screenshot. */}
+        <div className="text-[11px] text-ink-500">
+          Draw your signature above.
         </div>
       </div>
     );

@@ -1,0 +1,569 @@
+"""Portal endpoints for the label-design workflow.
+
+Routes here are scoped to the logged-in :class:`ClientAccount` via
+``request.user.customer_id``. A customer never sees a LabelDesign
+attached to a project they don't own — even by guessing the UUID.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from typing import Any
+
+from django.http import HttpResponse
+from django.template.loader import render_to_string
+from django.utils import timezone
+from rest_framework import status
+from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.request import Request
+from rest_framework.response import Response
+
+from apps.audit.services import record as record_audit
+from apps.client_portal.api.views import PortalAPIView
+from apps.label_design.api.serializers import (
+    ChoosePathSerializer,
+    CustomerApproveSerializer,
+    CustomerRejectSerializer,
+    CustomerUploadArtworkSerializer,
+    LabelDesignReadSerializer,
+    SubmitPreferencesSerializer,
+)
+from apps.label_design.constants import (
+    LabelDesignPath,
+    LabelDesignStatus,
+    RevisionSource,
+)
+from apps.label_design.content_block import (
+    compute_content_block,
+    render_content_block_html,
+    render_content_block_pdf,
+    render_content_block_png,
+    render_content_block_text,
+)
+from apps.label_design.models import (
+    LabelDesign,
+    LabelDesignPreferences,
+    LabelDesignRevision,
+)
+from apps.label_design.services import (
+    InvalidStatusTransition,
+    transition_status,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _label_designs_for_customer(customer_id):
+    """All LabelDesign rows owned by ``customer_id``.
+
+    Ownership is established by walking through any proposal that
+    belongs to the customer: a project becomes "owned" by the
+    customer when at least one proposal pinned to one of its
+    formulation versions references the customer.
+    """
+
+    from apps.proposals.models import Proposal
+
+    proposal_formulation_ids = (
+        Proposal.objects.filter(customer_id=customer_id)
+        .values_list("formulation_version__formulation_id", flat=True)
+        .distinct()
+    )
+    return (
+        LabelDesign.objects.filter(formulation_id__in=proposal_formulation_ids)
+        .select_related(
+            "formulation",
+            "organization",
+            "current_revision",
+            "preferences",
+        )
+        .prefetch_related("preferences__inspiration_files")
+    )
+
+
+def _get_label_design_for_customer(label_design_id, customer_id) -> LabelDesign:
+    label_design = (
+        _label_designs_for_customer(customer_id)
+        .filter(id=label_design_id)
+        .first()
+    )
+    if label_design is None:
+        raise NotFound()
+    return label_design
+
+
+def _ensure_status(label_design: LabelDesign, *allowed: str) -> None:
+    if label_design.status not in allowed:
+        raise ValidationError(
+            {
+                "detail": (
+                    f"label design status is {label_design.status}; "
+                    f"expected one of {sorted(allowed)}"
+                ),
+                "code": "wrong_status",
+            }
+        )
+
+
+def _sign_document_hash(html: str) -> str:
+    return hashlib.sha256(html.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# List + detail
+# ---------------------------------------------------------------------------
+
+
+class PortalLabelDesignListView(PortalAPIView):
+    def get(self, request: Request) -> Response:
+        rows = _label_designs_for_customer(request.user.customer_id).order_by(
+            "-updated_at"
+        )
+        return Response({"items": LabelDesignReadSerializer(rows, many=True).data})
+
+
+class PortalLabelDesignDetailView(PortalAPIView):
+    def get(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        return Response(LabelDesignReadSerializer(ld).data)
+
+
+# ---------------------------------------------------------------------------
+# Choose path + preferences submission
+# ---------------------------------------------------------------------------
+
+
+class PortalLabelDesignChoosePathView(PortalAPIView):
+    def post(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _ensure_status(ld, LabelDesignStatus.LABEL_PATH_PENDING)
+
+        serializer = ChoosePathSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        path = serializer.validated_data["path"]
+
+        ld.design_path = path
+        ld.save(update_fields=["design_path", "updated_at"])
+
+        target = (
+            LabelDesignStatus.DESIGN_PREFERENCES_PENDING
+            if path == LabelDesignPath.DESIGN_BY_US
+            else LabelDesignStatus.DESIGN_IN_PROGRESS
+        )
+        try:
+            transition_status(
+                ld,
+                to_status=target,
+                actor_client=request.user,
+                notes=f"customer chose {path}",
+            )
+        except InvalidStatusTransition as exc:
+            raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
+        return Response(LabelDesignReadSerializer(ld).data)
+
+
+class PortalLabelDesignPreferencesView(PortalAPIView):
+    def post(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _ensure_status(ld, LabelDesignStatus.DESIGN_PREFERENCES_PENDING)
+        if ld.design_path != LabelDesignPath.DESIGN_BY_US:
+            raise ValidationError(
+                {"detail": "preferences only apply to DESIGN_BY_US path", "code": "wrong_path"}
+            )
+
+        serializer = SubmitPreferencesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        preferences = LabelDesignPreferences.objects.create(
+            submitted_by_client=request.user,
+            company_name=payload["company_name"],
+            brand_name=payload["brand_name"],
+            product_names=payload["product_names"],
+            product_codes=payload["product_codes"],
+            brand_colours=payload["brand_colours"],
+            inspiration_urls=payload["inspiration_urls"],
+            elements_to_include=payload["elements_to_include"],
+            design_style=payload["design_style"],
+            material_type=payload["material_type"],
+            additional_comments=payload["additional_comments"],
+            declaration_signed_at=timezone.now(),
+            declaration_signature_image=payload["declaration_signature_image"],
+            declaration_name=payload["declaration_name"],
+            declaration_position=payload["declaration_position"],
+            raw_payload=request.data
+            if isinstance(request.data, dict)
+            else dict(request.data),
+        )
+
+        # Attach inspiration files if the request was multipart.
+        # Defense-in-depth limits mirror the FE dropzone in
+        # ``app/[locale]/portal/label-designs/[id]/preferences/page.tsx``
+        # — the FE is the friendly first stop but a direct API call
+        # mustn't be able to bypass them.
+        ALLOWED_MIMES = {
+            "image/jpeg",
+            "image/jpg",
+            "image/png",
+            "image/gif",
+            "image/webp",
+            "image/heic",
+            "image/heif",
+            "application/pdf",
+        }
+        MAX_FILE_BYTES = 10 * 1024 * 1024
+        MAX_TOTAL_BYTES = 50 * 1024 * 1024
+        MAX_FILES = 10
+
+        uploads = request.FILES.getlist("inspiration_files")
+        if len(uploads) > MAX_FILES:
+            raise ValidationError(
+                {
+                    "detail": f"At most {MAX_FILES} inspiration files are allowed.",
+                    "code": "too_many_files",
+                }
+            )
+        running_total = 0
+        for upload in uploads:
+            mime = (getattr(upload, "content_type", "") or "").lower()
+            size = int(getattr(upload, "size", 0) or 0)
+            if mime not in ALLOWED_MIMES:
+                raise ValidationError(
+                    {
+                        "detail": (
+                            f"{upload.name}: file type {mime or 'unknown'} is "
+                            "not supported."
+                        ),
+                        "code": "file_type_not_allowed",
+                    }
+                )
+            if size > MAX_FILE_BYTES:
+                raise ValidationError(
+                    {
+                        "detail": (
+                            f"{upload.name}: {size // (1024 * 1024)} MB is "
+                            f"over the {MAX_FILE_BYTES // (1024 * 1024)} MB "
+                            "per-file limit."
+                        ),
+                        "code": "file_too_large",
+                    }
+                )
+            running_total += size
+            if running_total > MAX_TOTAL_BYTES:
+                raise ValidationError(
+                    {
+                        "detail": (
+                            f"Total upload exceeds the "
+                            f"{MAX_TOTAL_BYTES // (1024 * 1024)} MB limit."
+                        ),
+                        "code": "batch_too_large",
+                    }
+                )
+
+        for upload in uploads:
+            preferences.inspiration_files.create(
+                file=upload,
+                original_name=upload.name,
+                content_type=(getattr(upload, "content_type", "") or "").lower(),
+                size_bytes=getattr(upload, "size", 0) or 0,
+            )
+
+        ld.preferences = preferences
+        ld.save(update_fields=["preferences", "updated_at"])
+
+        try:
+            transition_status(
+                ld,
+                to_status=LabelDesignStatus.DESIGN_IN_PROGRESS,
+                actor_client=request.user,
+                notes="design preferences submitted",
+                metadata={"preferences_id": str(preferences.id)},
+            )
+        except InvalidStatusTransition as exc:
+            raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
+        return Response(
+            LabelDesignReadSerializer(ld).data, status=status.HTTP_201_CREATED
+        )
+
+
+# ---------------------------------------------------------------------------
+# Content block exports (customer-side)
+# ---------------------------------------------------------------------------
+
+
+def _require_spec(ld: LabelDesign) -> None:
+    if ld.specification_sheet is None:
+        raise ValidationError(
+            {"detail": "No spec sheet attached.", "code": "no_spec"}
+        )
+
+
+def _require_customer_content_block_access(ld: LabelDesign) -> None:
+    """Gate the spec-derived content block behind:
+
+    * an approved payment (i.e. status has moved past
+      ``PAYMENT_PENDING``); and
+    * the ``DESIGN_BY_CUSTOMER`` design path — only customers who
+      chose to design the label themselves have any use for the
+      content block.
+
+    Both checks are enforced here (not just hidden in the FE) so a
+    direct API call can't bypass them.
+    """
+
+    if ld.status == LabelDesignStatus.PAYMENT_PENDING:
+        raise ValidationError(
+            {
+                "detail": (
+                    "Payment is still pending — the content block "
+                    "unlocks once finance confirms your payment."
+                ),
+                "code": "payment_pending",
+            }
+        )
+    if ld.design_path != LabelDesignPath.DESIGN_BY_CUSTOMER:
+        raise ValidationError(
+            {
+                "detail": (
+                    "The content block is only available when you "
+                    "choose to design the label yourself."
+                ),
+                "code": "wrong_path",
+            }
+        )
+
+
+class PortalLabelDesignContentBlockJSONView(PortalAPIView):
+    def get(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _require_customer_content_block_access(ld)
+        _require_spec(ld)
+        block = compute_content_block(ld.specification_sheet)
+        return Response(block.to_dict())
+
+
+class PortalLabelDesignContentBlockPDFView(PortalAPIView):
+    def get(self, request: Request, label_design_id) -> HttpResponse:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _require_customer_content_block_access(ld)
+        _require_spec(ld)
+        block = compute_content_block(ld.specification_sheet)
+        response = HttpResponse(
+            render_content_block_pdf(block), content_type="application/pdf"
+        )
+        response["Content-Disposition"] = (
+            f'inline; filename="content-block-{ld.id}.pdf"'
+        )
+        return response
+
+
+class PortalLabelDesignContentBlockPNGView(PortalAPIView):
+    def get(self, request: Request, label_design_id) -> HttpResponse:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _require_customer_content_block_access(ld)
+        _require_spec(ld)
+        try:
+            dpi = int(request.query_params.get("dpi", "300"))
+        except (TypeError, ValueError):
+            dpi = 300
+        dpi = max(72, min(dpi, 600))
+        block = compute_content_block(ld.specification_sheet)
+        response = HttpResponse(
+            render_content_block_png(block, dpi=dpi), content_type="image/png"
+        )
+        response["Content-Disposition"] = (
+            f'inline; filename="content-block-{ld.id}.png"'
+        )
+        return response
+
+
+class PortalLabelDesignContentBlockTextView(PortalAPIView):
+    def get(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _require_customer_content_block_access(ld)
+        _require_spec(ld)
+        block = compute_content_block(ld.specification_sheet)
+        text = render_content_block_text(block)
+        return Response({"full": text.full, "sections": text.sections})
+
+
+# ---------------------------------------------------------------------------
+# Customer self-design upload + approval / rejection
+# ---------------------------------------------------------------------------
+
+
+def _next_revision_number(label_design: LabelDesign) -> int:
+    last = (
+        LabelDesignRevision.objects.filter(label_design=label_design)
+        .order_by("-revision_number")
+        .values_list("revision_number", flat=True)
+        .first()
+    )
+    return (last or 0) + 1
+
+
+def _compliance_snapshot(label_design: LabelDesign) -> dict:
+    if label_design.specification_sheet is None:
+        return {}
+    return compute_content_block(label_design.specification_sheet).to_dict()
+
+
+def _esign_trio(request: Request) -> dict:
+    return {
+        "ip": (
+            request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
+            or request.META.get("REMOTE_ADDR", "")
+        ),
+        "user_agent": request.META.get("HTTP_USER_AGENT", ""),
+    }
+
+
+class PortalLabelDesignUploadArtworkView(PortalAPIView):
+    def post(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        if ld.design_path != LabelDesignPath.DESIGN_BY_CUSTOMER:
+            raise ValidationError(
+                {"detail": "uploads only allowed on DESIGN_BY_CUSTOMER path", "code": "wrong_path"}
+            )
+        _ensure_status(ld, LabelDesignStatus.DESIGN_IN_PROGRESS)
+
+        serializer = CustomerUploadArtworkSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        payload = serializer.validated_data
+
+        revision = LabelDesignRevision.objects.create(
+            label_design=ld,
+            revision_number=_next_revision_number(ld),
+            submitted_by_client=request.user,
+            source=RevisionSource.CUSTOMER_UPLOAD,
+            artwork_pdf=payload["artwork"],
+            notes=payload["notes"],
+            compliance_block_snapshot=_compliance_snapshot(ld),
+            customer_approved_own_design=True,
+        )
+        ld.current_revision = revision
+        ld.save(update_fields=["current_revision", "updated_at"])
+
+        try:
+            transition_status(
+                ld,
+                to_status=LabelDesignStatus.SCIENTIST_REVIEW,
+                actor_client=request.user,
+                notes="customer uploaded their own design",
+                metadata={"revision_id": str(revision.id)},
+            )
+        except InvalidStatusTransition as exc:
+            raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
+
+        record_audit(
+            organization=ld.organization,
+            actor=None,
+            action="label_design.customer_upload_artwork",
+            target=ld,
+            before=None,
+            after={
+                "revision_id": str(revision.id),
+                "signature_present": bool(payload["signature_image"]),
+            },
+        )
+        return Response(LabelDesignReadSerializer(ld).data, status=status.HTTP_201_CREATED)
+
+
+class PortalLabelDesignApproveView(PortalAPIView):
+    def post(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _ensure_status(ld, LabelDesignStatus.CUSTOMER_APPROVAL)
+
+        serializer = CustomerApproveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        signature = serializer.validated_data["signature_image"]
+
+        # Hash the on-screen approval HTML so we can prove which
+        # rendering the customer saw at sign time. Uses the
+        # content-block render as a stand-in for the approval page
+        # itself; the FE page is also derived from the same block.
+        try:
+            preview_html = render_content_block_html(
+                compute_content_block(ld.specification_sheet)
+                if ld.specification_sheet
+                else None
+            ) if ld.specification_sheet else ""
+        except Exception:
+            preview_html = ""
+
+        esign = _esign_trio(request)
+        ld.customer_approved_at = timezone.now()
+        ld.customer_approved_by = request.user
+        ld.customer_approval_signature_image = signature
+        ld.customer_sign_ip = esign["ip"][:45]
+        ld.customer_sign_user_agent = esign["user_agent"]
+        ld.customer_sign_document_hash = (
+            _sign_document_hash(preview_html) if preview_html else ""
+        )
+        ld.save(
+            update_fields=[
+                "customer_approved_at",
+                "customer_approved_by",
+                "customer_approval_signature_image",
+                "customer_sign_ip",
+                "customer_sign_user_agent",
+                "customer_sign_document_hash",
+                "updated_at",
+            ]
+        )
+
+        try:
+            transition_status(
+                ld,
+                to_status=LabelDesignStatus.LABEL_APPROVED,
+                actor_client=request.user,
+                notes="customer approval signature captured",
+            )
+        except InvalidStatusTransition as exc:
+            raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
+
+        return Response(LabelDesignReadSerializer(ld).data)
+
+
+class PortalLabelDesignRejectView(PortalAPIView):
+    def post(self, request: Request, label_design_id) -> Response:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _ensure_status(ld, LabelDesignStatus.CUSTOMER_APPROVAL)
+
+        serializer = CustomerRejectSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            transition_status(
+                ld,
+                to_status=LabelDesignStatus.DESIGN_IN_PROGRESS,
+                actor_client=request.user,
+                notes=serializer.validated_data["reason"] or "customer rejected",
+            )
+        except InvalidStatusTransition as exc:
+            raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
+
+        return Response(LabelDesignReadSerializer(ld).data)

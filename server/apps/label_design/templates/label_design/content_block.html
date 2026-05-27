@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+{% comment %}
+  Single-page HTML rendering of the Compliance Content Block.
+  The same template feeds the on-screen preview (served as text/html
+  by the staff workspace), the PDF render (via WeasyPrint), and the
+  PNG render (PDF -> pypdfium2). Keep everything inline so PDF/PNG
+  embed cleanly without external resource fetches.
+{% endcomment %}
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Label content block — {{ block.product_name|default:"Product" }}</title>
+<style>
+  @page { size: A6; margin: 6mm; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #1a1a1a;
+    font-size: 9pt;
+    line-height: 1.35;
+    margin: 0;
+    padding: 0;
+  }
+  h1 {
+    font-size: 14pt;
+    margin: 0 0 4pt 0;
+    font-weight: 700;
+  }
+  h2 {
+    font-size: 9pt;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4pt;
+    margin: 8pt 0 2pt 0;
+    border-bottom: 0.5pt solid #1a1a1a;
+    padding-bottom: 1pt;
+  }
+  p { margin: 0 0 4pt 0; }
+  .meta { color: #555; font-size: 8pt; }
+  .ingredients { font-size: 8pt; }
+  .allergen { font-weight: 700; }
+  .business { white-space: pre-line; font-size: 8pt; }
+  ul { list-style: none; padding: 0; margin: 0; }
+  li { padding: 1pt 0; border-bottom: 0.25pt dotted #ccc; }
+  li:last-child { border-bottom: 0; }
+  .qty { color: #555; }
+  .nrv { color: #555; }
+  .allergen-tag {
+    display: inline-block;
+    background: #ffd24a;
+    padding: 0 3pt;
+    border-radius: 2pt;
+    margin-left: 4pt;
+    font-size: 7pt;
+    font-weight: 700;
+  }
+</style>
+</head>
+<body>
+  <h1>{{ block.product_name|default:"(product name TBC)" }}</h1>
+  <p class="meta">
+    {% if block.product_code %}Code: {{ block.product_code }}{% endif %}
+    {% if block.net_quantity %} · {{ block.net_quantity }}{% endif %}
+  </p>
+
+  <h2>Serving</h2>
+  <p>
+    {% if block.serving_size %}Serving size: {{ block.serving_size }}<br>{% endif %}
+    {% if block.servings_per_pack %}Servings per pack: {{ block.servings_per_pack }}{% endif %}
+  </p>
+
+  {% if block.directions_of_use or block.suggested_dosage %}
+  <h2>Directions of use</h2>
+  <p>
+    {% if block.directions_of_use %}{{ block.directions_of_use }}<br>{% endif %}
+    {% if block.suggested_dosage %}<em>Suggested dosage: {{ block.suggested_dosage }}</em>{% endif %}
+  </p>
+  {% endif %}
+
+  <h2>Ingredients</h2>
+  {% if ingredients %}
+    <ul class="ingredients">
+      {% for ing in ingredients %}
+        <li>
+          {{ ing.name }}
+          {% if ing.qty_label %}<span class="qty"> — {{ ing.qty_label }}</span>{% endif %}
+          {% if ing.nrv_percent %}<span class="nrv"> ({{ ing.nrv_percent }}% NRV)</span>{% endif %}
+          {% if ing.allergen_flag %}<span class="allergen-tag">ALLERGEN</span>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <p class="meta">(no ingredients derived)</p>
+  {% endif %}
+
+  {% if block.allergen_statement %}
+    <p class="allergen">{{ block.allergen_statement }}</p>
+  {% endif %}
+
+  {% if block.storage_conditions or block.shelf_life %}
+  <h2>Storage</h2>
+  <p>
+    {% if block.storage_conditions %}{{ block.storage_conditions }}<br>{% endif %}
+    {% if block.shelf_life %}Shelf life: {{ block.shelf_life }}{% endif %}
+  </p>
+  {% endif %}
+
+  {% if block.business_address or block.country_of_origin %}
+  <h2>Manufactured by</h2>
+  <p class="business">{{ block.business_address }}</p>
+  {% if block.country_of_origin %}
+    <p class="business">Country of origin: {{ block.country_of_origin }}</p>
+  {% endif %}
+  {% endif %}
+</body>
+</html>

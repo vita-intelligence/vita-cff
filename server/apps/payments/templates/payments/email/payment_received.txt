@@ -1,0 +1,24 @@
+Vita Manufacture · Payment received
+
+Hi{% if customer_name %} {{ customer_name }}{% endif %},
+
+We’ve received your payment for {{ project_name|default:project_code }}{% if amount %} ({{ amount_label }}){% endif %}.
+
+That unlocks the next step: label design. Head into your portal and
+choose whether Vita designs the label for you or whether you’d like
+to design it yourself.
+
+Continue in portal:
+{{ portal_url }}
+
+— Receipt —
+Project: {{ project_code }}{% if project_name %} · {{ project_name }}{% endif %}
+{% if amount %}Amount: {{ amount_label }}
+{% endif %}{% if invoice_number %}Invoice: {{ invoice_number }}
+{% endif %}{% if paid_at_label %}Paid: {{ paid_at_label }}
+{% endif %}{% if reference %}Reference: {{ reference }}
+{% endif %}
+{% if sales_person_name %}Kind regards,
+{{ sales_person_name }}{% if sales_person_email %}
+{{ sales_person_email }}{% endif %}
+{% endif %}

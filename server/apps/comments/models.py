@@ -117,6 +117,17 @@ class Comment(models.Model):
         blank=True,
         related_name="comments",
     )
+    #: Denormalised FK for label-design threads. Customer + staff
+    #: collaborate on the artwork (designer notes, scientist review
+    #: clarifications, customer questions) — these threads attach to
+    #: a :class:`apps.label_design.models.LabelDesign` row.
+    label_design = models.ForeignKey(
+        "label_design.LabelDesign",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="comments",
+    )
 
     parent = models.ForeignKey(
         "self",
@@ -658,6 +669,7 @@ class ThreadEntityKind(models.TextChoices):
     SPECIFICATION = "specification", _("Specification")
     PROPOSAL = "proposal", _("Proposal")
     CFF_SUBMISSION = "cff_submission", _("CFF Submission")
+    LABEL_DESIGN = "label_design", _("Label design")
 
 
 class ThreadReadState(models.Model):

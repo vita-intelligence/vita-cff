@@ -33,7 +33,7 @@ export default async function PortalSpecDetailPage({
   if (!res.ok) notFound();
 
   return (
-    <PortalShell active="specs">
+    <PortalShell active="products">
       <PortalSpecView sheetId={id} />
     </PortalShell>
   );

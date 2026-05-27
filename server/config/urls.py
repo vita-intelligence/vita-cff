@@ -57,4 +57,9 @@ urlpatterns = [
         "api/portal/",
         include("apps.client_portal.api.urls", namespace="client_portal"),
     ),
+    path("api/", include("apps.payments.api.urls", namespace="payments")),
+    path(
+        "api/",
+        include("apps.label_design.api.urls", namespace="label_design"),
+    ),
 ]

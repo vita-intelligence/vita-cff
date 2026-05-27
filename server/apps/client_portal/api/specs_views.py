@@ -22,11 +22,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
 from rest_framework.response import Response
 
-from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.api.views import PortalAPIView, _err
 from apps.client_portal.models import PortalEvent
 from apps.client_portal.services import record_portal_event
 
@@ -127,6 +128,44 @@ class SpecListView(PortalAPIView):
                 continue
             seen.add(sid)
             rows.append(_serialise_spec(sheet, proposal))
+
+        # Third pass: standalone specs on a formulation the customer
+        # owns (via a proposal pinning the same formulation). Catches
+        # the auto-created FINAL spec — built post-trial and NOT
+        # bundled into the original proposal — which the two passes
+        # above can't see. The proposal we anchor against is the most
+        # recently updated one on the same project.
+        proposal_form_ids = list(
+            proposal_qs.values_list(
+                "formulation_version__formulation_id", flat=True
+            ).distinct()
+        )
+        if proposal_form_ids:
+            anchor_proposals: dict[str, Proposal] = {}
+            for prop in (
+                proposal_qs
+                .select_related("formulation_version")
+                .order_by("-updated_at")
+            ):
+                anchor_proposals.setdefault(
+                    prop.formulation_version.formulation_id, prop
+                )
+            for sheet in (
+                SpecificationSheet.objects
+                .filter(formulation_version__formulation_id__in=proposal_form_ids)
+                .select_related("formulation_version")
+                .order_by("-updated_at")
+            ):
+                sid = str(sheet.id)
+                if sid in seen:
+                    continue
+                anchor = anchor_proposals.get(
+                    sheet.formulation_version.formulation_id
+                )
+                if anchor is None:
+                    continue
+                seen.add(sid)
+                rows.append(_serialise_spec(sheet, anchor))
         return Response({"results": rows})
 
 
@@ -141,6 +180,7 @@ class SpecDetailView(PortalAPIView):
 
     def get(self, request: Request, sheet_id: str) -> Response:
         from apps.proposals.models import Proposal, ProposalLine
+        from apps.specifications.models import SpecificationSheet
         from apps.specifications.services import render_context as spec_render_context
 
         line = (
@@ -171,6 +211,37 @@ class SpecDetailView(PortalAPIView):
             if legacy is not None and legacy.specification_sheet is not None:
                 sheet = legacy.specification_sheet
                 proposal = legacy
+        # Third lookup: FINAL spec auto-created after a trial passes.
+        # It's NOT bundled into the original proposal — it stands
+        # alone on the same formulation_version. Ownership still flows
+        # from the customer through their proposal on the same project;
+        # we just need to walk one extra hop (proposal →
+        # formulation_version) to find the sheet.
+        if sheet is None:
+            shared_version_sheet = (
+                SpecificationSheet.objects
+                .select_related("formulation_version__formulation")
+                .filter(
+                    id=sheet_id,
+                    formulation_version__formulation_id__in=(
+                        Proposal.objects
+                        .filter(customer_id=request.user.customer_id)
+                        .values("formulation_version__formulation_id")
+                    ),
+                )
+                .first()
+            )
+            if shared_version_sheet is not None:
+                sheet = shared_version_sheet
+                proposal = (
+                    Proposal.objects
+                    .filter(
+                        customer_id=request.user.customer_id,
+                        formulation_version__formulation_id=shared_version_sheet.formulation_version.formulation_id,
+                    )
+                    .order_by("-updated_at")
+                    .first()
+                )
         if sheet is None or proposal is None:
             raise NotFound("Specification not found.")
 
@@ -185,3 +256,144 @@ class SpecDetailView(PortalAPIView):
             request=request,
         )
         return Response(payload)
+
+
+class SpecSignView(PortalAPIView):
+    """``POST /api/portal/specs/<sheet_id>/sign/``.
+
+    Standalone customer-signature capture for any spec the client
+    owns — works for both proposal-bundled drafts AND standalone
+    FINAL specs (the auto-created production-authorisation
+    document). The existing
+    ``proposals/<id>/specs/<sheet_id>/sign/`` endpoint only handles
+    the bundled case because it gates on the spec being attached to
+    a specific proposal; the FINAL spec is never bundled, so we need
+    this surface to sign it.
+
+    Ownership: same three-pass lookup the detail view uses (proposal
+    line / legacy 1-to-1 / shared formulation_version). The backend
+    ``accept_as_customer`` service handles the actual signature
+    capture + status flip + downstream project auto-advance.
+    """
+
+    def post(self, request: Request, sheet_id: str) -> Response:
+        from apps.client_portal.api.views import (
+            _client_ip,
+            _client_signer_fields,
+            _user_agent,
+        )
+        from apps.proposals.models import Proposal, ProposalLine
+        from apps.specifications.models import SpecificationSheet
+        from apps.specifications.services import (
+            InvalidStatusTransition,
+            SignatureRequired,
+            accept_as_customer,
+        )
+        from config.signatures import SignatureImageInvalid
+
+        # Three-pass ownership lookup — same shape as SpecDetailView.
+        sheet: SpecificationSheet | None = None
+        proposal: Proposal | None = None
+
+        line = (
+            ProposalLine.objects
+            .select_related("proposal", "specification_sheet")
+            .filter(
+                specification_sheet_id=sheet_id,
+                proposal__customer_id=request.user.customer_id,
+            )
+            .order_by("-proposal__updated_at")
+            .first()
+        )
+        if line is not None:
+            sheet = line.specification_sheet
+            proposal = line.proposal
+        else:
+            legacy = (
+                Proposal.objects
+                .select_related("specification_sheet")
+                .filter(
+                    specification_sheet_id=sheet_id,
+                    customer_id=request.user.customer_id,
+                )
+                .first()
+            )
+            if legacy is not None and legacy.specification_sheet is not None:
+                sheet = legacy.specification_sheet
+                proposal = legacy
+        if sheet is None:
+            shared = (
+                SpecificationSheet.objects
+                .select_related("formulation_version__formulation")
+                .filter(
+                    id=sheet_id,
+                    formulation_version__formulation_id__in=(
+                        Proposal.objects
+                        .filter(customer_id=request.user.customer_id)
+                        .values("formulation_version__formulation_id")
+                    ),
+                )
+                .first()
+            )
+            if shared is not None:
+                sheet = shared
+                proposal = (
+                    Proposal.objects
+                    .filter(
+                        customer_id=request.user.customer_id,
+                        formulation_version__formulation_id=shared.formulation_version.formulation_id,
+                    )
+                    .order_by("-updated_at")
+                    .first()
+                )
+
+        if sheet is None:
+            raise NotFound("Specification not found.")
+
+        signer_name, signer_email, signer_company = _client_signer_fields(request)
+        signature_image = (request.data or {}).get("signature_image") or ""
+
+        try:
+            updated = accept_as_customer(
+                sheet=sheet,
+                signer_name=signer_name,
+                signer_email=signer_email,
+                signer_company=signer_company,
+                signature_image=signature_image,
+            )
+        except InvalidStatusTransition:
+            return _err("invalid_status_transition", status.HTTP_400_BAD_REQUEST)
+        except (SignatureRequired, SignatureImageInvalid):
+            return _err("signature_required", status.HTTP_400_BAD_REQUEST)
+
+        # Capture the ESIGN audit trio so the signature is defensible
+        # (same shape as the proposal-bundled path).
+        updated.customer_sign_ip = _client_ip(request)[:45]
+        updated.customer_sign_user_agent = _user_agent(request)
+        updated.save(
+            update_fields=[
+                "customer_sign_ip",
+                "customer_sign_user_agent",
+            ]
+        )
+
+        if proposal is not None:
+            record_portal_event(
+                organization=proposal.organization,
+                proposal=proposal,
+                client_account=request.user,
+                kind=PortalEvent.Kind.SPEC_SIGNED,
+                metadata={"spec_id": str(updated.id)},
+                request=request,
+            )
+
+        return Response(
+            {
+                "id": str(updated.id),
+                "customer_signed_at": (
+                    updated.customer_signed_at.isoformat()
+                    if updated.customer_signed_at is not None
+                    else None
+                ),
+            },
+        )

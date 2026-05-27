@@ -29,7 +29,9 @@ export type ProtectedNavKey =
   | "customers"
   | "cff"
   | "approvals"
-  | "signed";
+  | "signed"
+  | "labelling"
+  | "finance";
 
 interface ProtectedHeaderProps {
   user: UserDto;
@@ -103,6 +105,19 @@ export async function ProtectedHeader({
   const canSeeSigned =
     hasFlatCapability(primaryOrg, "formulations", "view_signed") ||
     hasFlatCapability(primaryOrg, "proposals", "view_signed");
+  // Labelling + Finance — their own RBAC modules so the labelling
+  // team can see their queue without project-edit rights, and the
+  // finance role can record payments without anything else.
+  const canSeeLabelling = hasFlatCapability(
+    primaryOrg,
+    "labelling",
+    "view",
+  );
+  const canSeeFinance = hasFlatCapability(
+    primaryOrg,
+    "finance",
+    "view",
+  );
 
   // The primary nav is split into three visual buckets so a member
   // can find a surface without scanning a long flat row of pills:
@@ -158,6 +173,26 @@ export async function ProtectedHeader({
       label: tNav("main.approvals"),
     });
   }
+  if (canSeeLabelling) {
+    rndItems.push({
+      key: "labelling",
+      href: "/labelling",
+      label: "Labelling",
+    });
+  }
+  // Finance lives in its own group (not under R&D) because payment
+  // approval is the gate between APPROVED projects and the label
+  // workflow — operators search for it as its own thing, not as a
+  // sub-item of the project lifecycle. Putting it inside R&D meant
+  // owners couldn't find it without clicking the R&D dropdown.
+  const opsItems: HeaderNavItem[] = [];
+  if (canSeeFinance) {
+    opsItems.push({
+      key: "finance",
+      href: "/finance/payments",
+      label: "Finance",
+    });
+  }
 
   // Customers + Proposals share the ``proposals`` module gate —
   // sales-only roles see them even without any Projects capability.
@@ -190,6 +225,13 @@ export async function ProtectedHeader({
       key: "proposal",
       label: tNav("groups.proposal"),
       items: proposalItems,
+    });
+  }
+  if (opsItems.length > 0) {
+    navGroups.push({
+      key: "ops",
+      label: "Operations",
+      items: opsItems,
     });
   }
 

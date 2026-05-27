@@ -464,6 +464,34 @@ export function SpecificationSheetView({
                   if (next === "draft" && sheet.status === "approved") {
                     return canApprove;
                   }
+                  // DRAFT specs never reach the customer on their own
+                  // — they only travel via a proposal bundle (the
+                  // proposal's ``approved → sent`` transition pulls
+                  // the bundled draft along automatically). Hiding
+                  // the standalone "Advance to sent" button here
+                  // forces the right workflow without breaking the
+                  // proposal-bundle path that calls ``transition_status``
+                  // directly via :func:`apps.proposals.services.
+                  // _promote_attached_specs_to_sent`. FINAL specs
+                  // keep the button because they're customer-facing
+                  // documents that aren't bundled into a fresh
+                  // proposal post-trial.
+                  if (next === "sent" && sheet.document_kind === "draft") {
+                    return false;
+                  }
+                  // ``sent → accepted`` is reserved for the customer
+                  // kiosk: it captures the customer's signature and
+                  // ESIGN audit columns. Staff cannot sign on the
+                  // customer's behalf — the backend
+                  // :func:`apps.specifications.services.transition_status`
+                  // already refuses this; hiding the button stops the
+                  // UI from dangling an action that would 400.
+                  // ``sent → rejected`` stays because staff genuinely
+                  // need a way to close out a dead deal on the
+                  // customer's behalf when the customer goes silent.
+                  if (next === "accepted") {
+                    return false;
+                  }
                   return true;
                 })
                 .map((next) => {
@@ -482,6 +510,18 @@ export function SpecificationSheetView({
                         code: sheet.review_slot_blocker!.code,
                       })
                     : undefined;
+                  // Custom labels for the customer-facing steps —
+                  // "Advance to sent" reads like an internal lifecycle
+                  // bump; "Send to customer" reads like the action it
+                  // actually performs (and on FINAL specs, it ALSO
+                  // dispatches the customer email — see
+                  // ``apps/specifications/email.py``).
+                  const label =
+                    next === "sent"
+                      ? "Send to customer"
+                      : `${tSpecs("detail.advance_to")} ${tSpecs(
+                          `status.${next}` as `status.draft`,
+                        )}`;
                   return (
                     <span key={next} title={tooltip}>
                       <Button
@@ -492,8 +532,7 @@ export function SpecificationSheetView({
                         isDisabled={isBusy || slotBlocked}
                         onClick={() => handleTransition(next)}
                       >
-                        {tSpecs("detail.advance_to")}{" "}
-                        {tSpecs(`status.${next}` as `status.draft`)}
+                        {label}
                       </Button>
                     </span>
                   );

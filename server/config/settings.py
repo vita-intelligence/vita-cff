@@ -110,6 +110,8 @@ LOCAL_APPS = [
     "apps.comments",
     "apps.cff_submissions",
     "apps.client_portal",
+    "apps.label_design",
+    "apps.payments",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS

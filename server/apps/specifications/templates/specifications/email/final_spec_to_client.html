@@ -1,0 +1,142 @@
+{% load proposals_email_extras %}<!doctype html>
+{% comment %}
+Fork of ``apps/proposals/templates/proposals/email/send_to_client.html``
+tuned for the FINAL spec sign-off email. Same visual treatment,
+the same proposal-email-tested Outlook + dark-mode workarounds —
+just spec-flavoured copy and button labels so the customer
+understands "this is the production authorisation moment", not
+"another proposal to sign". Reuses the ``proposals_email_extras``
+template-tag library because nothing about the helpers is
+proposal-specific.
+{% endcomment %}
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
+  <title>Final specification {{ sheet.code }}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+        <o:AllowPNG/>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <style>
+    table, td, div, p, a { mso-line-height-rule: exactly; }
+    body { font-family: 'Segoe UI', Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <style>
+    a { color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) {
+      .email-card { background-color: #1f1d1a !important; color: #f6f5f3 !important; }
+      .email-card .body-copy { color: #f6f5f3 !important; }
+      .email-bg { background-color: #0e0d0c !important; }
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f6f5f3;mso-line-height-rule:exactly;-webkit-font-smoothing:antialiased;" class="email-bg">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f6f5f3;">
+    Your final specification {{ sheet.code }} is ready for production authorisation.
+  </div>
+
+  <center style="width:100%;background-color:#f6f5f3;" class="email-bg">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f6f5f3" style="background-color:#f6f5f3;padding:24px 12px;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" bgcolor="#ffffff" style="max-width:600px;width:100%;background-color:#ffffff;border:1px solid #e7e5e0;" class="email-card">
+            <tr>
+              <td style="padding:32px 32px 8px 32px;">
+                <p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#ff7a18;font-family:'Segoe UI',Arial,sans-serif;">
+                  Vita Manufacture &middot; Final · Production authorisation
+                </p>
+                <h1 style="margin:8px 0 0 0;font-size:22px;line-height:1.25;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
+                  Your product is ready to ship — please sign to authorise production.
+                </h1>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="body-copy" style="padding:16px 32px 0 32px;font-size:15px;line-height:1.6;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
+                {% if body_text %}
+                  {{ body_text|email_linebreaks }}
+                {% else %}
+                  <p style="margin:0 0 12px 0;">Hi{% if customer_name %} {{ customer_name }}{% endif %},</p>
+                  <p style="margin:0 0 12px 0;">
+                    Your trial batch passed our quality checks, so we&rsquo;ve prepared the
+                    <strong>final specification</strong> for <strong>{{ formulation_name|default:sheet.code }}</strong>.
+                    Signing it authorises us to begin production at the quantity and terms
+                    agreed in your proposal{% if proposal_code %} <strong>{{ proposal_code }}</strong>{% endif %}.
+                  </p>
+                  <p style="margin:0;">Click below to review and sign.</p>
+                {% endif %}
+              </td>
+            </tr>
+
+            {% if kiosk_url %}
+            <tr>
+              <td align="center" style="padding:28px 32px 8px 32px;">
+                <!--[if mso]>
+                <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
+                             href="{{ kiosk_url }}" style="height:48px;v-text-anchor:middle;width:260px;" arcsize="22%" stroke="f" fillcolor="#ff7a18">
+                  <w:anchorlock/>
+                  <center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:600;">Review &amp; sign</center>
+                </v:roundrect>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <a href="{{ kiosk_url }}"
+                   style="display:inline-block;background-color:#ff7a18;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:14px 28px;border-radius:10px;font-family:'Segoe UI',Arial,sans-serif;mso-padding-alt:0;">
+                  Review &amp; sign final specification
+                </a>
+                <!--<![endif]-->
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 8px 32px;font-size:12px;color:#8a857c;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
+                Or copy this link into your browser:
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 24px 32px;font-size:12px;color:#5a574f;text-align:center;word-break:break-all;font-family:'Segoe UI',Arial,sans-serif;">
+                <a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
+              </td>
+            </tr>
+            {% endif %}
+
+            <tr>
+              <td style="padding:0 32px 24px 32px;font-size:13px;color:#5a574f;font-family:'Segoe UI',Arial,sans-serif;border-top:1px solid #f0eee9;">
+                <p style="margin:16px 0 0 0;">
+                  <strong style="color:#1a1a1a;">What happens after you sign:</strong>
+                  We start production planning and move you straight into label design — you&rsquo;ll find the next steps in your Vita portal under <em>Labels</em>.
+                </p>
+              </td>
+            </tr>
+
+            {% if sales_person_name %}
+            <tr>
+              <td style="padding:0 32px 32px 32px;font-size:14px;color:#5a574f;font-family:'Segoe UI',Arial,sans-serif;">
+                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong>{% if sales_person_email %}<br/><a href="mailto:{{ sales_person_email }}" style="color:#5a574f;text-decoration:underline;">{{ sales_person_email }}</a>{% endif %}</p>
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;">
+            <tr>
+              <td align="center" style="padding:16px 16px 0 16px;font-size:11px;color:#8a857c;line-height:1.5;font-family:'Segoe UI',Arial,sans-serif;">
+                Vita Manufacture &middot; sent because your trial batch passed and your final specification is ready.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>

@@ -749,4 +749,34 @@ def transition_status(
         before={"status": previous_status},
         after={"status": next_status},
     )
+
+    # Trial-batch pass → auto-create the FINAL spec sheet so the
+    # scientist doesn't have to click "new sheet" and toggle Final.
+    # Idempotent (no-op if the project already has a FINAL). Failures
+    # are swallowed: the validation pass is the source of truth; a
+    # spec-creation hiccup must not undo it.
+    if next_status == ValidationStatus.PASSED:
+        try:
+            from apps.specifications.services import (
+                auto_create_final_spec_for_version,
+            )
+
+            trial_batch = getattr(validation, "trial_batch", None)
+            version = (
+                getattr(trial_batch, "formulation_version", None)
+                if trial_batch is not None
+                else None
+            )
+            if version is not None:
+                auto_create_final_spec_for_version(
+                    formulation_version=version, actor=actor
+                )
+        except Exception:  # pragma: no cover - defence in depth
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "auto_create_final_spec failed for validation %s",
+                validation.pk,
+            )
+
     return validation

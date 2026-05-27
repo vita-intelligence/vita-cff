@@ -33,7 +33,7 @@ export default async function PortalCFFDetailPage({
   if (!res.ok) notFound();
 
   return (
-    <PortalShell active="cff">
+    <PortalShell active="products">
       <PortalCFFView submissionId={id} />
     </PortalShell>
   );

@@ -35,6 +35,8 @@ FORMULATIONS_MODULE = "formulations"
 PROPOSALS_MODULE = "proposals"
 AUDIT_MODULE = "audit"
 CFF_SUBMISSIONS_MODULE = "cff_submissions"
+LABELLING_MODULE = "labelling"
+FINANCE_MODULE = "finance"
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +208,46 @@ class AuditCapability:
     VIEW = "view"
 
 
+class LabellingCapability:
+    """Capabilities for the Labelling team workflow.
+
+    Split from :class:`FormulationsCapability` so the labelling team
+    can own the post-spec design phase without holding formulation-
+    edit rights. The two roles ``REVIEW_SCIENTIST`` and
+    ``REVIEW_DIRECTOR`` mirror the signature slots on the
+    SpecificationSheet (prepared-by vs director) — pair them with
+    the matching staff role on the team, never on the same user.
+    """
+
+    #: Read access to label-design rows and their revisions.
+    VIEW = "view"
+    #: Create / edit revisions, upload artwork.
+    DESIGN = "design"
+    #: Submit the scientist review on a revision. Mirrors the
+    #: prepared-by signature slot on the spec sheet.
+    REVIEW_SCIENTIST = "review_scientist"
+    #: Submit the director review on a revision. Mirrors the
+    #: director signature slot on the spec sheet.
+    REVIEW_DIRECTOR = "review_director"
+    #: Assign a designer, hold / resume the workflow. The "manager"
+    #: of the labelling team.
+    MANAGE = "manage"
+
+
+class FinanceCapability:
+    """Capabilities for the finance team.
+
+    The finance role is the gate between an APPROVED project and
+    the LabelDesign workflow opening up to the customer — finance
+    records a payment, approves it, and that drives the LabelDesign
+    forward from ``PAYMENT_PENDING`` to ``LABEL_PATH_PENDING``.
+    """
+
+    VIEW = "view"
+    RECORD_PAYMENT = "record_payment"
+    APPROVE_PAYMENT = "approve_payment"
+
+
 class CFFSubmissionsCapability:
     """Capabilities for the CFF (Custom Formulation Request) intake.
 
@@ -344,6 +386,37 @@ MODULE_REGISTRY: dict[str, Module] = {
         capabilities=(
             CFFSubmissionsCapability.VIEW,
             CFFSubmissionsCapability.ASSIGN_PROJECT,
+        ),
+    ),
+    LABELLING_MODULE: Module(
+        key=LABELLING_MODULE,
+        name="Labelling",
+        description=(
+            "Post-approval label-design workflow: customer chooses "
+            "design path, scientist + director review the artwork, "
+            "customer signs off. Includes the spec-derived "
+            "Compliance Content Block exports."
+        ),
+        capabilities=(
+            LabellingCapability.VIEW,
+            LabellingCapability.DESIGN,
+            LabellingCapability.REVIEW_SCIENTIST,
+            LabellingCapability.REVIEW_DIRECTOR,
+            LabellingCapability.MANAGE,
+        ),
+    ),
+    FINANCE_MODULE: Module(
+        key=FINANCE_MODULE,
+        name="Finance",
+        description=(
+            "Record customer payments and approve them. Approving a "
+            "payment unlocks the downstream label-design workflow "
+            "for the customer."
+        ),
+        capabilities=(
+            FinanceCapability.VIEW,
+            FinanceCapability.RECORD_PAYMENT,
+            FinanceCapability.APPROVE_PAYMENT,
         ),
     ),
 }

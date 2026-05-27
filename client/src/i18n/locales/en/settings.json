@@ -147,7 +147,11 @@
     "audit_description": "Read the org-wide trail of every write across catalogues, projects, spec sheets, trial batches, and QC validations.",
     "cff_submissions": "CFF Submissions",
     "cff_submissions_description": "Custom Formulation Request intake: read submissions imported from the public Wix-hosted form and attach each one to a project. Upstream of the Projects module so commercial / triage roles can route requests without project-edit rights.",
-    "no_row_scopes": "No catalogues exist yet — create one to scope access."
+    "no_row_scopes": "No catalogues exist yet — create one to scope access.",
+    "labelling": "Labelling",
+    "labelling_description": "Post-approval label-design workflow: customer picks a design path, scientist + director review the artwork, customer signs off. Includes the spec-derived compliance content-block exports.",
+    "finance": "Finance",
+    "finance_description": "Record customer payments and approve them. Approving a payment unlocks the downstream label-design workflow for the customer."
   },
   "capabilities": {
     "members": {
@@ -176,7 +180,8 @@
       "sign_spec": "Sign spec sheet",
       "comments_view": "View comments",
       "comments_write": "Post & reply to comments",
-      "comments_moderate": "Moderate others' comments"
+      "comments_moderate": "Moderate others' comments",
+      "view_all_rd_pipeline": "View all R&D pipeline"
     },
     "proposals": {
       "view": "View",
@@ -195,6 +200,18 @@
     "cff_submissions": {
       "view": "View CFF submissions",
       "assign_project": "Attach CFFs to projects"
+    },
+    "labelling": {
+      "view": "View",
+      "design": "Design label artwork",
+      "review_scientist": "Sign off as scientist",
+      "review_director": "Sign off as director",
+      "manage": "Manage labelling team"
+    },
+    "finance": {
+      "view": "View",
+      "record_payment": "Record payment",
+      "approve_payment": "Approve payment"
     }
   },
   "capability_hints": {
@@ -224,7 +241,8 @@
       "sign_spec": "Apply your signature to a spec sheet or proposal in any internal slot (Scientist, R&D Manager, Product Manager, Director). Without this, the signature pad is read-only.",
       "comments_view": "Read comment threads on any project entity.",
       "comments_write": "Post comments and reply. You can always edit, delete, or resolve your own threads.",
-      "comments_moderate": "Edit, delete, or resolve OTHER users' comment threads. The moderator role — typically team leads only."
+      "comments_moderate": "Edit, delete, or resolve OTHER users' comment threads. The moderator role — typically team leads only.",
+      "view_all_rd_pipeline": "See every active project across the whole R&D pipeline, not just the ones you're assigned to. Useful for managers triaging workload or scientists scanning for similar formulations already in flight."
     },
     "proposals": {
       "view": "Read the proposals list, individual proposals, and the customer-facing PDF.",
@@ -243,6 +261,18 @@
     "cff_submissions": {
       "view": "Open the CFF inbox and read every Custom Formulation Request submitted via the public Wix form.",
       "assign_project": "Create a project from a CFF (or attach a CFF to an existing one). Also detach a CFF from its project. Required to convert intake into work."
+    },
+    "labelling": {
+      "view": "Read every label-design workflow row + its history. Required for anyone on the labelling team to see the queue at all.",
+      "design": "Upload artwork, submit revisions, and push designs forward through the lifecycle. The hands-on design role.",
+      "review_scientist": "Submit the scientist-level compliance review on a revision (the MA-PD-B-012 22-point checklist). Mirrors the ``prepared_by`` slot on the spec-sheet sign-off chain.",
+      "review_director": "Submit the director-level sign-off on a revision after the scientist review. The final internal approval before the customer sees it.",
+      "manage": "Assign a designer, put a label workflow on hold, resume from hold. The labelling-team manager / lead role."
+    },
+    "finance": {
+      "view": "Open the payments list and see every recorded payment + its status (pending / approved / voided). Required for any finance-team role.",
+      "record_payment": "Log a new customer payment against a project (amount, method, invoice reference, paid date). Lands at status=pending until an approver flips it to approved.",
+      "approve_payment": "Flip a pending payment to approved. Side effect: the matching LabelDesign auto-advances from PAYMENT_PENDING to LABEL_PATH_PENDING, unlocking the label workflow for the customer."
     }
   },
   "capability_pages": {
@@ -272,7 +302,8 @@
       "sign_spec": "Internal signature slots on Spec sheet detail (Scientist / R&D Manager / Product Manager / Director). Paired with Proposals → Sign proposal — same toggle covers both.",
       "comments_view": "Floating chat bubble on every Project page (Overview, Builder, Spec sheets, Proposals, Trial batches, QC). Spec sheet → comments thread.",
       "comments_write": "Compose + reply in the project chat bubble and the spec sheet thread. Authors always retain edit / delete / resolve on their own posts regardless of this grant.",
-      "comments_moderate": "Edit / delete / resolve OTHER users' comments anywhere a thread appears. The moderator role — typically team leads + owners only."
+      "comments_moderate": "Edit / delete / resolve OTHER users' comments anywhere a thread appears. The moderator role — typically team leads + owners only.",
+      "view_all_rd_pipeline": "R&D pipeline page (/rd-pipeline) shows projects owned by other scientists; without this you only see projects you're assigned to."
     },
     "proposals": {
       "view": "Proposals list (/proposals). Proposal detail page. Customers list (/customers) and customer create/edit modals. Customer picker on Spec sheet + Proposal forms.",
@@ -291,6 +322,18 @@
     "cff_submissions": {
       "view": "CFF inbox (/cff) — read every Custom Formulation Request. Floating CFF bubble (bottom-left) on every Project page that has a CFF attached.",
       "assign_project": "CFF inbox → Create new project / Attach to existing project buttons. Detach action on assigned CFF rows. Required to convert intake into a project workspace."
+    },
+    "labelling": {
+      "view": "Labelling queue (/labelling) + per-design workspace tabs.",
+      "design": "Upload artwork + Submit for review actions on the workspace. Content-block downloads (PDF / PNG / text) for designer reference.",
+      "review_scientist": "Scientist review panel on the workspace — only renders when the design is at SCIENTIST_REVIEW status.",
+      "review_director": "Director review panel on the workspace — only renders when the design is at DIRECTOR_REVIEW status.",
+      "manage": "Assign-designer dropdown + Hold / Resume buttons in the workspace header."
+    },
+    "finance": {
+      "view": "Payments list (/finance/payments).",
+      "record_payment": "Record-payment dialog on /finance/payments.",
+      "approve_payment": "Approve / Void buttons on each pending payment row."
     }
   },
   "role_presets": {
@@ -305,6 +348,10 @@
     "audit_label": "Common roles",
     "audit": "Compliance and QA leads. Owners get it implicitly.",
     "cff_submissions_label": "Common roles",
-    "cff_submissions": "Sales / triage: View + Attach to projects. Project leads who route incoming customer requests onto projects (paired with Projects → Edit so they can actually create the project). Read-only stakeholder: View only — useful for managers who want to monitor intake volume without acting on it."
+    "cff_submissions": "Sales / triage: View + Attach to projects. Project leads who route incoming customer requests onto projects (paired with Projects → Edit so they can actually create the project). Read-only stakeholder: View only — useful for managers who want to monitor intake volume without acting on it.",
+    "labelling_label": "Common roles",
+    "labelling": "Designer: View + Design. Senior scientist (regulatory reviewer): View + Review (scientist). Director: View + Review (director). Labelling lead / manager: all five — needs Manage to assign designers and pause / resume workflows.",
+    "finance_label": "Common roles",
+    "finance": "Finance assistant: View + Record payment. Finance lead / controller: View + Record + Approve. Owners get it implicitly."
   }
 }

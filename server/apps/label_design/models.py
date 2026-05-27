@@ -1,0 +1,603 @@
+"""Models for the label-design workflow.
+
+Shape recap (see plan §Data model):
+
+* :class:`LabelDesign` — one row per project; the workflow root.
+* :class:`LabelDesignRevision` — immutable artwork snapshot; every
+  rejection produces a new revision.
+* :class:`LabelDesignReview` — one row per (revision, reviewer-kind);
+  carries the 22-item checklist + mandatory final comments.
+* :class:`LabelDesignPreferences` — MA-ST-B-009 form, populated on
+  the DESIGN_BY_US path.
+* :class:`LabelDesignPreferenceFile` — inspiration attachments
+  uploaded with the preferences form.
+* :class:`LabelDesignTransition` — append-only audit row written
+  inside the same transaction as the status change.
+
+The state machine + transition validator live in
+:mod:`apps.label_design.services`; the constants (status enums,
+allowed transitions, checklist tuple) live in
+:mod:`apps.label_design.constants` so they can be imported without
+touching the model layer.
+"""
+
+from __future__ import annotations
+
+import uuid
+
+from django.conf import settings
+from django.db import models
+from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+
+from apps.label_design.constants import (
+    DesignStyle,
+    LabelDesignPath,
+    LabelDesignStatus,
+    MaterialType,
+    ReviewKind,
+    ReviewOutcome,
+    RevisionSource,
+)
+
+
+def _revision_artwork_upload_to(instance: "LabelDesignRevision", filename: str) -> str:
+    """Storage path for revision artwork PDFs.
+
+    Grouped under the parent label-design id so the Azure container
+    listing stays browsable per project. The revision id keeps the
+    object name unique even when the same designer re-uploads a file
+    with the same original filename.
+    """
+    label_design_id = instance.label_design_id
+    return f"label_design/{label_design_id}/revisions/{instance.id}/{filename}"
+
+
+def _revision_preview_upload_to(instance: "LabelDesignRevision", filename: str) -> str:
+    label_design_id = instance.label_design_id
+    return f"label_design/{label_design_id}/revisions/{instance.id}/preview/{filename}"
+
+
+def _preference_file_upload_to(instance: "LabelDesignPreferenceFile", filename: str) -> str:
+    return (
+        f"label_design/{instance.preferences.label_design_id}/inspiration/"
+        f"{instance.id}/{filename}"
+    )
+
+
+class LabelDesign(models.Model):
+    """The workflow root: one row per project that has reached the
+    label-design phase.
+
+    Created by signal when :class:`apps.formulations.models.Formulation`
+    hits ``APPROVED`` AND a customer-signed spec sheet exists. The
+    starting status is ``PAYMENT_PENDING`` because the finance team
+    still needs to record a payment before the customer can pick a
+    design path.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="label_designs",
+    )
+    formulation = models.OneToOneField(
+        "formulations.Formulation",
+        on_delete=models.CASCADE,
+        related_name="label_design",
+        help_text=_(
+            "The project this label belongs to. One label-design "
+            "workflow per project — re-runs of the label phase live "
+            "in the revision history."
+        ),
+    )
+    specification_sheet = models.ForeignKey(
+        "specifications.SpecificationSheet",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="label_designs",
+        help_text=_(
+            "The customer-signed final spec sheet whose acceptance "
+            "gated entry to this workflow. PROTECT because a spec "
+            "that was the basis of a label cannot be silently deleted."
+        ),
+    )
+
+    status = models.CharField(
+        _("status"),
+        max_length=32,
+        choices=LabelDesignStatus.choices,
+        default=LabelDesignStatus.PAYMENT_PENDING,
+        db_index=True,
+    )
+    design_path = models.CharField(
+        _("design path"),
+        max_length=24,
+        choices=LabelDesignPath.choices,
+        blank=True,
+        default="",
+        help_text=_(
+            "Which side does the artistic work. Blank until the customer "
+            "picks on the portal."
+        ),
+    )
+
+    current_revision = models.ForeignKey(
+        "LabelDesignRevision",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=_(
+            "Denormalised pointer to the revision currently in review "
+            "or approved. Avoids a subquery on the hot path."
+        ),
+    )
+    preferences = models.OneToOneField(
+        "LabelDesignPreferences",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="label_design_link",
+        help_text=_(
+            "MA-ST-B-009 form payload. Only populated on the "
+            "DESIGN_BY_US path."
+        ),
+    )
+
+    assigned_designer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_label_designs",
+    )
+
+    rejection_count = models.PositiveSmallIntegerField(
+        _("consecutive customer rejections"),
+        default=0,
+        help_text=_(
+            "Bumped each time the customer rejects on the "
+            "CUSTOMER_APPROVAL step; reset when the next customer "
+            "approval lands. The transition service auto-routes to "
+            "``ON_HOLD`` once this exceeds "
+            "``MAX_CUSTOMER_REJECTIONS_BEFORE_HOLD``."
+        ),
+    )
+
+    # Customer approval — mirrors the SpecificationSheet ESIGN columns
+    # at apps/specifications/models.py:196-239. Lets the same legal
+    # defence apply to a label sign-off as to the underlying spec.
+    customer_approved_at = models.DateTimeField(
+        _("customer approved at"), null=True, blank=True
+    )
+    customer_approved_by = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="approved_label_designs",
+    )
+    customer_approval_signature_image = models.TextField(
+        _("customer approval signature image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64-encoded PNG data URL captured on the portal "
+            "signature pad."
+        ),
+    )
+    customer_sign_ip = models.CharField(
+        _("customer sign ip"), max_length=45, blank=True, default=""
+    )
+    customer_sign_user_agent = models.TextField(
+        _("customer sign user agent"), blank=True, default=""
+    )
+    customer_sign_document_hash = models.CharField(
+        _("customer sign document hash"),
+        max_length=64,
+        blank=True,
+        default="",
+        help_text=_(
+            "SHA-256 hex digest of the rendered approval HTML the "
+            "customer saw at sign time. ESIGN drift detector."
+        ),
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("label design")
+        verbose_name_plural = _("label designs")
+        ordering = ("-updated_at",)
+        indexes = [
+            models.Index(fields=("organization", "status")),
+            models.Index(fields=("organization", "-updated_at")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display
+        return f"LabelDesign({self.formulation_id}, {self.status})"
+
+
+class LabelDesignRevision(models.Model):
+    """One artwork submission. Immutable — every rejection writes a
+    new row rather than overwriting the previous one, so the audit
+    trail survives and reviewers can diff iterations.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    label_design = models.ForeignKey(
+        LabelDesign,
+        on_delete=models.CASCADE,
+        related_name="revisions",
+    )
+    revision_number = models.PositiveIntegerField(
+        _("revision number"),
+        help_text=_(
+            "Monotonic per label_design; assigned by the service layer "
+            "at submit time. Numbering starts at 1."
+        ),
+    )
+
+    submitted_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_label_revisions",
+        help_text=_(
+            "Staff designer who submitted this revision. Null when "
+            "the customer self-designed."
+        ),
+    )
+    submitted_by_client = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_label_revisions",
+        help_text=_(
+            "Portal customer who submitted this revision. Null when "
+            "a staff designer submitted."
+        ),
+    )
+    submitted_at = models.DateTimeField(default=timezone.now, editable=False)
+    source = models.CharField(
+        _("source"),
+        max_length=24,
+        choices=RevisionSource.choices,
+    )
+
+    artwork_pdf = models.FileField(
+        _("artwork PDF"),
+        upload_to=_revision_artwork_upload_to,
+        blank=True,
+        null=True,
+        help_text=_(
+            "Canonical archived artwork file. Stored on the Azure "
+            "container in production, on the local filesystem in dev."
+        ),
+    )
+    artwork_preview_png = models.FileField(
+        _("preview PNG"),
+        upload_to=_revision_preview_upload_to,
+        blank=True,
+        null=True,
+        help_text=_(
+            "Auto-generated thumbnail rendered from the artwork PDF "
+            "for the list / workspace surfaces."
+        ),
+    )
+
+    compliance_block_snapshot = models.JSONField(
+        _("compliance block snapshot"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Frozen content-block dict at submit time. Lets reviewers "
+            "compare what was required vs what was delivered, and "
+            "survives later spec edits — see plan §Spec drift risk."
+        ),
+    )
+
+    customer_approved_own_design = models.BooleanField(
+        _("customer approved own design"),
+        default=False,
+        help_text=_(
+            "True when the customer self-designed and uploaded the "
+            "artwork; the explicit CUSTOMER_APPROVAL step is skipped "
+            "because this acts as their approval."
+        ),
+    )
+    notes = models.TextField(_("notes"), blank=True, default="")
+
+    class Meta:
+        verbose_name = _("label design revision")
+        verbose_name_plural = _("label design revisions")
+        ordering = ("-submitted_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("label_design", "revision_number"),
+                name="label_design_revision_unique_number",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("label_design", "-revision_number")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display
+        return f"Revision {self.revision_number} of {self.label_design_id}"
+
+
+class LabelDesignReview(models.Model):
+    """A scientist's or director's verdict on a single revision.
+
+    Unique on ``(revision, kind)`` so the same role cannot review
+    the same revision twice — a rejection produces a new revision,
+    which gets its own review row.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    revision = models.ForeignKey(
+        LabelDesignRevision,
+        on_delete=models.CASCADE,
+        related_name="reviews",
+    )
+    kind = models.CharField(
+        _("kind"),
+        max_length=16,
+        choices=ReviewKind.choices,
+    )
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="label_reviews",
+    )
+    outcome = models.CharField(
+        _("outcome"),
+        max_length=24,
+        choices=ReviewOutcome.choices,
+    )
+    checklist_responses = models.JSONField(
+        _("checklist responses"),
+        default=list,
+        help_text=_(
+            "List of ``{item_key, pass, comment}``. Validated by the "
+            "review serializer against "
+            "``constants.COMPLIANCE_CHECKLIST_KEYS`` — every checklist "
+            "item must be present, no extras allowed."
+        ),
+    )
+    final_comments = models.TextField(
+        _("final comments"),
+        help_text=_(
+            "Mandatory — the regulatory team requires reviewers to "
+            "describe exactly what they reviewed. Enforced at the "
+            "serializer + service layer."
+        ),
+    )
+    signature_image = models.TextField(
+        _("signature image"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Base64-encoded signature pad capture. Same shape as the "
+            "prepared-by / director signatures on SpecificationSheet."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("label design review")
+        verbose_name_plural = _("label design reviews")
+        ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("revision", "kind"),
+                name="label_design_review_unique_per_revision_kind",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("revision", "kind")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.kind} review of {self.revision_id}: {self.outcome}"
+
+
+class LabelDesignPreferences(models.Model):
+    """MA-ST-B-009 Design Preferences Form payload.
+
+    Populated only on the DESIGN_BY_US path. The OneToOne back to
+    :class:`LabelDesign` is on ``LabelDesign.preferences`` — kept on
+    the parent so the workflow row can be queried without joining
+    against a sibling that may or may not exist.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    submitted_by_client = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.PROTECT,
+        related_name="submitted_label_preferences",
+    )
+    submitted_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    # Section: Company Information
+    # Auto-populated from the Customer record on submit but persisted
+    # here too because the customer can override (e.g. "we go by 'Acme
+    # Skin Co' on the label even though the contract is 'Acme Limited'").
+    company_name = models.CharField(max_length=200, blank=True, default="")
+    brand_name = models.CharField(max_length=200, blank=True, default="")
+    product_names = models.TextField(blank=True, default="")
+    product_codes = models.TextField(blank=True, default="")
+
+    # Section: Design
+    brand_colours = models.JSONField(
+        _("brand colours"),
+        default=list,
+        blank=True,
+        help_text=_(
+            'List of ``{ "name": "...", "hex": "#..." }`` entries.'
+        ),
+    )
+    inspiration_urls = models.JSONField(
+        _("inspiration URLs"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "List of URL strings the customer referenced as visual "
+            "inspiration."
+        ),
+    )
+    elements_to_include = models.TextField(
+        _("specific elements to include"), blank=True, default=""
+    )
+    design_style = models.CharField(
+        _("design style"),
+        max_length=16,
+        choices=DesignStyle.choices,
+        blank=True,
+        default="",
+    )
+    material_type = models.CharField(
+        _("material type"),
+        max_length=16,
+        choices=MaterialType.choices,
+        blank=True,
+        default="",
+    )
+
+    # Section: Others
+    additional_comments = models.TextField(
+        _("additional comments"), blank=True, default=""
+    )
+
+    # Declaration + signature
+    declaration_signed_at = models.DateTimeField(
+        _("declaration signed at"), null=True, blank=True
+    )
+    declaration_signature_image = models.TextField(
+        _("declaration signature image"), blank=True, default=""
+    )
+    declaration_name = models.CharField(max_length=200, blank=True, default="")
+    declaration_position = models.CharField(max_length=120, blank=True, default="")
+
+    # Forward-compatible raw payload — mirrors CFFSubmission.raw_payload
+    # so a future revision of the form can keep landing without a model
+    # migration on day one.
+    raw_payload = models.JSONField(
+        _("raw payload"),
+        default=dict,
+        blank=True,
+    )
+
+    class Meta:
+        verbose_name = _("label design preferences")
+        verbose_name_plural = _("label design preferences")
+        ordering = ("-submitted_at",)
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"Preferences {self.id}"
+
+
+class LabelDesignPreferenceFile(models.Model):
+    """One inspiration file uploaded with the design preferences form."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    preferences = models.ForeignKey(
+        LabelDesignPreferences,
+        on_delete=models.CASCADE,
+        related_name="inspiration_files",
+    )
+    file = models.FileField(upload_to=_preference_file_upload_to)
+    original_name = models.CharField(max_length=255, blank=True, default="")
+    content_type = models.CharField(max_length=120, blank=True, default="")
+    size_bytes = models.PositiveBigIntegerField(default=0)
+    uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("label design inspiration file")
+        verbose_name_plural = _("label design inspiration files")
+        ordering = ("uploaded_at",)
+
+
+class LabelDesignTransition(models.Model):
+    """Append-only audit row written inside the same transaction as
+    a status flip on :class:`LabelDesign`.
+
+    Either ``actor`` (staff User) or ``actor_client_account`` is set
+    — never both. The system signal that bootstraps the row on spec
+    customer-sign records ``actor=NULL`` + ``actor_client_account=
+    NULL`` + ``notes='system'`` so the timeline reads cleanly.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    label_design = models.ForeignKey(
+        LabelDesign,
+        on_delete=models.CASCADE,
+        related_name="transitions",
+    )
+    from_status = models.CharField(
+        _("from status"),
+        max_length=32,
+        choices=LabelDesignStatus.choices,
+        blank=True,
+        default="",
+        help_text=_(
+            "Status the workflow left. Blank when the row is created "
+            "by the bootstrap signal (no prior status)."
+        ),
+    )
+    to_status = models.CharField(
+        _("to status"),
+        max_length=32,
+        choices=LabelDesignStatus.choices,
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="label_design_transitions",
+    )
+    actor_client_account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="label_design_transitions",
+    )
+    notes = models.TextField(
+        _("notes"),
+        blank=True,
+        default="",
+    )
+    metadata = models.JSONField(
+        _("metadata"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "Free-form keys: revision_id / review_id / payment_id "
+            "depending on which trigger fired the transition."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("label design transition")
+        verbose_name_plural = _("label design transitions")
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("label_design", "-created_at")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.label_design_id}: {self.from_status} → {self.to_status}"

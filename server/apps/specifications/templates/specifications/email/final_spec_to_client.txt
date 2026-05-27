@@ -1,0 +1,21 @@
+Vita Manufacture · Final · Production authorisation
+
+Hi{% if customer_name %} {{ customer_name }}{% endif %},
+
+Your trial batch passed our quality checks, so we’ve prepared the FINAL
+specification for {{ formulation_name|default:sheet.code }}.
+
+Signing it authorises us to begin production at the quantity and terms
+agreed in your proposal{% if proposal_code %} {{ proposal_code }}{% endif %}.
+
+Review and sign here:
+{{ kiosk_url }}
+
+What happens after you sign: we start production planning and move you
+straight into label design — find the next steps in your Vita portal
+under Labels.
+
+{% if sales_person_name %}Kind regards,
+{{ sales_person_name }}{% if sales_person_email %}
+{{ sales_person_email }}{% endif %}
+{% endif %}

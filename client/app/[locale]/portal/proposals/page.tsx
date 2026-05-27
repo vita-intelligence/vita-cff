@@ -46,7 +46,7 @@ export default async function PortalProposalsListPage() {
     res && res.ok ? await res.json() : { results: [] };
 
   return (
-    <PortalShell active="proposals">
+    <PortalShell active="products">
       <PageHeader
         eyebrow="All proposals"
         title="Your proposals"

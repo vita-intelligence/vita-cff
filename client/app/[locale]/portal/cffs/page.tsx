@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ExternalLink, PlusCircle } from "lucide-react";
 
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import {
@@ -46,13 +46,41 @@ export default async function PortalCFFsListPage() {
     res && res.ok ? await res.json() : { results: [] };
 
   return (
-    <PortalShell active="cff">
+    <PortalShell active="products">
       <PageHeader
         eyebrow="All requests"
         title="Your custom formulation requests"
         subtitle="Every request you've submitted to Vita. Open one to re-read your answers and continue the conversation."
         back={{ href: "/portal", label: "Portal" }}
       />
+
+      {/* "Start a new project" CTA. The form itself is hosted on the
+          marketing site (vitamanufacture.co.uk) — the Wix submission
+          is mirrored into our system by the CFF poller, so every new
+          request that lands there shows up in this list automatically.
+          ``rel="noopener noreferrer"`` because we're sending the
+          customer out of the portal. */}
+      <div className="mb-6 flex flex-col gap-3 border-2 border-black bg-orange-500 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-black">
+            Start a new project
+          </p>
+          <p className="mt-1 text-sm font-semibold text-black">
+            Fill in the custom formulation request form and we'll pick it up
+            from there.
+          </p>
+        </div>
+        <a
+          href="https://www.vitamanufacture.co.uk/custom-formulation-request-form"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
+        >
+          <PlusCircle className="h-4 w-4" />
+          New request
+          <ExternalLink className="h-3.5 w-3.5" />
+        </a>
+      </div>
 
       {data.results.length === 0 ? (
         <EmptyState

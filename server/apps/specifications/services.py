@@ -81,6 +81,34 @@ class SpecificationCodeConflict(Exception):
     code = "specification_code_conflict"
 
 
+class FinalSpecAlreadyExists(Exception):
+    """A project may have at most one FINAL specification sheet.
+
+    The auto-create path (triggered on trial-batch validation pass)
+    short-circuits to a no-op when this would fire, so it surfaces
+    only through the explicit ``create_sheet`` / ``update_sheet``
+    paths — i.e. when a scientist tries to add or flip-to-final a
+    second FINAL on the same project. The remediation in the UI is
+    to delete the existing FINAL (only allowed when it hasn't been
+    customer-signed) before creating the replacement.
+    """
+
+    code = "final_spec_already_exists"
+
+
+class FinalSpecDeletionLocked(Exception):
+    """A customer-signed FINAL spec cannot be deleted.
+
+    Once the customer has signed the final document, it's the
+    legally-binding production reference. Wiping it would also
+    orphan the downstream :class:`apps.label_design.models.LabelDesign`
+    audit chain. Scientists who need to roll back must issue a
+    revision through the normal lifecycle — never delete.
+    """
+
+    code = "final_spec_deletion_locked"
+
+
 class FormulationVersionNotInOrg(Exception):
     code = "formulation_version_not_in_org"
 
@@ -363,6 +391,29 @@ def get_sheet(
 
 
 @transaction.atomic
+def _existing_final_for_formulation(
+    *,
+    formulation_id: Any,
+    exclude_pk: Any = None,
+) -> SpecificationSheet | None:
+    """Return the FINAL spec sheet (if any) attached to ``formulation_id``,
+    walking through every formulation_version of the project.
+
+    The "one FINAL per project" invariant lives here so the auto-create
+    hook, the create-sheet path, and the update-sheet path all share
+    the same view of "is there already a final?". ``exclude_pk`` lets
+    the update path ignore the row currently being edited.
+    """
+
+    qs = SpecificationSheet.objects.filter(
+        formulation_version__formulation_id=formulation_id,
+        document_kind=SpecificationDocumentKind.FINAL,
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    return qs.order_by("-created_at").first()
+
+
 def delete_sheet(
     *,
     sheet: SpecificationSheet,
@@ -389,6 +440,17 @@ def delete_sheet(
 
     if sheet.status not in _DELETION_ALLOWED_STATUSES:
         raise SpecificationDeletionLocked()
+
+    # FINAL specs survive forever once the customer has signed them
+    # — the production document is legally binding and the downstream
+    # LabelDesign workflow references the snapshot. Pre-signature
+    # FINAL drafts can still be deleted so a scientist can replace
+    # them after a trial-batch reshoot.
+    if (
+        sheet.document_kind == SpecificationDocumentKind.FINAL
+        and sheet.customer_signed_at is not None
+    ):
+        raise FinalSpecDeletionLocked()
 
     organization = sheet.organization
     target_id = str(sheet.pk)
@@ -443,6 +505,19 @@ def create_sheet(
     if document_kind not in SpecificationDocumentKind.values:
         raise InvalidSpecificationDocumentKind()
 
+    # One FINAL per project. The auto-create-on-validation path
+    # short-circuits via ``_existing_final_for_formulation`` before
+    # calling us; this guard catches the manual-create surface (a
+    # scientist building a second FINAL by hand) and the test paths.
+    if document_kind == SpecificationDocumentKind.FINAL:
+        if (
+            _existing_final_for_formulation(
+                formulation_id=version.formulation_id
+            )
+            is not None
+        ):
+            raise FinalSpecAlreadyExists()
+
     # Seed shelf-life / storage / weight-uniformity from the per-
     # dosage-form defaults so the spec sheet lands populated rather
     # than three blank cells. Read the dosage form off the locked
@@ -478,6 +553,139 @@ def create_sheet(
         organization=organization,
         actor=actor,
         action="spec_sheet.create",
+        target=sheet,
+        after=snapshot(sheet),
+    )
+    return sheet
+
+
+@transaction.atomic
+def auto_create_final_spec_for_version(
+    *,
+    formulation_version: FormulationVersion,
+    actor: Any,
+) -> SpecificationSheet | None:
+    """Create a ``document_kind=FINAL`` spec sheet on
+    ``formulation_version`` if the project does not already have one.
+
+    Idempotent — second call (or a re-fire of the validation pass
+    that triggered the first) is a no-op and returns ``None``.
+
+    Most fields are seeded from the most recent draft spec on the
+    same project so the scientist isn't re-typing storage / shelf
+    life / packaging / client info. The new sheet lands at
+    ``status=DRAFT`` so the existing scientist → director → sent →
+    customer sign chain still applies — the auto-step only removes
+    the "click new sheet" friction.
+
+    Returns the new sheet on creation, or ``None`` when no work was
+    needed.
+    """
+
+    formulation = formulation_version.formulation
+    organization = formulation.organization
+
+    def _next_unique_final_code(*, base: str) -> str:
+        """Pick a per-org-unique ``-FINAL`` suffix on ``base``.
+
+        ``base`` is typically the draft spec's code or the formulation
+        code. If that bare ``<base>-FINAL`` already exists we walk
+        ``-FINAL-2``, ``-FINAL-3``, … until we find a free slot.
+        Returns ``""`` if ``base`` was empty — the caller falls back
+        to leaving the code blank (and the spec lists as "Untitled"
+        until the scientist fills it in).
+        """
+
+        base = (base or "").strip()
+        if not base:
+            return ""
+        candidate = f"{base}-FINAL"
+        suffix = 2
+        while SpecificationSheet.objects.filter(
+            organization=organization, code=candidate
+        ).exists():
+            candidate = f"{base}-FINAL-{suffix}"
+            suffix += 1
+        return candidate
+
+    if _existing_final_for_formulation(formulation_id=formulation.id) is not None:
+        # A final already exists somewhere on this project — could be
+        # the customer-signed one (project should be APPROVED already)
+        # or an unsigned draft we made on a previous trial-pass cycle.
+        # Either way, the invariant is satisfied; no-op.
+        return None
+
+    # Pre-populate from the most recent draft on the same project.
+    # We deliberately walk all formulation_versions (not just the one
+    # the validation pinned) so a scientist who already built a draft
+    # on v2 sees its packaging / storage carry into the FINAL.
+    source_draft = (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation_id=formulation.id,
+            document_kind=SpecificationDocumentKind.DRAFT,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+    from apps.specifications.constants import SPECIFICATION_TEXT_DEFAULTS
+
+    snapshot_metadata = formulation_version.snapshot_metadata or {}
+    dosage_form = snapshot_metadata.get("dosage_form", "") or ""
+    spec_defaults = SPECIFICATION_TEXT_DEFAULTS.get(dosage_form, {})
+
+    def _copy_or_default(attr: str, default_key: str | None = None) -> str:
+        if source_draft is not None:
+            value = getattr(source_draft, attr, "") or ""
+            if value:
+                return value
+        if default_key is not None:
+            return spec_defaults.get(default_key, "") or ""
+        return ""
+
+    # Pick a code that signals "this is the final" at a glance — the
+    # source draft's code with a ``-FINAL`` suffix is the most legible
+    # option for the spec list UI ("MA521352" → "MA521352-FINAL"). If
+    # the draft has no code, derive from the formulation code; if THAT
+    # is also blank, leave it empty for the scientist to fill in.
+    code_base = (
+        (getattr(source_draft, "code", "") or "").strip()
+        or (formulation.code or "").strip()
+    )
+    sheet = SpecificationSheet.objects.create(
+        organization=organization,
+        formulation_version=formulation_version,
+        code=_next_unique_final_code(base=code_base),
+        client_name=_copy_or_default("client_name"),
+        client_email=_copy_or_default("client_email"),
+        client_company=_copy_or_default("client_company"),
+        unit_cost=getattr(source_draft, "unit_cost", None) if source_draft else None,
+        margin_percent=getattr(source_draft, "margin_percent", None)
+        if source_draft
+        else None,
+        final_price=getattr(source_draft, "final_price", None)
+        if source_draft
+        else None,
+        quantity=getattr(source_draft, "quantity", 1) if source_draft else 1,
+        currency=getattr(source_draft, "currency", "GBP")
+        if source_draft
+        else "GBP",
+        cover_notes=_copy_or_default("cover_notes"),
+        total_weight_label=_copy_or_default("total_weight_label"),
+        unit_quantity=_copy_or_default("unit_quantity"),
+        food_contact_status=_copy_or_default("food_contact_status"),
+        shelf_life=_copy_or_default("shelf_life", "shelf_life"),
+        storage_conditions=_copy_or_default("storage_conditions", "storage_conditions"),
+        weight_uniformity=_copy_or_default("weight_uniformity", "weight_uniformity"),
+        status=SpecificationStatus.DRAFT,
+        document_kind=SpecificationDocumentKind.FINAL,
+        created_by=actor,
+        updated_by=actor,
+    )
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="spec_sheet.auto_create_final",
         target=sheet,
         after=snapshot(sheet),
     )
@@ -545,6 +753,21 @@ def update_sheet(
     new_kind = changes.get("document_kind")
     if new_kind is not None and new_kind not in SpecificationDocumentKind.values:
         raise InvalidSpecificationDocumentKind()
+    # Flipping a draft to FINAL has the same uniqueness constraint as
+    # creating a fresh FINAL. Exclude the row we're editing so a
+    # no-op kind=final → kind=final update doesn't trip on itself.
+    if (
+        new_kind == SpecificationDocumentKind.FINAL
+        and sheet.document_kind != SpecificationDocumentKind.FINAL
+    ):
+        if (
+            _existing_final_for_formulation(
+                formulation_id=sheet.formulation_version.formulation_id,
+                exclude_pk=sheet.pk,
+            )
+            is not None
+        ):
+            raise FinalSpecAlreadyExists()
     new_code = changes.get("code")
     if new_code and new_code != sheet.code:
         duplicate = (
@@ -1108,6 +1331,28 @@ def transition_status(
             actor=actor,
             version_number=sheet.formulation_version.version_number,
         )
+
+    # FINAL spec hitting ``sent`` is the moment the customer needs
+    # to come back and authorise production. Fire the email on
+    # ``transaction.on_commit`` so a rollback (rare here, but possible
+    # if a downstream signal raises) doesn't leave the customer with
+    # a "please sign" link to a sheet that never went out.
+    if (
+        next_status == SpecificationStatus.SENT
+        and sheet.document_kind == SpecificationDocumentKind.FINAL
+        and (sheet.customer_email or "").strip()
+    ):
+        sheet_id = sheet.pk
+
+        def _fire_final_spec_email() -> None:
+            from apps.specifications.email import (
+                send_final_spec_to_client,
+            )
+
+            send_final_spec_to_client(sheet_id=sheet_id, actor=actor)
+
+        transaction.on_commit(_fire_final_spec_email)
+
     return sheet
 
 

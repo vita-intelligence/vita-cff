@@ -19,7 +19,9 @@ export type HeaderNavHref =
   | "/customers"
   | "/cff"
   | "/approvals"
-  | "/signed";
+  | "/signed"
+  | "/labelling"
+  | "/finance/payments";
 
 
 export interface HeaderNavItem {

@@ -62,22 +62,33 @@ export function PortalLogo({ href = "/portal" }: { href?: string }) {
 }
 
 
+// Kept permissive so legacy pages that still pass ``active="proposals"``
+// etc. don't TS-error after the nav slim-down — those values just no
+// longer match any rendered nav item, so nothing highlights (the
+// deep-linked surfaces stay reachable, they're just not advertised
+// as a top-level destination).
 export type PortalNavSection =
   | "home"
+  | "products"
   | "proposals"
   | "specs"
   | "cff"
+  | "labels"
   | "settings";
 
 
+// Slim global nav: Products is the customer's mental anchor ("where
+// are my products?") and every action surface (proposals, specs,
+// labels, requests) is now reachable via the per-product detail
+// page. Settings stays for profile / password / avatar. New-project
+// entry point lives as a CTA on the Products page so we don't need
+// a "Requests" tab in the nav.
 const NAV_ITEMS: ReadonlyArray<{
   readonly key: PortalNavSection;
   readonly href: string;
   readonly label: string;
 }> = [
-  { key: "proposals", href: "/portal/proposals", label: "Proposals" },
-  { key: "specs", href: "/portal/specs", label: "Specifications" },
-  { key: "cff", href: "/portal/cffs", label: "Requests" },
+  { key: "products", href: "/portal/products", label: "Products" },
   { key: "settings", href: "/portal/settings", label: "Settings" },
 ];
 

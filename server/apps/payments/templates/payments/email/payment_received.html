@@ -1,0 +1,142 @@
+{% load proposals_email_extras %}<!doctype html>
+{% comment %}
+Fork of ``apps/proposals/templates/proposals/email/send_to_client.html``
+tuned for the "we received your payment, label design starts now"
+moment. Same battle-tested Outlook + dark-mode + preheader plumbing —
+just payment-flavoured copy. Reuses the ``proposals_email_extras``
+template-tag library because its helpers are visual / formatting,
+not proposal-specific.
+{% endcomment %}
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="x-apple-disable-message-reformatting" />
+  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
+  <title>Payment received — {{ project_name|default:project_code }}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+        <o:AllowPNG/>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <style>
+    table, td, div, p, a { mso-line-height-rule: exactly; }
+    body { font-family: 'Segoe UI', Arial, sans-serif !important; }
+  </style>
+  <![endif]-->
+  <style>
+    a { color: #1a1a1a; }
+    @media (prefers-color-scheme: dark) {
+      .email-card { background-color: #1f1d1a !important; color: #f6f5f3 !important; }
+      .email-card .body-copy { color: #f6f5f3 !important; }
+      .email-bg { background-color: #0e0d0c !important; }
+    }
+  </style>
+</head>
+<body style="margin:0;padding:0;background-color:#f6f5f3;mso-line-height-rule:exactly;-webkit-font-smoothing:antialiased;" class="email-bg">
+  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f6f5f3;">
+    Payment received for {{ project_name|default:project_code }}. Label design starts now.
+  </div>
+
+  <center style="width:100%;background-color:#f6f5f3;" class="email-bg">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f6f5f3" style="background-color:#f6f5f3;padding:24px 12px;">
+      <tr>
+        <td align="center" style="padding:24px 12px;">
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" bgcolor="#ffffff" style="max-width:600px;width:100%;background-color:#ffffff;border:1px solid #e7e5e0;" class="email-card">
+            <tr>
+              <td style="padding:32px 32px 8px 32px;">
+                <p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#1aa56b;font-family:'Segoe UI',Arial,sans-serif;">
+                  Vita Manufacture &middot; Payment received
+                </p>
+                <h1 style="margin:8px 0 0 0;font-size:22px;line-height:1.25;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
+                  Thanks{% if customer_name %}, {{ customer_name }}{% endif %} — your payment is confirmed.
+                </h1>
+              </td>
+            </tr>
+
+            <tr>
+              <td class="body-copy" style="padding:16px 32px 0 32px;font-size:15px;line-height:1.6;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
+                <p style="margin:0 0 12px 0;">
+                  We&rsquo;ve received your payment for
+                  <strong>{{ project_name|default:project_code }}</strong>{% if amount %} ({{ amount_label }}){% endif %}.
+                </p>
+                <p style="margin:0 0 12px 0;">
+                  That unlocks the next step: <strong>label design</strong>.
+                  Head into your portal and choose whether Vita designs the
+                  label for you or whether you&rsquo;d like to design it
+                  yourself.
+                </p>
+              </td>
+            </tr>
+
+            {% if portal_url %}
+            <tr>
+              <td align="center" style="padding:28px 32px 8px 32px;">
+                <!--[if mso]>
+                <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
+                             href="{{ portal_url }}" style="height:48px;v-text-anchor:middle;width:240px;" arcsize="22%" stroke="f" fillcolor="#ff7a18">
+                  <w:anchorlock/>
+                  <center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:600;">Continue in portal</center>
+                </v:roundrect>
+                <![endif]-->
+                <!--[if !mso]><!-- -->
+                <a href="{{ portal_url }}"
+                   style="display:inline-block;background-color:#ff7a18;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:14px 28px;border-radius:10px;font-family:'Segoe UI',Arial,sans-serif;mso-padding-alt:0;">
+                  Continue in portal
+                </a>
+                <!--<![endif]-->
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 8px 32px;font-size:12px;color:#8a857c;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
+                Or copy this link into your browser:
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 24px 32px;font-size:12px;color:#5a574f;text-align:center;word-break:break-all;font-family:'Segoe UI',Arial,sans-serif;">
+                <a href="{{ portal_url }}" style="color:#5a574f;text-decoration:underline;">{{ portal_url }}</a>
+              </td>
+            </tr>
+            {% endif %}
+
+            <tr>
+              <td style="padding:0 32px 24px 32px;font-size:13px;color:#5a574f;font-family:'Segoe UI',Arial,sans-serif;border-top:1px solid #f0eee9;">
+                <p style="margin:16px 0 0 0;">
+                  <strong style="color:#1a1a1a;">Receipt</strong><br/>
+                  Project: {{ project_code }}{% if project_name %} &middot; {{ project_name }}{% endif %}<br/>
+                  {% if amount %}Amount: {{ amount_label }}<br/>{% endif %}
+                  {% if invoice_number %}Invoice: {{ invoice_number }}<br/>{% endif %}
+                  {% if paid_at_label %}Paid: {{ paid_at_label }}<br/>{% endif %}
+                  {% if reference %}Reference: {{ reference }}{% endif %}
+                </p>
+              </td>
+            </tr>
+
+            {% if sales_person_name %}
+            <tr>
+              <td style="padding:0 32px 32px 32px;font-size:14px;color:#5a574f;font-family:'Segoe UI',Arial,sans-serif;">
+                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong>{% if sales_person_email %}<br/><a href="mailto:{{ sales_person_email }}" style="color:#5a574f;text-decoration:underline;">{{ sales_person_email }}</a>{% endif %}</p>
+              </td>
+            </tr>
+            {% endif %}
+          </table>
+
+          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;">
+            <tr>
+              <td align="center" style="padding:16px 16px 0 16px;font-size:11px;color:#8a857c;line-height:1.5;font-family:'Segoe UI',Arial,sans-serif;">
+                Vita Manufacture &middot; sent because we received your payment for {{ project_code }}.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </center>
+</body>
+</html>

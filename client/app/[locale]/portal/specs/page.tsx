@@ -48,7 +48,7 @@ export default async function PortalSpecsListPage() {
     res && res.ok ? await res.json() : { results: [] };
 
   return (
-    <PortalShell active="specs">
+    <PortalShell active="products">
       <PageHeader
         eyebrow="All specifications"
         title="Specification sheets"

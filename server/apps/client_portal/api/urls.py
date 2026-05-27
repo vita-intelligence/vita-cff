@@ -29,6 +29,7 @@ from .messaging_views import (
 from .specs_views import (
     SpecDetailView,
     SpecListView,
+    SpecSignView,
 )
 from .profile_views import (
     AvatarView,
@@ -54,6 +55,21 @@ from .views import (
     ProposalRejectView,
     ProposalSignSpecView,
     ProposalSignView,
+)
+from .dashboard_views import PortalDashboardView
+from .product_detail_views import PortalProductDetailView
+from .label_design_views import (
+    PortalLabelDesignApproveView,
+    PortalLabelDesignChoosePathView,
+    PortalLabelDesignContentBlockJSONView,
+    PortalLabelDesignContentBlockPDFView,
+    PortalLabelDesignContentBlockPNGView,
+    PortalLabelDesignContentBlockTextView,
+    PortalLabelDesignDetailView,
+    PortalLabelDesignListView,
+    PortalLabelDesignPreferencesView,
+    PortalLabelDesignRejectView,
+    PortalLabelDesignUploadArtworkView,
 )
 
 
@@ -111,6 +127,17 @@ urlpatterns = [
 
     # Authenticated identity + dashboard.
     path("auth/me/", MeView.as_view(), name="me"),
+    # Aggregator: actions queue + product list for the new portal
+    # home (action-oriented) and the new ``/portal/products`` view.
+    path("dashboard/", PortalDashboardView.as_view(), name="dashboard"),
+    # Per-project pipeline detail — the "follow my product through
+    # its journey" view. Returns pipeline stages + documents + an
+    # activity timeline for one formulation the customer owns.
+    path(
+        "products/<uuid:formulation_id>/",
+        PortalProductDetailView.as_view(),
+        name="product-detail",
+    ),
 
     # Inbox / bell — every thread the client account can see plus
     # a total-unread count. List shape matches the staff inbox so
@@ -207,12 +234,20 @@ urlpatterns = [
         name="spec-message-read",
     ),
 
-    # Standalone specs surface — list + detail.
+    # Standalone specs surface — list + detail + sign.
     path("specs/", SpecListView.as_view(), name="spec-list"),
     path(
         "specs/<uuid:sheet_id>/",
         SpecDetailView.as_view(),
         name="spec-detail",
+    ),
+    # Standalone sign endpoint — works for proposal-bundled drafts
+    # AND for post-trial FINAL specs (which aren't bundled into the
+    # original proposal).
+    path(
+        "specs/<uuid:sheet_id>/sign/",
+        SpecSignView.as_view(),
+        name="spec-sign",
     ),
 
     # Proposal-level chat — distinct from the per-spec threads
@@ -254,5 +289,65 @@ urlpatterns = [
         "cffs/<uuid:submission_id>/messages/read/",
         PortalCFFMessagesReadView.as_view(),
         name="cff-messages-read",
+    ),
+
+    # Label-design workflow — customer chooses path, fills the
+    # MA-ST-B-009 preferences form, downloads the spec-derived
+    # Content Block, uploads finished artwork (self-design path),
+    # signs off on the staff-designed artwork.
+    path(
+        "label-designs/",
+        PortalLabelDesignListView.as_view(),
+        name="label-design-list",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/",
+        PortalLabelDesignDetailView.as_view(),
+        name="label-design-detail",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/choose-path/",
+        PortalLabelDesignChoosePathView.as_view(),
+        name="label-design-choose-path",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/preferences/",
+        PortalLabelDesignPreferencesView.as_view(),
+        name="label-design-preferences",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/content-block/",
+        PortalLabelDesignContentBlockJSONView.as_view(),
+        name="label-design-content-block",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/content-block/pdf/",
+        PortalLabelDesignContentBlockPDFView.as_view(),
+        name="label-design-content-block-pdf",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/content-block/png/",
+        PortalLabelDesignContentBlockPNGView.as_view(),
+        name="label-design-content-block-png",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/content-block/text/",
+        PortalLabelDesignContentBlockTextView.as_view(),
+        name="label-design-content-block-text",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/upload-artwork/",
+        PortalLabelDesignUploadArtworkView.as_view(),
+        name="label-design-upload-artwork",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/approve/",
+        PortalLabelDesignApproveView.as_view(),
+        name="label-design-approve",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/reject/",
+        PortalLabelDesignRejectView.as_view(),
+        name="label-design-reject",
     ),
 ]
