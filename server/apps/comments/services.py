@@ -1058,17 +1058,17 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
     for organization in organizations:
         threads.extend(
             _inbox_threads_for_formulations(
-                organization=organization, pointers=pointers
+                organization=organization, pointers=pointers, user=user
             )
         )
         threads.extend(
             _inbox_threads_for_specifications(
-                organization=organization, pointers=pointers
+                organization=organization, pointers=pointers, user=user
             )
         )
         threads.extend(
             _inbox_threads_for_proposals(
-                organization=organization, pointers=pointers
+                organization=organization, pointers=pointers, user=user
             )
         )
 
@@ -1078,7 +1078,7 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
     for organization in cff_organizations:
         threads.extend(
             _inbox_threads_for_cff_submissions(
-                organization=organization, pointers=pointers
+                organization=organization, pointers=pointers, user=user
             )
         )
 
@@ -1125,10 +1125,36 @@ def _lookup_pointer(
     return pointers.get((entity_kind, entity_id, ""), _UNIX_EPOCH)
 
 
+def _notify_unread_filter(user) -> Q:
+    """Inbox unread-count rule (parallels the team-chat notification
+    quieting from commit 5bbcc7e): a comment only contributes to
+    ``unread_count`` if it was authored by a customer **or** it
+    explicitly @-mentions ``user``. Internal back-and-forth between
+    teammates still shows up in the thread list but does not bump
+    the bell badge — that signal is reserved for "the customer is
+    waiting" + "someone called you out by name".
+
+    Implementation: we look up mentioned comment ids via a subquery
+    on :class:`CommentMention` rather than the denormalised
+    ``mentions_cache`` JSON column. Two reasons — (1) the relational
+    join is portable across backends (SQLite's JSONField does not
+    support ``__contains``); (2) the subquery returns each comment
+    id at most once, so combining it with ``client_account`` via OR
+    can never inflate the COUNT(*) on a comment that happens to
+    satisfy both branches.
+    """
+
+    mentioned_ids = CommentMention.objects.filter(
+        mentioned_user=user
+    ).values("comment_id")
+    return Q(client_account__isnull=False) | Q(id__in=mentioned_ids)
+
+
 def _inbox_threads_for_formulations(
     *,
     organization: Organization,
     pointers: dict[tuple[str, str, str], _dt.datetime],
+    user,
 ) -> list[InboxThread]:
     """Build the inbox rows for every formulation in ``organization``
     that has at least one non-deleted comment."""
@@ -1144,6 +1170,7 @@ def _inbox_threads_for_formulations(
         .order_by("-last_at")
     )
     rows: list[InboxThread] = []
+    notify_filter = _notify_unread_filter(user)
     for formulation in formulations:
         latest = (
             Comment.objects.filter(
@@ -1170,7 +1197,7 @@ def _inbox_threads_for_formulations(
             formulation=formulation,
             is_deleted=False,
             created_at__gt=last_read,
-        ).count()
+        ).filter(notify_filter).count()
         rows.append(
             InboxThread(
                 organization_id=str(organization.id),
@@ -1203,6 +1230,7 @@ def _inbox_threads_for_proposals(
     *,
     organization: Organization,
     pointers: dict[tuple[str, str, str], _dt.datetime],
+    user,
 ) -> list[InboxThread]:
     """Build the inbox rows for every proposal in ``organization``
     that has at least one non-deleted comment.
@@ -1227,6 +1255,7 @@ def _inbox_threads_for_proposals(
         .order_by("-last_at")
     )
     rows: list[InboxThread] = []
+    notify_filter = _notify_unread_filter(user)
     for proposal in proposals:
         # Proposals carry a ``code`` (e.g. ``PROP-0123``) — best
         # title for the dropdown. Fall back to the customer
@@ -1256,12 +1285,16 @@ def _inbox_threads_for_proposals(
                 entity_id=str(proposal.id),
                 visibility=lane_label,
             )
-            unread = Comment.objects.filter(
-                proposal=proposal,
-                is_deleted=False,
-                visibility=lane_value,
-                created_at__gt=last_read,
-            ).count()
+            unread = (
+                Comment.objects.filter(
+                    proposal=proposal,
+                    is_deleted=False,
+                    visibility=lane_value,
+                    created_at__gt=last_read,
+                )
+                .filter(notify_filter)
+                .count()
+            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),
@@ -1322,6 +1355,7 @@ def _inbox_threads_for_cff_submissions(
     *,
     organization: Organization,
     pointers: dict[tuple[str, str, str], _dt.datetime],
+    user,
 ) -> list[InboxThread]:
     """Build the inbox rows for every CFF submission in
     ``organization`` that has at least one non-deleted comment.
@@ -1346,6 +1380,7 @@ def _inbox_threads_for_cff_submissions(
         .order_by("-last_at")
     )
     rows: list[InboxThread] = []
+    notify_filter = _notify_unread_filter(user)
     for cff in cffs:
         # CFF row has no team-side title — the FE rehydrates the
         # title from its own CFF list cache when the dropdown opens.
@@ -1370,12 +1405,16 @@ def _inbox_threads_for_cff_submissions(
                 entity_id=str(cff.id),
                 visibility=lane_label,
             )
-            unread = Comment.objects.filter(
-                cff_submission=cff,
-                is_deleted=False,
-                visibility=lane_value,
-                created_at__gt=last_read,
-            ).count()
+            unread = (
+                Comment.objects.filter(
+                    cff_submission=cff,
+                    is_deleted=False,
+                    visibility=lane_value,
+                    created_at__gt=last_read,
+                )
+                .filter(notify_filter)
+                .count()
+            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),
@@ -1398,6 +1437,7 @@ def _inbox_threads_for_specifications(
     *,
     organization: Organization,
     pointers: dict[tuple[str, str, str], _dt.datetime],
+    user,
 ) -> list[InboxThread]:
     """Build the inbox rows for every specification sheet in
     ``organization`` that has at least one non-deleted comment.
@@ -1420,6 +1460,7 @@ def _inbox_threads_for_specifications(
         .order_by("-last_at")
     )
     rows: list[InboxThread] = []
+    notify_filter = _notify_unread_filter(user)
     for sheet in sheets:
         # Specifications have no name field — fall back to client
         # company / code so the dropdown always shows *something*.
@@ -1444,12 +1485,16 @@ def _inbox_threads_for_specifications(
                 entity_id=str(sheet.id),
                 visibility=lane_label,
             )
-            unread = Comment.objects.filter(
-                specification_sheet=sheet,
-                is_deleted=False,
-                visibility=lane_value,
-                created_at__gt=last_read,
-            ).count()
+            unread = (
+                Comment.objects.filter(
+                    specification_sheet=sheet,
+                    is_deleted=False,
+                    visibility=lane_value,
+                    created_at__gt=last_read,
+                )
+                .filter(notify_filter)
+                .count()
+            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),

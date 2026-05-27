@@ -156,17 +156,20 @@ class TestMarkThreadRead:
 
 class TestListInboxThreads:
     def test_returns_threads_with_unread_count(self, workspace) -> None:
+        # Both posts ``@``-mention the viewer so they count under the
+        # quiet-notifications rule (only customer-authored or
+        # @-mentions-me bump the unread badge).
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="Hello",
+            body="@viewer@vita.test Hello",
         )
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="World",
+            body="@viewer@vita.test World",
         )
         threads = list_inbox_threads(user=workspace["viewer"])
         assert len(threads) == 1
@@ -174,7 +177,7 @@ class TestListInboxThreads:
         assert thread.entity_kind == "formulation"
         assert thread.entity_id == str(workspace["formulation"].id)
         assert thread.unread_count == 2
-        assert thread.last_message_preview == "World"
+        assert thread.last_message_preview.endswith("World")
 
     def test_author_does_not_see_own_message_as_unread(
         self, workspace
@@ -197,11 +200,14 @@ class TestListInboxThreads:
         assert compute_total_unread(user=workspace["owner"]) == 0
 
     def test_marking_read_clears_unread(self, workspace) -> None:
+        # Mention the viewer so the message would otherwise count
+        # under the quiet-notifications rule — the test asserts that
+        # ``mark_thread_read`` zeroes the badge regardless.
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="Hello",
+            body="@viewer@vita.test Hello",
         )
         mark_thread_read(
             user=workspace["viewer"],
@@ -269,25 +275,80 @@ class TestListInboxThreads:
         other_formulation = FormulationFactory(
             organization=workspace["org"], created_by=workspace["owner"]
         )
+        # All three posts mention the viewer so each contributes to
+        # the unread sum under the quiet-notifications rule.
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="A",
+            body="@viewer@vita.test A",
         )
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=other_formulation,
-            body="B",
+            body="@viewer@vita.test B",
         )
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=other_formulation,
-            body="C",
+            body="@viewer@vita.test C",
         )
         assert compute_total_unread(user=workspace["viewer"]) == 3
+
+    def test_unmentioned_internal_messages_do_not_bump_unread(
+        self, workspace
+    ) -> None:
+        """Quiet-notifications rule: an internal back-and-forth between
+        teammates that does not @-mention the viewer still surfaces
+        as a thread (so the conversation is discoverable), but
+        ``unread_count`` stays at zero — only @-mentions-me or
+        customer-authored messages bump the bell badge.
+        """
+
+        create_comment(
+            organization=workspace["org"],
+            actor=workspace["owner"],
+            target=workspace["formulation"],
+            body="Internal note — no one mentioned",
+        )
+        threads = list_inbox_threads(user=workspace["viewer"])
+        assert len(threads) == 1
+        assert threads[0].unread_count == 0
+        assert compute_total_unread(user=workspace["viewer"]) == 0
+
+    def test_unrelated_mention_does_not_bump_my_unread(
+        self, workspace
+    ) -> None:
+        """Mention targeting a different teammate must not bump the
+        viewer's unread count. Guards against a naïve filter that
+        would match any mention rather than ``mentions_cache``
+        containing *this* user's id.
+        """
+
+        third = UserFactory(email="third@vita.test")
+        MembershipFactory(
+            user=third,
+            organization=workspace["org"],
+            permissions={
+                "formulations": [
+                    "view",
+                    "comments_view",
+                    "comments_write",
+                ]
+            },
+        )
+        create_comment(
+            organization=workspace["org"],
+            actor=workspace["owner"],
+            target=workspace["formulation"],
+            body="@third@vita.test heads up",
+        )
+        # The mentioned third user's badge bumps.
+        assert compute_total_unread(user=third) == 1
+        # The unmentioned viewer's badge stays quiet.
+        assert compute_total_unread(user=workspace["viewer"]) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -447,11 +508,13 @@ class TestInboxFanOut:
 
 class TestInboxRESTEndpoints:
     def test_list_view_returns_threads_for_viewer(self, workspace) -> None:
+        # Mention the viewer so the post bumps unread under the
+        # quiet-notifications rule — see ``_notify_unread_filter``.
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="Hello",
+            body="@viewer@vita.test Hello",
         )
         client = _api_client_for(workspace["viewer"])
         response = client.get(reverse("comments:inbox"))
@@ -468,17 +531,19 @@ class TestInboxRESTEndpoints:
         assert response.status_code in (401, 403)
 
     def test_unread_count_endpoint(self, workspace) -> None:
+        # Both posts mention the viewer so each contributes to the
+        # badge under the quiet-notifications rule.
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="A",
+            body="@viewer@vita.test A",
         )
         create_comment(
             organization=workspace["org"],
             actor=workspace["owner"],
             target=workspace["formulation"],
-            body="B",
+            body="@viewer@vita.test B",
         )
         client = _api_client_for(workspace["viewer"])
         response = client.get(reverse("comments:inbox-unread-count"))
