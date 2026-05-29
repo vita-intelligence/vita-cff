@@ -6,12 +6,12 @@ import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
-import { APP_VERSION } from "@/config/version";
   getCataloguesServer,
   getCurrentUserServer,
   getActiveOrganizationServer,
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
+import { APP_VERSION } from "@/config/version";
 
 export default async function CataloguesIndexPage({
   params,
