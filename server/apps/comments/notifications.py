@@ -181,13 +181,25 @@ def _dispatch_customer_post_to_staff(comment: Comment) -> None:
 
 
 def _resolve_staff_who_posted_on_thread(comment: Comment):
-    """Distinct staff users who have previously authored a comment
-    on the same target as ``comment``. Returns an iterable of
-    :class:`User` instances.
+    """Distinct staff users who should be notified when a customer
+    posts a shared message on this thread.
 
-    Uses the comment's denormalised FK column (formulation /
-    specification_sheet / proposal / cff_submission / label_design)
-    to scope the lookup so we never scan the whole comments table.
+    Three layers, union'd:
+
+    1. Anyone who has previously authored a comment on the same
+       thread — a reasonable proxy for "people actively watching
+       this conversation".
+    2. Role pointers on the target entity. For label designs we
+       also notify the ``assigned_designer`` because they may not
+       have replied yet but they're the staff member who owns the
+       work; for proposals we notify the ``sales_person``; for
+       spec sheets / formulations we notify the
+       ``lead_scientist`` on the parent formulation.
+    3. (Reserved) future labelling-team manager rosters.
+
+    Without (2) the very first customer message on a brand-new
+    thread would notify nobody (user-reported "no notifications
+    for me").
     """
 
     from django.contrib.auth import get_user_model
@@ -199,12 +211,33 @@ def _resolve_staff_who_posted_on_thread(comment: Comment):
         author__isnull=False,
     ).exclude(id=comment.id)
 
+    role_user_ids: set = set()
+
     if comment.label_design_id:
         same_thread_qs = same_thread_qs.filter(
             label_design_id=comment.label_design_id
         )
+        # Layer 2 — assigned designer on this label workflow.
+        from apps.label_design.models import LabelDesign
+
+        designer_id = (
+            LabelDesign.objects.filter(id=comment.label_design_id)
+            .values_list("assigned_designer_id", flat=True)
+            .first()
+        )
+        if designer_id:
+            role_user_ids.add(designer_id)
     elif comment.proposal_id:
         same_thread_qs = same_thread_qs.filter(proposal_id=comment.proposal_id)
+        from apps.proposals.models import Proposal
+
+        sales_id = (
+            Proposal.objects.filter(id=comment.proposal_id)
+            .values_list("sales_person_id", flat=True)
+            .first()
+        )
+        if sales_id:
+            role_user_ids.add(sales_id)
     elif comment.specification_sheet_id:
         same_thread_qs = same_thread_qs.filter(
             specification_sheet_id=comment.specification_sheet_id
@@ -217,13 +250,25 @@ def _resolve_staff_who_posted_on_thread(comment: Comment):
         same_thread_qs = same_thread_qs.filter(
             formulation_id=comment.formulation_id
         )
+        from apps.formulations.models import Formulation
+
+        scientist_id = (
+            Formulation.objects.filter(id=comment.formulation_id)
+            .values_list("lead_scientist_id", flat=True)
+            .first()
+        )
+        if scientist_id:
+            role_user_ids.add(scientist_id)
     else:
         return []
 
-    author_ids = (
+    author_ids = set(
         same_thread_qs.values_list("author_id", flat=True).distinct()
     )
-    return User.objects.filter(id__in=author_ids).only(
+    all_ids = author_ids | role_user_ids
+    if not all_ids:
+        return []
+    return User.objects.filter(id__in=all_ids).only(
         "id", "email", "first_name", "last_name", "is_active"
     )
 

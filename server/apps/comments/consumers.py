@@ -86,6 +86,7 @@ class CommentConsumer(AsyncJsonWebsocketConsumer):
             "specification",
             "proposal",
             "cff_submission",
+            "label_design",
         }:
             await self.close(code=CLOSE_BAD_TARGET)
             return
@@ -304,6 +305,22 @@ def _authorise(
             CFFSubmissionsCapability.VIEW,
         ):
             return "forbidden"
+    elif kind == "label_design":
+        # Labelling threads gate on the labelling module's view cap,
+        # same shape as the REST list endpoint. Members holding
+        # labelling.view but NOT formulations.comments_view (a
+        # designer who isn't on the projects module) can still
+        # follow the live thread.
+        from apps.organizations.modules import (
+            LABELLING_MODULE,
+            LabellingCapability,
+        )
+        if not has_capability(
+            membership,
+            LABELLING_MODULE,
+            LabellingCapability.VIEW,
+        ):
+            return "forbidden"
     else:
         if not has_capability(
             membership,
@@ -324,6 +341,11 @@ def _authorise(
     elif kind == "cff_submission":
         from apps.cff_submissions.models import CFFSubmission
         exists = CFFSubmission.objects.filter(
+            organization=organization, id=entity_id
+        ).exists()
+    elif kind == "label_design":
+        from apps.label_design.models import LabelDesign
+        exists = LabelDesign.objects.filter(
             organization=organization, id=entity_id
         ).exists()
     else:  # proposal
@@ -636,7 +658,12 @@ class PortalCommentConsumer(AsyncJsonWebsocketConsumer):
         # crafted URL pointing at ``formulation`` closes with
         # ``CLOSE_BAD_TARGET`` rather than running the proposal /
         # spec authorisation gate against a row it does not match.
-        if kind not in {"proposal", "specification", "cff_submission"}:
+        if kind not in {
+            "proposal",
+            "specification",
+            "cff_submission",
+            "label_design",
+        }:
             await self.close(code=CLOSE_BAD_TARGET)
             return
 
@@ -881,6 +908,26 @@ def _authorise_portal(
             project__versions__proposals__customer_id=customer_id,
         ).exists()
         if via_project_link:
+            return ("ok", _portal_viewer_snapshot(client_account))
+        return ("missing", None)
+
+    if kind == "label_design":
+        # Customer reaches a label design when one of their
+        # proposals references the same formulation. Mirrors
+        # :func:`_load_owned_label_design` (the REST loader) and
+        # :func:`_gather_label_design_threads` (the inbox aggregator)
+        # so all three customer-facing surfaces agree on ownership.
+        from apps.label_design.models import LabelDesign
+
+        formulation_id = (
+            LabelDesign.objects.filter(id=entity_id)
+            .values_list("formulation_id", flat=True)
+            .first()
+        )
+        if formulation_id and Proposal.objects.filter(
+            customer_id=customer_id,
+            formulation_version__formulation_id=formulation_id,
+        ).exists():
             return ("ok", _portal_viewer_snapshot(client_account))
         return ("missing", None)
 

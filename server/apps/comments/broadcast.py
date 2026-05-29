@@ -48,6 +48,8 @@ def group_name_for_comment(comment: Comment) -> str | None:
         return f"comments.proposal.{comment.proposal_id}"
     if comment.cff_submission_id is not None:
         return f"comments.cff_submission.{comment.cff_submission_id}"
+    if comment.label_design_id is not None:
+        return f"comments.label_design.{comment.label_design_id}"
     return None
 
 
@@ -74,6 +76,8 @@ def _entity_kind_and_id(comment: Comment) -> tuple[str, str] | None:
         return ("proposal", str(comment.proposal_id))
     if comment.cff_submission_id is not None:
         return ("cff_submission", str(comment.cff_submission_id))
+    if comment.label_design_id is not None:
+        return ("label_design", str(comment.label_design_id))
     return None
 
 
@@ -304,6 +308,9 @@ def _serialise_comment(comment: Comment, event: str) -> dict[str, Any]:
     elif comment.cff_submission_id is not None:
         target_type = "cff_submission"
         target_id = str(comment.cff_submission_id)
+    elif comment.label_design_id is not None:
+        target_type = "label_design"
+        target_id = str(comment.label_design_id)
     else:
         target_type = "unknown"
         target_id = None
