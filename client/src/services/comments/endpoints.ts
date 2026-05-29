@@ -21,6 +21,11 @@ export const commentsEndpoints = {
   // instead of ``formulations.comments_view``).
   cffSubmissionThread: (orgId: string, submissionId: string) =>
     `/api/organizations/${orgId}/cff-submissions/${submissionId}/comments/`,
+  // Label-design chat — same shape as the other entity threads.
+  // Gated by ``labelling.view`` server-side so a designer can chat
+  // without holding ``formulations.comments_view``.
+  labelDesignThread: (orgId: string, labelDesignId: string) =>
+    `/api/organizations/${orgId}/label-designs/${labelDesignId}/comments/`,
   detail: (orgId: string, commentId: string) =>
     `/api/organizations/${orgId}/comments/${commentId}/`,
   resolve: (orgId: string, commentId: string) =>

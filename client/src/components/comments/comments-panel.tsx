@@ -121,7 +121,8 @@ export function CommentsPanel({
     visibility ??
     (entityKind === "specification" ||
     entityKind === "proposal" ||
-    entityKind === "cff_submission"
+    entityKind === "cff_submission" ||
+    entityKind === "label_design"
       ? "client"
       : "internal");
   const isFill = layout === "fill";

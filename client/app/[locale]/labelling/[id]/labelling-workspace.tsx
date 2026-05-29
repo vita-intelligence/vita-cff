@@ -1,6 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { CommentsPanel } from "@/components/comments";
+import { useCurrentUser } from "@/services/accounts";
+
+import { LabellingCommentsBubble } from "./labelling-comments-bubble";
+
 import {
   AlertCircle,
   Check,
@@ -70,6 +75,7 @@ type Tab =
   | "brief"
   | "spec"
   | "versions"
+  | "chat"
   | "reviews"
   | "audit";
 
@@ -90,6 +96,7 @@ export function LabellingWorkspace({
   canManage: boolean;
 }) {
   const { data, isLoading, error, refetch } = useLabelDesign(orgId, labelDesignId);
+  const currentUserQuery = useCurrentUser();
   const [tab, setTab] = useState<Tab>("artwork");
 
   const apiBase = env.NEXT_PUBLIC_API_URL;
@@ -150,6 +157,7 @@ export function LabellingWorkspace({
             { key: "brief", label: "Customer brief" },
             { key: "spec", label: "Spec" },
             { key: "versions", label: "Versions" },
+            { key: "chat", label: "Customer chat" },
             { key: "reviews", label: "Reviews" },
             { key: "audit", label: "Audit" },
           ] as const
@@ -211,6 +219,13 @@ export function LabellingWorkspace({
         />
       ) : null}
 
+      {tab === "chat" ? (
+        <CustomerChatTab
+          orgId={orgId}
+          labelDesignId={labelDesignId}
+        />
+      ) : null}
+
       {tab === "reviews" ? (
         <ReviewsTab orgId={orgId} labelDesignId={labelDesignId} />
       ) : null}
@@ -218,6 +233,72 @@ export function LabellingWorkspace({
       {tab === "audit" ? (
         <AuditTab orgId={orgId} labelDesignId={labelDesignId} />
       ) : null}
+
+      {/* Internal-only chat. Sits next to the customer-facing
+        * "Customer chat" tab so designers always have a private
+        * staff thread + a customer-visible one without ever
+        * mixing the two. */}
+      {currentUserQuery.data ? (
+        <LabellingCommentsBubble
+          orgId={orgId}
+          labelDesignId={labelDesignId}
+          currentUserId={currentUserQuery.data.id}
+          designLabel={data.formulation_code || "Label design"}
+          canRead
+          canWrite
+          canModerate={canManage}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+
+/** Customer-facing conversation tab. Mirrors ``ProposalConversation``
+ *  on the proposal page: a shared thread that the customer portal
+ *  reads via :class:`apps.client_portal.api.inbox_views`, scoped to
+ *  ``visibility=shared`` so internal-bubble posts never appear
+ *  here. */
+function CustomerChatTab({
+  orgId,
+  labelDesignId,
+}: {
+  orgId: string;
+  labelDesignId: string;
+}) {
+  const currentUserQuery = useCurrentUser();
+  if (!currentUserQuery.data) {
+    return (
+      <p className="rounded-2xl bg-ink-0 p-6 text-xs text-ink-500 ring-1 ring-ink-200">
+        Loading conversation…
+      </p>
+    );
+  }
+  return (
+    <section className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="mb-4 flex items-center justify-between">
+        <div>
+          <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-ink-500">
+            Conversation
+          </p>
+          <h2 className="mt-0.5 text-base font-semibold text-ink-1000">
+            About this label design
+          </h2>
+        </div>
+        <span className="text-[11px] text-ink-500">
+          Shared with the customer · posts appear in their portal
+        </span>
+      </header>
+      <CommentsPanel
+        orgId={orgId}
+        entityKind="label_design"
+        entityId={labelDesignId}
+        currentUserId={currentUserQuery.data.id}
+        canRead
+        canWrite
+        canModerate={false}
+        visibilityFilter="shared"
+      />
     </section>
   );
 }
@@ -647,6 +728,7 @@ function ArtworkTab({
             <SubmitForReviewCard
               orgId={orgId}
               labelDesignId={labelDesignId}
+              hasArtwork={Boolean(artworkPdfUrl)}
               onMutate={onMutate}
             />
           ) : null}
@@ -923,24 +1005,47 @@ function UploadCard({
 function SubmitForReviewCard({
   orgId,
   labelDesignId,
+  hasArtwork,
   onMutate,
 }: {
   orgId: string;
   labelDesignId: string;
+  hasArtwork: boolean;
   onMutate: () => void;
 }) {
   const submit = useSubmitLabelForReview(orgId, labelDesignId);
   const [err, setErr] = useState<string | null>(null);
+  // Gate the submit on an actual artwork upload — the backend will
+  // reject ``submit-for-review`` with ``no_revision`` if there's
+  // no current revision, but disabling the button up-front is
+  // friendlier than letting the user click and read a server error.
+  const disabled = submit.isPending || !hasArtwork;
   return (
-    <div className="rounded-2xl bg-ink-0 p-3 ring-1 ring-ink-200">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-        Send for scientist review
-      </h3>
-      <p className="mt-1 text-[11px] text-ink-500">
-        Make sure the latest revision is uploaded. The scientist will get the
-        compliance checklist.
+    <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-50 ring-1 ring-inset ring-violet-200">
+          <Send className="h-3.5 w-3.5 text-violet-700" />
+        </span>
+        <p className="text-xs font-semibold text-ink-1000">
+          Send for scientist review
+        </p>
+      </div>
+      <p className="mt-2 text-[11px] text-ink-500">
+        The scientist runs the MA-PD-B-012 compliance checklist on the latest
+        revision and approves or sends it back for changes.
       </p>
-      {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
+      {!hasArtwork ? (
+        <p className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>Upload artwork before sending for review.</span>
+        </p>
+      ) : null}
+      {err ? (
+        <p className="mt-2 flex items-start gap-1.5 rounded-md bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700 ring-1 ring-inset ring-rose-200">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{err}</span>
+        </p>
+      ) : null}
       <button
         type="button"
         onClick={async () => {
@@ -955,10 +1060,18 @@ function SubmitForReviewCard({
             );
           }
         }}
-        disabled={submit.isPending}
-        className="mt-2 inline-flex items-center gap-1 rounded-md bg-orange-600 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-orange-700 disabled:opacity-50"
+        disabled={disabled}
+        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-orange-600 px-3 py-2 text-xs font-semibold text-ink-0 hover:bg-orange-700 disabled:cursor-not-allowed disabled:opacity-50"
       >
-        {submit.isPending ? "Sending…" : "Send for review"}
+        {submit.isPending ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Sending…
+          </>
+        ) : (
+          <>
+            <Send className="h-3.5 w-3.5" /> Send for review
+          </>
+        )}
       </button>
     </div>
   );

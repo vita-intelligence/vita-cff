@@ -39,6 +39,7 @@ from rest_framework.views import APIView
 
 from apps.comments.api.pagination import CommentCursorPagination
 from apps.cff_submissions.api.permissions import HasCFFPermission
+from apps.label_design.api.permissions import HasLabellingPermission
 from apps.comments.api.permissions import HasCommentsPermission
 from apps.comments.api.serializers import (
     CommentCreateSerializer,
@@ -129,6 +130,21 @@ def _load_cff_submission(organization, submission_id):
     if submission is None:
         raise NotFound()
     return submission
+
+
+def _load_label_design(organization, label_design_id):
+    """Resolve a LabelDesign in the caller's org or 404. Same
+    leak-proof contract as the other loaders."""
+
+    from apps.label_design.models import LabelDesign
+    label_design = (
+        LabelDesign.objects.filter(
+            organization=organization, id=label_design_id,
+        ).first()
+    )
+    if label_design is None:
+        raise NotFound()
+    return label_design
 
 
 def _read_response(comment) -> Response:
@@ -291,6 +307,36 @@ class ProposalCommentsView(_EntityCommentListBase):
 
     def _target(self, request: Request, **url_kwargs) -> Any:
         return _load_proposal(self.organization, url_kwargs["proposal_id"])
+
+
+class LabelDesignCommentsView(_EntityCommentListBase):
+    """``GET``/``POST`` ``/label-designs/<id>/comments/``.
+
+    Internal + customer-facing chat scoped to one label-design
+    workflow. Gated by the labelling module rather than the
+    formulations comments capability — same access axis as the
+    rest of the labelling surface, so a designer / scientist
+    reviewer can comment without holding the projects module.
+
+    Visibility default matches the proposal / spec patterns:
+    SHARED is the auto-derive when ``visibility`` is omitted on
+    create. Internal posts (the floating bubble) explicitly pass
+    ``visibility="internal"`` so the customer portal never reads
+    them.
+    """
+
+    target_kind = "label_design"
+    permission_classes = (HasLabellingPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        from apps.organizations.modules import LabellingCapability
+        self.required_capability = LabellingCapability.VIEW
+        APIView.initial(self, request, *args, **kwargs)
+
+    def _target(self, request: Request, **url_kwargs) -> Any:
+        return _load_label_design(
+            self.organization, url_kwargs["label_design_id"]
+        )
 
 
 class CFFSubmissionCommentsView(_EntityCommentListBase):

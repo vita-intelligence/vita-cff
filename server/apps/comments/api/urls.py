@@ -18,6 +18,7 @@ from apps.comments.api.views import (
     CommentFlagView,
     CommentResolveView,
     FormulationCommentsView,
+    LabelDesignCommentsView,
     MentionableMembersView,
     ProposalCommentsView,
     SpecificationCommentsView,
@@ -66,6 +67,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/comments/",
         CFFSubmissionCommentsView.as_view(),
         name="cff-submission-comments",
+    ),
+    path(
+        "organizations/<uuid:org_id>/label-designs/<uuid:label_design_id>/comments/",
+        LabelDesignCommentsView.as_view(),
+        name="label-design-comments",
     ),
     path(
         "organizations/<uuid:org_id>/comments/<uuid:comment_id>/",
