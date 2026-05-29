@@ -34,6 +34,8 @@ from django.urls import NoReverseMatch
 from django.utils import timezone
 
 from apps.comments.models import (
+    ClientCommentNotification,
+    ClientCommentNotificationStatus,
     Comment,
     CommentNotification,
     CommentNotificationKind,
@@ -70,6 +72,7 @@ def enqueue_notifications_for_comment(comment_id) -> None:
             return
         _dispatch_mentions(comment)
         _dispatch_reply(comment)
+        _dispatch_customer(comment)
     except Exception:  # noqa: BLE001 — never break the write path
         logger.exception(
             "Failed to enqueue comment notifications (comment_id=%s)",
@@ -95,6 +98,40 @@ def _dispatch_mentions(comment: Comment) -> None:
             recipient=user,
             kind=CommentNotificationKind.MENTION,
         )
+
+
+def _dispatch_customer(comment: Comment) -> None:
+    """Auto-notify the brand-owner customer when a SHARED comment
+    lands on a client-visible target.
+
+    Replaces the legacy manual "Notify client" button — every
+    shared message now fans out an email automatically, mirroring
+    the way teammates get pinged for replies / mentions. Skips:
+
+    * internal comments (visibility != shared) — those are team
+      chatter the customer should never see;
+    * comments whose author IS the customer (no point emailing
+      them about their own post);
+    * targets with no resolvable customer (proposal with no
+      customer FK, formulation-only thread, etc.).
+
+    Dedupe via ``ClientCommentNotification(comment, recipient_email)``
+    so a retry of the dispatcher never double-sends.
+    """
+
+    if comment.visibility != Comment.Visibility.SHARED:
+        return
+
+    # Customer-authored comments don't notify the customer.
+    if comment.guest_email or comment.client_account_id is not None:
+        return
+
+    recipients = _resolve_customer_recipients(comment)
+    if not recipients:
+        return
+
+    for email in recipients:
+        _send_customer_once(comment=comment, recipient_email=email)
 
 
 def _dispatch_reply(comment: Comment) -> None:
@@ -197,6 +234,250 @@ def _send_once(
     row.sent_at = timezone.now()
     row.save(update_fields=["status", "sent_at"])
     return row
+
+
+# ---------------------------------------------------------------------------
+# Customer-side dispatch + send-once primitive
+# ---------------------------------------------------------------------------
+
+
+def _resolve_customer_recipients(comment: Comment) -> list[str]:
+    """Distinct, lowercased customer-portal emails for a comment.
+
+    Walks the comment's denormalised target FK to find the
+    associated customer record, then expands to every active
+    :class:`ClientAccount` email under that customer. Returns an
+    empty list when no resolvable customer / accounts exist — that
+    case happens for formulation-only threads, draft CFFs with no
+    customer link, etc.
+    """
+
+    from apps.client_portal.models import ClientAccount
+
+    customer_id = _customer_id_for_target(comment)
+    if customer_id is None:
+        return []
+
+    raw = (
+        ClientAccount.objects.filter(
+            customer_id=customer_id, is_active=True
+        )
+        .exclude(email="")
+        .values_list("email", flat=True)
+    )
+    seen: set[str] = set()
+    out: list[str] = []
+    for email in raw:
+        normalised = (email or "").strip().lower()
+        if not normalised or normalised in seen:
+            continue
+        seen.add(normalised)
+        out.append(normalised)
+    return out
+
+
+def _customer_id_for_target(comment: Comment):
+    """Resolve the brand-owner customer FK from whichever target
+    denormalisation column the comment carries.
+
+    Comment targets that can route to a customer:
+
+    * proposal → ``proposal.customer_id`` (direct)
+    * specification_sheet → through any Proposal pinned to the
+      sheet (modern per-line link OR legacy 1:1)
+    * cff_submission → through the customer attached to the
+      submission, if any
+    * label_design → through the spec sheet → proposal path
+
+    The first hit wins; ``None`` if nothing resolves.
+    """
+
+    from apps.proposals.models import Proposal
+
+    if getattr(comment, "proposal_id", None):
+        customer_id = (
+            Proposal.objects.filter(id=comment.proposal_id)
+            .values_list("customer_id", flat=True)
+            .first()
+        )
+        if customer_id:
+            return customer_id
+
+    sheet_id = getattr(comment, "specification_sheet_id", None)
+    if sheet_id is None and getattr(comment, "label_design_id", None):
+        # LabelDesign → SpecificationSheet → Proposal → customer.
+        from apps.label_design.models import LabelDesign
+
+        sheet_id = (
+            LabelDesign.objects.filter(id=comment.label_design_id)
+            .values_list("specification_sheet_id", flat=True)
+            .first()
+        )
+    if sheet_id:
+        proposal_ids = list(
+            Proposal.objects.filter(lines__specification_sheet_id=sheet_id)
+            .values_list("id", flat=True)
+        )
+        proposal_ids.extend(
+            Proposal.objects.filter(specification_sheet_id=sheet_id)
+            .values_list("id", flat=True)
+        )
+        if proposal_ids:
+            customer_id = (
+                Proposal.objects.filter(
+                    id__in=proposal_ids, customer__isnull=False
+                )
+                .values_list("customer_id", flat=True)
+                .first()
+            )
+            if customer_id:
+                return customer_id
+
+    if getattr(comment, "cff_submission_id", None):
+        from apps.cff_submissions.models import CFFSubmission
+
+        customer_id = (
+            CFFSubmission.objects.filter(id=comment.cff_submission_id)
+            .values_list("customer_id", flat=True)
+            .first()
+        )
+        if customer_id:
+            return customer_id
+
+    return None
+
+
+def _send_customer_once(*, comment: Comment, recipient_email: str) -> None:
+    """Dedupe + render + send the customer-facing message email.
+
+    Uses :class:`ClientCommentNotification` for the dedupe ledger.
+    Failures are isolated per recipient — one bad address never
+    blocks the next email.
+    """
+
+    try:
+        row = ClientCommentNotification.objects.create(
+            comment=comment,
+            recipient_email=recipient_email,
+        )
+    except IntegrityError:
+        return
+
+    try:
+        subject, text_body, html_body = _render_customer_email(
+            comment=comment, recipient_email=recipient_email
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to render customer comment email (comment=%s to=%s)",
+            comment.id,
+            recipient_email,
+        )
+        row.status = ClientCommentNotificationStatus.FAILED
+        row.error = repr(exc)[:1000]
+        row.save(update_fields=["status", "error"])
+        return
+
+    message = EmailMultiAlternatives(
+        subject=subject,
+        body=text_body,
+        from_email=getattr(
+            settings, "DEFAULT_FROM_EMAIL", "no-reply@localhost"
+        ),
+        to=[recipient_email],
+    )
+    if html_body:
+        message.attach_alternative(html_body, "text/html")
+
+    try:
+        message.send(fail_silently=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Failed to send customer comment email (comment=%s to=%s)",
+            comment.id,
+            recipient_email,
+        )
+        row.status = ClientCommentNotificationStatus.FAILED
+        row.error = repr(exc)[:1000]
+        row.save(update_fields=["status", "error"])
+        return
+
+    row.status = ClientCommentNotificationStatus.SENT
+    row.sent_at = timezone.now()
+    row.save(update_fields=["status", "sent_at"])
+
+
+def _render_customer_email(
+    *, comment: Comment, recipient_email: str
+) -> tuple[str, str, str]:
+    target_label, portal_url = _describe_portal_target(comment)
+    context = {
+        "brand": getattr(settings, "APP_BRAND_NAME", "Vita NPD"),
+        "recipient_email": recipient_email,
+        "author_label": _author_label(comment),
+        "body_excerpt": _excerpt(comment.body, limit=400),
+        "target_label": target_label,
+        "portal_url": portal_url,
+        "comment": comment,
+        "organization": comment.organization,
+    }
+    subject = render_to_string(
+        "comments/email/customer_message.subject.txt", context
+    ).strip()
+    text_body = render_to_string(
+        "comments/email/customer_message.body.txt", context
+    )
+    try:
+        html_body = render_to_string(
+            "comments/email/customer_message.body.html", context
+        )
+    except Exception:  # noqa: BLE001 — HTML alt is optional
+        html_body = ""
+    return subject, text_body, html_body
+
+
+def _describe_portal_target(comment: Comment) -> tuple[str, str]:
+    """Customer-portal URL + human label for a comment's target.
+
+    Distinct from :func:`_describe_target` (which points at the
+    staff app) because the customer doesn't have a staff session —
+    the link in their email must drop them onto the portal page
+    they CAN open.
+    """
+
+    base = getattr(settings, "APP_BASE_URL", "")
+    if getattr(comment, "proposal_id", None):
+        from apps.proposals.models import Proposal
+
+        proposal = Proposal.objects.filter(id=comment.proposal_id).first()
+        if proposal is not None:
+            label = (proposal.code or "proposal").strip() or "proposal"
+            return label, f"{base}/portal/proposals/{proposal.id}/"
+
+    if getattr(comment, "label_design_id", None):
+        return (
+            "label design",
+            f"{base}/portal/label-designs/{comment.label_design_id}/",
+        )
+
+    if comment.specification_sheet_id is not None:
+        sheet = comment.specification_sheet
+        label = (sheet.code or "specification sheet") if sheet else "spec sheet"
+        # Spec sheet has its own portal kiosk URL keyed on the
+        # public token. Falls back to the staff app URL if there's
+        # no public token (shouldn't happen on a SHARED comment).
+        token = getattr(sheet, "public_token", "")
+        if token:
+            return label, f"{base}/p/{token}/"
+        return label, f"{base}/specifications/{comment.specification_sheet_id}/"
+
+    if getattr(comment, "cff_submission_id", None):
+        return (
+            "submission",
+            f"{base}/portal/cff/{comment.cff_submission_id}/",
+        )
+
+    return "a project", base or ""
 
 
 # ---------------------------------------------------------------------------

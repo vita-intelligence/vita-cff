@@ -1,0 +1,14 @@
+Hi,
+
+{{ author_label|default:"The team" }} just left a message on {{ target_label }}:
+
+"{{ body_excerpt }}"
+
+Open the conversation to reply:
+{{ portal_url }}
+
+You're receiving this because messages on {{ target_label }} are
+shared with your team. You can reply right inside the portal — no
+need to email back.
+
+— {{ brand }}

@@ -116,9 +116,22 @@ const REGION_SELECTORS: Record<string, string> = {
 };
 
 
-/** Render the requested panel (or the whole document for "all") to
- *  a canvas via html2canvas. The iframe srcDoc runs same-origin, so
- *  the parent can grab ``contentDocument`` and walk it directly. */
+/** Render the requested panel to a canvas via html2canvas.
+ *
+ *  Strategy: lift the iframe's ``<style>`` blocks + the panel
+ *  markup into a fresh detached ``<div>`` in the PARENT document,
+ *  size that div to the panel's natural width (no grid stretching,
+ *  no row-height inheritance), html2canvas it, then unmount.
+ *
+ *  Capturing the panel in-place inside the iframe was unreliable —
+ *  grid layout inflated the panel to row height, sub-pixel borders
+ *  got rounded wrong, and html2canvas occasionally raced the
+ *  iframe's style recalc. Cloning gives us a deterministic,
+ *  layout-independent render that matches the preview pixel-for-
+ *  pixel in the relevant areas (the panel's own box). For
+ *  ``region === "all"`` we capture the body in place because the
+ *  whole document is what we want anyway.
+ */
 async function _renderRegionToCanvas(
   iframe: HTMLIFrameElement,
   region: string,
@@ -131,40 +144,81 @@ async function _renderRegionToCanvas(
     throw new Error("Preview iframe is not ready yet — try again in a second.");
   }
 
-  let target: HTMLElement;
   if (region === "all") {
-    target = doc.body;
-  } else {
-    const selector = REGION_SELECTORS[region];
-    const found = selector
-      ? (doc.querySelector(selector) as HTMLElement | null)
-      : null;
-    if (!found) {
-      throw new Error(`Region "${region}" not found in preview.`);
-    }
-    target = found;
+    const target = doc.body;
+    const rect = target.getBoundingClientRect();
+    return html2canvas(target, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      useCORS: true,
+      width: rect.width,
+      height: rect.height,
+      windowWidth: win.innerWidth,
+      windowHeight: win.innerHeight,
+      scrollX: 0,
+      scrollY: 0,
+    });
   }
 
-  // Use the target's actually rendered bounding box for the crop,
-  // and the iframe's real window for layout context. Overriding
-  // ``windowWidth`` to anything narrower than the iframe collapses
-  // the panel grid and was the cause of the off-page whitespace in
-  // the previous build — leave it as the iframe's own innerWidth.
-  const rect = target.getBoundingClientRect();
-  return html2canvas(target, {
-    backgroundColor: "#ffffff",
-    // 2× scale so the raster output stays sharp when pasted into
-    // Canva / Illustrator at typical label sizes. Higher would
-    // produce bigger files for diminishing returns.
-    scale: 2,
-    useCORS: true,
-    width: rect.width,
-    height: rect.height,
-    windowWidth: win.innerWidth,
-    windowHeight: win.innerHeight,
-    scrollX: 0,
-    scrollY: 0,
-  });
+  const selector = REGION_SELECTORS[region];
+  const found = selector
+    ? (doc.querySelector(selector) as HTMLElement | null)
+    : null;
+  if (!found) {
+    throw new Error(`Region "${region}" not found in preview.`);
+  }
+
+  // Width the panel naturally occupies inside the grid. We use this
+  // as the clone's width so the inner table layout matches what's
+  // on screen, but the clone is free to size its HEIGHT to content
+  // (no grid row stretching).
+  const naturalWidth = found.getBoundingClientRect().width;
+
+  // Build a sandboxed wrapper: pull the iframe's <style> blocks
+  // verbatim so the panel keeps every regulatory CSS rule, then
+  // append a deep clone of the panel article.
+  const sandbox = document.createElement("div");
+  sandbox.setAttribute(
+    "style",
+    [
+      "position: fixed",
+      "left: -100000px",
+      "top: 0",
+      `width: ${naturalWidth}px`,
+      "background: #ffffff",
+      "color: #111",
+      "pointer-events: none",
+    ].join("; "),
+  );
+
+  for (const styleEl of Array.from(doc.querySelectorAll("style"))) {
+    sandbox.appendChild(styleEl.cloneNode(true));
+  }
+  const clone = found.cloneNode(true) as HTMLElement;
+  // Strip any leftover margin from the panel so the canvas crops
+  // tight to the visible border.
+  clone.style.margin = "0";
+  sandbox.appendChild(clone);
+  document.body.appendChild(sandbox);
+
+  try {
+    // Let layout settle inside the sandbox before measuring.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const sandboxRect = sandbox.getBoundingClientRect();
+    return await html2canvas(sandbox, {
+      backgroundColor: "#ffffff",
+      scale: 2,
+      useCORS: true,
+      width: sandboxRect.width,
+      height: sandboxRect.height,
+      windowWidth: sandboxRect.width,
+      windowHeight: sandboxRect.height,
+      scrollX: 0,
+      scrollY: 0,
+    });
+  } finally {
+    sandbox.remove();
+  }
 }
 
 

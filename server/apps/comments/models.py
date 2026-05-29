@@ -604,6 +604,69 @@ class CommentNotification(models.Model):
         return f"Notification({self.kind} → {self.recipient_id})"
 
 
+class ClientCommentNotificationStatus(models.TextChoices):
+    QUEUED = "queued", _("Queued")
+    SENT = "sent", _("Sent")
+    FAILED = "failed", _("Failed")
+
+
+class ClientCommentNotification(models.Model):
+    """Outbound notification of a shared comment to a customer email.
+
+    Mirror of :class:`CommentNotification` for **non-User**
+    recipients — i.e. the brand-owner customer on a SHARED comment.
+    We don't use :class:`CommentNotification` because its
+    ``recipient`` FK is a ``User`` and customer accounts on the
+    portal don't necessarily back onto a User row (they live as
+    :class:`apps.client_portal.models.ClientAccount`).
+
+    The dedupe key is ``(comment_id, recipient_email_normalised)``
+    so a retry of the dispatcher (e.g. transaction.on_commit firing
+    twice on a hot reload) doesn't double-send. ``recipient_email``
+    is stored lowercase so the constraint actually catches mixed-
+    case duplicates.
+
+    There is no cooldown window: each individual comment is its own
+    event. The customer sees one email per shared message, just
+    like a teammate sees one in-app + one email per @-mention.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    comment = models.ForeignKey(
+        Comment,
+        on_delete=models.CASCADE,
+        related_name="client_notifications",
+    )
+    recipient_email = models.EmailField(_("recipient email"))
+    status = models.CharField(
+        _("status"),
+        max_length=16,
+        choices=ClientCommentNotificationStatus.choices,
+        default=ClientCommentNotificationStatus.QUEUED,
+    )
+    error = models.TextField(_("error"), blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    sent_at = models.DateTimeField(_("sent at"), null=True, blank=True)
+
+    class Meta:
+        verbose_name = _("client comment notification")
+        verbose_name_plural = _("client comment notifications")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("comment", "recipient_email"),
+                name="client_comment_notifications_unique",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("recipient_email", "-created_at")),
+            models.Index(fields=("status",)),
+        ]
+
+    def __str__(self) -> str:
+        return f"ClientNotification(→ {self.recipient_email})"
+
+
 class KioskSession(models.Model):
     """Persistent identity for an unauthenticated kiosk commenter.
 
