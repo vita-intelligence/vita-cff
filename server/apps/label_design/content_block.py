@@ -78,50 +78,55 @@ class CanonicalNutrition:
     """
 
     # Energy — both units required by UK/EU; US uses kcal only;
-    # JP/CN/AU report kJ + kcal (or kJ only for CN).
-    energy_kj_per_100g: str = ""
-    energy_kcal_per_100g: str = ""
-    energy_kj_per_serving: str = ""
-    energy_kcal_per_serving: str = ""
+    # JP/CN/AU report kJ + kcal (or kJ only for CN). Default "0"
+    # so an unresolved value reads like a true zero contribution
+    # rather than a placeholder — the customer's brand owner can
+    # see a complete-looking label even when the catalogue hasn't
+    # been backfilled with nutrition attributes yet.
+    energy_kj_per_100g: str = "0"
+    energy_kcal_per_100g: str = "0"
+    energy_kj_per_serving: str = "0"
+    energy_kcal_per_serving: str = "0"
 
-    # Fat group — total, saturated, trans (TBC). US is the only
-    # regime that mandates trans. Cholesterol is US-only.
-    fat_per_100g: str = ""
-    fat_per_serving: str = ""
-    fat_saturated_per_100g: str = ""
-    fat_saturated_per_serving: str = ""
-    fat_trans_per_100g: str = "TBC"
-    fat_trans_per_serving: str = "TBC"
-    cholesterol_per_100g: str = "TBC"
-    cholesterol_per_serving: str = "TBC"
+    # Fat group — total, saturated, trans. US is the only regime
+    # that mandates trans. Cholesterol is US-only.
+    fat_per_100g: str = "0"
+    fat_per_serving: str = "0"
+    fat_saturated_per_100g: str = "0"
+    fat_saturated_per_serving: str = "0"
+    fat_trans_per_100g: str = "0"
+    fat_trans_per_serving: str = "0"
+    cholesterol_per_100g: str = "0"
+    cholesterol_per_serving: str = "0"
 
-    # Carbohydrate group — total, sugars, added sugars (TBC, US-only),
+    # Carbohydrate group — total, sugars, added sugars (US-only),
     # fibre. EU mandates total + sugars; US mandates added sugars too.
-    carbohydrate_per_100g: str = ""
-    carbohydrate_per_serving: str = ""
-    sugar_per_100g: str = ""
-    sugar_per_serving: str = ""
-    added_sugars_per_100g: str = "TBC"
-    added_sugars_per_serving: str = "TBC"
-    fibre_per_100g: str = ""
-    fibre_per_serving: str = ""
+    carbohydrate_per_100g: str = "0"
+    carbohydrate_per_serving: str = "0"
+    sugar_per_100g: str = "0"
+    sugar_per_serving: str = "0"
+    added_sugars_per_100g: str = "0"
+    added_sugars_per_serving: str = "0"
+    fibre_per_100g: str = "0"
+    fibre_per_serving: str = "0"
 
-    protein_per_100g: str = ""
-    protein_per_serving: str = ""
+    protein_per_100g: str = "0"
+    protein_per_serving: str = "0"
 
     # UK/EU report Salt; US/JP/CN/AU report Sodium. We carry both —
     # sodium is derived from salt when only salt is on the snapshot.
-    salt_per_100g: str = ""
-    salt_per_serving: str = ""
-    sodium_per_100g: str = ""
-    sodium_per_serving: str = ""
+    salt_per_100g: str = "0"
+    salt_per_serving: str = "0"
+    sodium_per_100g: str = "0"
+    sodium_per_serving: str = "0"
 
-    # US-only daily-value extras. TBC until the scientist captures
-    # them in the LabelDesign nutrition-extras form (future work).
-    vitamin_d_per_serving: str = "TBC"
-    calcium_per_serving: str = "TBC"
-    iron_per_serving: str = "TBC"
-    potassium_per_serving: str = "TBC"
+    # US-only daily-value extras. Default 0 — designer / scientist
+    # can override when they capture the values via the (future)
+    # nutrition-extras form on the LabelDesign.
+    vitamin_d_per_serving: str = "0"
+    calcium_per_serving: str = "0"
+    iron_per_serving: str = "0"
+    potassium_per_serving: str = "0"
 
     #: ``True`` iff at least one contributor row is non-zero. Drives
     #: the "no nutrition data yet" empty state on each panel.
@@ -425,21 +430,23 @@ SODIUM_TO_SALT_FACTOR = Decimal("2.5")
 def _format_nutrition_value(value: Any, *, places: int = 1) -> str:
     """Format a nutrition value to ``places`` decimal places.
 
-    Returns the empty string for ``None`` / ``""`` so the template can
-    cleanly distinguish "data not derived" from the literal zero
-    that means "ingredient contributes none of this nutrient". A
-    contributors-aware caller decides which of those two stories the
-    panel tells.
+    Returns ``"0"`` (formatted to ``places`` decimals) for missing
+    / unparseable values rather than the empty string. The product
+    of two arguments here is that every cell on every regional
+    panel always reads as a complete label even when the catalogue
+    has no nutrition data for the ingredients yet — the user's
+    explicit preference is "show 0, never an em-dash or a TBC".
     """
 
+    fallback = format(Decimal(0).quantize(Decimal(10) ** -places), "f")
     if value is None or value == "":
-        return ""
+        return fallback
     try:
         return format(
             Decimal(str(value)).quantize(Decimal(10) ** -places), "f"
         )
     except Exception:
-        return _safe_str(value)
+        return fallback
 
 
 def _format_energy(value: Any) -> str:
@@ -493,15 +500,18 @@ def _resolve_canonical_nutrition(sheet: SpecificationSheet) -> CanonicalNutritio
     raw_salt_serving = per_serving("salt")
 
     def _derive_sodium(salt_value: Any) -> str:
+        # Returns ``"0"`` rather than ``""`` so a missing salt value
+        # still renders as a complete label cell, in line with the
+        # "show 0 for not-yet-derived data" policy on the panels.
         if salt_value is None or salt_value == "":
-            return ""
+            return "0"
         try:
             grams = Decimal(str(salt_value)) * SALT_TO_SODIUM_FACTOR
             # Sodium is reported in mg in every regime that uses it
             # (US, JP, CN, AU/NZ) — convert grams → mg.
             return _format_nutrition_value(grams * Decimal(1000), places=0)
         except Exception:
-            return ""
+            return "0"
 
     return CanonicalNutrition(
         energy_kj_per_100g=_format_energy(per_100g("energy_kj")),

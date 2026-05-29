@@ -136,8 +136,8 @@
   }
   .panel-uk-eu th, .panel-uk-eu td {
     border-bottom: 1px solid #ddd;
-    padding: 4px 6px;
-    line-height: 1.45;
+    padding: 7px 6px;
+    line-height: 1.6;
   }
   .panel-uk-eu th { text-align: right; font-size: 7pt; color: #555; }
   .panel-uk-eu td:first-child { text-align: left; }
@@ -164,15 +164,15 @@
   .panel-us .servings {
     font-size: 8pt;
     border-bottom: 1px solid #000;
-    padding: 4px 0;
-    line-height: 1.5;
+    padding: 6px 0;
+    line-height: 1.7;
   }
   .panel-us .calories-row {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
     border-bottom: 6px solid #000;
-    padding: 4px 0;
+    padding: 6px 0;
   }
   .panel-us .calories-row .label {
     font-size: 9pt;
@@ -194,9 +194,9 @@
     display: flex;
     justify-content: space-between;
     border-bottom: 1px solid #000;
-    padding: 4px 0;
+    padding: 8px 0;
     font-size: 8pt;
-    line-height: 1.6;
+    line-height: 1.85;
   }
   .panel-us .row .name { font-weight: 700; }
   .panel-us .row .name.indent { padding-left: 8pt; font-weight: 400; }
@@ -224,8 +224,8 @@
   }
   .panel-jp table th, .panel-jp table td {
     border-bottom: 1px solid #ccc;
-    padding: 4px 6px;
-    line-height: 1.45;
+    padding: 7px 6px;
+    line-height: 1.6;
   }
   .panel-jp td:first-child { text-align: left; }
   .panel-jp td:last-child { text-align: right; white-space: nowrap; }
@@ -253,9 +253,9 @@
   }
   .panel-cn tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 4px 6px;
+    padding: 7px 6px;
     font-size: 8pt;
-    line-height: 1.5;
+    line-height: 1.65;
   }
   .panel-cn td:nth-child(2),
   .panel-cn td:nth-child(3) { text-align: right; white-space: nowrap; }
@@ -277,9 +277,9 @@
   .panel-au thead th:first-child { text-align: left; }
   .panel-au tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 4px 6px;
+    padding: 7px 6px;
     font-size: 8pt;
-    line-height: 1.5;
+    line-height: 1.65;
   }
   .panel-au td:not(:first-child) { text-align: right; white-space: nowrap; }
   .panel-au .indent { padding-left: 12pt; color: #333; }
@@ -299,9 +299,9 @@
   .panel-codex thead th:first-child { text-align: left; }
   .panel-codex tbody td {
     border-bottom: 1px solid #eee;
-    padding: 4px 6px;
+    padding: 7px 6px;
     font-size: 8pt;
-    line-height: 1.5;
+    line-height: 1.65;
   }
   .panel-codex td:not(:first-child) { text-align: right; white-space: nowrap; }
 
@@ -325,9 +325,9 @@
   }
   .panel-gso table th, .panel-gso table td {
     border-bottom: 1px solid #ddd;
-    padding: 4px 6px;
+    padding: 7px 6px;
     font-size: 8pt;
-    line-height: 1.5;
+    line-height: 1.65;
   }
   .panel-gso .col-en td:last-child { text-align: right; white-space: nowrap; }
   .panel-gso .col-ar td:first-child { text-align: left; white-space: nowrap; }
@@ -345,9 +345,9 @@
   .panel-af thead th:first-child { text-align: left; }
   .panel-af tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 4px 6px;
+    padding: 7px 6px;
     font-size: 8pt;
-    line-height: 1.5;
+    line-height: 1.65;
   }
   .panel-af td:not(:first-child) { text-align: right; white-space: nowrap; }
 
@@ -422,38 +422,38 @@
         </tr>
         <tr>
           <td>Fat</td>
-          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_per_100g }} g</td>
+          <td>{{ block.nutrition.fat_per_serving }} g</td>
         </tr>
         <tr>
           <td class="indent">of which saturates</td>
-          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_saturated_per_100g }} g</td>
+          <td>{{ block.nutrition.fat_saturated_per_serving }} g</td>
         </tr>
         <tr>
           <td>Carbohydrate</td>
-          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.carbohydrate_per_100g }} g</td>
+          <td>{{ block.nutrition.carbohydrate_per_serving }} g</td>
         </tr>
         <tr>
           <td class="indent">of which sugars</td>
-          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sugar_per_100g }} g</td>
+          <td>{{ block.nutrition.sugar_per_serving }} g</td>
         </tr>
         <tr>
           <td>Fibre</td>
-          <td>{% if block.nutrition.fibre_per_100g %}{{ block.nutrition.fibre_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fibre_per_serving %}{{ block.nutrition.fibre_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fibre_per_100g }} g</td>
+          <td>{{ block.nutrition.fibre_per_serving }} g</td>
         </tr>
         <tr>
           <td>Protein</td>
-          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.protein_per_100g }} g</td>
+          <td>{{ block.nutrition.protein_per_serving }} g</td>
         </tr>
         <tr>
           <td>Salt</td>
-          <td>{% if block.nutrition.salt_per_100g %}{{ block.nutrition.salt_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.salt_per_serving %}{{ block.nutrition.salt_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.salt_per_100g }} g</td>
+          <td>{{ block.nutrition.salt_per_serving }} g</td>
         </tr>
       </tbody>
     </table>
@@ -480,15 +480,15 @@
     <div class="dv-head">% Daily Value*</div>
     <div class="calories-row">
       <div class="label">Calories</div>
-      <div class="value">{{ block.nutrition.energy_kcal_per_serving|default:"—" }}</div>
+      <div class="value">{{ block.nutrition.energy_kcal_per_serving }}</div>
     </div>
 
     <div class="row">
-      <div class="name">Total Fat <span class="amount">{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name">Total Fat <span class="amount">{{ block.nutrition.fat_per_serving }} g</span></div>
       <div class="dv">TBC</div>
     </div>
     <div class="row">
-      <div class="name indent">Saturated Fat <span class="amount">{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name indent">Saturated Fat <span class="amount">{{ block.nutrition.fat_saturated_per_serving }} g</span></div>
       <div class="dv">TBC</div>
     </div>
     <div class="row">
@@ -500,19 +500,19 @@
       <div class="dv">TBC</div>
     </div>
     <div class="row">
-      <div class="name">Sodium <span class="amount">{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</span></div>
+      <div class="name">Sodium <span class="amount">{{ block.nutrition.sodium_per_serving }} mg</span></div>
       <div class="dv">TBC</div>
     </div>
     <div class="row">
-      <div class="name">Total Carbohydrate <span class="amount">{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name">Total Carbohydrate <span class="amount">{{ block.nutrition.carbohydrate_per_serving }} g</span></div>
       <div class="dv">TBC</div>
     </div>
     <div class="row">
-      <div class="name indent">Dietary Fiber <span class="amount">{% if block.nutrition.fibre_per_serving %}{{ block.nutrition.fibre_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name indent">Dietary Fiber <span class="amount">{{ block.nutrition.fibre_per_serving }} g</span></div>
       <div class="dv">TBC</div>
     </div>
     <div class="row">
-      <div class="name indent">Total Sugars <span class="amount">{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name indent">Total Sugars <span class="amount">{{ block.nutrition.sugar_per_serving }} g</span></div>
       <div class="dv"></div>
     </div>
     <div class="row">
@@ -520,7 +520,7 @@
       <div class="dv">TBC</div>
     </div>
     <div class="row heavy">
-      <div class="name">Protein <span class="amount">{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="name">Protein <span class="amount">{{ block.nutrition.protein_per_serving }} g</span></div>
       <div class="dv"></div>
     </div>
 
@@ -545,11 +545,11 @@
     <p class="panel-sub">Nutrition facts · per serving ({{ block.serving_size|default:"TBC" }})</p>
     <table>
       <tbody>
-        <tr><td>エネルギー (Energy)</td><td>{% if block.nutrition.energy_kcal_per_serving %}{{ block.nutrition.energy_kcal_per_serving }} kcal{% else %}—{% endif %}</td></tr>
-        <tr><td>たんぱく質 (Protein)</td><td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td></tr>
-        <tr><td>脂質 (Fat)</td><td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td></tr>
-        <tr><td>炭水化物 (Carbohydrate)</td><td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td></tr>
-        <tr><td>食塩相当量 (Salt equivalent)</td><td>{% if block.nutrition.salt_per_serving %}{{ block.nutrition.salt_per_serving }} g{% else %}—{% endif %}</td></tr>
+        <tr><td>エネルギー (Energy)</td><td>{{ block.nutrition.energy_kcal_per_serving }} kcal</td></tr>
+        <tr><td>たんぱく質 (Protein)</td><td>{{ block.nutrition.protein_per_serving }} g</td></tr>
+        <tr><td>脂質 (Fat)</td><td>{{ block.nutrition.fat_per_serving }} g</td></tr>
+        <tr><td>炭水化物 (Carbohydrate)</td><td>{{ block.nutrition.carbohydrate_per_serving }} g</td></tr>
+        <tr><td>食塩相当量 (Salt equivalent)</td><td>{{ block.nutrition.salt_per_serving }} g</td></tr>
       </tbody>
     </table>
   </article>
@@ -572,27 +572,27 @@
       <tbody>
         <tr>
           <td>能量 (Energy)</td>
-          <td>{% if block.nutrition.energy_kj_per_100g %}{{ block.nutrition.energy_kj_per_100g }} kJ{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.energy_kj_per_100g }} kJ</td>
           <td class="tbc">TBC</td>
         </tr>
         <tr>
           <td>蛋白质 (Protein)</td>
-          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.protein_per_100g }} g</td>
           <td class="tbc">TBC</td>
         </tr>
         <tr>
           <td>脂肪 (Fat)</td>
-          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_per_100g }} g</td>
           <td class="tbc">TBC</td>
         </tr>
         <tr>
           <td>碳水化合物 (Carbohydrate)</td>
-          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.carbohydrate_per_100g }} g</td>
           <td class="tbc">TBC</td>
         </tr>
         <tr>
           <td>钠 (Sodium)</td>
-          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sodium_per_100g }} mg</td>
           <td class="tbc">TBC</td>
         </tr>
       </tbody>
@@ -619,38 +619,38 @@
       <tbody>
         <tr>
           <td>Energy</td>
-          <td>{% if block.nutrition.energy_kj_per_serving %}{{ block.nutrition.energy_kj_per_serving }} kJ{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.energy_kj_per_100g %}{{ block.nutrition.energy_kj_per_100g }} kJ{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.energy_kj_per_serving }} kJ</td>
+          <td>{{ block.nutrition.energy_kj_per_100g }} kJ</td>
         </tr>
         <tr>
           <td>Protein</td>
-          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.protein_per_serving }} g</td>
+          <td>{{ block.nutrition.protein_per_100g }} g</td>
         </tr>
         <tr>
           <td>Fat, total</td>
-          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_per_serving }} g</td>
+          <td>{{ block.nutrition.fat_per_100g }} g</td>
         </tr>
         <tr>
           <td class="indent">— saturated</td>
-          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_saturated_per_serving }} g</td>
+          <td>{{ block.nutrition.fat_saturated_per_100g }} g</td>
         </tr>
         <tr>
           <td>Carbohydrate</td>
-          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.carbohydrate_per_serving }} g</td>
+          <td>{{ block.nutrition.carbohydrate_per_100g }} g</td>
         </tr>
         <tr>
           <td class="indent">— sugars</td>
-          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sugar_per_serving }} g</td>
+          <td>{{ block.nutrition.sugar_per_100g }} g</td>
         </tr>
         <tr>
           <td>Sodium</td>
-          <td>{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sodium_per_serving }} mg</td>
+          <td>{{ block.nutrition.sodium_per_100g }} mg</td>
         </tr>
       </tbody>
     </table>
@@ -673,38 +673,38 @@
       <tbody>
         <tr>
           <td>Energy</td>
-          <td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} kcal{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.energy_kcal_per_serving %}{{ block.nutrition.energy_kcal_per_serving }} kcal{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.energy_kcal_per_100g }} kcal</td>
+          <td>{{ block.nutrition.energy_kcal_per_serving }} kcal</td>
         </tr>
         <tr>
           <td>Protein</td>
-          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.protein_per_100g }} g</td>
+          <td>{{ block.nutrition.protein_per_serving }} g</td>
         </tr>
         <tr>
           <td>Fat</td>
-          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_per_100g }} g</td>
+          <td>{{ block.nutrition.fat_per_serving }} g</td>
         </tr>
         <tr>
           <td>— Saturated</td>
-          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.fat_saturated_per_100g }} g</td>
+          <td>{{ block.nutrition.fat_saturated_per_serving }} g</td>
         </tr>
         <tr>
           <td>Carbohydrate</td>
-          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.carbohydrate_per_100g }} g</td>
+          <td>{{ block.nutrition.carbohydrate_per_serving }} g</td>
         </tr>
         <tr>
           <td>— Sugars</td>
-          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sugar_per_100g }} g</td>
+          <td>{{ block.nutrition.sugar_per_serving }} g</td>
         </tr>
         <tr>
           <td>Sodium</td>
-          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
-          <td>{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</td>
+          <td>{{ block.nutrition.sodium_per_100g }} mg</td>
+          <td>{{ block.nutrition.sodium_per_serving }} mg</td>
         </tr>
       </tbody>
     </table>
@@ -725,12 +725,12 @@
         <table>
           <thead><tr><th></th><th>per 100 g</th></tr></thead>
           <tbody>
-            <tr><td>Energy</td><td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} kcal{% else %}—{% endif %}</td></tr>
-            <tr><td>Protein</td><td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td></tr>
-            <tr><td>Fat</td><td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td></tr>
-            <tr><td>Carbohydrate</td><td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td></tr>
-            <tr><td>Sugars</td><td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td></tr>
-            <tr><td>Sodium</td><td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td></tr>
+            <tr><td>Energy</td><td>{{ block.nutrition.energy_kcal_per_100g }} kcal</td></tr>
+            <tr><td>Protein</td><td>{{ block.nutrition.protein_per_100g }} g</td></tr>
+            <tr><td>Fat</td><td>{{ block.nutrition.fat_per_100g }} g</td></tr>
+            <tr><td>Carbohydrate</td><td>{{ block.nutrition.carbohydrate_per_100g }} g</td></tr>
+            <tr><td>Sugars</td><td>{{ block.nutrition.sugar_per_100g }} g</td></tr>
+            <tr><td>Sodium</td><td>{{ block.nutrition.sodium_per_100g }} mg</td></tr>
           </tbody>
         </table>
       </div>
@@ -738,12 +738,12 @@
         <table>
           <thead><tr><th>لكل 100 جم</th><th></th></tr></thead>
           <tbody>
-            <tr><td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} سعرة{% else %}—{% endif %}</td><td>الطاقة</td></tr>
-            <tr><td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} جم{% else %}—{% endif %}</td><td>البروتين</td></tr>
-            <tr><td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} جم{% else %}—{% endif %}</td><td>الدهون</td></tr>
-            <tr><td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} جم{% else %}—{% endif %}</td><td>الكربوهيدرات</td></tr>
-            <tr><td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} جم{% else %}—{% endif %}</td><td>السكريات</td></tr>
-            <tr><td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} مجم{% else %}—{% endif %}</td><td>الصوديوم</td></tr>
+            <tr><td>{{ block.nutrition.energy_kcal_per_100g }} سعرة</td><td>الطاقة</td></tr>
+            <tr><td>{{ block.nutrition.protein_per_100g }} جم</td><td>البروتين</td></tr>
+            <tr><td>{{ block.nutrition.fat_per_100g }} جم</td><td>الدهون</td></tr>
+            <tr><td>{{ block.nutrition.carbohydrate_per_100g }} جم</td><td>الكربوهيدرات</td></tr>
+            <tr><td>{{ block.nutrition.sugar_per_100g }} جم</td><td>السكريات</td></tr>
+            <tr><td>{{ block.nutrition.sodium_per_100g }} مجم</td><td>الصوديوم</td></tr>
           </tbody>
         </table>
       </div>
@@ -766,14 +766,14 @@
         <tr><th></th><th>per 100 g</th><th>per serving</th></tr>
       </thead>
       <tbody>
-        <tr><td>Energy (kJ)</td><td>{{ block.nutrition.energy_kj_per_100g|default:"—" }}</td><td>{{ block.nutrition.energy_kj_per_serving|default:"—" }}</td></tr>
-        <tr><td>Protein (g)</td><td>{{ block.nutrition.protein_per_100g|default:"—" }}</td><td>{{ block.nutrition.protein_per_serving|default:"—" }}</td></tr>
-        <tr><td>Glycaemic carbohydrate (g)</td><td>{{ block.nutrition.carbohydrate_per_100g|default:"—" }}</td><td>{{ block.nutrition.carbohydrate_per_serving|default:"—" }}</td></tr>
-        <tr><td>— of which total sugar (g)</td><td>{{ block.nutrition.sugar_per_100g|default:"—" }}</td><td>{{ block.nutrition.sugar_per_serving|default:"—" }}</td></tr>
-        <tr><td>Total fat (g)</td><td>{{ block.nutrition.fat_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_per_serving|default:"—" }}</td></tr>
-        <tr><td>— of which saturated (g)</td><td>{{ block.nutrition.fat_saturated_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_saturated_per_serving|default:"—" }}</td></tr>
-        <tr><td>Dietary fibre (g)</td><td>{{ block.nutrition.fibre_per_100g|default:"—" }}</td><td>{{ block.nutrition.fibre_per_serving|default:"—" }}</td></tr>
-        <tr><td>Total sodium (mg)</td><td>{{ block.nutrition.sodium_per_100g|default:"—" }}</td><td>{{ block.nutrition.sodium_per_serving|default:"—" }}</td></tr>
+        <tr><td>Energy (kJ)</td><td>{{ block.nutrition.energy_kj_per_100g|default:"—" }}</td><td>{{ block.nutrition.energy_kj_per_serving }}</td></tr>
+        <tr><td>Protein (g)</td><td>{{ block.nutrition.protein_per_100g|default:"—" }}</td><td>{{ block.nutrition.protein_per_serving }}</td></tr>
+        <tr><td>Glycaemic carbohydrate (g)</td><td>{{ block.nutrition.carbohydrate_per_100g|default:"—" }}</td><td>{{ block.nutrition.carbohydrate_per_serving }}</td></tr>
+        <tr><td>— of which total sugar (g)</td><td>{{ block.nutrition.sugar_per_100g|default:"—" }}</td><td>{{ block.nutrition.sugar_per_serving }}</td></tr>
+        <tr><td>Total fat (g)</td><td>{{ block.nutrition.fat_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_per_serving }}</td></tr>
+        <tr><td>— of which saturated (g)</td><td>{{ block.nutrition.fat_saturated_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_saturated_per_serving }}</td></tr>
+        <tr><td>Dietary fibre (g)</td><td>{{ block.nutrition.fibre_per_100g|default:"—" }}</td><td>{{ block.nutrition.fibre_per_serving }}</td></tr>
+        <tr><td>Total sodium (mg)</td><td>{{ block.nutrition.sodium_per_100g|default:"—" }}</td><td>{{ block.nutrition.sodium_per_serving }}</td></tr>
       </tbody>
     </table>
   </article>
