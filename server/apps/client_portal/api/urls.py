@@ -45,6 +45,7 @@ from .views import (
     LoginView,
     LogoutView,
     MeView,
+    RefreshView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
     ProposalDetailView,
@@ -127,6 +128,7 @@ urlpatterns = [
 
     # Authenticated identity + dashboard.
     path("auth/me/", MeView.as_view(), name="me"),
+    path("auth/refresh/", RefreshView.as_view(), name="refresh"),
     # Aggregator: actions queue + product list for the new portal
     # home (action-oriented) and the new ``/portal/products`` view.
     path("dashboard/", PortalDashboardView.as_view(), name="dashboard"),

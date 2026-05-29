@@ -158,6 +158,8 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
     assigned_designer_email = serializers.CharField(
         source="assigned_designer.email", read_only=True, default=""
     )
+    hold_reason = serializers.SerializerMethodField()
+    hold_started_at = serializers.SerializerMethodField()
 
     class Meta:
         model = LabelDesign
@@ -179,10 +181,46 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
             "revisions",
             "rejection_count",
             "customer_approved_at",
+            "hold_reason",
+            "hold_started_at",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+    def get_hold_reason(self, obj) -> str:
+        """Notes recorded on the most-recent ON_HOLD transition,
+        surfaced so the customer portal can explain *why* their
+        label is paused instead of just showing a generic chip.
+        Empty string when the workflow isn't currently on hold."""
+
+        if obj.status != "on_hold":
+            return ""
+        from apps.label_design.models import LabelDesignTransition
+
+        row = (
+            LabelDesignTransition.objects.filter(
+                label_design=obj, to_status="on_hold"
+            )
+            .order_by("-created_at")
+            .values_list("notes", flat=True)
+            .first()
+        )
+        return (row or "").strip()
+
+    def get_hold_started_at(self, obj):
+        if obj.status != "on_hold":
+            return None
+        from apps.label_design.models import LabelDesignTransition
+
+        return (
+            LabelDesignTransition.objects.filter(
+                label_design=obj, to_status="on_hold"
+            )
+            .order_by("-created_at")
+            .values_list("created_at", flat=True)
+            .first()
+        )
 
 
 class LabelDesignListItemSerializer(serializers.ModelSerializer):

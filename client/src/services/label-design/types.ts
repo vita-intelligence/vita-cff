@@ -100,6 +100,12 @@ export interface LabelDesignDto {
   readonly revisions: ReadonlyArray<LabelDesignRevisionDto>;
   readonly rejection_count: number;
   readonly customer_approved_at: string | null;
+  //: Notes recorded on the most recent ON_HOLD transition (empty
+  //: string when the workflow isn't on hold). Surfaced on the
+  //: customer portal so the buyer sees *why* their label was
+  //: paused, not just the bare status chip.
+  readonly hold_reason: string;
+  readonly hold_started_at: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }

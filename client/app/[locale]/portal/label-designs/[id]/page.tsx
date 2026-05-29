@@ -245,13 +245,29 @@ export default function PortalLabelDesignDetailPage({
 
         {data.status === "on_hold" ? (
           <Card>
-            <div className="flex items-center gap-3">
-              <Clock className="h-6 w-6 text-amber-600" />
-              <div>
+            <div className="flex items-start gap-3">
+              <Clock className="mt-0.5 h-6 w-6 shrink-0 text-amber-600" />
+              <div className="flex-1">
                 <h3 className="text-lg font-bold">Label is on hold</h3>
-                <p className="text-sm text-neutral-600">
-                  Our team has paused this workflow. We’ll be in touch.
-                </p>
+                {data.hold_reason ? (
+                  <div className="mt-2 rounded-lg bg-amber-50 px-3 py-2 ring-1 ring-amber-200">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">
+                      Note from our team
+                    </p>
+                    <p className="mt-1 whitespace-pre-line text-sm text-amber-900">
+                      {data.hold_reason}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-1 text-sm text-neutral-600">
+                    Our team has paused this workflow. We&rsquo;ll be in touch.
+                  </p>
+                )}
+                {data.hold_started_at ? (
+                  <p className="mt-2 text-xs text-neutral-500">
+                    Paused {new Date(data.hold_started_at).toLocaleDateString()}
+                  </p>
+                ) : null}
               </div>
             </div>
           </Card>

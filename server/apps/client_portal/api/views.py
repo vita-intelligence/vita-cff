@@ -298,6 +298,78 @@ class MeView(PortalAPIView):
         return Response(_me_payload(request.user))
 
 
+class RefreshView(PortalPublicAPIView):
+    """``POST /api/portal/auth/refresh/`` — rotate the portal access
+    token using the refresh cookie.
+
+    Mirror of the staff ``/api/auth/refresh/`` endpoint. Without this
+    the portal access token (60 min) expired silently and the next
+    protected request 401'd, which the FE axios interceptor was
+    handling by hitting the STAFF refresh endpoint — naturally
+    failing, kicking the customer to login. The portal needed its
+    own refresh path keyed on the portal refresh cookie + the
+    ClientAccount table.
+
+    Returns 401 (not 400) when the cookie is missing / invalid so
+    the FE interceptor can keep its ``shouldSkipRefresh`` bypass
+    list trivially.
+    """
+
+    def post(self, request: Request) -> Response:
+        from rest_framework_simplejwt.exceptions import TokenError
+        from rest_framework_simplejwt.tokens import RefreshToken
+        from rest_framework_simplejwt.settings import api_settings as jwt_settings
+        from apps.client_portal.cookies import set_portal_auth_cookies
+
+        raw = request.COOKIES.get(
+            settings.PORTAL_AUTH_COOKIE_REFRESH_NAME
+        )
+        if not raw:
+            return _err("refresh_missing", status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            refresh = RefreshToken(raw)
+        except TokenError:
+            return _err("refresh_invalid", status.HTTP_401_UNAUTHORIZED)
+
+        account_id = refresh.get(jwt_settings.USER_ID_CLAIM)
+        if not account_id:
+            return _err("refresh_invalid", status.HTTP_401_UNAUTHORIZED)
+        try:
+            account = ClientAccount.objects.get(pk=account_id)
+        except ClientAccount.DoesNotExist:
+            return _err("refresh_invalid", status.HTTP_401_UNAUTHORIZED)
+        if not account.is_active:
+            return _err("account_inactive", status.HTTP_401_UNAUTHORIZED)
+
+        # Rotate the refresh token alongside the access token so a
+        # captured cookie loses validity on every refresh. Falls back
+        # to the original refresh string when token rotation is
+        # disabled in settings (default true here, but keep it safe).
+        try:
+            rotation_enabled = bool(
+                jwt_settings.ROTATE_REFRESH_TOKENS  # type: ignore[attr-defined]
+            )
+        except Exception:  # noqa: BLE001
+            rotation_enabled = False
+
+        if rotation_enabled:
+            try:
+                refresh.blacklist()  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 — blacklist is optional
+                pass
+            new_refresh = RefreshToken.for_user(account)
+            access = str(new_refresh.access_token)
+            new_refresh_str = str(new_refresh)
+        else:
+            access = str(refresh.access_token)
+            new_refresh_str = raw
+
+        response = Response(_me_payload(account))
+        set_portal_auth_cookies(response, access, new_refresh_str)
+        return response
+
+
 def _me_payload(account) -> dict:
     customer = account.customer
     return MeSerializer(

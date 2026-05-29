@@ -65,11 +65,30 @@ const REFRESH_BYPASS_PATHS: readonly string[] = [
   "/api/auth/register/",
   "/api/auth/logout/",
   "/api/auth/refresh/",
+  "/api/portal/auth/login/",
+  "/api/portal/auth/logout/",
+  "/api/portal/auth/refresh/",
+  "/api/portal/auth/request-activation-code/",
+  "/api/portal/auth/activate/",
 ];
 
 function shouldSkipRefresh(url: string | undefined): boolean {
   if (!url) return true;
   return REFRESH_BYPASS_PATHS.some((path) => url.includes(path));
+}
+
+/** Pick the right refresh endpoint based on the original request's
+ *  surface. Portal traffic flows through ``/api/portal/...`` so a
+ *  portal-bound request that 401'd needs the portal refresh path,
+ *  which rotates the portal cookies. Hitting the staff endpoint
+ *  here was the silent kicker: customer sessions died after the
+ *  60-minute access TTL because the staff refresh never set the
+ *  portal cookies. */
+function refreshUrlFor(originalUrl: string | undefined): string {
+  if (originalUrl && originalUrl.includes("/api/portal/")) {
+    return "/api/portal/auth/refresh/";
+  }
+  return "/api/auth/refresh/";
 }
 
 export function attachRequestInterceptors(instance: AxiosInstance): void {
@@ -143,7 +162,7 @@ export function attachResponseInterceptors(instance: AxiosInstance): void {
 
       isRefreshing = true;
       try {
-        await instance.post("/api/auth/refresh/");
+        await instance.post(refreshUrlFor(originalRequest.url));
       } catch (refreshError) {
         // Refresh itself failed — the refresh cookie is dead or the
         // server is unreachable. Drain the queue with the original
