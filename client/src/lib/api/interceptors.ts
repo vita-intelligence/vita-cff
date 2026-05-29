@@ -95,7 +95,19 @@ export function attachRequestInterceptors(instance: AxiosInstance): void {
   instance.interceptors.request.use(
     (config: InternalAxiosRequestConfig): InternalAxiosRequestConfig => {
       config.headers.set("Accept", "application/json");
-      if (!config.headers.has("Content-Type") && config.data !== undefined) {
+      // Only default to ``application/json`` for plain object / string
+      // payloads. ``FormData`` and ``Blob`` must keep their browser-
+      // computed Content-Type so the multipart boundary (or the
+      // binary mime) lands on the wire — overriding to JSON here
+      // was the silent cause of ``{"artwork":["invalid"]}`` on the
+      // artwork upload path: DRF saw ``application/json`` instead
+      // of ``multipart/form-data`` and rejected the file field.
+      if (
+        !config.headers.has("Content-Type") &&
+        config.data !== undefined &&
+        !(typeof FormData !== "undefined" && config.data instanceof FormData) &&
+        !(typeof Blob !== "undefined" && config.data instanceof Blob)
+      ) {
         config.headers.set("Content-Type", "application/json");
       }
       return config;
