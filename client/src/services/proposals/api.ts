@@ -3,6 +3,7 @@
  */
 
 import { apiClient } from "@/lib/api";
+import type { RenderedSheetContext } from "@/services/specifications";
 
 import { proposalsEndpoints } from "./endpoints";
 import type {
@@ -102,6 +103,21 @@ export async function fetchProposal(
 ): Promise<ProposalDto> {
   const { data } = await apiClient.get<ProposalDto>(
     proposalsEndpoints.detail(orgId, proposalId),
+  );
+  return data;
+}
+
+
+/** Fetch the rendered view-model for a spec sheet that's attached
+ *  to ``proposalId``. Gated by the proposals module so sales can
+ *  read it without holding ``formulations.view``. */
+export async function fetchProposalAttachedSpec(
+  orgId: string,
+  proposalId: string,
+  sheetId: string,
+): Promise<RenderedSheetContext> {
+  const { data } = await apiClient.get<RenderedSheetContext>(
+    proposalsEndpoints.attachedSpecRender(orgId, proposalId, sheetId),
   );
   return data;
 }

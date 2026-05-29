@@ -14,6 +14,7 @@ from apps.proposals.api.pipeline_views import (
 )
 from apps.proposals.api.views import (
     ProposalActivityView,
+    ProposalAttachedSpecRenderView,
     ProposalAuditView,
     ProposalCompleteRequiredFieldsView,
     ProposalCostPreviewView,
@@ -56,6 +57,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/",
         ProposalDetailView.as_view(),
         name="proposal-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/specs/<uuid:sheet_id>/render/",
+        ProposalAttachedSpecRenderView.as_view(),
+        name="proposal-attached-spec-render",
     ),
     path(
         "organizations/<uuid:org_id>/proposals/<uuid:proposal_id>/status/",

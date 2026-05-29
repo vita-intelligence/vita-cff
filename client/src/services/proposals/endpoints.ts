@@ -25,6 +25,18 @@ export const proposalsEndpoints = {
     `/api/organizations/${orgId}/proposals/${proposalId}/transitions/`,
   render: (orgId: string, proposalId: string) =>
     `/api/organizations/${orgId}/proposals/${proposalId}/render/`,
+  //: Passthrough to the spec sheet attached to this proposal —
+  //: gated by ``proposals.view`` rather than ``formulations.view``
+  //: so a sales member who can read the proposal can also read
+  //: the spec underneath it without inheriting access to every
+  //: signed spec in the org. The backend hard-checks the sheet
+  //: is actually referenced by the proposal.
+  attachedSpecRender: (
+    orgId: string,
+    proposalId: string,
+    sheetId: string,
+  ) =>
+    `/api/organizations/${orgId}/proposals/${proposalId}/specs/${sheetId}/render/`,
   //: WeasyPrint PDF download for authenticated staff. Mirror of the
   //: public token-gated ``publicDownload`` but gated by the standard
   //: org-scoped capability check so internal users can grab a signed

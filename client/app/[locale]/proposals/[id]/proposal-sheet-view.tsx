@@ -52,6 +52,7 @@ import {
   usePatchProposalLine,
   useProposal,
   useProposalActivity,
+  useProposalAttachedSpec,
   useProposalAudit,
   useTransitionProposalStatus,
   useUpdateProposal,
@@ -2062,6 +2063,9 @@ function AttachedSpecPreviews({
   orgId: string;
   proposal: ProposalDto;
 }) {
+  // Sales can't hold ``formulations.view``, so render via the
+  // proposal-scoped spec passthrough below — see
+  // ``AttachedSpecPreviewCard``.
   const tProposals = useTranslations("proposals");
   const attached = useMemo(() => {
     const seen = new Set<string>();
@@ -2115,6 +2119,7 @@ function AttachedSpecPreviews({
         <AttachedSpecPreviewCard
           key={ref.sheetId}
           orgId={orgId}
+          proposalId={proposal.id}
           sheetId={ref.sheetId}
           title={ref.title}
           subtitle={ref.subtitle}
@@ -2137,17 +2142,22 @@ function AttachedSpecPreviews({
  */
 function AttachedSpecPreviewCard({
   orgId,
+  proposalId,
   sheetId,
   title,
   subtitle,
 }: {
   orgId: string;
+  proposalId: string;
   sheetId: string;
   title: string;
   subtitle: string;
 }) {
   const tProposals = useTranslations("proposals");
-  const renderedQuery = useRenderedSpecification(orgId, sheetId);
+  // Use the proposal-scoped passthrough so sales (who hold
+  // ``proposals.view`` but not ``formulations.view``) can read the
+  // spec attached to a proposal they can already see.
+  const renderedQuery = useProposalAttachedSpec(orgId, proposalId, sheetId);
 
   return (
     <article className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">

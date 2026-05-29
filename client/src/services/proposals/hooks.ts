@@ -16,6 +16,8 @@ import {
 import type { ApiError } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
 
+import type { RenderedSheetContext } from "@/services/specifications";
+
 import {
   addProposalLine,
   completeProposalRequiredFields,
@@ -25,6 +27,7 @@ import {
   fetchCostPreview,
   fetchProposal,
   fetchProposalActivity,
+  fetchProposalAttachedSpec,
   fetchProposalAudit,
   fetchProposalLines,
   fetchProposalTransitions,
@@ -146,6 +149,19 @@ export const proposalsQueryKeys = {
       versionId,
       margin ?? "",
     ] as const,
+  attachedSpecRender: (
+    orgId: string,
+    proposalId: string,
+    sheetId: string,
+  ) =>
+    [
+      rootQueryKey,
+      "proposals",
+      orgId,
+      proposalId,
+      "attached-spec-render",
+      sheetId,
+    ] as const,
 };
 
 
@@ -222,6 +238,27 @@ export function useProposal(
     queryKey: proposalsQueryKeys.detail(orgId, proposalId),
     queryFn: () => fetchProposal(orgId, proposalId),
     enabled: Boolean(orgId && proposalId),
+  });
+}
+
+
+/** Render the spec sheet attached to ``proposalId`` via the
+ *  proposal-scoped passthrough. Use this on the proposal detail
+ *  page instead of ``useRenderedSpecification`` so members with
+ *  only ``proposals.view`` (e.g. sales) can read the spec. */
+export function useProposalAttachedSpec(
+  orgId: string,
+  proposalId: string,
+  sheetId: string,
+): UseQueryResult<RenderedSheetContext, ApiError> {
+  return useQuery<RenderedSheetContext, ApiError>({
+    queryKey: proposalsQueryKeys.attachedSpecRender(
+      orgId,
+      proposalId,
+      sheetId,
+    ),
+    queryFn: () => fetchProposalAttachedSpec(orgId, proposalId, sheetId),
+    enabled: Boolean(orgId && proposalId && sheetId),
   });
 }
 

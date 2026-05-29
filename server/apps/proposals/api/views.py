@@ -619,6 +619,73 @@ class ProposalDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class ProposalAttachedSpecRenderView(APIView):
+    """``GET`` ``/.../proposals/<id>/specs/<sheet_id>/render/``.
+
+    Passthrough to :func:`apps.specifications.services.render_context`
+    for a spec sheet bound to the proposal. Gated by the proposals
+    module rather than ``formulations.view`` so a sales member who
+    can read the proposal can also read the spec attached to it —
+    without widening their access to every other signed spec in
+    the org (the resolver hard-checks that the requested sheet is
+    referenced by the proposal's per-line FK or its legacy 1:1).
+
+    Mirrors :class:`LabelDesignSpecRenderView` in the labelling app:
+    each downstream surface (labelling, finance, proposals) gets a
+    sheet passthrough gated by its own cap so the staff who own
+    that surface can see the spec without inheriting full
+    formulation access.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # Same three-cap acceptance as the proposal detail GET so
+        # anyone who can open the proposal page can also see the
+        # spec underneath it.
+        self.required_capability_any = (
+            ProposalsCapability.VIEW,
+            ProposalsCapability.VIEW_APPROVALS,
+            ProposalsCapability.VIEW_SIGNED,
+        )
+        super().initial(request, *args, **kwargs)
+
+    def get(
+        self, request: Request, org_id: str, proposal_id: str, sheet_id: str
+    ) -> Response:
+        from apps.specifications.models import SpecificationSheet
+        from apps.specifications.services import render_context
+
+        try:
+            proposal = get_proposal(
+                organization=self.organization, proposal_id=proposal_id
+            )
+        except ProposalNotFound as exc:
+            raise NotFound() from exc
+
+        # Build the set of sheet ids actually attached to the
+        # proposal (modern per-line FK + legacy 1:1) so we never
+        # serve a spec that's just in the same org but unrelated.
+        attached_ids = set(
+            proposal.lines.exclude(specification_sheet__isnull=True)
+            .values_list("specification_sheet_id", flat=True)
+        )
+        if proposal.specification_sheet_id:
+            attached_ids.add(proposal.specification_sheet_id)
+        if str(sheet_id) not in {str(value) for value in attached_ids}:
+            raise NotFound()
+
+        sheet = (
+            SpecificationSheet.objects.filter(
+                organization=self.organization, id=sheet_id
+            )
+            .first()
+        )
+        if sheet is None:
+            raise NotFound()
+        return Response(render_context(sheet))
+
+
 class ProposalStatusView(APIView):
     """``POST`` ``/.../proposals/<id>/status/`` — transition the sheet
     one step along its state machine.
