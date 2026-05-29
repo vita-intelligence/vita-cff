@@ -16,6 +16,7 @@ import { SettingsShell } from "../settings-shell";
 import { computeAllowedSettingsTabs } from "../_shared/allowed-tabs";
 import { MembersTab } from "./members-tab";
 import { MembersTabAccessDenied } from "./members-tab-access-denied";
+import { APP_VERSION } from "@/config/version";
 
 
 /**
@@ -77,7 +78,7 @@ export default async function SettingsMembersPage({
           {content}
         </SettingsShell>
         <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

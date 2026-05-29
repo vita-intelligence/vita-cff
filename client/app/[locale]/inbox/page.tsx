@@ -9,6 +9,7 @@ import {
 import { redirect } from "@/i18n/navigation";
 
 import { InboxView } from "./inbox-view";
+import { APP_VERSION } from "@/config/version";
 
 
 /**
@@ -53,7 +54,7 @@ export default async function InboxPage({
         <InboxView />
 
         <footer className="mt-4 flex shrink-0 items-center justify-between border-t border-ink-200 py-3 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

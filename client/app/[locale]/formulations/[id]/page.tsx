@@ -5,6 +5,7 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { loadProjectForTab } from "./_shared/load-project";
 import { ProjectOverview } from "./project-overview";
 import { ProjectShell } from "./project-shell";
+import { APP_VERSION } from "@/config/version";
 
 
 export default async function ProjectOverviewPage({
@@ -40,7 +41,7 @@ export default async function ProjectOverviewPage({
         </ProjectShell>
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

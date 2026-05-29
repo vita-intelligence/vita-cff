@@ -6,6 +6,7 @@ import { getProjectSpecificationSheetsServer } from "@/lib/auth/server";
 import { loadProjectForTab } from "../_shared/load-project";
 import { ProjectShell } from "../project-shell";
 import { SpecSheetsList } from "./spec-sheets-list";
+import { APP_VERSION } from "@/config/version";
 
 
 export default async function ProjectSpecSheetsPage({
@@ -50,7 +51,7 @@ export default async function ProjectSpecSheetsPage({
         </ProjectShell>
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

@@ -15,6 +15,7 @@ import {
 } from "@/lib/auth/server";
 
 import { TrialBatchDetail } from "./trial-batch-detail";
+import { APP_VERSION } from "@/config/version";
 
 
 export default async function TrialBatchDetailPage({
@@ -69,7 +70,7 @@ export default async function TrialBatchDetailPage({
         />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

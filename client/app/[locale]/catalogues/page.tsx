@@ -6,6 +6,7 @@ import { Chip } from "@/components/ui/chip";
 import { Link, redirect } from "@/i18n/navigation";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
+import { APP_VERSION } from "@/config/version";
   getCataloguesServer,
   getCurrentUserServer,
   getActiveOrganizationServer,
@@ -85,7 +86,7 @@ export default async function CataloguesIndexPage({
         </section>
 
         <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
-          <span>v0.1.0</span>
+          <span>v{APP_VERSION}</span>
           <span>{tCommon("brand")}</span>
         </footer>
       </div>

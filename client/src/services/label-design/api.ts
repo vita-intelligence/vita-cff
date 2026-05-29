@@ -97,60 +97,125 @@ export async function fetchContentBlockHtml(
 }
 
 
-/** Fetch the per-region PDF as a blob and trigger a download.
- *
- * The PDF endpoint requires a Bearer token, which a plain
- * ``<a href>`` link in a new tab can't carry — the browser only
- * sends cookies on a navigation, and we authenticate via JWT.
- * So we fetch the bytes through ``apiClient`` (which attaches the
- * token), wrap them in an object URL, and click a synthesised
- * link to fire the browser's "Save As" flow. The object URL is
- * revoked after the download starts so we don't leak memory.
- */
-export async function downloadContentBlockPdf(
-  orgId: string,
-  ldId: string,
+/** CSS selector per ``REGION_SLUGS`` value (server-side constant).
+ *  ``"all"`` falls back to the entire body so the export contains
+ *  the brand header + every panel + ingredients + footer. The
+ *  panel class names mirror the ones in
+ *  ``apps/label_design/templates/label_design/content_block.html``;
+ *  changing one without the other will silently produce empty
+ *  downloads. */
+const REGION_SELECTORS: Record<string, string> = {
+  "uk-eu": ".panel-uk-eu",
+  us: ".panel-us",
+  japan: ".panel-jp",
+  china: ".panel-cn",
+  "australia-nz": ".panel-au",
+  "codex-asean": ".panel-codex",
+  "gso-dubai": ".panel-gso",
+  africa: ".panel-af",
+};
+
+
+/** Render the requested panel (or the whole document for "all") to
+ *  a canvas via html2canvas. The iframe srcDoc runs same-origin, so
+ *  the parent can grab ``contentDocument`` and walk it directly. */
+async function _renderRegionToCanvas(
+  iframe: HTMLIFrameElement,
   region: string,
-): Promise<void> {
-  const { data } = await apiClient.get<Blob>(
-    ep.contentBlockPdf(orgId, ldId, region),
-    { responseType: "blob" },
-  );
-  const url = URL.createObjectURL(
-    new Blob([data], { type: "application/pdf" }),
-  );
-  const suffix = region && region !== "all" ? `-${region}` : "";
-  _triggerDownload(url, `content-block-${ldId}${suffix}.pdf`);
+): Promise<HTMLCanvasElement> {
+  const html2canvas = (await import("html2canvas")).default;
+
+  const doc = iframe.contentDocument;
+  if (!doc) {
+    throw new Error("Preview iframe is not ready yet — try again in a second.");
+  }
+
+  let target: HTMLElement;
+  if (region === "all") {
+    target = doc.body;
+  } else {
+    const selector = REGION_SELECTORS[region];
+    const found = selector
+      ? (doc.querySelector(selector) as HTMLElement | null)
+      : null;
+    if (!found) {
+      throw new Error(`Region "${region}" not found in preview.`);
+    }
+    target = found;
+  }
+
+  return html2canvas(target, {
+    backgroundColor: "#ffffff",
+    // 2× scale so the raster output stays sharp when pasted into
+    // Canva / Illustrator at typical label sizes. Higher would
+    // produce bigger files for diminishing returns.
+    scale: 2,
+    useCORS: true,
+    // Snapshot the target's actual size, not the viewport — keeps
+    // single-region exports tightly cropped to that panel.
+    width: target.scrollWidth,
+    height: target.scrollHeight,
+    windowWidth: target.scrollWidth,
+    windowHeight: target.scrollHeight,
+  });
 }
 
 
+/** Trigger a PNG download rendered straight from the preview iframe.
+ *  No server round-trip — we already have the rendered HTML in the
+ *  iframe, so html2canvas rasterises that and the browser saves it. */
 export async function downloadContentBlockPng(
-  orgId: string,
+  iframe: HTMLIFrameElement,
   ldId: string,
   region: string,
 ): Promise<void> {
-  const { data } = await apiClient.get<Blob>(
-    ep.contentBlockPng(orgId, ldId, region),
-    { responseType: "blob" },
-  );
-  const url = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+  const canvas = await _renderRegionToCanvas(iframe, region);
+  const dataUrl = canvas.toDataURL("image/png");
   const suffix = region && region !== "all" ? `-${region}` : "";
-  _triggerDownload(url, `content-block-${ldId}${suffix}.png`);
+  _triggerDataUrlDownload(dataUrl, `content-block-${ldId}${suffix}.png`);
 }
 
 
-function _triggerDownload(objectUrl: string, filename: string): void {
+/** Trigger a PDF download rendered from the preview iframe. We
+ *  embed the html2canvas raster inside a single jsPDF page sized
+ *  to match the captured canvas so the panel fills the page with
+ *  no whitespace. Vector PDF would mean re-implementing the layout
+ *  via jsPDF primitives; the raster path keeps the visual identical
+ *  to what the staff already see on screen. */
+export async function downloadContentBlockPdf(
+  iframe: HTMLIFrameElement,
+  ldId: string,
+  region: string,
+): Promise<void> {
+  const { default: jsPDF } = await import("jspdf");
+  const canvas = await _renderRegionToCanvas(iframe, region);
+  const imgData = canvas.toDataURL("image/png");
+
+  // Canvas is at scale=2 so divide back to "logical" px for the
+  // PDF page dimensions; the image is added at the same logical
+  // size so it stays sharp on zoom.
+  const pageW = canvas.width / 2;
+  const pageH = canvas.height / 2;
+  const pdf = new jsPDF({
+    orientation: pageW > pageH ? "landscape" : "portrait",
+    unit: "px",
+    format: [pageW, pageH],
+    compress: true,
+  });
+  pdf.addImage(imgData, "PNG", 0, 0, pageW, pageH);
+  const suffix = region && region !== "all" ? `-${region}` : "";
+  pdf.save(`content-block-${ldId}${suffix}.pdf`);
+}
+
+
+function _triggerDataUrlDownload(dataUrl: string, filename: string): void {
   const a = document.createElement("a");
-  a.href = objectUrl;
+  a.href = dataUrl;
   a.download = filename;
   a.style.display = "none";
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  // ``revokeObjectURL`` immediately is unsafe on Safari — it
-  // sometimes cancels the in-flight download. A short timeout
-  // gives the browser time to start writing the file.
-  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 

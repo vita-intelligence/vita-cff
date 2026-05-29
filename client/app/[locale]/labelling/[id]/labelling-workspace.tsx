@@ -859,21 +859,30 @@ function ContentBlockTab({
   ] as const;
 
   const [busy, setBusy] = useState<string | null>(null);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
   const handleDownload = async (
     region: string,
     fmt: "pdf" | "png",
   ) => {
+    if (!iframeRef.current) {
+      setDownloadError(
+        "Preview hasn't loaded yet — wait a moment and try again.",
+      );
+      return;
+    }
     const key = `${fmt}:${region}`;
     setBusy(key);
+    setDownloadError(null);
     try {
       if (fmt === "pdf") {
-        await downloadContentBlockPdf(orgId, labelDesignId, region);
+        await downloadContentBlockPdf(iframeRef.current, labelDesignId, region);
       } else {
-        await downloadContentBlockPng(orgId, labelDesignId, region);
+        await downloadContentBlockPng(iframeRef.current, labelDesignId, region);
       }
-    } catch {
-      // Fall through — the user will see no file; surfacing axios
-      // detail noise here would be more confusing than helpful.
+    } catch (err) {
+      const msg =
+        err instanceof Error && err.message ? err.message : "Download failed";
+      setDownloadError(`${fmt.toUpperCase()} download failed — ${msg}`);
     } finally {
       setBusy(null);
     }
@@ -886,8 +895,13 @@ function ContentBlockTab({
           Per-region downloads
         </h3>
         <p className="mt-1 text-[11px] text-ink-500">
-          Grab the panel that matches the destination market. PDF stays sharp in any tool; PNG is for image-only paste targets.
+          Grab the panel that matches the destination market. Rendered straight from the preview &mdash; no server round-trip, instant download.
         </p>
+        {downloadError ? (
+          <p className="mt-2 rounded-md bg-danger/10 px-3 py-2 text-[11px] text-danger">
+            {downloadError}
+          </p>
+        ) : null}
         <div className="mt-3 divide-y divide-ink-100">
           {regions.map((r) => (
             <div
