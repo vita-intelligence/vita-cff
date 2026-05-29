@@ -19,6 +19,9 @@ from .invite_views import (
     InvitePreviewView,
 )
 from .messaging_views import (
+    LabelDesignChatListView,
+    LabelDesignChatPostView,
+    LabelDesignChatReadView,
     ProposalChatListView,
     ProposalChatPostView,
     ProposalChatReadView,
@@ -269,6 +272,25 @@ urlpatterns = [
         "proposals/<uuid:proposal_id>/proposal-messages/read/",
         ProposalChatReadView.as_view(),
         name="proposal-chat-read",
+    ),
+
+    # Label design — customer-facing chat with the labelling team
+    # on a workflow. Mirrors the proposal three-endpoint shape so
+    # the FE can reuse its plumbing.
+    path(
+        "label-designs/<uuid:label_design_id>/messages/",
+        LabelDesignChatListView.as_view(),
+        name="label-design-chat-list",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/messages/post/",
+        LabelDesignChatPostView.as_view(),
+        name="label-design-chat-post",
+    ),
+    path(
+        "label-designs/<uuid:label_design_id>/messages/read/",
+        LabelDesignChatReadView.as_view(),
+        name="label-design-chat-read",
     ),
 
     # CFF (Custom Formulation Request) — customer-facing intake

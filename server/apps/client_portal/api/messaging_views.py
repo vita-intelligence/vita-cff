@@ -520,6 +520,163 @@ class ProposalChatReadView(PortalAPIView):
         return Response({"detail": "ok"})
 
 
+def _load_owned_label_design(request: Request, label_design_id: str):
+    """Resolve a LabelDesign that belongs to the logged-in client.
+
+    Same leak-proof contract as the proposal / spec loaders. Walks
+    ``LabelDesign → Formulation → Proposal → customer`` (the modern
+    per-line link OR the legacy 1:1) and matches against the
+    caller's ``customer_id``.
+    """
+
+    from apps.label_design.models import LabelDesign
+    from apps.proposals.models import Proposal
+
+    label_design = (
+        LabelDesign.objects.select_related("formulation", "organization")
+        .filter(id=label_design_id)
+        .first()
+    )
+    if label_design is None:
+        raise NotFound("Label design not found.")
+
+    customer_id = request.user.customer_id
+    formulation_id = label_design.formulation_id
+    owns = (
+        Proposal.objects.filter(
+            customer_id=customer_id,
+            formulation_version__formulation_id=formulation_id,
+        ).exists()
+    )
+    if not owns:
+        raise NotFound("Label design not found.")
+    return label_design
+
+
+class LabelDesignChatListView(PortalAPIView):
+    """``GET /api/portal/label-designs/<id>/messages/`` — list shared
+    comments the customer can see on their label-design thread.
+    """
+
+    def get(self, request: Request, label_design_id: str) -> Response:
+        from apps.label_design.models import LabelDesign
+
+        ld = _load_owned_label_design(request, label_design_id)
+        ld_ct = ContentType.objects.get_for_model(LabelDesign)
+
+        comments = (
+            Comment.objects.filter(
+                content_type=ld_ct,
+                object_id=ld.id,
+                visibility=Comment.Visibility.SHARED,
+                organization_id=ld.organization_id,
+            )
+            .select_related(
+                "client_account__customer",
+                "author",
+                "parent__client_account__customer",
+                "parent__author",
+            )
+            .order_by("created_at")
+        )
+
+        read_row = (
+            CommentReadState.objects.filter(
+                viewer_client=request.user,
+                content_type=ld_ct,
+                object_id=ld.id,
+            )
+            .values("last_read_at")
+            .first()
+        )
+        return Response(
+            {
+                "results": [_serialise(c) for c in comments],
+                "read_state": (
+                    read_row["last_read_at"].isoformat()
+                    if read_row
+                    else None
+                ),
+                "label_design_id": str(ld.id),
+            },
+        )
+
+
+class LabelDesignChatPostView(PortalAPIView):
+    """``POST /api/portal/label-designs/<id>/messages/post/``."""
+
+    def post(self, request: Request, label_design_id: str) -> Response:
+        from apps.label_design.models import LabelDesign
+
+        ld = _load_owned_label_design(request, label_design_id)
+        try:
+            data = PostMessageSerializer(data=request.data)
+            data.is_valid(raise_exception=True)
+        except ValidationError as exc:
+            return _err(
+                "invalid_message",
+                status.HTTP_400_BAD_REQUEST,
+                detail=exc.detail,
+            )
+
+        ld_ct = ContentType.objects.get_for_model(LabelDesign)
+        parent_id = data.validated_data.get("parent_id")
+        parent: Comment | None = None
+        if parent_id:
+            parent = (
+                Comment.objects.filter(
+                    pk=parent_id,
+                    content_type=ld_ct,
+                    object_id=ld.id,
+                    visibility=Comment.Visibility.SHARED,
+                    organization_id=ld.organization_id,
+                )
+                .first()
+            )
+            if parent is None:
+                return _err(
+                    "invalid_reply_target",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            if parent.parent_id is not None:
+                parent = parent.parent
+
+        with transaction.atomic():
+            comment = Comment.objects.create(
+                organization_id=ld.organization_id,
+                content_type=ld_ct,
+                object_id=ld.id,
+                label_design=ld,
+                client_account=request.user,
+                visibility=Comment.Visibility.SHARED,
+                body=data.validated_data["body"],
+                parent=parent,
+            )
+            schedule_comment_broadcast(comment, "created")
+
+        return Response(_serialise(comment), status=status.HTTP_201_CREATED)
+
+
+class LabelDesignChatReadView(PortalAPIView):
+    """``POST /api/portal/label-designs/<id>/messages/read/``."""
+
+    def post(self, request: Request, label_design_id: str) -> Response:
+        from apps.label_design.models import LabelDesign
+
+        ld = _load_owned_label_design(request, label_design_id)
+        ld_ct = ContentType.objects.get_for_model(LabelDesign)
+        CommentReadState.objects.update_or_create(
+            viewer_client=request.user,
+            content_type=ld_ct,
+            object_id=ld.id,
+            defaults={
+                "organization_id": ld.organization_id,
+                "last_read_at": timezone.now(),
+            },
+        )
+        return Response({"detail": "ok"})
+
+
 class SpecMessageThreadView(PortalAPIView):
     """``GET + POST /api/portal/specs/<sheet_id>/messages/``.
 

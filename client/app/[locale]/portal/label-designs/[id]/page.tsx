@@ -17,6 +17,7 @@ import {
   PageHeader,
   PortalShell,
 } from "@/components/portal/brutalist";
+import { LabelDesignChatPanel } from "@/components/portal/label-design-chat-panel";
 import { Link } from "@/i18n/navigation";
 import { usePortalLabelDesign } from "@/services/label-design";
 import type { LabelDesignStatus } from "@/services/label-design/types";
@@ -299,6 +300,15 @@ export default function PortalLabelDesignDetailPage({
             </Link>
           </div>
         </Card>
+
+        {/* Customer chat with the Vita team about this label.
+            Backed by the SHARED comments thread the staff
+            labelling workspace also surfaces. Internal staff
+            chatter (visibility=internal) never appears here. */}
+        <LabelDesignChatPanel
+          labelDesignId={id}
+          designLabel={data.formulation_code || "this label"}
+        />
       </div>
     </PortalShell>
   );

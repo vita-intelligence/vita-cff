@@ -303,6 +303,48 @@ export async function markProposalChatRead(proposalId: string): Promise<void> {
 }
 
 
+// --- Label-design chat -------------------------------------------------
+
+
+export async function fetchLabelDesignChat(labelDesignId: string): Promise<{
+  results: PortalMessageDto[];
+  read_state: string | null;
+  label_design_id: string;
+}> {
+  const { data } = await apiClient.get<{
+    results: PortalMessageDto[];
+    read_state: string | null;
+    label_design_id: string;
+  }>(`/api/portal/label-designs/${labelDesignId}/messages/`);
+  return data;
+}
+
+
+export async function postLabelDesignChatMessage(
+  labelDesignId: string,
+  body: string,
+  parentId?: string | null,
+): Promise<PortalMessageDto> {
+  const payload: Record<string, unknown> = { body };
+  if (parentId) payload.parent_id = parentId;
+  const { data } = await apiClient.post<PortalMessageDto>(
+    `/api/portal/label-designs/${labelDesignId}/messages/post/`,
+    payload,
+  );
+  return data;
+}
+
+
+export async function markLabelDesignChatRead(
+  labelDesignId: string,
+): Promise<void> {
+  await apiClient.post(
+    `/api/portal/label-designs/${labelDesignId}/messages/read/`,
+    {},
+  );
+}
+
+
 // --- CFF (Custom Formulation Request) — customer-facing -----------------
 //
 // The customer sees CFFs they own — by email match against the form they
