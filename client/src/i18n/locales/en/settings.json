@@ -101,7 +101,9 @@
     "groups_hint": "Used by directory dropdowns. Sales filters list only people tagged 'Sales'; the future scientist picker only lists 'Scientist'. Independent of permissions — tagging here does not grant or revoke access.",
     "group": {
       "scientist": "Scientist",
-      "sales": "Sales"
+      "sales": "Sales",
+      "designer": "Designer",
+      "finance": "Finance"
     },
     "permissions_locked_owner": "The organization owner has full access by design — only their group tags can be edited here.",
     "permissions_locked_self": "You can't edit your own permissions, only your group tags. Ask another admin if you need an access change.",
@@ -211,7 +213,8 @@
     "finance": {
       "view": "View",
       "record_payment": "Record payment",
-      "approve_payment": "Approve payment"
+      "approve_payment": "Approve payment",
+      "assign_officer": "Assign finance officer"
     }
   },
   "capability_hints": {
@@ -272,7 +275,8 @@
     "finance": {
       "view": "Open the payments list and see every recorded payment + its status (pending / approved / voided). Required for any finance-team role.",
       "record_payment": "Log a new customer payment against a project (amount, method, invoice reference, paid date). Lands at status=pending until an approver flips it to approved.",
-      "approve_payment": "Flip a pending payment to approved. Side effect: the matching LabelDesign auto-advances from PAYMENT_PENDING to LABEL_PATH_PENDING, unlocking the label workflow for the customer."
+      "approve_payment": "Flip a pending payment to approved. Side effect: the matching LabelDesign auto-advances from PAYMENT_PENDING to LABEL_PATH_PENDING, unlocking the label workflow for the customer.",
+      "assign_officer": "Pick or change the finance officer (payment owner) on a Payment row. Mirrors Assign sales person on the commercial side so finance leads can re-route work without inheriting record-/approve-payment rights."
     }
   },
   "capability_pages": {
@@ -333,7 +337,8 @@
     "finance": {
       "view": "Payments list (/finance/payments).",
       "record_payment": "Record-payment dialog on /finance/payments.",
-      "approve_payment": "Approve / Void buttons on each pending payment row."
+      "approve_payment": "Approve / Void buttons on each pending payment row.",
+      "assign_officer": "Assign-finance-officer dropdown on each payment row."
     }
   },
   "role_presets": {

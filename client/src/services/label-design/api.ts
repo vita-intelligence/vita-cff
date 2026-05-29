@@ -126,7 +126,8 @@ async function _renderRegionToCanvas(
   const html2canvas = (await import("html2canvas")).default;
 
   const doc = iframe.contentDocument;
-  if (!doc) {
+  const win = iframe.contentWindow;
+  if (!doc || !win) {
     throw new Error("Preview iframe is not ready yet — try again in a second.");
   }
 
@@ -144,6 +145,12 @@ async function _renderRegionToCanvas(
     target = found;
   }
 
+  // Use the target's actually rendered bounding box for the crop,
+  // and the iframe's real window for layout context. Overriding
+  // ``windowWidth`` to anything narrower than the iframe collapses
+  // the panel grid and was the cause of the off-page whitespace in
+  // the previous build — leave it as the iframe's own innerWidth.
+  const rect = target.getBoundingClientRect();
   return html2canvas(target, {
     backgroundColor: "#ffffff",
     // 2× scale so the raster output stays sharp when pasted into
@@ -151,12 +158,12 @@ async function _renderRegionToCanvas(
     // produce bigger files for diminishing returns.
     scale: 2,
     useCORS: true,
-    // Snapshot the target's actual size, not the viewport — keeps
-    // single-region exports tightly cropped to that panel.
-    width: target.scrollWidth,
-    height: target.scrollHeight,
-    windowWidth: target.scrollWidth,
-    windowHeight: target.scrollHeight,
+    width: rect.width,
+    height: rect.height,
+    windowWidth: win.innerWidth,
+    windowHeight: win.innerHeight,
+    scrollX: 0,
+    scrollY: 0,
   });
 }
 
@@ -192,17 +199,22 @@ export async function downloadContentBlockPdf(
   const imgData = canvas.toDataURL("image/png");
 
   // Canvas is at scale=2 so divide back to "logical" px for the
-  // PDF page dimensions; the image is added at the same logical
-  // size so it stays sharp on zoom.
-  const pageW = canvas.width / 2;
-  const pageH = canvas.height / 2;
+  // PDF page dimensions; convert CSS pixels (96 DPI) into PDF
+  // points (72 DPI) which is jsPDF's most reliable unit — the
+  // ``px`` mode silently rounds with the wrong DPR on some builds
+  // and was leaving a fat margin on the right of single-panel
+  // exports. Express both the page format AND the addImage
+  // dimensions in the same unit so the image fills edge-to-edge.
+  const pxToPt = (px: number) => (px * 72) / 96;
+  const pageWPt = pxToPt(canvas.width / 2);
+  const pageHPt = pxToPt(canvas.height / 2);
   const pdf = new jsPDF({
-    orientation: pageW > pageH ? "landscape" : "portrait",
-    unit: "px",
-    format: [pageW, pageH],
+    orientation: pageWPt > pageHPt ? "landscape" : "portrait",
+    unit: "pt",
+    format: [pageWPt, pageHPt],
     compress: true,
   });
-  pdf.addImage(imgData, "PNG", 0, 0, pageW, pageH);
+  pdf.addImage(imgData, "PNG", 0, 0, pageWPt, pageHPt);
   const suffix = region && region !== "all" ? `-${region}` : "";
   pdf.save(`content-block-${ldId}${suffix}.pdf`);
 }
