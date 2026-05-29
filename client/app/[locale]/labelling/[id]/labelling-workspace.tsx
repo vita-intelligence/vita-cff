@@ -59,7 +59,14 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   on_hold: "On hold",
 };
 
-type Tab = "artwork" | "content" | "brief" | "spec" | "reviews" | "audit";
+type Tab =
+  | "artwork"
+  | "content"
+  | "brief"
+  | "spec"
+  | "versions"
+  | "reviews"
+  | "audit";
 
 
 export function LabellingWorkspace({
@@ -137,6 +144,7 @@ export function LabellingWorkspace({
             { key: "content", label: "Content block" },
             { key: "brief", label: "Customer brief" },
             { key: "spec", label: "Spec" },
+            { key: "versions", label: "Versions" },
             { key: "reviews", label: "Reviews" },
             { key: "audit", label: "Audit" },
           ] as const
@@ -188,6 +196,13 @@ export function LabellingWorkspace({
           labelDesignId={labelDesignId}
           sheetId={data.specification_sheet}
           title={data.formulation_name || ""}
+        />
+      ) : null}
+
+      {tab === "versions" ? (
+        <VersionsTab
+          revisions={data.revisions}
+          currentRevisionId={data.current_revision}
         />
       ) : null}
 
@@ -1201,6 +1216,128 @@ function ContentBlockTab({
         ) : null}
       </div>
     </div>
+  );
+}
+
+
+/** Versions tab — full artwork history with notes, submitter,
+ *  thumbnail, and direct PDF download per revision. The data is
+ *  already on ``LabelDesignDto.revisions`` (the backend serialises
+ *  every ``LabelDesignRevision`` row); the workspace just hadn't
+ *  rendered it before, so the team had no visibility into
+ *  "revision 1 was X, revision 2 the customer asked us to change Y".
+ */
+function VersionsTab({
+  revisions,
+  currentRevisionId,
+}: {
+  revisions: LabelDesignDto["revisions"];
+  currentRevisionId: string | null;
+}) {
+  if (revisions.length === 0) {
+    return (
+      <div className="rounded-2xl bg-ink-0 p-6 ring-1 ring-ink-200">
+        <p className="text-sm text-ink-500">
+          No artwork has been uploaded yet. Versions will appear here as
+          each revision lands.
+        </p>
+      </div>
+    );
+  }
+
+  // Reverse-chronological — newest first so the active revision sits
+  // at the top of the column without scrolling.
+  const ordered = [...revisions].sort(
+    (a, b) => b.revision_number - a.revision_number,
+  );
+
+  return (
+    <section className="space-y-3">
+      {ordered.map((r) => {
+        const isCurrent = r.id === currentRevisionId;
+        const submitter =
+          r.submitted_by_user_email ||
+          r.submitted_by_client_email ||
+          (r.source === "customer_upload" ? "Customer" : "Staff");
+        const submittedAt = r.submitted_at
+          ? new Date(r.submitted_at).toLocaleString()
+          : "";
+        return (
+          <article
+            key={r.id}
+            className={`rounded-2xl bg-ink-0 p-5 ring-1 ${
+              isCurrent
+                ? "ring-orange-300 shadow-sm"
+                : "ring-ink-200"
+            }`}
+          >
+            <header className="flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-sm font-semibold text-ink-1000">
+                    Revision {r.revision_number}
+                  </h3>
+                  {isCurrent ? (
+                    <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-700">
+                      Current
+                    </span>
+                  ) : null}
+                  <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-600">
+                    {r.source === "customer_upload"
+                      ? "Customer upload"
+                      : "Staff upload"}
+                  </span>
+                  {r.customer_approved_own_design ? (
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
+                      Customer self-approved
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-ink-500">
+                  {submitter}
+                  {submittedAt ? ` · ${submittedAt}` : ""}
+                </p>
+              </div>
+              {r.artwork_pdf_url ? (
+                <a
+                  href={r.artwork_pdf_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-1000 px-3 text-xs font-semibold text-ink-0 hover:bg-ink-900"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  PDF
+                </a>
+              ) : null}
+            </header>
+
+            <div className="mt-3 grid gap-3 sm:grid-cols-[160px_1fr]">
+              <div className="rounded-xl bg-ink-50 p-2 ring-1 ring-ink-200">
+                {r.artwork_preview_png_url ? (
+                  <img
+                    src={r.artwork_preview_png_url}
+                    alt={`Artwork revision ${r.revision_number}`}
+                    className="mx-auto max-h-32 object-contain"
+                  />
+                ) : (
+                  <div className="flex h-32 items-center justify-center text-[10px] text-ink-500">
+                    No preview
+                  </div>
+                )}
+              </div>
+              <div className="text-xs text-ink-800">
+                <p className="font-semibold uppercase tracking-wide text-ink-500">
+                  Notes
+                </p>
+                <p className="mt-1 whitespace-pre-line">
+                  {r.notes || "(no notes)"}
+                </p>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </section>
   );
 }
 

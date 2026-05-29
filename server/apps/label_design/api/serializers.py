@@ -232,9 +232,69 @@ class AssignDesignerSerializer(serializers.Serializer):
     designer_id = serializers.UUIDField(required=False, allow_null=True)
 
 
+#: Hard upper bound on a single artwork upload — 50 MB. Large
+#: enough that 300-DPI press-ready PDFs comfortably fit; small
+#: enough that an attacker spamming the endpoint can't OOM the
+#: container. WSGI / Daphne workers also have their own
+#: ``DATA_UPLOAD_MAX_MEMORY_SIZE`` cap as a second layer.
+ARTWORK_MAX_BYTES: int = 50 * 1024 * 1024
+
+#: Whitelisted content types for label artwork. PDF (vector) is
+#: the preferred format because designers paste it cleanly into
+#: any tool; PNG and JPEG are accepted for raster snapshots. We
+#: cross-check the file extension against the same shortlist so
+#: an attacker can't bypass MIME sniffing by lying about
+#: content_type — both signals have to agree.
+ARTWORK_ALLOWED_CONTENT_TYPES: tuple[str, ...] = (
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+)
+ARTWORK_ALLOWED_EXTENSIONS: tuple[str, ...] = (".pdf", ".png", ".jpg", ".jpeg")
+
+
+def _validate_artwork_file(value):
+    """Belt-and-braces security check for an uploaded artwork file.
+
+    Three layers — size, declared content_type, file extension —
+    so a single bypassed signal isn't enough. Runs on every
+    upload path (staff + customer-portal) via the two artwork
+    serializers below.
+    """
+
+    if value is None:
+        raise serializers.ValidationError("Artwork file is required.")
+    size = getattr(value, "size", 0) or 0
+    if size <= 0:
+        raise serializers.ValidationError("Uploaded artwork file is empty.")
+    if size > ARTWORK_MAX_BYTES:
+        raise serializers.ValidationError(
+            f"Artwork file too large — {size // (1024 * 1024)} MB exceeds the "
+            f"{ARTWORK_MAX_BYTES // (1024 * 1024)} MB cap. Compress the file or "
+            "export at a lower DPI."
+        )
+    content_type = (getattr(value, "content_type", "") or "").lower()
+    if content_type not in ARTWORK_ALLOWED_CONTENT_TYPES:
+        raise serializers.ValidationError(
+            f"Unsupported artwork type ({content_type or 'unknown'}). "
+            "Accepted formats: PDF, PNG, JPEG."
+        )
+    name = (getattr(value, "name", "") or "").lower()
+    if not any(name.endswith(ext) for ext in ARTWORK_ALLOWED_EXTENSIONS):
+        raise serializers.ValidationError(
+            "Artwork file extension must be one of "
+            f"{', '.join(ARTWORK_ALLOWED_EXTENSIONS)}."
+        )
+    return value
+
+
 class UploadArtworkSerializer(serializers.Serializer):
     artwork = serializers.FileField()
     notes = serializers.CharField(allow_blank=True, default="")
+
+    def validate_artwork(self, value):
+        return _validate_artwork_file(value)
 
 
 class _ChecklistResponseSerializer(serializers.Serializer):
@@ -358,6 +418,9 @@ class CustomerUploadArtworkSerializer(serializers.Serializer):
     artwork = serializers.FileField()
     signature_image = serializers.CharField()
     notes = serializers.CharField(allow_blank=True, default="")
+
+    def validate_artwork(self, value):
+        return _validate_artwork_file(value)
 
 
 class CustomerApproveSerializer(serializers.Serializer):
