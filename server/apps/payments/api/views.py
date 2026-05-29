@@ -52,6 +52,9 @@ class PaymentListCreateView(APIView):
         super().initial(request, *args, **kwargs)
 
     def get(self, request: Request, **kwargs) -> Response:
+        from apps.organizations.services import get_membership, has_capability
+        from django.db.models import Q
+
         qs = (
             Payment.objects.filter(organization=self.organization)
             .select_related(
@@ -70,8 +73,41 @@ class PaymentListCreateView(APIView):
         if finance_officer_filter:
             qs = qs.filter(assigned_finance_officer_id=finance_officer_filter)
 
+        # ``scope=mine|all`` — same pattern as the labelling queue
+        # and the R&D pipeline. A finance team member sees only the
+        # payments they own (plus unassigned ones waiting for triage)
+        # by default; a manager with ``finance.assign_officer`` can
+        # flip to ``all`` and see every payment in the org. The
+        # capability is the same one that gates "reassign a
+        # payment" — both are management actions in practice.
+        membership = get_membership(request.user, self.organization)
+        can_view_all = bool(
+            membership
+            and has_capability(
+                membership,
+                "finance",
+                FinanceCapability.ASSIGN_OFFICER,
+            )
+        )
+        raw_scope = (request.query_params.get("scope") or "mine").strip().lower()
+        if raw_scope not in {"mine", "all"}:
+            raw_scope = "mine"
+        if raw_scope == "all" and not can_view_all:
+            raw_scope = "mine"
+        if raw_scope == "mine":
+            qs = qs.filter(
+                Q(assigned_finance_officer_id=request.user.id)
+                | Q(assigned_finance_officer__isnull=True)
+            )
+
         data = PaymentReadSerializer(qs, many=True).data
-        return Response({"items": data})
+        return Response(
+            {
+                "items": data,
+                "scope": raw_scope,
+                "scope_capabilities": {"can_view_all": can_view_all},
+            }
+        )
 
     def post(self, request: Request, **kwargs) -> Response:
         serializer = PaymentCreateSerializer(data=request.data)

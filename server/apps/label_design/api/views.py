@@ -129,6 +129,8 @@ class LabelDesignListView(APIView):
     required_capability = LabellingCapability.VIEW
 
     def get(self, request: Request, **kwargs) -> Response:
+        from apps.organizations.services import has_capability, get_membership
+
         base_qs = (
             LabelDesign.objects.filter(organization=self.organization)
             .select_related("formulation", "assigned_designer")
@@ -144,6 +146,31 @@ class LabelDesignListView(APIView):
         designer_filter = request.query_params.get("designer")
         if designer_filter:
             base_qs = base_qs.filter(assigned_designer_id=designer_filter)
+
+        # ``scope=mine|all`` mirrors the R&D pipeline / proposals
+        # pipeline pattern. ``mine`` keeps a rank-and-file designer
+        # narrowed to "my work + anything no-one's claimed yet" so
+        # their queue isn't drowned by every other designer's load;
+        # ``all`` requires ``labelling.manage`` (team-lead grant)
+        # because seeing every other designer's queue is a
+        # management-only view.
+        membership = get_membership(request.user, self.organization)
+        can_view_all = bool(
+            membership
+            and has_capability(
+                membership, "labelling", LabellingCapability.MANAGE
+            )
+        )
+        raw_scope = (request.query_params.get("scope") or "mine").strip().lower()
+        if raw_scope not in {"mine", "all"}:
+            raw_scope = "mine"
+        if raw_scope == "all" and not can_view_all:
+            raw_scope = "mine"
+        if raw_scope == "mine":
+            base_qs = base_qs.filter(
+                Q(assigned_designer_id=request.user.id)
+                | Q(assigned_designer__isnull=True)
+            )
 
         # ``counts_by_status`` runs over the search-filtered set but
         # NOT the status-filtered set — that way the FE can render
@@ -183,6 +210,8 @@ class LabelDesignListView(APIView):
                 "has_more": has_more,
                 "next_offset": next_offset if has_more else None,
                 "counts_by_status": counts,
+                "scope": raw_scope,
+                "scope_capabilities": {"can_view_all": can_view_all},
             }
         )
 
