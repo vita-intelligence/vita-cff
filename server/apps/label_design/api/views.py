@@ -147,13 +147,14 @@ class LabelDesignListView(APIView):
         if designer_filter:
             base_qs = base_qs.filter(assigned_designer_id=designer_filter)
 
-        # ``scope=mine|all`` mirrors the R&D pipeline / proposals
-        # pipeline pattern. ``mine`` keeps a rank-and-file designer
-        # narrowed to "my work + anything no-one's claimed yet" so
-        # their queue isn't drowned by every other designer's load;
-        # ``all`` requires ``labelling.manage`` (team-lead grant)
-        # because seeing every other designer's queue is a
-        # management-only view.
+        # ``scope=mine|all`` — a rank-and-file designer only sees
+        # their work + anything still unclaimed, so the queue isn't
+        # drowned by every other designer's load. A manager (the
+        # ``labelling.manage`` cap holder) DEFAULTS to ``all`` —
+        # the whole point of holding that grant is to see the
+        # whole team's load. Either side can override with an
+        # explicit ``?scope=`` query param if they need the other
+        # view temporarily.
         membership = get_membership(request.user, self.organization)
         can_view_all = bool(
             membership
@@ -161,9 +162,12 @@ class LabelDesignListView(APIView):
                 membership, "labelling", LabellingCapability.MANAGE
             )
         )
-        raw_scope = (request.query_params.get("scope") or "mine").strip().lower()
+        default_scope = "all" if can_view_all else "mine"
+        raw_scope = (
+            request.query_params.get("scope") or default_scope
+        ).strip().lower()
         if raw_scope not in {"mine", "all"}:
-            raw_scope = "mine"
+            raw_scope = default_scope
         if raw_scope == "all" and not can_view_all:
             raw_scope = "mine"
         if raw_scope == "mine":

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -9,10 +10,14 @@ import {
   Clock,
   Copy,
   Download,
+  ExternalLink,
   FileImage,
   FileText,
+  ImageIcon,
   Loader2,
   Palette,
+  Send,
+  Sparkles,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -409,6 +414,90 @@ function AssignmentBar({
 }
 
 
+//: Status-driven visual treatment for the artwork hero. Maps a
+//: LabelDesignStatus to the chip palette + an icon so a designer
+//: gets a single-glance read on "what should I do next".
+const STATUS_PRESENTATION: Record<
+  LabelDesignStatus,
+  {
+    tone:
+      | "neutral"
+      | "amber"
+      | "blue"
+      | "violet"
+      | "emerald"
+      | "rose";
+    icon: typeof Sparkles;
+    headline: string;
+    sub: string;
+  }
+> = {
+  payment_pending: {
+    tone: "amber",
+    icon: AlertCircle,
+    headline: "Awaiting payment",
+    sub: "The workflow unlocks the moment finance approves the customer payment.",
+  },
+  label_path_pending: {
+    tone: "amber",
+    icon: AlertCircle,
+    headline: "Awaiting design path",
+    sub: "The customer hasn't picked whether we design or they upload their own artwork yet.",
+  },
+  design_preferences_pending: {
+    tone: "amber",
+    icon: AlertCircle,
+    headline: "Awaiting customer brief",
+    sub: "The customer is filling in MA-ST-B-009. Check the Customer brief tab when it lands.",
+  },
+  design_in_progress: {
+    tone: "blue",
+    icon: Sparkles,
+    headline: "Design in progress",
+    sub: "Upload the next revision and submit it for scientist review when you're ready.",
+  },
+  scientist_review: {
+    tone: "violet",
+    icon: Clock,
+    headline: "Scientist review",
+    sub: "Compliance reviewer is checking the artwork against the MA-PD-B-012 checklist.",
+  },
+  director_review: {
+    tone: "violet",
+    icon: Clock,
+    headline: "Director review",
+    sub: "Director sign-off is the last internal step before the customer sees this.",
+  },
+  customer_approval: {
+    tone: "blue",
+    icon: Send,
+    headline: "Awaiting customer approval",
+    sub: "The customer is reviewing the artwork on the portal — they can sign or request changes.",
+  },
+  label_approved: {
+    tone: "emerald",
+    icon: CheckCircle2,
+    headline: "Label approved",
+    sub: "Customer signed off. Ready for production hand-off.",
+  },
+  on_hold: {
+    tone: "rose",
+    icon: AlertCircle,
+    headline: "On hold",
+    sub: "A team lead paused this workflow. Resume from the workspace header when ready.",
+  },
+};
+
+const STATUS_TONE_CLASS: Record<string, string> = {
+  neutral: "bg-ink-100 text-ink-700 ring-ink-200",
+  amber: "bg-amber-50 text-amber-800 ring-amber-200",
+  blue: "bg-orange-50 text-orange-800 ring-orange-200",
+  violet: "bg-violet-50 text-violet-800 ring-violet-200",
+  emerald: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  rose: "bg-rose-50 text-rose-800 ring-rose-200",
+};
+
+
 function ArtworkTab({
   orgId,
   labelDesignId,
@@ -430,71 +519,225 @@ function ArtworkTab({
   canReviewDirector: boolean;
   onMutate: () => void;
 }) {
+  const presentation = STATUS_PRESENTATION[status] ?? STATUS_PRESENTATION.design_in_progress;
+  const StatusIcon = presentation.icon;
+  const toneClass =
+    STATUS_TONE_CLASS[presentation.tone] ?? STATUS_TONE_CLASS.neutral;
+
+  const showUpload =
+    canDesign &&
+    (status === "design_in_progress" || status === "label_path_pending");
+  const showSubmit = canDesign && status === "design_in_progress";
+
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
-      <div className="lg:col-span-2">
-        <div className="rounded-2xl bg-ink-0 p-3 ring-1 ring-ink-200">
+    <div className="space-y-4">
+      {/* Hero — status / context band so designers always see
+          "what's the system waiting on right now" at the top. */}
+      <header
+        className={`flex items-start gap-3 rounded-2xl px-4 py-3 ring-1 ring-inset ${toneClass}`}
+      >
+        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink-0/70 ring-1 ring-inset ring-ink-200">
+          <StatusIcon className="h-4 w-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-semibold uppercase tracking-wider opacity-80">
+            Status
+          </p>
+          <p className="text-sm font-semibold">{presentation.headline}</p>
+          <p className="mt-0.5 text-xs opacity-90">{presentation.sub}</p>
+        </div>
+        {designPath ? (
+          <span className="hidden shrink-0 rounded-full bg-ink-0/70 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-ink-700 ring-1 ring-inset ring-ink-200 sm:inline-block">
+            {designPath === "design_by_us"
+              ? "We design"
+              : "Customer uploads"}
+          </span>
+        ) : null}
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* Preview shell — title bar with download / open buttons,
+            and a generous inline PDF render or a friendlier empty
+            state with a call to action. */}
+        <article className="overflow-hidden rounded-2xl bg-ink-0 ring-1 ring-ink-200 lg:col-span-2">
+          <header className="flex items-center justify-between gap-2 border-b border-ink-100 px-4 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-ink-50 ring-1 ring-inset ring-ink-200">
+                <FileText className="h-3.5 w-3.5 text-ink-600" />
+              </span>
+              <div>
+                <p className="text-xs font-semibold text-ink-1000">
+                  Current artwork
+                </p>
+                <p className="text-[10px] text-ink-500">
+                  Latest revision inline
+                </p>
+              </div>
+            </div>
+            {artworkPdfUrl ? (
+              <div className="flex items-center gap-1.5">
+                <a
+                  href={artworkPdfUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex h-8 items-center gap-1 rounded-lg bg-ink-0 px-2.5 text-[11px] font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                >
+                  <ExternalLink className="h-3 w-3" /> Open
+                </a>
+                <a
+                  href={artworkPdfUrl}
+                  download
+                  className="inline-flex h-8 items-center gap-1 rounded-lg bg-ink-1000 px-2.5 text-[11px] font-semibold text-ink-0 hover:bg-ink-900"
+                >
+                  <Download className="h-3 w-3" /> Download
+                </a>
+              </div>
+            ) : null}
+          </header>
           {artworkPdfUrl ? (
             <object
               data={artworkPdfUrl}
               type="application/pdf"
-              className="h-[640px] w-full"
+              className="block h-[680px] w-full bg-ink-50"
             >
               <p className="p-4 text-sm text-ink-500">
-                Your browser can’t preview PDFs inline.{" "}
-                <a href={artworkPdfUrl} className="underline" target="_blank" rel="noopener noreferrer">
+                Your browser can&rsquo;t preview PDFs inline.{" "}
+                <a
+                  href={artworkPdfUrl}
+                  className="underline"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   Open in a new tab
                 </a>
                 .
               </p>
             </object>
           ) : (
-            <div className="flex h-[640px] items-center justify-center text-sm text-ink-500">
-              No artwork uploaded yet.
+            <div className="flex h-[680px] flex-col items-center justify-center gap-3 bg-gradient-to-b from-ink-50 to-ink-0 px-6 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+                <ImageIcon className="h-6 w-6 text-ink-400" />
+              </div>
+              <div>
+                <p className="text-sm font-semibold text-ink-1000">
+                  No artwork yet
+                </p>
+                <p className="mt-1 max-w-sm text-xs text-ink-500">
+                  {designPath === "design_by_customer"
+                    ? "The customer is uploading the artwork from their side. It will appear here as soon as they submit."
+                    : "Drop the first revision in the upload card on the right to get started."}
+                </p>
+              </div>
             </div>
           )}
-        </div>
-      </div>
-      <div className="space-y-3">
-        {canDesign && (status === "design_in_progress" || status === "label_path_pending") ? (
-          <UploadCard orgId={orgId} labelDesignId={labelDesignId} onMutate={onMutate} />
-        ) : null}
-        {canDesign && status === "design_in_progress" ? (
-          <SubmitForReviewCard orgId={orgId} labelDesignId={labelDesignId} onMutate={onMutate} />
-        ) : null}
-        {canReviewScientist && status === "scientist_review" ? (
-          <ReviewForm
-            kind="scientist"
-            orgId={orgId}
-            labelDesignId={labelDesignId}
-            onMutate={onMutate}
-          />
-        ) : null}
-        {canReviewDirector && status === "director_review" ? (
-          <ReviewForm
-            kind="director"
-            orgId={orgId}
-            labelDesignId={labelDesignId}
-            onMutate={onMutate}
-          />
-        ) : null}
-        {status === "customer_approval" ? (
-          <div className="rounded-2xl bg-ink-0 p-3 ring-1 ring-ink-200">
-            <p className="text-xs text-ink-500">
-              Awaiting the customer’s sign-off on the portal.
-            </p>
-          </div>
-        ) : null}
-        {status === "label_approved" ? (
-          <div className="rounded-2xl bg-emerald-50 p-3 ring-1 ring-emerald-200">
-            <p className="text-xs font-semibold text-emerald-900">
-              Label approved. Ready for production.
-            </p>
-          </div>
-        ) : null}
+        </article>
+
+        {/* Sidebar — context-driven action cards. Only the cards
+            that match the current status + the caller's caps render,
+            so the column never shows an action the user can't take. */}
+        <aside className="space-y-3">
+          {showUpload ? (
+            <UploadCard
+              orgId={orgId}
+              labelDesignId={labelDesignId}
+              onMutate={onMutate}
+            />
+          ) : null}
+          {showSubmit ? (
+            <SubmitForReviewCard
+              orgId={orgId}
+              labelDesignId={labelDesignId}
+              onMutate={onMutate}
+            />
+          ) : null}
+          {canReviewScientist && status === "scientist_review" ? (
+            <ReviewForm
+              kind="scientist"
+              orgId={orgId}
+              labelDesignId={labelDesignId}
+              onMutate={onMutate}
+            />
+          ) : null}
+          {canReviewDirector && status === "director_review" ? (
+            <ReviewForm
+              kind="director"
+              orgId={orgId}
+              labelDesignId={labelDesignId}
+              onMutate={onMutate}
+            />
+          ) : null}
+          {status === "customer_approval" ? (
+            <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-orange-50 ring-1 ring-inset ring-orange-200">
+                  <Send className="h-3.5 w-3.5 text-orange-700" />
+                </span>
+                <p className="text-xs font-semibold text-ink-1000">
+                  With the customer
+                </p>
+              </div>
+              <p className="mt-2 text-xs text-ink-600">
+                The portal customer is reviewing. They can sign off or
+                send back a change request — both will land in the
+                Reviews tab automatically.
+              </p>
+            </div>
+          ) : null}
+          {status === "label_approved" ? (
+            <div className="rounded-2xl bg-emerald-50 p-4 ring-1 ring-emerald-200">
+              <div className="flex items-center gap-2">
+                <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-100 ring-1 ring-inset ring-emerald-200">
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-700" />
+                </span>
+                <p className="text-xs font-semibold text-emerald-900">
+                  Approved &amp; signed
+                </p>
+              </div>
+              <p className="mt-2 text-xs text-emerald-800/90">
+                Customer signed off. Hand off to production with the
+                final PDF above.
+              </p>
+            </div>
+          ) : null}
+          {!showUpload && !showSubmit && status !== "customer_approval" && status !== "label_approved" ? (
+            <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-0 p-4">
+              <p className="text-xs text-ink-500">
+                Nothing for you to do right now — sit tight and the
+                workflow will surface the next action here.
+              </p>
+            </div>
+          ) : null}
+        </aside>
       </div>
     </div>
   );
+}
+
+
+//: 50 MB matches the backend ``ARTWORK_MAX_BYTES`` ceiling. Keep
+//: in lockstep so the FE rejection message stays correct.
+const ARTWORK_MAX_BYTES = 50 * 1024 * 1024;
+const ARTWORK_ALLOWED_EXT = [".pdf", ".png", ".jpg", ".jpeg"];
+const ARTWORK_ALLOWED_MIME = ["application/pdf", "image/png", "image/jpeg"];
+
+function _humanFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function _validateArtworkClient(file: File): string | null {
+  const name = file.name.toLowerCase();
+  if (!ARTWORK_ALLOWED_EXT.some((ext) => name.endsWith(ext))) {
+    return "Unsupported file type — accepted: PDF, PNG, JPEG.";
+  }
+  if (file.type && !ARTWORK_ALLOWED_MIME.includes(file.type)) {
+    return `Unsupported file type (${file.type}) — accepted: PDF, PNG, JPEG.`;
+  }
+  if (file.size > ARTWORK_MAX_BYTES) {
+    return `File too large (${_humanFileSize(file.size)}). Max ${_humanFileSize(ARTWORK_MAX_BYTES)}.`;
+  }
+  return null;
 }
 
 
@@ -511,12 +754,29 @@ function UploadCard({
   const [file, setFile] = useState<File | null>(null);
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const pickFile = (candidate: File | null) => {
+    setErr(null);
+    if (!candidate) {
+      setFile(null);
+      return;
+    }
+    const reason = _validateArtworkClient(candidate);
+    if (reason) {
+      setErr(reason);
+      setFile(null);
+      return;
+    }
+    setFile(candidate);
+  };
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr(null);
     if (!file) {
-      setErr("Pick a file first.");
+      setErr("Drop a file or click to choose one first.");
       return;
     }
     try {
@@ -525,42 +785,135 @@ function UploadCard({
       setNotes("");
       onMutate();
     } catch (e) {
-      setErr(
-        (e as { response?: { data?: { detail?: string } } })?.response?.data
-          ?.detail ?? "Upload failed.",
-      );
+      // Surface the backend's structured rejection (size / type
+      // / extension) when present — much friendlier than the
+      // generic "Upload failed".
+      const data = (e as { response?: { data?: Record<string, unknown> } })
+        ?.response?.data;
+      const fieldErr = Array.isArray((data as { artwork?: unknown })?.artwork)
+        ? ((data as { artwork: string[] }).artwork[0] as string)
+        : undefined;
+      const detail = (data as { detail?: string })?.detail;
+      setErr(fieldErr ?? detail ?? "Upload failed.");
     }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    const dropped = e.dataTransfer.files?.[0];
+    if (dropped) pickFile(dropped);
   };
 
   return (
     <form
       onSubmit={onSubmit}
-      className="rounded-2xl bg-ink-0 p-3 ring-1 ring-ink-200"
+      className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200"
     >
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-        Upload artwork
-      </h3>
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-orange-50 ring-1 ring-inset ring-orange-200">
+          <UploadCloud className="h-3.5 w-3.5 text-orange-700" />
+        </span>
+        <div>
+          <p className="text-xs font-semibold text-ink-1000">Upload artwork</p>
+          <p className="text-[10px] text-ink-500">PDF, PNG, JPEG · up to 50 MB</p>
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={onDrop}
+        className={`mt-3 flex w-full flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed px-4 py-6 text-center transition-colors ${
+          dragOver
+            ? "border-orange-400 bg-orange-50"
+            : file
+              ? "border-emerald-300 bg-emerald-50/50"
+              : "border-ink-200 bg-ink-50 hover:border-orange-300 hover:bg-orange-50/40"
+        }`}
+      >
+        {file ? (
+          <>
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 ring-1 ring-inset ring-emerald-200">
+              <Check className="h-4 w-4 text-emerald-700" />
+            </span>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-ink-1000">
+                {file.name}
+              </p>
+              <p className="text-[10px] text-ink-500">
+                {_humanFileSize(file.size)}
+              </p>
+            </div>
+            <span className="text-[10px] text-ink-500 underline-offset-2 hover:underline">
+              Replace
+            </span>
+          </>
+        ) : (
+          <>
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200">
+              <UploadCloud className="h-4 w-4 text-ink-500" />
+            </span>
+            <div>
+              <p className="text-xs font-semibold text-ink-1000">
+                Drop your file here
+              </p>
+              <p className="text-[10px] text-ink-500">
+                or click to browse
+              </p>
+            </div>
+          </>
+        )}
+      </button>
       <input
+        ref={inputRef}
         type="file"
         accept="application/pdf,image/png,image/jpeg"
-        onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-        className="mt-2 block w-full text-xs"
+        onChange={(e) => pickFile(e.target.files?.[0] ?? null)}
+        className="hidden"
       />
-      <textarea
-        value={notes}
-        onChange={(e) => setNotes(e.target.value)}
-        placeholder="Notes (optional)"
-        rows={2}
-        className="mt-2 w-full rounded border border-ink-200 px-2 py-1 text-xs"
-      />
-      {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
+
+      <label className="mt-3 block">
+        <span className="text-[10px] font-semibold uppercase tracking-wider text-ink-500">
+          Notes
+        </span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder="What changed in this revision? (optional)"
+          rows={3}
+          className="mt-1 w-full rounded-lg border-0 bg-ink-50 px-3 py-2 text-xs text-ink-800 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+        />
+      </label>
+
+      {err ? (
+        <p className="mt-2 flex items-start gap-1.5 rounded-md bg-rose-50 px-2.5 py-1.5 text-[11px] text-rose-700 ring-1 ring-inset ring-rose-200">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{err}</span>
+        </p>
+      ) : null}
+
       <button
         type="submit"
-        disabled={upload.isPending}
-        className="mt-2 inline-flex items-center gap-1 rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
+        disabled={upload.isPending || !file}
+        className="mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-lg bg-ink-1000 px-3 py-2 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
       >
-        <UploadCloud className="h-3 w-3" />
-        {upload.isPending ? "Uploading…" : "Upload"}
+        {upload.isPending ? (
+          <>
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            Uploading…
+          </>
+        ) : (
+          <>
+            <UploadCloud className="h-3.5 w-3.5" />
+            Upload revision
+          </>
+        )}
       </button>
     </form>
   );
@@ -938,24 +1291,17 @@ function BriefTab({
         </BriefSection>
 
         <BriefSection title="Declaration" className="lg:col-span-2">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <BriefRow label="Name" value={preferences.declaration_name} />
-              <BriefRow
-                label="Position"
-                value={preferences.declaration_position}
-              />
-              <BriefRow
-                label="Signed at"
-                value={
-                  preferences.declaration_signed_at
-                    ? new Date(
-                        preferences.declaration_signed_at,
-                      ).toLocaleString()
-                    : ""
-                }
-              />
-            </div>
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+            <BriefRow
+              label="Signed at"
+              value={
+                preferences.declaration_signed_at
+                  ? new Date(
+                      preferences.declaration_signed_at,
+                    ).toLocaleString()
+                  : ""
+              }
+            />
             {preferences.declaration_signature_image ? (
               <div className="rounded-lg bg-ink-50 p-3 ring-1 ring-ink-200">
                 <img

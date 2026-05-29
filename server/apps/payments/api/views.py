@@ -76,10 +76,11 @@ class PaymentListCreateView(APIView):
         # ``scope=mine|all`` — same pattern as the labelling queue
         # and the R&D pipeline. A finance team member sees only the
         # payments they own (plus unassigned ones waiting for triage)
-        # by default; a manager with ``finance.assign_officer`` can
-        # flip to ``all`` and see every payment in the org. The
-        # capability is the same one that gates "reassign a
-        # payment" — both are management actions in practice.
+        # by default; a manager (the ``finance.assign_officer`` cap
+        # holder) DEFAULTS to ``all`` because the whole point of
+        # holding that grant is to see the whole team's queue.
+        # Either side can override with ``?scope=`` if they need
+        # the other view temporarily.
         membership = get_membership(request.user, self.organization)
         can_view_all = bool(
             membership
@@ -89,9 +90,12 @@ class PaymentListCreateView(APIView):
                 FinanceCapability.ASSIGN_OFFICER,
             )
         )
-        raw_scope = (request.query_params.get("scope") or "mine").strip().lower()
+        default_scope = "all" if can_view_all else "mine"
+        raw_scope = (
+            request.query_params.get("scope") or default_scope
+        ).strip().lower()
         if raw_scope not in {"mine", "all"}:
-            raw_scope = "mine"
+            raw_scope = default_scope
         if raw_scope == "all" and not can_view_all:
             raw_scope = "mine"
         if raw_scope == "mine":
