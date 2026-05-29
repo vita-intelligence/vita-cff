@@ -131,13 +131,17 @@
   .panel-uk-eu { border: 1px solid #111; }
   .panel-uk-eu .panel-title {
     border-bottom: 1px solid #111;
-    padding-bottom: 4px;
-    margin-bottom: 4px;
+    padding-bottom: 8px;
+    margin-bottom: 6px;
+    line-height: 1.3;
   }
   .panel-uk-eu th, .panel-uk-eu td {
     border-bottom: 1px solid #ddd;
-    padding: 7px 6px;
-    line-height: 1.6;
+    /* Asymmetric vertical padding leaves descender room for
+     * letters like ``g``, ``p``, ``y`` that html2canvas trims
+     * tighter than the browser paint pass. */
+    padding: 5px 6px 10px 6px;
+    line-height: 1.8;
   }
   .panel-uk-eu th { text-align: right; font-size: 7pt; color: #555; }
   .panel-uk-eu td:first-child { text-align: left; }
@@ -157,15 +161,15 @@
     font-size: 18pt;
     font-weight: 900;
     border-bottom: 2px solid #000;
-    padding-bottom: 4px;
+    padding-bottom: 8px;
     margin-bottom: 0;
-    line-height: 1.1;
+    line-height: 1.25;
   }
   .panel-us .servings {
     font-size: 8pt;
     border-bottom: 1px solid #000;
-    padding: 6px 0;
-    line-height: 1.7;
+    padding: 5px 0 10px 0;
+    line-height: 1.9;
   }
   .panel-us .calories-row {
     display: flex;
@@ -194,9 +198,14 @@
     display: flex;
     justify-content: space-between;
     border-bottom: 1px solid #000;
-    padding: 8px 0;
+    /* Asymmetric padding — more bottom than top — to keep
+     * descenders (g, p, y) well clear of the divider in the
+     * html2canvas render. The canvas paint pass treats
+     * line-height conservatively, so the visual gap below
+     * baseline is smaller than browser-rendered. */
+    padding: 6px 0 12px 0;
     font-size: 8pt;
-    line-height: 1.85;
+    line-height: 2.0;
   }
   .panel-us .row .name { font-weight: 700; }
   .panel-us .row .name.indent { padding-left: 8pt; font-weight: 400; }
@@ -224,8 +233,8 @@
   }
   .panel-jp table th, .panel-jp table td {
     border-bottom: 1px solid #ccc;
-    padding: 7px 6px;
-    line-height: 1.6;
+    padding: 5px 6px 10px 6px;
+    line-height: 1.8;
   }
   .panel-jp td:first-child { text-align: left; }
   .panel-jp td:last-child { text-align: right; white-space: nowrap; }
@@ -253,9 +262,9 @@
   }
   .panel-cn tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 7px 6px;
+    padding: 5px 6px 10px 6px;
     font-size: 8pt;
-    line-height: 1.65;
+    line-height: 1.8;
   }
   .panel-cn td:nth-child(2),
   .panel-cn td:nth-child(3) { text-align: right; white-space: nowrap; }
@@ -277,9 +286,9 @@
   .panel-au thead th:first-child { text-align: left; }
   .panel-au tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 7px 6px;
+    padding: 5px 6px 10px 6px;
     font-size: 8pt;
-    line-height: 1.65;
+    line-height: 1.8;
   }
   .panel-au td:not(:first-child) { text-align: right; white-space: nowrap; }
   .panel-au .indent { padding-left: 12pt; color: #333; }
@@ -299,9 +308,9 @@
   .panel-codex thead th:first-child { text-align: left; }
   .panel-codex tbody td {
     border-bottom: 1px solid #eee;
-    padding: 7px 6px;
+    padding: 5px 6px 10px 6px;
     font-size: 8pt;
-    line-height: 1.65;
+    line-height: 1.8;
   }
   .panel-codex td:not(:first-child) { text-align: right; white-space: nowrap; }
 
@@ -325,9 +334,9 @@
   }
   .panel-gso table th, .panel-gso table td {
     border-bottom: 1px solid #ddd;
-    padding: 7px 6px;
+    padding: 5px 6px 10px 6px;
     font-size: 8pt;
-    line-height: 1.65;
+    line-height: 1.8;
   }
   .panel-gso .col-en td:last-child { text-align: right; white-space: nowrap; }
   .panel-gso .col-ar td:first-child { text-align: left; white-space: nowrap; }
@@ -345,9 +354,9 @@
   .panel-af thead th:first-child { text-align: left; }
   .panel-af tbody td {
     border-bottom: 1px solid #ddd;
-    padding: 7px 6px;
+    padding: 5px 6px 10px 6px;
     font-size: 8pt;
-    line-height: 1.65;
+    line-height: 1.8;
   }
   .panel-af td:not(:first-child) { text-align: right; white-space: nowrap; }
 
