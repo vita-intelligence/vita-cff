@@ -344,7 +344,7 @@ export function CommentCard({
           canResolveHere ||
           canReopen) ? (
           <div
-            className={`flex gap-0.5 rounded-xl bg-ink-0 p-0.5 text-[11px] opacity-0 shadow-sm ring-1 ring-ink-200 transition-opacity group-hover:opacity-100 focus-within:opacity-100 ${
+            className={`flex gap-0.5 rounded-xl bg-ink-0 p-0.5 text-[11px] opacity-60 shadow-sm ring-1 ring-ink-200 transition-opacity hover:opacity-100 group-hover:opacity-100 focus-within:opacity-100 ${
               isSelf ? "self-end" : "self-start"
             }`}
           >
