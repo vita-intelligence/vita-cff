@@ -24,12 +24,18 @@ export const labelDesignEndpoints = {
     `/api/organizations/${orgId}/label-designs/${ldId}/transitions/`,
   reviews: (orgId: string, ldId: string) =>
     `/api/organizations/${orgId}/label-designs/${ldId}/reviews/`,
+  specRender: (orgId: string, ldId: string) =>
+    `/api/organizations/${orgId}/label-designs/${ldId}/spec/`,
   contentBlockJson: (orgId: string, ldId: string) =>
     `/api/organizations/${orgId}/label-designs/${ldId}/content-block/`,
-  contentBlockPdf: (orgId: string, ldId: string) =>
-    `/api/organizations/${orgId}/label-designs/${ldId}/content-block/pdf/`,
-  contentBlockPng: (orgId: string, ldId: string) =>
-    `/api/organizations/${orgId}/label-designs/${ldId}/content-block/png/`,
+  contentBlockPdf: (orgId: string, ldId: string, region?: string) => {
+    const base = `/api/organizations/${orgId}/label-designs/${ldId}/content-block/pdf/`;
+    return region && region !== "all" ? `${base}?region=${region}` : base;
+  },
+  contentBlockPng: (orgId: string, ldId: string, region?: string) => {
+    const base = `/api/organizations/${orgId}/label-designs/${ldId}/content-block/png/`;
+    return region && region !== "all" ? `${base}?region=${region}` : base;
+  },
   contentBlockText: (orgId: string, ldId: string) =>
     `/api/organizations/${orgId}/label-designs/${ldId}/content-block/text/`,
   contentBlockHtml: (orgId: string, ldId: string) =>

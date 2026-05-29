@@ -16,6 +16,7 @@ from apps.label_design.api.views import (
     LabelDesignResumeView,
     LabelDesignReviewsView,
     LabelDesignScientistReviewView,
+    LabelDesignSpecRenderView,
     LabelDesignSubmitForReviewView,
     LabelDesignTransitionsView,
     LabelDesignUploadArtworkView,
@@ -74,6 +75,11 @@ urlpatterns = [
         f"{_org}/<uuid:label_design_id>/transitions/",
         LabelDesignTransitionsView.as_view(),
         name="transitions",
+    ),
+    path(
+        f"{_org}/<uuid:label_design_id>/spec/",
+        LabelDesignSpecRenderView.as_view(),
+        name="spec-render",
     ),
     path(
         f"{_org}/<uuid:label_design_id>/reviews/",

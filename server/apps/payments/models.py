@@ -98,6 +98,23 @@ class Payment(models.Model):
     )
     approved_at = models.DateTimeField(null=True, blank=True)
 
+    assigned_finance_officer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_payments",
+        help_text=_(
+            "Finance-team member who owns this payment (recording, "
+            "chasing, reconciliation). Pointer-only — being assigned "
+            "grants no capabilities. Gated by the "
+            "``finance.assign_officer`` capability. Mirrors the "
+            "``sales_person`` / ``lead_scientist`` pointer convention "
+            "and drives the ``scope=mine`` filter on the finance "
+            "queue."
+        ),
+    )
+
     status = models.CharField(
         _("status"),
         max_length=16,

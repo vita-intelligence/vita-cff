@@ -1,8 +1,10 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   Clock,
   Copy,
@@ -10,17 +12,24 @@ import {
   FileImage,
   FileText,
   Loader2,
+  Palette,
   UploadCloud,
+  X,
 } from "lucide-react";
 
 import { env } from "@/config/env";
 import { Link } from "@/i18n/navigation";
 import {
+  downloadContentBlockPdf,
+  downloadContentBlockPng,
+  useAssignLabelDesigner,
+  useContentBlockHtml,
   useContentBlockJson,
   useContentBlockText,
   useHoldLabelDesign,
   useLabelDesign,
   useLabelDesignReviews,
+  useLabelDesignSpec,
   useLabelDesignTransitions,
   useResumeLabelDesign,
   useSubmitDirectorReview,
@@ -28,8 +37,10 @@ import {
   useSubmitScientistReview,
   useUploadLabelArtwork,
 } from "@/services/label-design";
+import { useMemberships } from "@/services/members";
 import type { LabelDesignStatus } from "@/services/label-design/types";
 
+import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
 import { CHECKLIST_ITEMS, CHECKLIST_SECTIONS } from "./compliance-checklist";
 
 
@@ -108,6 +119,14 @@ export function LabellingWorkspace({
         </div>
       </header>
 
+      <AssignmentBar
+        orgId={orgId}
+        labelDesignId={labelDesignId}
+        designerId={data.assigned_designer}
+        designerEmail={data.assigned_designer_email}
+        canManage={canManage}
+      />
+
       <nav className="flex flex-wrap gap-1 border-b border-ink-200">
         {(
           [
@@ -153,21 +172,12 @@ export function LabellingWorkspace({
       ) : null}
 
       {tab === "spec" ? (
-        <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
-          <p className="text-xs text-ink-500">
-            Spec sheet:{" "}
-            {data.specification_sheet ? (
-              <Link
-                href={`/specifications/${data.specification_sheet}`}
-                className="text-orange-700 hover:underline"
-              >
-                Open in Spec Sheets
-              </Link>
-            ) : (
-              "not attached"
-            )}
-          </p>
-        </div>
+        <SpecTab
+          orgId={orgId}
+          labelDesignId={labelDesignId}
+          sheetId={data.specification_sheet}
+          title={data.formulation_name || ""}
+        />
       ) : null}
 
       {tab === "reviews" ? (
@@ -177,6 +187,197 @@ export function LabellingWorkspace({
       {tab === "audit" ? (
         <AuditTab orgId={orgId} labelDesignId={labelDesignId} />
       ) : null}
+    </section>
+  );
+}
+
+
+/** Designer pill + dropdown menu on the labelling workspace header.
+ *
+ * Visual + interaction mirror of ``LeadScientistMenu`` /
+ * ``SalesPersonMenu`` on the project workspace so designer
+ * assignment looks and feels identical to the scientist / sales
+ * pickers staff already use. Pill is orange to match the labelling
+ * brand colour the rest of the workspace uses; the dropdown is
+ * scoped to members tagged ``"designer"``.
+ */
+function AssignmentBar({
+  orgId,
+  labelDesignId,
+  designerId,
+  designerEmail,
+  canManage,
+}: {
+  orgId: string;
+  labelDesignId: string;
+  designerId: string | null;
+  designerEmail: string;
+  canManage: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Lazy fetch — only hit the roster endpoint once the picker is
+  // actually opened, matching ``LeadScientistMenu``'s pattern.
+  const designersQuery = useMemberships(orgId, {
+    enabled: open && canManage,
+    group: "designer",
+  });
+  const assignDesigner = useAssignLabelDesigner(orgId, labelDesignId);
+
+  // Close the menu on click-outside. Inlined here (rather than a
+  // shared hook) to keep the workspace file self-contained.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(e.target as Node)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [open]);
+
+  const members = useMemo(() => {
+    const rows = designersQuery.data ?? [];
+    const seen = new Set<string>();
+    const out: { id: string; name: string; email: string }[] = [];
+    for (const row of rows) {
+      if (seen.has(row.user.id)) continue;
+      seen.add(row.user.id);
+      const name =
+        (row.user.full_name && row.user.full_name.trim()) || row.user.email;
+      out.push({ id: row.user.id, name, email: row.user.email });
+    }
+    out.sort((a, b) => a.name.localeCompare(b.name));
+    return out;
+  }, [designersQuery.data]);
+
+  const pillLabel = designerId
+    ? designerEmail || "Designer"
+    : "Designer unassigned";
+
+  const pillClasses = designerId
+    ? "bg-orange-100 text-orange-700 ring-orange-200"
+    : "bg-ink-50 text-ink-600 ring-ink-200";
+
+  if (!canManage) {
+    return (
+      <section>
+        <span
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${pillClasses}`}
+          title={
+            designerId
+              ? `Designer: ${designerEmail || ""}`
+              : "Designer unassigned"
+          }
+        >
+          <Palette className="h-3.5 w-3.5" />
+          {pillLabel}
+        </span>
+      </section>
+    );
+  }
+
+  const handleAssign = async (userId: string | null) => {
+    setOpen(false);
+    if (userId === (designerId ?? null)) return;
+    try {
+      await assignDesigner.mutateAsync(userId);
+    } catch {
+      // Surface noise lives on the mutation result; the menu is
+      // already closed so we don't fight the user's flow.
+    }
+  };
+
+  return (
+    <section>
+      <div ref={containerRef} className="relative inline-block">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          disabled={assignDesigner.isPending}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-opacity hover:opacity-90 disabled:opacity-60 ${pillClasses}`}
+        >
+          <Palette className="h-3.5 w-3.5" />
+          {pillLabel}
+          <ChevronDown className="h-3 w-3" />
+        </button>
+        {open ? (
+          <div
+            role="menu"
+            className="absolute left-0 z-20 mt-2 flex w-72 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
+          >
+            <div className="flex items-center justify-between px-2 py-1.5">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                Designer
+              </span>
+              {designerId ? (
+                <button
+                  type="button"
+                  onClick={() => handleAssign(null)}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] font-medium text-ink-500 hover:bg-ink-50 hover:text-danger"
+                >
+                  <X className="h-3 w-3" />
+                  Clear
+                </button>
+              ) : null}
+            </div>
+            {designersQuery.isLoading ? (
+              <p className="px-2 py-3 text-xs text-ink-500">Loading…</p>
+            ) : members.length === 0 ? (
+              <p className="px-2 py-3 text-xs text-ink-500">
+                No members tagged{" "}
+                <code className="rounded bg-ink-100 px-1">designer</code>. Add
+                the tag in Settings &gt; Members.
+              </p>
+            ) : (
+              <div className="max-h-72 overflow-y-auto">
+                {members.map((member) => {
+                  const isActive = member.id === designerId;
+                  return (
+                    <button
+                      key={member.id}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={isActive}
+                      disabled={assignDesigner.isPending}
+                      onClick={() => handleAssign(member.id)}
+                      className={`flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-ink-50 disabled:opacity-60 ${
+                        isActive ? "bg-orange-100" : ""
+                      }`}
+                    >
+                      <Palette className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-400" />
+                      <span className="flex min-w-0 flex-col">
+                        <span
+                          className={`truncate text-sm ${
+                            isActive
+                              ? "font-semibold text-ink-1000"
+                              : "text-ink-800"
+                          }`}
+                        >
+                          {member.name}
+                        </span>
+                        <span className="truncate text-[11px] text-ink-500">
+                          {member.email}
+                        </span>
+                      </span>
+                      {isActive ? (
+                        <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-600" />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }
@@ -555,6 +756,61 @@ function ReviewForm({
 }
 
 
+function SpecTab({
+  orgId,
+  labelDesignId,
+  sheetId,
+  title,
+}: {
+  orgId: string;
+  labelDesignId: string;
+  sheetId: string | null;
+  title: string;
+}) {
+  const renderedQuery = useLabelDesignSpec(
+    orgId,
+    labelDesignId,
+    Boolean(sheetId),
+  );
+
+  if (!sheetId) {
+    return (
+      <div className="rounded-2xl bg-ink-0 p-6 ring-1 ring-ink-200">
+        <p className="text-sm text-ink-500">
+          No specification sheet is attached to this label design yet.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <article className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+      <header className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <FileText className="h-4 w-4 text-orange-600" />
+          <h3 className="text-sm font-semibold text-ink-1000">
+            {title || "Specification sheet"}
+          </h3>
+        </div>
+      </header>
+      <div className="mt-3 h-[70vh] overflow-auto rounded-xl bg-ink-50 py-6 ring-1 ring-inset ring-ink-200 md:h-[780px]">
+        {renderedQuery.data ? (
+          <SpecSheetContent rendered={renderedQuery.data} />
+        ) : renderedQuery.isError ? (
+          <div className="flex h-full items-center justify-center text-sm text-ink-500">
+            Couldn’t load the spec sheet.
+          </div>
+        ) : (
+          <div className="flex h-full items-center justify-center text-sm text-ink-500">
+            Loading spec sheet…
+          </div>
+        )}
+      </div>
+    </article>
+  );
+}
+
+
 function ContentBlockTab({
   orgId,
   labelDesignId,
@@ -564,121 +820,138 @@ function ContentBlockTab({
   labelDesignId: string;
   apiBase: string;
 }) {
-  const json = useContentBlockJson(orgId, labelDesignId);
-  const text = useContentBlockText(orgId, labelDesignId);
-  const [copied, setCopied] = useState<string | null>(null);
+  const html = useContentBlockHtml(orgId, labelDesignId);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [iframeHeight, setIframeHeight] = useState<number>(600);
 
-  const copy = async (key: string, value: string) => {
+  // Auto-expand the iframe to fit its content so the page has a
+  // single scroll rather than a nested one. Re-measures on srcDoc
+  // change and on window resize so reflow inside the iframe stays
+  // honoured.
+  const resizeIframe = useCallback(() => {
+    const el = iframeRef.current;
+    const doc = el?.contentDocument;
+    if (!el || !doc) return;
+    // Read both — Safari sometimes underreports one of them.
+    const next = Math.max(
+      doc.documentElement.scrollHeight,
+      doc.body?.scrollHeight ?? 0,
+    );
+    if (next && Math.abs(next - iframeHeight) > 2) {
+      setIframeHeight(next);
+    }
+  }, [iframeHeight]);
+
+  // Per-region rows for the downloads list. ``slug`` matches the
+  // backend REGION_SLUGS tuple; an empty slug means "the full
+  // 9-panel document". Order mirrors the on-page preview so the
+  // download list reads the same as the panels above.
+  const regions = [
+    { slug: "all", label: "All 9 panels (full document)" },
+    { slug: "uk-eu", label: "UK / EU — Reg (EU) 1169/2011" },
+    { slug: "us", label: "US — FDA 21 CFR 101.9" },
+    { slug: "japan", label: "Japan — 健康増進法" },
+    { slug: "china", label: "China — GB 28050" },
+    { slug: "australia-nz", label: "Australia / NZ — FSANZ 1.2.8" },
+    { slug: "codex-asean", label: "Codex / ASEAN — CXG 2-1985" },
+    { slug: "gso-dubai", label: "Middle East — GSO 9:2013" },
+    { slug: "africa", label: "Africa — ZA R146-2010" },
+  ] as const;
+
+  const [busy, setBusy] = useState<string | null>(null);
+  const handleDownload = async (
+    region: string,
+    fmt: "pdf" | "png",
+  ) => {
+    const key = `${fmt}:${region}`;
+    setBusy(key);
     try {
-      await navigator.clipboard.writeText(value);
-      setCopied(key);
-      setTimeout(() => setCopied(null), 1500);
+      if (fmt === "pdf") {
+        await downloadContentBlockPdf(orgId, labelDesignId, region);
+      } else {
+        await downloadContentBlockPng(orgId, labelDesignId, region);
+      }
     } catch {
-      // ignore
+      // Fall through — the user will see no file; surfacing axios
+      // detail noise here would be more confusing than helpful.
+    } finally {
+      setBusy(null);
     }
   };
 
-  const pdfUrl = `${apiBase}/api/organizations/${orgId}/label-designs/${labelDesignId}/content-block/pdf/`;
-  const pngUrl = `${apiBase}/api/organizations/${orgId}/label-designs/${labelDesignId}/content-block/png/`;
-
   return (
-    <div className="grid gap-4 lg:grid-cols-2">
+    <div className="flex flex-col gap-4">
       <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-          Downloads
+          Per-region downloads
         </h3>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <a
-            href={pdfUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900"
-          >
-            <Download className="h-3 w-3" /> <FileText className="h-3 w-3" /> PDF
-          </a>
-          <a
-            href={pngUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold ring-1 ring-ink-200 hover:bg-ink-50"
-          >
-            <Download className="h-3 w-3" /> <FileImage className="h-3 w-3" /> PNG
-          </a>
-          {text.data?.full ? (
-            <button
-              type="button"
-              onClick={() => copy("all", text.data.full)}
-              className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold ring-1 ring-ink-200 hover:bg-ink-50"
-            >
-              {copied === "all" ? (
-                <Check className="h-3 w-3 text-emerald-600" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}{" "}
-              Copy all
-            </button>
-          ) : null}
-        </div>
-        <p className="mt-2 text-[11px] text-ink-500">
-          PDF stays sharp in any tool. PNG is for image-only paste targets.
+        <p className="mt-1 text-[11px] text-ink-500">
+          Grab the panel that matches the destination market. PDF stays sharp in any tool; PNG is for image-only paste targets.
         </p>
+        <div className="mt-3 divide-y divide-ink-100">
+          {regions.map((r) => (
+            <div
+              key={r.slug}
+              className="flex flex-wrap items-center justify-between gap-2 py-2 first:pt-0 last:pb-0"
+            >
+              <span className="text-xs font-medium text-ink-1000">{r.label}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => handleDownload(r.slug, "pdf")}
+                  className="inline-flex items-center gap-1 rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
+                >
+                  {busy === `pdf:${r.slug}` ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Download className="h-3 w-3" />
+                  )}{" "}
+                  <FileText className="h-3 w-3" /> PDF
+                </button>
+                <button
+                  type="button"
+                  disabled={busy !== null}
+                  onClick={() => handleDownload(r.slug, "png")}
+                  className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold ring-1 ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+                >
+                  {busy === `png:${r.slug}` ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Download className="h-3 w-3" />
+                  )}{" "}
+                  <FileImage className="h-3 w-3" /> PNG
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-          Sections (copy individually)
+          Preview · 9 regional panels
         </h3>
-        {text.isLoading ? (
-          <p className="mt-3 text-xs text-ink-500">Loading…</p>
-        ) : text.data?.sections ? (
-          <div className="mt-3 space-y-3">
-            {Object.entries(text.data.sections).map(([key, value]) => (
-              <div key={key} className="border-t border-ink-100 pt-2 first:border-t-0 first:pt-0">
-                <div className="flex items-center justify-between">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                    {key}
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => copy(key, value)}
-                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-ink-500 hover:text-ink-700"
-                  >
-                    {copied === key ? (
-                      <>
-                        <Check className="h-3 w-3 text-emerald-600" /> Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="h-3 w-3" /> Copy
-                      </>
-                    )}
-                  </button>
-                </div>
-                <pre className="mt-1 whitespace-pre-wrap font-mono text-[11px] text-ink-700">
-                  {value}
-                </pre>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200 lg:col-span-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
-          Preview
-        </h3>
-        {json.isLoading ? (
-          <p className="mt-3 text-xs text-ink-500">Loading…</p>
-        ) : json.error ? (
+        <p className="mt-1 text-[11px] text-ink-500">
+          This is exactly what the &ldquo;All 9 panels&rdquo; PDF / PNG download contains.
+        </p>
+        {html.isLoading ? (
+          <p className="mt-3 text-xs text-ink-500">Loading preview…</p>
+        ) : html.error ? (
           <p className="mt-3 text-xs text-danger">
-            Couldn’t derive the content block (no spec attached?)
+            Couldn&rsquo;t render the content block (no spec attached?)
           </p>
-        ) : json.data ? (
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <pre className="overflow-x-auto rounded bg-ink-50 p-3 font-mono text-[11px]">
-              {JSON.stringify(json.data, null, 2)}
-            </pre>
-          </div>
+        ) : html.data ? (
+          <iframe
+            ref={iframeRef}
+            title="Content block preview"
+            srcDoc={html.data}
+            sandbox="allow-same-origin"
+            onLoad={resizeIframe}
+            scrolling="no"
+            style={{ height: iframeHeight }}
+            className="mt-3 block w-full overflow-hidden rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200"
+          />
         ) : null}
       </div>
     </div>

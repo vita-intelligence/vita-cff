@@ -63,6 +63,72 @@ class CertLogoSlot:
 
 
 @dataclass(frozen=True)
+class CanonicalNutrition:
+    """Per-100g + per-serving canonical nutrition values.
+
+    The single source of truth that every regional panel reads from.
+    Values are strings so we can carry "TBC" placeholders alongside
+    real numbers without losing the regional template's column shape.
+
+    Salt → sodium conversion uses the regulatory ratio (1 g salt =
+    393 mg sodium ≈ salt ÷ 2.5). Derivation happens in
+    :func:`_resolve_canonical_nutrition`, not on the dataclass, so
+    this stays a frozen value type the template can read without
+    side effects.
+    """
+
+    # Energy — both units required by UK/EU; US uses kcal only;
+    # JP/CN/AU report kJ + kcal (or kJ only for CN).
+    energy_kj_per_100g: str = ""
+    energy_kcal_per_100g: str = ""
+    energy_kj_per_serving: str = ""
+    energy_kcal_per_serving: str = ""
+
+    # Fat group — total, saturated, trans (TBC). US is the only
+    # regime that mandates trans. Cholesterol is US-only.
+    fat_per_100g: str = ""
+    fat_per_serving: str = ""
+    fat_saturated_per_100g: str = ""
+    fat_saturated_per_serving: str = ""
+    fat_trans_per_100g: str = "TBC"
+    fat_trans_per_serving: str = "TBC"
+    cholesterol_per_100g: str = "TBC"
+    cholesterol_per_serving: str = "TBC"
+
+    # Carbohydrate group — total, sugars, added sugars (TBC, US-only),
+    # fibre. EU mandates total + sugars; US mandates added sugars too.
+    carbohydrate_per_100g: str = ""
+    carbohydrate_per_serving: str = ""
+    sugar_per_100g: str = ""
+    sugar_per_serving: str = ""
+    added_sugars_per_100g: str = "TBC"
+    added_sugars_per_serving: str = "TBC"
+    fibre_per_100g: str = ""
+    fibre_per_serving: str = ""
+
+    protein_per_100g: str = ""
+    protein_per_serving: str = ""
+
+    # UK/EU report Salt; US/JP/CN/AU report Sodium. We carry both —
+    # sodium is derived from salt when only salt is on the snapshot.
+    salt_per_100g: str = ""
+    salt_per_serving: str = ""
+    sodium_per_100g: str = ""
+    sodium_per_serving: str = ""
+
+    # US-only daily-value extras. TBC until the scientist captures
+    # them in the LabelDesign nutrition-extras form (future work).
+    vitamin_d_per_serving: str = "TBC"
+    calcium_per_serving: str = "TBC"
+    iron_per_serving: str = "TBC"
+    potassium_per_serving: str = "TBC"
+
+    #: ``True`` iff at least one contributor row is non-zero. Drives
+    #: the "no nutrition data yet" empty state on each panel.
+    has_data: bool = False
+
+
+@dataclass(frozen=True)
 class ComplianceContentBlock:
     """The spec-derived "what must appear on the label" payload."""
 
@@ -76,6 +142,7 @@ class ComplianceContentBlock:
     ingredients_list: tuple[IngredientLine, ...] = ()
     allergen_statement: str = ""
     nutrition_table: tuple[NutritionRow, ...] = ()
+    nutrition: CanonicalNutrition = field(default_factory=CanonicalNutrition)
     claims: tuple[str, ...] = ()
     storage_conditions: str = ""
     shelf_life: str = ""
@@ -193,21 +260,90 @@ def _resolve_allergen_statement(
 
 
 def _resolve_business_address(sheet: SpecificationSheet) -> str:
-    organization = getattr(sheet, "organization", None)
-    if organization is None:
-        return ""
-    parts = [
-        getattr(organization, "name", "") or "",
-        getattr(organization, "address_line_1", "") or "",
-        getattr(organization, "address_line_2", "") or "",
-        getattr(organization, "city", "") or "",
-        getattr(organization, "postal_code", "") or "",
-        getattr(organization, "country", "") or "",
-    ]
-    return "\n".join(part for part in parts if part.strip())
+    """Resolve the brand-owner's address for the label.
+
+    The label business address identifies the food business
+    operator under whose name the product is marketed
+    (EU 1169/2011 Art. 9 §1(h)). For Vita's private-label model
+    that is **the customer**, not Vita — Vita is the contract
+    manufacturer; the brand the consumer reads on the shelf is the
+    customer's.
+
+    Resolution order:
+    1. ``Proposal.customer`` linked to the spec sheet (or its
+       formulation version) → ``customer.company`` +
+       ``customer.invoice_address``.
+    2. Fallback to the spec sheet's denormalised
+       ``client_company`` / ``client_name`` — single line, no
+       address (designer fills the rest in their tool).
+    3. Empty if neither is available.
+
+    Manufacturing tenant (``sheet.organization``) is intentionally
+    NOT used here — putting Vita's address on a customer-branded
+    label would be a labelling error.
+    """
+
+    # Path 1: spec → proposal (OneToOne reverse) → customer.
+    customer = None
+    proposal = getattr(sheet, "proposal", None)
+    if proposal is not None:
+        customer = getattr(proposal, "customer", None)
+
+    # Path 2: spec.formulation_version → any Proposal for the
+    # same version with a customer set. Falls back when the spec
+    # has no direct proposal link (rare — auto-generated FINAL
+    # specs on trial-batch PASS go straight to LabelDesign).
+    if customer is None:
+        version = getattr(sheet, "formulation_version", None)
+        if version is not None:
+            try:
+                from apps.proposals.models import Proposal
+
+                fallback = (
+                    Proposal.objects.filter(
+                        formulation_version=version, customer__isnull=False
+                    )
+                    .select_related("customer")
+                    .order_by("-updated_at")
+                    .first()
+                )
+                if fallback is not None:
+                    customer = fallback.customer
+            except Exception:
+                customer = None
+
+    if customer is not None:
+        lines = []
+        company = (getattr(customer, "company", "") or "").strip()
+        if company:
+            lines.append(company)
+        address = (getattr(customer, "invoice_address", "") or "").strip()
+        if address:
+            lines.append(address)
+        if lines:
+            return "\n".join(lines)
+
+    # Path 3: denormalised client_company on the spec sheet itself.
+    client_company = (
+        getattr(sheet, "client_company", "")
+        or getattr(sheet, "client_name", "")
+        or ""
+    ).strip()
+    if client_company:
+        return client_company
+
+    return ""
 
 
 def _resolve_country_of_origin(sheet: SpecificationSheet) -> str:
+    """Country of origin = country where the food was manufactured.
+
+    For Vita's UK contract-manufacturing model this is the
+    manufacturing tenant's country (UK by default). Country of
+    origin is distinct from the brand-owner address — it's
+    factually where the goods were made, and that is Vita's
+    facility, not the customer's HQ.
+    """
     organization = getattr(sheet, "organization", None)
     if organization is None:
         return ""
@@ -277,6 +413,125 @@ def _resolve_servings_per_pack(sheet: SpecificationSheet) -> str:
     return str(servings) if servings is not None else ""
 
 
+#: Conversion factor from grams of salt to grams of sodium.
+#: 1 g NaCl ≈ 0.393 g Na — used by EU Regulation 1169/2011 Annex I
+#: (salt = sodium × 2.5) and reciprocally for sodium-on-label
+#: regimes (US, JP, CN, AU). Applied bidirectionally so a spec that
+#: records one axis can populate the other for the matching panel.
+SALT_TO_SODIUM_FACTOR = Decimal("0.393")
+SODIUM_TO_SALT_FACTOR = Decimal("2.5")
+
+
+def _format_nutrition_value(value: Any, *, places: int = 1) -> str:
+    """Format a nutrition value to ``places`` decimal places.
+
+    Returns the empty string for ``None`` / ``""`` so the template can
+    cleanly distinguish "data not derived" from the literal zero
+    that means "ingredient contributes none of this nutrient". A
+    contributors-aware caller decides which of those two stories the
+    panel tells.
+    """
+
+    if value is None or value == "":
+        return ""
+    try:
+        return format(
+            Decimal(str(value)).quantize(Decimal(10) ** -places), "f"
+        )
+    except Exception:
+        return _safe_str(value)
+
+
+def _format_energy(value: Any) -> str:
+    """Energy values are whole-number kJ/kcal in every regime."""
+    return _format_nutrition_value(value, places=0)
+
+
+def _resolve_canonical_nutrition(sheet: SpecificationSheet) -> CanonicalNutrition:
+    """Build the canonical per-100g + per-serving nutrition payload.
+
+    Reads :attr:`FormulationVersion.snapshot_totals` (frozen at the
+    spec's birth, so this is deterministic — re-running on the same
+    spec returns the same values). The snapshot stores rows under
+    the keys defined in
+    :data:`apps.formulations.constants.NUTRITION_KEYS`.
+
+    Sodium is back-derived from salt where the snapshot records
+    salt only — every regime except UK/EU expects sodium on the
+    label. We never overwrite a value the snapshot already has.
+    """
+
+    version = getattr(sheet, "formulation_version", None)
+    if version is None:
+        return CanonicalNutrition()
+    totals = getattr(version, "snapshot_totals", None) or {}
+    rows = (totals.get("nutrition") or {}).get("rows") or []
+
+    by_key: dict[str, dict[str, Any]] = {}
+    has_data = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        key = row.get("key") or row.get("slug")
+        if not key:
+            continue
+        by_key[key] = row
+        if (row.get("contributors") or 0) > 0:
+            has_data = True
+
+    def per_100g(key: str) -> Any:
+        return (by_key.get(key) or {}).get("per_100g")
+
+    def per_serving(key: str) -> Any:
+        return (by_key.get(key) or {}).get("per_serving")
+
+    # Salt → sodium back-derivation. UK/EU snapshot has salt; the
+    # other panels want sodium. If sodium isn't on the snapshot and
+    # salt is, derive it; otherwise leave both empty so the template
+    # shows nothing (rather than a misleading derived zero).
+    raw_salt_100g = per_100g("salt")
+    raw_salt_serving = per_serving("salt")
+
+    def _derive_sodium(salt_value: Any) -> str:
+        if salt_value is None or salt_value == "":
+            return ""
+        try:
+            grams = Decimal(str(salt_value)) * SALT_TO_SODIUM_FACTOR
+            # Sodium is reported in mg in every regime that uses it
+            # (US, JP, CN, AU/NZ) — convert grams → mg.
+            return _format_nutrition_value(grams * Decimal(1000), places=0)
+        except Exception:
+            return ""
+
+    return CanonicalNutrition(
+        energy_kj_per_100g=_format_energy(per_100g("energy_kj")),
+        energy_kcal_per_100g=_format_energy(per_100g("energy_kcal")),
+        energy_kj_per_serving=_format_energy(per_serving("energy_kj")),
+        energy_kcal_per_serving=_format_energy(per_serving("energy_kcal")),
+        fat_per_100g=_format_nutrition_value(per_100g("fat")),
+        fat_per_serving=_format_nutrition_value(per_serving("fat")),
+        fat_saturated_per_100g=_format_nutrition_value(per_100g("fat_saturated")),
+        fat_saturated_per_serving=_format_nutrition_value(
+            per_serving("fat_saturated")
+        ),
+        carbohydrate_per_100g=_format_nutrition_value(per_100g("carbohydrate")),
+        carbohydrate_per_serving=_format_nutrition_value(
+            per_serving("carbohydrate")
+        ),
+        sugar_per_100g=_format_nutrition_value(per_100g("sugar")),
+        sugar_per_serving=_format_nutrition_value(per_serving("sugar")),
+        fibre_per_100g=_format_nutrition_value(per_100g("fibre")),
+        fibre_per_serving=_format_nutrition_value(per_serving("fibre")),
+        protein_per_100g=_format_nutrition_value(per_100g("protein")),
+        protein_per_serving=_format_nutrition_value(per_serving("protein")),
+        salt_per_100g=_format_nutrition_value(raw_salt_100g, places=2),
+        salt_per_serving=_format_nutrition_value(raw_salt_serving, places=2),
+        sodium_per_100g=_derive_sodium(raw_salt_100g),
+        sodium_per_serving=_derive_sodium(raw_salt_serving),
+        has_data=has_data,
+    )
+
+
 def _resolve_directions_and_dosage(
     sheet: SpecificationSheet,
 ) -> tuple[str, str]:
@@ -311,7 +566,8 @@ def compute_content_block(spec: SpecificationSheet) -> ComplianceContentBlock:
         suggested_dosage=dosage,
         ingredients_list=ingredients,
         allergen_statement=_resolve_allergen_statement(ingredients),
-        nutrition_table=(),  # populated in a later slice — kept empty here
+        nutrition_table=(),  # legacy field — superseded by ``nutrition``
+        nutrition=_resolve_canonical_nutrition(spec),
         claims=(),
         storage_conditions=_safe_str(getattr(spec, "storage_conditions", "")),
         shelf_life=_safe_str(getattr(spec, "shelf_life", "")),
@@ -328,18 +584,50 @@ def compute_content_block(spec: SpecificationSheet) -> ComplianceContentBlock:
 # ---------------------------------------------------------------------------
 
 
-def render_content_block_html(block: ComplianceContentBlock) -> str:
-    """Render the block to an HTML string. The same template feeds
-    the PDF + PNG renderers, so all three formats stay visually
-    aligned."""
+#: Region slugs the template recognises. ``"all"`` (the default)
+#: renders the full document with brand header + 9 panels +
+#: ingredients + footer; any other slug renders just that single
+#: regulatory panel for a per-region download.
+REGION_SLUGS: tuple[str, ...] = (
+    "all",
+    "uk-eu",
+    "us",
+    "japan",
+    "china",
+    "australia-nz",
+    "codex-asean",
+    "gso-dubai",
+    "africa",
+)
 
+
+def render_content_block_html(
+    block: ComplianceContentBlock, *, region: str = "all"
+) -> str:
+    """Render the block to an HTML string.
+
+    Same template feeds the PDF + PNG renderers, so every format
+    stays visually aligned. ``region`` controls whether the full
+    document or a single regional panel is rendered — see
+    :data:`REGION_SLUGS` for the supported values. Unknown slugs
+    fall back to ``"all"`` so a malformed query parameter doesn't
+    blow up the renderer.
+    """
+    if region not in REGION_SLUGS:
+        region = "all"
     return render_to_string(
         "label_design/content_block.html",
-        {"block": block, "ingredients": block.ingredients_list},
+        {
+            "block": block,
+            "ingredients": block.ingredients_list,
+            "region": region,
+        },
     )
 
 
-def render_content_block_pdf(block: ComplianceContentBlock) -> bytes:
+def render_content_block_pdf(
+    block: ComplianceContentBlock, *, region: str = "all"
+) -> bytes:
     """Render the block to a PDF byte string via WeasyPrint.
 
     Lazy import: WeasyPrint loads cairo/pango at module-load time
@@ -351,12 +639,12 @@ def render_content_block_pdf(block: ComplianceContentBlock) -> bytes:
 
     from weasyprint import HTML  # noqa: WPS433 — see docstring
 
-    html_string = render_content_block_html(block)
+    html_string = render_content_block_html(block, region=region)
     return HTML(string=html_string).write_pdf()
 
 
 def render_content_block_png(
-    block: ComplianceContentBlock, *, dpi: int = 300
+    block: ComplianceContentBlock, *, dpi: int = 300, region: str = "all"
 ) -> bytes:
     """Rasterise the PDF to PNG via pypdfium2.
 
@@ -368,7 +656,7 @@ def render_content_block_png(
 
     import pypdfium2 as pdfium  # noqa: WPS433 — lazy for symmetry
 
-    pdf_bytes = render_content_block_pdf(block)
+    pdf_bytes = render_content_block_pdf(block, region=region)
     pdf = pdfium.PdfDocument(pdf_bytes)
     page = pdf[0]
     bitmap = page.render(scale=dpi / 72)

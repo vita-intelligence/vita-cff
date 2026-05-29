@@ -196,6 +196,30 @@ class LabelDesignDetailView(APIView):
         return Response(LabelDesignReadSerializer(label_design).data)
 
 
+class LabelDesignSpecRenderView(APIView):
+    """``GET`` ``/.../label-designs/<id>/spec/``.
+
+    Passthrough to ``apps.specifications.services.render_context`` for
+    the spec sheet attached to this label design. Lives on the
+    labelling API (not the specifications one) so a designer with
+    only ``labelling.view`` can read the spec without needing
+    ``formulations.view`` — the spec they get is strictly the one
+    bound to the label design they can already see.
+    """
+
+    permission_classes = [HasLabellingPermission]
+    required_capability = LabellingCapability.VIEW
+
+    def get(self, request: Request, **kwargs) -> Response:
+        from apps.specifications.services import render_context
+
+        label_design = _get_label_design(self.organization, kwargs["label_design_id"])
+        sheet = label_design.specification_sheet
+        if sheet is None:
+            raise NotFound("No spec sheet is attached to this label design.")
+        return Response(render_context(sheet))
+
+
 class LabelDesignAssignDesignerView(APIView):
     permission_classes = [HasLabellingPermission]
     required_capability = LabellingCapability.MANAGE
@@ -565,6 +589,18 @@ class LabelDesignContentBlockJSONView(APIView):
         return Response(block.to_dict())
 
 
+def _region_slug(request: Request) -> str:
+    """Read + sanitise the ``region`` query parameter.
+
+    Unknown values fall back to ``"all"`` rather than 400-ing so
+    the file-download path is always safe to click.
+    """
+    from apps.label_design.content_block import REGION_SLUGS
+
+    raw = (request.query_params.get("region") or "all").strip().lower()
+    return raw if raw in REGION_SLUGS else "all"
+
+
 class LabelDesignContentBlockPDFView(APIView):
     permission_classes = [HasLabellingPermission]
     required_capability = LabellingCapability.VIEW
@@ -575,11 +611,13 @@ class LabelDesignContentBlockPDFView(APIView):
             raise ValidationError(
                 {"detail": "No spec sheet attached.", "code": "no_spec"}
             )
+        region = _region_slug(request)
         block = compute_content_block(label_design.specification_sheet)
-        pdf_bytes = render_content_block_pdf(block)
+        pdf_bytes = render_content_block_pdf(block, region=region)
         response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        suffix = f"-{region}" if region != "all" else ""
         response["Content-Disposition"] = (
-            f'inline; filename="content-block-{label_design.id}.pdf"'
+            f'inline; filename="content-block-{label_design.id}{suffix}.pdf"'
         )
         return response
 
@@ -599,11 +637,13 @@ class LabelDesignContentBlockPNGView(APIView):
         except (TypeError, ValueError):
             dpi = 300
         dpi = max(72, min(dpi, 600))
+        region = _region_slug(request)
         block = compute_content_block(label_design.specification_sheet)
-        png_bytes = render_content_block_png(block, dpi=dpi)
+        png_bytes = render_content_block_png(block, dpi=dpi, region=region)
         response = HttpResponse(png_bytes, content_type="image/png")
+        suffix = f"-{region}" if region != "all" else ""
         response["Content-Disposition"] = (
-            f'inline; filename="content-block-{label_design.id}.png"'
+            f'inline; filename="content-block-{label_design.id}{suffix}.png"'
         )
         return response
 

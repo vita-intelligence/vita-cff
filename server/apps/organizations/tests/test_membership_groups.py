@@ -254,5 +254,9 @@ class TestMembershipGroupsEndpoint:
 
 def test_groups_constant_is_fixed_for_now() -> None:
     # Pin the supported group set so a code change introducing a
-    # third group doesn't slip in without a deliberate test update.
-    assert MEMBERSHIP_GROUPS == frozenset({"scientist", "sales"})
+    # new group doesn't slip in without a deliberate test update.
+    # ``designer`` and ``finance`` were added to scope the label-
+    # design and finance-payment queue pickers respectively.
+    assert MEMBERSHIP_GROUPS == frozenset(
+        {"scientist", "sales", "designer", "finance"}
+    )

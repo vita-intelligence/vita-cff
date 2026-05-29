@@ -246,6 +246,16 @@ class FinanceCapability:
     VIEW = "view"
     RECORD_PAYMENT = "record_payment"
     APPROVE_PAYMENT = "approve_payment"
+    #: Assign / clear the finance-officer pointer on a Payment —
+    #: i.e. who in the finance team owns recording / chasing this
+    #: specific customer payment. Mirrors
+    #: :attr:`FormulationsCapability.ASSIGN_SALES_PERSON` /
+    #: ``ASSIGN_LEAD_SCIENTIST``: pointer-only, no capability
+    #: inheritance. Lives on :class:`payments.Payment` (the unit
+    #: of work the finance team owns) rather than ``LabelDesign``
+    #: so the labelling team and finance team each have a clean
+    #: queue keyed on their own pointer.
+    ASSIGN_OFFICER = "assign_officer"
 
 
 class CFFSubmissionsCapability:
@@ -417,6 +427,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             FinanceCapability.VIEW,
             FinanceCapability.RECORD_PAYMENT,
             FinanceCapability.APPROVE_PAYMENT,
+            FinanceCapability.ASSIGN_OFFICER,
         ),
     ),
 }

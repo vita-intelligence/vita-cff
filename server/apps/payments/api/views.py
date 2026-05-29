@@ -15,7 +15,9 @@ from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
 from apps.organizations.modules import FinanceCapability
 from apps.payments.api.permissions import HasFinancePermission
+from apps.audit.services import record as record_audit
 from apps.payments.api.serializers import (
+    AssignPaymentFinanceOfficerSerializer,
     PaymentCreateSerializer,
     PaymentReadSerializer,
     PaymentVoidSerializer,
@@ -52,12 +54,21 @@ class PaymentListCreateView(APIView):
     def get(self, request: Request, **kwargs) -> Response:
         qs = (
             Payment.objects.filter(organization=self.organization)
-            .select_related("formulation", "recorded_by", "approved_by")
+            .select_related(
+                "formulation",
+                "recorded_by",
+                "approved_by",
+                "assigned_finance_officer",
+            )
             .order_by("-paid_at")
         )
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
+
+        finance_officer_filter = request.query_params.get("finance_officer")
+        if finance_officer_filter:
+            qs = qs.filter(assigned_finance_officer_id=finance_officer_filter)
 
         data = PaymentReadSerializer(qs, many=True).data
         return Response({"items": data})
@@ -122,6 +133,63 @@ class PaymentApproveView(APIView):
                 {"detail": "Payment is voided.", "code": "voided"}
             )
 
+        return Response(PaymentReadSerializer(payment).data)
+
+
+class PaymentAssignFinanceOfficerView(APIView):
+    """``POST .../payments/<id>/assign-finance-officer/`` — assign
+    or clear the finance-officer pointer on the payment row.
+
+    Gated by ``finance.assign_officer``. Pointer-only: being
+    assigned grants no extra capabilities, mirrors how
+    ``sales_person`` works on a project. Drives the ``scope=mine``
+    filter on the finance queue (``?finance_officer=<id>``).
+    """
+
+    permission_classes = [HasFinancePermission]
+    required_capability = FinanceCapability.ASSIGN_OFFICER
+
+    def post(self, request: Request, **kwargs) -> Response:
+        payment = Payment.objects.filter(
+            organization=self.organization, id=kwargs["payment_id"]
+        ).first()
+        if payment is None:
+            raise NotFound()
+
+        serializer = AssignPaymentFinanceOfficerSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        finance_officer_id = serializer.validated_data.get("finance_officer_id")
+
+        if finance_officer_id is None:
+            payment.assigned_finance_officer = None
+        else:
+            from apps.accounts.models import User
+            from apps.organizations.services import get_membership
+
+            user = User.objects.filter(pk=finance_officer_id).first()
+            if user is None or get_membership(user, self.organization) is None:
+                raise ValidationError(
+                    {
+                        "finance_officer_id": (
+                            "user is not a member of this organization"
+                        )
+                    }
+                )
+            payment.assigned_finance_officer = user
+        payment.save(update_fields=["assigned_finance_officer", "updated_at"])
+
+        record_audit(
+            organization=payment.organization,
+            actor=request.user,
+            action="payment.assign_finance_officer",
+            target=payment,
+            before=None,
+            after={
+                "assigned_finance_officer_id": (
+                    str(finance_officer_id) if finance_officer_id else None
+                )
+            },
+        )
         return Response(PaymentReadSerializer(payment).data)
 
 

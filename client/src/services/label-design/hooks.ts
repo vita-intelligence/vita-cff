@@ -13,10 +13,12 @@ import { rootQueryKey } from "@/lib/query";
 
 import {
   assignLabelDesigner,
+  fetchContentBlockHtml,
   fetchContentBlockJson,
   fetchContentBlockText,
   fetchLabelDesign,
   fetchLabelDesignReviews,
+  fetchLabelDesignSpec,
   fetchLabelDesignTransitions,
   fetchLabelDesigns,
   holdLabelDesign,
@@ -37,6 +39,8 @@ import {
   type PreferencesSubmitBody,
   type ReviewSubmitBody,
 } from "./api";
+import type { RenderedSheetContext } from "@/services/specifications";
+
 import type {
   ComplianceContentBlockDto,
   ContentBlockTextDto,
@@ -68,6 +72,10 @@ export const labelDesignKeys = {
     [...rootQueryKey, "label-design", "content-block-json", orgId, ldId] as const,
   contentBlockText: (orgId: string, ldId: string) =>
     [...rootQueryKey, "label-design", "content-block-text", orgId, ldId] as const,
+  contentBlockHtml: (orgId: string, ldId: string) =>
+    [...rootQueryKey, "label-design", "content-block-html", orgId, ldId] as const,
+  specRender: (orgId: string, ldId: string) =>
+    [...rootQueryKey, "label-design", "spec-render", orgId, ldId] as const,
   portalList: () => [...rootQueryKey, "label-design", "portal-list"] as const,
   portalDetail: (ldId: string) =>
     [...rootQueryKey, "label-design", "portal-detail", ldId] as const,
@@ -134,6 +142,19 @@ export function useLabelDesign(
 }
 
 
+export function useLabelDesignSpec(
+  orgId: string,
+  ldId: string,
+  enabled = true,
+): UseQueryResult<RenderedSheetContext> {
+  return useQuery({
+    queryKey: labelDesignKeys.specRender(orgId, ldId),
+    queryFn: () => fetchLabelDesignSpec(orgId, ldId),
+    enabled: enabled && Boolean(orgId) && Boolean(ldId),
+  });
+}
+
+
 export function useLabelDesignTransitions(
   orgId: string,
   ldId: string,
@@ -165,6 +186,18 @@ export function useContentBlockJson(
   return useQuery({
     queryKey: labelDesignKeys.contentBlockJson(orgId, ldId),
     queryFn: () => fetchContentBlockJson(orgId, ldId),
+    enabled: Boolean(orgId) && Boolean(ldId),
+  });
+}
+
+
+export function useContentBlockHtml(
+  orgId: string,
+  ldId: string,
+): UseQueryResult<string> {
+  return useQuery({
+    queryKey: labelDesignKeys.contentBlockHtml(orgId, ldId),
+    queryFn: () => fetchContentBlockHtml(orgId, ldId),
     enabled: Boolean(orgId) && Boolean(ldId),
   });
 }

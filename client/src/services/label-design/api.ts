@@ -5,6 +5,7 @@
  */
 
 import { apiClient } from "@/lib/api";
+import type { RenderedSheetContext } from "@/services/specifications";
 
 import { labelDesignEndpoints as ep } from "./endpoints";
 import type {
@@ -67,6 +68,89 @@ export async function fetchLabelDesign(
 ): Promise<LabelDesignDto> {
   const { data } = await apiClient.get<LabelDesignDto>(ep.detail(orgId, ldId));
   return data;
+}
+
+
+export async function fetchLabelDesignSpec(
+  orgId: string,
+  ldId: string,
+): Promise<RenderedSheetContext> {
+  const { data } = await apiClient.get<RenderedSheetContext>(
+    ep.specRender(orgId, ldId),
+  );
+  return data;
+}
+
+
+export async function fetchContentBlockHtml(
+  orgId: string,
+  ldId: string,
+): Promise<string> {
+  // ``responseType: 'text'`` so axios doesn't try to parse the HTML
+  // body as JSON. The endpoint returns the same template the PDF and
+  // PNG renderers use, so embedding the response in an iframe gives
+  // the staff a WYSIWYG preview that matches the download.
+  const { data } = await apiClient.get<string>(ep.contentBlockHtml(orgId, ldId), {
+    responseType: "text",
+  });
+  return data;
+}
+
+
+/** Fetch the per-region PDF as a blob and trigger a download.
+ *
+ * The PDF endpoint requires a Bearer token, which a plain
+ * ``<a href>`` link in a new tab can't carry — the browser only
+ * sends cookies on a navigation, and we authenticate via JWT.
+ * So we fetch the bytes through ``apiClient`` (which attaches the
+ * token), wrap them in an object URL, and click a synthesised
+ * link to fire the browser's "Save As" flow. The object URL is
+ * revoked after the download starts so we don't leak memory.
+ */
+export async function downloadContentBlockPdf(
+  orgId: string,
+  ldId: string,
+  region: string,
+): Promise<void> {
+  const { data } = await apiClient.get<Blob>(
+    ep.contentBlockPdf(orgId, ldId, region),
+    { responseType: "blob" },
+  );
+  const url = URL.createObjectURL(
+    new Blob([data], { type: "application/pdf" }),
+  );
+  const suffix = region && region !== "all" ? `-${region}` : "";
+  _triggerDownload(url, `content-block-${ldId}${suffix}.pdf`);
+}
+
+
+export async function downloadContentBlockPng(
+  orgId: string,
+  ldId: string,
+  region: string,
+): Promise<void> {
+  const { data } = await apiClient.get<Blob>(
+    ep.contentBlockPng(orgId, ldId, region),
+    { responseType: "blob" },
+  );
+  const url = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+  const suffix = region && region !== "all" ? `-${region}` : "";
+  _triggerDownload(url, `content-block-${ldId}${suffix}.png`);
+}
+
+
+function _triggerDownload(objectUrl: string, filename: string): void {
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  a.style.display = "none";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  // ``revokeObjectURL`` immediately is unsafe on Safari — it
+  // sometimes cancels the in-flight download. A short timeout
+  // gives the browser time to start writing the file.
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 

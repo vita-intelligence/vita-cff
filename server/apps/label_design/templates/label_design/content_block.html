@@ -1,115 +1,788 @@
 <!DOCTYPE html>
 {% comment %}
-  Single-page HTML rendering of the Compliance Content Block.
-  The same template feeds the on-screen preview (served as text/html
-  by the staff workspace), the PDF render (via WeasyPrint), and the
-  PNG render (PDF -> pypdfium2). Keep everything inline so PDF/PNG
-  embed cleanly without external resource fetches.
+  Multi-region Compliance Content Block.
+
+  Layout: a one-page brand header followed by nine regional Nutrition
+  Information panels, each rendered in its own regulatory style so the
+  designer can grab the panel that matches the destination market and
+  paste it into the artwork tool.
+
+  The same template feeds the on-screen preview (text/html), the PDF
+  render (WeasyPrint), and the PNG render (pypdfium2 rasterising the
+  PDF). Keep everything inline so the PDF/PNG embed cleanly without
+  external resource fetches.
+
+  Regulatory references:
+   * UK / EU      — Regulation (EU) 1169/2011, Annex XV
+   * US           — FDA 21 CFR 101.9 (2016 update)
+   * Japan        — Health Promotion Act, Standards for Nutrition
+                    Labelling (2015)
+   * China        — GB 28050 — National Standard for Nutrition Labelling
+   * Australia/NZ — FSANZ Standard 1.2.8 — Nutrition Information Panel
+   * Codex/ASEAN  — Codex CXG 2-1985 (rev. 2017)
+   * Dubai (GSO)  — GSO 9:2013 — Labelling of pre-packaged food
+   * Africa       — South Africa Regulation R146 of 2010 (Codex-aligned
+                    baseline used as a continent-wide proxy)
 {% endcomment %}
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Label content block — {{ block.product_name|default:"Product" }}</title>
 <style>
-  @page { size: A6; margin: 6mm; }
-  body {
-    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
-    color: #1a1a1a;
+  @page { size: A4; margin: 8mm; }
+  html, body {
+    font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    color: #111;
     font-size: 9pt;
     line-height: 1.35;
     margin: 0;
     padding: 0;
+    background: #fff;
   }
-  h1 {
-    font-size: 14pt;
-    margin: 0 0 4pt 0;
+  h1, h2, h3 { margin: 0; }
+  p { margin: 0 0 4pt 0; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { padding: 2pt 4pt; vertical-align: top; }
+  .muted { color: #555; }
+  .small { font-size: 7.5pt; }
+
+  /* ----- Brand header ----- */
+  .brand-head {
+    border-bottom: 2pt solid #111;
+    padding-bottom: 6pt;
+    margin-bottom: 10pt;
+  }
+  .brand-head h1 {
+    font-size: 16pt;
     font-weight: 700;
+    margin-bottom: 2pt;
   }
-  h2 {
+  .brand-head .meta { color: #555; font-size: 8.5pt; }
+
+  /* ----- Ingredients + allergen + footer block ----- */
+  .ingredients-block {
+    border-top: 0.5pt solid #ccc;
+    padding-top: 6pt;
+    margin-top: 8pt;
+  }
+  .ingredients-block h2 {
     font-size: 9pt;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.4pt;
-    margin: 8pt 0 2pt 0;
-    border-bottom: 0.5pt solid #1a1a1a;
-    padding-bottom: 1pt;
+    margin-bottom: 2pt;
   }
-  p { margin: 0 0 4pt 0; }
-  .meta { color: #555; font-size: 8pt; }
-  .ingredients { font-size: 8pt; }
-  .allergen { font-weight: 700; }
-  .business { white-space: pre-line; font-size: 8pt; }
-  ul { list-style: none; padding: 0; margin: 0; }
-  li { padding: 1pt 0; border-bottom: 0.25pt dotted #ccc; }
-  li:last-child { border-bottom: 0; }
-  .qty { color: #555; }
-  .nrv { color: #555; }
-  .allergen-tag {
-    display: inline-block;
-    background: #ffd24a;
-    padding: 0 3pt;
-    border-radius: 2pt;
-    margin-left: 4pt;
+  .ingredients-line { font-size: 8pt; }
+  .allergen-line {
+    font-weight: 700;
+    font-size: 8.5pt;
+    margin-top: 4pt;
+  }
+  .footer-block {
+    margin-top: 10pt;
+    font-size: 7.5pt;
+    color: #555;
+    white-space: pre-line;
+  }
+
+  /* ----- Panels grid ----- */
+  .panels-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8pt;
+  }
+  .panel {
+    border: 0.5pt solid #aaa;
+    padding: 6pt;
+    page-break-inside: avoid;
+    background: #fff;
+  }
+  .panel .panel-head {
     font-size: 7pt;
     font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5pt;
+    color: #555;
+    margin-bottom: 2pt;
+  }
+  .panel .panel-title {
+    font-size: 11pt;
+    font-weight: 700;
+    margin-bottom: 4pt;
+  }
+  .panel table { font-size: 8pt; }
+  .panel .empty-state {
+    color: #999;
+    font-style: italic;
+    font-size: 8pt;
+    padding: 6pt 0;
+  }
+
+  /* ----- UK / EU panel (EU 1169/2011) -----
+   * Per 100 g + per serving columns; salt last; thin black borders.
+   */
+  .panel-uk-eu { border: 1pt solid #111; }
+  .panel-uk-eu .panel-title {
+    border-bottom: 1pt solid #111;
+    padding-bottom: 2pt;
+  }
+  .panel-uk-eu th, .panel-uk-eu td {
+    border-bottom: 0.5pt solid #ddd;
+    padding: 1.5pt 4pt;
+  }
+  .panel-uk-eu th { text-align: right; font-size: 7pt; color: #555; }
+  .panel-uk-eu td:first-child { text-align: left; }
+  .panel-uk-eu td:not(:first-child) { text-align: right; white-space: nowrap; }
+  .panel-uk-eu .indent { padding-left: 12pt; color: #333; }
+
+  /* ----- US (FDA) Nutrition Facts panel -----
+   * Black 1.5pt border, Helvetica feel, bold Calories,
+   * heavy horizontal rules between major sections.
+   */
+  .panel-us {
+    border: 1.5pt solid #000;
+    padding: 4pt 6pt;
+    font-family: Helvetica, Arial, sans-serif;
+  }
+  .panel-us .panel-title {
+    font-size: 18pt;
+    font-weight: 900;
+    border-bottom: 2pt solid #000;
+    padding-bottom: 2pt;
+    margin-bottom: 0;
+  }
+  .panel-us .servings {
+    font-size: 8pt;
+    border-bottom: 0.5pt solid #000;
+    padding: 2pt 0;
+  }
+  .panel-us .calories-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 6pt solid #000;
+    padding: 2pt 0;
+  }
+  .panel-us .calories-row .label {
+    font-size: 9pt;
+    font-weight: 700;
+  }
+  .panel-us .calories-row .value {
+    font-size: 22pt;
+    font-weight: 900;
+  }
+  .panel-us .dv-head {
+    text-align: right;
+    font-size: 7pt;
+    font-weight: 700;
+    border-bottom: 0.5pt solid #000;
+    padding: 1pt 0;
+  }
+  .panel-us .row {
+    display: flex;
+    justify-content: space-between;
+    border-bottom: 0.5pt solid #000;
+    padding: 1.5pt 0;
+    font-size: 8pt;
+  }
+  .panel-us .row .name { font-weight: 700; }
+  .panel-us .row .name.indent { padding-left: 8pt; font-weight: 400; }
+  .panel-us .row .name.indent2 { padding-left: 16pt; font-weight: 400; }
+  .panel-us .row .dv { font-weight: 700; min-width: 36pt; text-align: right; }
+  .panel-us .row .amount { flex: 1; text-align: right; padding-right: 8pt; }
+  .panel-us .heavy { border-bottom: 4pt solid #000 !important; }
+  .panel-us .footnote {
+    font-size: 6.5pt;
+    margin-top: 4pt;
+    color: #333;
+    line-height: 1.25;
+  }
+
+  /* ----- Japan panel -----
+   * Centered table, 5 mandatory rows, salt-equivalent reported in g.
+   */
+  .panel-jp { border: 0.5pt solid #111; }
+  .panel-jp .panel-title { text-align: center; }
+  .panel-jp .panel-sub {
+    text-align: center;
+    font-size: 7.5pt;
+    color: #555;
+    margin-bottom: 4pt;
+  }
+  .panel-jp table th, .panel-jp table td {
+    border-bottom: 0.5pt solid #ccc;
+    padding: 1.5pt 4pt;
+  }
+  .panel-jp td:first-child { text-align: left; }
+  .panel-jp td:last-child { text-align: right; white-space: nowrap; }
+
+  /* ----- China GB 28050 panel -----
+   * 三栏: 项目 / 含量 / 营养素参考值 NRV%.
+   * Heavy header band, three columns.
+   */
+  .panel-cn { border: 1pt solid #111; }
+  .panel-cn .panel-title { text-align: center; }
+  .panel-cn .panel-sub {
+    text-align: center;
+    font-size: 7.5pt;
+    color: #555;
+    margin-bottom: 4pt;
+  }
+  .panel-cn thead th {
+    background: #f0f0f0;
+    border-top: 1pt solid #111;
+    border-bottom: 1pt solid #111;
+    font-size: 7.5pt;
+    font-weight: 700;
+    padding: 2pt 4pt;
+  }
+  .panel-cn tbody td {
+    border-bottom: 0.5pt solid #ddd;
+    padding: 1.5pt 4pt;
+    font-size: 8pt;
+  }
+  .panel-cn td:nth-child(2),
+  .panel-cn td:nth-child(3) { text-align: right; white-space: nowrap; }
+
+  /* ----- Australia / NZ NIP -----
+   * Per serving column FIRST, per 100 g second (NIP convention).
+   */
+  .panel-au { border: 0.5pt solid #111; }
+  .panel-au .panel-title { text-align: center; }
+  .panel-au thead th {
+    border-top: 0.75pt solid #111;
+    border-bottom: 0.75pt solid #111;
+    font-size: 7.5pt;
+    font-weight: 700;
+    text-align: right;
+    padding: 2pt 4pt;
+  }
+  .panel-au thead th:first-child { text-align: left; }
+  .panel-au tbody td {
+    border-bottom: 0.5pt solid #ddd;
+    padding: 1.5pt 4pt;
+    font-size: 8pt;
+  }
+  .panel-au td:not(:first-child) { text-align: right; white-space: nowrap; }
+  .panel-au .indent { padding-left: 12pt; color: #333; }
+
+  /* ----- Codex/ASEAN panel -----
+   * Minimal — per 100 g column; optional per-serving on the right.
+   */
+  .panel-codex { border: 0.5pt solid #aaa; }
+  .panel-codex thead th {
+    border-bottom: 0.5pt solid #111;
+    font-size: 7.5pt;
+    font-weight: 700;
+    text-align: right;
+    padding: 1.5pt 4pt;
+  }
+  .panel-codex thead th:first-child { text-align: left; }
+  .panel-codex tbody td {
+    border-bottom: 0.25pt solid #eee;
+    padding: 1pt 4pt;
+    font-size: 8pt;
+  }
+  .panel-codex td:not(:first-child) { text-align: right; white-space: nowrap; }
+
+  /* ----- GSO Dubai panel — bilingual Arabic/English -----
+   * Side-by-side English (LTR) and Arabic (RTL) columns,
+   * each carrying the same Codex-style declaration.
+   */
+  .panel-gso { border: 0.5pt solid #111; }
+  .panel-gso .panel-title { text-align: center; }
+  .panel-gso .bilingual {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6pt;
+    margin-top: 2pt;
+  }
+  .panel-gso .col-en { direction: ltr; text-align: left; }
+  .panel-gso .col-ar {
+    direction: rtl;
+    text-align: right;
+    font-family: "Noto Naskh Arabic", "Geeza Pro", "Amiri", "Segoe UI", sans-serif;
+  }
+  .panel-gso table th, .panel-gso table td {
+    border-bottom: 0.25pt solid #ddd;
+    padding: 1.5pt 4pt;
+    font-size: 8pt;
+  }
+  .panel-gso .col-en td:last-child { text-align: right; white-space: nowrap; }
+  .panel-gso .col-ar td:first-child { text-align: left; white-space: nowrap; }
+
+  /* ----- Africa panel (South Africa R146 baseline) ----- */
+  .panel-af { border: 0.5pt solid #111; }
+  .panel-af thead th {
+    border-bottom: 0.75pt solid #111;
+    font-size: 7.5pt;
+    font-weight: 700;
+    text-align: right;
+    padding: 2pt 4pt;
+  }
+  .panel-af thead th:first-child { text-align: left; }
+  .panel-af tbody td {
+    border-bottom: 0.5pt solid #ddd;
+    padding: 1.5pt 4pt;
+    font-size: 8pt;
+  }
+  .panel-af td:not(:first-child) { text-align: right; white-space: nowrap; }
+
+  /* TBC tag — visually marks fields awaiting designer / scientist input. */
+  .tbc {
+    color: #aa6c00;
+    font-style: italic;
+    font-size: 7.5pt;
   }
 </style>
 </head>
 <body>
+
+{% comment %}
+  Region awareness: the same template renders either the full
+  document (brand header + all 9 panels + ingredients + footer)
+  or a single panel in isolation, depending on the ``region``
+  context variable. ``"all"`` (or unset) = full; ``"uk-eu"`` /
+  ``"us"`` / ``"japan"`` / ``"china"`` / ``"australia-nz"`` /
+  ``"codex-asean"`` / ``"gso-dubai"`` / ``"africa"`` = single
+  panel only. The single-panel variant is what the per-region
+  download endpoints return, sized to a smaller page so the
+  designer gets a tight artefact to paste.
+{% endcomment %}
+{% if region|default:"all" == "all" %}
+<header class="brand-head">
   <h1>{{ block.product_name|default:"(product name TBC)" }}</h1>
   <p class="meta">
     {% if block.product_code %}Code: {{ block.product_code }}{% endif %}
-    {% if block.net_quantity %} · {{ block.net_quantity }}{% endif %}
+    {% if block.net_quantity %} · Net qty: {{ block.net_quantity }}{% endif %}
+    {% if block.serving_size %} · Serving: {{ block.serving_size }}{% endif %}
+    {% if block.servings_per_pack %} · {{ block.servings_per_pack }} servings/pack{% endif %}
   </p>
-
-  <h2>Serving</h2>
-  <p>
-    {% if block.serving_size %}Serving size: {{ block.serving_size }}<br>{% endif %}
-    {% if block.servings_per_pack %}Servings per pack: {{ block.servings_per_pack }}{% endif %}
-  </p>
-
   {% if block.directions_of_use or block.suggested_dosage %}
-  <h2>Directions of use</h2>
-  <p>
-    {% if block.directions_of_use %}{{ block.directions_of_use }}<br>{% endif %}
-    {% if block.suggested_dosage %}<em>Suggested dosage: {{ block.suggested_dosage }}</em>{% endif %}
-  </p>
+    <p class="small">
+      {% if block.directions_of_use %}<strong>Directions:</strong> {{ block.directions_of_use }}{% endif %}
+      {% if block.suggested_dosage %} · <em>{{ block.suggested_dosage }}</em>{% endif %}
+    </p>
   {% endif %}
+</header>
+{% endif %}
 
+<section class="panels-grid {% if region|default:"all" != "all" %}single-region{% endif %}">
+
+  {% comment %}
+    UK / EU — Regulation (EU) 1169/2011 Annex XV order:
+    Energy (kJ+kcal) → Fat → of which saturates → Carbohydrate →
+    of which sugars → (Fibre, voluntary) → Protein → Salt. Salt
+    reported in g (sodium × 2.5 per Annex I); we read it directly
+    from the snapshot. Indented "of which" rows are mandatory.
+  {% endcomment %}
+  <article class="panel panel-uk-eu">
+    <div class="panel-head">UK / EU · Reg (EU) 1169/2011</div>
+    <h2 class="panel-title">Nutrition Declaration</h2>
+    <table>
+      <thead>
+        <tr><th></th><th>per 100 g</th><th>per serving</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Energy</td>
+          <td>
+            {% if block.nutrition.energy_kj_per_100g %}{{ block.nutrition.energy_kj_per_100g }} kJ<br>{% endif %}
+            {% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} kcal{% endif %}
+            {% if not block.nutrition.energy_kj_per_100g and not block.nutrition.energy_kcal_per_100g %}—{% endif %}
+          </td>
+          <td>
+            {% if block.nutrition.energy_kj_per_serving %}{{ block.nutrition.energy_kj_per_serving }} kJ<br>{% endif %}
+            {% if block.nutrition.energy_kcal_per_serving %}{{ block.nutrition.energy_kcal_per_serving }} kcal{% endif %}
+            {% if not block.nutrition.energy_kj_per_serving and not block.nutrition.energy_kcal_per_serving %}—{% endif %}
+          </td>
+        </tr>
+        <tr>
+          <td>Fat</td>
+          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="indent">of which saturates</td>
+          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Carbohydrate</td>
+          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="indent">of which sugars</td>
+          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Fibre</td>
+          <td>{% if block.nutrition.fibre_per_100g %}{{ block.nutrition.fibre_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fibre_per_serving %}{{ block.nutrition.fibre_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Protein</td>
+          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Salt</td>
+          <td>{% if block.nutrition.salt_per_100g %}{{ block.nutrition.salt_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.salt_per_serving %}{{ block.nutrition.salt_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+  </article>
+
+  {% comment %}
+    US — FDA 21 CFR 101.9 (2016 update). Mandatory: Calories
+    (large), Total Fat, Sat Fat, Trans Fat, Cholesterol, Sodium,
+    Total Carb, Dietary Fiber, Total Sugars + Includes Added
+    Sugars (indented), Protein, Vitamin D, Calcium, Iron,
+    Potassium. %DV column required; 2000 kcal footnote required.
+    Trans fat / cholesterol / added sugars / vitamins flagged
+    TBC because the snapshot doesn't carry them — designer
+    captures via the (future) nutrition-extras form.
+  {% endcomment %}
+  <article class="panel panel-us">
+    <div class="panel-head" style="color:#333">USA · FDA 21 CFR 101.9</div>
+    <h2 class="panel-title">Nutrition Facts</h2>
+    <div class="servings">
+      {% if block.servings_per_pack %}{{ block.servings_per_pack }} servings per container<br>{% endif %}
+      <strong>Serving size</strong>
+      <span style="float:right">{{ block.serving_size|default:"TBC" }}</span>
+    </div>
+    <div class="dv-head">% Daily Value*</div>
+    <div class="calories-row">
+      <div class="label">Calories</div>
+      <div class="value">{{ block.nutrition.energy_kcal_per_serving|default:"—" }}</div>
+    </div>
+
+    <div class="row">
+      <div class="name">Total Fat <span class="amount">{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name indent">Saturated Fat <span class="amount">{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name indent">Trans Fat <span class="amount tbc">TBC</span></div>
+      <div class="dv"></div>
+    </div>
+    <div class="row">
+      <div class="name">Cholesterol <span class="amount tbc">TBC</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name">Sodium <span class="amount">{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name">Total Carbohydrate <span class="amount">{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name indent">Dietary Fiber <span class="amount">{% if block.nutrition.fibre_per_serving %}{{ block.nutrition.fibre_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row">
+      <div class="name indent">Total Sugars <span class="amount">{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv"></div>
+    </div>
+    <div class="row">
+      <div class="name indent2">Includes Added Sugars <span class="amount tbc">TBC</span></div>
+      <div class="dv">TBC</div>
+    </div>
+    <div class="row heavy">
+      <div class="name">Protein <span class="amount">{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</span></div>
+      <div class="dv"></div>
+    </div>
+
+    <div class="row"><div class="name indent">Vitamin D <span class="amount tbc">TBC</span></div><div class="dv">TBC</div></div>
+    <div class="row"><div class="name indent">Calcium <span class="amount tbc">TBC</span></div><div class="dv">TBC</div></div>
+    <div class="row"><div class="name indent">Iron <span class="amount tbc">TBC</span></div><div class="dv">TBC</div></div>
+    <div class="row"><div class="name indent">Potassium <span class="amount tbc">TBC</span></div><div class="dv">TBC</div></div>
+
+    <p class="footnote">* The % Daily Value (DV) tells you how much a nutrient in a serving of food contributes to a daily diet. 2,000 calories a day is used for general nutrition advice.</p>
+  </article>
+
+  {% comment %}
+    Japan — Health Promotion Act 2015. 5 mandatories:
+    エネルギー (Energy, kcal), たんぱく質 (Protein), 脂質 (Fat),
+    炭水化物 (Carbohydrate), 食塩相当量 (Salt equivalent, g). Per
+    serving (1食あたり) preferred; per 100g allowed. Salt-equivalent
+    = sodium × 2.54 (we read the snapshot's salt directly).
+  {% endcomment %}
+  <article class="panel panel-jp">
+    <div class="panel-head">Japan · 健康増進法 (2015)</div>
+    <h2 class="panel-title">栄養成分表示</h2>
+    <p class="panel-sub">Nutrition facts · per serving ({{ block.serving_size|default:"TBC" }})</p>
+    <table>
+      <tbody>
+        <tr><td>エネルギー (Energy)</td><td>{% if block.nutrition.energy_kcal_per_serving %}{{ block.nutrition.energy_kcal_per_serving }} kcal{% else %}—{% endif %}</td></tr>
+        <tr><td>たんぱく質 (Protein)</td><td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td></tr>
+        <tr><td>脂質 (Fat)</td><td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td></tr>
+        <tr><td>炭水化物 (Carbohydrate)</td><td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td></tr>
+        <tr><td>食塩相当量 (Salt equivalent)</td><td>{% if block.nutrition.salt_per_serving %}{{ block.nutrition.salt_per_serving }} g{% else %}—{% endif %}</td></tr>
+      </tbody>
+    </table>
+  </article>
+
+  {% comment %}
+    China — GB 28050. 1+4 mandatories: Energy + Protein + Fat +
+    Carb + Sodium. Three columns: 项目 (item) / 含量 (per 100g)
+    / NRV%. NRV% computed against GB daily values — flagged TBC
+    until the reference-value lookup is wired. Per 100g; optional
+    per-100mL for liquids (not in scope today).
+  {% endcomment %}
+  <article class="panel panel-cn">
+    <div class="panel-head">China · GB 28050</div>
+    <h2 class="panel-title">营养成分表</h2>
+    <p class="panel-sub">Nutrition Information Table</p>
+    <table>
+      <thead>
+        <tr><th>项目 (Item)</th><th>每 100 g (per 100 g)</th><th>NRV%</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>能量 (Energy)</td>
+          <td>{% if block.nutrition.energy_kj_per_100g %}{{ block.nutrition.energy_kj_per_100g }} kJ{% else %}—{% endif %}</td>
+          <td class="tbc">TBC</td>
+        </tr>
+        <tr>
+          <td>蛋白质 (Protein)</td>
+          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+          <td class="tbc">TBC</td>
+        </tr>
+        <tr>
+          <td>脂肪 (Fat)</td>
+          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+          <td class="tbc">TBC</td>
+        </tr>
+        <tr>
+          <td>碳水化合物 (Carbohydrate)</td>
+          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+          <td class="tbc">TBC</td>
+        </tr>
+        <tr>
+          <td>钠 (Sodium)</td>
+          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
+          <td class="tbc">TBC</td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="small muted" style="margin-top:3pt">NRV% calculations require Chinese reference values — populate via the regulatory step.</p>
+  </article>
+
+  {% comment %}
+    Australia / NZ — FSANZ Standard 1.2.8. Regulatory convention:
+    heading "NUTRITION INFORMATION" (caps), columns "Quantity per
+    Serving" + "Quantity per 100 g". Sodium (mg), not salt.
+  {% endcomment %}
+  <article class="panel panel-au">
+    <div class="panel-head">Australia / NZ · FSANZ 1.2.8</div>
+    <h2 class="panel-title" style="text-transform:uppercase">Nutrition Information</h2>
+    <p class="small muted">
+      Servings per pack: {{ block.servings_per_pack|default:"TBC" }} ·
+      Serving size: {{ block.serving_size|default:"TBC" }}
+    </p>
+    <table>
+      <thead>
+        <tr><th></th><th>Quantity per Serving</th><th>Quantity per 100 g</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Energy</td>
+          <td>{% if block.nutrition.energy_kj_per_serving %}{{ block.nutrition.energy_kj_per_serving }} kJ{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.energy_kj_per_100g %}{{ block.nutrition.energy_kj_per_100g }} kJ{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Protein</td>
+          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Fat, total</td>
+          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="indent">— saturated</td>
+          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Carbohydrate</td>
+          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td class="indent">— sugars</td>
+          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Sodium</td>
+          <td>{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+  </article>
+
+  {% comment %}
+    Codex / ASEAN — CXG 2-1985 rev 2017. Mandatory: Energy,
+    Protein, Available Carbohydrate, Fat. Recommended (we
+    include): Saturated Fat, Total Sugars, Sodium. Per 100g +
+    optional per serving. Baseline for ASEAN markets (Singapore,
+    Malaysia, Thailand, Indonesia, Vietnam, Philippines).
+  {% endcomment %}
+  <article class="panel panel-codex">
+    <div class="panel-head">Codex / ASEAN · CXG 2-1985 rev 2017</div>
+    <h2 class="panel-title">Nutrition Information</h2>
+    <table>
+      <thead>
+        <tr><th></th><th>per 100 g</th><th>per serving</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Energy</td>
+          <td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} kcal{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.energy_kcal_per_serving %}{{ block.nutrition.energy_kcal_per_serving }} kcal{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Protein</td>
+          <td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.protein_per_serving %}{{ block.nutrition.protein_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Fat</td>
+          <td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_per_serving %}{{ block.nutrition.fat_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>— Saturated</td>
+          <td>{% if block.nutrition.fat_saturated_per_100g %}{{ block.nutrition.fat_saturated_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.fat_saturated_per_serving %}{{ block.nutrition.fat_saturated_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Carbohydrate</td>
+          <td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.carbohydrate_per_serving %}{{ block.nutrition.carbohydrate_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>— Sugars</td>
+          <td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.sugar_per_serving %}{{ block.nutrition.sugar_per_serving }} g{% else %}—{% endif %}</td>
+        </tr>
+        <tr>
+          <td>Sodium</td>
+          <td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td>
+          <td>{% if block.nutrition.sodium_per_serving %}{{ block.nutrition.sodium_per_serving }} mg{% else %}—{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+  </article>
+
+  {% comment %}
+    GSO Dubai / GCC — GSO 9:2013. Bilingual English + Arabic
+    mandatory. Same nutrient set as Codex baseline. Arabic header
+    المعلومات الغذائية. RTL column uses Noto Naskh Arabic with
+    system Arabic font fallbacks; the PDF renderer will use
+    whichever Arabic font is installed on the host.
+  {% endcomment %}
+  <article class="panel panel-gso">
+    <div class="panel-head">Middle East · GSO 9:2013 (UAE / GCC)</div>
+    <h2 class="panel-title">Nutrition Information · المعلومات الغذائية</h2>
+    <div class="bilingual">
+      <div class="col-en">
+        <table>
+          <thead><tr><th></th><th>per 100 g</th></tr></thead>
+          <tbody>
+            <tr><td>Energy</td><td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} kcal{% else %}—{% endif %}</td></tr>
+            <tr><td>Protein</td><td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} g{% else %}—{% endif %}</td></tr>
+            <tr><td>Fat</td><td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} g{% else %}—{% endif %}</td></tr>
+            <tr><td>Carbohydrate</td><td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} g{% else %}—{% endif %}</td></tr>
+            <tr><td>Sugars</td><td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} g{% else %}—{% endif %}</td></tr>
+            <tr><td>Sodium</td><td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} mg{% else %}—{% endif %}</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="col-ar">
+        <table>
+          <thead><tr><th>لكل 100 جم</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>{% if block.nutrition.energy_kcal_per_100g %}{{ block.nutrition.energy_kcal_per_100g }} سعرة{% else %}—{% endif %}</td><td>الطاقة</td></tr>
+            <tr><td>{% if block.nutrition.protein_per_100g %}{{ block.nutrition.protein_per_100g }} جم{% else %}—{% endif %}</td><td>البروتين</td></tr>
+            <tr><td>{% if block.nutrition.fat_per_100g %}{{ block.nutrition.fat_per_100g }} جم{% else %}—{% endif %}</td><td>الدهون</td></tr>
+            <tr><td>{% if block.nutrition.carbohydrate_per_100g %}{{ block.nutrition.carbohydrate_per_100g }} جم{% else %}—{% endif %}</td><td>الكربوهيدرات</td></tr>
+            <tr><td>{% if block.nutrition.sugar_per_100g %}{{ block.nutrition.sugar_per_100g }} جم{% else %}—{% endif %}</td><td>السكريات</td></tr>
+            <tr><td>{% if block.nutrition.sodium_per_100g %}{{ block.nutrition.sodium_per_100g }} مجم{% else %}—{% endif %}</td><td>الصوديوم</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </article>
+
+  {% comment %}
+    Africa — South Africa R146 of 2010. Most stringent food-
+    labelling regulation in Africa and a reasonable continent-wide
+    proxy. Heading: "Typical Nutritional Information". Mandatory:
+    Energy (kJ), Protein, Glycaemic carbohydrate + of which total
+    sugar, Total fat + of which saturated, Dietary fibre, Total
+    sodium (mg). ECOWAS / SADC accept R146-style declarations.
+  {% endcomment %}
+  <article class="panel panel-af">
+    <div class="panel-head">Africa · ZA R146-2010 (Codex baseline)</div>
+    <h2 class="panel-title">Typical Nutritional Information</h2>
+    <table>
+      <thead>
+        <tr><th></th><th>per 100 g</th><th>per serving</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Energy (kJ)</td><td>{{ block.nutrition.energy_kj_per_100g|default:"—" }}</td><td>{{ block.nutrition.energy_kj_per_serving|default:"—" }}</td></tr>
+        <tr><td>Protein (g)</td><td>{{ block.nutrition.protein_per_100g|default:"—" }}</td><td>{{ block.nutrition.protein_per_serving|default:"—" }}</td></tr>
+        <tr><td>Glycaemic carbohydrate (g)</td><td>{{ block.nutrition.carbohydrate_per_100g|default:"—" }}</td><td>{{ block.nutrition.carbohydrate_per_serving|default:"—" }}</td></tr>
+        <tr><td>— of which total sugar (g)</td><td>{{ block.nutrition.sugar_per_100g|default:"—" }}</td><td>{{ block.nutrition.sugar_per_serving|default:"—" }}</td></tr>
+        <tr><td>Total fat (g)</td><td>{{ block.nutrition.fat_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_per_serving|default:"—" }}</td></tr>
+        <tr><td>— of which saturated (g)</td><td>{{ block.nutrition.fat_saturated_per_100g|default:"—" }}</td><td>{{ block.nutrition.fat_saturated_per_serving|default:"—" }}</td></tr>
+        <tr><td>Dietary fibre (g)</td><td>{{ block.nutrition.fibre_per_100g|default:"—" }}</td><td>{{ block.nutrition.fibre_per_serving|default:"—" }}</td></tr>
+        <tr><td>Total sodium (mg)</td><td>{{ block.nutrition.sodium_per_100g|default:"—" }}</td><td>{{ block.nutrition.sodium_per_serving|default:"—" }}</td></tr>
+      </tbody>
+    </table>
+  </article>
+
+</section>
+
+{# ---------------- Ingredients + allergens + footer ---------------- #}
+<section class="ingredients-block">
   <h2>Ingredients</h2>
   {% if ingredients %}
-    <ul class="ingredients">
-      {% for ing in ingredients %}
-        <li>
-          {{ ing.name }}
-          {% if ing.qty_label %}<span class="qty"> — {{ ing.qty_label }}</span>{% endif %}
-          {% if ing.nrv_percent %}<span class="nrv"> ({{ ing.nrv_percent }}% NRV)</span>{% endif %}
-          {% if ing.allergen_flag %}<span class="allergen-tag">ALLERGEN</span>{% endif %}
-        </li>
-      {% endfor %}
-    </ul>
+    <p class="ingredients-line">
+      {% for ing in ingredients %}{{ ing.name }}{% if ing.qty_label %} ({{ ing.qty_label }}){% endif %}{% if not forloop.last %}, {% endif %}{% endfor %}.
+    </p>
   {% else %}
-    <p class="meta">(no ingredients derived)</p>
+    <p class="muted small">(no ingredients derived)</p>
   {% endif %}
-
   {% if block.allergen_statement %}
-    <p class="allergen">{{ block.allergen_statement }}</p>
+    <p class="allergen-line">{{ block.allergen_statement }}</p>
   {% endif %}
+</section>
 
-  {% if block.storage_conditions or block.shelf_life %}
-  <h2>Storage</h2>
-  <p>
-    {% if block.storage_conditions %}{{ block.storage_conditions }}<br>{% endif %}
-    {% if block.shelf_life %}Shelf life: {{ block.shelf_life }}{% endif %}
-  </p>
+<section class="footer-block">
+  {% if block.storage_conditions %}<strong>Storage:</strong> {{ block.storage_conditions }}{% endif %}
+  {% if block.shelf_life %}{% if block.storage_conditions %} · {% endif %}<strong>Shelf life:</strong> {{ block.shelf_life }}{% endif %}
+  {% if block.business_address %}
+
+<strong>Manufactured by:</strong>
+{{ block.business_address }}
   {% endif %}
-
-  {% if block.business_address or block.country_of_origin %}
-  <h2>Manufactured by</h2>
-  <p class="business">{{ block.business_address }}</p>
   {% if block.country_of_origin %}
-    <p class="business">Country of origin: {{ block.country_of_origin }}</p>
-  {% endif %}
-  {% endif %}
+Country of origin: {{ block.country_of_origin }}{% endif %}
+</section>
+
 </body>
 </html>

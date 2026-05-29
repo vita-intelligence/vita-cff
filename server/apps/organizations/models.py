@@ -25,7 +25,9 @@ INVITATION_EXPIRY = timedelta(days=7)
 #: lifecycle: scientists author formulations and spec sheets;
 #: salespeople negotiate proposals. Adding a third group later is a
 #: one-line change.
-MEMBERSHIP_GROUPS: frozenset[str] = frozenset({"scientist", "sales"})
+MEMBERSHIP_GROUPS: frozenset[str] = frozenset(
+    {"scientist", "sales", "designer", "finance"}
+)
 
 
 def _generate_invitation_token() -> str:

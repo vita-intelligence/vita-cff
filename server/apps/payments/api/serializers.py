@@ -23,6 +23,9 @@ class PaymentReadSerializer(serializers.ModelSerializer):
     approved_by_email = serializers.CharField(
         source="approved_by.email", read_only=True, default=""
     )
+    assigned_finance_officer_email = serializers.CharField(
+        source="assigned_finance_officer.email", read_only=True, default=""
+    )
 
     class Meta:
         model = Payment
@@ -43,12 +46,18 @@ class PaymentReadSerializer(serializers.ModelSerializer):
             "approved_by",
             "approved_by_email",
             "approved_at",
+            "assigned_finance_officer",
+            "assigned_finance_officer_email",
             "status",
             "notes",
             "created_at",
             "updated_at",
         )
         read_only_fields = fields
+
+
+class AssignPaymentFinanceOfficerSerializer(serializers.Serializer):
+    finance_officer_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class PaymentCreateSerializer(serializers.Serializer):

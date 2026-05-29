@@ -27,8 +27,17 @@ export interface MembershipDto {
 }
 
 
-/** The two role tags admins can assign in Members > Edit. */
-export const MEMBERSHIP_GROUPS = ["scientist", "sales"] as const;
+/** Role tags admins can assign in Members > Edit. Drives the
+ *  picker scope on the staff queues (scientist on /rd-pipeline,
+ *  sales on /pipeline, designer on /labelling, finance on
+ *  /finance). The frontend list and the backend
+ *  ``MEMBERSHIP_GROUPS`` frozenset must stay in lockstep. */
+export const MEMBERSHIP_GROUPS = [
+  "scientist",
+  "sales",
+  "designer",
+  "finance",
+] as const;
 export type MembershipGroup = (typeof MEMBERSHIP_GROUPS)[number];
 
 
