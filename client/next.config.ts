@@ -61,6 +61,18 @@ const nextConfig: NextConfig = {
           source: "/ws/:path*",
           destination: `${BACKEND_INTERNAL_URL}/ws/:path*/`,
         },
+        // ``/media/*`` is Django's MEDIA_URL — uploaded files
+        // (artwork PDFs, signature images, etc.) live there in
+        // dev. Without this rewrite the browser, after fetching
+        // the JSON from /api/, follows the relative ``/media/...``
+        // URL against its own origin (``localhost:3000``) and
+        // 404s. In prod the storage backend returns full Azure
+        // Blob URLs from ``FileField.url`` so the rewrite is a
+        // no-op (Azure handles the request directly).
+        {
+          source: "/media/:path*",
+          destination: `${BACKEND_INTERNAL_URL}/media/:path*`,
+        },
         // ``/api/portal/*`` is always served by Django. We put it
         // at ``beforeFiles`` so it CANNOT be shadowed by any app
         // route — the customer portal pages live at

@@ -22,6 +22,7 @@ from django.db.models import Count, Q
 from django.http import HttpResponse
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -333,6 +334,10 @@ class LabelDesignUploadArtworkView(APIView):
     """
 
     permission_classes = [HasLabellingPermission]
+    # DRF defaults to JSON-only parsing; override here so the
+    # ``artwork`` FileField actually receives the upload body
+    # instead of returning 415 ``Unsupported Media Type``.
+    parser_classes = (MultiPartParser, FormParser)
     required_capability = LabellingCapability.DESIGN
 
     def post(self, request: Request, **kwargs) -> Response:

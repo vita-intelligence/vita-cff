@@ -1,5 +1,7 @@
 """Root URL configuration for the Vita NPD platform."""
 
+from django.conf import settings
+from django.conf.urls.static import static
 from django.contrib import admin
 from django.http import JsonResponse
 from django.urls import include, path
@@ -63,3 +65,17 @@ urlpatterns = [
         include("apps.label_design.api.urls", namespace="label_design"),
     ),
 ]
+
+
+# ``MEDIA_URL`` is served by Django itself only when ``DEBUG`` is
+# True. In production, ``django-storages`` returns full Azure Blob
+# URLs from every ``FileField.url`` — the browser hits Azure
+# directly so Django never serves a media file. The dev-only
+# helper below uses Django's built-in static-file view to serve
+# ``MEDIA_ROOT`` over HTTP so the Next.js ``/media/*`` rewrite
+# can reach uploaded artwork without an Azure account on the
+# developer's laptop.
+if settings.DEBUG:
+    urlpatterns += static(
+        settings.MEDIA_URL, document_root=settings.MEDIA_ROOT
+    )

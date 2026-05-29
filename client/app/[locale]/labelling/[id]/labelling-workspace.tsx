@@ -57,6 +57,23 @@ import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-
 import { CHECKLIST_ITEMS, CHECKLIST_SECTIONS } from "./compliance-checklist";
 
 
+// Artwork uploads accept .pdf, .png, .jpg, .jpeg — the FE has to
+// pick the right inline renderer based on the file the customer
+// or designer actually sent. URL-extension sniff is enough since
+// the backend's ``_safe_extension`` normalises the suffix at
+// save-time (see ``apps/label_design/models.py``).
+function isImageArtwork(url: string): boolean {
+  if (!url) return false;
+  const path = url.split("?")[0].split("#")[0].toLowerCase();
+  return /\.(png|jpe?g|gif|webp|avif)$/.test(path);
+}
+
+function isPdfArtwork(url: string): boolean {
+  if (!url) return false;
+  const path = url.split("?")[0].split("#")[0].toLowerCase();
+  return path.endsWith(".pdf");
+}
+
 const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   payment_pending: "Payment pending",
   label_path_pending: "Awaiting customer’s design path choice",
@@ -676,24 +693,55 @@ function ArtworkTab({
             ) : null}
           </header>
           {artworkPdfUrl ? (
-            <object
-              data={artworkPdfUrl}
-              type="application/pdf"
-              className="block h-[680px] w-full bg-ink-50"
-            >
-              <p className="p-4 text-sm text-ink-500">
-                Your browser can&rsquo;t preview PDFs inline.{" "}
+            isImageArtwork(artworkPdfUrl) ? (
+              // PNG / JPG upload — render the bitmap directly,
+              // centred and contained so portrait + landscape labels
+              // both look right. ``bg-checker`` would be nicer for
+              // transparency but a flat tone matches the PDF tray.
+              <div className="flex h-[680px] w-full items-center justify-center bg-ink-50 p-4">
+                <img
+                  src={artworkPdfUrl}
+                  alt="Current artwork"
+                  className="max-h-full max-w-full object-contain"
+                />
+              </div>
+            ) : isPdfArtwork(artworkPdfUrl) ? (
+              <object
+                data={artworkPdfUrl}
+                type="application/pdf"
+                className="block h-[680px] w-full bg-ink-50"
+              >
+                <p className="p-4 text-sm text-ink-500">
+                  Your browser can&rsquo;t preview PDFs inline.{" "}
+                  <a
+                    href={artworkPdfUrl}
+                    className="underline"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open in a new tab
+                  </a>
+                  .
+                </p>
+              </object>
+            ) : (
+              // Unknown file type — give a clear opt-in to open
+              // externally rather than guessing wrong.
+              <div className="flex h-[680px] flex-col items-center justify-center gap-3 bg-ink-50 px-6 text-center">
+                <FileText className="h-8 w-8 text-ink-400" />
+                <p className="text-sm text-ink-700">
+                  Inline preview unavailable for this file type.
+                </p>
                 <a
                   href={artworkPdfUrl}
-                  className="underline"
                   target="_blank"
                   rel="noopener noreferrer"
+                  className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-1000 px-3 text-xs font-semibold text-ink-0 hover:bg-ink-900"
                 >
-                  Open in a new tab
+                  <ExternalLink className="h-3.5 w-3.5" /> Open file
                 </a>
-                .
-              </p>
-            </object>
+              </div>
+            )
           ) : (
             <div className="flex h-[680px] flex-col items-center justify-center gap-3 bg-gradient-to-b from-ink-50 to-ink-0 px-6 text-center">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
@@ -1765,19 +1813,35 @@ function VersionsTab({
                   className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-1000 px-3 text-xs font-semibold text-ink-0 hover:bg-ink-900"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  PDF
+                  {isImageArtwork(r.artwork_pdf_url) ? "Image" : "PDF"}
                 </a>
               ) : null}
             </header>
 
             <div className="mt-3 grid gap-3 sm:grid-cols-[160px_1fr]">
               <div className="rounded-xl bg-ink-50 p-2 ring-1 ring-ink-200">
+                {/* Prefer the pre-rendered PNG (for PDF uploads),
+                    fall back to the artwork file itself when the
+                    upload IS an image (PNG/JPG), and only show "no
+                    preview" if neither is usable (e.g. PDF with no
+                    preview generator run yet). */}
                 {r.artwork_preview_png_url ? (
                   <img
                     src={r.artwork_preview_png_url}
                     alt={`Artwork revision ${r.revision_number}`}
                     className="mx-auto max-h-32 object-contain"
                   />
+                ) : isImageArtwork(r.artwork_pdf_url) ? (
+                  <img
+                    src={r.artwork_pdf_url}
+                    alt={`Artwork revision ${r.revision_number}`}
+                    className="mx-auto max-h-32 object-contain"
+                  />
+                ) : r.artwork_pdf_url ? (
+                  <div className="flex h-32 flex-col items-center justify-center gap-1 text-[10px] text-ink-500">
+                    <FileText className="h-5 w-5 text-ink-400" />
+                    PDF
+                  </div>
                 ) : (
                   <div className="flex h-32 items-center justify-center text-[10px] text-ink-500">
                     No preview

@@ -66,7 +66,11 @@ export default function CustomerHistoryPage({
                       rel="noopener noreferrer"
                       className="border-2 border-black bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-[0.18em] hover:bg-neutral-100"
                     >
-                      Open PDF
+                      {/\.(png|jpe?g|gif|webp|avif)(?:\?|#|$)/i.test(
+                        rev.artwork_pdf_url
+                      )
+                        ? "Open image"
+                        : "Open PDF"}
                     </a>
                   ) : null}
                 </div>

@@ -30,6 +30,10 @@ export default function CustomerApprovePage({
   const [error, setError] = useState<string | null>(null);
 
   const pdfUrl = data?.current_revision_detail?.artwork_pdf_url || "";
+  // Artwork can be PDF, PNG, or JPG — pick the right inline render
+  // by extension. The same backend FileField stores all three.
+  const isImage = /\.(png|jpe?g|gif|webp|avif)(?:\?|#|$)/i.test(pdfUrl);
+  const isPdf = /\.pdf(?:\?|#|$)/i.test(pdfUrl);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -66,14 +70,22 @@ export default function CustomerApprovePage({
               rel="noopener noreferrer"
               className="mt-3 inline-flex items-center gap-2 border-2 border-black bg-white px-3 py-1.5 text-xs font-bold uppercase tracking-[0.18em] hover:bg-neutral-100"
             >
-              Open artwork PDF
+              Open artwork {isImage ? "image" : "PDF"}
             </a>
           ) : (
             <p className="mt-3 text-sm text-neutral-500">
               No artwork attached yet.
             </p>
           )}
-          {pdfUrl ? (
+          {pdfUrl && isImage ? (
+            <div className="mt-4 flex h-[600px] w-full items-center justify-center border-2 border-black bg-neutral-50 p-4">
+              <img
+                src={pdfUrl}
+                alt="Final artwork"
+                className="max-h-full max-w-full object-contain"
+              />
+            </div>
+          ) : pdfUrl && isPdf ? (
             <object
               data={pdfUrl}
               type="application/pdf"

@@ -15,6 +15,7 @@ from django.template.loader import render_to_string
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -170,6 +171,8 @@ class PortalLabelDesignChoosePathView(PortalAPIView):
 
 
 class PortalLabelDesignPreferencesView(PortalAPIView):
+    parser_classes = (MultiPartParser, FormParser)
+
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
             label_design_id, request.user.customer_id
@@ -436,6 +439,8 @@ def _esign_trio(request: Request) -> dict:
 
 
 class PortalLabelDesignUploadArtworkView(PortalAPIView):
+    parser_classes = (MultiPartParser, FormParser)
+
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
             label_design_id, request.user.customer_id
