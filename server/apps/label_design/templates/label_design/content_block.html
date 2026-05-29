@@ -85,15 +85,22 @@
     white-space: pre-line;
   }
 
-  /* ----- Panels grid ----- */
+  /* ----- Panels grid -----
+   * ``align-items: start`` so each panel sizes to its own content
+   * height rather than stretching to the tallest panel in the row.
+   * Without this the UK/EU panel (short) shares a grid row with the
+   * US panel (tall) and gets captured with a giant empty area below
+   * when a designer downloads the single-region PDF.
+   */
   .panels-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 8pt;
+    align-items: start;
   }
   .panel {
-    border: 0.5pt solid #aaa;
-    padding: 6pt;
+    border: 1px solid #aaa;
+    padding: 12px;
     page-break-inside: avoid;
     background: #fff;
   }
@@ -121,14 +128,16 @@
   /* ----- UK / EU panel (EU 1169/2011) -----
    * Per 100 g + per serving columns; salt last; thin black borders.
    */
-  .panel-uk-eu { border: 1pt solid #111; }
+  .panel-uk-eu { border: 1px solid #111; }
   .panel-uk-eu .panel-title {
-    border-bottom: 1pt solid #111;
-    padding-bottom: 2pt;
+    border-bottom: 1px solid #111;
+    padding-bottom: 4px;
+    margin-bottom: 4px;
   }
   .panel-uk-eu th, .panel-uk-eu td {
-    border-bottom: 0.5pt solid #ddd;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ddd;
+    padding: 4px 6px;
+    line-height: 1.45;
   }
   .panel-uk-eu th { text-align: right; font-size: 7pt; color: #555; }
   .panel-uk-eu td:first-child { text-align: left; }
@@ -140,28 +149,30 @@
    * heavy horizontal rules between major sections.
    */
   .panel-us {
-    border: 1.5pt solid #000;
-    padding: 4pt 6pt;
+    border: 2px solid #000;
+    padding: 10px 12px;
     font-family: Helvetica, Arial, sans-serif;
   }
   .panel-us .panel-title {
     font-size: 18pt;
     font-weight: 900;
-    border-bottom: 2pt solid #000;
-    padding-bottom: 2pt;
+    border-bottom: 2px solid #000;
+    padding-bottom: 4px;
     margin-bottom: 0;
+    line-height: 1.1;
   }
   .panel-us .servings {
     font-size: 8pt;
-    border-bottom: 0.5pt solid #000;
-    padding: 2pt 0;
+    border-bottom: 1px solid #000;
+    padding: 4px 0;
+    line-height: 1.5;
   }
   .panel-us .calories-row {
     display: flex;
     justify-content: space-between;
     align-items: baseline;
-    border-bottom: 6pt solid #000;
-    padding: 2pt 0;
+    border-bottom: 6px solid #000;
+    padding: 4px 0;
   }
   .panel-us .calories-row .label {
     font-size: 9pt;
@@ -175,22 +186,24 @@
     text-align: right;
     font-size: 7pt;
     font-weight: 700;
-    border-bottom: 0.5pt solid #000;
-    padding: 1pt 0;
+    border-bottom: 1px solid #000;
+    padding: 3px 0;
+    line-height: 1.4;
   }
   .panel-us .row {
     display: flex;
     justify-content: space-between;
-    border-bottom: 0.5pt solid #000;
-    padding: 1.5pt 0;
+    border-bottom: 1px solid #000;
+    padding: 4px 0;
     font-size: 8pt;
+    line-height: 1.6;
   }
   .panel-us .row .name { font-weight: 700; }
   .panel-us .row .name.indent { padding-left: 8pt; font-weight: 400; }
   .panel-us .row .name.indent2 { padding-left: 16pt; font-weight: 400; }
   .panel-us .row .dv { font-weight: 700; min-width: 36pt; text-align: right; }
   .panel-us .row .amount { flex: 1; text-align: right; padding-right: 8pt; }
-  .panel-us .heavy { border-bottom: 4pt solid #000 !important; }
+  .panel-us .heavy { border-bottom: 4px solid #000 !important; }
   .panel-us .footnote {
     font-size: 6.5pt;
     margin-top: 4pt;
@@ -201,7 +214,7 @@
   /* ----- Japan panel -----
    * Centered table, 5 mandatory rows, salt-equivalent reported in g.
    */
-  .panel-jp { border: 0.5pt solid #111; }
+  .panel-jp { border: 1px solid #111; }
   .panel-jp .panel-title { text-align: center; }
   .panel-jp .panel-sub {
     text-align: center;
@@ -210,8 +223,9 @@
     margin-bottom: 4pt;
   }
   .panel-jp table th, .panel-jp table td {
-    border-bottom: 0.5pt solid #ccc;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ccc;
+    padding: 4px 6px;
+    line-height: 1.45;
   }
   .panel-jp td:first-child { text-align: left; }
   .panel-jp td:last-child { text-align: right; white-space: nowrap; }
@@ -220,7 +234,7 @@
    * 三栏: 项目 / 含量 / 营养素参考值 NRV%.
    * Heavy header band, three columns.
    */
-  .panel-cn { border: 1pt solid #111; }
+  .panel-cn { border: 1px solid #111; }
   .panel-cn .panel-title { text-align: center; }
   .panel-cn .panel-sub {
     text-align: center;
@@ -230,16 +244,18 @@
   }
   .panel-cn thead th {
     background: #f0f0f0;
-    border-top: 1pt solid #111;
-    border-bottom: 1pt solid #111;
+    border-top: 1px solid #111;
+    border-bottom: 1px solid #111;
     font-size: 7.5pt;
     font-weight: 700;
-    padding: 2pt 4pt;
+    padding: 5px 6px;
+    line-height: 1.4;
   }
   .panel-cn tbody td {
-    border-bottom: 0.5pt solid #ddd;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ddd;
+    padding: 4px 6px;
     font-size: 8pt;
+    line-height: 1.5;
   }
   .panel-cn td:nth-child(2),
   .panel-cn td:nth-child(3) { text-align: right; white-space: nowrap; }
@@ -247,21 +263,23 @@
   /* ----- Australia / NZ NIP -----
    * Per serving column FIRST, per 100 g second (NIP convention).
    */
-  .panel-au { border: 0.5pt solid #111; }
+  .panel-au { border: 1px solid #111; }
   .panel-au .panel-title { text-align: center; }
   .panel-au thead th {
-    border-top: 0.75pt solid #111;
-    border-bottom: 0.75pt solid #111;
+    border-top: 1px solid #111;
+    border-bottom: 1px solid #111;
     font-size: 7.5pt;
     font-weight: 700;
     text-align: right;
-    padding: 2pt 4pt;
+    padding: 5px 6px;
+    line-height: 1.4;
   }
   .panel-au thead th:first-child { text-align: left; }
   .panel-au tbody td {
-    border-bottom: 0.5pt solid #ddd;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ddd;
+    padding: 4px 6px;
     font-size: 8pt;
+    line-height: 1.5;
   }
   .panel-au td:not(:first-child) { text-align: right; white-space: nowrap; }
   .panel-au .indent { padding-left: 12pt; color: #333; }
@@ -269,19 +287,21 @@
   /* ----- Codex/ASEAN panel -----
    * Minimal — per 100 g column; optional per-serving on the right.
    */
-  .panel-codex { border: 0.5pt solid #aaa; }
+  .panel-codex { border: 1px solid #aaa; }
   .panel-codex thead th {
-    border-bottom: 0.5pt solid #111;
+    border-bottom: 1px solid #111;
     font-size: 7.5pt;
     font-weight: 700;
     text-align: right;
-    padding: 1.5pt 4pt;
+    padding: 4px 6px;
+    line-height: 1.4;
   }
   .panel-codex thead th:first-child { text-align: left; }
   .panel-codex tbody td {
-    border-bottom: 0.25pt solid #eee;
-    padding: 1pt 4pt;
+    border-bottom: 1px solid #eee;
+    padding: 4px 6px;
     font-size: 8pt;
+    line-height: 1.5;
   }
   .panel-codex td:not(:first-child) { text-align: right; white-space: nowrap; }
 
@@ -289,7 +309,7 @@
    * Side-by-side English (LTR) and Arabic (RTL) columns,
    * each carrying the same Codex-style declaration.
    */
-  .panel-gso { border: 0.5pt solid #111; }
+  .panel-gso { border: 1px solid #111; }
   .panel-gso .panel-title { text-align: center; }
   .panel-gso .bilingual {
     display: grid;
@@ -304,27 +324,30 @@
     font-family: "Noto Naskh Arabic", "Geeza Pro", "Amiri", "Segoe UI", sans-serif;
   }
   .panel-gso table th, .panel-gso table td {
-    border-bottom: 0.25pt solid #ddd;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ddd;
+    padding: 4px 6px;
     font-size: 8pt;
+    line-height: 1.5;
   }
   .panel-gso .col-en td:last-child { text-align: right; white-space: nowrap; }
   .panel-gso .col-ar td:first-child { text-align: left; white-space: nowrap; }
 
   /* ----- Africa panel (South Africa R146 baseline) ----- */
-  .panel-af { border: 0.5pt solid #111; }
+  .panel-af { border: 1px solid #111; }
   .panel-af thead th {
-    border-bottom: 0.75pt solid #111;
+    border-bottom: 1px solid #111;
     font-size: 7.5pt;
     font-weight: 700;
     text-align: right;
-    padding: 2pt 4pt;
+    padding: 5px 6px;
+    line-height: 1.4;
   }
   .panel-af thead th:first-child { text-align: left; }
   .panel-af tbody td {
-    border-bottom: 0.5pt solid #ddd;
-    padding: 1.5pt 4pt;
+    border-bottom: 1px solid #ddd;
+    padding: 4px 6px;
     font-size: 8pt;
+    line-height: 1.5;
   }
   .panel-af td:not(:first-child) { text-align: right; white-space: nowrap; }
 
