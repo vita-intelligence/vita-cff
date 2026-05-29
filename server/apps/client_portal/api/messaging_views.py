@@ -47,6 +47,8 @@ from apps.client_portal.api.views import (
     _load_owned_proposal,
 )
 from apps.comments.broadcast import schedule_comment_broadcast
+from apps.comments.notifications import enqueue_notifications_for_comment
+from django.db import transaction as _db_tx
 from apps.comments.models import Comment, CommentReadState
 
 
@@ -380,6 +382,13 @@ class SpecMessagePostView(PortalAPIView):
             # would never push live; the staff side would only catch
             # them on the next 30s poll.
             schedule_comment_broadcast(comment, "created")
+            # Fire the comment-notification pipeline so staff
+            # @-mentions land in their inbox and a "customer
+            # posted" email goes to staff watching the thread.
+            # ``on_commit`` so a rollback suppresses both.
+            _db_tx.on_commit(
+                lambda c=comment: enqueue_notifications_for_comment(c.id)
+            )
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 
@@ -496,6 +505,13 @@ class ProposalChatPostView(PortalAPIView):
             # customer WS attached to this proposal sees the message
             # instantly instead of waiting for the next 30s poll.
             schedule_comment_broadcast(comment, "created")
+            # Fire the comment-notification pipeline so staff
+            # @-mentions land in their inbox and a "customer
+            # posted" email goes to staff watching the thread.
+            # ``on_commit`` so a rollback suppresses both.
+            _db_tx.on_commit(
+                lambda c=comment: enqueue_notifications_for_comment(c.id)
+            )
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 
@@ -653,6 +669,13 @@ class LabelDesignChatPostView(PortalAPIView):
                 parent=parent,
             )
             schedule_comment_broadcast(comment, "created")
+            # Fire the comment-notification pipeline so staff
+            # @-mentions land in their inbox and a "customer
+            # posted" email goes to staff watching the thread.
+            # ``on_commit`` so a rollback suppresses both.
+            _db_tx.on_commit(
+                lambda c=comment: enqueue_notifications_for_comment(c.id)
+            )
 
         return Response(_serialise(comment), status=status.HTTP_201_CREATED)
 

@@ -67,6 +67,8 @@ const paymentsEndpoints = {
     `/api/organizations/${orgId}/payments/${paymentId}/approve/`,
   void: (orgId: string, paymentId: string) =>
     `/api/organizations/${orgId}/payments/${paymentId}/void/`,
+  assignFinanceOfficer: (orgId: string, paymentId: string) =>
+    `/api/organizations/${orgId}/payments/${paymentId}/assign-finance-officer/`,
   pendingProjects: (orgId: string) =>
     `/api/organizations/${orgId}/payments/pending-projects/`,
 };
@@ -142,6 +144,43 @@ export async function fetchPayment(
 ): Promise<PaymentDto> {
   const { data } = await apiClient.get<PaymentDto>(
     paymentsEndpoints.detail(orgId, paymentId),
+  );
+  return data;
+}
+
+
+export interface PaymentEditBody {
+  readonly amount?: string;
+  readonly currency?: string;
+  readonly method?: PaymentMethod;
+  readonly external_reference?: string;
+  readonly invoice_number?: string;
+  readonly paid_at?: string;
+  readonly notes?: string;
+}
+
+
+export async function patchPayment(
+  orgId: string,
+  paymentId: string,
+  body: PaymentEditBody,
+): Promise<PaymentDto> {
+  const { data } = await apiClient.patch<PaymentDto>(
+    paymentsEndpoints.detail(orgId, paymentId),
+    body,
+  );
+  return data;
+}
+
+
+export async function assignPaymentFinanceOfficer(
+  orgId: string,
+  paymentId: string,
+  financeOfficerId: string | null,
+): Promise<PaymentDto> {
+  const { data } = await apiClient.post<PaymentDto>(
+    paymentsEndpoints.assignFinanceOfficer(orgId, paymentId),
+    { finance_officer_id: financeOfficerId },
   );
   return data;
 }
@@ -286,5 +325,38 @@ export function useVoidPayment(orgId: string) {
     mutationFn: (args: { paymentId: string; notes: string }) =>
       voidPayment(orgId, args.paymentId, args.notes),
     onSuccess: () => _invalidatePaymentLists(qc, orgId),
+  });
+}
+
+
+export function usePatchPayment(orgId: string, paymentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: PaymentEditBody) =>
+      patchPayment(orgId, paymentId, body),
+    onSuccess: () => {
+      qc.refetchQueries({
+        queryKey: paymentsQueryKeys.detail(orgId, paymentId),
+      });
+      _invalidatePaymentLists(qc, orgId);
+    },
+  });
+}
+
+
+export function useAssignPaymentFinanceOfficer(
+  orgId: string,
+  paymentId: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (financeOfficerId: string | null) =>
+      assignPaymentFinanceOfficer(orgId, paymentId, financeOfficerId),
+    onSuccess: () => {
+      qc.refetchQueries({
+        queryKey: paymentsQueryKeys.detail(orgId, paymentId),
+      });
+      _invalidatePaymentLists(qc, orgId);
+    },
   });
 }

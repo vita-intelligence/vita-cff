@@ -102,7 +102,7 @@ export function MessageBubble({
         <button
           type="button"
           onClick={onReply}
-          className="opacity-0 transition-opacity hover:underline group-hover:opacity-100 focus:opacity-100"
+          className="text-neutral-600 hover:text-black hover:underline focus:text-black"
         >
           ↩ Reply
         </button>

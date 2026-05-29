@@ -39,6 +39,16 @@ export default async function FinancePaymentDetailPage({
     "finance",
     "approve_payment",
   );
+  const canEdit = hasFlatCapability(
+    organization!,
+    "finance",
+    "record_payment",
+  );
+  const canAssignOfficer = hasFlatCapability(
+    organization!,
+    "finance",
+    "assign_officer",
+  );
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
@@ -49,6 +59,8 @@ export default async function FinancePaymentDetailPage({
           orgId={organization!.id}
           paymentId={id}
           canApprove={canApprove}
+          canEdit={canEdit}
+          canAssignOfficer={canAssignOfficer}
         />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">

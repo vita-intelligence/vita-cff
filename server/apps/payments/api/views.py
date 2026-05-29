@@ -19,6 +19,7 @@ from apps.audit.services import record as record_audit
 from apps.payments.api.serializers import (
     AssignPaymentFinanceOfficerSerializer,
     PaymentCreateSerializer,
+    PaymentEditSerializer,
     PaymentReadSerializer,
     PaymentVoidSerializer,
 )
@@ -142,22 +143,32 @@ class PaymentListCreateView(APIView):
 
 
 class PaymentDetailView(APIView):
-    """``GET /api/organizations/<org>/payments/<id>/``.
+    """``GET / PATCH /api/organizations/<org>/payments/<id>/``.
 
-    Single-payment detail surface for the staff detail page —
-    gives the finance team the full trace (who recorded, who
-    approved, when, voided?, linked label design, audit metadata)
-    that the list endpoint can't fit in a row. Same gate as the
-    list ``GET`` (``finance.view``); the detail view is read-only.
+    ``GET`` returns the full payment row for the detail page,
+    gated by ``finance.view``.
+
+    ``PATCH`` edits the mutable subset (amount, currency, method,
+    external reference, invoice number, paid date, notes) gated by
+    ``finance.record_payment``. Only allowed while the payment is
+    still ``pending`` — once approved or voided the row is locked
+    and the correct workflow is to void and re-record so the audit
+    trail stays clean.
     """
 
     permission_classes = [HasFinancePermission]
-    required_capability = FinanceCapability.VIEW
 
-    def get(self, request: Request, **kwargs) -> Response:
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        if request.method == "PATCH":
+            self.required_capability = FinanceCapability.RECORD_PAYMENT
+        else:
+            self.required_capability = FinanceCapability.VIEW
+        super().initial(request, *args, **kwargs)
+
+    def _load(self, payment_id) -> Payment:
         payment = (
             Payment.objects.filter(
-                organization=self.organization, id=kwargs["payment_id"]
+                organization=self.organization, id=payment_id
             )
             .select_related(
                 "formulation",
@@ -170,6 +181,44 @@ class PaymentDetailView(APIView):
         )
         if payment is None:
             raise NotFound()
+        return payment
+
+    def get(self, request: Request, **kwargs) -> Response:
+        return Response(PaymentReadSerializer(self._load(kwargs["payment_id"])).data)
+
+    def patch(self, request: Request, **kwargs) -> Response:
+        payment = self._load(kwargs["payment_id"])
+        if payment.status != PaymentStatus.PENDING:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "Cannot edit a payment once it has been approved or "
+                        "voided. Void this row and record a fresh one to "
+                        "make corrections."
+                    ),
+                    "code": "payment_locked",
+                }
+            )
+        serializer = PaymentEditSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        before = {
+            field: getattr(payment, field)
+            for field in serializer.validated_data.keys()
+        }
+        for field, value in serializer.validated_data.items():
+            setattr(payment, field, value)
+        payment.save(
+            update_fields=[*serializer.validated_data.keys(), "updated_at"]
+        )
+
+        record_audit(
+            organization=payment.organization,
+            actor=request.user,
+            action="payment.edit",
+            target=payment,
+            before={k: str(v) for k, v in before.items()},
+            after={k: str(getattr(payment, k)) for k in serializer.validated_data},
+        )
         return Response(PaymentReadSerializer(payment).data)
 
 

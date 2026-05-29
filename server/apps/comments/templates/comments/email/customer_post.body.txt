@@ -1,0 +1,14 @@
+Hi {{ recipient_name }},
+
+{{ author_label }} just left a message on {{ target_label }}:
+
+"{{ body_excerpt }}"
+
+Open the conversation to reply:
+{{ target_url }}
+
+You're getting this because you've been participating in this
+thread. Reply right inside the workspace — the customer sees
+your message in their portal.
+
+— {{ organization.name }}

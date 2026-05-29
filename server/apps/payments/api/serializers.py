@@ -84,3 +84,35 @@ class PaymentCreateSerializer(serializers.Serializer):
 
 class PaymentVoidSerializer(serializers.Serializer):
     notes = serializers.CharField(allow_blank=True, default="")
+
+
+class PaymentEditSerializer(serializers.Serializer):
+    """Editable subset of a Payment row. Every field is optional so
+    a PATCH can land just one column at a time. ``amount`` and
+    ``paid_at`` are included because finance frequently mis-keys
+    those at record time and needs to correct them before the
+    approval gate; status / approved_at / approved_by / recorded_by
+    are intentionally absent — those flip via the dedicated
+    approve / void actions.
+    """
+
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, required=False
+    )
+    currency = serializers.CharField(max_length=3, required=False)
+    method = serializers.ChoiceField(
+        choices=PaymentMethod.choices, required=False
+    )
+    external_reference = serializers.CharField(
+        max_length=160, allow_blank=True, required=False
+    )
+    invoice_number = serializers.CharField(
+        max_length=64, allow_blank=True, required=False
+    )
+    paid_at = serializers.DateTimeField(required=False)
+    notes = serializers.CharField(allow_blank=True, required=False)
+
+    def validate_amount(self, value: Decimal) -> Decimal:
+        if value <= 0:
+            raise serializers.ValidationError("amount must be positive")
+        return value

@@ -42,6 +42,12 @@ from django.utils.translation import gettext_lazy as _
 class CommentNotificationKind(models.TextChoices):
     MENTION = "mention", _("Mention")
     REPLY = "reply", _("Reply")
+    #: A customer posted a shared message on a thread a staff user
+    #: has been participating in. Fires for everyone who's
+    #: previously posted on the thread (a reasonable proxy for
+    #: "people watching this conversation") so the customer
+    #: doesn't end up waiting on a silent inbox.
+    CUSTOMER_POST = "customer_post", _("Customer post")
 
 
 class CommentNotificationStatus(models.TextChoices):

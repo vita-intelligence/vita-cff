@@ -73,6 +73,7 @@ def enqueue_notifications_for_comment(comment_id) -> None:
         _dispatch_mentions(comment)
         _dispatch_reply(comment)
         _dispatch_customer(comment)
+        _dispatch_customer_post_to_staff(comment)
     except Exception:  # noqa: BLE001 — never break the write path
         logger.exception(
             "Failed to enqueue comment notifications (comment_id=%s)",
@@ -132,6 +133,99 @@ def _dispatch_customer(comment: Comment) -> None:
 
     for email in recipients:
         _send_customer_once(comment=comment, recipient_email=email)
+
+
+def _dispatch_customer_post_to_staff(comment: Comment) -> None:
+    """Email every staff user who has previously posted on the
+    same thread when a customer posts a new shared message.
+
+    "Previously posted on the thread" is a reasonable proxy for
+    "people watching this conversation" — the assigned designer
+    / sales person / scientist will typically have replied at
+    least once, and any teammate who chimed in once expects to
+    see follow-ups. Dedupes via the same
+    :class:`CommentNotification` ledger as mentions / replies,
+    keyed on ``(comment, recipient, kind=customer_post)``.
+
+    Skips when:
+
+    * the comment isn't a customer post (staff author / guest with
+      no client_account → nothing to notify staff about),
+    * visibility isn't ``SHARED`` (an "internal" customer post is
+      a category error — the portal can't create one — but defend
+      anyway),
+    * the resolver yields zero staff (rare — usually means the
+      thread is brand new and the customer is the first to write,
+      in which case the @mention path or the dedicated CFF /
+      labelling triage rosters catch it instead).
+    """
+
+    # Only customer posts qualify. Staff-authored comments use the
+    # mention / reply paths.
+    if comment.author_id is not None:
+        return
+    if comment.client_account_id is None and not comment.guest_email:
+        return
+    if comment.visibility != Comment.Visibility.SHARED:
+        return
+
+    recipients = _resolve_staff_who_posted_on_thread(comment)
+    for user in recipients:
+        if not user.is_active or not user.email:
+            continue
+        _send_once(
+            comment=comment,
+            recipient=user,
+            kind=CommentNotificationKind.CUSTOMER_POST,
+        )
+
+
+def _resolve_staff_who_posted_on_thread(comment: Comment):
+    """Distinct staff users who have previously authored a comment
+    on the same target as ``comment``. Returns an iterable of
+    :class:`User` instances.
+
+    Uses the comment's denormalised FK column (formulation /
+    specification_sheet / proposal / cff_submission / label_design)
+    to scope the lookup so we never scan the whole comments table.
+    """
+
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    same_thread_qs = Comment.objects.filter(
+        organization_id=comment.organization_id,
+        is_deleted=False,
+        author__isnull=False,
+    ).exclude(id=comment.id)
+
+    if comment.label_design_id:
+        same_thread_qs = same_thread_qs.filter(
+            label_design_id=comment.label_design_id
+        )
+    elif comment.proposal_id:
+        same_thread_qs = same_thread_qs.filter(proposal_id=comment.proposal_id)
+    elif comment.specification_sheet_id:
+        same_thread_qs = same_thread_qs.filter(
+            specification_sheet_id=comment.specification_sheet_id
+        )
+    elif comment.cff_submission_id:
+        same_thread_qs = same_thread_qs.filter(
+            cff_submission_id=comment.cff_submission_id
+        )
+    elif comment.formulation_id:
+        same_thread_qs = same_thread_qs.filter(
+            formulation_id=comment.formulation_id
+        )
+    else:
+        return []
+
+    author_ids = (
+        same_thread_qs.values_list("author_id", flat=True).distinct()
+    )
+    return User.objects.filter(id__in=author_ids).only(
+        "id", "email", "first_name", "last_name", "is_active"
+    )
 
 
 def _dispatch_reply(comment: Comment) -> None:
@@ -544,16 +638,28 @@ def _describe_target(comment: Comment) -> tuple[str, str]:
     """
 
     base = getattr(settings, "APP_BASE_URL", "")
+    if comment.label_design_id is not None:
+        return "label design", f"{base}/labelling/{comment.label_design_id}"
+    if getattr(comment, "proposal_id", None):
+        from apps.proposals.models import Proposal
+
+        proposal = Proposal.objects.filter(id=comment.proposal_id).first()
+        if proposal is not None:
+            label = proposal.code or "proposal"
+            return label, f"{base}/proposals/{proposal.id}"
+    if getattr(comment, "cff_submission_id", None):
+        return (
+            "CFF submission",
+            f"{base}/cffs/{comment.cff_submission_id}",
+        )
+    if comment.specification_sheet_id is not None:
+        sheet = comment.specification_sheet
+        label = (sheet.code if sheet else "") or "specification sheet"
+        return label, f"{base}/specifications/{comment.specification_sheet_id}"
     if comment.formulation_id is not None:
         formulation = comment.formulation
         label = formulation.name or formulation.code or "project"
-        url = f"{base}/formulations/{formulation.id}"
-        return label, url
-    if comment.specification_sheet_id is not None:
-        sheet = comment.specification_sheet
-        label = sheet.code or "specification sheet"
-        url = f"{base}/specifications/{sheet.id}"
-        return label, url
+        return label, f"{base}/formulations/{formulation.id}"
     return "a project", base or ""
 
 
