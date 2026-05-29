@@ -69,7 +69,10 @@ export function PortalInboxBell() {
     }
   }, []);
 
-  // Boot + periodic refresh of the badge.
+  // Boot + periodic refresh of the badge. Also listens for an
+  // ad-hoc ``vita:portal-inbox-refresh`` window event so that
+  // marking a thread as read on any of the chat panels can flush
+  // the badge immediately without waiting for the 15s tick.
   useEffect(() => {
     refreshCount();
     let timer: ReturnType<typeof setInterval> | null = setInterval(refreshCount, POLL_MS);
@@ -77,15 +80,31 @@ export function PortalInboxBell() {
     const onVis = () => {
       if (document.visibilityState === "visible") refreshCount();
     };
+    const onAdhocRefresh = () => {
+      refreshCount();
+      if (open) {
+        // Drop-down's already open — pull the full list too so the
+        // row's unread count visually clears at the same tick.
+        refreshList();
+      }
+    };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener(
+      "vita:portal-inbox-refresh",
+      onAdhocRefresh,
+    );
     return () => {
       if (timer) clearInterval(timer);
       timer = null;
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener(
+        "vita:portal-inbox-refresh",
+        onAdhocRefresh,
+      );
     };
-  }, [refreshCount]);
+  }, [refreshCount, refreshList, open]);
 
   // Fetch the list lazily the first time the dropdown opens.
   // Refetch on every open after that so the user sees freshness.
@@ -181,11 +200,21 @@ export function PortalInboxBell() {
                     >
                       <div className="mb-1 flex items-center justify-between gap-2">
                         <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
-                          {t.entity_kind === "proposal"
-                            ? "Proposal"
-                            : t.parent_proposal
-                              ? `Spec · ${t.parent_proposal.code}`
-                              : "Specification"}
+                          {(() => {
+                            switch (t.entity_kind) {
+                              case "proposal":
+                                return "Proposal";
+                              case "label_design":
+                                return "Labelling";
+                              case "cff_submission":
+                                return "Submission";
+                              case "specification":
+                              default:
+                                return t.parent_proposal
+                                  ? `Spec · ${t.parent_proposal.code}`
+                                  : "Specification";
+                            }
+                          })()}
                         </span>
                         {t.unread_count > 0 ? (
                           <span className="inline-flex items-center border-2 border-black bg-black px-1.5 py-0.5 text-[9px] font-black uppercase tracking-widest text-white">

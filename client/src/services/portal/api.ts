@@ -220,6 +220,7 @@ export async function postSpecMessage(
 
 export async function markSpecMessagesRead(sheetId: string): Promise<void> {
   await apiClient.post(`/api/portal/specs/${sheetId}/messages/read/`, {});
+  _emitInboxRefresh();
 }
 
 
@@ -300,6 +301,21 @@ export async function markProposalChatRead(proposalId: string): Promise<void> {
     `/api/portal/proposals/${proposalId}/proposal-messages/read/`,
     {},
   );
+  _emitInboxRefresh();
+}
+
+
+/** Tell every mounted ``PortalInboxBell`` to flush its badge
+ *  immediately. Fired from each ``mark*Read`` helper so the bell
+ *  doesn't wait for the next 15s tick to reflect a freshly-read
+ *  thread. SSR-safe (the listener side is in a useEffect). */
+function _emitInboxRefresh(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.dispatchEvent(new CustomEvent("vita:portal-inbox-refresh"));
+  } catch {
+    // ignore
+  }
 }
 
 
@@ -342,6 +358,7 @@ export async function markLabelDesignChatRead(
     `/api/portal/label-designs/${labelDesignId}/messages/read/`,
     {},
   );
+  _emitInboxRefresh();
 }
 
 
@@ -434,6 +451,7 @@ export async function markCFFMessagesRead(submissionId: string): Promise<void> {
     `/api/portal/cffs/${submissionId}/messages/read/`,
     {},
   );
+  _emitInboxRefresh();
 }
 
 
@@ -441,7 +459,11 @@ export async function markCFFMessagesRead(submissionId: string): Promise<void> {
 
 
 export interface PortalInboxThread {
-  readonly entity_kind: "proposal" | "specification";
+  readonly entity_kind:
+    | "proposal"
+    | "specification"
+    | "cff_submission"
+    | "label_design";
   readonly entity_id: string;
   readonly entity_title: string;
   readonly deep_link: string;
