@@ -365,11 +365,101 @@ def _gather_cff_threads(client_account) -> list[dict[str, Any]]:
     return rows
 
 
+def _gather_label_design_threads(client_account) -> list[dict[str, Any]]:
+    """Build the inbox rows for every label design the client owns
+    that has at least one shared comment.
+
+    "Owns" follows the same join the per-thread loader uses
+    (:func:`_load_owned_label_design`): the label design's
+    formulation has at least one proposal whose customer is the
+    client's customer. The bell is the customer's first signal
+    that the labelling team has replied, so omitting label
+    designs here would silently break the user-reported
+    "I never get notifications" complaint.
+    """
+
+    from apps.label_design.models import LabelDesign
+    from apps.proposals.models import Proposal
+
+    formulation_ids = list(
+        Proposal.objects.filter(customer_id=client_account.customer_id)
+        .values_list("formulation_version__formulation_id", flat=True)
+        .distinct()
+    )
+    if not formulation_ids:
+        return []
+
+    label_design_ct = ContentType.objects.get_for_model(LabelDesign)
+    label_designs = (
+        LabelDesign.objects.filter(formulation_id__in=formulation_ids)
+        .filter(
+            comments__visibility=Comment.Visibility.SHARED,
+            comments__is_deleted=False,
+        )
+        .select_related("formulation")
+        .distinct()
+    )
+    read_rows = (
+        CommentReadState.objects.filter(
+            viewer_client=client_account,
+            content_type=label_design_ct,
+            object_id__in=[ld.id for ld in label_designs],
+        )
+        .values_list("object_id", "last_read_at")
+    )
+    last_read_by_id = {str(ld_id): ts for ld_id, ts in read_rows}
+
+    rows: list[dict[str, Any]] = []
+    for ld in label_designs:
+        latest = (
+            Comment.objects.filter(
+                label_design=ld,
+                visibility=Comment.Visibility.SHARED,
+                is_deleted=False,
+            )
+            .select_related("author", "client_account__customer")
+            .order_by("-created_at")
+            .first()
+        )
+        if latest is None:
+            continue
+        last_read = last_read_by_id.get(str(ld.id), _UNIX_EPOCH)
+        unread = (
+            Comment.objects.filter(
+                label_design=ld,
+                visibility=Comment.Visibility.SHARED,
+                is_deleted=False,
+                created_at__gt=last_read,
+            )
+            .exclude(client_account=client_account)
+            .count()
+        )
+        title = (
+            ld.formulation.name
+            or ld.formulation.code
+            or "Label design"
+        )
+        rows.append(
+            {
+                "entity_kind": "label_design",
+                "entity_id": str(ld.id),
+                "entity_title": title,
+                "deep_link": f"/portal/label-designs/{ld.id}",
+                "unread_count": unread,
+                "last_message_at": latest.created_at.isoformat(),
+                "last_message_preview": _preview(latest),
+                "last_message_author": _author_snapshot(latest),
+            }
+        )
+    return rows
+
+
 def _all_threads(client_account) -> list[dict[str, Any]]:
     rows = (
         _gather_proposal_threads(client_account)
         + _gather_spec_threads(client_account)
         + _gather_cff_threads(client_account)
+        + _gather_label_design_threads(client_account)
     )
     rows.sort(key=lambda r: r["last_message_at"], reverse=True)
     return rows

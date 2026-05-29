@@ -397,16 +397,37 @@ def _customer_id_for_target(comment: Comment):
         if customer_id:
             return customer_id
 
-    sheet_id = getattr(comment, "specification_sheet_id", None)
-    if sheet_id is None and getattr(comment, "label_design_id", None):
-        # LabelDesign → SpecificationSheet → Proposal → customer.
+    # Direct label_design → formulation → proposal → customer.
+    # Tried BEFORE the spec-sheet path because not every label
+    # design carries a ``specification_sheet`` FK (early-flow
+    # designs created from a PASSing trial batch sometimes don't
+    # have one yet), and we'd rather email the customer too
+    # eagerly than silently drop a notification.
+    if getattr(comment, "label_design_id", None):
         from apps.label_design.models import LabelDesign
 
-        sheet_id = (
+        ld_row = (
             LabelDesign.objects.filter(id=comment.label_design_id)
-            .values_list("specification_sheet_id", flat=True)
+            .values("formulation_id", "specification_sheet_id")
             .first()
         )
+        if ld_row:
+            if ld_row.get("formulation_id"):
+                customer_id = (
+                    Proposal.objects.filter(
+                        formulation_version__formulation_id=ld_row[
+                            "formulation_id"
+                        ],
+                        customer__isnull=False,
+                    )
+                    .order_by("-updated_at")
+                    .values_list("customer_id", flat=True)
+                    .first()
+                )
+                if customer_id:
+                    return customer_id
+
+    sheet_id = getattr(comment, "specification_sheet_id", None)
     if sheet_id:
         proposal_ids = list(
             Proposal.objects.filter(lines__specification_sheet_id=sheet_id)
