@@ -12,6 +12,7 @@ import {
   XCircle,
 } from "lucide-react";
 
+import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import {
   fetchPendingPaymentProjects,
@@ -448,9 +449,12 @@ function PaymentRow({
   return (
     <tr className="border-t border-ink-100 align-middle">
       <td className="px-3 py-2">
-        <div className="font-semibold text-ink-1000">
+        <Link
+          href={`/finance/payments/${payment.id}`}
+          className="block font-semibold text-ink-1000 hover:text-orange-700"
+        >
           {payment.formulation_code}
-        </div>
+        </Link>
         <div className="text-[11px] text-ink-500">
           {payment.formulation_name}
         </div>

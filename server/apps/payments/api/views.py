@@ -141,6 +141,38 @@ class PaymentListCreateView(APIView):
         )
 
 
+class PaymentDetailView(APIView):
+    """``GET /api/organizations/<org>/payments/<id>/``.
+
+    Single-payment detail surface for the staff detail page —
+    gives the finance team the full trace (who recorded, who
+    approved, when, voided?, linked label design, audit metadata)
+    that the list endpoint can't fit in a row. Same gate as the
+    list ``GET`` (``finance.view``); the detail view is read-only.
+    """
+
+    permission_classes = [HasFinancePermission]
+    required_capability = FinanceCapability.VIEW
+
+    def get(self, request: Request, **kwargs) -> Response:
+        payment = (
+            Payment.objects.filter(
+                organization=self.organization, id=kwargs["payment_id"]
+            )
+            .select_related(
+                "formulation",
+                "recorded_by",
+                "approved_by",
+                "assigned_finance_officer",
+                "label_design",
+            )
+            .first()
+        )
+        if payment is None:
+            raise NotFound()
+        return Response(PaymentReadSerializer(payment).data)
+
+
 class PaymentApproveView(APIView):
     """``POST /api/organizations/<org>/payments/<id>/approve/`` —
     flip a PENDING payment to APPROVED. Side-effect: drives the

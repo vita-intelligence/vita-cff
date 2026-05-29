@@ -40,6 +40,8 @@ export interface PaymentDto {
   readonly approved_at: string | null;
   readonly status: PaymentStatus;
   readonly notes: string;
+  readonly assigned_finance_officer: string | null;
+  readonly assigned_finance_officer_email: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -59,6 +61,8 @@ export interface PaymentCreateBody {
 
 const paymentsEndpoints = {
   list: (orgId: string) => `/api/organizations/${orgId}/payments/`,
+  detail: (orgId: string, paymentId: string) =>
+    `/api/organizations/${orgId}/payments/${paymentId}/`,
   approve: (orgId: string, paymentId: string) =>
     `/api/organizations/${orgId}/payments/${paymentId}/approve/`,
   void: (orgId: string, paymentId: string) =>
@@ -132,6 +136,17 @@ export async function fetchPayments(
 }
 
 
+export async function fetchPayment(
+  orgId: string,
+  paymentId: string,
+): Promise<PaymentDto> {
+  const { data } = await apiClient.get<PaymentDto>(
+    paymentsEndpoints.detail(orgId, paymentId),
+  );
+  return data;
+}
+
+
 export async function recordPayment(
   orgId: string,
   body: PaymentCreateBody,
@@ -172,6 +187,8 @@ export async function voidPayment(
 export const paymentsQueryKeys = {
   list: (orgId: string, status?: string) =>
     [...rootQueryKey, "payments", orgId, status ?? "all"] as const,
+  detail: (orgId: string, paymentId: string) =>
+    [...rootQueryKey, "payments", orgId, "detail", paymentId] as const,
   pendingProjects: (orgId: string, search: string) =>
     [
       ...rootQueryKey,
@@ -194,6 +211,18 @@ export function usePayments(
     queryKey: paymentsQueryKeys.list(orgId, status),
     queryFn: () => fetchPayments(orgId, status),
     enabled: Boolean(orgId),
+  });
+}
+
+
+export function usePayment(
+  orgId: string,
+  paymentId: string,
+): UseQueryResult<PaymentDto> {
+  return useQuery({
+    queryKey: paymentsQueryKeys.detail(orgId, paymentId),
+    queryFn: () => fetchPayment(orgId, paymentId),
+    enabled: Boolean(orgId && paymentId),
   });
 }
 

@@ -5,6 +5,7 @@ from django.urls import path
 from apps.payments.api.views import (
     PaymentApproveView,
     PaymentAssignFinanceOfficerView,
+    PaymentDetailView,
     PaymentListCreateView,
     PaymentVoidView,
     PendingPaymentProjectsView,
@@ -27,6 +28,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/payments/pending-projects/",
         PendingPaymentProjectsView.as_view(),
         name="payment-pending-projects",
+    ),
+    path(
+        "organizations/<uuid:org_id>/payments/<uuid:payment_id>/",
+        PaymentDetailView.as_view(),
+        name="payment-detail",
     ),
     path(
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/approve/",

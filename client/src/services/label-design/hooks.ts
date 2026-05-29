@@ -225,10 +225,17 @@ function _invalidateLabelDesign(
   orgId: string,
   ldId: string,
 ) {
-  qc.invalidateQueries({ queryKey: labelDesignKeys.detail(orgId, ldId) });
-  qc.invalidateQueries({ queryKey: labelDesignKeys.list(orgId) });
-  qc.invalidateQueries({ queryKey: labelDesignKeys.transitions(orgId, ldId) });
-  qc.invalidateQueries({ queryKey: labelDesignKeys.reviews(orgId, ldId) });
+  // ``refetchQueries`` (vs ``invalidateQueries``) forces a network
+  // round-trip even when there is no active observer momentarily —
+  // the Hold / Resume buttons unmount the moment the status flips
+  // (the parent swaps in the other button), and an invalidate-only
+  // call was racing the unmount in the resume case so the new state
+  // never landed until a manual refresh. Refetching is the safe
+  // hammer here.
+  qc.refetchQueries({ queryKey: labelDesignKeys.detail(orgId, ldId) });
+  qc.refetchQueries({ queryKey: labelDesignKeys.list(orgId) });
+  qc.refetchQueries({ queryKey: labelDesignKeys.transitions(orgId, ldId) });
+  qc.refetchQueries({ queryKey: labelDesignKeys.reviews(orgId, ldId) });
 }
 
 

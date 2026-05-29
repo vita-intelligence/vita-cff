@@ -96,6 +96,16 @@ def _proposal_model():
     return Proposal
 
 
+def _label_design_model():
+    """Lazy import — ``apps.label_design`` carries its own
+    signals + service dependencies that pull formulations /
+    specifications. Importing on first use keeps the comments
+    app loadable before those settle during initial migrations."""
+
+    from apps.label_design.models import LabelDesign
+    return LabelDesign
+
+
 def _cff_submission_model():
     """Lazy import — ``apps.cff_submissions.models`` would pull
     the Wix client + Celery tasks at module load; deferring to
@@ -123,6 +133,7 @@ def _supported_targets_dict() -> dict[type, str]:
         **_SUPPORTED_TARGETS,
         _proposal_model(): "proposal",
         _cff_submission_model(): "cff_submission",
+        _label_design_model(): "label_design",
     }
 
 
@@ -316,6 +327,11 @@ def create_comment(
         # still lets a triager flip something internal if they
         # need to discuss something the customer shouldn't see.
         "cff_submission",
+        # Label-design threads default to shared so the staff +
+        # customer can chat about artwork revisions on the portal
+        # workspace. The internal-only bubble explicitly passes
+        # ``visibility="internal"`` to override this default.
+        "label_design",
     }
     if visibility is None:
         resolved_visibility = (
