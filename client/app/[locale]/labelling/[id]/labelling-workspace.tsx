@@ -38,7 +38,10 @@ import {
   useUploadLabelArtwork,
 } from "@/services/label-design";
 import { useMemberships } from "@/services/members";
-import type { LabelDesignStatus } from "@/services/label-design/types";
+import type {
+  LabelDesignDto,
+  LabelDesignStatus,
+} from "@/services/label-design/types";
 
 import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
 import { CHECKLIST_ITEMS, CHECKLIST_SECTIONS } from "./compliance-checklist";
@@ -56,7 +59,7 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
   on_hold: "On hold",
 };
 
-type Tab = "artwork" | "content" | "spec" | "reviews" | "audit";
+type Tab = "artwork" | "content" | "brief" | "spec" | "reviews" | "audit";
 
 
 export function LabellingWorkspace({
@@ -132,6 +135,7 @@ export function LabellingWorkspace({
           [
             { key: "artwork", label: "Artwork" },
             { key: "content", label: "Content block" },
+            { key: "brief", label: "Customer brief" },
             { key: "spec", label: "Spec" },
             { key: "reviews", label: "Reviews" },
             { key: "audit", label: "Audit" },
@@ -169,6 +173,13 @@ export function LabellingWorkspace({
 
       {tab === "content" ? (
         <ContentBlockTab orgId={orgId} labelDesignId={labelDesignId} apiBase={apiBase} />
+      ) : null}
+
+      {tab === "brief" ? (
+        <BriefTab
+          preferences={data.preferences_detail}
+          designPath={data.design_path}
+        />
       ) : null}
 
       {tab === "spec" ? (
@@ -752,6 +763,227 @@ function ReviewForm({
       </div>
       {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
     </form>
+  );
+}
+
+
+/** Customer-brief tab — surfaces the MA-ST-B-009 design
+ *  preferences the customer submitted on the DESIGN_BY_US path
+ *  so the designer can actually act on the brief. Without this
+ *  the workspace silently hid the form payload behind a tab the
+ *  designer never opened — staff were guessing at the brand
+ *  colours and inspiration the customer had explicitly captured.
+ */
+function BriefTab({
+  preferences,
+  designPath,
+}: {
+  preferences: LabelDesignDto["preferences_detail"];
+  designPath: string;
+}) {
+  if (designPath === "design_by_customer") {
+    return (
+      <div className="rounded-2xl bg-ink-0 p-6 ring-1 ring-ink-200">
+        <p className="text-sm text-ink-500">
+          The customer is designing their own artwork, so no MA-ST-B-009
+          brief was submitted.
+        </p>
+      </div>
+    );
+  }
+  if (!preferences) {
+    return (
+      <div className="rounded-2xl bg-ink-0 p-6 ring-1 ring-ink-200">
+        <p className="text-sm text-ink-500">
+          No brief submitted yet — the workspace will surface the customer&rsquo;s
+          design preferences here once they fill in MA-ST-B-009.
+        </p>
+      </div>
+    );
+  }
+
+  const submittedAt = preferences.submitted_at
+    ? new Date(preferences.submitted_at).toLocaleString()
+    : "";
+
+  return (
+    <article className="space-y-4">
+      <header className="rounded-2xl bg-ink-0 p-5 ring-1 ring-ink-200">
+        <h2 className="text-base font-semibold text-ink-1000">
+          MA-ST-B-009 · Design preferences
+        </h2>
+        <p className="mt-1 text-xs text-ink-500">
+          Submitted by{" "}
+          <span className="text-ink-700">{preferences.submitted_by_client_email}</span>
+          {submittedAt ? ` · ${submittedAt}` : ""}
+        </p>
+      </header>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <BriefSection title="Project">
+          <BriefRow label="Company" value={preferences.company_name} />
+          <BriefRow label="Brand" value={preferences.brand_name} />
+          <BriefRow label="Products" value={preferences.product_names} />
+          <BriefRow label="Product codes" value={preferences.product_codes} />
+        </BriefSection>
+
+        <BriefSection title="Style + finish">
+          <BriefRow label="Design style" value={preferences.design_style} />
+          <BriefRow label="Material" value={preferences.material_type} />
+        </BriefSection>
+
+        <BriefSection title="Brand colours" className="lg:col-span-2">
+          {preferences.brand_colours.length === 0 ? (
+            <p className="text-xs text-ink-500">No colours supplied.</p>
+          ) : (
+            <div className="flex flex-wrap gap-3">
+              {preferences.brand_colours.map((c, i) => (
+                <div
+                  key={`${c.hex}-${i}`}
+                  className="flex items-center gap-2 rounded-lg bg-ink-50 px-3 py-2 ring-1 ring-ink-200"
+                >
+                  <span
+                    className="h-6 w-6 rounded ring-1 ring-ink-300"
+                    style={{ backgroundColor: c.hex || "#fff" }}
+                  />
+                  <div className="text-xs">
+                    <div className="font-medium text-ink-1000">
+                      {c.name || "(unnamed)"}
+                    </div>
+                    <div className="font-mono text-ink-500">
+                      {c.hex || "—"}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </BriefSection>
+
+        <BriefSection title="Elements to include" className="lg:col-span-2">
+          <p className="whitespace-pre-line text-sm text-ink-800">
+            {preferences.elements_to_include || "(none)"}
+          </p>
+        </BriefSection>
+
+        <BriefSection title="Inspiration URLs" className="lg:col-span-2">
+          {preferences.inspiration_urls.length === 0 ? (
+            <p className="text-xs text-ink-500">None.</p>
+          ) : (
+            <ul className="space-y-1 text-xs">
+              {preferences.inspiration_urls.map((url, i) => (
+                <li key={`${url}-${i}`}>
+                  <a
+                    href={url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-orange-700 hover:underline"
+                  >
+                    {url}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </BriefSection>
+
+        <BriefSection title="Inspiration files" className="lg:col-span-2">
+          {preferences.inspiration_file_urls.length === 0 ? (
+            <p className="text-xs text-ink-500">None.</p>
+          ) : (
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {preferences.inspiration_file_urls.map((f) => (
+                <li key={f.id}>
+                  <a
+                    href={f.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2 text-xs ring-1 ring-ink-200 hover:bg-ink-100"
+                  >
+                    <span className="truncate font-medium text-ink-1000">
+                      {f.original_name}
+                    </span>
+                    <span className="text-ink-500">
+                      {Math.max(1, Math.round(f.size_bytes / 1024))} KB
+                    </span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+        </BriefSection>
+
+        <BriefSection
+          title="Additional comments"
+          className="lg:col-span-2"
+        >
+          <p className="whitespace-pre-line text-sm text-ink-800">
+            {preferences.additional_comments || "(none)"}
+          </p>
+        </BriefSection>
+
+        <BriefSection title="Declaration" className="lg:col-span-2">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <BriefRow label="Name" value={preferences.declaration_name} />
+              <BriefRow
+                label="Position"
+                value={preferences.declaration_position}
+              />
+              <BriefRow
+                label="Signed at"
+                value={
+                  preferences.declaration_signed_at
+                    ? new Date(
+                        preferences.declaration_signed_at,
+                      ).toLocaleString()
+                    : ""
+                }
+              />
+            </div>
+            {preferences.declaration_signature_image ? (
+              <div className="rounded-lg bg-ink-50 p-3 ring-1 ring-ink-200">
+                <img
+                  src={preferences.declaration_signature_image}
+                  alt="Customer signature"
+                  className="mx-auto max-h-24"
+                />
+              </div>
+            ) : null}
+          </div>
+        </BriefSection>
+      </div>
+    </article>
+  );
+}
+
+function BriefSection({
+  title,
+  className,
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section
+      className={`rounded-2xl bg-ink-0 p-5 ring-1 ring-ink-200 ${className ?? ""}`}
+    >
+      <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-ink-700">
+        {title}
+      </h3>
+      {children}
+    </section>
+  );
+}
+
+function BriefRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1.5 text-xs">
+      <span className="font-medium text-ink-500">{label}</span>
+      <span className="truncate text-right text-ink-800">{value || "—"}</span>
+    </div>
   );
 }
 
