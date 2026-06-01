@@ -77,16 +77,22 @@ import { CHECKLIST_ITEMS, CHECKLIST_SECTIONS } from "./compliance-checklist";
 // or designer actually sent. URL-extension sniff is enough since
 // the backend's ``_safe_extension`` normalises the suffix at
 // save-time (see ``apps/label_design/models.py``).
+function _stripUrlSuffix(url: string): string {
+  // ``split()`` always returns a non-empty array at runtime but
+  // the ``noUncheckedIndexedAccess`` compiler flag widens ``[0]``
+  // to ``string | undefined``. The ``?? ""`` keeps TS happy
+  // without a narrowing dance.
+  return ((url.split("?")[0] ?? "").split("#")[0] ?? "").toLowerCase();
+}
+
 function isImageArtwork(url: string): boolean {
   if (!url) return false;
-  const path = url.split("?")[0].split("#")[0].toLowerCase();
-  return /\.(png|jpe?g|gif|webp|avif)$/.test(path);
+  return /\.(png|jpe?g|gif|webp|avif)$/.test(_stripUrlSuffix(url));
 }
 
 function isPdfArtwork(url: string): boolean {
   if (!url) return false;
-  const path = url.split("?")[0].split("#")[0].toLowerCase();
-  return path.endsWith(".pdf");
+  return _stripUrlSuffix(url).endsWith(".pdf");
 }
 
 const STATUS_LABELS: Record<LabelDesignStatus, string> = {

@@ -182,12 +182,15 @@ export interface EntityKey {
   // every supported polymorphic target on the backend (proposals
   // joined the set when the customer-portal "about this proposal"
   // chat surface shipped; cff_submission joined when the staff
-  // CFF detail page added internal-triage comments).
+  // CFF detail page added internal-triage comments; label_design
+  // joined when the staff labelling workspace + customer portal
+  // workspace both opened a per-label chat surface).
   readonly kind:
     | "formulation"
     | "specification"
     | "proposal"
-    | "cff_submission";
+    | "cff_submission"
+    | "label_design";
   readonly entityId: string;
 }
 
