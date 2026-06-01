@@ -1,6 +1,17 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { ArrowRight, ExternalLink, Inbox, PlusCircle } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowRight,
+  CheckCircle2,
+  Clock,
+  ExternalLink,
+  FileSignature,
+  Inbox,
+  Layers,
+  PlusCircle,
+  Sparkles,
+} from "lucide-react";
 
 import {
   Card,
@@ -26,6 +37,28 @@ type Stage =
   | "label_approved"
   | "on_hold"
   | "unknown";
+
+
+type ActionKind =
+  | "sign_proposal"
+  | "sign_final_spec"
+  | "label_choose_path"
+  | "label_preferences"
+  | "label_upload"
+  | "label_approve";
+
+
+interface ActionItem {
+  readonly kind: ActionKind;
+  readonly urgency: 1 | 2 | 3;
+  readonly title: string;
+  readonly subtitle: string;
+  readonly url: string;
+  readonly product_code: string;
+  readonly product_name: string;
+  readonly reference_code: string;
+  readonly created_at: string;
+}
 
 
 interface ProductItem {
@@ -65,14 +98,30 @@ const STAGE_TONE: Record<Stage, string> = {
 };
 
 
+const ACTION_ICONS: Record<
+  ActionKind,
+  React.ComponentType<{ className?: string }>
+> = {
+  sign_proposal: FileSignature,
+  sign_final_spec: Sparkles,
+  label_choose_path: Layers,
+  label_preferences: Layers,
+  label_upload: Layers,
+  label_approve: AlertCircle,
+};
+
+
 /**
- * Project-centric portal view.
+ * Portal home + product list — unified.
  *
- * Companion to the action queue on the portal home — answers the
- * customer's "where are my products?" question by showing one card
- * per project with its current stage chip. Clicking a card jumps
- * straight to whatever surface is most relevant (the open action
- * if there is one, otherwise the proposal detail).
+ * Previously there were two surfaces: ``/portal`` (welcome + action
+ * queue + first 6 products) and ``/portal/products`` (full product
+ * grid). Customers couldn't tell them apart because both led
+ * with product cards; the home page felt like a samplng of the
+ * "all" page. We collapsed them into this single route so the
+ * customer's mental model is "everything I have is here, and
+ * the things that need me are at the top". ``/portal`` is now a
+ * redirect to this page.
  */
 export default async function PortalProductsPage() {
   const jar = await cookies();
@@ -84,39 +133,87 @@ export default async function PortalProductsPage() {
   const headers = { Cookie: `vita_portal_access=${portalCookie.value}` };
   const base = env.NEXT_PUBLIC_API_URL;
 
-  const dashRes = await fetch(`${base}/api/portal/dashboard/`, {
-    cache: "no-store",
-    headers,
-  }).catch(() => null);
+  const [meRes, dashRes] = await Promise.all([
+    fetch(`${base}/api/portal/auth/me/`, {
+      cache: "no-store",
+      headers,
+    }).catch(() => null),
+    fetch(`${base}/api/portal/dashboard/`, {
+      cache: "no-store",
+      headers,
+    }).catch(() => null),
+  ]);
 
+  if (!meRes || meRes.status === 401 || meRes.status === 403) {
+    redirect("/portal/login");
+  }
   if (!dashRes || dashRes.status === 401 || dashRes.status === 403) {
     redirect("/portal/login");
   }
 
-  const dash: { products?: ProductItem[] } =
+  const me = meRes.ok ? await meRes.json() : null;
+  const dash: { actions?: ActionItem[]; products?: ProductItem[] } =
     dashRes.ok ? await dashRes.json() : {};
+  const actions: ActionItem[] = dash.actions ?? [];
   const products: ProductItem[] = dash.products ?? [];
 
   return (
     <PortalShell active="products">
       <PageHeader
-        eyebrow="Your products"
-        title="All your projects"
-        subtitle="One card per project — the chip shows where it sits in the journey from proposal to approved label."
+        eyebrow="Welcome"
+        title={me?.customer_company || "Your portal"}
+        subtitle={
+          actions.length > 0
+            ? `${actions.length} ${actions.length === 1 ? "thing" : "things"} need your attention. Your full project list is below.`
+            : "All caught up — every project is below."
+        }
       />
 
-      {/* Single entry point for starting a new project. The form
-          itself lives on the marketing site (vitamanufacture.co.uk)
-          and the Wix poller mirrors each submission into our system,
-          so the new product shows up in this list automatically. */}
+      {/* Action queue — pinned at the top because answering
+          "what needs me right now?" is the first question the
+          customer comes here to resolve. */}
+      {actions.length > 0 ? (
+        <section className="mb-10">
+          <Eyebrow>Needs your attention</Eyebrow>
+          <ul className="mt-3 flex flex-col gap-3">
+            {actions.map((a, idx) => (
+              <li key={`${a.kind}-${a.url}-${idx}`}>
+                <ActionCard action={a} />
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : (
+        <section className="mb-10">
+          <Card>
+            <div className="flex items-start gap-3">
+              <CheckCircle2 className="mt-0.5 h-6 w-6 shrink-0 text-emerald-600" />
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-emerald-900">
+                  All clear
+                </p>
+                <p className="mt-1 text-sm">
+                  No outstanding actions on your side right now. We&rsquo;ll
+                  be in touch as your projects move forward.
+                </p>
+              </div>
+            </div>
+          </Card>
+        </section>
+      )}
+
+      {/* New-project CTA. Form lives on the marketing site and a
+          Wix poller mirrors each submission into our system, so a
+          successful submit shows up in the grid below
+          automatically. */}
       <div className="mb-6 flex flex-col gap-3 border-2 border-black bg-orange-500 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-black">
             Start a new product
           </p>
           <p className="mt-1 text-sm font-semibold text-black">
-            Fill in the custom formulation request form and we'll take it
-            from there.
+            Fill in the custom formulation request form and we&rsquo;ll
+            take it from there.
           </p>
         </div>
         <a
@@ -131,8 +228,9 @@ export default async function PortalProductsPage() {
         </a>
       </div>
 
+      <Eyebrow>Your products</Eyebrow>
       {products.length === 0 ? (
-        <Card>
+        <Card className="mt-3">
           <div className="flex items-start gap-3">
             <Inbox className="mt-0.5 h-6 w-6 shrink-0" />
             <div>
@@ -140,18 +238,15 @@ export default async function PortalProductsPage() {
                 Nothing here yet
               </p>
               <p className="mt-1 text-sm">
-                Submit a request above and your first project will appear here.
+                Submit a request above and your first project will appear
+                here.
               </p>
             </div>
           </div>
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {products.map((p) => {
-            // Cards always open the per-project pipeline view — the
-            // "journey" page is the customer's central touchpoint for
-            // one product. Action shortcuts live there too, so we
-            // don't lose the deep-link behaviour the old card had.
             const href = `/portal/products/${p.id}`;
             return (
               <a key={p.id} href={href} className="group">
@@ -170,7 +265,9 @@ export default async function PortalProductsPage() {
                     </div>
                     <div>
                       <span
-                        className={`inline-block border-2 border-black px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${STAGE_TONE[p.stage_key] ?? STAGE_TONE.unknown}`}
+                        className={`inline-block border-2 border-black px-2 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${
+                          STAGE_TONE[p.stage_key] ?? STAGE_TONE.unknown
+                        }`}
                       >
                         {p.stage_label}
                       </span>
@@ -188,5 +285,40 @@ export default async function PortalProductsPage() {
         </div>
       )}
     </PortalShell>
+  );
+}
+
+
+function ActionCard({ action }: { action: ActionItem }) {
+  const Icon = ACTION_ICONS[action.kind] ?? Clock;
+  const isUrgent = action.urgency === 1;
+  return (
+    <a
+      href={action.url}
+      className="group block border-2 border-black bg-white p-4 transition-all hover:shadow-[4px_4px_0_0_black]"
+    >
+      <div className="flex items-start gap-4">
+        <span
+          className={`inline-flex h-10 w-10 shrink-0 items-center justify-center border-2 border-black ${
+            isUrgent ? "bg-orange-500 text-black" : "bg-white text-black"
+          }`}
+        >
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-500">
+            {action.product_code || "Project"}
+            {isUrgent ? (
+              <span className="ml-2 text-orange-700">· URGENT</span>
+            ) : null}
+          </p>
+          <p className="mt-1 text-base font-black uppercase leading-tight">
+            {action.title}
+          </p>
+          <p className="mt-1 text-sm text-neutral-700">{action.subtitle}</p>
+        </div>
+        <ArrowRight className="h-5 w-5 shrink-0 text-neutral-400 transition-transform group-hover:translate-x-1" />
+      </div>
+    </a>
   );
 }

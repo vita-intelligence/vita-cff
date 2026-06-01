@@ -9,6 +9,7 @@ import {
   PageHeader,
   PortalShell,
 } from "@/components/portal/brutalist";
+import { SignatureField } from "@/components/ui/signature-field";
 import { useRouter } from "@/i18n/navigation";
 import { usePortalUploadArtwork } from "@/services/label-design";
 
@@ -34,8 +35,8 @@ export default function CustomerUploadPage({
       setError("Please choose a file.");
       return;
     }
-    if (!signature.trim()) {
-      setError("Please type your name to confirm this is your design.");
+    if (!signature) {
+      setError("Please draw your signature to confirm this is your design.");
       return;
     }
     try {
@@ -96,12 +97,16 @@ export default function CustomerUploadPage({
             By submitting, you confirm that you authored this artwork and accept
             it as your approved design pending our regulatory review.
           </p>
-          <input
-            value={signature}
-            onChange={(e) => setSignature(e.target.value)}
-            placeholder="Type your name"
-            className="mt-3 w-full border-2 border-black px-2 py-2 font-mono text-sm"
-          />
+          <div className="mt-3">
+            <SignatureField
+              label="Signature"
+              value={signature}
+              onChange={setSignature}
+              ariaLabel="Customer signature"
+              required
+              tone="portal"
+            />
+          </div>
         </Card>
 
         {error ? (

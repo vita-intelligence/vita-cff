@@ -145,6 +145,13 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation.name", read_only=True
     )
+    # Spec disambiguator — multi-spec projects produce multiple
+    # label-design rows sharing the same project code, so the FE
+    # leans on this to render "Spec A label" / "Spec B label"
+    # instead of two identical-looking cards.
+    specification_sheet_code = serializers.CharField(
+        source="specification_sheet.code", read_only=True, default=""
+    )
     organization_name = serializers.CharField(
         source="organization.name", read_only=True
     )
@@ -171,6 +178,7 @@ class LabelDesignReadSerializer(serializers.ModelSerializer):
             "formulation_code",
             "formulation_name",
             "specification_sheet",
+            "specification_sheet_code",
             "status",
             "design_path",
             "assigned_designer",
@@ -238,6 +246,11 @@ class LabelDesignListItemSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation.name", read_only=True
     )
+    # See the read serializer comment — needed so multi-spec
+    # projects don't render as duplicate rows in the queue.
+    specification_sheet_code = serializers.CharField(
+        source="specification_sheet.code", read_only=True, default=""
+    )
     assigned_designer_email = serializers.CharField(
         source="assigned_designer.email", read_only=True, default=""
     )
@@ -249,6 +262,8 @@ class LabelDesignListItemSerializer(serializers.ModelSerializer):
             "formulation",
             "formulation_code",
             "formulation_name",
+            "specification_sheet",
+            "specification_sheet_code",
             "status",
             "design_path",
             "assigned_designer",
@@ -353,14 +368,30 @@ class ReviewSubmitSerializer(serializers.Serializer):
 
     The view sets ``kind`` from the endpoint URL — this serializer
     only validates the body shape and the checklist completeness.
+
+    ``require_full_checklist`` (via context, defaulting to ``True``)
+    decides whether all 22 ``MA-PD-B-012`` items are mandatory. The
+    scientist endpoint passes ``True`` — running the checklist is
+    the scientific review. The director endpoint passes ``False``
+    because the director is signing off ON the scientist's verdict;
+    rerunning the checklist would be ceremonial. The scientist's
+    full checklist stays on its own review row, so the regulatory
+    trail is intact.
     """
 
     outcome = serializers.ChoiceField(choices=ReviewOutcome.choices)
-    checklist = _ChecklistResponseSerializer(many=True)
+    checklist = _ChecklistResponseSerializer(
+        many=True, required=False, default=list
+    )
     final_comments = serializers.CharField(min_length=1)
     signature_image = serializers.CharField(allow_blank=True, default="")
 
     def validate_checklist(self, value: list[dict]) -> list[dict]:
+        require_full = self.context.get("require_full_checklist", True)
+        # Director path — an empty checklist is the expected
+        # payload; nothing to verify against the master key set.
+        if not require_full and not value:
+            return value
         keys_in_payload = {item["item_key"] for item in value}
         missing = COMPLIANCE_CHECKLIST_KEYS - keys_in_payload
         extras = keys_in_payload - COMPLIANCE_CHECKLIST_KEYS

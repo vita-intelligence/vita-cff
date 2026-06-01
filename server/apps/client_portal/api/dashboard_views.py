@@ -29,6 +29,10 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.queries import (
+    customer_proposals_for_formulations,
+    formulation_ids_for_customer,
+)
 from apps.formulations.models import Formulation, ProjectStatus
 from apps.label_design.constants import LabelDesignPath, LabelDesignStatus
 from apps.label_design.models import LabelDesign
@@ -86,11 +90,13 @@ def _build_actions(customer_id) -> list[dict]:
     # 2) FINAL spec sheets at ``status=sent`` — customer must sign to
     #    authorise production. Highest urgency because this is the
     #    moment the project advances to APPROVED.
+    #    Customer-project scope includes every formulation reached
+    #    via a proposal line, not just the proposal's anchor — see
+    #    :mod:`apps.client_portal.queries`.
+    customer_formulation_ids = formulation_ids_for_customer(customer_id)
     final_sheets = (
         SpecificationSheet.objects.filter(
-            formulation_version__formulation_id__in=Proposal.objects.filter(
-                customer_id=customer_id
-            ).values("formulation_version__formulation_id"),
+            formulation_version__formulation_id__in=customer_formulation_ids,
             document_kind=SpecificationDocumentKind.FINAL,
             status=SpecificationStatus.SENT,
             customer_signed_at__isnull=True,
@@ -117,21 +123,31 @@ def _build_actions(customer_id) -> list[dict]:
             }
         )
 
-    # 3) Label-design rows the customer is gating on.
+    # 3) Label-design rows the customer is gating on. Multi-spec
+    #    projects can produce several rows in one queue; the spec
+    #    code suffix on each subtitle lets the customer tell which
+    #    artwork an action belongs to without opening the page.
+    #    Scope shared with the final-spec block above.
     label_designs = (
         LabelDesign.objects.filter(
-            formulation_id__in=Proposal.objects.filter(
-                customer_id=customer_id
-            ).values("formulation_version__formulation_id"),
+            formulation_id__in=customer_formulation_ids,
         )
-        .select_related("formulation")
+        .select_related("formulation", "specification_sheet")
         .order_by("updated_at")
     )
     for ld in label_designs:
+        spec_code = (
+            ld.specification_sheet.code if ld.specification_sheet else ""
+        )
+        spec_suffix = f" · {spec_code}" if spec_code else ""
         common = {
-            "product_code": ld.formulation.code,
+            "product_code": (
+                f"{ld.formulation.code}{spec_suffix}"
+                if spec_code
+                else ld.formulation.code
+            ),
             "product_name": ld.formulation.name,
-            "reference_code": ld.formulation.code,
+            "reference_code": spec_code or ld.formulation.code,
             "created_at": ld.updated_at.isoformat(),
         }
         if ld.status == LabelDesignStatus.LABEL_PATH_PENDING:
@@ -315,29 +331,53 @@ def _resolve_stage(
 
 
 def _build_products(customer_id) -> list[dict]:
-    """One entry per project the customer can see."""
+    """One entry per project the customer can see.
 
-    formulation_ids = list(
-        Proposal.objects.filter(customer_id=customer_id)
-        .values_list("formulation_version__formulation_id", flat=True)
-        .distinct()
-    )
+    Scope = every formulation the customer owns via the shared
+    helper. That includes both anchor projects (proposal pinned
+    directly to the formulation_version) AND line-derived
+    projects (proposals that bundle multiple specs across N
+    projects). Without the line walk, multi-project proposals'
+    non-anchor projects vanish from the portal list.
+    """
+
+    formulation_ids = list(formulation_ids_for_customer(customer_id))
     if not formulation_ids:
         return []
 
     formulations = Formulation.objects.filter(id__in=formulation_ids)
+
+    # Per-project proposal grouping. A proposal that bundles 2
+    # projects shows up under BOTH project cards. The helper
+    # returns a distinct list of covering proposals; we walk each
+    # and pin it to every project it covers (anchor + lines).
     proposals_by_form: dict = {}
-    for p in (
-        Proposal.objects.filter(
-            customer_id=customer_id,
-            formulation_version__formulation_id__in=formulation_ids,
-        )
-        .select_related("formulation_version")
-        .order_by("-updated_at")
+    for p in customer_proposals_for_formulations(
+        customer_id=customer_id, formulation_ids=formulation_ids
     ):
-        proposals_by_form.setdefault(
-            p.formulation_version.formulation_id, []
-        ).append(p)
+        # Anchor project — pin the proposal here.
+        if p.formulation_version is not None:
+            proposals_by_form.setdefault(
+                p.formulation_version.formulation_id, []
+            ).append(p)
+        # Line-derived projects — pin the same proposal to each
+        # other project it touches, dedup-aware so the anchor
+        # project doesn't get pinned twice when a line happens to
+        # repeat the anchor.
+        seen = {
+            p.formulation_version.formulation_id
+            if p.formulation_version
+            else None
+        }
+        for line in p.lines.all():
+            sheet = line.specification_sheet
+            if sheet is None or sheet.formulation_version is None:
+                continue
+            fid = sheet.formulation_version.formulation_id
+            if fid in seen:
+                continue
+            seen.add(fid)
+            proposals_by_form.setdefault(fid, []).append(p)
 
     sheets_by_form: dict = {}
     for s in (

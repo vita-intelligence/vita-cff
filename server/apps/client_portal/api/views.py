@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import uuid
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied
@@ -44,7 +45,7 @@ from apps.client_portal.permissions import (
     ClientOwnsProposal,
     IsClientAccount,
 )
-from apps.client_portal.models import PortalEvent
+from apps.client_portal.models import ClientAccount, PortalEvent
 from apps.client_portal.services import (
     AccountAlreadyActivated,
     ActivationCodeRateLimited,

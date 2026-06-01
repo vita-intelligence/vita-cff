@@ -135,29 +135,35 @@ def transition_status(
     return label_design
 
 
-def bootstrap_for_formulation(formulation, *, spec_sheet=None) -> LabelDesign | None:
-    """Create a :class:`LabelDesign` for ``formulation`` if one does
-    not already exist.
+def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
+    """Create a :class:`LabelDesign` for the (formulation, spec)
+    pair carried by ``spec_sheet`` if one does not already exist.
 
-    Called by the signal in :mod:`apps.label_design.signals` when a
-    Formulation flips to ``APPROVED``. Idempotent — duplicates are
-    impossible thanks to the OneToOne FK, but we still guard with
-    ``get_or_create`` so the post_save can fire on every save without
-    raising.
+    Multi-spec projects produce multiple label-design rows — one
+    per signed spec — so the upsert key is the composite
+    ``(formulation, specification_sheet)`` instead of just the
+    project. Idempotent: re-firing the signal on the same spec
+    short-circuits.
 
-    Returns the row (whether new or existing) so the signal can log
-    helpfully, or ``None`` if the formulation is not eligible.
+    Returns the row (whether new or existing) so the signal can
+    log helpfully, or ``None`` if the spec / formulation is not
+    eligible (project not yet approved, or no formulation
+    attached).
     """
 
-    # Only bootstrap when the project is genuinely APPROVED. The
-    # caller should already have checked, but defence-in-depth keeps
-    # the API safe for any direct service-layer caller.
     from apps.formulations.models import ProjectStatus
 
+    formulation = getattr(
+        getattr(spec_sheet, "formulation_version", None), "formulation", None
+    )
+    if formulation is None:
+        return None
     if formulation.project_status != ProjectStatus.APPROVED:
         return None
 
-    existing = LabelDesign.objects.filter(formulation=formulation).first()
+    existing = LabelDesign.objects.filter(
+        formulation=formulation, specification_sheet=spec_sheet
+    ).first()
     if existing is not None:
         return existing
 
@@ -176,8 +182,11 @@ def bootstrap_for_formulation(formulation, *, spec_sheet=None) -> LabelDesign | 
         to_status=LabelDesignStatus.PAYMENT_PENDING,
         actor=None,
         actor_client_account=None,
-        notes="bootstrap on project approval",
-        metadata={"trigger": "formulation_status_approved"},
+        notes="bootstrap on customer spec sign",
+        metadata={
+            "trigger": "spec_customer_signed",
+            "spec_sheet_id": str(spec_sheet.pk),
+        },
         created_at=timezone.now(),
     )
     record_audit(
@@ -186,9 +195,66 @@ def bootstrap_for_formulation(formulation, *, spec_sheet=None) -> LabelDesign | 
         action="label_design.bootstrap",
         target=label_design,
         before=None,
-        after={"status": LabelDesignStatus.PAYMENT_PENDING},
+        after={
+            "status": LabelDesignStatus.PAYMENT_PENDING,
+            "spec_sheet_id": str(spec_sheet.pk),
+        },
     )
     return label_design
+
+
+def bootstrap_for_formulation(
+    formulation, *, spec_sheet=None
+) -> LabelDesign | None:
+    """Backwards-compatible shim around :func:`bootstrap_for_spec`.
+
+    Older callers (tests, ad-hoc shells, a no-longer-fired
+    formulation signal) pass a project + maybe a spec. Route them
+    to the per-spec path so the new uniqueness rule is honoured.
+    When no spec is known, locate the latest customer-signed
+    spec for the project — that mirrors the original behaviour
+    where the formulation signal hunted for it itself.
+    """
+
+    if spec_sheet is None:
+        spec_sheet = _find_signed_spec_sheet(formulation)
+    if spec_sheet is None:
+        return None
+    return bootstrap_for_spec(spec_sheet)
+
+
+def _find_signed_spec_sheet(formulation):
+    """Locate the most-recent customer-signed final spec sheet for
+    ``formulation``, if one exists. Lifted from the old formulation
+    signal so the back-compat shim above can reuse it.
+    """
+
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    final_accepted = (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation,
+            customer_signed_at__isnull=False,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status=SpecificationStatus.ACCEPTED,
+        )
+        .order_by("-customer_signed_at")
+        .first()
+    )
+    if final_accepted is not None:
+        return final_accepted
+    return (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation,
+            customer_signed_at__isnull=False,
+        )
+        .order_by("-customer_signed_at")
+        .first()
+    )
 
 
 def _is_anonymous(actor: Any) -> bool:

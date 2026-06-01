@@ -66,15 +66,15 @@ def _label_designs_for_customer(customer_id):
     formulation versions references the customer.
     """
 
-    from apps.proposals.models import Proposal
+    from apps.client_portal.queries import formulation_ids_for_customer
 
-    proposal_formulation_ids = (
-        Proposal.objects.filter(customer_id=customer_id)
-        .values_list("formulation_version__formulation_id", flat=True)
-        .distinct()
-    )
+    # Walks both anchor proposals AND line-derived projects so
+    # a customer-owned multi-project proposal still surfaces every
+    # label-design row.
     return (
-        LabelDesign.objects.filter(formulation_id__in=proposal_formulation_ids)
+        LabelDesign.objects.filter(
+            formulation_id__in=formulation_ids_for_customer(customer_id)
+        )
         .select_related(
             "formulation",
             "organization",
@@ -544,6 +544,14 @@ class PortalLabelDesignApproveView(PortalAPIView):
                 to_status=LabelDesignStatus.LABEL_APPROVED,
                 actor_client=request.user,
                 notes="customer approval signature captured",
+                # Pair the approval to the artwork the customer
+                # actually signed. See the reject endpoint for the
+                # full reasoning — staff Versions tab uses this.
+                metadata=(
+                    {"revision_id": str(ld.current_revision_id)}
+                    if ld.current_revision_id
+                    else None
+                ),
             )
         except InvalidStatusTransition as exc:
             raise ValidationError({"detail": str(exc), "code": "invalid_transition"})
@@ -567,6 +575,17 @@ class PortalLabelDesignRejectView(PortalAPIView):
                 to_status=LabelDesignStatus.DESIGN_IN_PROGRESS,
                 actor_client=request.user,
                 notes=serializer.validated_data["reason"] or "customer rejected",
+                # Pin the rejection to the revision the customer
+                # was actually looking at. Without ``revision_id``
+                # in the metadata the staff Versions tab couldn't
+                # surface the customer's verdict next to the
+                # artwork it referred to — the transition would
+                # show up only in the bare Audit timeline.
+                metadata=(
+                    {"revision_id": str(ld.current_revision_id)}
+                    if ld.current_revision_id
+                    else None
+                ),
             )
         except InvalidStatusTransition as exc:
             raise ValidationError({"detail": str(exc), "code": "invalid_transition"})

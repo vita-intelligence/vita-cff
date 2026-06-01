@@ -22,6 +22,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -63,10 +64,40 @@ export const SignaturePad = forwardRef<SignaturePadHandle, Props>(
     // Canvas pixels must match the parent's CSS pixels or drawings
     // render stretched. We track the measured width so resizes don't
     // leave prior strokes offset.
+    //
+    // Initial width of ``0`` (not ``400``) is intentional: the
+    // HTML ``width`` attribute on ``<canvas>`` is its drawing
+    // surface, but it ALSO acts as the element's default CSS
+    // width unless overridden. On a 360px phone an initial 400
+    // pushed every ancestor wider than the viewport until the
+    // ``ResizeObserver`` ran. Starting at 0 + a CSS ``max-width:
+    // 100%`` cap (set below) keeps the canvas inside its parent
+    // from the first paint.
     const [canvasSize, setCanvasSize] = useState({
-      width: 400,
+      width: 0,
       height: 140,
     });
+
+    // ``useLayoutEffect`` (not ``useEffect``) for the initial
+    // measure: it fires AFTER DOM commit but BEFORE paint, so the
+    // ``setCanvasSize`` re-render happens before the user ever
+    // sees the 0-width canvas. Critical for modal/dialog mounts
+    // where ``useEffect`` would let the empty canvas paint once
+    // and then resize on the next frame — making the pad look
+    // like it didn't render at all on slower devices.
+    // ``ResizeObserver`` stays in a plain ``useEffect`` to track
+    // later runtime resizes (orientation change, container
+    // collapse, etc.). On SSR ``useLayoutEffect`` is aliased
+    // to a noop so this is safe even though the component is
+    // ``"use client"``.
+    useLayoutEffect(() => {
+      const el = wrapperRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0) {
+        setCanvasSize({ width: Math.round(rect.width), height: 140 });
+      }
+    }, []);
 
     useEffect(() => {
       const el = wrapperRef.current;
@@ -80,7 +111,6 @@ export const SignaturePad = forwardRef<SignaturePadHandle, Props>(
           });
         }
       };
-      sync();
       const observer = new ResizeObserver(sync);
       observer.observe(el);
       return () => observer.disconnect();
@@ -143,7 +173,17 @@ export const SignaturePad = forwardRef<SignaturePadHandle, Props>(
               width: canvasSize.width,
               height: canvasSize.height,
               className: "block rounded-xl",
-              style: { touchAction: "none" },
+              // ``max-width: 100%`` + ``display: block`` make the
+              // canvas display-size follow its parent even when
+              // the HTML ``width`` attribute hasn't synced yet
+              // (first render, narrow viewports). Without this
+              // the bare attribute width pushed wide parents out
+              // beyond the screen on mobile.
+              style: {
+                touchAction: "none",
+                display: "block",
+                maxWidth: "100%",
+              },
               "aria-label": ariaLabel ?? "Signature pad",
             }}
             onEnd={emitChange}

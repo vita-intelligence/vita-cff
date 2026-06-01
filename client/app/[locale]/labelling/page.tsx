@@ -40,7 +40,20 @@ export default async function LabellingPage({
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
         <ProtectedHeader user={user!} active="labelling" />
 
-        <LabellingQueue orgId={organization!.id} />
+        <LabellingQueue
+          orgId={organization!.id}
+          canReviewScientist={hasFlatCapability(
+            organization!,
+            "labelling",
+            "review_scientist",
+          )}
+          canReviewDirector={hasFlatCapability(
+            organization!,
+            "labelling",
+            "review_director",
+          )}
+          canDesign={hasFlatCapability(organization!, "labelling", "design")}
+        />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v{APP_VERSION}</span>

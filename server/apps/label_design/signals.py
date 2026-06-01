@@ -1,17 +1,27 @@
 """Signal wiring for the label-design workflow.
 
-The only signal we listen for in v1: a :class:`Formulation` save
-that lands the row in ``APPROVED`` status. That's the moment a
-project becomes eligible for the label-design phase, so we bootstrap
-the :class:`LabelDesign` row with ``status=PAYMENT_PENDING`` and let
-the finance team pick it up.
+We bootstrap one :class:`LabelDesign` per **(project, spec)**
+pair — not per project. The trigger is the customer signing a
+spec sheet, which is the moment that particular product is ready
+to enter the label-design phase. Multi-spec projects produce
+multiple label-design rows as each spec gets signed; the shared
+payment still gates them all (see :func:`payments.services.
+approve_payment` which fans out across pending rows).
 
-We listen on ``post_save`` (not ``pre_save``) so the bootstrap only
-fires after the formulation row is durably persisted. The receiver
-is idempotent — re-saving an APPROVED project won't create duplicate
-``LabelDesign`` rows because the OneToOne FK enforces uniqueness AND
-:func:`bootstrap_for_formulation` short-circuits when one already
-exists.
+Two signals to keep the bootstrap reactive to either side:
+
+1. ``SpecificationSheet`` ``post_save`` — fires on the spec the
+   moment the customer's signature lands. Idempotent because the
+   composite unique on ``(formulation, specification_sheet)``
+   makes duplicates impossible at the DB layer AND
+   :func:`bootstrap_for_spec` short-circuits when one already
+   exists.
+2. ``Formulation`` ``post_save`` — kept as a defensive fallback
+   for projects where the spec was already signed BEFORE the
+   project flipped to APPROVED (rare race: scientist marks the
+   project approved retroactively after a customer signed an
+   earlier spec). The handler walks every signed spec on the
+   project and upserts.
 """
 
 from __future__ import annotations
@@ -22,71 +32,71 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 
 from apps.formulations.models import Formulation, ProjectStatus
-from apps.label_design.services import bootstrap_for_formulation
+from apps.label_design.services import (
+    bootstrap_for_spec,
+    _find_signed_spec_sheet,
+)
+from apps.specifications.models import SpecificationSheet
 
 
 logger = logging.getLogger(__name__)
 
 
-@receiver(post_save, sender=Formulation)
-def _bootstrap_label_design_on_approval(sender, instance: Formulation, **kwargs) -> None:
-    """Create a LabelDesign row the moment a project hits APPROVED.
+@receiver(post_save, sender=SpecificationSheet)
+def _bootstrap_on_customer_spec_sign(
+    sender, instance: SpecificationSheet, **kwargs
+) -> None:
+    """Create a LabelDesign the moment a customer signs the spec.
 
-    Cheap on every formulation save — one indexed read against
-    ``label_designs.formulation_id`` when the status is not
-    APPROVED, plus one row when it is and the LabelDesign doesn't
-    yet exist. Failures are logged but never raised so the original
-    save is not undone by a bootstrap problem.
+    Skips when the customer signature column is still null OR the
+    parent project hasn't reached APPROVED yet (the bootstrap
+    service double-checks the project state and returns None in
+    that case). Failures are logged but never raised so the
+    original spec save is not undone by a bootstrap problem.
+    """
+
+    if instance.customer_signed_at is None:
+        return
+
+    try:
+        bootstrap_for_spec(instance)
+    except Exception:  # pragma: no cover - defence in depth
+        logger.exception(
+            "label_design bootstrap failed for spec %s", instance.pk
+        )
+
+
+@receiver(post_save, sender=Formulation)
+def _backfill_label_designs_on_approval(
+    sender, instance: Formulation, **kwargs
+) -> None:
+    """Fallback bootstrap for a freshly-APPROVED project.
+
+    Handles the race where the customer's spec signature landed
+    BEFORE the project itself flipped to APPROVED — the spec-side
+    signal short-circuited (project not approved yet) and would
+    never re-fire on its own. Walks every customer-signed spec on
+    the project and lets the per-spec bootstrap upsert each one.
     """
 
     if instance.project_status != ProjectStatus.APPROVED:
         return
 
     try:
-        spec_sheet = _find_signed_spec_sheet(instance)
-        bootstrap_for_formulation(instance, spec_sheet=spec_sheet)
+        sheet = _find_signed_spec_sheet(instance)
+        if sheet is None:
+            return
+        # Walk every signed spec — the helper above only returns
+        # one, so iterate explicitly to cover multi-spec projects.
+        from apps.specifications.models import SpecificationSheet
+
+        signed = SpecificationSheet.objects.filter(
+            formulation_version__formulation=instance,
+            customer_signed_at__isnull=False,
+        )
+        for s in signed:
+            bootstrap_for_spec(s)
     except Exception:  # pragma: no cover - defence in depth
         logger.exception(
-            "label_design bootstrap failed for formulation %s", instance.pk
+            "label_design backfill failed for formulation %s", instance.pk
         )
-
-
-def _find_signed_spec_sheet(formulation: Formulation):
-    """Locate the customer-signed final spec sheet for ``formulation``,
-    if one exists.
-
-    Returns ``None`` when no signed sheet is found — the LabelDesign
-    is still created (the project is APPROVED for *some* reason),
-    just without the spec FK pre-populated.
-    """
-
-    from apps.specifications.models import (
-        SpecificationDocumentKind,
-        SpecificationSheet,
-        SpecificationStatus,
-    )
-
-    sheet = (
-        SpecificationSheet.objects.filter(
-            formulation_version__formulation=formulation,
-            customer_signed_at__isnull=False,
-        )
-        .order_by("-customer_signed_at")
-        .first()
-    )
-    if sheet is None:
-        return None
-
-    # Prefer a FINAL document if we can find one; ACCEPTED status is
-    # the strongest signal the lifecycle reached customer approval.
-    final_accepted = (
-        SpecificationSheet.objects.filter(
-            formulation_version__formulation=formulation,
-            customer_signed_at__isnull=False,
-            document_kind=SpecificationDocumentKind.FINAL,
-            status=SpecificationStatus.ACCEPTED,
-        )
-        .order_by("-customer_signed_at")
-        .first()
-    )
-    return final_accepted or sheet

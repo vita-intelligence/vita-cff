@@ -230,6 +230,16 @@ MIDDLEWARE = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
+# Django's default is ``DENY`` which blocks ALL ``<iframe>`` /
+# ``<object>`` embedding of any Django-served response — including
+# inline PDF previews of artwork uploads on the labelling
+# workspace. ``SAMEORIGIN`` still blocks clickjacking from foreign
+# origins but lets the FE (same origin via Next's ``/api`` and
+# ``/media`` rewrites) render PDF artwork inline. In prod the
+# artwork comes back from Azure Blob storage so this header
+# doesn't apply there anyway.
+X_FRAME_OPTIONS = "SAMEORIGIN"
+
 ROOT_URLCONF = "config.urls"
 WSGI_APPLICATION = "config.wsgi.application"
 #: Channels discovers the ASGI app via ``ASGI_APPLICATION``. Our

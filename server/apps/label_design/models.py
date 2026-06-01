@@ -136,14 +136,15 @@ class LabelDesign(models.Model):
         on_delete=models.CASCADE,
         related_name="label_designs",
     )
-    formulation = models.OneToOneField(
+    formulation = models.ForeignKey(
         "formulations.Formulation",
         on_delete=models.CASCADE,
-        related_name="label_design",
+        related_name="label_designs",
         help_text=_(
-            "The project this label belongs to. One label-design "
-            "workflow per project — re-runs of the label phase live "
-            "in the revision history."
+            "The project this label belongs to. A project can carry "
+            "MORE THAN ONE label-design row when it has multiple "
+            "specs — each spec gets its own artwork workflow even "
+            "though the project shares a single payment."
         ),
     )
     specification_sheet = models.ForeignKey(
@@ -155,7 +156,10 @@ class LabelDesign(models.Model):
         help_text=_(
             "The customer-signed final spec sheet whose acceptance "
             "gated entry to this workflow. PROTECT because a spec "
-            "that was the basis of a label cannot be silently deleted."
+            "that was the basis of a label cannot be silently deleted. "
+            "Pinned 1:1 with this label-design row via the partial "
+            "UniqueConstraint in Meta so two specs in the same project "
+            "always produce two distinct label workflows."
         ),
     )
 
@@ -270,6 +274,23 @@ class LabelDesign(models.Model):
         indexes = [
             models.Index(fields=("organization", "status")),
             models.Index(fields=("organization", "-updated_at")),
+            # Per-formulation lookups are now hot: the dashboard,
+            # the staff queue, and the payment-approval fan-out all
+            # walk every label-design row for a project.
+            models.Index(fields=("formulation",)),
+        ]
+        constraints = [
+            # One workflow per (project, spec). Partial — only
+            # enforced when a spec is set, because legacy / pre-spec
+            # rows can carry a NULL spec_sheet without two NULLs
+            # colliding. Multi-spec projects rely on this to prevent
+            # a duplicate bootstrap when the per-spec signal fires
+            # twice for the same sign event.
+            models.UniqueConstraint(
+                fields=("formulation", "specification_sheet"),
+                condition=models.Q(specification_sheet__isnull=False),
+                name="label_design_unique_per_formulation_spec",
+            ),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - admin display

@@ -141,3 +141,38 @@ body {
     transform: translateX(330%);
   }
 }
+
+/*
+ * react-pdf width clamp.
+ *
+ * ``<Page width={N}>`` writes ``N`` to the canvas HTML ``width``
+ * attribute AND to its inline CSS ``width`` style. On narrow
+ * viewports the canvas's inline pixel width still wins over any
+ * parent ``max-width`` constraint because flex / grid children
+ * inherit ``min-width: auto`` — once the PDF loads, the inline
+ * pixel width expands every ancestor with it, dragging the
+ * whole page wider than the viewport. Forcing 100% display
+ * width with ``!important`` here neutralises that and lets the
+ * parent column be the single source of truth for size.
+ * Internal canvas resolution stays whatever ``width={N}`` chose
+ * so a high-DPI render still looks crisp.
+ */
+.react-pdf__Document,
+.react-pdf__Page,
+.react-pdf__Page__canvas,
+.react-pdf__Page__svg {
+  max-width: 100% !important;
+  height: auto !important;
+}
+/* Stronger constraint specifically on the canvas: react-pdf
+ * sets an inline ``style="width: Xpx"`` from the ``width={N}``
+ * prop. ``max-width: 100%`` alone caps it, but on narrow
+ * viewports the canvas was still kicking off a measurement
+ * feedback loop (canvas pushes parent → ResizeObserver fires →
+ * Page renders bigger → canvas pushes parent more). Forcing
+ * the display width to follow the parent column exactly cuts
+ * the loop. Internal canvas resolution stays at ``width={N}``
+ * so the render is still crisp. */
+.react-pdf__Page__canvas {
+  width: 100% !important;
+}

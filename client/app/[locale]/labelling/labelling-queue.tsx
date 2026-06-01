@@ -116,8 +116,33 @@ const STATUS_LABELS: Record<LabelDesignStatus, string> = {
 // ---------------------------------------------------------------------------
 
 
-export function LabellingQueue({ orgId }: { orgId: string }) {
-  const [tab, setTab] = useState<TabKey>("all");
+export function LabellingQueue({
+  orgId,
+  canReviewScientist = false,
+  canReviewDirector = false,
+  canDesign = false,
+}: {
+  orgId: string;
+  canReviewScientist?: boolean;
+  canReviewDirector?: boolean;
+  canDesign?: boolean;
+}) {
+  // Smart default tab — drop the user on the queue that matches
+  // their role so the "lazy director" sees their pile straight
+  // away without clicking around. Order of precedence puts the
+  // narrowest capability first: a director-only user lands on
+  // "Director", a scientist-only on "Scientist", a designer on
+  // "In design", and everyone else (owner, mixed cap) still
+  // sees "All" which is the broadest view.
+  const defaultTab: TabKey =
+    canReviewDirector && !canReviewScientist && !canDesign
+      ? "director_review"
+      : canReviewScientist && !canReviewDirector && !canDesign
+        ? "scientist_review"
+        : canDesign && !canReviewScientist && !canReviewDirector
+          ? "design_in_progress"
+          : "all";
+  const [tab, setTab] = useState<TabKey>(defaultTab);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
 
@@ -363,6 +388,15 @@ function QueueRow({ item }: { item: LabelDesignListItemDto }) {
         >
           {item.formulation_code || "—"}
         </Link>
+        {/* Spec code suffix — multi-spec projects produce one
+            row per spec sharing the same formulation code, so
+            this is what tells a designer "this row is the Alex
+            Capsules MA22222 label, not the MA22223 label". */}
+        {item.specification_sheet_code ? (
+          <span className="ml-1 text-[10px] font-medium uppercase tracking-wide text-ink-500">
+            · {item.specification_sheet_code}
+          </span>
+        ) : null}
       </td>
       <td className="px-3 py-2 text-ink-700">{item.formulation_name || "—"}</td>
       <td className="px-3 py-2">

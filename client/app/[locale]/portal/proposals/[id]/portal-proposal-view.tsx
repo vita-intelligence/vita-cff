@@ -262,15 +262,22 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
         />
       </Card>
 
-      {/* Acks + sign-proposal */}
+      {/* Acks + continue-to-signing. The button on this card does
+          NOT sign the proposal — it opens the signature dialog,
+          where the customer actually draws + confirms. Wording
+          matters: an earlier version that said "Sign proposal"
+          here made customers feel like ticking the boxes was the
+          sign, so the heading + CTA both explicitly call out
+          "before you sign" / "continue to signing". */}
       {!proposal.has_signature ? (
         <Card>
-          <Eyebrow>02 / Acknowledge & sign</Eyebrow>
+          <Eyebrow>02 / Before you sign</Eyebrow>
           <h2 className="mt-1 mb-4 text-xl font-black uppercase tracking-tight">
-            Acknowledge & sign the proposal
+            Acknowledge, then continue to signing
           </h2>
           <p className="mb-5 max-w-prose text-sm leading-relaxed text-neutral-700">
-            Tick every statement, then draw your signature.
+            Tick every statement to unlock the signing step — you&rsquo;ll
+            draw your signature on the next screen.
           </p>
           <div className="flex flex-col gap-3">
             <AckRow
@@ -294,6 +301,33 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               text="I accept the R&D and confidentiality terms."
             />
           </div>
+          {/* Static reference to the live website T&Cs + Privacy.
+              These aren't tickboxes because they're not proposal-
+              specific opt-ins, they're the standing policies that
+              govern every Vita customer. Linking them inline keeps
+              the proposal-card uncluttered while still making the
+              two surfaces one click away before sign. */}
+          <p className="mt-4 text-[12px] leading-relaxed text-neutral-600">
+            By continuing you also confirm you&rsquo;ve read our{" "}
+            <a
+              href="https://www.vitamanufacture.co.uk/termsandcondition"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold underline underline-offset-2 hover:text-black"
+            >
+              Terms &amp; Conditions
+            </a>{" "}
+            and{" "}
+            <a
+              href="https://www.vitamanufacture.co.uk/privacypolicy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="font-bold underline underline-offset-2 hover:text-black"
+            >
+              Privacy Policy
+            </a>
+            .
+          </p>
           <div className="mt-5">
             <PortalButton
               type="button"
@@ -301,7 +335,7 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
               onClick={() => setPending(true)}
             >
               <PenLine className="h-4 w-4" />
-              Sign proposal
+              Continue to signing
             </PortalButton>
             {!proposalRead ? (
               <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
@@ -431,9 +465,9 @@ export function PortalProposalView({ proposalId }: { proposalId: string }) {
             setActionError(null);
           }
         }}
-        title="Sign proposal"
-        subtitle="Draw your signature with your mouse, finger or stylus."
-        confirmLabel="Submit signature"
+        title="Draw your signature"
+        subtitle="Use your mouse, finger or stylus. This is what gets recorded as your sign-off on the proposal."
+        confirmLabel="Sign & submit"
         busy={busy}
         errorMessage={actionError}
         onConfirm={onSign}

@@ -381,6 +381,26 @@ class LabelDesignSubmitForReviewView(APIView):
             raise ValidationError(
                 {"detail": "No artwork uploaded yet.", "code": "no_revision"}
             )
+        # A revision is locked once any reviewer touches it — the
+        # ``(revision, kind)`` UNIQUE constraint on LabelDesignReview
+        # means we couldn't store a second scientist OR director
+        # review on the same revision even if we wanted to. Force a
+        # new upload so the audit trail (reject → resubmit) doesn't
+        # lose the prior verdict.
+        already_reviewed = LabelDesignReview.objects.filter(
+            revision=label_design.current_revision
+        ).exists()
+        if already_reviewed:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "This revision was already reviewed. Upload a new "
+                        "artwork revision before resubmitting — that keeps "
+                        "the previous review on the record."
+                    ),
+                    "code": "revision_already_reviewed",
+                }
+            )
         try:
             transition_status(
                 label_design,
@@ -423,9 +443,42 @@ class _BaseReviewSubmitView(APIView):
                 {"detail": "No revision to review.", "code": "no_revision"}
             )
 
-        serializer = ReviewSubmitSerializer(data=request.data)
+        serializer = ReviewSubmitSerializer(
+            data=request.data,
+            context={
+                # Scientist runs the regulatory checklist; director
+                # is signing off on the scientist's verdict so the
+                # checklist payload is optional. See the serializer
+                # docstring for the regulatory reasoning.
+                "require_full_checklist": (
+                    self.review_kind == ReviewKind.SCIENTIST
+                ),
+            },
+        )
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
+
+        # Backstop: the model has a UNIQUE(revision, kind) constraint
+        # — surfacing the IntegrityError as a 500 to the FE is exactly
+        # the kind of "failed" toast the user complained about. The
+        # ``submit-for-review`` view should have caught this earlier,
+        # but if the FE bypassed it (or two reviewers raced) we still
+        # want a friendly 400 instead of a stacktrace.
+        existing = LabelDesignReview.objects.filter(
+            revision=label_design.current_revision,
+            kind=self.review_kind,
+        ).first()
+        if existing is not None:
+            raise ValidationError(
+                {
+                    "detail": (
+                        f"This revision was already reviewed by a "
+                        f"{self.review_kind}. Ask the designer to upload "
+                        "a new revision before the next review round."
+                    ),
+                    "code": "revision_already_reviewed",
+                }
+            )
 
         # Persist the review row first — it becomes the audit-of-record
         # whether the workflow advances or rolls back.

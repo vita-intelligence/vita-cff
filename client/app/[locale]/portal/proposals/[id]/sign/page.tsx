@@ -1,42 +1,23 @@
-import { cookies } from "next/headers";
-import { notFound, redirect } from "next/navigation";
-
-import { PortalShell } from "@/components/portal/brutalist";
-import { env } from "@/config/env";
-
-import { ProposalSignForm } from "./sign-form";
+import { redirect } from "next/navigation";
 
 
+/**
+ * Legacy route. The old ``/sign/`` page surfaced acknowledgements
+ * + an inline signature pad **before** the customer had seen the
+ * proposal content — confusing UX that made it feel like ticking
+ * boxes was the sign-off. The replacement lives on the proposal
+ * detail page (``/portal/proposals/[id]``): read the proposal
+ * inline, scroll to the bottom to enable the acks, tick them,
+ * then a "Continue to signing" CTA opens the signature dialog.
+ * This server component just forwards any deep-link to the new
+ * surface so old emails / bookmarks still land the customer in
+ * the right place.
+ */
 export default async function PortalProposalSignPage({
   params,
 }: {
   params: Promise<{ locale: string; id: string }>;
 }) {
-  const { id } = await params;
-  const jar = await cookies();
-  const portalCookie = jar.get("vita_portal_access");
-  if (!portalCookie) {
-    redirect(`/portal/login`);
-  }
-
-  const base = env.NEXT_PUBLIC_API_URL;
-  const res = await fetch(`${base}/api/portal/proposals/${id}/`, {
-    cache: "no-store",
-    headers: { Cookie: `vita_portal_access=${portalCookie.value}` },
-  }).catch(() => null);
-
-  if (!res || res.status === 404) notFound();
-  if (res.status === 401 || res.status === 403) redirect("/portal/login");
-  if (!res.ok) notFound();
-
-  const proposal = await res.json();
-  return (
-    <PortalShell>
-      <ProposalSignForm
-        proposalId={id}
-        code={proposal?.code || "Proposal"}
-        status={proposal?.status || "unknown"}
-      />
-    </PortalShell>
-  );
+  const { locale, id } = await params;
+  redirect(`/${locale}/portal/proposals/${id}`);
 }

@@ -208,23 +208,18 @@ export default function PortalLabelDesignDetailPage({
         {data.status === "customer_approval" ? (
           <Card>
             <Eyebrow>YOUR TURN</Eyebrow>
-            <h3 className="mt-1 text-lg font-bold">Approve the artwork</h3>
+            <h3 className="mt-1 text-lg font-bold">Review the artwork</h3>
             <p className="mt-1 text-sm text-neutral-600">
-              Our team has approved the design internally. Review the artwork
-              and sign off, or request changes.
+              Our team has approved the design internally. Open the artwork
+              to read it through — you can sign off or request changes from
+              the same page.
             </p>
-            <div className="mt-4 flex flex-wrap gap-2">
+            <div className="mt-4">
               <Link
                 href={`/portal/label-designs/${id}/approve`}
                 className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
               >
-                <FileSignature className="h-3.5 w-3.5" /> Approve & sign
-              </Link>
-              <Link
-                href={`/portal/label-designs/${id}/reject`}
-                className="inline-flex items-center gap-2 border-2 border-black bg-white px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-black hover:bg-neutral-100"
-              >
-                Request changes
+                <ArrowRight className="h-3.5 w-3.5" /> See the artwork
               </Link>
             </div>
           </Card>

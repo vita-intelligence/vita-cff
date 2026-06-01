@@ -92,10 +92,17 @@ def record_payment(
 
 @transaction.atomic
 def approve_payment(*, payment: Payment, actor: Any) -> Payment:
-    """Approve a PENDING payment. Side effect: if the matching
-    LabelDesign exists and is still in ``PAYMENT_PENDING``, advance
-    it to ``LABEL_PATH_PENDING`` so the customer can pick a design
-    path on the portal.
+    """Approve a PENDING payment. Side effect: advance EVERY
+    ``LabelDesign`` for the same project that's still sitting in
+    ``PAYMENT_PENDING`` to ``LABEL_PATH_PENDING``.
+
+    Multi-spec projects carry multiple label-design rows (one per
+    customer-signed spec) but a single payment unlocks the whole
+    project — so the fan-out matters. We still also nudge the
+    legacy ``payment.label_design`` FK row if it points
+    somewhere different (rare; only when the column was set by
+    an older code path before the formulation-level fan-out
+    existed).
     """
 
     if payment.status == PaymentStatus.APPROVED:
@@ -110,18 +117,41 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
         update_fields=["status", "approved_by", "approved_at", "updated_at"]
     )
 
-    label_design = payment.label_design
-    if (
-        label_design is not None
-        and label_design.status == LabelDesignStatus.PAYMENT_PENDING
-    ):
+    # Fan out across every pending label-design row for this
+    # project — newest first so a logged audit trail reads
+    # newest-spec-first.
+    pending = LabelDesign.objects.filter(
+        formulation_id=payment.formulation_id,
+        status=LabelDesignStatus.PAYMENT_PENDING,
+    ).order_by("-created_at")
+    advanced_ids: list[str] = []
+    for ld in pending:
         label_design_transition(
-            label_design,
+            ld,
             to_status=LabelDesignStatus.LABEL_PATH_PENDING,
             actor=actor,
             notes="payment approved",
             metadata={"payment_id": str(payment.id)},
         )
+        advanced_ids.append(str(ld.id))
+
+    # Safety net for legacy data: if the explicit FK pointed at a
+    # row outside the formulation set we just walked, advance that
+    # one too. New code never relies on this column.
+    legacy = payment.label_design
+    if (
+        legacy is not None
+        and legacy.formulation_id != payment.formulation_id
+        and legacy.status == LabelDesignStatus.PAYMENT_PENDING
+    ):
+        label_design_transition(
+            legacy,
+            to_status=LabelDesignStatus.LABEL_PATH_PENDING,
+            actor=actor,
+            notes="payment approved (legacy fk)",
+            metadata={"payment_id": str(payment.id)},
+        )
+        advanced_ids.append(str(legacy.id))
 
     record_audit(
         organization=payment.organization,
@@ -129,7 +159,10 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
         action="payment.approve",
         target=payment,
         before={"status": PaymentStatus.PENDING},
-        after={"status": PaymentStatus.APPROVED},
+        after={
+            "status": PaymentStatus.APPROVED,
+            "advanced_label_designs": advanced_ids,
+        },
     )
 
     # Notify the customer that we've received their payment + point

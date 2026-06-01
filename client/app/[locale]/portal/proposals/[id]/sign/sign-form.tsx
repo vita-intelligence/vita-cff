@@ -120,6 +120,27 @@ export function ProposalSignForm({
             </label>
           ))}
         </div>
+        <p className="mt-4 text-[12px] leading-relaxed text-neutral-600">
+          By signing you also confirm you&rsquo;ve read our{" "}
+          <a
+            href="https://www.vitamanufacture.co.uk/termsandcondition"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-bold underline underline-offset-2 hover:text-black"
+          >
+            Terms &amp; Conditions
+          </a>{" "}
+          and{" "}
+          <a
+            href="https://www.vitamanufacture.co.uk/privacypolicy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-bold underline underline-offset-2 hover:text-black"
+          >
+            Privacy Policy
+          </a>
+          .
+        </p>
       </Card>
 
       <Card>
@@ -147,7 +168,7 @@ export function ProposalSignForm({
 
       <form onSubmit={onSubmit} className="flex gap-3">
         <PortalButton type="submit" disabled={submitting}>
-          {submitting ? "Signing…" : "Sign proposal"}
+          {submitting ? "Signing…" : "Sign & submit"}
         </PortalButton>
         <PortalButton
           type="button"

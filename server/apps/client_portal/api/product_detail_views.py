@@ -506,6 +506,7 @@ def _build_documents(
     proposals: list[Proposal],
     sheets: list[SpecificationSheet],
     label_design: LabelDesign | None,
+    label_designs_all: list[LabelDesign] | None = None,
 ) -> list[dict]:
     """Every signed / submitted document on this project, newest-first."""
 
@@ -543,22 +544,33 @@ def _build_documents(
                 "url": f"/portal/specs/{sheet.id}",
             }
         )
-    # Label-design entry. Emitted from the moment the LabelDesign
-    # row exists (i.e. the spec sheet has been customer-signed and
-    # the workflow has bootstrapped) — not just once finished
-    # artwork has been uploaded. This is the customer's portal door
-    # into every step of the label workflow: choose-path,
-    # preferences, content block, upload, approve. Without this
-    # entry the per-product page has no link into the label flow
-    # until artwork already exists, which is far too late.
-    if label_design is not None:
+    # Label-design entries — one per label-design row. Multi-spec
+    # projects have one workflow per spec, and the customer needs a
+    # door into each (choose-path, preferences, upload, approve).
+    # Pre-multi-spec callers that only pass ``label_design`` still
+    # get a single entry via the fallback below.
+    label_design_list = (
+        list(label_designs_all)
+        if label_designs_all is not None
+        else ([label_design] if label_design is not None else [])
+    )
+    for ld in label_design_list:
+        spec_code = (
+            ld.specification_sheet.code if ld.specification_sheet else ""
+        )
+        # Multi-spec projects suffix the spec code so the customer
+        # can tell which artwork each row drives. Single-spec /
+        # legacy rows stay as the bare "Label design" label.
+        label = "Label design"
+        if spec_code and len(label_design_list) > 1:
+            label = f"Label design · {spec_code}"
         out.append(
             {
                 "kind": "label_workflow",
-                "label": "Label design",
-                "status": label_design.status,
-                "signed_at": _iso(label_design.customer_approved_at),
-                "url": f"/portal/label-designs/{label_design.id}",
+                "label": label,
+                "status": ld.status,
+                "signed_at": _iso(ld.customer_approved_at),
+                "url": f"/portal/label-designs/{ld.id}",
             }
         )
     out.sort(key=lambda d: d["signed_at"] or "", reverse=True)
@@ -635,26 +647,28 @@ class PortalProductDetailView(PortalAPIView):
     documents + timeline for a single project the customer owns."""
 
     def get(self, request: Request, formulation_id) -> Response:
+        from apps.client_portal.queries import (
+            customer_owns_formulation,
+            proposals_covering_formulation,
+        )
+
         customer_id = request.user.customer_id
 
-        # Ownership: at least one Proposal pinning this formulation
-        # to this customer.
-        owns_project = Proposal.objects.filter(
-            customer_id=customer_id,
-            formulation_version__formulation_id=formulation_id,
-        ).exists()
-        if not owns_project:
+        # Ownership: at least one proposal owned by this customer
+        # covers this formulation — anchor OR via a line. Without
+        # the line walk, a customer owning a multi-project proposal
+        # would 404 on every non-anchor project's detail page.
+        if not customer_owns_formulation(
+            customer_id=customer_id, formulation_id=formulation_id
+        ):
             raise NotFound()
 
         formulation = get_object_or_404(Formulation, id=formulation_id)
 
         proposals = list(
-            Proposal.objects.filter(
-                customer_id=customer_id,
-                formulation_version__formulation_id=formulation_id,
-            )
-            .select_related("formulation_version")
-            .order_by("-updated_at")
+            proposals_covering_formulation(
+                customer_id=customer_id, formulation_id=formulation_id
+            ).select_related("formulation_version")
         )
         sheets = list(
             SpecificationSheet.objects.filter(
@@ -668,9 +682,42 @@ class PortalProductDetailView(PortalAPIView):
                 trial_batch__formulation_version__formulation_id=formulation_id,
             ).order_by("-updated_at")
         )
-        label_design = LabelDesign.objects.filter(
-            formulation_id=formulation_id
-        ).first()
+        # Multi-spec projects carry multiple label-design rows.
+        # The helpers below were designed against the 1:1 model so
+        # we keep them stable by featuring the "most-blocking" row
+        # (the least-advanced status, which is whichever spec is
+        # waiting on the customer the loudest). The dashboard's
+        # action queue + the documents list still surface every
+        # row individually so nothing gets hidden.
+        label_designs_all = list(
+            LabelDesign.objects.filter(formulation_id=formulation_id)
+            .select_related("specification_sheet")
+            .order_by("created_at")
+        )
+
+        # Status priority — lower number wins as the "feature"
+        # row. Order mirrors the customer's mental "what blocks
+        # me next?": approve > customer brief > path > waiting on
+        # us > done.
+        _STATUS_BLOCK_PRIORITY: dict[str, int] = {
+            LabelDesignStatus.CUSTOMER_APPROVAL: 0,
+            LabelDesignStatus.LABEL_PATH_PENDING: 1,
+            LabelDesignStatus.DESIGN_PREFERENCES_PENDING: 2,
+            LabelDesignStatus.PAYMENT_PENDING: 3,
+            LabelDesignStatus.DESIGN_IN_PROGRESS: 4,
+            LabelDesignStatus.SCIENTIST_REVIEW: 5,
+            LabelDesignStatus.DIRECTOR_REVIEW: 6,
+            LabelDesignStatus.ON_HOLD: 7,
+            LabelDesignStatus.LABEL_APPROVED: 8,
+        }
+        label_design = (
+            min(
+                label_designs_all,
+                key=lambda ld: _STATUS_BLOCK_PRIORITY.get(ld.status, 99),
+            )
+            if label_designs_all
+            else None
+        )
         payment = (
             Payment.objects.filter(
                 formulation_id=formulation_id, status=PaymentStatus.APPROVED
@@ -715,6 +762,7 @@ class PortalProductDetailView(PortalAPIView):
                     proposals=proposals,
                     sheets=sheets,
                     label_design=label_design,
+                    label_designs_all=label_designs_all,
                 ),
                 "timeline": _build_timeline(
                     proposals=proposals,

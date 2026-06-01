@@ -4,7 +4,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CommentsPanel } from "@/components/comments";
 import { useCurrentUser } from "@/services/accounts";
 
+import dynamic from "next/dynamic";
+
 import { LabellingCommentsBubble } from "./labelling-comments-bubble";
+
+// PDF.js touches browser-only APIs (``DOMMatrix``, ``Canvas``)
+// at module-eval time, so SSR'ing this component throws in
+// Node. ``ssr: false`` skips the server pass entirely — the
+// preview tab only matters in the browser anyway.
+const PdfPreview = dynamic(
+  () => import("@/components/pdf-preview").then((m) => m.PdfPreview),
+  { ssr: false },
+);
 
 import {
   AlertCircle,
@@ -50,8 +61,12 @@ import {
 import { useMemberships } from "@/services/members";
 import type {
   LabelDesignDto,
+  LabelDesignReviewDto,
   LabelDesignStatus,
+  LabelDesignTransitionDto,
 } from "@/services/label-design/types";
+
+import { SignatureField } from "@/components/ui/signature-field";
 
 import { SpecSheetContent } from "../../specifications/[id]/specification-sheet-view";
 import { CHECKLIST_ITEMS, CHECKLIST_SECTIONS } from "./compliance-checklist";
@@ -145,6 +160,12 @@ export function LabellingWorkspace({
           <h1 className="mt-1 text-lg font-semibold text-ink-1000">
             {data.formulation_name || "Label design"}{" "}
             <span className="text-ink-500">· {data.formulation_code}</span>
+            {/* Spec disambiguator — see queue card comment. */}
+            {data.specification_sheet_code ? (
+              <span className="ml-1 text-ink-500">
+                / {data.specification_sheet_code}
+              </span>
+            ) : null}
           </h1>
           <p className="text-xs text-ink-500">{STATUS_LABELS[data.status]}</p>
         </div>
@@ -205,6 +226,7 @@ export function LabellingWorkspace({
           status={data.status}
           designPath={data.design_path}
           artworkPdfUrl={data.current_revision_detail?.artwork_pdf_url ?? ""}
+          currentRevisionId={data.current_revision}
           onMutate={() => refetch()}
         />
       ) : null}
@@ -231,6 +253,8 @@ export function LabellingWorkspace({
 
       {tab === "versions" ? (
         <VersionsTab
+          orgId={orgId}
+          labelDesignId={labelDesignId}
           revisions={data.revisions}
           currentRevisionId={data.current_revision}
         />
@@ -602,6 +626,7 @@ function ArtworkTab({
   status,
   designPath,
   artworkPdfUrl,
+  currentRevisionId,
   canDesign,
   canReviewScientist,
   canReviewDirector,
@@ -612,6 +637,7 @@ function ArtworkTab({
   status: LabelDesignStatus;
   designPath: string;
   artworkPdfUrl: string;
+  currentRevisionId: string | null;
   canDesign: boolean;
   canReviewScientist: boolean;
   canReviewDirector: boolean;
@@ -622,9 +648,33 @@ function ArtworkTab({
   const toneClass =
     STATUS_TONE_CLASS[presentation.tone] ?? STATUS_TONE_CLASS.neutral;
 
+  // The (revision, kind) UNIQUE constraint on LabelDesignReview
+  // means a revision is locked once a reviewer OF THAT KIND
+  // touches it. Crucially this is per-kind, not per-revision —
+  // the same revision legitimately carries a scientist review
+  // (approved) AND a director review (next step), so the stuck
+  // check has to scope to the kind that's currently being asked
+  // for. Without the kind filter, the director review form
+  // disappears the moment the scientist approves.
+  const reviewsQuery = useLabelDesignReviews(orgId, labelDesignId);
+  const currentKindReviewExists = Boolean(
+    currentRevisionId &&
+      reviewsQuery.data?.some(
+        (r) =>
+          r.revision === currentRevisionId &&
+          ((status === "scientist_review" && r.kind === "scientist") ||
+            (status === "director_review" && r.kind === "director")),
+      ),
+  );
+  const isStuckMidReview =
+    (status === "scientist_review" || status === "director_review") &&
+    currentKindReviewExists;
+
   const showUpload =
     canDesign &&
-    (status === "design_in_progress" || status === "label_path_pending");
+    (status === "design_in_progress" ||
+      status === "label_path_pending" ||
+      isStuckMidReview);
   const showSubmit = canDesign && status === "design_in_progress";
 
   return (
@@ -698,7 +748,7 @@ function ArtworkTab({
               // centred and contained so portrait + landscape labels
               // both look right. ``bg-checker`` would be nicer for
               // transparency but a flat tone matches the PDF tray.
-              <div className="flex h-[680px] w-full items-center justify-center bg-ink-50 p-4">
+              <div className="flex h-[440px] w-full min-w-0 max-w-full items-center justify-center overflow-hidden bg-ink-50 p-4 sm:h-[560px] lg:h-[680px]">
                 <img
                   src={artworkPdfUrl}
                   alt="Current artwork"
@@ -706,28 +756,14 @@ function ArtworkTab({
                 />
               </div>
             ) : isPdfArtwork(artworkPdfUrl) ? (
-              <object
-                data={artworkPdfUrl}
-                type="application/pdf"
-                className="block h-[680px] w-full bg-ink-50"
-              >
-                <p className="p-4 text-sm text-ink-500">
-                  Your browser can&rsquo;t preview PDFs inline.{" "}
-                  <a
-                    href={artworkPdfUrl}
-                    className="underline"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open in a new tab
-                  </a>
-                  .
-                </p>
-              </object>
+              <PdfPreview
+                url={artworkPdfUrl}
+                heightClassName="h-[440px] sm:h-[560px] lg:h-[680px]"
+              />
             ) : (
               // Unknown file type — give a clear opt-in to open
               // externally rather than guessing wrong.
-              <div className="flex h-[680px] flex-col items-center justify-center gap-3 bg-ink-50 px-6 text-center">
+              <div className="flex h-[440px] flex-col items-center justify-center gap-3 bg-ink-50 px-6 text-center sm:h-[560px] lg:h-[680px]">
                 <FileText className="h-8 w-8 text-ink-400" />
                 <p className="text-sm text-ink-700">
                   Inline preview unavailable for this file type.
@@ -743,7 +779,7 @@ function ArtworkTab({
               </div>
             )
           ) : (
-            <div className="flex h-[680px] flex-col items-center justify-center gap-3 bg-gradient-to-b from-ink-50 to-ink-0 px-6 text-center">
+            <div className="flex h-[440px] flex-col items-center justify-center gap-3 bg-gradient-to-b from-ink-50 to-ink-0 px-6 text-center sm:h-[560px] lg:h-[680px]">
               <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
                 <ImageIcon className="h-6 w-6 text-ink-400" />
               </div>
@@ -765,6 +801,22 @@ function ArtworkTab({
             that match the current status + the caller's caps render,
             so the column never shows an action the user can't take. */}
         <aside className="space-y-3">
+          {isStuckMidReview ? (
+            <div className="rounded-2xl bg-amber-50 p-3 text-[11px] text-amber-900 ring-1 ring-inset ring-amber-200">
+              <p className="flex items-start gap-1.5">
+                <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  <strong className="font-semibold">
+                    This revision was already reviewed.
+                  </strong>{" "}
+                  The reviewer can&rsquo;t submit a second verdict on the
+                  same artwork — upload a new revision below and they can
+                  start a fresh review round. The earlier verdict stays on
+                  the record.
+                </span>
+              </p>
+            </div>
+          ) : null}
           {showUpload ? (
             <UploadCard
               orgId={orgId}
@@ -777,10 +829,13 @@ function ArtworkTab({
               orgId={orgId}
               labelDesignId={labelDesignId}
               hasArtwork={Boolean(artworkPdfUrl)}
+              currentRevisionId={currentRevisionId}
               onMutate={onMutate}
             />
           ) : null}
-          {canReviewScientist && status === "scientist_review" ? (
+          {canReviewScientist &&
+          status === "scientist_review" &&
+          !isStuckMidReview ? (
             <ReviewForm
               kind="scientist"
               orgId={orgId}
@@ -788,11 +843,13 @@ function ArtworkTab({
               onMutate={onMutate}
             />
           ) : null}
-          {canReviewDirector && status === "director_review" ? (
-            <ReviewForm
-              kind="director"
+          {canReviewDirector &&
+          status === "director_review" &&
+          !isStuckMidReview ? (
+            <DirectorReviewForm
               orgId={orgId}
               labelDesignId={labelDesignId}
+              currentRevisionId={currentRevisionId}
               onMutate={onMutate}
             />
           ) : null}
@@ -1054,20 +1111,32 @@ function SubmitForReviewCard({
   orgId,
   labelDesignId,
   hasArtwork,
+  currentRevisionId,
   onMutate,
 }: {
   orgId: string;
   labelDesignId: string;
   hasArtwork: boolean;
+  currentRevisionId: string | null;
   onMutate: () => void;
 }) {
   const submit = useSubmitLabelForReview(orgId, labelDesignId);
+  const reviewsQuery = useLabelDesignReviews(orgId, labelDesignId);
   const [err, setErr] = useState<string | null>(null);
+  // A revision is locked once it's been reviewed — the backend
+  // enforces UNIQUE(revision, kind) on the review row. Surfacing
+  // that up-front is much friendlier than letting the designer
+  // click "Send for review" and read a 400. The fix is always
+  // the same: upload a fresh revision.
+  const currentReviewed = Boolean(
+    currentRevisionId &&
+      reviewsQuery.data?.some((r) => r.revision === currentRevisionId),
+  );
   // Gate the submit on an actual artwork upload — the backend will
   // reject ``submit-for-review`` with ``no_revision`` if there's
   // no current revision, but disabling the button up-front is
   // friendlier than letting the user click and read a server error.
-  const disabled = submit.isPending || !hasArtwork;
+  const disabled = submit.isPending || !hasArtwork || currentReviewed;
   return (
     <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
       <div className="flex items-center gap-2">
@@ -1086,6 +1155,15 @@ function SubmitForReviewCard({
         <p className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
           <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
           <span>Upload artwork before sending for review.</span>
+        </p>
+      ) : currentReviewed ? (
+        <p className="mt-2 flex items-start gap-1.5 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
+          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>
+            This revision was already reviewed. Upload a new artwork
+            revision before resubmitting — the previous review stays
+            on the record.
+          </span>
         </p>
       ) : null}
       {err ? (
@@ -1262,13 +1340,11 @@ function ReviewForm({
         className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-xs"
       />
 
-      <label className="mt-2 block text-[10px] font-semibold uppercase tracking-wide text-ink-700">
-        Sign (type your name)
-      </label>
-      <input
+      <SignatureField
+        label="Sign"
         value={signature}
-        onChange={(e) => setSignature(e.target.value)}
-        className="mt-1 w-full rounded border border-ink-200 px-2 py-1 font-mono text-xs"
+        onChange={setSignature}
+        ariaLabel="Scientist signature"
       />
 
       <div className="mt-2 flex items-center gap-2">
@@ -1292,6 +1368,322 @@ function ReviewForm({
       </div>
       {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
     </form>
+  );
+}
+
+
+/** Read-only render of a scientist's full MA-PD-B-012 checklist.
+ *
+ *  Grouped by the same 5 sections the scientist saw at fill-time
+ *  so the director reads it in workflow order. Failed items
+ *  bubble to the top of each section because they're the ones
+ *  that actually need attention; passing items collapse beneath
+ *  a "show all" toggle. The scientist's per-item comment travels
+ *  with the row — those are the WHY the director is signing off
+ *  on.
+ */
+function ScientistChecklistReview({
+  responses,
+}: {
+  responses: LabelDesignReviewDto["checklist_responses"];
+}) {
+  const [showPassing, setShowPassing] = useState(false);
+  const byKey = useMemo(() => {
+    const m = new Map<string, { pass: boolean; comment: string }>();
+    for (const r of responses) {
+      m.set(r.item_key, { pass: r.pass, comment: r.comment });
+    }
+    return m;
+  }, [responses]);
+
+  return (
+    <div className="mt-3 rounded-md bg-ink-0/60 p-2 ring-1 ring-inset ring-ink-200">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-600">
+          Scientist&rsquo;s checklist
+        </p>
+        <button
+          type="button"
+          onClick={() => setShowPassing((v) => !v)}
+          className="rounded bg-ink-50 px-2 py-0.5 text-[10px] font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100"
+        >
+          {showPassing ? "Failed only" : "Show passing"}
+        </button>
+      </div>
+      <div className="mt-2 space-y-2">
+        {CHECKLIST_SECTIONS.map((section) => {
+          const items = CHECKLIST_ITEMS.filter(
+            (i) => i.section === section.key,
+          );
+          if (items.length === 0) return null;
+          // Render failed items first within each section so the
+          // director's eye lands on the problems before the noise.
+          const sorted = [...items].sort((a, b) => {
+            const ar = byKey.get(a.key);
+            const br = byKey.get(b.key);
+            const af = ar ? (ar.pass ? 1 : 0) : 2;
+            const bf = br ? (br.pass ? 1 : 0) : 2;
+            return af - bf;
+          });
+          const visible = sorted.filter((item) => {
+            const r = byKey.get(item.key);
+            return showPassing || !r || !r.pass;
+          });
+          if (visible.length === 0) return null;
+          return (
+            <div key={section.key}>
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                {section.label}
+              </p>
+              <ul className="mt-1 space-y-1">
+                {visible.map((item) => {
+                  const r = byKey.get(item.key);
+                  const pass = r?.pass ?? true;
+                  return (
+                    <li
+                      key={item.key}
+                      className={`rounded px-2 py-1 text-[11px] ring-1 ring-inset ${
+                        pass
+                          ? "bg-emerald-50/60 text-ink-900 ring-emerald-200/60"
+                          : "bg-rose-50 text-ink-900 ring-rose-200"
+                      }`}
+                    >
+                      <div className="flex items-start gap-1.5">
+                        {pass ? (
+                          <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-emerald-700" />
+                        ) : (
+                          <AlertCircle className="mt-0.5 h-3 w-3 shrink-0 text-rose-700" />
+                        )}
+                        <span className="flex-1">{item.label}</span>
+                        <span
+                          className={`shrink-0 rounded px-1.5 text-[9px] font-semibold uppercase tracking-wide ${
+                            pass
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-rose-100 text-rose-800"
+                          }`}
+                        >
+                          {pass ? "Pass" : "Fail"}
+                        </span>
+                      </div>
+                      {r?.comment ? (
+                        <p className="mt-1 whitespace-pre-line pl-4 text-[11px] text-ink-700">
+                          {r.comment}
+                        </p>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+/** Director review = sign-off on the scientist's verdict.
+ *
+ *  The 22-item MA-PD-B-012 checklist belongs to the scientist
+ *  (it IS the scientific review). Asking the director to rerun
+ *  it would be ceremony — they're approving the work, not
+ *  redoing it. This form shows what the scientist concluded
+ *  and asks the director for an approve/reject decision plus
+ *  comments and a signature. The scientist's full checklist
+ *  stays on their own review row, so the regulatory trail is
+ *  intact.
+ */
+function DirectorReviewForm({
+  orgId,
+  labelDesignId,
+  currentRevisionId,
+  onMutate,
+}: {
+  orgId: string;
+  labelDesignId: string;
+  currentRevisionId: string | null;
+  onMutate: () => void;
+}) {
+  const submit = useSubmitDirectorReview(orgId, labelDesignId);
+  const reviewsQuery = useLabelDesignReviews(orgId, labelDesignId);
+  const scientistReview = useMemo(() => {
+    if (!currentRevisionId) return null;
+    return (
+      reviewsQuery.data?.find(
+        (r) => r.revision === currentRevisionId && r.kind === "scientist",
+      ) ?? null
+    );
+  }, [reviewsQuery.data, currentRevisionId]);
+
+  const [finalComments, setFinalComments] = useState("");
+  const [signature, setSignature] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  // Tracks which button is in-flight so we can show the right
+  // spinner copy. Not used to drive the request — that goes
+  // through ``submitWithOutcome`` directly to dodge the
+  // ``setState`` batching gotcha (state isn't visible to the
+  // sibling event handler that reads it).
+  const [pendingOutcome, setPendingOutcome] = useState<
+    "approved" | "requires_revision" | null
+  >(null);
+
+  const failedChecklistCount = useMemo(() => {
+    if (!scientistReview) return 0;
+    return scientistReview.checklist_responses.filter((r) => !r.pass).length;
+  }, [scientistReview]);
+
+  const submitWithOutcome = async (
+    outcome: "approved" | "requires_revision",
+  ) => {
+    setErr(null);
+    if (!finalComments.trim()) {
+      setErr("A short comment is required.");
+      return;
+    }
+    setPendingOutcome(outcome);
+    try {
+      await submit.mutateAsync({
+        outcome,
+        // Director path — empty checklist by design. Backend
+        // accepts it via the ``require_full_checklist=False``
+        // context flag on ``ReviewSubmitSerializer``.
+        checklist: [],
+        final_comments: finalComments,
+        signature_image: signature,
+      });
+      onMutate();
+    } catch (e) {
+      setErr(
+        (e as { response?: { data?: { detail?: string } } })?.response?.data
+          ?.detail ?? "Submission failed.",
+      );
+    } finally {
+      setPendingOutcome(null);
+    }
+  };
+
+  return (
+    <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-50 ring-1 ring-inset ring-violet-200">
+          <CheckCircle2 className="h-3.5 w-3.5 text-violet-700" />
+        </span>
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
+          Director sign-off
+        </h3>
+      </div>
+      <p className="mt-1 text-[11px] text-ink-500">
+        The scientist has run the MA-PD-B-012 compliance check.
+        Read their verdict and decide.
+      </p>
+
+      {/* Scientist's verdict card — the thing the director is
+          signing off on. Bare minimum: outcome, who, when, plus
+          the comments that travel with the verdict. Failed
+          items get a separate count so the director sees at a
+          glance whether the scientist flagged anything. */}
+      {scientistReview ? (
+        <div
+          className={`mt-3 rounded-lg px-3 py-2 ring-1 ring-inset ${
+            scientistReview.outcome === "approved"
+              ? "bg-emerald-50 text-emerald-900 ring-emerald-200"
+              : "bg-rose-50 text-rose-900 ring-rose-200"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide">
+            {scientistReview.outcome === "approved" ? (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            ) : (
+              <AlertCircle className="h-3.5 w-3.5" />
+            )}
+            <span>
+              Scientist {scientistReview.outcome === "approved"
+                ? "approved"
+                : "sent back"}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-700">
+            {scientistReview.reviewer_email || "Unknown"}
+            {scientistReview.created_at
+              ? ` · ${new Date(scientistReview.created_at).toLocaleString()}`
+              : ""}
+          </p>
+          {failedChecklistCount > 0 ? (
+            <p className="mt-1 text-[11px] text-rose-800">
+              {failedChecklistCount} checklist item
+              {failedChecklistCount === 1 ? "" : "s"} flagged.
+            </p>
+          ) : (
+            <p className="mt-1 text-[11px] text-emerald-800">
+              All 22 checklist items passed.
+            </p>
+          )}
+          {scientistReview.final_comments ? (
+            <p className="mt-2 whitespace-pre-line text-xs text-ink-900">
+              “{scientistReview.final_comments}”
+            </p>
+          ) : null}
+
+          {/* Line-by-line MA-PD-B-012 verdict — every item the
+              scientist filled in, grouped the same way they saw
+              it, with their per-item comment if any. The director
+              needs the comments inline to sign off knowingly;
+              hiding them behind a tab switch was making the
+              workspace lie about how much context was on screen. */}
+          <ScientistChecklistReview
+            responses={scientistReview.checklist_responses}
+          />
+        </div>
+      ) : (
+        <p className="mt-3 rounded-md bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-800 ring-1 ring-inset ring-amber-200">
+          No scientist review found on this revision — strange. Check
+          the Reviews tab before signing off.
+        </p>
+      )}
+
+      <label className="mt-3 block text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+        Your comment (required)
+      </label>
+      <textarea
+        value={finalComments}
+        onChange={(e) => setFinalComments(e.target.value)}
+        rows={3}
+        placeholder="Anything you want on the record alongside your decision."
+        className="mt-1 w-full rounded border border-ink-200 px-2 py-1 text-xs"
+      />
+
+      <SignatureField
+        label="Sign"
+        value={signature}
+        onChange={setSignature}
+        ariaLabel="Director signature"
+      />
+
+      <div className="mt-3 flex flex-col gap-2">
+        <button
+          type="button"
+          onClick={() => submitWithOutcome("approved")}
+          disabled={submit.isPending}
+          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-ink-0 hover:bg-emerald-700 disabled:opacity-50"
+        >
+          <CheckCircle2 className="h-3.5 w-3.5" />
+          {pendingOutcome === "approved" ? "Approving…" : "Approve label"}
+        </button>
+        <button
+          type="button"
+          onClick={() => submitWithOutcome("requires_revision")}
+          disabled={submit.isPending}
+          className="inline-flex items-center justify-center gap-1.5 rounded-md bg-ink-0 px-3 py-2 text-xs font-semibold text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50 disabled:opacity-50"
+        >
+          <AlertCircle className="h-3.5 w-3.5" />
+          {pendingOutcome === "requires_revision"
+            ? "Sending back…"
+            : "Send back for changes"}
+        </button>
+      </div>
+      {err ? <p className="mt-2 text-xs text-danger">{err}</p> : null}
+    </div>
   );
 }
 
@@ -1735,12 +2127,67 @@ function ContentBlockTab({
  *  "revision 1 was X, revision 2 the customer asked us to change Y".
  */
 function VersionsTab({
+  orgId,
+  labelDesignId,
   revisions,
   currentRevisionId,
 }: {
+  orgId: string;
+  labelDesignId: string;
   revisions: LabelDesignDto["revisions"];
   currentRevisionId: string | null;
 }) {
+  // Reviews are the journey markers that turn the flat list of
+  // revisions into a roadmap — scientist verdict, director
+  // verdict, customer verdict, with comments. Without these the
+  // tab just shows "here are some PDFs" and the operator has to
+  // jump to the Reviews tab to reconstruct the story.
+  const reviewsQuery = useLabelDesignReviews(orgId, labelDesignId);
+  const transitionsQuery = useLabelDesignTransitions(orgId, labelDesignId);
+
+  const reviewsByRevision = useMemo(() => {
+    const map = new Map<string, LabelDesignReviewDto[]>();
+    for (const r of reviewsQuery.data ?? []) {
+      const existing = map.get(r.revision) ?? [];
+      existing.push(r);
+      map.set(r.revision, existing);
+    }
+    // Stable order: scientist first, then director — matches the
+    // workflow direction so the eye reads top-to-bottom.
+    for (const arr of map.values()) {
+      arr.sort((a, b) =>
+        a.kind === b.kind ? 0 : a.kind === "scientist" ? -1 : 1,
+      );
+    }
+    return map;
+  }, [reviewsQuery.data]);
+
+  // Customer verdicts live as ``LabelDesignTransition`` rows
+  // (not reviews) — see the portal approve/reject views which
+  // tag the transition with ``metadata.revision_id`` so we can
+  // pair them back to the right artwork here. We surface them
+  // alongside the staff reviews so the journey reads
+  // end-to-end: scientist → director → customer.
+  const customerEventsByRevision = useMemo(() => {
+    const map = new Map<string, LabelDesignTransitionDto[]>();
+    for (const t of transitionsQuery.data ?? []) {
+      const revisionId =
+        typeof t.metadata?.revision_id === "string"
+          ? t.metadata.revision_id
+          : null;
+      if (!revisionId) continue;
+      // Only customer-driven transitions belong in the journey
+      // here — director/scientist transitions are already
+      // covered by the review rows above. ``actor_client_email``
+      // is set iff the actor was a ClientAccount (customer).
+      if (!t.actor_client_email) continue;
+      const existing = map.get(revisionId) ?? [];
+      existing.push(t);
+      map.set(revisionId, existing);
+    }
+    return map;
+  }, [transitionsQuery.data]);
+
   if (revisions.length === 0) {
     return (
       <div className="rounded-2xl bg-ink-0 p-6 ring-1 ring-ink-200">
@@ -1818,32 +2265,34 @@ function VersionsTab({
               ) : null}
             </header>
 
-            <div className="mt-3 grid gap-3 sm:grid-cols-[160px_1fr]">
-              <div className="rounded-xl bg-ink-50 p-2 ring-1 ring-ink-200">
+            <div className="mt-3 grid gap-3 sm:grid-cols-[200px_1fr]">
+              <div className="overflow-hidden rounded-xl bg-ink-50 ring-1 ring-ink-200">
                 {/* Prefer the pre-rendered PNG (for PDF uploads),
-                    fall back to the artwork file itself when the
-                    upload IS an image (PNG/JPG), and only show "no
-                    preview" if neither is usable (e.g. PDF with no
-                    preview generator run yet). */}
+                    then fall back to the artwork file itself when
+                    the upload IS an image (PNG/JPG), and finally
+                    render PDFs inline at thumbnail size via
+                    PDF.js — same canvas pipeline as the main
+                    artwork preview so it works in Brave too. */}
                 {r.artwork_preview_png_url ? (
                   <img
                     src={r.artwork_preview_png_url}
                     alt={`Artwork revision ${r.revision_number}`}
-                    className="mx-auto max-h-32 object-contain"
+                    className="mx-auto max-h-40 object-contain p-2"
                   />
                 ) : isImageArtwork(r.artwork_pdf_url) ? (
                   <img
                     src={r.artwork_pdf_url}
                     alt={`Artwork revision ${r.revision_number}`}
-                    className="mx-auto max-h-32 object-contain"
+                    className="mx-auto max-h-40 object-contain p-2"
                   />
                 ) : r.artwork_pdf_url ? (
-                  <div className="flex h-32 flex-col items-center justify-center gap-1 text-[10px] text-ink-500">
-                    <FileText className="h-5 w-5 text-ink-400" />
-                    PDF
-                  </div>
+                  <PdfPreview
+                    url={r.artwork_pdf_url}
+                    heightClassName="h-40"
+                    compact
+                  />
                 ) : (
-                  <div className="flex h-32 items-center justify-center text-[10px] text-ink-500">
+                  <div className="flex h-40 items-center justify-center text-[10px] text-ink-500">
                     No preview
                   </div>
                 )}
@@ -1855,12 +2304,134 @@ function VersionsTab({
                 <p className="mt-1 whitespace-pre-line">
                   {r.notes || "(no notes)"}
                 </p>
+
+                {/* Journey — every verdict written against this
+                    revision, in workflow order (scientist →
+                    director → customer). Keeps the audit story
+                    attached to the artwork it's about so a
+                    reviewer doesn't need to cross-reference the
+                    Reviews tab. */}
+                <RevisionJourney
+                  reviews={reviewsByRevision.get(r.id) ?? []}
+                  customerEvents={customerEventsByRevision.get(r.id) ?? []}
+                />
               </div>
             </div>
           </article>
         );
       })}
     </section>
+  );
+}
+
+
+function RevisionJourney({
+  reviews,
+  customerEvents,
+}: {
+  reviews: ReadonlyArray<LabelDesignReviewDto>;
+  customerEvents: ReadonlyArray<LabelDesignTransitionDto>;
+}) {
+  // Build a unified, chronologically-ordered journey across two
+  // sources: staff ``LabelDesignReview`` rows (scientist /
+  // director) and customer ``LabelDesignTransition`` rows
+  // (approve / reject from the portal). Each entry carries the
+  // shape needed to render a tone, label, actor, time, and
+  // optional comment — uniform read regardless of source.
+  type JourneyEntry = {
+    key: string;
+    kind: "scientist" | "director" | "customer";
+    approved: boolean;
+    actor: string;
+    at: string;
+    comment: string;
+  };
+
+  const entries: JourneyEntry[] = [];
+  for (const r of reviews) {
+    entries.push({
+      key: `r-${r.id}`,
+      kind: r.kind,
+      approved: r.outcome === "approved",
+      actor: r.reviewer_email || "",
+      at: r.created_at || "",
+      comment: r.final_comments || "",
+    });
+  }
+  for (const t of customerEvents) {
+    // ``approved`` derives from the destination status — the
+    // portal-approve endpoint transitions to LABEL_APPROVED, the
+    // portal-reject endpoint goes back to DESIGN_IN_PROGRESS.
+    const approved = t.to_status === "label_approved";
+    entries.push({
+      key: `t-${t.id}`,
+      kind: "customer",
+      approved,
+      actor: t.actor_client_email || "Customer",
+      at: t.created_at || "",
+      comment: t.notes || "",
+    });
+  }
+  entries.sort((a, b) => (a.at || "").localeCompare(b.at || ""));
+
+  if (entries.length === 0) {
+    return (
+      <div className="mt-3 rounded-md bg-ink-50/50 px-2 py-1.5 text-[11px] text-ink-500">
+        Not yet reviewed.
+      </div>
+    );
+  }
+
+  const labelFor = (kind: JourneyEntry["kind"], approved: boolean) => {
+    if (kind === "customer") return approved ? "Approved" : "Rejected";
+    return approved ? "Approved" : "Sent back";
+  };
+
+  return (
+    <ol className="mt-3 space-y-1.5">
+      {entries.map((e) => {
+        const tone = e.approved
+          ? "bg-emerald-50 text-emerald-800 ring-emerald-200"
+          : "bg-rose-50 text-rose-800 ring-rose-200";
+        const at = e.at ? new Date(e.at).toLocaleString() : "";
+        return (
+          <li
+            key={e.key}
+            className={`rounded-md px-2 py-1.5 text-[11px] ring-1 ring-inset ${tone}`}
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              {e.approved ? (
+                <CheckCircle2 className="h-3 w-3" />
+              ) : (
+                <AlertCircle className="h-3 w-3" />
+              )}
+              <span className="font-semibold uppercase tracking-wide">
+                {e.kind}
+              </span>
+              <span>·</span>
+              <span>{labelFor(e.kind, e.approved)}</span>
+              {e.actor ? (
+                <>
+                  <span>·</span>
+                  <span className="text-ink-600">{e.actor}</span>
+                </>
+              ) : null}
+              {at ? (
+                <>
+                  <span>·</span>
+                  <span className="text-ink-500">{at}</span>
+                </>
+              ) : null}
+            </div>
+            {e.comment ? (
+              <p className="mt-1 whitespace-pre-line text-ink-700">
+                {e.comment}
+              </p>
+            ) : null}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -1872,7 +2443,50 @@ function ReviewsTab({
   orgId: string;
   labelDesignId: string;
 }) {
-  const { data, isLoading } = useLabelDesignReviews(orgId, labelDesignId);
+  const reviewsQ = useLabelDesignReviews(orgId, labelDesignId);
+  const transitionsQ = useLabelDesignTransitions(orgId, labelDesignId);
+  const isLoading = reviewsQ.isLoading || transitionsQ.isLoading;
+
+  // Reviews tab is the verdict log. The natural mental model is
+  // "every time someone said yes or no to the artwork" — that's
+  // scientist + director (LabelDesignReview rows) AND customer
+  // (LabelDesignTransition rows from the portal approve/reject
+  // endpoints). Merging both sources here keeps the reviewer's
+  // workflow self-contained on this tab; they don't have to
+  // jump to the Audit timeline to reconstruct the customer's
+  // decision.
+  type Entry =
+    | {
+        kind: "review";
+        id: string;
+        at: string;
+        review: LabelDesignReviewDto;
+      }
+    | {
+        kind: "customer";
+        id: string;
+        at: string;
+        transition: LabelDesignTransitionDto;
+      };
+
+  const entries: Entry[] = [];
+  for (const r of reviewsQ.data ?? []) {
+    entries.push({ kind: "review", id: r.id, at: r.created_at, review: r });
+  }
+  for (const t of transitionsQ.data ?? []) {
+    // Only customer-driven transitions are verdicts; staff
+    // transitions are already captured by the review rows.
+    if (!t.actor_client_email) continue;
+    if (
+      t.to_status !== "label_approved" &&
+      t.to_status !== "design_in_progress"
+    ) {
+      continue;
+    }
+    entries.push({ kind: "customer", id: t.id, at: t.created_at, transition: t });
+  }
+  entries.sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+
   return (
     <div className="rounded-2xl bg-ink-0 p-4 ring-1 ring-ink-200">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-700">
@@ -1880,49 +2494,82 @@ function ReviewsTab({
       </h3>
       {isLoading ? (
         <p className="mt-3 text-xs text-ink-500">Loading…</p>
-      ) : !data || data.length === 0 ? (
+      ) : entries.length === 0 ? (
         <p className="mt-3 text-xs text-ink-500">No reviews yet.</p>
       ) : (
         <ul className="mt-3 space-y-3">
-          {data.map((r) => (
-            <li key={r.id} className="rounded bg-ink-50/50 p-2">
-              <p className="text-xs font-semibold text-ink-1000">
-                {r.kind === "scientist" ? "Scientist" : "Director"} ·{" "}
-                <span
-                  className={
-                    r.outcome === "approved"
-                      ? "text-emerald-700"
-                      : "text-rose-700"
-                  }
-                >
-                  {r.outcome === "approved" ? "Approved" : "Requires revisions"}
-                </span>
-              </p>
-              <p className="text-[11px] text-ink-500">
-                {r.reviewer_email} · {new Date(r.created_at).toLocaleString()}
-              </p>
-              {r.final_comments ? (
-                <p className="mt-1 whitespace-pre-line text-[11px] text-ink-700">
-                  {r.final_comments}
+          {entries.map((e) => {
+            if (e.kind === "review") {
+              const r = e.review;
+              return (
+                <li key={e.id} className="rounded bg-ink-50/50 p-2">
+                  <p className="text-xs font-semibold text-ink-1000">
+                    {r.kind === "scientist" ? "Scientist" : "Director"} ·{" "}
+                    <span
+                      className={
+                        r.outcome === "approved"
+                          ? "text-emerald-700"
+                          : "text-rose-700"
+                      }
+                    >
+                      {r.outcome === "approved"
+                        ? "Approved"
+                        : "Requires revisions"}
+                    </span>
+                  </p>
+                  <p className="text-[11px] text-ink-500">
+                    {r.reviewer_email} ·{" "}
+                    {new Date(r.created_at).toLocaleString()}
+                  </p>
+                  {r.final_comments ? (
+                    <p className="mt-1 whitespace-pre-line text-[11px] text-ink-700">
+                      {r.final_comments}
+                    </p>
+                  ) : null}
+                  {r.checklist_responses?.length ? (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-[10px] text-ink-500">
+                        Checklist ({r.checklist_responses.length} items)
+                      </summary>
+                      <ul className="mt-1 space-y-0.5 text-[11px]">
+                        {r.checklist_responses.map((c, i) => (
+                          <li key={`${r.id}-${c.item_key}-${i}`}>
+                            {c.pass ? "✓" : "✗"} {c.item_key}
+                            {c.comment ? ` — ${c.comment}` : ""}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  ) : null}
+                </li>
+              );
+            }
+            const t = e.transition;
+            const approved = t.to_status === "label_approved";
+            return (
+              <li key={e.id} className="rounded bg-ink-50/50 p-2">
+                <p className="text-xs font-semibold text-ink-1000">
+                  Customer ·{" "}
+                  <span
+                    className={
+                      approved ? "text-emerald-700" : "text-rose-700"
+                    }
+                  >
+                    {approved ? "Approved" : "Rejected"}
+                  </span>
                 </p>
-              ) : null}
-              {r.checklist_responses?.length ? (
-                <details className="mt-1">
-                  <summary className="cursor-pointer text-[10px] text-ink-500">
-                    Checklist ({r.checklist_responses.length} items)
-                  </summary>
-                  <ul className="mt-1 space-y-0.5 text-[11px]">
-                    {r.checklist_responses.map((c, i) => (
-                      <li key={`${r.id}-${c.item_key}-${i}`}>
-                        {c.pass ? "✓" : "✗"} {c.item_key}
-                        {c.comment ? ` — ${c.comment}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                </details>
-              ) : null}
-            </li>
-          ))}
+                <p className="text-[11px] text-ink-500">
+                  {t.actor_client_email || "Customer"} ·{" "}
+                  {new Date(t.created_at).toLocaleString()}
+                </p>
+                {t.notes ? (
+                  <p className="mt-1 whitespace-pre-line text-[11px] text-ink-700">
+                    {t.notes}
+                  </p>
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

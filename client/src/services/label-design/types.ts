@@ -90,6 +90,13 @@ export interface LabelDesignDto {
   readonly formulation_code: string;
   readonly formulation_name: string;
   readonly specification_sheet: string | null;
+  /** Spec code used as the disambiguator when a project carries
+   *  more than one spec. Each spec produces its own label-design
+   *  row sharing the same ``formulation_code``, so this is the
+   *  field the UI keys on to render "Spec A label" vs "Spec B
+   *  label". Empty string when no spec is attached (legacy / pre-
+   *  spec rows). */
+  readonly specification_sheet_code: string;
   readonly status: LabelDesignStatus;
   readonly design_path: LabelDesignPath;
   readonly assigned_designer: string | null;
@@ -119,6 +126,8 @@ export interface LabelDesignListItemDto {
   readonly formulation: string;
   readonly formulation_code: string;
   readonly formulation_name: string;
+  readonly specification_sheet: string | null;
+  readonly specification_sheet_code: string;
   readonly status: LabelDesignStatus;
   readonly design_path: LabelDesignPath;
   readonly assigned_designer: string | null;
