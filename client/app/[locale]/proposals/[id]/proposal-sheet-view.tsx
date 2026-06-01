@@ -70,7 +70,9 @@ import {
   type FormulationVersionDto,
 } from "@/services/formulations";
 import { useCurrentUser } from "@/services/accounts";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { useMemberships } from "@/services/members";
+import { useOrganization } from "@/services/organizations";
 import {
   specificationsEndpoints,
   useInfiniteSpecifications,
@@ -157,24 +159,19 @@ export function ProposalSheetView({
   const proposalQuery = useProposal(orgId, proposalId);
   const transitionMutation = useTransitionProposalStatus(orgId, proposalId);
   const updateMutation = useUpdateProposal(orgId, proposalId);
-  // Current user's membership on this org — drives the per-button
-  // RBAC gates below. ``is_owner`` short-circuits everything (the
-  // owner role bypasses capability checks server-side too).
+  // Current user's caps come from the cached :class:`OrganizationDto`
+  // payload, not from a fresh memberships fetch. The Memberships
+  // endpoint is gated on ``members.view`` — sales / scientist roles
+  // don't hold that cap, so reading caps off it would 403 their
+  // request, leave ``myMembership`` null, and silently disable
+  // surfaces they actually have access to (the proposal chat bubble
+  // was hidden for exactly this reason on prod). Reading off the
+  // org DTO matches the formulations / specifications pages and
+  // works for every role.
   const currentUserQuery = useCurrentUser();
-  const membershipsQuery = useMemberships(orgId);
-  const myMembership = useMemo(() => {
-    const me = currentUserQuery.data;
-    if (!me) return null;
-    return (
-      membershipsQuery.data?.find((m) => m.user.id === me.id) ?? null
-    );
-  }, [currentUserQuery.data, membershipsQuery.data]);
-  const hasProposalsCap = (cap: string): boolean => {
-    if (!myMembership) return false;
-    if (myMembership.is_owner) return true;
-    const raw = myMembership.permissions["proposals"];
-    return Array.isArray(raw) ? raw.includes(cap) : false;
-  };
+  const organization = useOrganization(orgId);
+  const hasProposalsCap = (cap: string): boolean =>
+    hasFlatCapability(organization, "proposals", cap);
   // ``approve`` and ``manual_close`` are the two new gates. Falls
   // back to ``false`` while the memberships query is still loading
   // so a fast-rendered ``in_review`` proposal doesn't briefly show
@@ -620,9 +617,11 @@ export function ProposalSheetView({
           orgId={orgId}
           proposalId={proposalId}
           currentUserId={currentUserQuery.data.id}
-          canRead={hasProposalsCap("view") || myMembership?.is_owner === true}
-          canWrite={hasProposalsCap("view") || myMembership?.is_owner === true}
-          canModerate={myMembership?.is_owner === true}
+          // ``hasFlatCapability`` already short-circuits true on
+          // owners — no separate ``is_owner`` branch needed.
+          canRead={hasProposalsCap("view")}
+          canWrite={hasProposalsCap("view")}
+          canModerate={organization?.is_owner === true}
         />
       ) : null}
 
@@ -640,9 +639,9 @@ export function ProposalSheetView({
           proposalId={proposalId}
           currentUserId={currentUserQuery.data.id}
           proposalLabel={proposal.code || "Proposal"}
-          canRead={hasProposalsCap("view") || myMembership?.is_owner === true}
-          canWrite={hasProposalsCap("view") || myMembership?.is_owner === true}
-          canModerate={myMembership?.is_owner === true}
+          canRead={hasProposalsCap("view")}
+          canWrite={hasProposalsCap("view")}
+          canModerate={organization?.is_owner === true}
         />
       ) : null}
 
