@@ -15,7 +15,10 @@ import type {
   LabelDesignListItemDto,
   LabelDesignListPage,
   LabelDesignReviewDto,
+  LabelDesignTemplateCategoryDto,
+  LabelDesignTemplateDto,
   LabelDesignTransitionDto,
+  PortalLabelDesignTemplateGroup,
 } from "./types";
 
 
@@ -499,6 +502,17 @@ export async function portalFetchContentBlockText(
 }
 
 
+export async function portalFetchContentBlockHtml(
+  ldId: string,
+): Promise<string> {
+  const { data } = await apiClient.get<string>(
+    ep.portalContentBlockHtml(ldId),
+    { responseType: "text" },
+  );
+  return data;
+}
+
+
 export async function portalUploadArtwork(
   ldId: string,
   payload: {
@@ -540,4 +554,137 @@ export async function portalRejectLabel(
     { reason },
   );
   return data;
+}
+
+
+// ---------------------------------------------------------------------------
+// Template library (staff)
+// ---------------------------------------------------------------------------
+
+
+export async function fetchLabelDesignTemplateCategories(
+  orgId: string,
+): Promise<LabelDesignTemplateCategoryDto[]> {
+  const { data } = await apiClient.get<{
+    items: LabelDesignTemplateCategoryDto[];
+  }>(ep.templateCategories(orgId));
+  return data.items;
+}
+
+
+export async function createLabelDesignTemplateCategory(
+  orgId: string,
+  payload: {
+    name: string;
+    description?: string;
+    sort_order?: number;
+  },
+): Promise<LabelDesignTemplateCategoryDto> {
+  const { data } = await apiClient.post<LabelDesignTemplateCategoryDto>(
+    ep.templateCategories(orgId),
+    payload,
+  );
+  return data;
+}
+
+
+export async function updateLabelDesignTemplateCategory(
+  orgId: string,
+  catId: string,
+  payload: Partial<{
+    name: string;
+    description: string;
+    sort_order: number;
+  }>,
+): Promise<LabelDesignTemplateCategoryDto> {
+  const { data } = await apiClient.patch<LabelDesignTemplateCategoryDto>(
+    ep.templateCategoryDetail(orgId, catId),
+    payload,
+  );
+  return data;
+}
+
+
+export async function deleteLabelDesignTemplateCategory(
+  orgId: string,
+  catId: string,
+): Promise<void> {
+  await apiClient.delete(ep.templateCategoryDetail(orgId, catId));
+}
+
+
+export async function fetchLabelDesignTemplates(
+  orgId: string,
+): Promise<LabelDesignTemplateDto[]> {
+  const { data } = await apiClient.get<{ items: LabelDesignTemplateDto[] }>(
+    ep.templates(orgId),
+  );
+  return data.items;
+}
+
+
+export async function uploadLabelDesignTemplate(
+  orgId: string,
+  payload: {
+    category_id: string;
+    name: string;
+    description?: string;
+    file: File;
+    sort_order?: number;
+  },
+): Promise<LabelDesignTemplateDto> {
+  const form = new FormData();
+  form.append("category_id", payload.category_id);
+  form.append("name", payload.name);
+  if (payload.description) form.append("description", payload.description);
+  form.append("file", payload.file);
+  if (payload.sort_order !== undefined) {
+    form.append("sort_order", String(payload.sort_order));
+  }
+  const { data } = await apiClient.post<LabelDesignTemplateDto>(
+    ep.templates(orgId),
+    form,
+  );
+  return data;
+}
+
+
+export async function updateLabelDesignTemplate(
+  orgId: string,
+  tplId: string,
+  payload: Partial<{
+    name: string;
+    description: string;
+    sort_order: number;
+    category_id: string;
+  }>,
+): Promise<LabelDesignTemplateDto> {
+  const { data } = await apiClient.patch<LabelDesignTemplateDto>(
+    ep.templateDetail(orgId, tplId),
+    payload,
+  );
+  return data;
+}
+
+
+export async function deleteLabelDesignTemplate(
+  orgId: string,
+  tplId: string,
+): Promise<void> {
+  await apiClient.delete(ep.templateDetail(orgId, tplId));
+}
+
+
+// ---------------------------------------------------------------------------
+// Portal template library (read-only)
+// ---------------------------------------------------------------------------
+
+
+export async function fetchPortalLabelDesignTemplates(): Promise<
+  PortalLabelDesignTemplateGroup[]
+> {
+  const { data } = await apiClient.get<{
+    items: PortalLabelDesignTemplateGroup[];
+  }>(ep.portalTemplateLibrary());
+  return data.items;
 }

@@ -688,3 +688,165 @@ class LabelDesignTransition(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"{self.label_design_id}: {self.from_status} → {self.to_status}"
+
+
+# ---------------------------------------------------------------------------
+# Template library — staff-curated design resources the customer can
+# download to use when they're on the DESIGN_BY_CUSTOMER path.
+# ---------------------------------------------------------------------------
+
+
+def _template_upload_to(instance: "LabelDesignTemplate", filename: str) -> str:
+    """Storage path for a customer-downloadable template.
+
+    Uploaded files keep their ORIGINAL filename (the customer
+    downloads ``Capsule-Label-A4.psd`` not
+    ``template.bin``) but the on-disk path is namespaced by org +
+    template id so two templates with the same name across two
+    organisations can't collide.
+    """
+
+    from pathlib import Path
+
+    safe_name = Path(filename or "template").name.replace("/", "_") or "template"
+    return f"label_design_templates/{instance.organization_id}/{instance.id}/{safe_name}"
+
+
+class LabelDesignTemplateCategory(models.Model):
+    """Top-level grouping for downloadable label-design templates.
+
+    Org-scoped because each Vita organisation curates its own
+    template library (e.g. one org sells supplements in capsule
+    form, another sells liquids — the relevant template surfaces
+    differ). Categories are presentation-only: customers see the
+    name + ordering, no permission gates per category.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="label_design_template_categories",
+    )
+    name = models.CharField(_("name"), max_length=120)
+    description = models.TextField(_("description"), blank=True, default="")
+    sort_order = models.PositiveIntegerField(
+        _("sort order"),
+        default=0,
+        help_text=_(
+            "Lower numbers render first. Lets staff curate the order "
+            "without renaming categories."
+        ),
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("label design template category")
+        verbose_name_plural = _("label design template categories")
+        ordering = ("sort_order", "name")
+        constraints = [
+            # Names are unique per org so the customer doesn't see
+            # two "Capsule labels" cards.
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="label_design_template_category_unique_name",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display
+        return self.name
+
+
+class LabelDesignTemplate(models.Model):
+    """A single downloadable file in the template library.
+
+    Org-scoped: customers see templates from the org that owns
+    their projects. The actual file lives on the same storage
+    backend the artwork uses (Azure Blob in prod, local FS in
+    dev) so the existing CDN / lifecycle policies apply.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="label_design_templates",
+    )
+    category = models.ForeignKey(
+        LabelDesignTemplateCategory,
+        on_delete=models.PROTECT,
+        related_name="templates",
+        help_text=_(
+            "PROTECT because deleting a category that still has "
+            "templates attached would silently break customer "
+            "downloads — staff has to clear the category first."
+        ),
+    )
+    name = models.CharField(_("name"), max_length=180)
+    description = models.TextField(_("description"), blank=True, default="")
+    file = models.FileField(
+        _("file"),
+        upload_to=_template_upload_to,
+        max_length=255,
+        help_text=_(
+            "Any file type accepted (PDF, PNG, JPG, AI, PSD, ZIP, …). "
+            "The Azure container the file lands in inherits the "
+            "media-container ACL — public read; staff-managed write."
+        ),
+    )
+    file_original_name = models.CharField(
+        _("original filename"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_(
+            "Customer-visible filename at upload time. Used to seed "
+            "the Content-Disposition header on download so the file "
+            "lands with a sensible name on the customer's disk."
+        ),
+    )
+    file_size_bytes = models.PositiveBigIntegerField(
+        _("file size (bytes)"),
+        default=0,
+        help_text=_(
+            "Captured at upload time; the FE renders it as KB / MB "
+            "next to the download button so customers know what "
+            "they're about to fetch."
+        ),
+    )
+    content_type = models.CharField(
+        _("content type"),
+        max_length=120,
+        blank=True,
+        default="",
+        help_text=_(
+            "MIME type sniffed at upload time. Used to render an "
+            "appropriate icon + as a hint for the download header."
+        ),
+    )
+    sort_order = models.PositiveIntegerField(_("sort order"), default=0)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_label_design_templates",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("label design template")
+        verbose_name_plural = _("label design templates")
+        ordering = ("sort_order", "name")
+        indexes = [
+            models.Index(fields=("organization", "category", "sort_order")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - admin display
+        return self.name

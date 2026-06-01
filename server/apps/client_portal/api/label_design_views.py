@@ -395,6 +395,29 @@ class PortalLabelDesignContentBlockPNGView(PortalAPIView):
         return response
 
 
+class PortalLabelDesignContentBlockHTMLView(PortalAPIView):
+    """HTML mirror of the staff content-block preview.
+
+    Same 9-region template, same render path — the customer
+    workspace iframes this URL and drives ``html2canvas`` against
+    it to produce per-region PDF / PNG downloads on the FE without
+    a second server hit. Without this surface the customer side
+    could only see JSON / text exports, missing the visual preview
+    the staff already has.
+    """
+
+    def get(self, request: Request, label_design_id) -> HttpResponse:
+        ld = _get_label_design_for_customer(
+            label_design_id, request.user.customer_id
+        )
+        _require_customer_content_block_access(ld)
+        _require_spec(ld)
+        block = compute_content_block(ld.specification_sheet)
+        return HttpResponse(
+            render_content_block_html(block), content_type="text/html"
+        )
+
+
 class PortalLabelDesignContentBlockTextView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(

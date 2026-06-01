@@ -2,6 +2,12 @@
 
 from django.urls import path
 
+from apps.label_design.api.template_views import (
+    LabelDesignTemplateCategoryDetailView,
+    LabelDesignTemplateCategoryListView,
+    LabelDesignTemplateDetailView,
+    LabelDesignTemplateListView,
+)
 from apps.label_design.api.views import (
     LabelDesignAssignDesignerView,
     LabelDesignContentBlockHTMLView,
@@ -110,5 +116,27 @@ urlpatterns = [
         f"{_org}/<uuid:label_design_id>/content-block/html/",
         LabelDesignContentBlockHTMLView.as_view(),
         name="content-block-html",
+    ),
+    # Template library — staff curates here, customers download via
+    # the portal-side mirror in ``apps.client_portal``.
+    path(
+        "organizations/<uuid:org_id>/label-design-template-categories/",
+        LabelDesignTemplateCategoryListView.as_view(),
+        name="template-category-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/label-design-template-categories/<uuid:category_id>/",
+        LabelDesignTemplateCategoryDetailView.as_view(),
+        name="template-category-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/label-design-templates/",
+        LabelDesignTemplateListView.as_view(),
+        name="template-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/label-design-templates/<uuid:template_id>/",
+        LabelDesignTemplateDetailView.as_view(),
+        name="template-detail",
     ),
 ]

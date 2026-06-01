@@ -56,10 +56,25 @@ export const labelDesignEndpoints = {
     `/api/portal/label-designs/${ldId}/content-block/png/`,
   portalContentBlockText: (ldId: string) =>
     `/api/portal/label-designs/${ldId}/content-block/text/`,
+  portalContentBlockHtml: (ldId: string) =>
+    `/api/portal/label-designs/${ldId}/content-block/html/`,
   portalUploadArtwork: (ldId: string) =>
     `/api/portal/label-designs/${ldId}/upload-artwork/`,
   portalApprove: (ldId: string) =>
     `/api/portal/label-designs/${ldId}/approve/`,
   portalReject: (ldId: string) =>
     `/api/portal/label-designs/${ldId}/reject/`,
+
+  // Staff template library
+  templateCategories: (orgId: string) =>
+    `/api/organizations/${orgId}/label-design-template-categories/`,
+  templateCategoryDetail: (orgId: string, catId: string) =>
+    `/api/organizations/${orgId}/label-design-template-categories/${catId}/`,
+  templates: (orgId: string) =>
+    `/api/organizations/${orgId}/label-design-templates/`,
+  templateDetail: (orgId: string, tplId: string) =>
+    `/api/organizations/${orgId}/label-design-templates/${tplId}/`,
+
+  // Portal — customer-facing template library
+  portalTemplateLibrary: () => `/api/portal/label-design-templates/`,
 } as const;

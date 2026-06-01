@@ -35,6 +35,11 @@ export interface LabelDesignRevisionDto {
   readonly compliance_block_snapshot: Record<string, unknown>;
   readonly customer_approved_own_design: boolean;
   readonly notes: string;
+  /** Every verdict written against this revision, sorted
+   *  scientist-first then director. Surfaces inline so neither
+   *  the staff Versions tab nor the customer portal need a
+   *  second round-trip to reconstruct the journey. */
+  readonly reviews: ReadonlyArray<LabelDesignReviewDto>;
 }
 
 export interface LabelDesignReviewDto {
@@ -190,4 +195,42 @@ export interface ComplianceContentBlockDto {
 export interface ContentBlockTextDto {
   readonly full: string;
   readonly sections: Record<string, string>;
+}
+
+
+// ---------------------------------------------------------------------------
+// Template library
+// ---------------------------------------------------------------------------
+
+
+export interface LabelDesignTemplateCategoryDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly sort_order: number;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+
+export interface LabelDesignTemplateDto {
+  readonly id: string;
+  readonly category: string;
+  readonly category_name: string;
+  readonly name: string;
+  readonly description: string;
+  readonly file_url: string;
+  readonly file_original_name: string;
+  readonly file_size_bytes: number;
+  readonly content_type: string;
+  readonly sort_order: number;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+
+/** Portal-side aggregate: one category card + its templates. */
+export interface PortalLabelDesignTemplateGroup {
+  readonly category: LabelDesignTemplateCategoryDto;
+  readonly templates: ReadonlyArray<LabelDesignTemplateDto>;
 }

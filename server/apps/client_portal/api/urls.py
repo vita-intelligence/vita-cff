@@ -62,9 +62,11 @@ from .views import (
 )
 from .dashboard_views import PortalDashboardView
 from .product_detail_views import PortalProductDetailView
+from .template_views import PortalLabelDesignTemplateLibraryView
 from .label_design_views import (
     PortalLabelDesignApproveView,
     PortalLabelDesignChoosePathView,
+    PortalLabelDesignContentBlockHTMLView,
     PortalLabelDesignContentBlockJSONView,
     PortalLabelDesignContentBlockPDFView,
     PortalLabelDesignContentBlockPNGView,
@@ -360,6 +362,11 @@ urlpatterns = [
         name="label-design-content-block-text",
     ),
     path(
+        "label-designs/<uuid:label_design_id>/content-block/html/",
+        PortalLabelDesignContentBlockHTMLView.as_view(),
+        name="label-design-content-block-html",
+    ),
+    path(
         "label-designs/<uuid:label_design_id>/upload-artwork/",
         PortalLabelDesignUploadArtworkView.as_view(),
         name="label-design-upload-artwork",
@@ -373,5 +380,12 @@ urlpatterns = [
         "label-designs/<uuid:label_design_id>/reject/",
         PortalLabelDesignRejectView.as_view(),
         name="label-design-reject",
+    ),
+    # Customer-facing template library — read-only mirror of
+    # the staff template management surface.
+    path(
+        "label-design-templates/",
+        PortalLabelDesignTemplateLibraryView.as_view(),
+        name="label-design-template-library",
     ),
 ]

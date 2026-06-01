@@ -24,6 +24,7 @@ import {
   holdLabelDesign,
   portalApproveLabel,
   portalChoosePath,
+  portalFetchContentBlockHtml,
   portalFetchContentBlockJson,
   portalFetchContentBlockText,
   portalFetchLabelDesign,
@@ -83,6 +84,8 @@ export const labelDesignKeys = {
     [...rootQueryKey, "label-design", "portal-content-block-json", ldId] as const,
   portalContentBlockText: (ldId: string) =>
     [...rootQueryKey, "label-design", "portal-content-block-text", ldId] as const,
+  portalContentBlockHtml: (ldId: string) =>
+    [...rootQueryKey, "label-design", "portal-content-block-html", ldId] as const,
 } as const;
 
 
@@ -351,6 +354,18 @@ export function usePortalContentBlockText(
   return useQuery({
     queryKey: labelDesignKeys.portalContentBlockText(ldId),
     queryFn: () => portalFetchContentBlockText(ldId),
+    enabled: Boolean(ldId) && (options.enabled ?? true),
+  });
+}
+
+
+export function usePortalContentBlockHtml(
+  ldId: string,
+  options: { enabled?: boolean } = {},
+): UseQueryResult<string> {
+  return useQuery({
+    queryKey: labelDesignKeys.portalContentBlockHtml(ldId),
+    queryFn: () => portalFetchContentBlockHtml(ldId),
     enabled: Boolean(ldId) && (options.enabled ?? true),
   });
 }

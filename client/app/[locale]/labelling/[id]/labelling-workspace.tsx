@@ -167,7 +167,22 @@ export function LabellingWorkspace({
               </span>
             ) : null}
           </h1>
-          <p className="text-xs text-ink-500">{STATUS_LABELS[data.status]}</p>
+          <div className="mt-0.5 flex flex-wrap items-center gap-2">
+            <p className="text-xs text-ink-500">{STATUS_LABELS[data.status]}</p>
+            {/* Path chip in the header so the designer
+                immediately sees who's responsible for uploading
+                artwork on this row. Hidden when the customer
+                hasn't picked yet. */}
+            {data.design_path === "design_by_customer" ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 ring-1 ring-inset ring-amber-200">
+                Customer designs
+              </span>
+            ) : data.design_path === "design_by_us" ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-ink-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700 ring-1 ring-inset ring-ink-200">
+                Vita designs
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="flex items-center gap-2">
           {canManage && data.status !== "on_hold" ? (
@@ -670,12 +685,20 @@ function ArtworkTab({
     (status === "scientist_review" || status === "director_review") &&
     currentKindReviewExists;
 
+  // Hard rule: on the DESIGN_BY_CUSTOMER path the customer owns
+  // the artwork pipeline — staff has no upload surface, no
+  // "submit for review" surface, and no stuck-mid-review recovery
+  // upload. The backend matches with a 400 if either endpoint is
+  // hit; hiding the controls keeps the staff workspace honest.
+  const isCustomerDesign = designPath === "design_by_customer";
   const showUpload =
     canDesign &&
+    !isCustomerDesign &&
     (status === "design_in_progress" ||
       status === "label_path_pending" ||
       isStuckMidReview);
-  const showSubmit = canDesign && status === "design_in_progress";
+  const showSubmit =
+    canDesign && !isCustomerDesign && status === "design_in_progress";
 
   return (
     <div className="space-y-4">
@@ -886,7 +909,35 @@ function ArtworkTab({
               </p>
             </div>
           ) : null}
-          {!showUpload && !showSubmit && status !== "customer_approval" && status !== "label_approved" ? (
+          {/* Customer-design specific waiting state — staff has no
+              upload affordance on this path, so the generic
+              "nothing to do" fallback below would read as
+              misleading. This card explains the situation
+              explicitly. */}
+          {isCustomerDesign &&
+          (status === "design_in_progress" ||
+            status === "label_path_pending") ? (
+            <div className="rounded-2xl border border-dashed border-orange-300 bg-orange-50/40 p-4">
+              <p className="text-xs font-semibold text-orange-900">
+                Customer is designing
+              </p>
+              <p className="mt-1 text-[11px] text-orange-800/90">
+                On this path the customer owns the artwork. They
+                upload the next revision from the portal; the
+                workflow will reappear here when they submit it for
+                review.
+              </p>
+            </div>
+          ) : null}
+          {!showUpload &&
+          !showSubmit &&
+          status !== "customer_approval" &&
+          status !== "label_approved" &&
+          !(
+            isCustomerDesign &&
+            (status === "design_in_progress" ||
+              status === "label_path_pending")
+          ) ? (
             <div className="rounded-2xl border border-dashed border-ink-200 bg-ink-0 p-4">
               <p className="text-xs text-ink-500">
                 Nothing for you to do right now — sit tight and the

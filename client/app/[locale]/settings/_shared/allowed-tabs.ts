@@ -36,5 +36,11 @@ export function computeAllowedSettingsTabs(
   if (hasFlatCapability(primaryOrg, "audit", "view")) {
     tabs.push("audit-log");
   }
+  // Labelling template library is curated by the same role that
+  // owns the labelling workflow (the ``manage`` cap holder). Hidden
+  // for everyone else so the chrome stays focused.
+  if (hasFlatCapability(primaryOrg, "labelling", "manage")) {
+    tabs.push("labelling-templates");
+  }
   return tabs;
 }

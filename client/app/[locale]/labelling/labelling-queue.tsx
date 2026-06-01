@@ -400,7 +400,23 @@ function QueueRow({ item }: { item: LabelDesignListItemDto }) {
       </td>
       <td className="px-3 py-2 text-ink-700">{item.formulation_name || "—"}</td>
       <td className="px-3 py-2">
-        <StatusChip status={item.status} />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusChip status={item.status} />
+          {/* Path chip — "Customer" lights up amber so a designer
+              skimming the queue can tell at a glance which rows
+              they have no upload responsibility for. "Vita"
+              stays neutral. Blank when the customer hasn't
+              picked yet. */}
+          {item.design_path === "design_by_customer" ? (
+            <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800 ring-1 ring-inset ring-amber-200">
+              Customer
+            </span>
+          ) : item.design_path === "design_by_us" ? (
+            <span className="inline-flex items-center gap-1 rounded bg-ink-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700 ring-1 ring-inset ring-ink-200">
+              Vita
+            </span>
+          ) : null}
+        </div>
       </td>
       <td className="px-3 py-2 text-ink-700 tabular-nums">{ageDays}d</td>
       <td className="px-3 py-2 text-ink-700">

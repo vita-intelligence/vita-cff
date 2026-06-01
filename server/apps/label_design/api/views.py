@@ -331,6 +331,11 @@ class LabelDesignUploadArtworkView(APIView):
     NOT transition status — that's a separate ``submit-for-review``
     call so the designer can iterate locally before showing it to
     reviewers.
+
+    Hard-gated to DESIGN_BY_US: the moment the customer picks
+    DESIGN_BY_CUSTOMER they own the artwork pipeline and staff has
+    no business pushing a competing revision. The portal upload
+    endpoint is the only legitimate write surface on that path.
     """
 
     permission_classes = [HasLabellingPermission]
@@ -341,7 +346,20 @@ class LabelDesignUploadArtworkView(APIView):
     required_capability = LabellingCapability.DESIGN
 
     def post(self, request: Request, **kwargs) -> Response:
+        from apps.label_design.constants import LabelDesignPath
+
         label_design = _get_label_design(self.organization, kwargs["label_design_id"])
+        if label_design.design_path == LabelDesignPath.DESIGN_BY_CUSTOMER:
+            raise ValidationError(
+                {
+                    "detail": (
+                        "This label is on the DESIGN_BY_CUSTOMER path — only "
+                        "the customer can upload artwork. Switch the path on "
+                        "the workspace if you need to take over."
+                    ),
+                    "code": "wrong_path",
+                }
+            )
         serializer = UploadArtworkSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 

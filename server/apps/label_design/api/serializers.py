@@ -44,6 +44,14 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
     )
     artwork_pdf_url = serializers.SerializerMethodField()
     artwork_preview_png_url = serializers.SerializerMethodField()
+    # Nested review list — every verdict written against this
+    # revision, in workflow order. Surfaces the same payload both
+    # the staff Versions tab and the customer-portal history page
+    # render, so neither side needs a second round-trip to fetch
+    # reviews. The forward serializer reference below uses the
+    # ``LabelDesignReviewReadSerializer`` declared further down,
+    # via DRF's lazy resolution.
+    reviews = serializers.SerializerMethodField()
 
     class Meta:
         model = LabelDesignRevision
@@ -62,6 +70,7 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
             "compliance_block_snapshot",
             "customer_approved_own_design",
             "notes",
+            "reviews",
         )
         read_only_fields = fields
 
@@ -70,6 +79,18 @@ class LabelDesignRevisionReadSerializer(serializers.ModelSerializer):
 
     def get_artwork_preview_png_url(self, obj: LabelDesignRevision) -> str:
         return obj.artwork_preview_png.url if obj.artwork_preview_png else ""
+
+    def get_reviews(self, obj: LabelDesignRevision) -> list[dict]:
+        # Order scientist-first then director — matches the workflow
+        # direction so the FE journey reads top-to-bottom.
+        rows = sorted(
+            obj.reviews.all(),
+            key=lambda r: (
+                0 if r.kind == "scientist" else 1,
+                r.created_at,
+            ),
+        )
+        return LabelDesignReviewReadSerializer(rows, many=True).data
 
 
 class LabelDesignReviewReadSerializer(serializers.ModelSerializer):

@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   Building2,
+  Layers,
   Plug,
   ScrollText,
   User2,
@@ -19,7 +20,8 @@ export type SettingsTabKey =
   | "organization"
   | "members"
   | "integrations"
-  | "audit-log";
+  | "audit-log"
+  | "labelling-templates";
 
 
 const ALL_TABS: readonly SettingsTabKey[] = [
@@ -28,6 +30,7 @@ const ALL_TABS: readonly SettingsTabKey[] = [
   "members",
   "integrations",
   "audit-log",
+  "labelling-templates",
 ] as const;
 
 
@@ -92,6 +95,16 @@ export function SettingsShell({
         label: tSettings("tabs.audit_log"),
         href: "/settings/audit-log",
         icon: <ScrollText className="h-4 w-4" />,
+      },
+      {
+        key: "labelling-templates" as const,
+        // i18n key may not exist yet — fall back to the literal so
+        // the tab still renders if the locale file hasn't been
+        // updated. Add ``settings.tabs.labelling_templates`` to the
+        // locale JSON when localising.
+        label: "Labelling templates",
+        href: "/settings/labelling-templates",
+        icon: <Layers className="h-4 w-4" />,
       },
     ] as const
   ).filter((tab) => allowedTabs.includes(tab.key));
