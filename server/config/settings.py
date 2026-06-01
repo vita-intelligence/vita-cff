@@ -448,6 +448,15 @@ AZURE_ACCOUNT_KEY = os.environ.get("AZURE_STORAGE_ACCOUNT_KEY")
 AZURE_MEDIA_CONTAINER = os.environ.get(
     "AZURE_STORAGE_MEDIA_CONTAINER", "media"
 )
+#: Lifetime (seconds) of SAS tokens minted onto every
+#: ``FileField.url`` in production. The ``media`` container is
+#: private, so without a token the URL 403s. One hour balances
+#: "long enough to download a 25 MB template / open a PDF preview"
+#: against "short enough that a leaked link expires fast". Override
+#: via env when a specific deployment needs different semantics.
+AZURE_STORAGE_URL_EXPIRY_SECONDS = int(
+    os.environ.get("AZURE_STORAGE_URL_EXPIRY_SECONDS", "3600")
+)
 
 if AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY:
     STORAGES = {
@@ -457,7 +466,11 @@ if AZURE_ACCOUNT_NAME and AZURE_ACCOUNT_KEY:
                 "account_name": AZURE_ACCOUNT_NAME,
                 "account_key": AZURE_ACCOUNT_KEY,
                 "azure_container": AZURE_MEDIA_CONTAINER,
-                "expiration_secs": None,
+                # SAS-token TTL on every URL. ``None`` returned
+                # unsigned URLs which 403'd on the private
+                # container — switching to a real value flips
+                # FileField.url to a signed download link.
+                "expiration_secs": AZURE_STORAGE_URL_EXPIRY_SECONDS,
             },
         },
         "staticfiles": {
