@@ -234,15 +234,14 @@ class MeView(APIView):
 def _client_ip_for_audit(request: Request) -> str:
     """Best-effort client IP extraction for audit columns.
 
-    Mirrors the throttle helper but kept local to the views layer
-    so the API and throttling modules don't reach into each
-    other's internals.
+    Azure App Service appends the source port to the XFF value
+    (``92.18.60.6:57508``); we delegate to the portal-side helper
+    which strips the port and validates the result so audit fields
+    never accumulate malformed ``ip:port`` strings.
     """
 
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or ""
+    from apps.client_portal.services import _extract_client_ip
+    return _extract_client_ip(request) or ""
 
 
 # Token-state exceptions all map cleanly to a single "what went

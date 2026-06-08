@@ -33,10 +33,13 @@ def _client_ip(request: Any) -> str:
     real client.
     """
 
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or "unknown"
+    # Azure XFF arrives as "ip:port"; the portal-side helper strips
+    # the port. Throttle keys must be stable across requests, so we
+    # fall back to "unknown" (rather than the empty string the portal
+    # helper returns) to preserve the existing bucketing semantics
+    # for requests with no usable IP.
+    from apps.client_portal.services import _extract_client_ip
+    return _extract_client_ip(request) or "unknown"
 
 
 class ForgotPasswordEmailThrottle(SimpleRateThrottle):

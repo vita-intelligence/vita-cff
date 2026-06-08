@@ -82,10 +82,13 @@ logger = logging.getLogger(__name__)
 
 
 def _request_ip(request: Request) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or ""
+    # Azure App Service appends the client source port to the XFF
+    # value ("92.18.60.6:57508"). Strip it so audit columns store a
+    # bare address. Stays a string return (audit fields are CharField,
+    # not GenericIPAddressField — a malformed value is logged-but-
+    # not-crashing here).
+    from apps.client_portal.services import _extract_client_ip
+    return _extract_client_ip(request) or ""
 
 
 def _err(code: str, http_status: int, **extra) -> Response:
@@ -575,10 +578,8 @@ def _client_signer_fields(request: Request) -> tuple[str, str, str]:
 
 
 def _client_ip(request: Request) -> str:
-    xff = request.META.get("HTTP_X_FORWARDED_FOR", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR", "") or ""
+    from apps.client_portal.services import _extract_client_ip
+    return _extract_client_ip(request) or ""
 
 
 def _user_agent(request: Request) -> str:

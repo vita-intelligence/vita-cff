@@ -728,18 +728,29 @@ def record_portal_event(
     expensive once volume picks up.
     """
 
+    ip_address = _extract_client_ip(request) if request is not None else None
+    user_agent = _extract_user_agent(request) if request is not None else ""
+    # Wrap the insert in a savepoint so a failure here can never
+    # poison the outer ``transaction.atomic`` opened by the caller
+    # (every PortalEvent producer — activate, sign, reject, view,
+    # download — runs inside one). Without the savepoint, a rejected
+    # insert leaves Postgres in "current transaction is aborted,
+    # commands ignored until end of transaction block" state on the
+    # connection; the swallowed Python exception then surfaces as a
+    # cascade of 5xx on *every* subsequent query that grabs the same
+    # pooled connection, including endpoints in completely unrelated
+    # apps. The savepoint scopes the rollback to this one INSERT.
     try:
-        ip_address = _extract_client_ip(request) if request is not None else None
-        user_agent = _extract_user_agent(request) if request is not None else ""
-        PortalEvent.objects.create(
-            organization=organization,
-            proposal=proposal,
-            client_account=client_account,
-            kind=kind,
-            metadata=metadata or {},
-            ip_address=ip_address,
-            user_agent=user_agent,
-        )
+        with transaction.atomic(savepoint=True):
+            PortalEvent.objects.create(
+                organization=organization,
+                proposal=proposal,
+                client_account=client_account,
+                kind=kind,
+                metadata=metadata or {},
+                ip_address=ip_address,
+                user_agent=user_agent,
+            )
     except Exception:  # noqa: BLE001 — telemetry must never crash the flow
         logger.exception(
             "[portal-event] failed to record kind=%s proposal=%s account=%s",
@@ -755,20 +766,46 @@ def _extract_client_ip(request) -> str | None:
     Azure App Service terminates TLS at the front door and forwards
     the original address in ``X-Forwarded-For`` (comma-separated; the
     first entry is the real client, the rest are intermediate hops).
-    Fall back to ``REMOTE_ADDR`` when the header is absent (local dev,
-    direct hits during tests). Returns ``None`` if neither parses to
-    something that fits the ``GenericIPAddressField`` column —
-    saving a malformed value would just raise on insert and cost us
-    the row.
+    Azure appends the **client source port** to the IP — the header
+    arrives as ``92.18.60.6:57508`` rather than a bare address — so
+    we strip the port before returning. Fall back to ``REMOTE_ADDR``
+    when the header is absent (local dev, direct hits during tests).
+    Returns ``None`` when nothing parses to a valid IP — silently
+    dropping the column beats crashing the insert and (worse)
+    poisoning the enclosing transaction.
     """
 
+    import ipaddress
+
     forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+    candidate = ""
     if forwarded:
         candidate = forwarded.split(",", 1)[0].strip()
-        if candidate:
-            return candidate or None
-    remote = request.META.get("REMOTE_ADDR")
-    return remote or None
+    if not candidate:
+        candidate = (request.META.get("REMOTE_ADDR") or "").strip()
+    if not candidate:
+        return None
+
+    # Strip the trailing source port. Two shapes Azure emits:
+    #   * IPv4-with-port:  "92.18.60.6:57508"
+    #   * IPv6-with-port:  "[2001:db8::1]:57508"
+    # A bare IPv6 ("2001:db8::1") also contains colons but no
+    # brackets and no trailing ":port" — leave it alone.
+    if candidate.startswith("["):
+        # Bracketed IPv6 form. Drop the brackets + optional ":port".
+        end = candidate.find("]")
+        if end != -1:
+            candidate = candidate[1:end]
+    elif candidate.count(":") == 1:
+        # Exactly one colon → must be IPv4-with-port (bare IPv6
+        # always has 2+ colons). Trim the trailing port.
+        candidate = candidate.split(":", 1)[0]
+
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        return None
+    return candidate
 
 
 def _extract_user_agent(request) -> str:

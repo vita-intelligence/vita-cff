@@ -452,11 +452,9 @@ def _compliance_snapshot(label_design: LabelDesign) -> dict:
 
 
 def _esign_trio(request: Request) -> dict:
+    from apps.client_portal.services import _extract_client_ip
     return {
-        "ip": (
-            request.META.get("HTTP_X_FORWARDED_FOR", "").split(",")[0].strip()
-            or request.META.get("REMOTE_ADDR", "")
-        ),
+        "ip": _extract_client_ip(request) or "",
         "user_agent": request.META.get("HTTP_USER_AGENT", ""),
     }
 
