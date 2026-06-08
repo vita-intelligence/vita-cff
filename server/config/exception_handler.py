@@ -30,6 +30,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.db.utils import OperationalError
 from rest_framework import status as drf_status
 from rest_framework.exceptions import ErrorDetail
 from rest_framework.response import Response
@@ -97,6 +98,35 @@ def codified_exception_handler(exc: Exception, context: dict[str, Any]) -> Respo
         api_code = getattr(exc, "api_code", None)
         if api_code and isinstance(response.data, dict):
             response.data.setdefault("code", api_code)
+        return response
+
+    # Pool exhaustion / transient DB connectivity surfaces as
+    # ``django.db.utils.OperationalError`` (which wraps
+    # ``psycopg_pool.PoolTimeout`` when ``getconn()`` runs past its
+    # wait budget). Letting that bubble as a 500 is wrong twice:
+    # the server itself is fine (the pool just needs to drain), and
+    # the frontend's TanStack Query treats 500 as a hard failure
+    # instead of retrying. Returning 503 with ``Retry-After`` gets
+    # the user back on their feet on the next click without the
+    # support-noise of an "Internal Server Error" toast. The log
+    # entry preserves the traceback so the spike is still visible
+    # in observability — we are NOT hiding the problem, just
+    # presenting it correctly.
+    if isinstance(exc, OperationalError):
+        view = context.get("view")
+        request = context.get("request")
+        logger.warning(
+            "db unavailable rescued by global handler: %s view=%s path=%s",
+            type(exc).__name__,
+            type(view).__name__ if view is not None else "unknown",
+            getattr(request, "path", "unknown") if request is not None else "unknown",
+            exc_info=exc,
+        )
+        response = Response(
+            {"code": "service_temporarily_unavailable"},
+            status=drf_status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+        response["Retry-After"] = "2"
         return response
 
     # DRF did not recognise the exception. Before letting it fall
