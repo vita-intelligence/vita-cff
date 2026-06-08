@@ -255,8 +255,8 @@ export function useCreateFormulation(
   const queryClient = useQueryClient();
   return useMutation<FormulationDto, ApiError, CreateFormulationRequestDto>({
     mutationFn: (payload) => createFormulation(orgId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.list(orgId),
       });
     },
@@ -353,11 +353,11 @@ export function useDeleteFormulation(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (formulationId) => deleteFormulation(orgId, formulationId),
-    onSuccess: async (_, formulationId) => {
+    onSuccess: (_, formulationId) => {
       queryClient.removeQueries({
         queryKey: formulationsQueryKeys.detail(orgId, formulationId),
       });
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.list(orgId),
       });
     },
@@ -396,8 +396,8 @@ export function useSaveVersion(
   return useMutation<FormulationVersionDto, ApiError, SaveVersionRequestDto>({
     mutationFn: (payload) =>
       saveFormulationVersion(orgId, formulationId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.versions(orgId, formulationId),
       });
     },

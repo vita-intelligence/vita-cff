@@ -330,6 +330,50 @@ else:
     }
 
 
+# Django cache — shared across uvicorn workers.
+#
+# Without an explicit ``CACHES`` setting Django falls back to a
+# per-process ``LocMemCache``, which means worker A's cache writes
+# are invisible to worker B. On a 2-worker box every cached lookup
+# has a ~50% miss rate, defeating the point of caching.
+#
+# In prod we point Django's cache at DB 4 of the shared Redis (DB 0
+# is the sibling API, DB 1 Channels, DB 2 Celery broker, DB 3 the
+# reserved Celery result backend). Override via ``CACHE_URL`` if a
+# specific environment needs its own Redis. When neither
+# ``CACHE_URL`` nor ``CHANNEL_LAYER_URL`` is set (dev / test) we
+# fall back to LocMem so the test suite stays self-contained.
+_CACHE_URL = os.environ.get("CACHE_URL")
+if not _CACHE_URL and CHANNEL_LAYER_URL:
+    # Reuse the same Redis instance, swap to DB 4 — cheap default
+    # that "just works" once CHANNEL_LAYER_URL is configured.
+    import re as _re_cache
+    _CACHE_URL = _re_cache.sub(r"/\d+(\?|$)", r"/4\1", CHANNEL_LAYER_URL)
+    if _CACHE_URL == CHANNEL_LAYER_URL:
+        # URL had no explicit DB segment — append /4.
+        _CACHE_URL = CHANNEL_LAYER_URL.rstrip("/") + "/4"
+
+if _CACHE_URL:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.redis.RedisCache",
+            "LOCATION": _CACHE_URL,
+            # Per-key TTL ceiling. Individual ``cache.set(..., timeout=)``
+            # calls still override; this is the safety net for any
+            # cached value that forgets to set one.
+            "TIMEOUT": 300,
+            "KEY_PREFIX": "vita-cff",
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "vita-cff-locmem",
+        }
+    }
+
+
 # Celery — async task queue for work that must not block a request
 # (PDF rendering, email send, future MRPeasy push, etc.).
 #
@@ -438,13 +482,15 @@ TEMPLATES = [
 # manages connection lifetime itself.
 _DATABASE_URL = os.environ.get("DATABASE_URL")
 if _DATABASE_URL:
+    from psycopg_pool import ConnectionPool
+
     _db_config = dj_database_url.parse(
         _DATABASE_URL,
         conn_health_checks=True,
         ssl_require=_env_bool("DATABASE_SSL_REQUIRE", default=True),
     )
     _pool_min = int(os.environ.get("DB_POOL_MIN_SIZE", "1"))
-    _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "5"))
+    _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "7"))
     _db_config.setdefault("OPTIONS", {})
     _db_config["OPTIONS"]["pool"] = {
         "min_size": _pool_min,
@@ -452,7 +498,17 @@ if _DATABASE_URL:
         # Wait at most this long for a free connection before raising
         # rather than queueing forever; surfaces saturation as a
         # bounded 503 instead of a stuck request.
-        "timeout": float(os.environ.get("DB_POOL_TIMEOUT", "10")),
+        "timeout": float(os.environ.get("DB_POOL_TIMEOUT", "3")),
+        # Validate every connection pulled from the pool before handing
+        # it to a worker. Without this, a dead TCP socket (idle timeout,
+        # Postgres restart, network blip) sits in the pool and poisons
+        # the next request that grabs it; the worker hangs on the
+        # already-broken socket, the slot stays locked, and a few of
+        # these wedge the whole app — exactly the failure we saw mid-
+        # day. ``check_connection`` runs a cheap ``SELECT 1`` + rollback
+        # and discards the socket if it errors. Cost: one round-trip
+        # per checkout (sub-millisecond on the same Azure region).
+        "check": ConnectionPool.check_connection,
     }
     DATABASES = {"default": _db_config}
 else:

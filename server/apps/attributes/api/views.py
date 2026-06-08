@@ -48,10 +48,19 @@ class AttributeDefinitionListCreateView(APIView):
             catalogue=self.catalogue,
             include_archived=include_archived,
         )
-        return Response(
+        response = Response(
             AttributeDefinitionReadSerializer(definitions, many=True).data,
             status=status.HTTP_200_OK,
         )
+        # Form-schema reads sit on the hot path: every "edit item"
+        # modal in the catalogue pulls them. The list is org-scoped
+        # and only changes via the Manage Fields screen, which itself
+        # invalidates the React Query cache key. A short browser TTL
+        # collapses the rapid repeat requests during a power-user
+        # session without making a freshly-added field invisible
+        # after the modal commit.
+        response["Cache-Control"] = "private, max-age=60"
+        return response
 
     def post(self, request: Request, org_id: str, slug: str) -> Response:
         serializer = AttributeDefinitionCreateSerializer(data=request.data)

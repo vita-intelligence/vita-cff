@@ -95,10 +95,15 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
 #   IP (the audit log, CSRF, JWT cookie scoping all depend on this).
 # - ``--lifespan off`` skips ASGI lifespan events; Django doesn't
 #   implement them and uvicorn defaults to ``auto`` which warns.
+# - ``--limit-max-requests`` recycles each worker after N requests so
+#   accumulated state (memory growth, wedged psycopg connections,
+#   leaked file handles) doesn't compound forever. Master respawns
+#   the worker immediately; cost is one in-flight connection drop
+#   per recycle, amortised across ~1000 requests.
 # - WebSocket fan-out across workers needs ``CHANNEL_LAYER_URL`` set
 #   to a Redis DSN (already wired in settings.py). Without it each
 #   worker has its own ``InMemoryChannelLayer`` and broadcasts only
 #   reach clients on the same worker -- harmless for HTTP, degraded
 #   for the comments live channel.
 ENTRYPOINT ["/app/docker/entrypoint.sh"]
-CMD ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips=* --lifespan off"]
+CMD ["sh", "-c", "exec uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers ${WEB_CONCURRENCY:-2} --proxy-headers --forwarded-allow-ips=* --lifespan off --limit-max-requests ${UVICORN_MAX_REQUESTS:-1000}"]

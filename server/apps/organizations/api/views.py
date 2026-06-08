@@ -496,7 +496,16 @@ class ModuleRegistryView(APIView):
             }
             for module in all_modules()
         ]
-        return Response(payload, status=status.HTTP_200_OK)
+        response = Response(payload, status=status.HTTP_200_OK)
+        # The module/capability registry is static Python data — it
+        # cannot change without a redeploy. ``private`` because it's
+        # only meaningful to an authenticated session, ``max-age``
+        # one hour because the Settings page re-fetches it on every
+        # admin's session warmup and the round-trip is otherwise
+        # wasted. A redeploy bumps the response immediately because
+        # the container restart drops any in-flight CDN-style caches.
+        response["Cache-Control"] = "private, max-age=3600"
+        return response
 
 
 class PublicInvitationDetailView(APIView):

@@ -119,8 +119,8 @@ export function useCreateCatalogue(
   const queryClient = useQueryClient();
   return useMutation<CatalogueDto, ApiError, CreateCatalogueRequestDto>({
     mutationFn: (payload) => createCatalogue(orgId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: cataloguesQueryKeys.catalogueList(orgId),
       });
     },
@@ -134,8 +134,8 @@ export function useUpdateCatalogue(
   const queryClient = useQueryClient();
   return useMutation<CatalogueDto, ApiError, UpdateCatalogueRequestDto>({
     mutationFn: (payload) => updateCatalogue(orgId, slug, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: cataloguesQueryKeys.catalogueList(orgId),
       });
     },
@@ -148,8 +148,8 @@ export function useDeleteCatalogue(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (slug) => deleteCatalogue(orgId, slug),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: cataloguesQueryKeys.catalogueList(orgId),
       });
     },
@@ -251,8 +251,8 @@ export function useCreateItem(
   const queryClient = useQueryClient();
   return useMutation<ItemDto, ApiError, CreateItemRequestDto>({
     mutationFn: (payload) => createItem(orgId, slug, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: cataloguesQueryKeys.itemList(orgId, slug),
       });
     },

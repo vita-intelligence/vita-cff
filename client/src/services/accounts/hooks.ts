@@ -51,8 +51,8 @@ export function useRegister(): UseMutationResult<
   const queryClient = useQueryClient();
   return useMutation<RegisterResponseDto, ApiError, RegisterRequestDto>({
     mutationFn: registerUser,
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: accountsQueryKeys.all });
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: accountsQueryKeys.all });
     },
   });
 }

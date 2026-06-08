@@ -73,14 +73,14 @@ export function useCreateOrganization(): UseMutationResult<
     CreateOrganizationRequestDto
   >({
     mutationFn: createOrganization,
-    onSuccess: async (organization) => {
+    onSuccess: (organization) => {
       // Prime the cache with the new row and invalidate the list query so
       // the home page picks up the change on the next render.
       queryClient.setQueryData<OrganizationDto[]>(
         organizationsQueryKeys.list(),
         (prev) => (prev ? [...prev, organization] : [organization]),
       );
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: organizationsQueryKeys.list(),
       });
     },

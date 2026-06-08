@@ -149,8 +149,8 @@ export function useCreateSpecification(
     CreateSpecificationRequestDto
   >({
     mutationFn: (payload) => createSpecification(orgId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
@@ -198,11 +198,11 @@ export function useDeleteSpecification(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (sheetId) => deleteSpecification(orgId, sheetId),
-    onSuccess: async (_, sheetId) => {
+    onSuccess: (_, sheetId) => {
       queryClient.removeQueries({
         queryKey: specificationsQueryKeys.detail(orgId, sheetId),
       });
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
@@ -295,8 +295,8 @@ export function useRevokeSpecificationPublicLink(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, void>({
     mutationFn: () => revokeSpecificationPublicLink(orgId, sheetId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.detail(orgId, sheetId),
       });
     },

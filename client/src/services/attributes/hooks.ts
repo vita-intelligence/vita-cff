@@ -64,8 +64,8 @@ export function useCreateAttributeDefinition(
     CreateAttributeDefinitionRequestDto
   >({
     mutationFn: (payload) => createAttributeDefinition(orgId, slug, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: attributesQueryKeys.all,
       });
     },
@@ -89,8 +89,8 @@ export function useUpdateAttributeDefinition(
   >({
     mutationFn: (payload) =>
       updateAttributeDefinition(orgId, slug, definitionId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: attributesQueryKeys.all,
       });
     },
@@ -105,8 +105,8 @@ export function useArchiveAttributeDefinition(
   return useMutation<void, ApiError, string>({
     mutationFn: (definitionId) =>
       archiveAttributeDefinition(orgId, slug, definitionId),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: attributesQueryKeys.all,
       });
     },

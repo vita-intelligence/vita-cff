@@ -87,8 +87,8 @@ export function useCreateTrialBatch(
   return useMutation<TrialBatchDto, ApiError, CreateTrialBatchRequestDto>({
     mutationFn: (payload) =>
       createTrialBatch(orgId, formulationId, payload),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
+    onSuccess: () => {
+      queryClient.invalidateQueries({
         queryKey: trialBatchesQueryKeys.byFormulation(orgId, formulationId),
       });
     },
@@ -124,7 +124,7 @@ export function useDeleteTrialBatch(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (batchId) => deleteTrialBatch(orgId, batchId),
-    onSuccess: async (_, batchId) => {
+    onSuccess: (_, batchId) => {
       queryClient.removeQueries({
         queryKey: trialBatchesQueryKeys.detail(orgId, batchId),
       });
@@ -133,7 +133,7 @@ export function useDeleteTrialBatch(
       });
       // Invalidate every by-formulation list in the org — we do not
       // know from the batchId alone which formulation it belonged to.
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: trialBatchesQueryKeys.all,
       });
     },

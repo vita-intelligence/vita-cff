@@ -96,12 +96,12 @@ export function useCreateValidation(
     CreateValidationRequestDto
   >({
     mutationFn: (payload) => createValidation(orgId, payload),
-    onSuccess: async (created) => {
+    onSuccess: (created) => {
       queryClient.setQueryData(
         productValidationQueryKeys.detail(orgId, created.id),
         created,
       );
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: productValidationQueryKeys.forBatch(
           orgId,
           created.trial_batch_id,
@@ -126,12 +126,12 @@ export function useUpdateValidation(
     UpdateValidationRequestDto
   >({
     mutationFn: (payload) => updateValidation(orgId, validationId, payload),
-    onSuccess: async (updated) => {
+    onSuccess: (updated) => {
       queryClient.setQueryData(
         productValidationQueryKeys.detail(orgId, validationId),
         updated,
       );
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: productValidationQueryKeys.stats(orgId, validationId),
       });
     },
@@ -169,14 +169,14 @@ export function useDeleteValidation(
   const queryClient = useQueryClient();
   return useMutation<void, ApiError, string>({
     mutationFn: (validationId) => deleteValidation(orgId, validationId),
-    onSuccess: async (_, validationId) => {
+    onSuccess: (_, validationId) => {
       queryClient.removeQueries({
         queryKey: productValidationQueryKeys.detail(orgId, validationId),
       });
       queryClient.removeQueries({
         queryKey: productValidationQueryKeys.stats(orgId, validationId),
       });
-      await queryClient.invalidateQueries({
+      queryClient.invalidateQueries({
         queryKey: productValidationQueryKeys.all,
       });
     },
