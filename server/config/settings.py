@@ -482,8 +482,6 @@ TEMPLATES = [
 # manages connection lifetime itself.
 _DATABASE_URL = os.environ.get("DATABASE_URL")
 if _DATABASE_URL:
-    from psycopg_pool import ConnectionPool
-
     _db_config = dj_database_url.parse(
         _DATABASE_URL,
         conn_health_checks=True,
@@ -492,6 +490,14 @@ if _DATABASE_URL:
     _pool_min = int(os.environ.get("DB_POOL_MIN_SIZE", "1"))
     _pool_max = int(os.environ.get("DB_POOL_MAX_SIZE", "7"))
     _db_config.setdefault("OPTIONS", {})
+    # Django's PostgreSQL backend wires
+    # ``check=ConnectionPool.check_connection`` into the pool itself
+    # whenever this ``pool`` dict is present — so every connection
+    # pulled from the pool already gets validated (cheap ``SELECT 1``
+    # + rollback) before reaching a worker. We do NOT pass ``check``
+    # here ourselves: doing so triggers
+    # ``TypeError: got multiple values for keyword argument 'check'``
+    # because Django merges its own value on top of this dict.
     _db_config["OPTIONS"]["pool"] = {
         "min_size": _pool_min,
         "max_size": _pool_max,
@@ -499,16 +505,6 @@ if _DATABASE_URL:
         # rather than queueing forever; surfaces saturation as a
         # bounded 503 instead of a stuck request.
         "timeout": float(os.environ.get("DB_POOL_TIMEOUT", "3")),
-        # Validate every connection pulled from the pool before handing
-        # it to a worker. Without this, a dead TCP socket (idle timeout,
-        # Postgres restart, network blip) sits in the pool and poisons
-        # the next request that grabs it; the worker hangs on the
-        # already-broken socket, the slot stays locked, and a few of
-        # these wedge the whole app — exactly the failure we saw mid-
-        # day. ``check_connection`` runs a cheap ``SELECT 1`` + rollback
-        # and discards the socket if it errors. Cost: one round-trip
-        # per checkout (sub-millisecond on the same Azure region).
-        "check": ConnectionPool.check_connection,
     }
     DATABASES = {"default": _db_config}
 else:
