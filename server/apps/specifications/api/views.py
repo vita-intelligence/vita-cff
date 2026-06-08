@@ -29,6 +29,7 @@ from apps.specifications.api.serializers import (
 from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.models import SpecificationSheet
 from apps.specifications.services import (
+    FinalSpecAlreadyExists,
     FormulationVersionNotInOrg,
     InvalidSnapshotOverrides,
     InvalidSpecificationDocumentKind,
@@ -246,6 +247,20 @@ class SpecificationDetailView(APIView):
             return Response(
                 {"snapshot_overrides": ["invalid_snapshot_overrides"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except FinalSpecAlreadyExists:
+            # Surface the domain error as a 409 instead of letting it
+            # bubble as an uncaught 500. The earlier behaviour leaked
+            # an unhandled exception every time a user tried to flip a
+            # draft to FINAL when another final already existed for
+            # the same formulation — eight back-to-back retries today
+            # were the trigger for the afternoon perf spike (each one
+            # held a connection through the @transaction.atomic
+            # rollback). 409 lets the frontend render "another final
+            # already exists" copy without a 500 noise burst.
+            return Response(
+                {"code": "final_spec_already_exists"},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             SpecificationSheetReadSerializer(updated).data,
