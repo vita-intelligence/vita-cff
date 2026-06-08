@@ -180,7 +180,11 @@ class LabelDesignListView(APIView):
         # ``counts_by_status`` runs over the search-filtered set but
         # NOT the status-filtered set — that way the FE can render
         # tab pills showing "how many would appear if I clicked this
-        # tab" even while a different tab is active.
+        # tab" even while a different tab is active. The dict
+        # already tells us every status' count, so the
+        # status-filtered total is just a dict lookup — no need for
+        # a second ``qs.count()`` round-trip when the user is on a
+        # specific tab.
         counts = dict(
             base_qs.values_list("status")
             .annotate(c=Count("id"))
@@ -191,6 +195,9 @@ class LabelDesignListView(APIView):
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
+            total = counts.get(status_filter, 0)
+        else:
+            total = sum(counts.values())
 
         try:
             limit = int(request.query_params.get("limit") or _LIST_DEFAULT_LIMIT)
@@ -203,7 +210,6 @@ class LabelDesignListView(APIView):
             offset = 0
         offset = max(0, offset)
 
-        total = qs.count()
         rows = list(qs.order_by("-updated_at")[offset : offset + limit])
         items = LabelDesignListItemSerializer(rows, many=True).data
         next_offset = offset + len(rows)

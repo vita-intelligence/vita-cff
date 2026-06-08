@@ -323,9 +323,17 @@ class PaymentVoidView(APIView):
     required_capability = FinanceCapability.APPROVE_PAYMENT
 
     def post(self, request: Request, **kwargs) -> Response:
-        payment = Payment.objects.filter(
-            organization=self.organization, id=kwargs["payment_id"]
-        ).first()
+        payment = (
+            Payment.objects.select_related(
+                "formulation",
+                "label_design",
+                "recorded_by",
+                "approved_by",
+                "assigned_finance_officer",
+            )
+            .filter(organization=self.organization, id=kwargs["payment_id"])
+            .first()
+        )
         if payment is None:
             raise NotFound()
 

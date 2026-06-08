@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.cache import cache
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
@@ -166,6 +167,18 @@ class BootstrapView(APIView):
 
     permission_classes = (IsAuthenticated,)
 
+    #: Bootstrap is hit on every authed page navigation by the SSR
+    #: shell, so a single power user with a few tabs open can fire
+    #: 10+ requests/minute against it. The payload (user + orgs +
+    #: caller capabilities) is identical between calls for the same
+    #: user, and the serialization itself — not the prefetch — is
+    #: where the CPU+pool time goes. A short per-user cache absorbs
+    #: the storm while still picking up membership/role changes
+    #: within one minute. The trade-off is explicit: a permission
+    #: change can take up to ``_BOOTSTRAP_CACHE_TTL`` seconds to
+    #: take effect on the client.
+    _BOOTSTRAP_CACHE_TTL = 60
+
     def get(self, request: Request) -> Response:
         # Lazy imports to keep this view's load path independent of
         # the organizations app — accounts is the most-imported app
@@ -176,7 +189,38 @@ class BootstrapView(APIView):
         from apps.organizations.models import Membership
         from apps.organizations.services import list_user_organizations
 
-        organizations = list_user_organizations(request.user)
+        # The User model has no ``updated_at`` column, so the cache
+        # key folds in a stable hash of every user field the
+        # response actually surfaces. Editing name / email /
+        # avatar / active flag changes the hash and auto-busts the
+        # entry on the very next request — no manual cache.delete
+        # call required at the PATCH /me/ site. Membership and
+        # role changes don't touch User, so they ride the TTL out
+        # (explicit user trade-off: 60s eventual consistency on
+        # permission changes).
+        import hashlib
+
+        user = request.user
+        identity_hash = hashlib.blake2s(
+            "|".join(
+                (
+                    str(user.email or ""),
+                    str(user.first_name or ""),
+                    str(user.last_name or ""),
+                    str(user.avatar_image or ""),
+                    "1" if getattr(user, "is_active", True) else "0",
+                )
+            ).encode("utf-8"),
+            digest_size=8,
+        ).hexdigest()
+        cache_key = f"bootstrap:v1:user:{user.pk}:{identity_hash}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            response = Response(cached, status=status.HTTP_200_OK)
+            response["X-Cache"] = "HIT"
+            return response
+
+        organizations = list_user_organizations(user)
         # Same prefetch as ``OrganizationListCreateView.get`` — load
         # every caller membership in one query so the serializer's
         # ``is_owner`` / ``permissions`` SerializerMethodFields don't
@@ -185,23 +229,24 @@ class BootstrapView(APIView):
         caller_memberships = {
             str(m.organization_id): m
             for m in Membership.objects.filter(
-                user=request.user, organization_id__in=org_ids
+                user=user, organization_id__in=org_ids
             )
         }
-        return Response(
-            {
-                "user": UserReadSerializer(request.user).data,
-                "organizations": OrganizationReadSerializer(
-                    organizations,
-                    many=True,
-                    context={
-                        "request": request,
-                        "caller_memberships_by_org_id": caller_memberships,
-                    },
-                ).data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        payload = {
+            "user": UserReadSerializer(user).data,
+            "organizations": OrganizationReadSerializer(
+                organizations,
+                many=True,
+                context={
+                    "request": request,
+                    "caller_memberships_by_org_id": caller_memberships,
+                },
+            ).data,
+        }
+        cache.set(cache_key, payload, timeout=self._BOOTSTRAP_CACHE_TTL)
+        response = Response(payload, status=status.HTTP_200_OK)
+        response["X-Cache"] = "MISS"
+        return response
 
 
 class MeView(APIView):

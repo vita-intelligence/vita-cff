@@ -551,23 +551,22 @@ class CFFFieldLabelsView(APIView):
         # The org's configured form id is the only one we expect
         # rows for; serialising the whole cache anyway is cheap and
         # forward-compatible with a future multi-form intake.
+        #
+        # Single distinct query yields every ``(form_id, namespace)``
+        # combination in one round-trip — the previous shape fired
+        # one query for distinct form ids and then N additional
+        # queries (one per form id) to fetch namespaces.
         labels_by_form: dict[str, dict[str, str]] = {}
-        for form_id in (
+        pairs = (
             CFFSubmission.objects
             .filter(organization=self.organization)
-            .values_list("wix_form_id", flat=True)
+            .values_list("wix_form_id", "wix_namespace")
             .distinct()
-        ):
-            namespaces = (
-                CFFSubmission.objects
-                .filter(organization=self.organization, wix_form_id=form_id)
-                .values_list("wix_namespace", flat=True)
-                .distinct()
-            )
-            for ns in namespaces:
-                labels = get_field_labels(form_id=str(form_id), namespace=ns)
-                if labels:
-                    labels_by_form[str(form_id)] = labels
+        )
+        for form_id, ns in pairs:
+            labels = get_field_labels(form_id=str(form_id), namespace=ns)
+            if labels:
+                labels_by_form[str(form_id)] = labels
         return Response({"field_labels_by_form": labels_by_form})
 
 

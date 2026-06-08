@@ -20,7 +20,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 
-from django.db.models import Count
+from django.db.models import Count, Q
 
 from apps.formulations.constants import (
     DosageForm,
@@ -294,17 +294,24 @@ def _trial_batch_counts(formulation: Formulation) -> TrialBatchCounts:
     qs = TrialBatch.objects.filter(
         formulation_version__formulation=formulation
     ).order_by("-created_at")
-    total = qs.count()
-    # "In flight" = total minus those whose linked validation has
-    # reached a terminal state. Subquery via .values rather than a
-    # join keeps this a single roundtrip.
-    settled = qs.filter(
-        validation__status__in=("passed", "failed"),
-    ).count()
+    # One aggregation query gives us both totals — the previous
+    # shape fired ``qs.count()`` and ``qs.filter(...).count()`` as
+    # two separate round-trips. Under the overview burst on prod
+    # those round-trips stack up across every helper and starve
+    # the pool; collapsing here saves one trip per overview call.
+    agg = qs.aggregate(
+        total=Count("id"),
+        settled=Count(
+            "id", filter=Q(validation__status__in=("passed", "failed"))
+        ),
+    )
     counts = TrialBatchCounts()
-    counts.total = total
-    counts.in_flight = max(total - settled, 0)
-    latest = qs.first()
+    counts.total = agg["total"] or 0
+    counts.in_flight = max(counts.total - (agg["settled"] or 0), 0)
+    # ``latest`` still needs its own SELECT because aggregations
+    # can't return row columns alongside their counts. ``.only()``
+    # keeps the payload to the two fields we actually read.
+    latest = qs.only("label", "batch_size_units").first()
     if latest is not None:
         counts.latest_label = latest.label
         counts.latest_packs = latest.batch_size_units
