@@ -157,6 +157,56 @@ REST_FRAMEWORK = {
 }
 
 
+# Logging
+#
+# Django's default ``django.request`` logger routes 5xx errors to
+# :class:`django.utils.log.AdminEmailHandler`. With no ``ADMINS``
+# set (and we don't set one — production alerts live in Azure, not
+# in SMTP) those tracebacks land in /dev/null: uvicorn records the
+# 500 in the access log, but the Python exception that caused it is
+# completely invisible. That's how the second wave of 5xx after the
+# X-Forwarded-For fix went undiagnosed for a full hour.
+#
+# Explicit console handler for ``django.request`` so every uncaught
+# exception inside a request flows into the container's stdout, the
+# same stream uvicorn writes to. Azure log-stream / log-download
+# both pick it up.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "verbose": {
+            "format": (
+                "[%(asctime)s] %(levelname)s %(name)s "
+                "(%(module)s:%(lineno)d) %(message)s"
+            ),
+        },
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "verbose",
+        },
+    },
+    "loggers": {
+        "django.request": {
+            "handlers": ["console"],
+            "level": "ERROR",
+            "propagate": False,
+        },
+        # Catch DB-level pool / cursor errors that surface outside
+        # the request loop (e.g. when a connection in
+        # ``InFailedSqlTransaction`` state returns to the pool and
+        # the pool retry path swallows it).
+        "django.db.backends": {
+            "handlers": ["console"],
+            "level": "WARNING",
+            "propagate": False,
+        },
+    },
+}
+
+
 # simplejwt
 #
 # ``ACCESS_TOKEN_LIFETIME`` is deliberately long: every navigation
