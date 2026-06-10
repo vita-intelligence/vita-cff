@@ -57,6 +57,47 @@ class LoginRequestSerializer(serializers.Serializer):
     password = serializers.CharField(write_only=True)
 
 
+class RegistrationStartRequestSerializer(serializers.Serializer):
+    """Body for ``POST /api/portal/register/`` — step 1 of the
+    self-registration flow.
+
+    ``privacy_accepted`` is a boolean the FE wires up to a mandatory
+    checkbox; the service-layer guard rejects falsy values with a
+    codified error so a hand-crafted curl can't slip a consent-less
+    row through.
+    """
+
+    email = serializers.EmailField()
+    name = serializers.CharField(max_length=200, allow_blank=True, default="")
+    company = serializers.CharField(max_length=200, allow_blank=True, default="")
+    password = serializers.CharField(write_only=True, min_length=8)
+    privacy_accepted = serializers.BooleanField()
+
+
+class RegistrationStartResponseSerializer(serializers.Serializer):
+    """Response for the step-1 endpoint. Same shape whether the
+    server actually sent a code or suppressed because the email
+    already belongs to an activated account — never let the
+    response shape leak which path the request took."""
+
+    token = serializers.CharField()
+    email_masked = serializers.CharField()
+
+
+class RegistrationConfirmRequestSerializer(serializers.Serializer):
+    """Body for ``POST /api/portal/register/confirm/`` — step 2.
+
+    The password is collected again at this step rather than stored
+    server-side between steps; mirrors the invite + kiosk flows where
+    the password lives only in React state until both halves of the
+    credential pair (password + code) submit together.
+    """
+
+    token = serializers.CharField()
+    code = serializers.RegexField(regex=r"^\d{6}$")
+    password = serializers.CharField(write_only=True, min_length=8)
+
+
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
 

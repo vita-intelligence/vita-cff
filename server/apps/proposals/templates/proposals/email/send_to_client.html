@@ -1,142 +1,37 @@
-{% load proposals_email_extras %}<!doctype html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="x-apple-disable-message-reformatting" />
-  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
-  <title>{{ proposal.code }}</title>
-  {% comment %}
-  Outlook (Windows) honours these MSO conditionals — gives every
-  cell a fixed line-height and disables Word's font scaling. The
-  non-Office mail clients ignore the block entirely.
-  {% endcomment %}
-  <!--[if mso]>
-  <noscript>
-    <xml>
-      <o:OfficeDocumentSettings>
-        <o:PixelsPerInch>96</o:PixelsPerInch>
-        <o:AllowPNG/>
-      </o:OfficeDocumentSettings>
-    </xml>
-  </noscript>
-  <style>
-    table, td, div, p, a { mso-line-height-rule: exactly; }
-    body { font-family: 'Segoe UI', Arial, sans-serif !important; }
-  </style>
-  <![endif]-->
-  <style>
-    /* Dark-mode and client-specific touch-ups that the inline styles
-       below can't reach (gmail and outlook.com strip <style>, but
-       Apple Mail and many mobile clients keep it). */
-    a { color: #1a1a1a; }
-    @media (prefers-color-scheme: dark) {
-      .email-card { background-color: #1f1d1a !important; color: #f6f5f3 !important; }
-      .email-card .body-copy { color: #f6f5f3 !important; }
-      .email-bg { background-color: #0e0d0c !important; }
-    }
-  </style>
-</head>
-<body style="margin:0;padding:0;background-color:#f6f5f3;mso-line-height-rule:exactly;-webkit-font-smoothing:antialiased;" class="email-bg">
-  {% comment %}
-  A hidden one-line preheader. Gmail / Outlook / Apple Mail render
-  this as the inbox preview snippet — first thing the customer
-  sees before they even open the email. Keep it under 100 chars.
-  {% endcomment %}
-  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f6f5f3;">
-    Your Vita Manufacture proposal {{ proposal.code }} is ready to review.
-  </div>
+{% extends "email/base.html" %}
+{% load proposals_email_extras %}
 
-  <center style="width:100%;background-color:#f6f5f3;" class="email-bg">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f6f5f3" style="background-color:#f6f5f3;padding:24px 12px;">
-      <tr>
-        <td align="center" style="padding:24px 12px;">
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" bgcolor="#ffffff" style="max-width:600px;width:100%;background-color:#ffffff;border:1px solid #e7e5e0;" class="email-card">
-            <tr>
-              <td style="padding:32px 32px 8px 32px;">
-                <p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#8a857c;font-family:'Segoe UI',Arial,sans-serif;">
-                  Vita Manufacture &middot; {{ proposal.code }}
-                </p>
-              </td>
-            </tr>
+{% block subject %}{{ proposal.code }}{% endblock %}
+{% block preheader %}Your Vita Manufacture proposal {{ proposal.code }} is ready to review.{% endblock %}
+{% block brandmark %}VITA MANUFACTURE &middot; {{ proposal.code }}{% endblock %}
+{% block heading %}Your proposal is ready{% endblock %}
 
-            <tr>
-              <td class="body-copy" style="padding:16px 32px 0 32px;font-size:15px;line-height:1.6;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
-                {{ body_text|email_linebreaks }}
-              </td>
-            </tr>
+{% block intro %}
+{{ body_text|email_linebreaks }}
+{% endblock %}
 
-            {% if kiosk_url %}
-            {% comment %}
-            The proposal email carries the kiosk button only — no
-            activation code. The 6-digit code is delivered as a
-            separate JIT email by the request-code endpoint when
-            the customer reaches the activation page. Keeping the
-            code out of this email mitigates:
-              * Forward leaks (one email = link OR code, never both).
-              * "I can't find the code" support tickets — historically
-                customers missed it buried under a long cover letter.
-            {% endcomment %}
-            <tr>
-              <td align="center" style="padding:28px 32px 8px 32px;">
-                {% comment %}
-                Bulletproof button: a VML rounded-rect for Outlook
-                desktop (Word rendering engine doesn't honour
-                border-radius on anchors), wrapped around the same
-                ``<a>`` so every other client falls through to the
-                normal styled link. Two URLs in one declaration:
-                the VML ``href=`` and the inner ``<a href=``.
-                {% endcomment %}
-                <!--[if mso]>
-                <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-                             href="{{ kiosk_url }}" style="height:48px;v-text-anchor:middle;width:200px;" arcsize="22%" stroke="f" fillcolor="#ff7a18">
-                  <w:anchorlock/>
-                  <center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:600;">Open proposal</center>
-                </v:roundrect>
-                <![endif]-->
-                <!--[if !mso]><!-- -->
-                <a href="{{ kiosk_url }}"
-                   style="display:inline-block;background-color:#ff7a18;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:14px 28px;border-radius:10px;font-family:'Segoe UI',Arial,sans-serif;mso-padding-alt:0;">
-                  <!--[if mso]>&nbsp;&nbsp;&nbsp;&nbsp;<![endif]-->
-                  Open proposal
-                  <!--[if mso]>&nbsp;&nbsp;&nbsp;&nbsp;<![endif]-->
-                </a>
-                <!--<![endif]-->
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 32px 8px 32px;font-size:12px;color:#8a857c;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
-                Or copy this link into your browser:
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 32px 24px 32px;font-size:12px;color:#5a574f;text-align:center;word-break:break-all;font-family:'Segoe UI',Arial,sans-serif;">
-                <a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
-              </td>
-            </tr>
-            {% endif %}
+{% block cta_block %}{% if kiosk_url %}{% include "email/_cta_button.html" with cta_url=kiosk_url cta_label="Open proposal" %}{% endif %}{% endblock %}
 
-            {% if sales_person_name %}
-            <tr>
-              <td style="padding:8px 32px 32px 32px;font-size:14px;color:#5a574f;border-top:1px solid #f0eee9;font-family:'Segoe UI',Arial,sans-serif;">
-                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ sales_person_name }}</strong>{% if sales_person_email %}<br/><a href="mailto:{{ sales_person_email }}" style="color:#5a574f;text-decoration:underline;">{{ sales_person_email }}</a>{% endif %}</p>
-              </td>
-            </tr>
-            {% endif %}
-          </table>
+{% block body %}
+{% if kiosk_url %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:8px;">
+<tr>
+<td align="left" valign="top" bgcolor="#ffffff" style="background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:normal;color:#5a574f;line-height:20px;padding-top:12px;padding-bottom:8px;">
+Or copy this link into your browser:<br />
+<a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
+</td>
+</tr>
+</table>
+{% endif %}
+{% if sales_person_name %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>
+<td align="left" valign="top" bgcolor="#ffffff" style="background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:normal;color:#5a574f;line-height:22px;padding-top:16px;padding-bottom:8px;border-top-width:1px;border-top-style:solid;border-top-color:#e4e0d6;">
+Kind regards,<br /><b style="color:#1a1a1a;">{{ sales_person_name }}</b>{% if sales_person_email %}<br /><a href="mailto:{{ sales_person_email }}" style="color:#5a574f;text-decoration:underline;">{{ sales_person_email }}</a>{% endif %}
+</td>
+</tr>
+</table>
+{% endif %}
+{% endblock %}
 
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;">
-            <tr>
-              <td align="center" style="padding:16px 16px 0 16px;font-size:11px;color:#8a857c;line-height:1.5;font-family:'Segoe UI',Arial,sans-serif;">
-                Vita Manufacture &middot; sent because you have a live proposal with us.
-              </td>
-            </tr>
-          </table>
-        </td>
-      </tr>
-    </table>
-  </center>
-</body>
-</html>
+{% block footer %}Vita Manufacture &middot; sent because you have a live proposal with us.{% endblock %}

@@ -1,18 +1,16 @@
 """Email senders for the client portal.
 
-Two surfaces:
+Every sender here is a thin adapter that gathers the dynamic fields
+(recipient, code, link, customer company) and hands them off to
+:func:`config.email_layout.render_email`. Doing it that way keeps the
+bulletproof markup — Outlook-safe tables, MSO conditionals, inline
+styles + attribute fallbacks — in one place; the per-flow copy is what
+lives here. Mailpit's ``html-check`` scores stay high (≥95% Supported
+across the caniemail dataset) for the same reason.
 
-* :func:`send_portal_activation_email` — the kiosk-email rewrite.
-  Used when a proposal is sent for the first time (or re-sent after
-  a customer email update). Brutalist plain-HTML body, CTA points
-  at ``<APP_BASE_URL>/portal/activate/<public_token>``.
-* :func:`send_portal_password_reset_email` — forgot-password flow.
-  Mirrors :func:`apps.accounts.email.send_password_reset_email` but
-  branded for the client side and aimed at ``/portal/reset/<token>``.
-
-Both use Django's ``send_mail`` rather than EmailMessage so the
-backend choice (SMTP in prod, console in dev) remains the single
-toggle that decides where mail actually goes.
+All flows use Django's ``send`` via ``EmailMultiAlternatives`` so the
+backend choice (SMTP in prod, console / mailpit in dev) remains the
+single toggle that decides where mail actually goes.
 """
 
 from __future__ import annotations
@@ -21,6 +19,8 @@ import logging
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
+
+from config.email_layout import EmailCTA, EmailCode, render_email
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,32 @@ def _app_base_url() -> str:
     return base.rstrip("/")
 
 
+def _send(*, to_email: str, subject: str, html: str, text: str) -> None:
+    """Single chokepoint for the actual SMTP dispatch.
+
+    Centralising the construction here means a future change to the
+    ``From`` envelope, headers, or reply-to address lands in one
+    file rather than six.
+    """
+
+    msg = EmailMultiAlternatives(
+        subject=subject,
+        body=text,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[to_email],
+    )
+    msg.attach_alternative(html, "text/html")
+    msg.send(fail_silently=False)
+
+
+def _greeting(customer_company: str) -> str:
+    """Personalised opener used at the top of every customer email."""
+
+    if customer_company:
+        return f"Hi {customer_company},"
+    return "Hi,"
+
+
 def send_portal_activation_email(
     *,
     to_email: str,
@@ -39,14 +65,13 @@ def send_portal_activation_email(
     proposal_code: str,
     public_token: str,
 ) -> None:
-    """Send the kiosk-email replacement — "Set up your account to
-    review your proposal".
+    """Send the kiosk-email replacement — "Open the portal to review
+    your proposal".
 
-    The link is ``<APP_BASE_URL>/portal/activate/<public_token>``.
+    The CTA points at ``<APP_BASE_URL>/portal/activate/<public_token>``.
     Whether the customer is a first-time visitor or a returner is
-    decided server-side by the activation page, so the copy stays
-    the same across both paths (it just says "Sign in or set up
-    your account").
+    decided server-side by the activation page, so the copy stays the
+    same across both paths.
     """
 
     if not to_email:
@@ -58,48 +83,27 @@ def send_portal_activation_email(
     base = _app_base_url() or "https://npd.vitaintelligent.com"
     activation_url = f"{base}/portal/activate/{public_token}"
     subject = f"Vita NPD — review proposal {proposal_code}".strip()
-    company_line = (
-        f"Hi {customer_company},"
-        if customer_company
-        else "Hi,"
-    )
-    text = (
-        f"{company_line}\n\n"
-        f"Your proposal {proposal_code} from Vita is ready to review.\n\n"
-        f"Open your account to read, sign, or comment:\n"
-        f"{activation_url}\n\n"
-        "First time? You'll be asked to set a password. Returning?\n"
-        "You'll be taken straight to the sign-in page.\n\n"
-        "— The Vita team\n"
-    )
-    html = (
-        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
-        'color: #000; background: #fff; padding: 24px;">'
-        f'<p style="font-size: 14px; line-height: 1.5;">{company_line}</p>'
-        '<p style="font-size: 14px; line-height: 1.5;">'
-        f'Your proposal <strong>{proposal_code}</strong> from Vita is '
-        'ready to review.</p>'
-        f'<p style="margin: 24px 0;">'
-        f'<a href="{activation_url}" '
-        'style="display: inline-block; background: #000; color: #fff; '
-        'padding: 12px 24px; font-weight: 700; text-decoration: none; '
-        'border: 2px solid #000; box-shadow: 6px 6px 0 #000;">'
-        'Open your account →</a></p>'
-        '<p style="font-size: 12px; line-height: 1.5; color: #555;">'
-        'First time? You will be asked to set a password. Returning? '
-        'You will be taken straight to the sign-in page.</p>'
-        '<p style="font-size: 12px; color: #555;">— The Vita team</p>'
-        "</div>"
-    )
 
-    msg = EmailMultiAlternatives(
-        subject=subject,
-        body=text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+    intro_html = (
+        f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
+        f"<p style=\"margin-top:12px;margin-bottom:0;\">Your proposal "
+        f"<b>{proposal_code}</b> from Vita is ready to review.</p>"
     )
-    msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+    html, text = render_email(
+        subject=subject,
+        preheader=(
+            f"Open the portal to read, sign, or comment on proposal "
+            f"{proposal_code}."
+        ),
+        heading="Your proposal is ready",
+        intro_html=intro_html,
+        cta=EmailCTA(label="Open your account", url=activation_url),
+        outro=(
+            "First time? You will be asked to set a password. "
+            "Returning? You will be taken straight to the sign-in page."
+        ),
+    )
+    _send(to_email=to_email, subject=subject, html=html, text=text)
 
 
 def send_email_change_code(
@@ -109,50 +113,31 @@ def send_email_change_code(
 ) -> None:
     """Send the 6-digit code that confirms an email-change request.
 
-    The code is mailed to the **new** address — proving the
-    customer actually controls it before we flip their login over.
+    The code is mailed to the **new** address — proving the customer
+    actually controls it before we flip their login over.
     """
 
     if not to_email:
         return
 
     subject = "Vita NPD — confirm your new email"
-    text = (
-        "Hi,\n\n"
-        "Your code to confirm this new email on your Vita portal\n"
-        "account is:\n\n"
-        f"  {code}\n\n"
-        "Enter it on the settings page within the next 30 minutes.\n"
-        "If you didn't request this, ignore the email — your account\n"
-        "stays on its current address.\n\n"
-        "— The Vita team\n"
+    intro_html = (
+        "<p style=\"margin-top:0;margin-bottom:0;\">Your code to confirm "
+        "this new email on your Vita portal account is below.</p>"
     )
-    html = (
-        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
-        'color: #000; background: #fff; padding: 24px;">'
-        '<p style="font-size: 14px; line-height: 1.5;">Hi,</p>'
-        '<p style="font-size: 14px; line-height: 1.5;">'
-        "Your code to confirm this new email on your Vita portal "
-        "account is:</p>"
-        '<div style="margin: 24px 0; padding: 14px 28px; border: 2px solid #000; '
-        'display: inline-block; font-family: \'Courier New\', monospace; '
-        f'font-size: 26px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
-        '<p style="font-size: 12px; line-height: 1.5; color: #555;">'
-        "Enter it on the settings page within the next 30 minutes. "
-        "If you didn't request this, ignore the email — your account "
-        "stays on its current address.</p>"
-        '<p style="font-size: 12px; color: #555;">— The Vita team</p>'
-        "</div>"
-    )
-
-    msg = EmailMultiAlternatives(
+    html, text = render_email(
         subject=subject,
-        body=text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+        preheader="Enter the code on the settings page to confirm the change.",
+        heading="Confirm your new email",
+        intro_html=intro_html,
+        code=EmailCode(code),
+        outro=(
+            "Enter it on the settings page within the next 30 minutes. "
+            "If you didn't request this, ignore the email — your account "
+            "stays on its current address."
+        ),
     )
-    msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+    _send(to_email=to_email, subject=subject, html=html, text=text)
 
 
 def send_portal_invite_email(
@@ -163,11 +148,9 @@ def send_portal_invite_email(
 ) -> None:
     """Send the 6-digit verification code for a customer-portal invite.
 
-    Sibling to :func:`send_portal_activation_email` but for the
-    customers-page-issued flow: only the *code* is mailed here, not
-    a clickable link, because the staff member shares the URL by
-    hand. Receiving this email is what proves to us the customer
-    actually controls the address on file.
+    Only the *code* is mailed here, not a clickable link — the staff
+    member shares the URL by hand. Receiving this email is what
+    proves to us the customer actually controls the address on file.
     """
 
     if not to_email:
@@ -177,47 +160,24 @@ def send_portal_invite_email(
         return
 
     subject = "Vita NPD — your portal activation code"
-    company_line = (
-        f"Hi {customer_company},"
-        if customer_company
-        else "Hi,"
+    intro_html = (
+        f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
+        "<p style=\"margin-top:12px;margin-bottom:0;\">Your team at Vita "
+        "has issued a portal invite for you. Open the link they shared "
+        "and enter this 6-digit code to finish setting up your account.</p>"
     )
-    text = (
-        f"{company_line}\n\n"
-        "Your team at Vita has issued a portal invite for you.\n"
-        "Open the link they shared and enter this 6-digit code\n"
-        "to finish setting up your account:\n\n"
-        f"  {code}\n\n"
-        "The code expires in 7 days. If you didn't expect this\n"
-        "email, you can safely ignore it.\n\n"
-        "— The Vita team\n"
-    )
-    html = (
-        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
-        'color: #000; background: #fff; padding: 24px;">'
-        f'<p style="font-size: 14px; line-height: 1.5;">{company_line}</p>'
-        '<p style="font-size: 14px; line-height: 1.5;">'
-        "Your team at Vita has issued a portal invite for you. Open the "
-        "link they shared and enter this 6-digit code to finish setting "
-        "up your account:</p>"
-        '<div style="margin: 24px 0; padding: 14px 28px; border: 2px solid #000; '
-        'display: inline-block; font-family: \'Courier New\', monospace; '
-        f'font-size: 26px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
-        '<p style="font-size: 12px; line-height: 1.5; color: #555;">'
-        "The code expires in 7 days. If you didn't expect this email, "
-        "you can safely ignore it.</p>"
-        '<p style="font-size: 12px; color: #555;">— The Vita team</p>'
-        "</div>"
-    )
-
-    msg = EmailMultiAlternatives(
+    html, text = render_email(
         subject=subject,
-        body=text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+        preheader="Enter the 6-digit code on the activation page.",
+        heading="Activate your portal account",
+        intro_html=intro_html,
+        code=EmailCode(code),
+        outro=(
+            "The code expires in 7 days. If you didn't expect this email, "
+            "you can safely ignore it."
+        ),
     )
-    msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+    _send(to_email=to_email, subject=subject, html=html, text=text)
 
 
 def send_proposal_activation_code_email(
@@ -232,12 +192,8 @@ def send_proposal_activation_code_email(
     Standalone OTP email — no link, no cover letter, no other CTA.
     Sent by :func:`apps.client_portal.services.request_activation_code`
     each time the customer hits "Send code" or "Resend" on the
-    activation page (rate-limited to one every 60 seconds, with a
-    10-minute TTL on the code itself).
-
-    Designed to land in the inbox immediately recognisable as an
-    OTP: short subject, the code is the headline, no "could be
-    anything" cover copy.
+    activation page (rate-limited to one every 60s, with a 10-minute
+    TTL on the code itself).
     """
 
     if not to_email:
@@ -247,50 +203,68 @@ def send_proposal_activation_code_email(
         return
 
     subject = f"Your Vita Manufacture verification code · {code}"
-    company_line = (
-        f"Hi {customer_company},"
-        if customer_company
-        else "Hi,"
+    intro_html = (
+        f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
+        f"<p style=\"margin-top:12px;margin-bottom:0;\">Your 6-digit "
+        f"verification code for proposal <b>{proposal_code}</b> is "
+        "below.</p>"
     )
-    text = (
-        f"{company_line}\n\n"
-        f"Your 6-digit verification code for proposal "
-        f"{proposal_code} is:\n\n"
-        f"  {code}\n\n"
-        "Enter it on the activation page within the next 10 minutes.\n"
-        "If you didn't request this, ignore the email — the code is\n"
-        "useless without the activation link.\n\n"
-        "— Vita Manufacture\n"
-    )
-    html = (
-        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
-        'color: #1a1a1a; background: #ffffff; padding: 32px; max-width: 480px;">'
-        f'<p style="margin: 0 0 12px 0; font-size: 14px; line-height: 1.5;">'
-        f'{company_line}</p>'
-        '<p style="margin: 0 0 20px 0; font-size: 14px; line-height: 1.5;">'
-        "Your 6-digit verification code for proposal "
-        f"<strong>{proposal_code}</strong> is:</p>"
-        '<div style="margin: 0 auto 24px auto; padding: 18px 32px; '
-        'border: 2px solid #1a1a1a; display: inline-block; '
-        'font-family: \'Courier New\', monospace; '
-        f'font-size: 32px; letter-spacing: 0.5em; font-weight: 700;">{code}</div>'
-        '<p style="margin: 0 0 12px 0; font-size: 12px; line-height: 1.5; color: #5a574f;">'
-        "Enter it on the activation page within the next 10 minutes. "
-        "If you didn't request this, ignore the email — the code is "
-        "useless without the activation link.</p>"
-        '<p style="margin: 16px 0 0 0; font-size: 12px; color: #8a857c;">'
-        "— Vita Manufacture</p>"
-        "</div>"
-    )
-
-    msg = EmailMultiAlternatives(
+    html, text = render_email(
         subject=subject,
-        body=text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+        preheader="Enter the code on the activation page to continue.",
+        heading="Confirm your email",
+        intro_html=intro_html,
+        code=EmailCode(code),
+        outro=(
+            "Enter it on the activation page within the next 10 minutes. "
+            "If you didn't request this, ignore the email — the code is "
+            "useless without the activation link."
+        ),
     )
-    msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+    _send(to_email=to_email, subject=subject, html=html, text=text)
+
+
+def send_portal_registration_code_email(
+    *,
+    to_email: str,
+    code: str,
+    customer_company: str = "",
+) -> None:
+    """Send the 6-digit verification code for a self-registration.
+
+    Sibling to :func:`send_portal_invite_email` but the trigger is
+    reversed: the customer initiated the registration on the portal,
+    so the copy welcomes them in rather than referencing a staff
+    invite.
+    """
+
+    if not to_email:
+        logger.warning(
+            "portal.registration_code_email: skipped — no recipient address.",
+        )
+        return
+
+    subject = f"Your Vita Manufacture portal code · {code}"
+    intro_html = (
+        f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
+        "<p style=\"margin-top:12px;margin-bottom:0;\">Thanks for signing "
+        "up to the Vita Manufacture customer portal. Your 6-digit "
+        "confirmation code is below — enter it on the registration page "
+        "to finish setting up your account.</p>"
+    )
+    html, text = render_email(
+        subject=subject,
+        preheader="Enter the code to finish setting up your portal account.",
+        heading="Confirm your email",
+        intro_html=intro_html,
+        code=EmailCode(code),
+        outro=(
+            "The code expires in 10 minutes. If you didn't request this, "
+            "ignore the email — the code is useless without the open "
+            "registration tab."
+        ),
+    )
+    _send(to_email=to_email, subject=subject, html=html, text=text)
 
 
 def send_portal_password_reset_email(
@@ -298,44 +272,30 @@ def send_portal_password_reset_email(
     to_email: str,
     plaintext_token: str,
 ) -> None:
+    """Send the forgot-password reset link.
+
+    Aimed at ``<APP_BASE_URL>/portal/reset/<token>``. Mirror of the
+    staff side (:mod:`apps.accounts.email`) but branded for the
+    customer surface.
+    """
+
     if not to_email:
         return
 
     base = _app_base_url() or "https://npd.vitaintelligent.com"
     reset_url = f"{base}/portal/reset/{plaintext_token}"
     subject = "Vita NPD — reset your portal password"
-    text = (
-        "Hi,\n\n"
-        "Use the link below to set a new password for your Vita portal "
-        "account. The link expires in 30 minutes.\n\n"
-        f"{reset_url}\n\n"
-        "If you didn't request this, ignore this email.\n\n"
-        "— The Vita team\n"
+    intro_html = (
+        "<p style=\"margin-top:0;margin-bottom:0;\">Use the button below "
+        "to set a new password for your Vita portal account. The link "
+        "expires in 30 minutes.</p>"
     )
-    html = (
-        '<div style="font-family: ui-sans-serif, system-ui, sans-serif; '
-        'color: #000; background: #fff; padding: 24px;">'
-        '<p style="font-size: 14px; line-height: 1.5;">Hi,</p>'
-        '<p style="font-size: 14px; line-height: 1.5;">'
-        'Use the link below to set a new password for your Vita portal '
-        'account. The link expires in 30 minutes.</p>'
-        f'<p style="margin: 24px 0;">'
-        f'<a href="{reset_url}" '
-        'style="display: inline-block; background: #000; color: #fff; '
-        'padding: 12px 24px; font-weight: 700; text-decoration: none; '
-        'border: 2px solid #000; box-shadow: 6px 6px 0 #000;">'
-        'Reset password →</a></p>'
-        '<p style="font-size: 12px; color: #555;">'
-        "If you didn't request this, ignore this email."
-        '</p>'
-        "</div>"
-    )
-
-    msg = EmailMultiAlternatives(
+    html, text = render_email(
         subject=subject,
-        body=text,
-        from_email=settings.DEFAULT_FROM_EMAIL,
-        to=[to_email],
+        preheader="Reset your Vita portal password — link valid for 30 min.",
+        heading="Reset your password",
+        intro_html=intro_html,
+        cta=EmailCTA(label="Reset password", url=reset_url),
+        outro="If you didn't request this, ignore this email.",
     )
-    msg.attach_alternative(html, "text/html")
-    msg.send(fail_silently=False)
+    _send(to_email=to_email, subject=subject, html=html, text=text)

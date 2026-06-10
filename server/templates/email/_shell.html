@@ -1,0 +1,11 @@
+{% extends "email/base.html" %}
+
+{% block subject %}{{ subject }}{% endblock %}
+{% block preheader %}{{ preheader }}{% endblock %}
+{% block heading %}{{ heading }}{% endblock %}
+{% block intro %}{{ intro_html|safe }}{% endblock %}
+{% block code_block %}{{ code_block|safe }}{% endblock %}
+{% block cta_block %}{{ cta_block|safe }}{% endblock %}
+{% block body %}{{ body_html|safe }}{% endblock %}
+{% block outro_block %}{% if outro %}<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%"><tr><td align="left" valign="top" bgcolor="#ffffff" style="background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:normal;color:#5a574f;line-height:20px;padding-top:8px;padding-bottom:8px;">{{ outro|safe }}</td></tr></table>{% endif %}{% endblock %}
+{% block footer %}{{ footer_html|safe }}{% endblock %}

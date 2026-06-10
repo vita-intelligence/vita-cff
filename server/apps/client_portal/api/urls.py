@@ -18,6 +18,10 @@ from .invite_views import (
     InviteActivateView,
     InvitePreviewView,
 )
+from .registration_views import (
+    RegistrationConfirmView,
+    RegistrationStartView,
+)
 from .messaging_views import (
     LabelDesignChatListView,
     LabelDesignChatPostView,
@@ -115,6 +119,20 @@ urlpatterns = [
         "invites/<str:token>/activate/",
         InviteActivateView.as_view(),
         name="invite-activate",
+    ),
+
+    # Self-registration (cookie-issuing — public). Two steps:
+    # ``register/`` mints a pending row + mails the OTP,
+    # ``register/confirm/`` redeems the code and lands the cookies.
+    path(
+        "register/",
+        RegistrationStartView.as_view(),
+        name="register-start",
+    ),
+    path(
+        "register/confirm/",
+        RegistrationConfirmView.as_view(),
+        name="register-confirm",
     ),
 
     # Auth (cookie-issuing / clearing — public).

@@ -136,6 +136,31 @@ class ClientAccount(AbstractBaseUser):
         ),
     )
 
+    privacy_accepted_at = models.DateTimeField(
+        _("privacy policy accepted at"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Set when the customer ticked the privacy-policy checkbox "
+            "on the self-registration form. NULL for accounts that "
+            "predate the registration flow (kiosk-link / staff-issued "
+            "invite) since those paths never asked for consent."
+        ),
+    )
+    privacy_policy_version = models.CharField(
+        _("privacy policy version"),
+        max_length=255,
+        blank=True,
+        default="",
+        help_text=_(
+            "Identifier of the privacy policy the customer accepted at "
+            "registration time. Stored as a URL today; switching to a "
+            "semantic version later is a write-only change (older "
+            "rows keep whatever URL they accepted). Empty string for "
+            "accounts created via kiosk / invite."
+        ),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -427,6 +452,156 @@ class CustomerPortalInvite(models.Model):
         )
 
 
+class ClientAccountRegistration(models.Model):
+    """A pending customer-driven self-registration.
+
+    Sibling to :class:`CustomerPortalInvite` — same hashed-code + TTL
+    lifecycle — but the entry point is reversed: the customer fills
+    the form on ``/portal/register`` *without* a prior :class:`Customer`
+    row or a staff-issued token. The row stages the (email, name,
+    company, privacy-acceptance) tuple the customer typed so the
+    confirm step can promote it into a real :class:`Customer` +
+    :class:`ClientAccount` after the 6-digit code proves the inbox.
+
+    Why a separate model from :class:`CustomerPortalInvite`:
+
+    * Invites are bound to an existing customer record at creation
+      time (``customer`` FK is required); registrations have no
+      Customer yet, so the FK doesn't exist.
+    * The staged contact fields (``name``, ``company``) live on this
+      row, not on a Customer; they only become a Customer at confirm.
+    * Different audit story — the staff team needs to see "self-
+      registered" as a distinct origin from "staff invited".
+
+    The password is **never** stored here. The portal form collects
+    the password in React state and submits it alongside the code on
+    the confirm step; losing the tab means restarting registration,
+    same UX trade-off the invite + kiosk forms make.
+    """
+
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="client_registrations",
+        help_text=_(
+            "The org the new customer + portal account will land in. "
+            "Resolved at registration time to the single active "
+            "Organization (vita-cff is single-org in production); "
+            "pinned on the row so a later org flip can't silently "
+            "redirect an in-flight registration."
+        ),
+    )
+    token = models.UUIDField(
+        default=uuid.uuid4,
+        unique=True,
+        editable=False,
+        help_text=_(
+            "Opaque handle the FE keeps between step 1 (form submit) "
+            "and step 2 (code confirm). Lives only in the React form "
+            "state — never carried in a URL — so a leaked client "
+            "log can't be replayed without the code that's only in "
+            "the customer's inbox."
+        ),
+    )
+    email = models.EmailField(
+        help_text=_(
+            "Address the customer typed into the register form. "
+            "Lower-cased + trimmed so the confirm step can match "
+            "against ``normalize_email`` output without a second "
+            "normalisation pass."
+        ),
+    )
+    name = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=_(
+            "Primary contact name the customer typed. Stored verbatim "
+            "(no case normalisation) and copied onto the new "
+            ":class:`apps.customers.models.Customer` row at confirm."
+        ),
+    )
+    company = models.CharField(
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=_(
+            "Company name the customer typed. Same handling as "
+            "``name`` above."
+        ),
+    )
+    code_hash = models.CharField(
+        max_length=64,
+        help_text=_(
+            "SHA-256 of the plaintext 6-digit code mailed to the "
+            "customer's address. Stored hashed so a DB dump can't "
+            "be turned into a working confirmation."
+        ),
+    )
+    privacy_policy_version = models.CharField(
+        max_length=255,
+        help_text=_(
+            "Identifier of the privacy policy the form linked to at "
+            "the moment the customer ticked the box. Copied to "
+            ":attr:`ClientAccount.privacy_policy_version` on confirm "
+            "so the consent record survives a later policy URL change."
+        ),
+    )
+    request_ip = models.CharField(
+        max_length=45,
+        blank=True,
+        default="",
+        help_text=_(
+            "IP of the step-1 submit. Audit breadcrumb only — never "
+            "gated on. Same Azure XFF parsing as the rest of the "
+            "portal (see ``_extract_client_ip`` in services.py)."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    invalidated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Set when a fresher registration superseded this one. "
+            "A repeat step-1 submit by the same email re-issues a "
+            "code and stamps the prior row; only the newest code in "
+            "the customer's inbox is consumable. Distinct from "
+            "``used_at`` so the audit log can tell an abandoned "
+            "attempt from a consumed one."
+        ),
+    )
+
+    class Meta:
+        verbose_name = _("client account registration")
+        verbose_name_plural = _("client account registrations")
+        indexes = [
+            models.Index(fields=("email", "-created_at")),
+            models.Index(fields=("expires_at",)),
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"ClientAccountRegistration(email={self.email}, "
+            f"created={self.created_at:%Y-%m-%dT%H:%M:%SZ})"
+        )
+
+    @property
+    def is_consumable(self) -> bool:
+        now = timezone.now()
+        return (
+            self.used_at is None
+            and self.invalidated_at is None
+            and self.expires_at > now
+        )
+
+
 class PortalEvent(models.Model):
     """A single customer action recorded on the client portal.
 
@@ -467,6 +642,10 @@ class PortalEvent(models.Model):
             _("Verification code requested"),
         )
         ACTIVATED = "activated", _("Account activated")
+        SELF_REGISTERED = (
+            "self_registered",
+            _("Self-registered via portal"),
+        )
         # Authenticated session events.
         SIGNED_IN = "signed_in", _("Signed in")
         SIGNED_OUT = "signed_out", _("Signed out")

@@ -437,7 +437,7 @@ CELERY_BEAT_SCHEDULE: dict[str, dict[str, object]] = {
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

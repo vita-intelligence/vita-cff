@@ -65,7 +65,13 @@ export function PortalLoginForm() {
           {submitting ? "Signing in…" : "Sign in"}
         </PortalButton>
       </form>
-      <div className="mt-6 border-t-2 border-black pt-4">
+      <div className="mt-6 flex flex-col gap-2 border-t-2 border-black pt-4">
+        <Link
+          href="/portal/register"
+          className="text-xs font-bold uppercase tracking-widest underline"
+        >
+          Create an account →
+        </Link>
         <Link
           href="/portal/forgot-password"
           className="text-xs font-bold uppercase tracking-widest underline"

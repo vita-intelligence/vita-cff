@@ -1,10 +1,26 @@
-{% autoescape on %}<!DOCTYPE html>
-<html>
-  <body style="font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; color: #111; line-height: 1.5;">
-    <p>Hi {{ recipient_name }},</p>
-    <p><strong>{{ author_label }}</strong> replied to your thread on <strong>{{ target_label }}</strong>:</p>
-    <blockquote style="border-left: 3px solid #ffc000; margin: 0 0 16px; padding: 4px 12px; color: #333; white-space: pre-wrap;">{{ body_excerpt }}</blockquote>
-    <p><a href="{{ target_url }}" style="color: #b06800; font-weight: 600;">Open the thread →</a></p>
-    <p style="color: #555; font-size: 12px; margin-top: 24px;">— {{ organization.name }}</p>
-  </body>
-</html>{% endautoescape %}
+{% extends "email/base.html" %}
+{% autoescape on %}
+
+{% block subject %}{{ author_label }} replied on {{ target_label }}{% endblock %}
+{% block preheader %}{{ author_label }} replied to your thread on {{ target_label }}.{% endblock %}
+{% block brandmark %}{{ organization.name }}{% endblock %}
+{% block heading %}New reply on {{ target_label }}{% endblock %}
+
+{% block intro %}
+<p style="margin-top:0;margin-bottom:12px;">Hi {{ recipient_name }},</p>
+<p style="margin-top:0;margin-bottom:0;"><b>{{ author_label }}</b> replied to your thread on <b>{{ target_label }}</b>.</p>
+{% endblock %}
+
+{% block body %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:8px;margin-bottom:8px;">
+<tr>
+<td align="left" valign="top" bgcolor="#f8f6f1" style="background-color:#f8f6f1;border-left-width:3px;border-left-style:solid;border-left-color:#1a1a1a;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:normal;color:#1a1a1a;line-height:22px;padding-top:12px;padding-bottom:12px;padding-left:16px;padding-right:16px;white-space:pre-wrap;">{{ body_excerpt }}</td>
+</tr>
+</table>
+{% endblock %}
+
+{% block cta_block %}{% include "email/_cta_button.html" with cta_url=target_url cta_label="Open the thread" %}{% endblock %}
+
+{% block footer %}&mdash; {{ organization.name }}{% endblock %}
+
+{% endautoescape %}

@@ -90,6 +90,70 @@ export async function activateInvite(
 }
 
 
+export interface StartRegistrationPayload {
+  readonly email: string;
+  readonly name: string;
+  readonly company: string;
+  readonly password: string;
+  readonly privacy_accepted: boolean;
+}
+
+
+export interface StartRegistrationResult {
+  /** Opaque handle the FE keeps between step 1 (form submit) and
+   *  step 2 (code confirm). Carry it only in component state — it
+   *  is the registration's only resume-handle and should never be
+   *  persisted to localStorage or appended to a URL. */
+  readonly token: string;
+  /** ``j****@example.com`` shape — safe to render on the code-entry
+   *  step. Always emitted (even when the backend suppressed the
+   *  email because the address already has an activated account)
+   *  so the FE doesn't leak which path the request took. */
+  readonly email_masked: string;
+}
+
+
+/**
+ * Step 1 of customer-driven self-registration. POSTs the form, and
+ * either returns a token the customer can redeem with the 6-digit
+ * code we just emailed them, or — when the email is already
+ * registered — returns a decoy token so the response shape never
+ * leaks "this email is on file". The confirm step will fail with
+ * ``invalid_registration_token`` for the decoy case, which the FE
+ * surfaces as "we sent a code if your email is recognised, check
+ * your inbox".
+ */
+export async function startRegistration(
+  payload: StartRegistrationPayload,
+): Promise<StartRegistrationResult> {
+  const { data } = await apiClient.post<StartRegistrationResult>(
+    "/api/portal/register/",
+    payload,
+  );
+  return data;
+}
+
+
+/**
+ * Step 2 of self-registration. Submits the token from step 1
+ * alongside the 6-digit code from the customer's inbox and the
+ * password the form collected. Success sets the portal cookies and
+ * returns the same ``PortalMeDto`` shape as :func:`login`, so the
+ * caller can route to ``/portal`` without a follow-up ``fetchMe``.
+ */
+export async function confirmRegistration(
+  token: string,
+  code: string,
+  password: string,
+): Promise<PortalMeDto> {
+  const { data } = await apiClient.post<PortalMeDto>(
+    "/api/portal/register/confirm/",
+    { token, code, password },
+  );
+  return data;
+}
+
+
 export async function login(email: string, password: string): Promise<PortalMeDto> {
   const { data } = await apiClient.post<PortalMeDto>(
     "/api/portal/auth/login/",

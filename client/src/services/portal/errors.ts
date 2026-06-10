@@ -36,6 +36,14 @@ const FRIENDLY: Record<string, string> = {
   email_already_in_use: "Another portal account already uses this email.",
   invalid_email_change_code: "That code doesn't match. Check the email we just sent and try again.",
   current_password_incorrect: "Current password is incorrect.",
+  privacy_policy_not_accepted: "Please tick the privacy-policy box before continuing.",
+  registration_email_missing: "Enter the email address you'd like to use for your portal account.",
+  invalid_registration_token: "We couldn't match that code to an open registration. Start again from the registration page.",
+  registration_expired: "This registration has expired. Start again from the registration page.",
+  registration_already_used: "This registration has already been completed. Sign in instead.",
+  invalid_registration_code: "That code doesn't match the one we just emailed. Double-check it and try again.",
+  no_active_organization: "Sign-ups are temporarily unavailable. Please try again later or contact customer service.",
+  multiple_active_organizations: "Sign-ups are temporarily unavailable. Please try again later or contact customer service.",
 };
 
 

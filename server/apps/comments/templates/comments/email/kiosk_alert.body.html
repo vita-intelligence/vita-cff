@@ -1,146 +1,47 @@
-<!doctype html>
-<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="x-apple-disable-message-reformatting" />
-  <meta name="format-detection" content="telephone=no,address=no,email=no,date=no,url=no" />
-  <title>{% if sheet_code %}{{ sheet_code }} — {% endif %}New update</title>
-  {% comment %}
-  Outlook (Windows / Word rendering engine) honours the MSO
-  conditional below to fix line-height and font-substitution
-  quirks. All other clients ignore the block entirely.
-  Mirrors the structure in
-  ``apps/proposals/templates/proposals/email/send_to_client.html``
-  so the two emails feel like the same family.
-  {% endcomment %}
-  <!--[if mso]>
-  <noscript>
-    <xml>
-      <o:OfficeDocumentSettings>
-        <o:PixelsPerInch>96</o:PixelsPerInch>
-        <o:AllowPNG/>
-      </o:OfficeDocumentSettings>
-    </xml>
-  </noscript>
-  <style>
-    table, td, div, p, a { mso-line-height-rule: exactly; }
-    body { font-family: 'Segoe UI', Arial, sans-serif !important; }
-  </style>
-  <![endif]-->
-  <style>
-    a { color: #1a1a1a; }
-    @media (prefers-color-scheme: dark) {
-      .email-card { background-color: #1f1d1a !important; color: #f6f5f3 !important; }
-      .email-card .body-copy { color: #f6f5f3 !important; }
-      .email-card .quote-card { background-color: #2a2723 !important; color: #f6f5f3 !important; border-color: #44403a !important; }
-      .email-bg { background-color: #0e0d0c !important; }
-    }
-  </style>
-</head>
-<body style="margin:0;padding:0;background-color:#f6f5f3;mso-line-height-rule:exactly;-webkit-font-smoothing:antialiased;" class="email-bg">
-  {% comment %}
-  Inbox preview snippet — Gmail / Apple Mail / Outlook all render
-  this hidden one-liner in the inbox list before the email is
-  even opened.
-  {% endcomment %}
-  <div style="display:none;max-height:0;overflow:hidden;mso-hide:all;font-size:1px;line-height:1px;color:#f6f5f3;">
-    {% if custom_note %}{{ custom_note }}{% else %}There are new updates on your specification{% if sheet_code %} {{ sheet_code }}{% endif %}.{% endif %}
-  </div>
+{% extends "email/base.html" %}
 
-  <center style="width:100%;background-color:#f6f5f3;" class="email-bg">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" bgcolor="#f6f5f3" style="background-color:#f6f5f3;padding:24px 12px;">
-      <tr>
-        <td align="center" style="padding:24px 12px;">
+{% block subject %}{% if sheet_code %}{{ sheet_code }} — {% endif %}New update{% endblock %}
+{% block preheader %}{% if custom_note %}{{ custom_note }}{% else %}There are new updates on your specification{% if sheet_code %} {{ sheet_code }}{% endif %}.{% endif %}{% endblock %}
+{% block brandmark %}{{ brand }}{% if sheet_code %} &middot; {{ sheet_code }}{% endif %}{% endblock %}
+{% block heading %}New update from the team{% endblock %}
 
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" bgcolor="#ffffff" style="max-width:600px;width:100%;background-color:#ffffff;border:1px solid #e7e5e0;" class="email-card">
-            <tr>
-              <td style="padding:32px 32px 8px 32px;">
-                <p style="margin:0;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:#8a857c;font-family:'Segoe UI',Arial,sans-serif;">
-                  {{ brand }}{% if sheet_code %} &middot; {{ sheet_code }}{% endif %}
-                </p>
-              </td>
-            </tr>
+{% block intro %}
+<p style="margin-top:0;margin-bottom:12px;">Hi{% if recipient_name %} {{ recipient_name }}{% endif %},</p>
+<p style="margin-top:0;margin-bottom:0;">The team has a new update for you on{% if sheet_code %} specification <b>{{ sheet_code }}</b>{% else %} your specification{% endif %}.</p>
+{% endblock %}
 
-            <tr>
-              <td class="body-copy" style="padding:16px 32px 0 32px;font-size:15px;line-height:1.6;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;">
-                <p style="margin:0 0 12px 0;">Hi{% if recipient_name %} {{ recipient_name }}{% endif %},</p>
-                <p style="margin:0;">The team has a new update for you on{% if sheet_code %} specification <strong>{{ sheet_code }}</strong>{% else %} your specification{% endif %}.</p>
-              </td>
-            </tr>
+{% block body %}
+{% if custom_note %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-top:8px;margin-bottom:8px;">
+<tr>
+<td align="left" valign="top" bgcolor="#f8f6f1" style="background-color:#f8f6f1;border-left-width:3px;border-left-style:solid;border-left-color:#1a1a1a;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:normal;color:#1a1a1a;line-height:22px;padding-top:12px;padding-bottom:12px;padding-left:16px;padding-right:16px;white-space:pre-wrap;">{{ custom_note }}</td>
+</tr>
+</table>
+{% endif %}
+{% endblock %}
 
-            {% if custom_note %}
-            <tr>
-              <td style="padding:20px 32px 0 32px;">
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="quote-card" style="background-color:#fff8ef;border:1px solid #f7d9a8;border-left:4px solid #ff7a18;">
-                  <tr>
-                    <td style="padding:12px 16px;font-family:'Segoe UI',Arial,sans-serif;font-size:14px;line-height:1.6;color:#1a1a1a;font-style:italic;white-space:pre-wrap;">{{ custom_note }}</td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-            {% endif %}
+{% block cta_block %}{% if kiosk_url %}{% include "email/_cta_button.html" with cta_url=kiosk_url cta_label="Open specification" %}{% endif %}{% endblock %}
 
-            {% if kiosk_url %}
-            <tr>
-              <td align="center" style="padding:28px 32px 8px 32px;">
-                {% comment %}
-                Bulletproof orange CTA — VML rounded-rect for Outlook
-                desktop, styled <a> for every other client. Lifted
-                verbatim from the proposal send-to-client template so
-                the two emails share the same visual signature.
-                {% endcomment %}
-                <!--[if mso]>
-                <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word"
-                             href="{{ kiosk_url }}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="22%" stroke="f" fillcolor="#ff7a18">
-                  <w:anchorlock/>
-                  <center style="color:#ffffff;font-family:'Segoe UI',Arial,sans-serif;font-size:15px;font-weight:600;">Open specification</center>
-                </v:roundrect>
-                <![endif]-->
-                <!--[if !mso]><!-- -->
-                <a href="{{ kiosk_url }}"
-                   style="display:inline-block;background-color:#ff7a18;color:#ffffff;text-decoration:none;font-weight:600;font-size:15px;padding:14px 28px;border-radius:10px;font-family:'Segoe UI',Arial,sans-serif;mso-padding-alt:0;">
-                  <!--[if mso]>&nbsp;&nbsp;&nbsp;&nbsp;<![endif]-->
-                  Open specification
-                  <!--[if mso]>&nbsp;&nbsp;&nbsp;&nbsp;<![endif]-->
-                </a>
-                <!--<![endif]-->
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 32px 8px 32px;font-size:12px;color:#8a857c;text-align:center;font-family:'Segoe UI',Arial,sans-serif;">
-                Or copy this link into your browser:
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:0 32px 24px 32px;font-size:12px;color:#5a574f;text-align:center;word-break:break-all;font-family:'Segoe UI',Arial,sans-serif;">
-                <a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
-              </td>
-            </tr>
-            {% endif %}
+{% block outro_block %}
+{% if kiosk_url %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>
+<td align="left" valign="top" bgcolor="#ffffff" style="background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:12px;font-weight:normal;color:#5a574f;line-height:20px;padding-top:12px;padding-bottom:8px;">
+Or copy this link into your browser:<br />
+<a href="{{ kiosk_url }}" style="color:#5a574f;text-decoration:underline;">{{ kiosk_url }}</a>
+</td>
+</tr>
+</table>
+{% endif %}
+{% if triggered_by_name %}
+<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%">
+<tr>
+<td align="left" valign="top" bgcolor="#ffffff" style="background-color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:normal;color:#5a574f;line-height:22px;padding-top:16px;padding-bottom:8px;border-top-width:1px;border-top-style:solid;border-top-color:#e4e0d6;">
+Kind regards,<br /><b style="color:#1a1a1a;">{{ triggered_by_name }}</b>{% if triggered_by_email %}<br /><a href="mailto:{{ triggered_by_email }}" style="color:#5a574f;text-decoration:underline;">{{ triggered_by_email }}</a>{% endif %}
+</td>
+</tr>
+</table>
+{% endif %}
+{% endblock %}
 
-            {% if triggered_by_name %}
-            <tr>
-              <td style="padding:8px 32px 32px 32px;font-size:14px;color:#5a574f;border-top:1px solid #f0eee9;font-family:'Segoe UI',Arial,sans-serif;">
-                <p style="margin:16px 0 0 0;">Kind regards,<br/><strong style="color:#1a1a1a;">{{ triggered_by_name }}</strong>{% if triggered_by_email %}<br/><a href="mailto:{{ triggered_by_email }}" style="color:#5a574f;text-decoration:underline;">{{ triggered_by_email }}</a>{% endif %}</p>
-              </td>
-            </tr>
-            {% endif %}
-          </table>
-
-          <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" style="max-width:600px;width:100%;">
-            <tr>
-              <td align="center" style="padding:16px 16px 0 16px;font-size:11px;color:#8a857c;line-height:1.5;font-family:'Segoe UI',Arial,sans-serif;">
-                {{ brand }} &middot; sent because you have an open specification with us.
-              </td>
-            </tr>
-          </table>
-
-        </td>
-      </tr>
-    </table>
-  </center>
-</body>
-</html>
+{% block footer %}{{ brand }} &middot; sent because you have an open specification with us.{% endblock %}

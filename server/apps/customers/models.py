@@ -149,11 +149,24 @@ class Customer(models.Model):
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="created_customers",
+        null=True,
+        blank=True,
+        help_text=_(
+            "Staff user who created this row. NULL when the customer "
+            "created themselves via the self-registration flow on the "
+            "portal — that path has no staff actor."
+        ),
     )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
         related_name="updated_customers",
+        null=True,
+        blank=True,
+        help_text=_(
+            "Staff user who last touched this row. NULL when the most "
+            "recent write came from the self-registration path."
+        ),
     )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
