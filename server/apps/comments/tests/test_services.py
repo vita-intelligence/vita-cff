@@ -236,7 +236,12 @@ class TestMentionNotifications:
 
 
 class TestReplyNotifications:
-    def test_reply_emails_parent_author(
+    """The "reply" kind was retired — staff explicitly asked for
+    only mention + customer-post emails. These tests pin that
+    behavior so a future commit doesn't quietly reintroduce
+    inbox noise."""
+
+    def test_reply_does_not_email_parent_author(
         self, project, django_capture_on_commit_callbacks
     ) -> None:
         with django_capture_on_commit_callbacks(execute=True):
@@ -255,10 +260,9 @@ class TestReplyNotifications:
                 body="Here is the answer",
                 parent=root,
             )
-        notif = CommentNotification.objects.get()
-        assert notif.kind == CommentNotificationKind.REPLY
-        assert notif.recipient_id == project["member"].id
-        assert len(project["mail"]) == 1
+        # No new CommentNotification row, no email.
+        assert CommentNotification.objects.count() == 0
+        assert len(project["mail"]) == 0
 
     def test_self_reply_does_not_email(
         self, project, django_capture_on_commit_callbacks

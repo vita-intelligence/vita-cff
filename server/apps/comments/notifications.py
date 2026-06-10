@@ -1,24 +1,28 @@
 """Outbound email notifications for comment events.
 
-Two notification kinds land today:
+Staff receive comment-email notifications in exactly two cases:
 
 * **mention** — the recipient was @-named in the comment body.
-* **reply** — the recipient is the parent-thread author and a
-  different user posted a child comment.
+* **customer_post** — the comment was authored by a customer (portal
+  account or guest) on a SHARED thread and the recipient is either
+  the role-owner of the target entity (assigned designer / sales
+  person / lead scientist) or has previously posted on the same
+  thread.
+
+The legacy **reply** kind has been retired — staff explicitly asked
+for "mention + customer-text only". Existing ``CommentNotification``
+rows with ``kind=reply`` stay in the table for historical audit; the
+dispatcher just no longer creates new ones. ``CommentNotificationKind.REPLY``
+is kept on the enum so older rows still deserialise.
 
 Delivery is synchronous via :func:`django.core.mail.send_mail`
 wrapped in :meth:`django.db.transaction.on_commit` so we never send
 an email for a write the surrounding transaction later rolled back.
-When the Channels + Redis layer lands in a later commit the
-dispatcher swaps to a Celery task with the same contract; nothing
-calling it should need to change.
 
 Dedupe is handled by a unique constraint on
 :class:`~apps.comments.models.CommentNotification` — ``(comment,
 recipient, kind)`` — so a retry of the dispatcher sees the row
-already exists and skips the send. A user mentioned *and* replied
-to in the same comment receives **one** mention email; the reply
-row is not created.
+already exists and skips the send.
 """
 
 from __future__ import annotations
@@ -70,8 +74,11 @@ def enqueue_notifications_for_comment(comment_id) -> None:
         )
         if comment is None or comment.is_deleted:
             return
+        # Staff-side fan-out is intentionally narrow: only @mentions
+        # and customer posts. The reply kind was dropped — staff
+        # complained that "anyone replied to a thread I touched" was
+        # the dominant inbox noise. See module docstring for history.
         _dispatch_mentions(comment)
-        _dispatch_reply(comment)
         _dispatch_customer(comment)
         _dispatch_customer_post_to_staff(comment)
     except Exception:  # noqa: BLE001 — never break the write path
@@ -270,30 +277,6 @@ def _resolve_staff_who_posted_on_thread(comment: Comment):
         return []
     return User.objects.filter(id__in=all_ids).only(
         "id", "email", "first_name", "last_name", "is_active"
-    )
-
-
-def _dispatch_reply(comment: Comment) -> None:
-    parent = comment.parent
-    if parent is None or parent.author_id is None:
-        return
-    author = parent.author
-    if not author.is_active or not author.email:
-        return
-    # Don't notify someone for replying to themselves.
-    if comment.author_id == parent.author_id:
-        return
-    # Suppress the reply email when the same user is also mentioned —
-    # mention copy is more specific.
-    if parent.author_id and any(
-        mention.mentioned_user_id == parent.author_id
-        for mention in comment.mentions.all()
-    ):
-        return
-    _send_once(
-        comment=comment,
-        recipient=author,
-        kind=CommentNotificationKind.REPLY,
     )
 
 
