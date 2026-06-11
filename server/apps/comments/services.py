@@ -20,7 +20,7 @@ from typing import Any, Sequence
 
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction
-from django.db.models import Max, Q, QuerySet
+from django.db.models import Max, OuterRef, Q, QuerySet, Subquery
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
@@ -1105,15 +1105,123 @@ def list_inbox_threads(*, user) -> list[InboxThread]:
 def compute_total_unread(*, user) -> int:
     """Sum of unread comments across every thread the user can see.
 
-    Powers the bell badge — the FE polls this on bell mount + on
+    Powers the bell badge. The FE pings this on bell mount + on
     every inbox WS event as a cheap reconciliation against the
-    optimistic local counter. We could maintain a denormalised
-    counter row, but the query as written is one COUNT per active
-    thread and the FE only fires this on user-visible state changes,
-    so the simpler shape wins.
+    optimistic local counter, so the path needs to stay tight even
+    when the user has many active threads.
+
+    Implementation: one pointer prefetch + one batched aggregate per
+    entity kind. We never build the dropdown preview rows — the
+    badge only needs an integer. Compared with the legacy "reuse
+    ``list_inbox_threads`` and sum" approach, this is ~5 queries
+    total regardless of thread count.
     """
 
-    return sum(thread.unread_count for thread in list_inbox_threads(user=user))
+    organizations = _accessible_organizations_for_user(user)
+    cff_organizations = _cff_accessible_organizations_for_user(user)
+    if not organizations and not cff_organizations:
+        return 0
+
+    pointer_rows = ThreadReadState.objects.filter(user=user).values_list(
+        "entity_kind", "entity_id", "visibility", "last_read_at"
+    )
+    pointers: dict[tuple[str, str, str], _dt.datetime] = {
+        (kind, str(eid), vis or ""): ts
+        for kind, eid, vis, ts in pointer_rows
+    }
+
+    notify_filter = _notify_unread_filter(user)
+    org_ids = [o.id for o in organizations]
+    cff_org_ids = [o.id for o in cff_organizations]
+
+    total = 0
+
+    def _add_unread(
+        rows,
+        *,
+        entity_kind: str,
+        split_by_visibility: bool,
+        fallback_lane: str = "internal",
+    ) -> int:
+        running = 0
+        if split_by_visibility:
+            for entity_id, visibility, created_at in rows:
+                lane = _LANE_LABEL_BY_VISIBILITY.get(visibility)
+                if lane is None:
+                    continue
+                pointer = _lookup_pointer(
+                    pointers,
+                    entity_kind=entity_kind,
+                    entity_id=str(entity_id),
+                    visibility=lane,
+                )
+                if created_at > pointer:
+                    running += 1
+        else:
+            for entity_id, created_at in rows:
+                pointer = _lookup_pointer(
+                    pointers,
+                    entity_kind=entity_kind,
+                    entity_id=str(entity_id),
+                    visibility=fallback_lane,
+                )
+                if created_at > pointer:
+                    running += 1
+        return running
+
+    if org_ids:
+        # Formulations — internal-only, no lane split.
+        total += _add_unread(
+            Comment.objects.filter(
+                formulation__organization_id__in=org_ids,
+                is_deleted=False,
+            )
+            .filter(notify_filter)
+            .values_list("formulation_id", "created_at"),
+            entity_kind="formulation",
+            split_by_visibility=False,
+        )
+        # Proposals — split by lane.
+        total += _add_unread(
+            Comment.objects.filter(
+                proposal__organization_id__in=org_ids,
+                is_deleted=False,
+            )
+            .filter(notify_filter)
+            .values_list("proposal_id", "visibility", "created_at"),
+            entity_kind="proposal",
+            split_by_visibility=True,
+        )
+        # Specifications — split by lane.
+        total += _add_unread(
+            Comment.objects.filter(
+                specification_sheet__organization_id__in=org_ids,
+                is_deleted=False,
+            )
+            .filter(notify_filter)
+            .values_list(
+                "specification_sheet_id", "visibility", "created_at"
+            ),
+            entity_kind="specification",
+            split_by_visibility=True,
+        )
+
+    if cff_org_ids:
+        # CFF submissions — independent capability axis, lane-split.
+        total += _add_unread(
+            Comment.objects.filter(
+                cff_submission__organization_id__in=cff_org_ids,
+                is_deleted=False,
+            )
+            .filter(notify_filter)
+            .values_list(
+                "cff_submission_id", "visibility", "created_at"
+            ),
+            entity_kind="cff_submission",
+            split_by_visibility=True,
+        )
+
+    return total
 
 
 # ---- internals -------------------------------------------------------------
@@ -1166,6 +1274,174 @@ def _notify_unread_filter(user) -> Q:
     return Q(client_account__isnull=False) | Q(id__in=mentioned_ids)
 
 
+# Maps the on-disk ``Comment.visibility`` value back to the public
+# lane label used in ``ThreadReadState`` / the inbox API. Kept module-
+# level so the batch helpers and ``compute_total_unread`` share one
+# definition. ``None`` (no lane filter) maps to the formulations'
+# virtual ``"internal"`` lane.
+_LANE_LABEL_BY_VISIBILITY: dict[str, str] = {
+    Comment.Visibility.INTERNAL: "internal",
+    Comment.Visibility.SHARED: "shared",
+}
+
+
+def _latest_comments_per_entity_lane(
+    *,
+    entity_ids: Sequence[Any],
+    fk_attr: str,
+    lanes: Sequence[tuple[str, str | None]],
+) -> dict[tuple[Any, str], Comment]:
+    """Bulk-fetch the latest non-deleted comment per ``(entity, lane)``.
+
+    Two queries regardless of how many entities or lanes:
+
+    1. One ``Subquery``-annotated SELECT on the entity model — for
+       each entity row, the planner runs a tiny correlated lookup
+       that returns the id of the latest comment for each lane.
+    2. One ``IN`` fetch on ``Comment`` for the collected ids, with
+       ``select_related`` on the author chain so the preview render
+       does not paginate into N+1 author lookups.
+
+    The result is a dict keyed by ``(entity_id, lane_label)`` so the
+    callers can index straight into it from their per-entity loop.
+
+    ``fk_attr`` is the ``Comment``-side column name (``"formulation"``,
+    ``"proposal"``, etc.); ``lanes`` is a sequence of
+    ``(lane_label, visibility_value)`` pairs. Pass ``visibility_value
+    = None`` for the formulations' un-split case so the subquery does
+    not filter on visibility at all.
+    """
+
+    if not entity_ids:
+        return {}
+
+    entity_model = Comment._meta.get_field(fk_attr).related_model
+
+    # One Subquery annotation per lane — Django folds all of them
+    # into the same SELECT against the entity model.
+    annotations: dict[str, Subquery] = {}
+    for lane_label, visibility_value in lanes:
+        latest_qs = Comment.objects.filter(
+            **{fk_attr: OuterRef("pk")},
+            is_deleted=False,
+        )
+        if visibility_value is not None:
+            latest_qs = latest_qs.filter(visibility=visibility_value)
+        annotations[f"_latest_{lane_label}_id"] = Subquery(
+            latest_qs.order_by("-created_at").values("id")[:1]
+        )
+
+    rows = (
+        entity_model.objects.filter(pk__in=entity_ids)
+        .annotate(**annotations)
+        .values("pk", *annotations.keys())
+    )
+
+    by_id: dict[tuple[Any, str], Any] = {}
+    needed_comment_ids: list[Any] = []
+    for row in rows:
+        pk = row["pk"]
+        for lane_label, _ in lanes:
+            cid = row.get(f"_latest_{lane_label}_id")
+            if cid is None:
+                continue
+            by_id[(pk, lane_label)] = cid
+            needed_comment_ids.append(cid)
+
+    if not needed_comment_ids:
+        return {}
+
+    comment_by_id = {
+        c.id: c
+        for c in Comment.objects.filter(id__in=needed_comment_ids).select_related(
+            "author", "client_account__customer"
+        )
+    }
+    return {
+        key: comment_by_id[cid]
+        for key, cid in by_id.items()
+        if cid in comment_by_id
+    }
+
+
+def _unread_counts_per_entity_lane(
+    *,
+    entity_ids: Sequence[Any],
+    fk_attr: str,
+    lanes: Sequence[tuple[str, str | None]],
+    entity_kind: str,
+    pointers: dict[tuple[str, str, str], _dt.datetime],
+    user,
+) -> dict[tuple[Any, str], int]:
+    """Bulk-count notify-eligible comments per ``(entity, lane)``.
+
+    One query: pulls the ``(entity_fk, visibility, created_at)``
+    triples for every notify-eligible comment under the requested
+    entities, then buckets them in Python against the user's read
+    pointers. Compared with the legacy "one COUNT per row" pattern
+    this is one round-trip for the whole helper.
+
+    The notify filter (``_notify_unread_filter``) already excludes
+    the dominant volume of team-internal replies, so the row volume
+    pulled into Python is bounded by "customer messages + @-mentions
+    of this user" — typically tens, never thousands.
+    """
+
+    if not entity_ids:
+        return {}
+
+    fk_id_field = f"{fk_attr}_id"
+    notify_filter = _notify_unread_filter(user)
+
+    base_qs = (
+        Comment.objects.filter(
+            is_deleted=False,
+            **{f"{fk_attr}_id__in": entity_ids},
+        ).filter(notify_filter)
+    )
+
+    # Only include visibility in the projection when we are actually
+    # splitting by it — formulations call this with a single virtual
+    # lane and we want every comment to count regardless of its
+    # stored visibility value.
+    visibility_split = any(v is not None for _, v in lanes)
+    visibility_values = {v for _, v in lanes if v is not None}
+    if visibility_split:
+        base_qs = base_qs.filter(visibility__in=visibility_values)
+        rows = base_qs.values_list(fk_id_field, "visibility", "created_at")
+    else:
+        rows = base_qs.values_list(fk_id_field, "created_at")
+
+    out: dict[tuple[Any, str], int] = {}
+    if visibility_split:
+        for entity_id, visibility, created_at in rows:
+            lane_label = _LANE_LABEL_BY_VISIBILITY.get(visibility)
+            if lane_label is None:
+                continue
+            pointer = _lookup_pointer(
+                pointers,
+                entity_kind=entity_kind,
+                entity_id=str(entity_id),
+                visibility=lane_label,
+            )
+            if created_at > pointer:
+                key = (entity_id, lane_label)
+                out[key] = out.get(key, 0) + 1
+    else:
+        (lane_label, _) = lanes[0]
+        for entity_id, created_at in rows:
+            pointer = _lookup_pointer(
+                pointers,
+                entity_kind=entity_kind,
+                entity_id=str(entity_id),
+                visibility=lane_label,
+            )
+            if created_at > pointer:
+                key = (entity_id, lane_label)
+                out[key] = out.get(key, 0) + 1
+    return out
+
+
 def _inbox_threads_for_formulations(
     *,
     organization: Organization,
@@ -1173,9 +1449,18 @@ def _inbox_threads_for_formulations(
     user,
 ) -> list[InboxThread]:
     """Build the inbox rows for every formulation in ``organization``
-    that has at least one non-deleted comment."""
+    that has at least one non-deleted comment.
 
-    formulations = (
+    Batched shape: one query for the entity list, one to find the
+    latest comment id per formulation (Subquery annotate), one bulk
+    fetch for those comments (with ``select_related`` for the author
+    chain), and one aggregate to count notify-eligible comments per
+    formulation. Total: 4 round-trips regardless of how many active
+    threads the user can see — vs the legacy 1 + 2N pattern that
+    flooded Postgres on big tenants.
+    """
+
+    formulations = list(
         Formulation.objects.filter(
             organization=organization,
             comments__isnull=False,
@@ -1185,35 +1470,36 @@ def _inbox_threads_for_formulations(
         .distinct()
         .order_by("-last_at")
     )
+    if not formulations:
+        return []
+
+    formulation_ids = [f.id for f in formulations]
+    # Formulations are not split by lane — we ask the batch helpers
+    # for a single virtual lane labelled "internal" with no
+    # ``visibility`` filter so every comment counts.
+    lanes = (("internal", None),)
+    latest_by_lane = _latest_comments_per_entity_lane(
+        entity_ids=formulation_ids,
+        fk_attr="formulation",
+        lanes=lanes,
+    )
+    unread_by_lane = _unread_counts_per_entity_lane(
+        entity_ids=formulation_ids,
+        fk_attr="formulation",
+        lanes=lanes,
+        entity_kind="formulation",
+        pointers=pointers,
+        user=user,
+    )
+
     rows: list[InboxThread] = []
-    notify_filter = _notify_unread_filter(user)
     for formulation in formulations:
-        latest = (
-            Comment.objects.filter(
-                formulation=formulation, is_deleted=False
-            )
-            .select_related("author", "client_account__customer")
-            .order_by("-created_at")
-            .first()
-        )
+        latest = latest_by_lane.get((formulation.id, "internal"))
         if latest is None:
             continue
         # Formulations are an internal-only surface (no customer
         # portal twin) so this lane is always ``"internal"`` and
-        # never splits into two rows. The lookup falls back to the
-        # legacy ``""`` pointer for users whose pre-split read
-        # state hasn't been written to the lane-specific row yet.
-        last_read = _lookup_pointer(
-            pointers,
-            entity_kind="formulation",
-            entity_id=str(formulation.id),
-            visibility="internal",
-        )
-        unread = Comment.objects.filter(
-            formulation=formulation,
-            is_deleted=False,
-            created_at__gt=last_read,
-        ).filter(notify_filter).count()
+        # never splits into two rows.
         rows.append(
             InboxThread(
                 organization_id=str(organization.id),
@@ -1222,7 +1508,9 @@ def _inbox_threads_for_formulations(
                 entity_id=str(formulation.id),
                 entity_title=(formulation.name or "").strip(),
                 entity_code=(formulation.code or "").strip(),
-                unread_count=unread,
+                unread_count=unread_by_lane.get(
+                    (formulation.id, "internal"), 0
+                ),
                 last_message_at=latest.created_at,
                 last_message_preview=_preview_for_comment(latest),
                 last_message_author=_author_snapshot(latest),
@@ -1260,7 +1548,7 @@ def _inbox_threads_for_proposals(
     """
 
     Proposal = _proposal_model()
-    proposals = (
+    proposals = list(
         Proposal.objects.filter(
             organization=organization,
             comments__isnull=False,
@@ -1270,8 +1558,25 @@ def _inbox_threads_for_proposals(
         .distinct()
         .order_by("-last_at")
     )
+    if not proposals:
+        return []
+
+    proposal_ids = [p.id for p in proposals]
+    latest_by_lane = _latest_comments_per_entity_lane(
+        entity_ids=proposal_ids,
+        fk_attr="proposal",
+        lanes=_SPLIT_LANES,
+    )
+    unread_by_lane = _unread_counts_per_entity_lane(
+        entity_ids=proposal_ids,
+        fk_attr="proposal",
+        lanes=_SPLIT_LANES,
+        entity_kind="proposal",
+        pointers=pointers,
+        user=user,
+    )
+
     rows: list[InboxThread] = []
-    notify_filter = _notify_unread_filter(user)
     for proposal in proposals:
         # Proposals carry a ``code`` (e.g. ``PROP-0123``) — best
         # title for the dropdown. Fall back to the customer
@@ -1282,35 +1587,10 @@ def _inbox_threads_for_proposals(
             or (getattr(proposal, "customer_name", "") or "").strip()
         )
         code = (getattr(proposal, "code", "") or "").strip()
-        for lane_label, lane_value in _SPLIT_LANES:
-            latest = (
-                Comment.objects.filter(
-                    proposal=proposal,
-                    is_deleted=False,
-                    visibility=lane_value,
-                )
-                .select_related("author", "client_account__customer")
-                .order_by("-created_at")
-                .first()
-            )
+        for lane_label, _ in _SPLIT_LANES:
+            latest = latest_by_lane.get((proposal.id, lane_label))
             if latest is None:
                 continue  # this lane is empty for this proposal
-            last_read = _lookup_pointer(
-                pointers,
-                entity_kind="proposal",
-                entity_id=str(proposal.id),
-                visibility=lane_label,
-            )
-            unread = (
-                Comment.objects.filter(
-                    proposal=proposal,
-                    is_deleted=False,
-                    visibility=lane_value,
-                    created_at__gt=last_read,
-                )
-                .filter(notify_filter)
-                .count()
-            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),
@@ -1319,7 +1599,9 @@ def _inbox_threads_for_proposals(
                     entity_id=str(proposal.id),
                     entity_title=title,
                     entity_code=code,
-                    unread_count=unread,
+                    unread_count=unread_by_lane.get(
+                        (proposal.id, lane_label), 0
+                    ),
                     last_message_at=latest.created_at,
                     last_message_preview=_preview_for_comment(latest),
                     last_message_author=_author_snapshot(latest),
@@ -1385,7 +1667,7 @@ def _inbox_threads_for_cff_submissions(
     """
 
     CFFSubmission = _cff_submission_model()
-    cffs = (
+    cffs = list(
         CFFSubmission.objects.filter(
             organization=organization,
             comments__isnull=False,
@@ -1395,42 +1677,34 @@ def _inbox_threads_for_cff_submissions(
         .distinct()
         .order_by("-last_at")
     )
+    if not cffs:
+        return []
+
+    cff_ids = [c.id for c in cffs]
+    latest_by_lane = _latest_comments_per_entity_lane(
+        entity_ids=cff_ids,
+        fk_attr="cff_submission",
+        lanes=_SPLIT_LANES,
+    )
+    unread_by_lane = _unread_counts_per_entity_lane(
+        entity_ids=cff_ids,
+        fk_attr="cff_submission",
+        lanes=_SPLIT_LANES,
+        entity_kind="cff_submission",
+        pointers=pointers,
+        user=user,
+    )
+
     rows: list[InboxThread] = []
-    notify_filter = _notify_unread_filter(user)
     for cff in cffs:
         # CFF row has no team-side title — the FE rehydrates the
         # title from its own CFF list cache when the dropdown opens.
         # (Same fallback pattern the messenger toast uses.)
         title = f"CFF · {str(cff.id)[:8]}"
-        for lane_label, lane_value in _SPLIT_LANES:
-            latest = (
-                Comment.objects.filter(
-                    cff_submission=cff,
-                    is_deleted=False,
-                    visibility=lane_value,
-                )
-                .select_related("author", "client_account__customer")
-                .order_by("-created_at")
-                .first()
-            )
+        for lane_label, _ in _SPLIT_LANES:
+            latest = latest_by_lane.get((cff.id, lane_label))
             if latest is None:
                 continue
-            last_read = _lookup_pointer(
-                pointers,
-                entity_kind="cff_submission",
-                entity_id=str(cff.id),
-                visibility=lane_label,
-            )
-            unread = (
-                Comment.objects.filter(
-                    cff_submission=cff,
-                    is_deleted=False,
-                    visibility=lane_value,
-                    created_at__gt=last_read,
-                )
-                .filter(notify_filter)
-                .count()
-            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),
@@ -1439,7 +1713,9 @@ def _inbox_threads_for_cff_submissions(
                     entity_id=str(cff.id),
                     entity_title=title,
                     entity_code="",
-                    unread_count=unread,
+                    unread_count=unread_by_lane.get(
+                        (cff.id, lane_label), 0
+                    ),
                     last_message_at=latest.created_at,
                     last_message_preview=_preview_for_comment(latest),
                     last_message_author=_author_snapshot(latest),
@@ -1465,7 +1741,7 @@ def _inbox_threads_for_specifications(
     mix into a single inbox row; this keeps them apart cleanly.
     """
 
-    sheets = (
+    sheets = list(
         SpecificationSheet.objects.filter(
             organization=organization,
             comments__isnull=False,
@@ -1475,42 +1751,34 @@ def _inbox_threads_for_specifications(
         .distinct()
         .order_by("-last_at")
     )
+    if not sheets:
+        return []
+
+    sheet_ids = [s.id for s in sheets]
+    latest_by_lane = _latest_comments_per_entity_lane(
+        entity_ids=sheet_ids,
+        fk_attr="specification_sheet",
+        lanes=_SPLIT_LANES,
+    )
+    unread_by_lane = _unread_counts_per_entity_lane(
+        entity_ids=sheet_ids,
+        fk_attr="specification_sheet",
+        lanes=_SPLIT_LANES,
+        entity_kind="specification",
+        pointers=pointers,
+        user=user,
+    )
+
     rows: list[InboxThread] = []
-    notify_filter = _notify_unread_filter(user)
     for sheet in sheets:
         # Specifications have no name field — fall back to client
         # company / code so the dropdown always shows *something*.
         title = (sheet.code or sheet.client_company or "").strip()
         code = (sheet.code or "").strip()
-        for lane_label, lane_value in _SPLIT_LANES:
-            latest = (
-                Comment.objects.filter(
-                    specification_sheet=sheet,
-                    is_deleted=False,
-                    visibility=lane_value,
-                )
-                .select_related("author", "client_account__customer")
-                .order_by("-created_at")
-                .first()
-            )
+        for lane_label, _ in _SPLIT_LANES:
+            latest = latest_by_lane.get((sheet.id, lane_label))
             if latest is None:
                 continue
-            last_read = _lookup_pointer(
-                pointers,
-                entity_kind="specification",
-                entity_id=str(sheet.id),
-                visibility=lane_label,
-            )
-            unread = (
-                Comment.objects.filter(
-                    specification_sheet=sheet,
-                    is_deleted=False,
-                    visibility=lane_value,
-                    created_at__gt=last_read,
-                )
-                .filter(notify_filter)
-                .count()
-            )
             rows.append(
                 InboxThread(
                     organization_id=str(organization.id),
@@ -1519,7 +1787,9 @@ def _inbox_threads_for_specifications(
                     entity_id=str(sheet.id),
                     entity_title=title,
                     entity_code=code,
-                    unread_count=unread,
+                    unread_count=unread_by_lane.get(
+                        (sheet.id, lane_label), 0
+                    ),
                     last_message_at=latest.created_at,
                     last_message_preview=_preview_for_comment(latest),
                     last_message_author=_author_snapshot(latest),

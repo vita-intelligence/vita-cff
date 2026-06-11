@@ -78,22 +78,119 @@ interface MarkReadVars {
   readonly visibility?: "internal" | "shared";
 }
 
+/**
+ * Snapshot of the inbox caches taken at the start of a mark-read
+ * mutation so ``onError`` can roll back to a coherent state if the
+ * server roundtrip fails.
+ */
+interface MarkReadOptimisticContext {
+  readonly previousList: InboxListResponseDto | undefined;
+  readonly previousUnread: InboxUnreadCountDto | undefined;
+}
+
+function threadMatchesMarkRead(
+  thread: { entity_kind: string; entity_id: string; visibility: string },
+  vars: MarkReadVars,
+): boolean {
+  if (thread.entity_kind !== vars.entityKind) return false;
+  if (thread.entity_id !== vars.entityId) return false;
+  // The mutation may target a specific lane — match it. When the
+  // caller omits ``visibility`` (legacy code path) we clear every
+  // lane for the entity, matching the server's "blank pointer
+  // covers all lanes" fallback.
+  if (vars.visibility && thread.visibility !== vars.visibility) return false;
+  return true;
+}
+
 export function useMarkThreadRead(): UseMutationResult<
   ThreadMarkReadResponseDto,
   ApiError,
-  MarkReadVars
+  MarkReadVars,
+  MarkReadOptimisticContext
 > {
   const queryClient = useQueryClient();
-  return useMutation<ThreadMarkReadResponseDto, ApiError, MarkReadVars>({
+  return useMutation<
+    ThreadMarkReadResponseDto,
+    ApiError,
+    MarkReadVars,
+    MarkReadOptimisticContext
+  >({
     mutationFn: markThreadRead,
-    onSuccess: () => {
-      // Both queries depend on the read pointer; refetch them both.
-      // The bell badge update is the user-visible signal so we keep
-      // the round-trip in the critical path.
-      queryClient.invalidateQueries({ queryKey: inboxQueryKeys.list() });
-      queryClient.invalidateQueries({
-        queryKey: inboxQueryKeys.unreadCount(),
-      });
+    // Patch both caches before the network roundtrip so the badge
+    // and the row's count clear the instant the user opens a thread.
+    // The legacy ``invalidateQueries`` approach paid a full inbox
+    // refetch (50+ DB queries on the server) before the badge moved
+    // — that latency is what made the notifications feel "sticky".
+    onMutate: async (vars) => {
+      await Promise.all([
+        queryClient.cancelQueries({ queryKey: inboxQueryKeys.list() }),
+        queryClient.cancelQueries({ queryKey: inboxQueryKeys.unreadCount() }),
+      ]);
+
+      const previousList = queryClient.getQueryData<InboxListResponseDto>(
+        inboxQueryKeys.list(),
+      );
+      const previousUnread = queryClient.getQueryData<InboxUnreadCountDto>(
+        inboxQueryKeys.unreadCount(),
+      );
+
+      let cleared = 0;
+      if (previousList) {
+        const nextThreads = previousList.threads.map((thread) => {
+          if (!threadMatchesMarkRead(thread, vars)) return thread;
+          cleared += thread.unread_count;
+          if (thread.unread_count === 0) return thread;
+          return { ...thread, unread_count: 0 };
+        });
+        queryClient.setQueryData<InboxListResponseDto>(
+          inboxQueryKeys.list(),
+          {
+            ...previousList,
+            threads: nextThreads,
+            total_unread: Math.max(0, previousList.total_unread - cleared),
+          },
+        );
+      }
+
+      if (previousUnread) {
+        // Fall back to the cleared total if the list cache is
+        // primed; otherwise leave the unread count untouched and
+        // let the server reconcile via WS / next poll. Better to
+        // under-clear briefly than to render a wrong negative.
+        if (cleared > 0) {
+          queryClient.setQueryData<InboxUnreadCountDto>(
+            inboxQueryKeys.unreadCount(),
+            {
+              unread_count: Math.max(
+                0,
+                previousUnread.unread_count - cleared,
+              ),
+            },
+          );
+        }
+      }
+
+      return { previousList, previousUnread };
     },
+    onError: (_err, _vars, context) => {
+      // Roll back to the pre-mutation snapshot so a failed POST
+      // does not leave the badge / list lying about the state.
+      if (context?.previousList) {
+        queryClient.setQueryData(
+          inboxQueryKeys.list(),
+          context.previousList,
+        );
+      }
+      if (context?.previousUnread) {
+        queryClient.setQueryData(
+          inboxQueryKeys.unreadCount(),
+          context.previousUnread,
+        );
+      }
+    },
+    // No ``invalidateQueries`` on success — the optimistic patch
+    // already matches what the server just wrote (the mark-read
+    // endpoint only bumps the pointer, doesn't append messages),
+    // and the WS layer + 60s poll fallback reconcile any drift.
   });
 }
