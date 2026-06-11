@@ -510,9 +510,17 @@ def _build_documents(
 ) -> list[dict]:
     """Every signed / submitted document on this project, newest-first."""
 
+    # A document is "the team has committed to it" once it leaves
+    # the internal pipeline — i.e. anything past DRAFT / IN_REVIEW.
+    # That covers APPROVED (signed off internally, ready to send),
+    # SENT, ACCEPTED, and REJECTED. We surface rejected rows too so
+    # the customer keeps a paper trail of every proposal/spec we
+    # ever put in front of them.
+    INTERNAL_ONLY_STATUSES = ("draft", "in_review")
+
     out: list[dict] = []
     for proposal in proposals:
-        if proposal.customer_signed_at is None and proposal.status != "sent":
+        if proposal.status in INTERNAL_ONLY_STATUSES:
             continue
         out.append(
             {
@@ -524,11 +532,7 @@ def _build_documents(
             }
         )
     for sheet in sheets:
-        if sheet.status not in (
-            SpecificationStatus.SENT,
-            SpecificationStatus.ACCEPTED,
-            SpecificationStatus.APPROVED,
-        ):
+        if sheet.status in INTERNAL_ONLY_STATUSES:
             continue
         kind_label = (
             "Final specification"
