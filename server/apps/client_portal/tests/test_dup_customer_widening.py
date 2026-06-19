@@ -332,6 +332,44 @@ class TestMergeCustomers:
                 canonical=c, duplicate=c, actor=actor, reason="bad",
             )
 
+    def test_merge_absorbs_dynamics_anchor_only_on_duplicate(self, db):
+        """Regression for the prod constraint clash: canonical row
+        has no Dataverse anchor, duplicate carries one. The merger
+        must move the anchor to the canonical WITHOUT both rows
+        briefly sharing the value (would trip
+        ``customers_unique_dynamics_account_per_org``).
+        """
+
+        import uuid
+
+        org = OrganizationFactory()
+        actor = UserFactory()
+        anchor = uuid.uuid4()
+
+        canonical = Customer.objects.create(
+            organization=org,
+            email="anchor@example.com",
+            company="Portal active, no anchor",
+            created_by=actor,
+            updated_by=actor,
+        )
+        dup = Customer.objects.create(
+            organization=org,
+            email="anchor@example.com",
+            company="Has Dataverse anchor",
+            dynamics_account_id=anchor,
+            created_by=actor,
+            updated_by=actor,
+        )
+
+        merge_customers(
+            canonical=canonical, duplicate=dup, actor=actor, reason="t",
+        )
+
+        canonical.refresh_from_db()
+        assert canonical.dynamics_account_id == anchor
+        assert not Customer.objects.filter(pk=dup.pk).exists()
+
     def test_merge_archives_duplicate_email_as_alias(self, db):
         org = OrganizationFactory()
         actor = UserFactory()

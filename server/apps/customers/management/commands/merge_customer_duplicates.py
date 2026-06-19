@@ -118,70 +118,89 @@ class Command(BaseCommand):
                 f"email={email_value!r} · rows={count}"
             )
 
-            rows = list(
-                Customer.objects.select_for_update()
-                .filter(
-                    organization_id=org_pk,
-                    email__iexact=email_value,
-                )
-                .order_by("created_at")
-            )
-            if len(rows) < 2:
-                self.stdout.write(
-                    "  skipped — fewer than 2 rows after select_for_update"
-                )
-                continue
-
+            # Wrap the whole group in one transaction so the
+            # ``select_for_update`` row-lock is honoured on Postgres
+            # (SQLite silently ignores it). Each merge inside the
+            # group runs in its own savepoint so a single bad pair
+            # never poisons the rest of the group.
             try:
-                canonical, duplicates = pick_merge_canonical(rows)
-            except CustomerMergeError as exc:
-                self.stdout.write(
-                    self.style.WARNING(f"  canonical-pick failed: {exc}")
-                )
-                continue
-
-            self.stdout.write(
-                f"  canonical : {canonical.pk} "
-                f"({canonical.company or canonical.name or '-'})"
-            )
-            for dup in duplicates:
-                self.stdout.write(
-                    f"  duplicate : {dup.pk} "
-                    f"({dup.company or dup.name or '-'})"
-                )
-
-            if dry_run:
-                continue
-
-            for dup in duplicates:
-                # Capture the pk before the merge — ``duplicate.delete()``
-                # clears the in-memory instance's pk so we'd otherwise
-                # log "merged None →" after a successful run.
-                dup_pk = dup.pk
-                try:
-                    with transaction.atomic():
-                        merge_customers(
-                            canonical=canonical,
-                            duplicate=dup,
-                            actor=actor,
-                            reason=(
-                                "merge_customer_duplicates sweep "
-                                f"(org={org_pk}, email={email_value})"
-                            ),
+                with transaction.atomic():
+                    rows = list(
+                        Customer.objects.select_for_update()
+                        .filter(
+                            organization_id=org_pk,
+                            email__iexact=email_value,
                         )
-                    total_merges += 1
-                    self.stdout.write(
-                        self.style.SUCCESS(
-                            f"  merged {dup_pk} → {canonical.pk}"
-                        )
+                        .order_by("created_at")
                     )
-                except CustomerMergeError as exc:
-                    total_failures += 1
-                    self.stdout.write(
-                        self.style.WARNING(
-                            f"  REFUSED {dup_pk}: {exc}"
+                    if len(rows) < 2:
+                        self.stdout.write(
+                            "  skipped — fewer than 2 rows after "
+                            "select_for_update"
                         )
+                        continue
+
+                    try:
+                        canonical, duplicates = pick_merge_canonical(rows)
+                    except CustomerMergeError as exc:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"  canonical-pick failed: {exc}"
+                            )
+                        )
+                        continue
+
+                    self.stdout.write(
+                        f"  canonical : {canonical.pk} "
+                        f"({canonical.company or canonical.name or '-'})"
                     )
+                    for dup in duplicates:
+                        self.stdout.write(
+                            f"  duplicate : {dup.pk} "
+                            f"({dup.company or dup.name or '-'})"
+                        )
+
+                    if dry_run:
+                        # Roll back the outer transaction so the dry-run
+                        # leaves no row-locks behind.
+                        transaction.set_rollback(True)
+                        continue
+
+                    for dup in duplicates:
+                        # Capture pk before merge — ``duplicate.delete()``
+                        # clears the in-memory pk after the row is gone.
+                        dup_pk = dup.pk
+                        try:
+                            with transaction.atomic():
+                                merge_customers(
+                                    canonical=canonical,
+                                    duplicate=dup,
+                                    actor=actor,
+                                    reason=(
+                                        "merge_customer_duplicates sweep"
+                                        f" (org={org_pk}, "
+                                        f"email={email_value})"
+                                    ),
+                                )
+                            total_merges += 1
+                            self.stdout.write(
+                                self.style.SUCCESS(
+                                    f"  merged {dup_pk} → {canonical.pk}"
+                                )
+                            )
+                        except CustomerMergeError as exc:
+                            total_failures += 1
+                            self.stdout.write(
+                                self.style.WARNING(
+                                    f"  REFUSED {dup_pk}: {exc}"
+                                )
+                            )
+            except Exception as exc:  # noqa: BLE001
+                self.stdout.write(
+                    self.style.ERROR(f"  group aborted: {exc}")
+                )
+                total_failures += 1
+                continue
 
         self.stdout.write("")
         self.stdout.write("=" * 70)

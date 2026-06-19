@@ -1203,28 +1203,58 @@ def _absorb_dynamics_anchors(*, canonical, duplicate) -> list[str]:
     canonical already carries — by definition the canonical is the
     keeper, including any Dynamics linkage it already had.
 
+    Constraint dance: ``customers_unique_dynamics_account_per_org``
+    and ``customers_unique_dynamics_per_org`` are partial unique
+    indexes on the same table, so if we just SET the value on the
+    canonical while the duplicate still carries it, Postgres rejects
+    the canonical's UPDATE with ``duplicate key value`` — both rows
+    would briefly hold the same anchor inside the same transaction
+    and the constraint is checked immediately. We avoid that by
+    NULLing the dup's anchor via direct UPDATE *before* assigning
+    it on the canonical; the dup is about to be deleted at the end
+    of the merge anyway, so the brief clearing is invisible
+    externally.
+
     Returns the list of fields actually copied so the audit row can
     show what changed."""
 
+    fields_to_clear_on_dup: list[str] = []
     fields_changed: list[str] = []
+
     if (
         canonical.dynamics_id is None
         and duplicate.dynamics_id is not None
     ):
+        fields_to_clear_on_dup.append("dynamics_id")
         canonical.dynamics_id = duplicate.dynamics_id
         fields_changed.append("dynamics_id")
     if (
         canonical.dynamics_account_id is None
         and duplicate.dynamics_account_id is not None
     ):
+        fields_to_clear_on_dup.append("dynamics_account_id")
         canonical.dynamics_account_id = duplicate.dynamics_account_id
         fields_changed.append("dynamics_account_id")
     if (
         canonical.dynamics_contact_id is None
         and duplicate.dynamics_contact_id is not None
     ):
+        fields_to_clear_on_dup.append("dynamics_contact_id")
         canonical.dynamics_contact_id = duplicate.dynamics_contact_id
         fields_changed.append("dynamics_contact_id")
+
+    if fields_to_clear_on_dup:
+        # Bulk UPDATE the dup to NULL the anchors we're absorbing.
+        # Bypass the ORM's save() so we don't risk a signal touching
+        # other constraints; we know exactly which columns to clear.
+        Customer.objects.filter(pk=duplicate.pk).update(
+            **{f: None for f in fields_to_clear_on_dup}
+        )
+        # Reflect the change on the in-memory dup so callers that
+        # read the snapshot afterwards see the cleared state.
+        for f in fields_to_clear_on_dup:
+            setattr(duplicate, f, None)
+
     return fields_changed
 
 
