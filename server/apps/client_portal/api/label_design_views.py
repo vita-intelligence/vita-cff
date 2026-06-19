@@ -1,7 +1,7 @@
 """Portal endpoints for the label-design workflow.
 
 Routes here are scoped to the logged-in :class:`ClientAccount` via
-``request.user.customer_id``. A customer never sees a LabelDesign
+``customer_ids_for_account(request.user)``. A customer never sees a LabelDesign
 attached to a project they don't own — even by guessing the UUID.
 """
 
@@ -21,6 +21,7 @@ from rest_framework.response import Response
 
 from apps.audit.services import record as record_audit
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.queries import customer_ids_for_account
 from apps.label_design.api.serializers import (
     ChoosePathSerializer,
     CustomerApproveSerializer,
@@ -57,13 +58,18 @@ from apps.label_design.services import (
 # ---------------------------------------------------------------------------
 
 
-def _label_designs_for_customer(customer_id):
-    """All LabelDesign rows owned by ``customer_id``.
+def _label_designs_for_customer(customer_ids):
+    """All LabelDesign rows owned by the customer rows in ``customer_ids``.
 
     Ownership is established by walking through any proposal that
     belongs to the customer: a project becomes "owned" by the
     customer when at least one proposal pinned to one of its
     formulation versions references the customer.
+
+    ``customer_ids`` is the email-union from
+    :func:`apps.client_portal.queries.customer_ids_for_account` so
+    duplicate-customer rows that share an email all contribute
+    their label-design rows to the same portal surface.
     """
 
     from apps.client_portal.queries import formulation_ids_for_customer
@@ -73,7 +79,7 @@ def _label_designs_for_customer(customer_id):
     # label-design row.
     return (
         LabelDesign.objects.filter(
-            formulation_id__in=formulation_ids_for_customer(customer_id)
+            formulation_id__in=formulation_ids_for_customer(customer_ids)
         )
         .select_related(
             "formulation",
@@ -85,9 +91,9 @@ def _label_designs_for_customer(customer_id):
     )
 
 
-def _get_label_design_for_customer(label_design_id, customer_id) -> LabelDesign:
+def _get_label_design_for_customer(label_design_id, customer_ids) -> LabelDesign:
     label_design = (
-        _label_designs_for_customer(customer_id)
+        _label_designs_for_customer(customer_ids)
         .filter(id=label_design_id)
         .first()
     )
@@ -120,7 +126,7 @@ def _sign_document_hash(html: str) -> str:
 
 class PortalLabelDesignListView(PortalAPIView):
     def get(self, request: Request) -> Response:
-        rows = _label_designs_for_customer(request.user.customer_id).order_by(
+        rows = _label_designs_for_customer(customer_ids_for_account(request.user)).order_by(
             "-updated_at"
         )
         return Response({"items": LabelDesignReadSerializer(rows, many=True).data})
@@ -129,7 +135,7 @@ class PortalLabelDesignListView(PortalAPIView):
 class PortalLabelDesignDetailView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         return Response(LabelDesignReadSerializer(ld).data)
 
@@ -142,7 +148,7 @@ class PortalLabelDesignDetailView(PortalAPIView):
 class PortalLabelDesignChoosePathView(PortalAPIView):
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.LABEL_PATH_PENDING)
 
@@ -175,7 +181,7 @@ class PortalLabelDesignPreferencesView(PortalAPIView):
 
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.DESIGN_PREFERENCES_PENDING)
         if ld.design_path != LabelDesignPath.DESIGN_BY_US:
@@ -348,7 +354,7 @@ def _require_customer_content_block_access(ld: LabelDesign) -> None:
 class PortalLabelDesignContentBlockJSONView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _require_customer_content_block_access(ld)
         _require_spec(ld)
@@ -359,7 +365,7 @@ class PortalLabelDesignContentBlockJSONView(PortalAPIView):
 class PortalLabelDesignContentBlockPDFView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> HttpResponse:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _require_customer_content_block_access(ld)
         _require_spec(ld)
@@ -376,7 +382,7 @@ class PortalLabelDesignContentBlockPDFView(PortalAPIView):
 class PortalLabelDesignContentBlockPNGView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> HttpResponse:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _require_customer_content_block_access(ld)
         _require_spec(ld)
@@ -408,7 +414,7 @@ class PortalLabelDesignContentBlockHTMLView(PortalAPIView):
 
     def get(self, request: Request, label_design_id) -> HttpResponse:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _require_customer_content_block_access(ld)
         _require_spec(ld)
@@ -421,7 +427,7 @@ class PortalLabelDesignContentBlockHTMLView(PortalAPIView):
 class PortalLabelDesignContentBlockTextView(PortalAPIView):
     def get(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _require_customer_content_block_access(ld)
         _require_spec(ld)
@@ -464,7 +470,7 @@ class PortalLabelDesignUploadArtworkView(PortalAPIView):
 
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         if ld.design_path != LabelDesignPath.DESIGN_BY_CUSTOMER:
             raise ValidationError(
@@ -517,7 +523,7 @@ class PortalLabelDesignUploadArtworkView(PortalAPIView):
 class PortalLabelDesignApproveView(PortalAPIView):
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.CUSTOMER_APPROVAL)
 
@@ -583,7 +589,7 @@ class PortalLabelDesignApproveView(PortalAPIView):
 class PortalLabelDesignRejectView(PortalAPIView):
     def post(self, request: Request, label_design_id) -> Response:
         ld = _get_label_design_for_customer(
-            label_design_id, request.user.customer_id
+            label_design_id, customer_ids_for_account(request.user)
         )
         _ensure_status(ld, LabelDesignStatus.CUSTOMER_APPROVAL)
 

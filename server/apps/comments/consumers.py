@@ -836,11 +836,18 @@ def _authorise_portal(
     if not customer_id:
         return ("unauthenticated", None)
 
+    # Same widening every REST + Inbox surface applies — when a
+    # historical duplicate Customer row exists for the same email,
+    # the WS authorisation joins through every sibling so a thread
+    # tied to the dup still admits the logged-in account.
+    from apps.client_portal.queries import customer_ids_for_account
+    owner_ids = customer_ids_for_account(client_account)
+
     from apps.proposals.models import Proposal, ProposalLine
 
     if kind == "proposal":
         exists = Proposal.objects.filter(
-            customer_id=customer_id, id=entity_id
+            customer_id__in=owner_ids, id=entity_id,
         ).exists()
         if not exists:
             return ("missing", None)
@@ -853,14 +860,15 @@ def _authorise_portal(
         #   * Legacy 1-to-1 attachment via ``Proposal.specification_sheet``;
         #   * Modern per-line attachment via ``ProposalLine.specification_sheet``.
         # Either match grants access. Both checks scope by the
-        # customer's id so a guessed sheet UUID does not leak across
-        # tenants.
+        # customer's union so a guessed sheet UUID does not leak
+        # across tenants while still admitting siblings under the
+        # same email.
         if Proposal.objects.filter(
-            customer_id=customer_id, specification_sheet_id=entity_id
+            customer_id__in=owner_ids, specification_sheet_id=entity_id,
         ).exists():
             return ("ok", _portal_viewer_snapshot(client_account))
         if ProposalLine.objects.filter(
-            proposal__customer_id=customer_id,
+            proposal__customer_id__in=owner_ids,
             specification_sheet_id=entity_id,
         ).exists():
             return ("ok", _portal_viewer_snapshot(client_account))
@@ -905,7 +913,7 @@ def _authorise_portal(
         # :func:`apps.cff_submissions.services.list_customer_cffs`
         # for the matching ORM clause.
         via_project_link = qs.filter(
-            project__versions__proposals__customer_id=customer_id,
+            project__versions__proposals__customer_id__in=owner_ids,
         ).exists()
         if via_project_link:
             return ("ok", _portal_viewer_snapshot(client_account))
@@ -925,7 +933,7 @@ def _authorise_portal(
             .first()
         )
         if formulation_id and Proposal.objects.filter(
-            customer_id=customer_id,
+            customer_id__in=owner_ids,
             formulation_version__formulation_id=formulation_id,
         ).exists():
             return ("ok", _portal_viewer_snapshot(client_account))

@@ -29,18 +29,24 @@ from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView, _err
 from apps.client_portal.models import PortalEvent
+from apps.client_portal.queries import customer_ids_for_account
 from apps.client_portal.services import record_portal_event
 
 
 def _client_proposals_qs(account):
-    """Every proposal whose customer is the logged-in client's.
+    """Every proposal owned by the logged-in client's customer rows.
 
     Used by both the specs list (to join through lines) and the
-    spec-detail ownership check.
+    spec-detail ownership check. ``customer_ids_for_account`` unions
+    the FK target with sibling Customer rows sharing the account's
+    email so existing duplicate-customer pairs keep surfacing every
+    proposal until Phase 4's sweep collapses them.
     """
 
     from apps.proposals.models import Proposal
-    return Proposal.objects.filter(customer_id=account.customer_id)
+    return Proposal.objects.filter(
+        customer_id__in=customer_ids_for_account(account),
+    )
 
 
 def _serialise_spec(sheet, proposal) -> dict[str, Any]:
@@ -183,12 +189,13 @@ class SpecDetailView(PortalAPIView):
         from apps.specifications.models import SpecificationSheet
         from apps.specifications.services import render_context as spec_render_context
 
+        owner_ids = customer_ids_for_account(request.user)
         line = (
             ProposalLine.objects
             .select_related("proposal", "specification_sheet")
             .filter(
                 specification_sheet_id=sheet_id,
-                proposal__customer_id=request.user.customer_id,
+                proposal__customer_id__in=owner_ids,
             )
             .order_by("-proposal__updated_at")
             .first()
@@ -204,7 +211,7 @@ class SpecDetailView(PortalAPIView):
                 .select_related("specification_sheet")
                 .filter(
                     specification_sheet_id=sheet_id,
-                    customer_id=request.user.customer_id,
+                    customer_id__in=owner_ids,
                 )
                 .first()
             )
@@ -225,7 +232,7 @@ class SpecDetailView(PortalAPIView):
                     id=sheet_id,
                     formulation_version__formulation_id__in=(
                         Proposal.objects
-                        .filter(customer_id=request.user.customer_id)
+                        .filter(customer_id__in=owner_ids)
                         .values("formulation_version__formulation_id")
                     ),
                 )
@@ -236,7 +243,7 @@ class SpecDetailView(PortalAPIView):
                 proposal = (
                     Proposal.objects
                     .filter(
-                        customer_id=request.user.customer_id,
+                        customer_id__in=owner_ids,
                         formulation_version__formulation_id=shared_version_sheet.formulation_version.formulation_id,
                     )
                     .order_by("-updated_at")
@@ -294,13 +301,14 @@ class SpecSignView(PortalAPIView):
         # Three-pass ownership lookup — same shape as SpecDetailView.
         sheet: SpecificationSheet | None = None
         proposal: Proposal | None = None
+        owner_ids = customer_ids_for_account(request.user)
 
         line = (
             ProposalLine.objects
             .select_related("proposal", "specification_sheet")
             .filter(
                 specification_sheet_id=sheet_id,
-                proposal__customer_id=request.user.customer_id,
+                proposal__customer_id__in=owner_ids,
             )
             .order_by("-proposal__updated_at")
             .first()
@@ -314,7 +322,7 @@ class SpecSignView(PortalAPIView):
                 .select_related("specification_sheet")
                 .filter(
                     specification_sheet_id=sheet_id,
-                    customer_id=request.user.customer_id,
+                    customer_id__in=owner_ids,
                 )
                 .first()
             )
@@ -329,7 +337,7 @@ class SpecSignView(PortalAPIView):
                     id=sheet_id,
                     formulation_version__formulation_id__in=(
                         Proposal.objects
-                        .filter(customer_id=request.user.customer_id)
+                        .filter(customer_id__in=owner_ids)
                         .values("formulation_version__formulation_id")
                     ),
                 )
@@ -340,7 +348,7 @@ class SpecSignView(PortalAPIView):
                 proposal = (
                     Proposal.objects
                     .filter(
-                        customer_id=request.user.customer_id,
+                        customer_id__in=owner_ids,
                         formulation_version__formulation_id=shared.formulation_version.formulation_id,
                     )
                     .order_by("-updated_at")

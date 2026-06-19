@@ -751,7 +751,25 @@ def import_customer_from_dynamics(
     # person. Without this path, we'd create a second row with the
     # same email — exactly the duplicate-customer trap the audit
     # flagged.
+    #
+    # When multiple existing rows already share the email
+    # (legacy footprint from before the auto-merger), collapse them
+    # into the canonical row first so the adopt-by-email branch
+    # below resolves against a single survivor instead of taking
+    # ``.first()`` and silently leaving the others.
     if existing is None and (contact.email or "").strip():
+        try:
+            auto_merge_email_duplicates(
+                organization=organization,
+                email=contact.email.strip(),
+                actor=actor,
+                reason="dynamics import adopt-by-email",
+            )
+        except CustomerMergeError:
+            # Bad inputs — preserve legacy behaviour and let the
+            # adopt-by-email branch below pick whichever row remains.
+            pass
+
         candidate = (
             Customer.objects.select_for_update()
             .filter(
@@ -1002,3 +1020,434 @@ def swap_primary_contact(
 # error vocabulary self-contained.
 DynamicsDecryptionFailed = DecryptionFailed
 DataverseFailure = DataverseError
+
+
+# ---------------------------------------------------------------------------
+# Customer merge — collapses a duplicate row into a canonical one.
+#
+# Single source of truth for the algorithm. Three call sites:
+#
+#   * The historical hand-curated script
+#     (``server/scripts/consolidate_customer_dupes.py``) — kept as a
+#     thin wrapper so legacy GROUPS lists still work.
+#   * The auto-merger inside :func:`finalize_self_registration` and
+#     :func:`import_customer_from_dynamics` — when adopt-by-email
+#     finds more than one row, we merge the extras in instead of
+#     silently picking ``.first()``.
+#   * The ``manage.py merge_customer_duplicates`` command — scans the
+#     whole table by ``(organization, LOWER(email))`` and merges any
+#     residual groups.
+# ---------------------------------------------------------------------------
+
+
+class CustomerMergeError(Exception):
+    """Refused to merge — caller passed an inconsistent pair.
+
+    Concrete causes:
+
+    * The canonical id equals the duplicate id (no-op typo).
+    * Canonical and duplicate live in different organizations.
+
+    Auto-merge call sites wrap the merge in a savepoint and fall
+    back to today's behaviour (use the existing row, leave the others
+    alone) on this exception so a bad input never breaks a customer
+    sign-up.
+    """
+
+    code = "customer_merge_error"
+
+
+def _redirect_proposals_to_canonical(
+    *, canonical_id: Any, duplicate_id: Any,
+) -> int:
+    """Move every Proposal.customer FK from duplicate to canonical.
+
+    Proposal rows themselves stay verbatim (code / status / lines /
+    sign-off blocks) so the audit trail survives the merge intact.
+    """
+
+    from apps.proposals.models import Proposal
+
+    return Proposal.objects.filter(customer_id=duplicate_id).update(
+        customer_id=canonical_id,
+    )
+
+
+def _redirect_client_accounts_to_canonical(
+    *, canonical_id: Any, duplicate_id: Any,
+) -> dict[str, int]:
+    """Move portal logins from duplicate → canonical.
+
+    Three real-world shapes land here:
+
+    * Duplicate has an unactivated stub. Move it; harmless if the
+      canonical ends up with two stubs.
+    * Duplicate has an activated login and canonical does not. Move
+      it; the customer signs in with that email going forward.
+    * Both rows have activated logins. Keep the canonical's, set the
+      duplicate's ``is_active=False`` (rather than delete) so
+      historical portal events / signatures still resolve via FK.
+
+    Returns ``{"moved": n, "deactivated": n}`` so the audit row can
+    record which case fired.
+    """
+
+    from apps.client_portal.models import ClientAccount
+
+    moved = 0
+    deactivated = 0
+    canonical_has_activated = ClientAccount.objects.filter(
+        customer_id=canonical_id,
+        activated_at__isnull=False,
+        is_active=True,
+    ).exists()
+    for account in ClientAccount.objects.filter(customer_id=duplicate_id):
+        if (
+            canonical_has_activated
+            and account.activated_at is not None
+            and account.is_active
+        ):
+            account.is_active = False
+            account.customer_id = canonical_id
+            account.save(update_fields=["is_active", "customer"])
+            deactivated += 1
+            continue
+        account.customer_id = canonical_id
+        account.save(update_fields=["customer"])
+        moved += 1
+        if account.activated_at is not None:
+            # The dup carried the only activated login; canonical now
+            # owns it, so any later dup in the same call must respect
+            # the "canonical wins" rule above.
+            canonical_has_activated = True
+    return {"moved": moved, "deactivated": deactivated}
+
+
+def _redirect_portal_invites_to_canonical(
+    *, canonical_id: Any, duplicate_id: Any,
+) -> dict[str, int]:
+    """Move open / used portal invites to the canonical row. Any
+    still-open (unredeemed) invite gets ``invalidated_at=now`` so a
+    stale link issued against the duplicate row can't be redeemed
+    post-merge."""
+
+    from apps.client_portal.models import CustomerPortalInvite
+
+    moved = 0
+    invalidated = 0
+    now = timezone.now()
+    for invite in CustomerPortalInvite.objects.filter(
+        customer_id=duplicate_id,
+    ):
+        invite.customer_id = canonical_id
+        if invite.used_at is None and invite.invalidated_at is None:
+            invite.invalidated_at = now
+            invalidated += 1
+        invite.save(update_fields=["customer", "invalidated_at"])
+        moved += 1
+    return {"moved": moved, "invalidated": invalidated}
+
+
+def _archive_duplicate_email_as_alias(
+    *, canonical, duplicate,
+) -> bool:
+    """Pin the duplicate's email on the canonical as an alias so
+    portal-side CFF joins that union across historical emails still
+    find rows the duplicate would have answered to."""
+
+    from apps.customers.models import (
+        CustomerEmailAlias,
+        CustomerEmailAliasSource,
+    )
+
+    dup_email = (duplicate.email or "").strip().lower()
+    if not dup_email:
+        return False
+    canonical_email = (canonical.email or "").strip().lower()
+    if dup_email == canonical_email:
+        return False
+    _, created = CustomerEmailAlias.objects.get_or_create(
+        customer=canonical,
+        email=dup_email,
+        defaults={"source": CustomerEmailAliasSource.PORTAL_EMAIL_CHANGE},
+    )
+    return created
+
+
+def _migrate_existing_aliases(*, canonical, duplicate) -> int:
+    """Carry the duplicate's existing aliases over to the canonical,
+    deduping against any alias the canonical already has."""
+
+    from apps.customers.models import CustomerEmailAlias
+
+    moved = 0
+    for alias in CustomerEmailAlias.objects.filter(customer_id=duplicate.pk):
+        normalised = (alias.email or "").strip().lower()
+        if not normalised:
+            alias.delete()
+            continue
+        _, created = CustomerEmailAlias.objects.get_or_create(
+            customer=canonical,
+            email=normalised,
+            defaults={"source": alias.source},
+        )
+        alias.delete()
+        if created:
+            moved += 1
+    return moved
+
+
+def _absorb_dynamics_anchors(*, canonical, duplicate) -> list[str]:
+    """Copy Dataverse anchors from duplicate → canonical when the
+    canonical has the column blank. Never overwrites a value the
+    canonical already carries — by definition the canonical is the
+    keeper, including any Dynamics linkage it already had.
+
+    Returns the list of fields actually copied so the audit row can
+    show what changed."""
+
+    fields_changed: list[str] = []
+    if (
+        canonical.dynamics_id is None
+        and duplicate.dynamics_id is not None
+    ):
+        canonical.dynamics_id = duplicate.dynamics_id
+        fields_changed.append("dynamics_id")
+    if (
+        canonical.dynamics_account_id is None
+        and duplicate.dynamics_account_id is not None
+    ):
+        canonical.dynamics_account_id = duplicate.dynamics_account_id
+        fields_changed.append("dynamics_account_id")
+    if (
+        canonical.dynamics_contact_id is None
+        and duplicate.dynamics_contact_id is not None
+    ):
+        canonical.dynamics_contact_id = duplicate.dynamics_contact_id
+        fields_changed.append("dynamics_contact_id")
+    return fields_changed
+
+
+def _count_portal_events_following(*, duplicate) -> int:
+    """``PortalEvent`` is FK'd to ``Proposal``, not ``Customer`` —
+    so the events follow automatically once the proposals re-point.
+    This helper just counts them for the audit metadata."""
+
+    from apps.client_portal.models import PortalEvent
+
+    return PortalEvent.objects.filter(
+        proposal__customer_id=duplicate.pk,
+    ).count()
+
+
+@transaction.atomic
+def merge_customers(
+    *,
+    canonical,
+    duplicate,
+    actor: Any,
+    reason: str = "",
+) -> dict[str, Any]:
+    """Collapse ``duplicate`` into ``canonical`` and delete ``duplicate``.
+
+    The canonical row keeps its identity (name / company / email /
+    phone / addresses are NOT overwritten — by definition the
+    canonical is the authoritative row). The duplicate's dependents
+    are re-pointed:
+
+    * :class:`Proposal` rows — bulk update of ``customer_id``.
+    * :class:`ClientAccount` rows — moved, with conflict resolution
+      when both rows have activated logins (canonical wins,
+      duplicate's gets ``is_active=False``).
+    * :class:`CustomerPortalInvite` rows — moved; still-open invites
+      get ``invalidated_at`` set so stale links can't be redeemed.
+    * :class:`CustomerEmailAlias` rows — moved (deduping) and the
+      duplicate's canonical email is archived as a new alias on the
+      canonical.
+    * Dataverse anchors (``dynamics_id`` / ``dynamics_account_id`` /
+      ``dynamics_contact_id``) — copied from duplicate to canonical
+      only when the canonical column is blank.
+
+    One ``customer.merged`` audit row is written with a before-snapshot
+    of the duplicate and a summary of every count/move, so the merge
+    is reversible from the audit table if it ever fires on the wrong
+    pair.
+
+    Raises :class:`CustomerMergeError` for the two refusable inputs
+    (same id, different org). Every other failure path is a real
+    bug — surface it as the underlying exception so the savepoint
+    fallback above can catch it.
+    """
+
+    if canonical.pk == duplicate.pk:
+        raise CustomerMergeError(
+            "canonical and duplicate are the same row",
+        )
+    if canonical.organization_id != duplicate.organization_id:
+        raise CustomerMergeError(
+            "canonical and duplicate belong to different organizations",
+        )
+
+    before = snapshot(duplicate)
+
+    proposals_moved = _redirect_proposals_to_canonical(
+        canonical_id=canonical.pk, duplicate_id=duplicate.pk,
+    )
+    login_stats = _redirect_client_accounts_to_canonical(
+        canonical_id=canonical.pk, duplicate_id=duplicate.pk,
+    )
+    invite_stats = _redirect_portal_invites_to_canonical(
+        canonical_id=canonical.pk, duplicate_id=duplicate.pk,
+    )
+    archived = _archive_duplicate_email_as_alias(
+        canonical=canonical, duplicate=duplicate,
+    )
+    aliases_moved = _migrate_existing_aliases(
+        canonical=canonical, duplicate=duplicate,
+    )
+    event_count = _count_portal_events_following(duplicate=duplicate)
+    anchors_copied = _absorb_dynamics_anchors(
+        canonical=canonical, duplicate=duplicate,
+    )
+    if anchors_copied:
+        canonical.updated_by = actor or canonical.updated_by or canonical.created_by
+        canonical.save(
+            update_fields=[
+                *anchors_copied,
+                "updated_by",
+                "updated_at",
+            ],
+        )
+
+    summary: dict[str, Any] = {
+        "canonical_id": str(canonical.pk),
+        "merged_customer_id": str(duplicate.pk),
+        "reason": reason,
+        "proposals_moved": proposals_moved,
+        "client_logins_moved": login_stats["moved"],
+        "client_logins_deactivated": login_stats["deactivated"],
+        "invites_moved": invite_stats["moved"],
+        "invites_invalidated": invite_stats["invalidated"],
+        "email_archived_as_alias": archived,
+        "existing_aliases_moved": aliases_moved,
+        "portal_events_now_following": event_count,
+        "dynamics_anchors_copied": anchors_copied,
+    }
+
+    record_audit(
+        organization=duplicate.organization,
+        actor=actor,
+        action="customer.merged",
+        target=canonical,
+        before=before,
+        after=summary,
+    )
+
+    duplicate.delete()
+    return summary
+
+
+def pick_merge_canonical(rows: list) -> tuple[Any, list]:
+    """Pick the canonical row from ``rows`` (≥2 same-email customers).
+
+    Precedence:
+
+    1. Row with an activated :class:`ClientAccount`. That row is
+       already the customer's login; keeping it canonical means
+       they don't have to re-set their password / re-establish
+       their session.
+    2. Row with a Dataverse anchor (``dynamics_account_id`` /
+       ``dynamics_contact_id`` / ``dynamics_id``). Anchored rows
+       are how future imports resolve; keep them as the canonical
+       so the next sync converges instead of diverging.
+    3. Oldest row (lowest ``created_at``) — historical proposals
+       and CFFs are pinned to it by default.
+
+    Returns ``(canonical, [other, other, …])`` so the caller can
+    iterate and merge.
+    """
+
+    from apps.client_portal.models import ClientAccount
+
+    if len(rows) < 2:
+        raise CustomerMergeError(
+            "pick_merge_canonical needs at least 2 rows",
+        )
+
+    activated_customer_ids: set = set(
+        ClientAccount.objects.filter(
+            customer_id__in=[r.pk for r in rows],
+            activated_at__isnull=False,
+            is_active=True,
+        )
+        .values_list("customer_id", flat=True)
+    )
+
+    def rank(row) -> tuple[int, int, Any]:
+        # Lower tuple wins ``sorted``.
+        activated = 0 if row.pk in activated_customer_ids else 1
+        anchored = 0 if (
+            row.dynamics_account_id is not None
+            or row.dynamics_contact_id is not None
+            or row.dynamics_id is not None
+        ) else 1
+        # ``created_at`` ties go to lowest UUID for determinism in
+        # tests / re-runs.
+        return (activated, anchored, row.created_at, str(row.pk))
+
+    ordered = sorted(rows, key=rank)
+    canonical = ordered[0]
+    duplicates = ordered[1:]
+    return canonical, duplicates
+
+
+def auto_merge_email_duplicates(
+    *,
+    organization,
+    email: str,
+    actor: Any,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Find every Customer in ``organization`` matching ``email``
+    (case-insensitive) and, if there are two or more, merge the
+    losers into the canonical.
+
+    Returns a summary dict when at least one merge happened, or
+    ``None`` when nothing matched / only one row exists. Used by the
+    registration + Dynamics-import auto-merge hooks so a duplicate
+    that adopt-by-email would silently leave behind gets collapsed
+    inline instead.
+
+    Safe to wrap in a savepoint at the call site — every failure
+    path either raises :class:`CustomerMergeError` (caller can
+    fall back) or surfaces the underlying IntegrityError /
+    ProtectedError so the caller can decide how to recover.
+    """
+
+    cleaned = (email or "").strip()
+    if not cleaned:
+        return None
+
+    rows = list(
+        Customer.objects.select_for_update()
+        .filter(organization=organization, email__iexact=cleaned)
+    )
+    if len(rows) < 2:
+        return None
+
+    canonical, duplicates = pick_merge_canonical(rows)
+    merged: list[dict[str, Any]] = []
+    for dup in duplicates:
+        merged.append(
+            merge_customers(
+                canonical=canonical,
+                duplicate=dup,
+                actor=actor,
+                reason=reason,
+            )
+        )
+    return {
+        "canonical_id": str(canonical.pk),
+        "merged_count": len(merged),
+        "merges": merged,
+    }

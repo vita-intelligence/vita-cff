@@ -46,6 +46,7 @@ from apps.client_portal.permissions import (
     IsClientAccount,
 )
 from apps.client_portal.models import ClientAccount, PortalEvent
+from apps.client_portal.queries import customer_ids_for_account
 from apps.client_portal.services import (
     AccountAlreadyActivated,
     ActivationCodeRateLimited,
@@ -468,9 +469,14 @@ class ProposalListView(PortalAPIView):
     def get(self, request: Request) -> Response:
         from apps.proposals.models import Proposal
 
+        # ``customer_ids_for_account`` unions the FK target with any
+        # sibling Customer rows in the same org sharing the account's
+        # email — survives the duplicate-customer footprint while
+        # Phase 4's sweep drains it. Collapses to a single id once
+        # the auto-merger leaves no dupes behind.
         proposals = (
             Proposal.objects
-            .filter(customer_id=request.user.customer_id)
+            .filter(customer_id__in=customer_ids_for_account(request.user))
             .order_by("-updated_at")
         )
         rows = [
@@ -507,7 +513,13 @@ def _load_owned_proposal(request: Request, proposal_id):
         .filter(pk=proposal_id)
         .first()
     )
-    if proposal is None or proposal.customer_id != request.user.customer_id:
+    if proposal is None:
+        raise NotFound("Proposal not found.")
+    # Owned if the proposal's customer is the account's primary FK
+    # OR any sibling Customer row sharing the account's email in the
+    # same org. Mirrors the read-widening rule applied across every
+    # other portal lookup.
+    if proposal.customer_id not in set(customer_ids_for_account(request.user)):
         raise NotFound("Proposal not found.")
     return proposal
 

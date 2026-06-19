@@ -30,6 +30,7 @@ from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import (
+    customer_ids_for_account,
     customer_proposals_for_formulations,
     formulation_ids_for_customer,
 )
@@ -54,18 +55,26 @@ URGENCY_LOW = 3
 # ---------------------------------------------------------------------------
 
 
-def _build_actions(customer_id) -> list[dict]:
+def _build_actions(customer_ids) -> list[dict]:
     """Every "needs your attention" item across the customer's projects.
 
     Each action has a stable ``kind`` so the FE can route the
     icon / treatment; ``url`` is the deep-link the customer clicks.
+
+    ``customer_ids`` is the union from
+    :func:`apps.client_portal.queries.customer_ids_for_account` so
+    duplicate-customer rows sharing the account's email all
+    contribute their actions to the same surface.
     """
 
     actions: list[dict] = []
 
     # 1) Proposals at ``status=sent`` — customer must sign or reject.
     sent_proposals = (
-        Proposal.objects.filter(customer_id=customer_id, status="sent")
+        Proposal.objects.filter(
+            customer_id__in=customer_ids,
+            status="sent",
+        )
         .select_related("formulation_version__formulation")
         .order_by("updated_at")
     )
@@ -93,7 +102,7 @@ def _build_actions(customer_id) -> list[dict]:
     #    Customer-project scope includes every formulation reached
     #    via a proposal line, not just the proposal's anchor — see
     #    :mod:`apps.client_portal.queries`.
-    customer_formulation_ids = formulation_ids_for_customer(customer_id)
+    customer_formulation_ids = formulation_ids_for_customer(customer_ids)
     final_sheets = (
         SpecificationSheet.objects.filter(
             formulation_version__formulation_id__in=customer_formulation_ids,
@@ -330,7 +339,7 @@ def _resolve_stage(
     return ("unknown", None)
 
 
-def _build_products(customer_id) -> list[dict]:
+def _build_products(customer_ids) -> list[dict]:
     """One entry per project the customer can see.
 
     Scope = every formulation the customer owns via the shared
@@ -341,7 +350,7 @@ def _build_products(customer_id) -> list[dict]:
     non-anchor projects vanish from the portal list.
     """
 
-    formulation_ids = list(formulation_ids_for_customer(customer_id))
+    formulation_ids = list(formulation_ids_for_customer(customer_ids))
     if not formulation_ids:
         return []
 
@@ -353,7 +362,7 @@ def _build_products(customer_id) -> list[dict]:
     # and pin it to every project it covers (anchor + lines).
     proposals_by_form: dict = {}
     for p in customer_proposals_for_formulations(
-        customer_id=customer_id, formulation_ids=formulation_ids
+        customer_ids=customer_ids, formulation_ids=formulation_ids
     ):
         # Anchor project — pin the proposal here.
         if p.formulation_version is not None:
@@ -438,10 +447,12 @@ class PortalDashboardView(PortalAPIView):
     """``GET /api/portal/dashboard/`` — actions + product list."""
 
     def get(self, request: Request) -> Response:
-        customer_id = request.user.customer_id
+        # Compute the union once per request — saves three round-trips
+        # to the helper inside the two builders below.
+        customer_ids = customer_ids_for_account(request.user)
         return Response(
             {
-                "actions": _build_actions(customer_id),
-                "products": _build_products(customer_id),
+                "actions": _build_actions(customer_ids),
+                "products": _build_products(customer_ids),
             }
         )

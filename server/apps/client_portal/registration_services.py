@@ -437,7 +437,7 @@ def finalize_self_registration(
     email = registration.email
     organization = registration.organization
 
-    # Adopt-by-email. The Dynamics import already runs the same
+    # Adopt-by-email + auto-merge. The Dynamics import runs the same
     # lookup, and the customers page enforces a forward-only email
     # uniqueness guard — so finding a row here means staff (or
     # Dynamics) already added the customer's contact info, and the
@@ -446,6 +446,37 @@ def finalize_self_registration(
     # the snapshot we already have is the authoritative source
     # (Dynamics-driven or operator-typed), not what the customer
     # just typed on a webform.
+    #
+    # When MORE than one row matches (the existing duplicate-customer
+    # footprint that the Phase 4 sweep / Phase 5 DB constraint
+    # together drain), collapse the losers into the canonical row in
+    # the same transaction so the new ClientAccount lands on a single
+    # source-of-truth row. ``auto_merge_email_duplicates`` does the
+    # heavy lifting; we wrap it in a savepoint so a merge failure
+    # never blocks an honest sign-up — we fall back to the legacy
+    # ``.first()`` behaviour and log the dup case for follow-up.
+    from django.db import transaction as _db_tx
+
+    from apps.customers.services import (
+        CustomerMergeError,
+        auto_merge_email_duplicates,
+    )
+
+    try:
+        with _db_tx.atomic():
+            auto_merge_email_duplicates(
+                organization=organization,
+                email=email,
+                actor=None,  # self-registration has no staff actor
+                reason="self_registration adopt-by-email",
+            )
+    except CustomerMergeError:
+        # Inconsistent inputs — same id, cross-org. Should not happen
+        # for the (org, email) cluster but if it does the legacy
+        # adopt-by-email path below still keeps the customer signing
+        # in, on whichever row ``.first()`` returns.
+        pass
+
     customer = (
         Customer.objects
         .filter(

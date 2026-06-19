@@ -30,6 +30,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.queries import customer_ids_for_account
 from apps.comments.models import Comment, CommentReadState
 
 
@@ -86,7 +87,7 @@ def _gather_proposal_threads(client_account) -> list[dict[str, Any]]:
     proposal_ct = ContentType.objects.get_for_model(Proposal)
     proposals = (
         Proposal.objects
-        .filter(customer_id=client_account.customer_id)
+        .filter(customer_id__in=customer_ids_for_account(client_account))
         .filter(
             comments__visibility=Comment.Visibility.SHARED,
             comments__is_deleted=False,
@@ -158,7 +159,9 @@ def _gather_spec_threads(client_account) -> list[dict[str, Any]]:
     from apps.proposals.models import Proposal, ProposalLine
     from apps.specifications.models import SpecificationSheet
 
-    proposal_qs = Proposal.objects.filter(customer_id=client_account.customer_id)
+    proposal_qs = Proposal.objects.filter(
+        customer_id__in=customer_ids_for_account(client_account),
+    )
 
     sheet_ids: set[str] = set()
     sheet_to_proposal: dict[str, Any] = {}
@@ -382,7 +385,9 @@ def _gather_label_design_threads(client_account) -> list[dict[str, Any]]:
     from apps.proposals.models import Proposal
 
     formulation_ids = list(
-        Proposal.objects.filter(customer_id=client_account.customer_id)
+        Proposal.objects.filter(
+            customer_id__in=customer_ids_for_account(client_account),
+        )
         .values_list("formulation_version__formulation_id", flat=True)
         .distinct()
     )

@@ -5,6 +5,7 @@ from __future__ import annotations
 from rest_framework.permissions import BasePermission
 
 from apps.client_portal.models import ClientAccount
+from apps.client_portal.queries import customer_ids_for_account
 
 
 class IsClientAccount(BasePermission):
@@ -42,4 +43,10 @@ class ClientOwnsProposal(BasePermission):
     def has_object_permission(self, request, view, obj) -> bool:
         if not isinstance(request.user, ClientAccount):
             return False
-        return obj.customer_id == request.user.customer_id
+        # Permits the object's owner OR any sibling Customer row
+        # sharing the account's email in the same org — survives the
+        # historical duplicate-customer footprint while the Phase 4
+        # sweep drains it.
+        return obj.customer_id in set(
+            customer_ids_for_account(request.user)
+        )

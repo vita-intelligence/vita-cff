@@ -652,18 +652,23 @@ class PortalProductDetailView(PortalAPIView):
 
     def get(self, request: Request, formulation_id) -> Response:
         from apps.client_portal.queries import (
+            customer_ids_for_account,
             customer_owns_formulation,
             proposals_covering_formulation,
         )
 
-        customer_id = request.user.customer_id
+        # Union of every Customer id the account can read through —
+        # the FK target plus any sibling rows sharing the email so
+        # an existing dupe pair doesn't hide a project from its
+        # rightful owner.
+        customer_ids = customer_ids_for_account(request.user)
 
-        # Ownership: at least one proposal owned by this customer
-        # covers this formulation — anchor OR via a line. Without
-        # the line walk, a customer owning a multi-project proposal
-        # would 404 on every non-anchor project's detail page.
+        # Ownership: at least one proposal across the union covers
+        # this formulation — anchor OR via a line. Without the line
+        # walk, a customer owning a multi-project proposal would
+        # 404 on every non-anchor project's detail page.
         if not customer_owns_formulation(
-            customer_id=customer_id, formulation_id=formulation_id
+            customer_ids=customer_ids, formulation_id=formulation_id,
         ):
             raise NotFound()
 
@@ -671,7 +676,7 @@ class PortalProductDetailView(PortalAPIView):
 
         proposals = list(
             proposals_covering_formulation(
-                customer_id=customer_id, formulation_id=formulation_id
+                customer_ids=customer_ids, formulation_id=formulation_id,
             ).select_related("formulation_version")
         )
         sheets = list(

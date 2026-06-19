@@ -917,6 +917,7 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
     as needed.
     """
 
+    from apps.client_portal.queries import customer_ids_for_account
     from apps.customers.models import Customer
 
     customer_id = getattr(client_account, "customer_id", None)
@@ -926,6 +927,14 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
     customer = Customer.objects.filter(id=customer_id).first()
     if customer is None:
         return CFFSubmission.objects.none()
+
+    # Widen the customer scope to every sibling Customer row in the
+    # same org that shares the account's email — survives the
+    # duplicate-customer footprint until the Phase 4 sweep collapses
+    # them. The project-link leg below filters on the union; the
+    # email-match leg already accumulates every alias on the
+    # canonical row below.
+    owner_ids = customer_ids_for_account(client_account)
 
     # Both legs scope to the customer's organisation. Without this
     # a stray CFF in a sibling tenant could theoretically match
@@ -957,6 +966,25 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
         .values_list("email", flat=True)
         if alias and alias.strip()
     )
+    # Sibling Customer rows (the duplicate-customer footprint) may
+    # carry their own email + aliases; fold them in too so a CFF
+    # submitted under the sibling row's address still surfaces.
+    sibling_ids = [cid for cid in owner_ids if cid != customer_id]
+    if sibling_ids:
+        from apps.customers.models import CustomerEmailAlias
+
+        sibling_emails = Customer.objects.filter(
+            id__in=sibling_ids,
+        ).values_list("email", flat=True)
+        for raw in sibling_emails:
+            if raw and raw.strip():
+                candidate_emails.add(raw.strip().lower())
+        sibling_aliases = CustomerEmailAlias.objects.filter(
+            customer_id__in=sibling_ids,
+        ).values_list("email", flat=True)
+        for raw in sibling_aliases:
+            if raw and raw.strip():
+                candidate_emails.add(raw.strip().lower())
 
     email_filter = Q(pk__in=[])  # always-empty seed
     for addr in candidate_emails:
@@ -973,7 +1001,7 @@ def list_customer_cffs(*, client_account) -> QuerySet[CFFSubmission]:
     # project owned by this customer matches — exactly the
     # semantics the portal wants.
     project_filter = Q(
-        projects__versions__proposals__customer_id=customer_id,
+        projects__versions__proposals__customer_id__in=owner_ids,
     )
 
     return (

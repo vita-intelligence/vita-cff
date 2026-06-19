@@ -375,14 +375,40 @@ def _resolve_customer_recipients(comment: Comment) -> list[str]:
     """
 
     from apps.client_portal.models import ClientAccount
+    from apps.customers.models import Customer
 
     customer_id = _customer_id_for_target(comment)
     if customer_id is None:
         return []
 
+    # Widen to every sibling Customer row sharing the email + org —
+    # an activated portal login may live on a different row than the
+    # one the proposal/spec is FK'd to (the duplicate-customer
+    # footprint). Without this widening, the notifier would skip a
+    # real customer whose ClientAccount sits on the canonical row
+    # when the source thread is pinned to a sibling row.
+    target = (
+        Customer.objects
+        .filter(pk=customer_id)
+        .only("organization_id", "email")
+        .first()
+    )
+    candidate_customer_ids: list = [customer_id]
+    if target is not None and (target.email or "").strip():
+        sibling_ids = list(
+            Customer.objects.filter(
+                organization_id=target.organization_id,
+                email__iexact=target.email.strip(),
+            )
+            .exclude(pk=customer_id)
+            .values_list("id", flat=True)
+        )
+        candidate_customer_ids.extend(sibling_ids)
+
     raw = (
         ClientAccount.objects.filter(
-            customer_id=customer_id, is_active=True
+            customer_id__in=candidate_customer_ids,
+            is_active=True,
         )
         .exclude(email="")
         .values_list("email", flat=True)

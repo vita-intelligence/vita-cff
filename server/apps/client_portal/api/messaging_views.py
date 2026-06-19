@@ -46,6 +46,7 @@ from apps.client_portal.api.views import (
     _err,
     _load_owned_proposal,
 )
+from apps.client_portal.queries import customer_ids_for_account
 from apps.comments.broadcast import schedule_comment_broadcast
 from apps.comments.notifications import enqueue_notifications_for_comment
 from django.db import transaction as _db_tx
@@ -209,14 +210,17 @@ def _load_owned_spec(request: Request, sheet_id: str):
 
     from apps.proposals.models import Proposal, ProposalLine
 
+    owner_ids = customer_ids_for_account(request.user)
+
     # Per-line attachment: spec belongs to a proposal whose customer
-    # is the logged-in client's.
+    # is the logged-in client's (or any sibling Customer row sharing
+    # the account email — see ``customer_ids_for_account``).
     line = (
         ProposalLine.objects
         .select_related("proposal", "specification_sheet")
         .filter(
             specification_sheet_id=sheet_id,
-            proposal__customer_id=request.user.customer_id,
+            proposal__customer_id__in=owner_ids,
         )
         .first()
     )
@@ -229,7 +233,7 @@ def _load_owned_spec(request: Request, sheet_id: str):
         .select_related("specification_sheet")
         .filter(
             specification_sheet_id=sheet_id,
-            customer_id=request.user.customer_id,
+            customer_id__in=owner_ids,
         )
         .first()
     )
@@ -556,11 +560,11 @@ def _load_owned_label_design(request: Request, label_design_id: str):
     if label_design is None:
         raise NotFound("Label design not found.")
 
-    customer_id = request.user.customer_id
+    owner_ids = customer_ids_for_account(request.user)
     formulation_id = label_design.formulation_id
     owns = (
         Proposal.objects.filter(
-            customer_id=customer_id,
+            customer_id__in=owner_ids,
             formulation_version__formulation_id=formulation_id,
         ).exists()
     )
