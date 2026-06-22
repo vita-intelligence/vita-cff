@@ -247,6 +247,19 @@ class Proposal(models.Model):
             "proposal. Drives the auto-suggested unit price."
         ),
     )
+    deposit_percent = models.DecimalField(
+        _("deposit %"),
+        max_digits=5,
+        decimal_places=2,
+        default=50,
+        help_text=_(
+            "Deposit percentage printed in the Custom-template "
+            "deposit clause (``A deposit of at least X% is required "
+            "to commence this process``). Scientists set it per "
+            "quote; defaults to 50 if unspecified. Ignored on the "
+            "Ready-to-Go template, which has no deposit clause."
+        ),
+    )
 
     cover_notes = models.TextField(
         _("cover notes"), blank=True, default=""

@@ -121,3 +121,53 @@ class TestSignatoryReplacement:
         assert "Alex Nguyen" in body
         assert "Matthew Bowden" not in body
         assert "Mathew Bowden" not in body
+
+
+class TestDepositPercent:
+    """Deposit-clause % is now a per-proposal field — the rendered
+    .docx must reflect the chosen value, never the legacy hard-coded
+    30%. The Custom template carries the clause; Ready-to-Go skips
+    it entirely (the corresponding paragraph isn't even present in
+    the source .docx) so there's nothing to assert there beyond
+    "the renderer doesn't crash on the alternative template"."""
+
+    def test_default_50_renders(self) -> None:
+        from decimal import Decimal
+
+        proposal = ProposalFactory(template_type="custom")
+        # Sanity: the migration default is 50.
+        assert proposal.deposit_percent == Decimal("50")
+
+        body = _docx_body_text(render_docx_bytes(proposal))
+
+        assert "deposit of at least more than 50%" in body
+        assert "deposit of at least more than 30%" not in body
+
+    def test_custom_percentage_renders(self) -> None:
+        from decimal import Decimal
+
+        proposal = ProposalFactory(
+            template_type="custom",
+            deposit_percent=Decimal("75"),
+        )
+        body = _docx_body_text(render_docx_bytes(proposal))
+
+        assert "deposit of at least more than 75%" in body
+        assert "deposit of at least more than 30%" not in body
+        assert "deposit of at least more than 50%" not in body
+
+    def test_fractional_percentage_trims_trailing_zeros(self) -> None:
+        """Sales reads the sentence aloud — "37.5%" is fine but
+        "37.50%" is jarring. The label formatter strips the trailing
+        zero before splicing into the docx."""
+
+        from decimal import Decimal
+
+        proposal = ProposalFactory(
+            template_type="custom",
+            deposit_percent=Decimal("37.50"),
+        )
+        body = _docx_body_text(render_docx_bytes(proposal))
+
+        assert "deposit of at least more than 37.5%" in body
+        assert "37.50%" not in body

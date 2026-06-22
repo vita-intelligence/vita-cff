@@ -172,6 +172,11 @@ class ProposalRenderContext:
     ack_spec_signing: bool = False
     ack_lead_times: bool = False
     ack_terms: bool = False
+    #: Deposit percentage printed in the Custom-template clause.
+    #: Stored as a formatted string ("50" / "37.5") so the renderer
+    #: can splice it into the original sentence without re-formatting
+    #: at every call site.
+    deposit_percent_label: str = "50"
 
     @classmethod
     def from_proposal(cls, proposal: Proposal) -> "ProposalRenderContext":
@@ -347,6 +352,9 @@ class ProposalRenderContext:
                 getattr(proposal, "ack_lead_times", False)
             ),
             ack_terms=bool(getattr(proposal, "ack_terms", False)),
+            deposit_percent_label=_format_percent_label(
+                getattr(proposal, "deposit_percent", None)
+            ),
         )
 
 
@@ -384,6 +392,30 @@ def _format_money(value, currency: str = "GBP") -> str:
     except Exception:
         return str(value)
     return f"{glyph}{number:,.2f}"
+
+
+def _format_percent_label(value) -> str:
+    """Render a deposit percentage for splicing into the deposit clause.
+
+    Strips trailing zeros so "50.00" prints as "50" and "37.50" as
+    "37.5" — sales reads the resulting sentence aloud and the
+    trailing-zero noise is jarring. Falls back to the model default
+    ("50") when the value is missing.
+    """
+
+    if value is None:
+        return "50"
+    try:
+        number = (
+            value if isinstance(value, Decimal) else Decimal(str(value))
+        )
+    except Exception:
+        return "50"
+    normalized = number.normalize()
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text or "0"
 
 
 def _decode_signature_png(data_url: str) -> bytes | None:
@@ -1124,6 +1156,20 @@ def render_docx_bytes(proposal: Proposal) -> bytes:
     # from the XML tree after the pass — mutating ``doc.paragraphs``
     # mid-iteration skips elements and risks leaving a stale cursor
     # behind.
+    # Deposit clause: the original template hard-codes "30%" but the
+    # percentage is now a per-proposal field. Replace the whole
+    # sentence (rather than just the "30%" token) so any "at least
+    # more than" / "at least" phrasing drift in older template
+    # revisions still ends up rewritten to the canonical sentence.
+    deposit_sentence_new = (
+        f"A deposit of at least more than {ctx.deposit_percent_label}% "
+        "is required to commence this process."
+    )
+    deposit_sentence_originals = (
+        "A deposit of at least more than 30% is required to commence this process.",
+        "A deposit of at least 30% is required to commence this process.",
+    )
+
     paragraphs_to_remove: list = []
     for p in doc.paragraphs:
         _paint_freight_total(p, ctx, "Freight (UK only):", freight_text)
@@ -1132,6 +1178,7 @@ def render_docx_bytes(proposal: Proposal) -> bytes:
         )
         if signatory_value:
             _replace_any(p, signatory_candidates, signatory_value)
+        _replace_any(p, deposit_sentence_originals, deposit_sentence_new)
         if any(team in p.text for team in team_candidates):
             paragraphs_to_remove.append(p)
 

@@ -133,6 +133,7 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "freight_amount",
             "material_cost_per_pack",
             "margin_percent",
+            "deposit_percent",
             "lines",
             "subtotal",
             "total_excl_vat",
@@ -335,6 +336,17 @@ class ProposalCreateSerializer(serializers.Serializer):
     margin_percent = serializers.DecimalField(
         max_digits=6, decimal_places=2, required=False, allow_null=True
     )
+    #: Deposit % printed in the Custom-template deposit clause.
+    #: Optional on the wire — the service layer defaults to 50 when
+    #: the caller omits it, matching the model default.
+    deposit_percent = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=0,
+        max_value=100,
+    )
     #: Scientist-entered cost per pack (what it costs *us* to
     #: manufacture one). Overrides the automatic
     #: ``compute_material_cost_per_pack`` roll-up so overheads /
@@ -390,6 +402,14 @@ class ProposalUpdateSerializer(serializers.Serializer):
     )
     margin_percent = serializers.DecimalField(
         max_digits=6, decimal_places=2, required=False, allow_null=True
+    )
+    deposit_percent = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=0,
+        max_value=100,
     )
     material_cost_per_pack = serializers.DecimalField(
         max_digits=12, decimal_places=4, required=False, allow_null=True

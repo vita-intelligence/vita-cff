@@ -73,6 +73,12 @@ export function SpecCreateProposalModal({
   const [quantity, setQuantity] = useState<string>("1");
   const [unitCost, setUnitCost] = useState<string>("");
   const [margin, setMargin] = useState<string>("30");
+  //: Deposit clause printed on the Custom template. Free-text
+  //: numeric input, defaults to 50, validated on submit (0–100).
+  //: Ignored for Ready-to-Go quotes (no deposit clause in that
+  //: template) but kept in state so toggling templates doesn't
+  //: lose the typed value.
+  const [deposit, setDeposit] = useState<string>("50");
   // ``pricingOverride`` mirrors the org-wide new-proposal modal:
   // hidden by default, exposed via the "Adjust pricing" link.
   // When false, cost/margin/price are NOT sent — the backend
@@ -153,6 +159,7 @@ export function SpecCreateProposalModal({
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
+    setDeposit("50");
     setPricingOverride(false);
     setError(null);
   };
@@ -165,6 +172,26 @@ export function SpecCreateProposalModal({
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
+    //: Validate the deposit % only when the chosen template prints
+    //: the clause — Ready-to-Go skips deposit so a typo there
+    //: shouldn't block submission. Out-of-range surfaces an inline
+    //: error before we burn a network round-trip.
+    let depositPayload: string | null = null;
+    if (template === "custom") {
+      const depositTrim = deposit.trim();
+      if (depositTrim) {
+        const depositNum = Number.parseFloat(depositTrim);
+        if (
+          !Number.isFinite(depositNum) ||
+          depositNum < 0 ||
+          depositNum > 100
+        ) {
+          setError(tProposals("create.deposit_percent_invalid"));
+          return;
+        }
+        depositPayload = depositTrim;
+      }
+    }
     try {
       // When the override panel isn't open we forward NO pricing
       // fields — the backend's create_proposal pulls cost / margin
@@ -179,6 +206,9 @@ export function SpecCreateProposalModal({
         customer_email: customer?.email ?? "",
         customer_company: customer?.company ?? "",
         quantity: Math.max(1, Number.parseInt(quantity, 10) || 1),
+        ...(depositPayload !== null
+          ? { deposit_percent: depositPayload }
+          : {}),
       };
       const created = await createMutation.mutateAsync(
         pricingOverride
@@ -293,19 +323,45 @@ export function SpecCreateProposalModal({
                  *  margin sit behind an Adjust pricing toggle. Same
                  *  shape as the org-wide new-proposal modal so the
                  *  two surfaces feel identical. */}
-                <label className="flex w-32 flex-col gap-1.5">
-                  <span className="text-xs font-medium text-ink-700">
-                    {tProposals("create.quantity")}
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
-                    className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                  />
-                </label>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="flex w-32 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tProposals("create.quantity")}
+                    </span>
+                    <input
+                      type="number"
+                      min={1}
+                      step={1}
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                  </label>
+
+                  {/* Deposit % only renders on Custom-template quotes —
+                   *  Ready-to-Go has no deposit clause in the rendered
+                   *  document, so showing it would mislead the operator. */}
+                  {template === "custom" ? (
+                    <label className="flex w-32 flex-col gap-1.5">
+                      <span className="text-xs font-medium text-ink-700">
+                        {tProposals("create.deposit_percent")}
+                      </span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        step="0.1"
+                        value={deposit}
+                        onChange={(e) => setDeposit(e.target.value)}
+                        placeholder="50"
+                        className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                      />
+                      <span className="text-[10px] text-ink-500">
+                        {tProposals("create.deposit_percent_hint")}
+                      </span>
+                    </label>
+                  ) : null}
+                </div>
 
                 {specHasPricing && !pricingOverride ? (
                   <div className="flex flex-col gap-2 rounded-xl bg-amber-50 px-3 py-3 ring-1 ring-inset ring-amber-200">

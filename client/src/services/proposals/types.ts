@@ -99,6 +99,10 @@ export interface ProposalDto {
   readonly freight_amount: string | null;
   readonly material_cost_per_pack: string | null;
   readonly margin_percent: string | null;
+  //: Deposit % printed in the Custom-template deposit clause.
+  //: Always populated (defaults to "50.00" on the server) so the
+  //: editor never has to guess between "unset" and "zero".
+  readonly deposit_percent: string;
   readonly subtotal: string | null;
   readonly total_excl_vat: string | null;
   readonly cover_notes: string;
@@ -180,6 +184,7 @@ export interface CreateProposalRequestDto {
   readonly unit_price?: string | null;
   readonly freight_amount?: string | null;
   readonly margin_percent?: string | null;
+  readonly deposit_percent?: string | null;
   readonly material_cost_per_pack?: string | null;
   readonly cover_notes?: string;
   readonly valid_until?: string | null;

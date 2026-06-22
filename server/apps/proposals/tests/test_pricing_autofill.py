@@ -27,6 +27,7 @@ from apps.proposals.models import ProposalStatus
 from apps.proposals.services import (
     add_proposal_line,
     create_proposal,
+    update_proposal,
     update_proposal_line,
 )
 from apps.proposals.tests.factories import ProposalFactory
@@ -280,3 +281,60 @@ class TestCreateProposalAutoFill:
         # Quantity is NOT inherited — proposal defaults to 1 and
         # sales picks the real order size separately.
         assert proposal.quantity == 1
+
+
+class TestDepositPercentField:
+    """The deposit % printed on the Custom-template clause is a
+    per-proposal field. Lock the create/update wiring so an absent
+    value defaults to 50 and an explicit value persists verbatim."""
+
+    def _approved_version(self, org):
+        from apps.formulations.services import save_version
+        from apps.formulations.tests.factories import FormulationFactory
+
+        formulation = FormulationFactory(organization=org)
+        version = save_version(
+            formulation=formulation, actor=org.created_by
+        )
+        formulation.approved_version_number = version.version_number
+        formulation.save(update_fields=["approved_version_number"])
+        return version
+
+    def test_create_defaults_to_50_when_omitted(self) -> None:
+        org = OrganizationFactory()
+        version = self._approved_version(org)
+
+        proposal = create_proposal(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+        assert proposal.deposit_percent == Decimal("50")
+
+    def test_create_persists_explicit_percentage(self) -> None:
+        org = OrganizationFactory()
+        version = self._approved_version(org)
+
+        proposal = create_proposal(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+            deposit_percent=Decimal("75"),
+        )
+        assert proposal.deposit_percent == Decimal("75")
+
+    def test_update_changes_percentage(self) -> None:
+        org = OrganizationFactory()
+        version = self._approved_version(org)
+        proposal = create_proposal(
+            organization=org,
+            actor=org.created_by,
+            formulation_version_id=version.id,
+        )
+
+        updated = update_proposal(
+            proposal=proposal,
+            actor=org.created_by,
+            deposit_percent=Decimal("25"),
+        )
+        assert updated.deposit_percent == Decimal("25")

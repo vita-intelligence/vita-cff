@@ -789,6 +789,7 @@ function EditProposalPanel({
     currency: proposal.currency,
     valid_until: proposal.valid_until ?? "",
     cover_notes: proposal.cover_notes,
+    deposit_percent: proposal.deposit_percent ?? "50",
   }));
 
   const bind =
@@ -825,6 +826,9 @@ function EditProposalPanel({
       freight_amount: form.freight_amount || null,
       valid_until: form.valid_until || null,
       cover_notes: form.cover_notes,
+      // Send only when the rep actually typed a value. Empty input =
+      // leave existing value alone.
+      deposit_percent: form.deposit_percent.trim() || null,
     });
   };
 
@@ -1076,6 +1080,25 @@ function EditProposalPanel({
             onChange={bind("valid_until")}
             className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
           />
+        </Field>
+        {/* Deposit clause % — only meaningful on Custom-template
+         *  proposals (Ready-to-Go renders no deposit paragraph) but
+         *  always editable here so a rep who flipped templates after
+         *  creation can still set the value. */}
+        <Field label={tProposals("edit.deposit_percent")}>
+          <input
+            type="number"
+            min={0}
+            max={100}
+            step="0.1"
+            value={form.deposit_percent}
+            onChange={bind("deposit_percent")}
+            placeholder="50"
+            className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+          />
+          <span className="text-[10px] text-ink-500">
+            {tProposals("edit.deposit_percent_hint")}
+          </span>
         </Field>
       </div>
 

@@ -491,6 +491,7 @@ class ProposalListCreateView(APIView):
                 unit_price=data.get("unit_price"),
                 freight_amount=data.get("freight_amount"),
                 margin_percent=data.get("margin_percent"),
+                deposit_percent=data.get("deposit_percent"),
                 material_cost_per_pack=data.get("material_cost_per_pack"),
                 cover_notes=data.get("cover_notes", ""),
                 valid_until=data.get("valid_until"),

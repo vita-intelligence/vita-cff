@@ -535,6 +535,7 @@ def create_proposal(
     unit_price: Decimal | None = None,
     freight_amount: Decimal | None = None,
     margin_percent: Decimal | None = None,
+    deposit_percent: Decimal | None = None,
     material_cost_per_pack: Decimal | None = None,
     cover_notes: str = "",
     valid_until: Any = None,
@@ -683,6 +684,11 @@ def create_proposal(
         freight_amount=freight_amount,
         material_cost_per_pack=material_cost,
         margin_percent=margin_percent,
+        **(
+            {"deposit_percent": deposit_percent}
+            if deposit_percent is not None
+            else {}
+        ),
         cover_notes=cover_notes,
         valid_until=valid_until,
         created_by=actor,
@@ -751,6 +757,7 @@ _UPDATABLE_FIELDS: tuple[str, ...] = (
     "unit_price",
     "freight_amount",
     "margin_percent",
+    "deposit_percent",
     "material_cost_per_pack",
     "cover_notes",
     "valid_until",

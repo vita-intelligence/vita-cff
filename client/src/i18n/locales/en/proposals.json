@@ -61,6 +61,9 @@
     "quantity": "Quantity (packs)",
     "unit_cost": "Unit cost",
     "margin_percent": "Margin %",
+    "deposit_percent": "Deposit %",
+    "deposit_percent_hint": "Used in the Custom-template deposit clause. Default 50 — change per quote if you've agreed a different deposit.",
+    "deposit_percent_invalid": "Deposit % must be between 0 and 100.",
     "price_placeholder": "Unit price appears here once you enter cost and margin.",
     "price_derived": "Unit price: {price} = cost ÷ (1 − margin ÷ 100) — gross margin",
     "specification_sheet": "Bundled specification sheet (optional)",
@@ -217,6 +220,8 @@
     "currency": "Currency (ISO code)",
     "unit_cost": "Unit cost",
     "margin": "Margin %",
+    "deposit_percent": "Deposit %",
+    "deposit_percent_hint": "Printed on the Custom-template deposit clause.",
     "freight_amount": "Freight amount",
     "valid_until": "Valid until",
     "cover_notes": "Cover notes",
@@ -481,7 +486,7 @@
           "register": "Register your product in our production database",
           "labels": "Validate and regulatory review of your label(s)"
         },
-        "custom_deposit": "A deposit of at least more than 30% is required to commence this process.",
+        "custom_deposit": "A deposit of at least more than {percent}% is required to commence this process.",
         "ready_no_dev": "This formula does not require a laboratory development phase, as its manufacturing process has been validated."
       },
       "timelines": {

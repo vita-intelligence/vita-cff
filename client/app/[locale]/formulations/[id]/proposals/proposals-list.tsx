@@ -283,6 +283,10 @@ function NewProposalButton({
   // confusion over "three numbers, which one wins".
   const [unitCost, setUnitCost] = useState<string>("");
   const [margin, setMargin] = useState<string>("30");
+  //: Deposit % printed on the Custom-template deposit clause. Free
+  //: text, validated on submit. Only the Custom template renders
+  //: the deposit paragraph, so the input is shown conditionally.
+  const [deposit, setDeposit] = useState<string>("50");
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useCreateProposal(orgId);
@@ -348,6 +352,7 @@ function NewProposalButton({
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
+    setDeposit("50");
     setTemplate(projectType as ProposalTemplateType);
     setError(null);
   };
@@ -363,6 +368,25 @@ function NewProposalButton({
     if (!versionId) {
       setError(tProposals("create.invalid_input"));
       return;
+    }
+    //: Deposit % is only printed on Custom-template proposals.
+    //: Validate range before submit so an obvious typo surfaces
+    //: inline rather than as a server-side 400.
+    let depositPayload: string | null = null;
+    if (template === "custom") {
+      const depositTrim = deposit.trim();
+      if (depositTrim) {
+        const depositNum = Number.parseFloat(depositTrim);
+        if (
+          !Number.isFinite(depositNum) ||
+          depositNum < 0 ||
+          depositNum > 100
+        ) {
+          setError(tProposals("create.deposit_percent_invalid"));
+          return;
+        }
+        depositPayload = depositTrim;
+      }
     }
     try {
       const created = await createMutation.mutateAsync({
@@ -385,6 +409,9 @@ function NewProposalButton({
             : null,
         material_cost_per_pack: unitCost ? unitCost : null,
         margin_percent: margin ? margin : null,
+        ...(depositPayload !== null
+          ? { deposit_percent: depositPayload }
+          : {}),
       });
       close();
       router.push(`/proposals/${created.id}`);
@@ -597,6 +624,30 @@ function NewProposalButton({
                     />
                   </label>
                 </div>
+
+                {/* Deposit % — Custom template only. Doesn't apply to
+                    Ready-to-Go since that template skips the deposit
+                    clause entirely. */}
+                {template === "custom" ? (
+                  <label className="flex w-40 flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tProposals("create.deposit_percent")}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.1"
+                      value={deposit}
+                      onChange={(e) => setDeposit(e.target.value)}
+                      placeholder="50"
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                    <span className="text-[10px] text-ink-500">
+                      {tProposals("create.deposit_percent_hint")}
+                    </span>
+                  </label>
+                ) : null}
 
                 {/* Derived unit price — read-only. "Cost × (1 +
                     margin/100)" is the quote the customer sees. */}
