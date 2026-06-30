@@ -84,9 +84,9 @@ def _build_actions(customer_ids) -> list[dict]:
             {
                 "kind": "sign_proposal",
                 "urgency": URGENCY_HIGH,
-                "title": "Sign your proposal",
+                "title": "Review your proposal",
                 "subtitle": (
-                    f"Proposal {proposal.code} for {formulation.name or 'your product'}"
+                    f"Open proposal {proposal.code} for {formulation.name or 'your product'} — read it through, then sign when you're ready."
                 ),
                 "url": f"/portal/proposals/{proposal.id}/sign",
                 "product_code": formulation.code,

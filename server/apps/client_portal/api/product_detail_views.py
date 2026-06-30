@@ -492,8 +492,8 @@ def _build_next_action(
     sent_proposal = _first_sent_proposal(proposals)
     if sent_proposal is not None:
         return {
-            "label": "Sign your proposal",
-            "subtitle": f"Review and sign proposal {sent_proposal.code}.",
+            "label": "Review your proposal",
+            "subtitle": f"Open proposal {sent_proposal.code} to read it through — you sign on the next step.",
             "url": f"/portal/proposals/{sent_proposal.id}/sign",
             "urgency": "high",
         }
