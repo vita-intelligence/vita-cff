@@ -306,6 +306,12 @@ export interface FormulationDto {
    *  PATCH — so these fields stay read-only on the standard write
    *  serializer. */
   readonly is_rtg_published: boolean;
+  /** Customer-facing marketing name shown on the RTG catalog.
+   *  Empty string ⇒ every display consumer falls back to ``name``.
+   *  Kept separate so the internal SKU identifier can stay
+   *  ``PROT-042 · Vanilla Protein v3.2`` while the catalog reads
+   *  ``Signature Vanilla Whey``. */
+  readonly rtg_display_name: string;
   readonly rtg_short_description: string;
   readonly rtg_hero_image: string | null;
   readonly rtg_base_price: string | null;
@@ -340,6 +346,11 @@ export interface CreateFormulationRequestDto {
   readonly suggested_dosage?: string;
   readonly appearance?: string;
   readonly disintegration_spec?: string;
+  /** Optional at create — defaults to ``"custom"`` server-side.
+   *  Set to ``"ready_to_go"`` from the RTG catalog page's "New RTG"
+   *  dialog so the row lands with the marketing panel already
+   *  visible on its project overview. */
+  readonly project_type?: ProjectType;
 }
 
 export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> & {

@@ -491,6 +491,21 @@ class Formulation(models.Model):
             "refuses to flip this on for Custom projects."
         ),
     )
+    rtg_display_name = models.CharField(
+        _("RTG display name"),
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=_(
+            "Customer-facing name shown on the RTG catalog (staff "
+            "hub + portal grid + order confirmation). Kept separate "
+            "from ``name`` so R&D can keep the internal identifier "
+            "(``PROT-042 · Vanilla Protein v3.2``) untouched "
+            "for specs + audit while marketing uses a cleaner label "
+            "(``Signature Vanilla Whey``). Blank falls back to "
+            "``name`` in every consumer."
+        ),
+    )
     rtg_short_description = models.TextField(
         _("RTG short description"),
         blank=True,

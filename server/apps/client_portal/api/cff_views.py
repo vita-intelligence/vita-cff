@@ -580,7 +580,11 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     """
 
     id = serializers.UUIDField()
-    name = serializers.CharField()
+    # ``name`` is the customer-facing label: the marketing display
+    # name if staff set one, otherwise the formulation's internal
+    # name. Portal callers get one field to render — the fallback
+    # logic lives here so every consumer doesn't reimplement it.
+    name = serializers.SerializerMethodField()
     short_description = serializers.CharField(source="rtg_short_description")
     hero_image_url = serializers.SerializerMethodField()
     base_price = serializers.DecimalField(
@@ -601,6 +605,10 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
             except ValueError:
                 return None
         return None
+
+    def get_name(self, obj) -> str:
+        display = (getattr(obj, "rtg_display_name", "") or "").strip()
+        return display or obj.name
 
 
 class PortalRTGCatalogView(PortalAPIView):

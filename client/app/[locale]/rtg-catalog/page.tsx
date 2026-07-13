@@ -12,6 +12,7 @@ import {
   getUserOrganizationsServer,
 } from "@/lib/auth/server";
 
+import { NewRTGButton } from "./new-rtg-button";
 import { RTGCatalogGrid } from "./rtg-catalog-grid";
 import { APP_VERSION } from "@/config/version";
 
@@ -119,6 +120,9 @@ export default async function RTGCatalogPage({
               a card here makes it discoverable in the customer portal.
             </p>
           </div>
+          {canWrite ? (
+            <NewRTGButton orgId={primaryOrg.id} locale={locale} />
+          ) : null}
         </section>
 
         <section className="mt-10 md:mt-12">

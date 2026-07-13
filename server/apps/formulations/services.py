@@ -2276,6 +2276,7 @@ def create_formulation(
     target_fill_weight_mg: Decimal | None = None,
     powder_type: str = PowderType.STANDARD.value,
     water_volume_ml: Decimal | None = None,
+    project_type: str = ProjectType.CUSTOM.value,
 ) -> Formulation:
     """Create a new formulation.
 
@@ -2306,6 +2307,13 @@ def create_formulation(
     if tablet_size and tablet_size_by_key(tablet_size) is None:
         raise InvalidTabletSize()
     _validate_powder_type(powder_type)
+
+    # ``project_type`` is trusted after this guard — the model has a
+    # DB-level check via ``choices`` but validating at the boundary
+    # lets the API return a clean 400 rather than a Django IntegrityError.
+    valid_project_types = {choice.value for choice in ProjectType}
+    if project_type not in valid_project_types:
+        project_type = ProjectType.CUSTOM.value
 
     # Seed the four free-text product cells with per-dosage-form
     # defaults when the caller submitted blanks — gives scientists
@@ -2342,6 +2350,7 @@ def create_formulation(
         target_fill_weight_mg=target_fill_weight_mg,
         powder_type=powder_type,
         water_volume_ml=water_volume_ml,
+        project_type=project_type,
         created_by=actor,
         updated_by=actor,
     )
@@ -4920,6 +4929,7 @@ def publish_to_rtg_catalog(
         raise exc
 
     merged: dict[str, Any] = {
+        "rtg_display_name": formulation.rtg_display_name,
         "rtg_short_description": formulation.rtg_short_description,
         "rtg_base_price": formulation.rtg_base_price,
         "rtg_moq": formulation.rtg_moq,
@@ -4943,6 +4953,12 @@ def publish_to_rtg_catalog(
 
     before = snapshot(formulation)
     formulation.is_rtg_published = True
+    # ``rtg_display_name`` is optional — blank stays blank and every
+    # consumer falls back to ``name``. Trim to keep whitespace-only
+    # values from looking like a set value.
+    formulation.rtg_display_name = str(
+        merged.get("rtg_display_name") or ""
+    ).strip()[:200]
     formulation.rtg_short_description = str(
         merged["rtg_short_description"]
     ).strip()

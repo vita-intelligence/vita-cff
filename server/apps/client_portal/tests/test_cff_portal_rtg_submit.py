@@ -362,6 +362,43 @@ class TestRTGCatalogEndpoint:
         assert results[0]["moq"] == 100
         assert "60ct bottle" in results[0]["packaging_options"]
 
+    def test_display_name_overrides_internal_name(self):
+        """When staff sets an ``rtg_display_name``, the catalog's
+        ``name`` field returns it instead of ``formulation.name``.
+        Preserves the R&D-facing SKU identifier while customers see
+        the marketing label."""
+
+        org = OrganizationFactory()
+        sku = _make_rtg_sku(org=org, name="PROT-042 · Vanilla Protein v3.2")
+        sku.rtg_display_name = "Signature Vanilla Whey"
+        sku.save(update_fields=["rtg_display_name", "updated_at"])
+
+        customer = _make_customer(org=org)
+        account = _make_client_account(customer=customer)
+
+        client = APIClient()
+        _login_portal(client, account)
+        r = client.get("/api/portal/rtg-catalog/")
+        assert r.status_code == 200
+        assert r.json()["results"][0]["name"] == "Signature Vanilla Whey"
+
+    def test_display_name_falls_back_to_internal_name(self):
+        """Blank ``rtg_display_name`` (the default on newly published
+        SKUs) falls back to ``formulation.name`` so a card is always
+        renderable — no empty-title tiles in the customer catalog."""
+
+        org = OrganizationFactory()
+        _make_rtg_sku(org=org, name="Vanilla Whey")
+
+        customer = _make_customer(org=org)
+        account = _make_client_account(customer=customer)
+
+        client = APIClient()
+        _login_portal(client, account)
+        r = client.get("/api/portal/rtg-catalog/")
+        assert r.status_code == 200
+        assert r.json()["results"][0]["name"] == "Vanilla Whey"
+
 
 class TestRTGCreateAPI:
     def test_api_201_returns_full_detail(self):

@@ -57,6 +57,9 @@ function RTGCatalogPanelInner({
   formulation,
   canEdit,
 }: Props) {
+  const [displayName, setDisplayName] = useState(
+    formulation.rtg_display_name || "",
+  );
   const [description, setDescription] = useState(
     formulation.rtg_short_description || "",
   );
@@ -101,6 +104,7 @@ function RTGCatalogPanelInner({
       try {
         const form = new FormData();
         form.append("is_rtg_published", nextPublished ? "true" : "false");
+        form.append("rtg_display_name", displayName);
         form.append("rtg_short_description", description);
         form.append("rtg_base_price", basePrice);
         form.append("rtg_moq", moq);
@@ -152,6 +156,7 @@ function RTGCatalogPanelInner({
       basePrice,
       currency,
       description,
+      displayName,
       formulation.id,
       heroFile,
       moq,
@@ -192,6 +197,31 @@ function RTGCatalogPanelInner({
       ) : null}
 
       <div className="grid gap-4 md:grid-cols-2">
+        <div className="md:col-span-2">
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
+            Display name
+          </label>
+          <input
+            type="text"
+            value={displayName}
+            onChange={(e) => setDisplayName(e.currentTarget.value)}
+            disabled={disabled}
+            maxLength={200}
+            placeholder={formulation.name}
+            className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
+          />
+          <p className="mt-1 text-xs text-ink-500">
+            Customer-facing name shown on the catalog. Leave blank to
+            fall back to the internal name{" "}
+            <span className="font-mono">{formulation.name}</span>.
+          </p>
+          {fieldErrors.rtg_display_name ? (
+            <p className="mt-1 text-xs text-rose-700">
+              {fieldErrors.rtg_display_name}
+            </p>
+          ) : null}
+        </div>
+
         <div className="md:col-span-2">
           <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
             Short description
