@@ -32,6 +32,7 @@ from dataclasses import dataclass
 MEMBERS_MODULE = "members"
 CATALOGUES_MODULE = "catalogues"
 FORMULATIONS_MODULE = "formulations"
+RTG_CATALOG_MODULE = "rtg_catalog"
 PROPOSALS_MODULE = "proposals"
 AUDIT_MODULE = "audit"
 CFF_SUBMISSIONS_MODULE = "cff_submissions"
@@ -258,6 +259,39 @@ class FinanceCapability:
     ASSIGN_OFFICER = "assign_officer"
 
 
+class RTGCatalogCapability:
+    """Capabilities for the Ready-to-Go catalog surface.
+
+    Split from :class:`FormulationsCapability` so a "catalog manager"
+    role can list, edit marketing copy, and flip the publish switch on
+    RTG SKUs without inheriting broader project-edit rights on the
+    underlying formulation (which controls the recipe, spec sheets,
+    trial batches, and QC). The three caps mirror the mental model of
+    the catalog:
+
+    * :attr:`VIEW` — read the RTG catalog list and detail. Sees which
+      SKUs are published and their marketing block. Does not grant
+      access to the recipe / R&D data on the underlying formulation.
+    * :attr:`MANAGE` — edit the marketing block (display name, short
+      description, hero image, price, MOQ, packaging options) on RTG
+      SKUs. Held by copy owners / commercial ops.
+    * :attr:`PUBLISH` — flip the ``is_rtg_published`` flag on or off.
+      The go-live gate, deliberately split from ``MANAGE`` so the
+      person drafting copy and the person authorising customer
+      visibility can be different people (segregation of duties on
+      what appears in the customer portal).
+
+    Membership backfill on ``0011_rtg_catalog_module`` mirrors any
+    existing ``formulations.edit`` grant onto
+    ``rtg_catalog.view + manage + publish`` so no member loses access
+    on upgrade. Owners bypass regardless.
+    """
+
+    VIEW = "view"
+    MANAGE = "manage"
+    PUBLISH = "publish"
+
+
 class CFFSubmissionsCapability:
     """Capabilities for the CFF (Custom Formulation Request) intake.
 
@@ -352,6 +386,22 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.COMMENTS_VIEW,
             FormulationsCapability.COMMENTS_WRITE,
             FormulationsCapability.COMMENTS_MODERATE,
+        ),
+    ),
+    RTG_CATALOG_MODULE: Module(
+        key=RTG_CATALOG_MODULE,
+        name="RTG Catalog",
+        description=(
+            "Ready-to-Go catalog: browse, edit marketing copy, "
+            "and publish / unpublish SKUs that appear in the "
+            "customer portal. Split from Projects so the catalog "
+            "manager can go live without holding recipe-edit "
+            "rights on the underlying formulation."
+        ),
+        capabilities=(
+            RTGCatalogCapability.VIEW,
+            RTGCatalogCapability.MANAGE,
+            RTGCatalogCapability.PUBLISH,
         ),
     ),
     PROPOSALS_MODULE: Module(

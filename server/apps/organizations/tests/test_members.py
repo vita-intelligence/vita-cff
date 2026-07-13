@@ -512,9 +512,12 @@ class TestModuleRegistry:
             "members",
             "catalogues",
             "formulations",
+            "rtg_catalog",
             "proposals",
             "audit",
             "cff_submissions",
+            "labelling",
+            "finance",
         }
         members = next(r for r in rows if r["key"] == "members")
         assert set(members["capabilities"]) == {
@@ -540,6 +543,8 @@ class TestModuleRegistry:
         }
         cff = next(r for r in rows if r["key"] == "cff_submissions")
         assert set(cff["capabilities"]) == {"view", "assign_project"}
+        rtg = next(r for r in rows if r["key"] == "rtg_catalog")
+        assert set(rtg["capabilities"]) == {"view", "manage", "publish"}
 
     def test_unauthenticated_is_401(self) -> None:
         response = APIClient().get(reverse("organizations:module-registry"))

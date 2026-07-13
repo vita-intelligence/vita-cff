@@ -3,7 +3,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 import { ProtectedHeader } from "@/components/layout/protected-header";
 import { Breadcrumbs } from "@/components/ui/breadcrumbs";
 import { Link, redirect } from "@/i18n/navigation";
-import { resolveLegacyFlatLevel } from "@/lib/auth/capabilities";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { redirectToLogin } from "@/lib/auth/redirects";
 import {
   getActiveOrganizationServer,
@@ -51,12 +51,19 @@ export default async function RTGCatalogPage({
   }
   const primaryOrg = (await getActiveOrganizationServer())!;
 
-  const level = resolveLegacyFlatLevel(primaryOrg, "formulations");
+  // RTG Catalog page rides its own module now. ``view`` is the
+  // minimum entry cap; ``manage`` or ``publish`` unlocks the New RTG
+  // dialog + inline write affordances. We also treat holders of the
+  // legacy ``formulations.edit`` as writable to keep the surface
+  // functional between the code deploy and the migration run.
+  const canView = hasFlatCapability(primaryOrg, "rtg_catalog", "view");
+  const canManage = hasFlatCapability(primaryOrg, "rtg_catalog", "manage");
+  const canPublish = hasFlatCapability(primaryOrg, "rtg_catalog", "publish");
 
   const tCommon = await getTranslations("common");
   const tNav = await getTranslations("navigation");
 
-  if (level === "none") {
+  if (!canView) {
     return (
       <main className="min-h-dvh bg-ink-0 text-ink-1000">
         <div className="mx-auto flex min-h-dvh max-w-xl flex-col items-center justify-center px-6 py-10 text-center">
@@ -91,7 +98,7 @@ export default async function RTGCatalogPage({
     primaryOrg.id,
     { ordering: "-updated_at", pageSize: 100, projectType: "ready_to_go" },
   );
-  const canWrite = level === "write" || level === "admin";
+  const canWrite = canManage || canPublish;
 
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
