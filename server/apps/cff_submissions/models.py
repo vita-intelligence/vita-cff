@@ -32,6 +32,26 @@ from django.db import models
 from django.utils.translation import gettext_lazy as _
 
 
+class CFFProvenance(models.TextChoices):
+    """Where a CFF submission originated.
+
+    ``wix`` — pulled from the public marketing-site form. Anonymous
+    (no portal login), synced by the poller, carries every
+    ``wix_*`` id field.
+    ``portal`` — submitted through the authenticated customer portal.
+    Ships from a logged-in :class:`ClientAccount`; the ``wix_*`` id
+    columns are NULL for these rows.
+
+    Triage doesn't need to branch on this — both are ``CFFSubmission``
+    rows with the same ``raw_payload`` shape and same reject / assign
+    lifecycle. The field is here to answer "how did this land in our
+    inbox?" for audits + power the ``@Portal`` badge on the row.
+    """
+
+    WIX = "wix", _("Wix marketing form")
+    PORTAL = "portal", _("Portal (authenticated)")
+
+
 class CFFSubmissionStatus(models.TextChoices):
     """Mirror of Wix's ``status`` field on a Submission object.
 
@@ -70,16 +90,36 @@ class CFFSubmission(models.Model):
         ),
     )
 
-    #: Wix-side identifiers. ``wix_submission_id`` is unique so the
-    #: importer can ``update_or_create`` safely; ``wix_form_id`` and
-    #: ``wix_namespace`` are kept on the row (rather than derived
-    #: from a config table) so a future migration to a multi-form
-    #: intake is a config change, not a schema change.
-    wix_submission_id = models.UUIDField(
-        unique=True,
-        help_text=_("Wix's id for the submission. Idempotency key."),
+    #: Provenance discriminator — see :class:`CFFProvenance`. Every
+    #: ``wix_*`` column below is nullable so portal submissions can
+    #: skip them; the DB check constraint ``portal_submissions_have_no_wix_id``
+    #: keeps the invariant explicit for downstream readers of the
+    #: schema (the migration adds one via ``check`` constraint).
+    provenance = models.CharField(
+        _("provenance"),
+        max_length=16,
+        choices=CFFProvenance.choices,
+        default=CFFProvenance.WIX,
+        db_index=True,
+        help_text=_(
+            "Where the submission originated. Wix rows come from the "
+            "public marketing form via the poller; portal rows come "
+            "from the authenticated customer portal."
+        ),
     )
-    wix_form_id = models.UUIDField(db_index=True)
+
+    #: Wix-side identifiers. ``wix_submission_id`` is the idempotency
+    #: key for the poller's ``update_or_create``. NULL for portal
+    #: submissions (there's no Wix row to update). ``unique`` still
+    #: applies when set — Postgres unique constraints allow multiple
+    #: NULLs by default so portal rows don't collide.
+    wix_submission_id = models.UUIDField(
+        null=True,
+        blank=True,
+        unique=True,
+        help_text=_("Wix's id for the submission. Idempotency key. NULL for portal rows."),
+    )
+    wix_form_id = models.UUIDField(null=True, blank=True, db_index=True)
     wix_namespace = models.CharField(max_length=64, default="wix.form_app.form")
 
     wix_status = models.CharField(
@@ -88,14 +128,37 @@ class CFFSubmission(models.Model):
         default=CFFSubmissionStatus.UNKNOWN,
     )
 
-    wix_created_date = models.DateTimeField()
-    wix_updated_date = models.DateTimeField()
+    #: These land on the Wix row from Wix's API; for portal rows the
+    #: importer path is bypassed and we stamp them with
+    #: ``timezone.now()`` at creation so downstream ordering
+    #: (``-wix_created_date``) still sorts consistently.
+    wix_created_date = models.DateTimeField(null=True, blank=True)
+    wix_updated_date = models.DateTimeField(null=True, blank=True)
 
     raw_payload = models.JSONField(
         help_text=_(
-            "Full submission object from Wix. Rendered field-by-field "
-            "in the UI; never re-shape into columns or we lose the "
-            "ability to handle form-schema drift."
+            "Full form response object. For Wix rows this is the raw "
+            "Wix API payload; for portal rows we build the same "
+            "slug-keyed ``submissions`` shape so triage renders both "
+            "uniformly. Never re-shape into columns or we lose "
+            "resilience against form-schema drift."
+        ),
+    )
+
+    #: The authenticated portal customer who submitted this CFF.
+    #: NULL for Wix rows (anonymous marketing-site submissions). The
+    #: FK keeps history intact if the ClientAccount is later deleted
+    #: (``SET_NULL``) so triage can still see "submitted via portal"
+    #: even if the account is gone.
+    submitted_by_client_account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="submitted_cffs",
+        help_text=_(
+            "Portal customer that authored this submission. NULL when "
+            "the CFF came in via Wix (anonymous marketing form)."
         ),
     )
 

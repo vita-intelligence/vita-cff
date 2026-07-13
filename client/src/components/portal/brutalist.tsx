@@ -504,6 +504,10 @@ const STATUS_PALETTE: Record<
   signed:    { bg: "bg-black",      text: "text-white", label: "Signed" },
   accepted:  { bg: "bg-black",      text: "text-white", label: "Accepted" },
   rejected:  { bg: "bg-red-700",    text: "text-white", label: "Declined" },
+  // CFF lifecycle_state values. Kept in the same palette so the
+  // portal renders every workflow chip with one component.
+  under_review:    { bg: "bg-yellow-200", text: "text-black", label: "Under review" },
+  project_created: { bg: "bg-black",      text: "text-white", label: "Project created" },
 };
 
 

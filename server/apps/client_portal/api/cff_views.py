@@ -46,6 +46,9 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.cff_submissions.services import (
+    CFFPortalError,
+    PortalSubmissionInput,
+    create_portal_submission,
     get_customer_cff,
     list_customer_cffs,
 )
@@ -73,6 +76,16 @@ class PortalCFFListItemSerializer(serializers.Serializer):
     Wix-side import metadata, the assigned-by user, or any
     sales-person hint — they need their own intake state + an
     activity summary so they can pick which thread to read.
+
+    ``lifecycle_state`` is the derived single-value summary the FE
+    renders as a chip — cleaner than making the FE walk
+    ``has_project`` / ``is_rejected`` / ``wix_status`` and pick one:
+
+    * ``project_created`` — CFF has been attached to at least one
+      project. Terminal happy path.
+    * ``rejected`` — triage rejected the CFF. Terminal decline path.
+    * ``under_review`` — CFF is in the triage queue awaiting a
+      decision. Default.
     """
 
     id = serializers.UUIDField()
@@ -80,6 +93,21 @@ class PortalCFFListItemSerializer(serializers.Serializer):
     status = serializers.CharField(source="wix_status")
     has_project = serializers.SerializerMethodField()
     project_code = serializers.SerializerMethodField()
+    # Rejection state is customer-visible so they can see the outcome
+    # without waiting on an email. The reason is intentionally shown
+    # verbatim — internal triage notes are usually short and factual
+    # ("duplicate", "off-topic", …); if a specific tenant ever wants
+    # to sanitise, it belongs in a per-tenant policy, not a hardcoded
+    # rewrite here.
+    is_rejected = serializers.BooleanField()
+    rejection_reason = serializers.CharField(allow_blank=True)
+    rejected_at = serializers.DateTimeField(allow_null=True)
+    # In-portal vs marketing-site provenance. Surfaced so the FE can
+    # render a subtle "Portal" badge on rows the customer submitted
+    # here vs the ones that came in via Wix.
+    provenance = serializers.CharField()
+    # Single-word lifecycle for chip rendering.
+    lifecycle_state = serializers.SerializerMethodField()
     #: Short preview line so the list row reads as more than a
     #: row of identical "CFF · 2026-05-21" stamps. Pulled from the
     #: customer's own form responses (market segment, brief, etc).
@@ -103,6 +131,17 @@ class PortalCFFListItemSerializer(serializers.Serializer):
             return None
         return first.code or first.name or None
 
+    def get_lifecycle_state(self, obj) -> str:
+        # Priority order: project_created wins over rejected wins
+        # over under_review. In practice a rejected CFF can't also
+        # be assigned (the reject service blocks it), but the guard
+        # here keeps the FE readable if state ever drifts.
+        if obj.projects.exists():
+            return "project_created"
+        if obj.rejected_at is not None:
+            return "rejected"
+        return "under_review"
+
     def get_summary(self, obj) -> str:
         return _summary_line(obj)
 
@@ -112,7 +151,9 @@ class PortalCFFDetailSerializer(PortalCFFListItemSerializer):
     customer can re-read everything they submitted."""
 
     raw_payload = serializers.JSONField()
-    wix_form_id = serializers.UUIDField()
+    # Nullable now that portal-authored submissions exist. Wix rows
+    # keep the value; portal rows carry NULL.
+    wix_form_id = serializers.UUIDField(allow_null=True)
 
 
 class PortalCFFMessageSerializer(serializers.Serializer):
@@ -233,6 +274,175 @@ class PortalCFFDetailView(PortalAPIView):
     def get(self, request: Request, submission_id: str) -> Response:
         submission = _load_owned_cff(request, submission_id)
         return Response(PortalCFFDetailSerializer(submission).data)
+
+
+class PortalCFFCreateSerializer(serializers.Serializer):
+    """Wire-shape for the multi-step portal wizard's final submit.
+
+    Every field is optional at the serializer level — the service
+    layer enforces required-ness so we produce one field-scoped
+    error dict regardless of which layer flagged the issue. Multi-
+    choice fields ship as lists of strings; the service flattens
+    them for storage.
+    """
+
+    first_name = serializers.CharField(allow_blank=True, required=False, max_length=200)
+    last_name = serializers.CharField(allow_blank=True, required=False, max_length=200)
+    email = serializers.EmailField(allow_blank=True, required=False)
+    phone = serializers.CharField(allow_blank=True, required=False, max_length=32)
+    company_name = serializers.CharField(allow_blank=True, required=False, max_length=200)
+
+    product_formats = serializers.ListField(
+        child=serializers.CharField(max_length=64), required=False, default=list,
+    )
+    market_segment = serializers.CharField(allow_blank=True, required=False, max_length=500)
+    dose = serializers.CharField(allow_blank=True, required=False, max_length=500)
+    nutritional_requirements = serializers.ListField(
+        child=serializers.CharField(max_length=64), required=False, default=list,
+    )
+    target_sex = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, default=list,
+    )
+    target_age = serializers.ListField(
+        child=serializers.CharField(max_length=32), required=False, default=list,
+    )
+    other_nutritional_requirements = serializers.CharField(
+        allow_blank=True, required=False, max_length=2000,
+    )
+
+    dose_per_unit = serializers.CharField(allow_blank=True, required=False, max_length=500)
+    actives_requirements = serializers.CharField(
+        allow_blank=True, required=False, max_length=4000,
+    )
+
+    primary_package_type = serializers.CharField(
+        allow_blank=True, required=False, max_length=200,
+    )
+    quantity_to_be_quoted = serializers.CharField(
+        allow_blank=True, required=False, max_length=64,
+    )
+
+    country_region = serializers.CharField(allow_blank=True, required=False, max_length=100)
+    address = serializers.CharField(allow_blank=True, required=False, max_length=500)
+    city = serializers.CharField(allow_blank=True, required=False, max_length=200)
+    postal_code = serializers.CharField(allow_blank=True, required=False, max_length=32)
+    delivery_same_as_proposal = serializers.CharField(
+        allow_blank=True, required=False, max_length=16,
+    )
+
+    account_manager_email = serializers.CharField(
+        allow_blank=True, required=False, max_length=320,
+    )
+
+
+class PortalCFFCreateView(PortalAPIView):
+    """``POST /api/portal/cffs/``.
+
+    Authenticated portal customer submits the in-portal CFF form.
+    The row lands in the triage queue immediately with
+    ``provenance=portal``; the customer sees it on their /portal/cffs
+    list right after the redirect and can track state as triage
+    routes / rejects / creates-project.
+    """
+
+    def post(self, request: Request) -> Response:
+        payload = PortalCFFCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        # Coerce list defaults into tuples so the frozen dataclass is
+        # happy. Also handles the "list serializer returns []" default
+        # cleanly without a per-field ``or ()`` sprinkle.
+        data = dict(payload.validated_data)
+        for list_field in (
+            "product_formats",
+            "nutritional_requirements",
+            "target_sex",
+            "target_age",
+        ):
+            data[list_field] = tuple(data.get(list_field) or ())
+
+        typed_input = PortalSubmissionInput(**data)
+
+        try:
+            submission = create_portal_submission(
+                client_account=request.user,
+                payload=typed_input,
+            )
+        except CFFPortalError as exc:
+            field_errors = getattr(exc, "field_errors", None)
+            if field_errors:
+                return _err(
+                    "cff_portal_validation",
+                    422,
+                    detail=str(exc),
+                    fields=field_errors,
+                )
+            return _err("cff_portal_error", 400, detail=str(exc))
+
+        return Response(
+            PortalCFFDetailSerializer(submission).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PortalCFFSalesPeopleView(PortalAPIView):
+    """``GET /api/portal/cffs/sales-people/``.
+
+    Feeds the searchable "Vita Manufacture Account Manager" dropdown
+    on the portal wizard. Returns every :class:`User` who is a
+    member of the customer's org (there's no dedicated "sales"
+    role today — every member is a candidate). The customer's
+    currently-attached account manager (if any) is flagged so the
+    FE can preselect them.
+    """
+
+    def get(self, request: Request) -> Response:
+        client_account = request.user
+        customer = getattr(client_account, "customer", None)
+        if customer is None or customer.organization_id is None:
+            return Response({"results": [], "default_email": ""})
+
+        from apps.organizations.models import Membership
+
+        # Membership carries no ``is_active`` flag — every row is
+        # treated as an active grant. Scope on the User side so
+        # deactivated accounts don't leak into the picker.
+        rows = (
+            Membership.objects
+            .select_related("user")
+            .filter(
+                organization_id=customer.organization_id,
+                user__is_active=True,
+            )
+            .order_by("user__last_name", "user__first_name", "user__email")
+        )
+
+        # Best-effort preselect: pull the email off Customer.account_manager
+        # when the FK exists, else fall back to the customer's own
+        # sales_person if that's what your workspace calls it. Silently
+        # skipped when neither field is present so we don't hard-fail
+        # tenants that haven't adopted the field yet.
+        default_email = ""
+        candidate_fields = ("account_manager", "sales_person")
+        for field_name in candidate_fields:
+            candidate = getattr(customer, field_name, None)
+            if candidate is not None:
+                email = getattr(candidate, "email", "") or ""
+                if email:
+                    default_email = email.strip().lower()
+                    break
+
+        return Response({
+            "results": [
+                {
+                    "id": str(row.user.id),
+                    "full_name": row.user.get_full_name() or row.user.email,
+                    "email": row.user.email,
+                }
+                for row in rows
+            ],
+            "default_email": default_email,
+        })
 
 
 class PortalCFFMessagesView(PortalAPIView):

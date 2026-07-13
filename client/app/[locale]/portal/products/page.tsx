@@ -1,11 +1,11 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import Link from "next/link";
 import {
   AlertCircle,
   ArrowRight,
   CheckCircle2,
   Clock,
-  ExternalLink,
   FileSignature,
   Inbox,
   Layers,
@@ -36,7 +36,13 @@ type Stage =
   | "label_customer_approval"
   | "label_approved"
   | "on_hold"
-  | "unknown";
+  | "unknown"
+  // Pre-project CFF states. Not real project stages — these only
+  // appear on ``kind === "cff"`` cards emitted by the dashboard
+  // backend to represent un-converted submissions inline with real
+  // projects.
+  | "cff_under_review"
+  | "cff_rejected";
 
 
 type ActionKind =
@@ -62,6 +68,12 @@ interface ActionItem {
 
 
 interface ProductItem {
+  /** ``"formulation"`` = a real project the customer owns.
+   *  ``"cff"`` = a pre-project CFF submission the customer sent
+   *  that hasn't been converted to a project yet (or was rejected).
+   *  Drives card tone + navigation target so the same array carries
+   *  both mental-model slices without duplicating a component. */
+  readonly kind: "formulation" | "cff";
   readonly id: string;
   readonly code: string;
   readonly name: string;
@@ -73,6 +85,10 @@ interface ProductItem {
   readonly proposal_code: string;
   readonly label_design_id: string | null;
   readonly last_updated: string;
+  /** Where the card link goes. Formulations open the project
+   *  drill-down; CFFs go to the CFF detail so the customer can
+   *  re-read their submission + see the rejection reason. */
+  readonly href: string;
 }
 
 
@@ -95,6 +111,11 @@ const STAGE_TONE: Record<Stage, string> = {
   label_approved: "bg-emerald-300 text-black",
   on_hold: "bg-rose-200 text-black",
   unknown: "bg-neutral-100 text-black",
+  // CFF stages read as pending / declined, not as "urgent" — a
+  // yellow "under review" chip signals "the ball is in our court";
+  // red flags a decline without shouting.
+  cff_under_review: "bg-yellow-200 text-black",
+  cff_rejected: "bg-red-700 text-white",
 };
 
 
@@ -202,30 +223,26 @@ export default async function PortalProductsPage() {
         </section>
       )}
 
-      {/* New-project CTA. Form lives on the marketing site and a
-          Wix poller mirrors each submission into our system, so a
-          successful submit shows up in the grid below
-          automatically. */}
+      {/* New-project CTA — in-portal wizard at ``/portal/cffs/new``.
+          Successful submissions land in the CFF list and get picked
+          up by our team from there. */}
       <div className="mb-6 flex flex-col gap-3 border-2 border-black bg-orange-500 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-black">
             Start a new product
           </p>
           <p className="mt-1 text-sm font-semibold text-black">
-            Fill in the custom formulation request form and we&rsquo;ll
-            take it from there.
+            Tell us what you want to make. We&rsquo;ll review your request and
+            get back with a proposal.
           </p>
         </div>
-        <a
-          href="https://www.vitamanufacture.co.uk/custom-formulation-request-form"
-          target="_blank"
-          rel="noopener noreferrer"
+        <Link
+          href="/portal/cffs/new"
           className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
         >
           <PlusCircle className="h-4 w-4" />
           New project
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        </Link>
       </div>
 
       <Eyebrow>Your products</Eyebrow>
@@ -238,8 +255,9 @@ export default async function PortalProductsPage() {
                 Nothing here yet
               </p>
               <p className="mt-1 text-sm">
-                Submit a request above and your first project will appear
-                here.
+                Submit a request above and it&apos;ll appear here right away
+                — first as a pending request, then as a full project once
+                our team picks it up.
               </p>
             </div>
           </div>
@@ -247,15 +265,31 @@ export default async function PortalProductsPage() {
       ) : (
         <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {products.map((p) => {
-            const href = `/portal/products/${p.id}`;
+            const isCff = p.kind === "cff";
+            // Backend provides the click target so the FE doesn't
+            // have to fork on kind for URL construction. Fallback
+            // preserves the old behaviour if an older row happens
+            // to be cached without the field.
+            const href = p.href || `/portal/products/${p.id}`;
             return (
               <a key={p.id} href={href} className="group">
-                <Card hover className="h-full">
+                <Card
+                  hover
+                  className={`h-full ${
+                    // Muted treatment for pre-project CFF cards so
+                    // the customer sees them as "your submission,
+                    // pending" — visually distinct from active
+                    // projects without needing a second list.
+                    isCff ? "!bg-neutral-50 !border-dashed" : ""
+                  }`}
+                >
                   <div className="flex h-full flex-col gap-4">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-neutral-500">
-                          {p.code || "Project"}
+                          {isCff
+                            ? "Request · pending"
+                            : p.code || "Project"}
                         </p>
                         <h2 className="mt-1 truncate text-lg font-black uppercase leading-tight">
                           {p.name || "Untitled"}
@@ -275,6 +309,14 @@ export default async function PortalProductsPage() {
                     {p.proposal_code ? (
                       <p className="text-[11px] text-neutral-500">
                         Proposal {p.proposal_code}
+                      </p>
+                    ) : isCff ? (
+                      // Reinforce the "waiting on us" framing so the
+                      // customer doesn't scan the page looking for an
+                      // action they need to take on a pre-project
+                      // card — there isn't one.
+                      <p className="text-[11px] text-neutral-500">
+                        We&apos;ll review your submission and get back to you.
                       </p>
                     ) : null}
                   </div>

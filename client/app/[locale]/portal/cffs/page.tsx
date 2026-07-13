@@ -1,7 +1,7 @@
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { ArrowRight, ExternalLink, PlusCircle } from "lucide-react";
+import { ArrowRight, PlusCircle } from "lucide-react";
 
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import {
@@ -19,10 +19,23 @@ interface CFFListResponse {
   results: Array<{
     id: string;
     submitted_at: string;
+    // Wix submission status. Kept for legacy/back-compat display;
+    // the ``lifecycle_state`` field below is the one the chip reads.
     status: string;
     has_project: boolean;
     project_code: string | null;
     summary: string;
+    // Rejection state (customer-visible). Empty string when the CFF
+    // isn't rejected — safe to render inline conditionally.
+    is_rejected: boolean;
+    rejection_reason: string;
+    rejected_at: string | null;
+    // "wix" for anonymous marketing-form submissions, "portal" for
+    // ones the customer typed in the wizard here. Drives the small
+    // provenance chip on the row.
+    provenance: string;
+    // Single-value lifecycle: "under_review" | "rejected" | "project_created".
+    lifecycle_state: string;
   }>;
 }
 
@@ -54,32 +67,26 @@ export default async function PortalCFFsListPage() {
         back={{ href: "/portal", label: "Portal" }}
       />
 
-      {/* "Start a new project" CTA. The form itself is hosted on the
-          marketing site (vitamanufacture.co.uk) — the Wix submission
-          is mirrored into our system by the CFF poller, so every new
-          request that lands there shows up in this list automatically.
-          ``rel="noopener noreferrer"`` because we're sending the
-          customer out of the portal. */}
+      {/* "Start a new project" CTA — now an in-portal wizard at
+          ``/portal/cffs/new`` instead of the previous redirect to
+          the marketing-site Wix form. */}
       <div className="mb-6 flex flex-col gap-3 border-2 border-black bg-orange-500 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-black">
             Start a new project
           </p>
           <p className="mt-1 text-sm font-semibold text-black">
-            Fill in the custom formulation request form and we'll pick it up
-            from there.
+            Tell us what you want to make. We'll review your request and get
+            back with a proposal.
           </p>
         </div>
-        <a
-          href="https://www.vitamanufacture.co.uk/custom-formulation-request-form"
-          target="_blank"
-          rel="noopener noreferrer"
+        <Link
+          href="/portal/cffs/new"
           className="inline-flex items-center gap-2 border-2 border-black bg-black px-4 py-2 text-sm font-bold uppercase tracking-[0.18em] text-white hover:bg-neutral-800"
         >
           <PlusCircle className="h-4 w-4" />
           New request
-          <ExternalLink className="h-3.5 w-3.5" />
-        </a>
+        </Link>
       </div>
 
       {data.results.length === 0 ? (
@@ -94,6 +101,10 @@ export default async function PortalCFFsListPage() {
             const submittedLabel = Number.isNaN(submitted.getTime())
               ? "—"
               : submitted.toLocaleDateString();
+            // Prefer the derived lifecycle chip; fall back to the
+            // Wix status if lifecycle isn't populated (older rows
+            // before the FE migrated).
+            const chipStatus = cff.lifecycle_state || cff.status;
             return (
               <Card key={cff.id} hover className="!p-0">
                 <Link
@@ -111,10 +122,29 @@ export default async function PortalCFFsListPage() {
                     </div>
                     <div className="text-[11px] uppercase tracking-widest text-neutral-500">
                       Submitted {submittedLabel}
+                      {cff.provenance === "portal" ? (
+                        <span className="ml-2 rounded-none border border-black px-1.5 py-0.5 text-[9px] text-black">
+                          via portal
+                        </span>
+                      ) : null}
                     </div>
+                    {/* Rejected rows carry the reason inline so the
+                        customer doesn't have to open the detail page
+                        to see the outcome. Same brutalist palette as
+                        the rejected-chip on the staff inbox. */}
+                    {cff.is_rejected && cff.rejection_reason ? (
+                      <p className="mt-1 border-2 border-black bg-red-50 px-3 py-2 text-[11px] leading-relaxed text-black">
+                        <span className="font-bold uppercase tracking-widest">
+                          Not proceeding:
+                        </span>{" "}
+                        <span className="whitespace-pre-wrap">
+                          {cff.rejection_reason}
+                        </span>
+                      </p>
+                    ) : null}
                   </div>
                   <div className="flex shrink-0 items-center gap-4">
-                    <StatusPill status={cff.status} />
+                    <StatusPill status={chipStatus} />
                     <LinkIconSlot
                       idleIcon={<ArrowRight className="h-5 w-5" />}
                       spinnerSizeClassName="h-5 w-5"

@@ -93,15 +93,66 @@ export function PortalCFFView({ submissionId }: { submissionId: string }) {
     ? `Request · ${cff.project_code}`
     : `Request · ${cff.id.slice(0, 8)}`;
 
+  // Chip prefers the derived lifecycle over the raw Wix status —
+  // "Under review" reads cleanly for a customer whereas "Confirmed"
+  // (Wix's word for "the form landed on our servers") does not.
+  const chipStatus = cff.lifecycle_state || cff.status;
+
   return (
     <div className="flex flex-col gap-8">
       <PageHeader
         eyebrow={referenceLabel}
         title={cff.summary || "Custom formulation request"}
-        subtitle={`Submitted ${submittedLabel}`}
+        subtitle={
+          cff.provenance === "portal"
+            ? `Submitted via portal · ${submittedLabel}`
+            : `Submitted ${submittedLabel}`
+        }
         back={{ href: "/portal/cffs", label: "Requests" }}
-        actions={<StatusPill status={cff.status} />}
+        actions={<StatusPill status={chipStatus} />}
       />
+
+      {/* Rejection banner — the customer needs to see the outcome + the
+          reason without hunting for it. Kept above the responses so it's
+          the first thing on the page after the header. */}
+      {cff.is_rejected ? (
+        <Card className="!border-red-700 !bg-red-50">
+          <div className="flex flex-col gap-3">
+            <span className="text-[11px] font-bold uppercase tracking-widest text-red-800">
+              We're not proceeding with this request
+            </span>
+            {cff.rejection_reason ? (
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-black">
+                {cff.rejection_reason}
+              </p>
+            ) : (
+              <p className="text-sm text-neutral-700">
+                Reach out to your account manager for details on why we&apos;re
+                not moving ahead with this one.
+              </p>
+            )}
+          </div>
+        </Card>
+      ) : null}
+
+      {/* Project-created banner — same treatment on the positive side.
+          Points at the eventual project record so the customer can hop
+          straight into the workspace once we've spun it up. */}
+      {cff.has_project && cff.project_code ? (
+        <Card>
+          <div className="flex flex-col gap-2">
+            <Eyebrow>Project created</Eyebrow>
+            <p className="text-sm text-neutral-800">
+              We've set up a workspace for this request as{" "}
+              <span className="font-bold uppercase tracking-wide">
+                {cff.project_code}
+              </span>
+              . Everything you and our team do from here on lives on the
+              project page.
+            </p>
+          </div>
+        </Card>
+      ) : null}
 
       <Card>
         <header className="mb-4 flex items-center justify-between border-b-2 border-black pb-3">
