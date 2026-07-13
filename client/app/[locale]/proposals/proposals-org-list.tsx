@@ -831,22 +831,43 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                           sheet.document_kind === "final"
                             ? " [FINAL]"
                             : " [DRAFT]";
-                        // ``In use`` set: linked to a proposal that
-                        // hasn't been rejected. Rejected proposals
-                        // release the spec so the team can try
-                        // again with adjusted terms.
+                        // Ready-to-Go recipes are evergreen — the same
+                        // spec ships to many customers (and the same
+                        // customer can re-order under separate
+                        // proposals at different quantities). The "spec
+                        // is bound to a proposal" concept only applies
+                        // to Custom projects, where each bespoke
+                        // recipe belongs to a single deal. For RTG we
+                        // never mark the row busy; the chip below
+                        // still surfaces "also on PROP-0042" as
+                        // context, but the option stays selectable.
+                        const isReadyToGo =
+                          sheet.formulation_project_type === "ready_to_go";
+                        // ``In use`` set (Custom only): linked to a
+                        // proposal that hasn't been rejected.
+                        // Rejected proposals release the spec so the
+                        // team can try again with adjusted terms.
                         const linkedProposalStatus =
                           sheet.linked_proposal?.status;
-                        const isBusy = Boolean(
-                          sheet.linked_proposal &&
-                            linkedProposalStatus !== "rejected",
-                        );
+                        const isBusy =
+                          !isReadyToGo &&
+                          Boolean(
+                            sheet.linked_proposal &&
+                              linkedProposalStatus !== "rejected",
+                          );
                         // Status chip — "Approved" reads as "ready
                         // to attach"; "Sent · PROP-0042" /
                         // "Accepted · PROP-0042" reads as "in use,
-                        // here's the deal it's bundled with".
+                        // here's the deal it's bundled with". For
+                        // RTG, an existing binding is context ("also
+                        // on PROP-0042"), not a gate — the customer
+                        // buying it now is a different sale.
                         let chip = "";
-                        if (sheet.linked_proposal && isBusy) {
+                        if (isReadyToGo && sheet.linked_proposal) {
+                          chip = ` · RTG · also on ${sheet.linked_proposal.code}`;
+                        } else if (isReadyToGo) {
+                          chip = " · RTG";
+                        } else if (sheet.linked_proposal && isBusy) {
                           const statusLabel = tProposals(
                             `create.spec_status.${sheet.status}` as
                               "create.spec_status.approved",

@@ -679,10 +679,26 @@ def create_proposal(
             update_fields=["project_type", "updated_by", "updated_at"]
         )
 
+    # Ready-to-Go recipes are evergreen — the same spec sheet ships to
+    # many customers and the same customer can re-order under separate
+    # proposals. Setting the top-level ``Proposal.specification_sheet``
+    # OneToOne locks the spec to one deal and blocks every subsequent
+    # RTG sale with a UNIQUE-constraint 500. For RTG we skip the
+    # OneToOne slot entirely and rely on the per-line FK below (still
+    # written unconditionally); ``resolve_linked_proposal`` and
+    # ``_attached_spec_sheets`` both walk the line-level path so
+    # nothing downstream cares that the legacy slot is NULL.
+    # Custom projects keep the OneToOne for schema-level
+    # backward compatibility.
+    should_pin_legacy_slot = (
+        sheet is not None
+        and getattr(version.formulation, "project_type", "custom")
+        != "ready_to_go"
+    )
     proposal = Proposal.objects.create(
         organization=organization,
         formulation_version=version,
-        specification_sheet=sheet,
+        specification_sheet=sheet if should_pin_legacy_slot else None,
         customer=customer,
         code=code,
         template_type=chosen_template,

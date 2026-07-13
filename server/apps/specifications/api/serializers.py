@@ -47,6 +47,14 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     formulation_code = serializers.CharField(
         source="formulation_version.formulation.code", read_only=True
     )
+    #: Engagement model of the underlying formulation. Used by the
+    #: proposal-line spec picker to decide whether to gate this sheet
+    #: as "already in use" — Custom specs are one-per-proposal (each
+    #: bespoke recipe belongs to a single deal), Ready-to-Go specs
+    #: are evergreen and reusable across every customer and re-order.
+    formulation_project_type = serializers.CharField(
+        source="formulation_version.formulation.project_type", read_only=True
+    )
     formulation_version_number = serializers.IntegerField(
         source="formulation_version.version_number", read_only=True
     )
@@ -179,6 +187,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_id",
             "formulation_name",
             "formulation_code",
+            "formulation_project_type",
             "formulation_version_number",
             "linked_proposal",
             "review_slot_blocker",
