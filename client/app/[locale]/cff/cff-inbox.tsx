@@ -458,6 +458,35 @@ function CFFRow({
               )}
               {t("reject.undo")}
             </button>
+          ) : row.submission_kind === "ready_to_go" &&
+            row.drafted_proposal_id ? (
+            // RTG rows never take the project attachment path — the
+            // auto-drafted proposal IS the deliverable, and the
+            // triage step is "sanity-check + Send" on the quote.
+            // Swap the project-focused buttons for a deep-link into
+            // the proposal so the operator lands on the artefact
+            // that actually needs their attention. Reject stays
+            // available so an operator can still stop a bad RTG
+            // order before it goes out.
+            <>
+              <Link
+                href={`/proposals/${row.drafted_proposal_id}`}
+                prefetch={false}
+                className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
+              >
+                {t("rtg_actions.view_proposal")}
+              </Link>
+              {onReject ? (
+                <button
+                  type="button"
+                  onClick={onReject}
+                  className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
+                >
+                  <Ban className="h-3 w-3" />
+                  {t("reject.open")}
+                </button>
+              ) : null}
+            </>
           ) : (
             <>
               {onAssign ? (

@@ -39,6 +39,9 @@
     "assigned_to_n": "Attached to {count} projects",
     "drafted_as": "Drafted as {proposal}"
   },
+  "rtg_actions": {
+    "view_proposal": "View proposal"
+  },
   "detail": {
     "title": "CFF submission",
     "close": "Close",

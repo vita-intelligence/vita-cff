@@ -567,32 +567,49 @@ export function CFFDetailModal({
         {/* ---- Footer ---- */}
         <footer className="flex items-center justify-end gap-2 border-t border-ink-100 bg-white px-6 py-3">
           {canAssign ? (
-            <>
-              {/* Both triage actions stay visible regardless of
-                  current assignment state. Under the M2M model a CFF
-                  can spawn additional projects or be wired into more
-                  existing ones at any point — hiding the buttons
-                  after the first link is created would lock the
-                  triager out of that follow-up path. */}
-              <button
-                type="button"
-                onClick={onAssign}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                {t("assign.open")}
-              </button>
-              {/* Primary path: spin up the project + auto-assign
-                  the sales person from the CFF. */}
-              <button
-                type="button"
-                onClick={onCreateProject}
+            submission.submission_kind === "ready_to_go" &&
+            submission.drafted_proposal_id ? (
+              // RTG rows skip project attachment entirely — the
+              // deliverable is the auto-drafted proposal. Swap the
+              // two triage buttons for a single deep-link into the
+              // proposal so the operator lands on the artefact
+              // that actually needs their attention.
+              <Link
+                href={`/proposals/${submission.drafted_proposal_id}`}
+                prefetch={false}
                 className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
               >
-                <Sparkles className="h-3.5 w-3.5" />
-                {t("create_project.open")}
-              </button>
-            </>
+                <ExternalLink className="h-3.5 w-3.5" />
+                {t("rtg_actions.view_proposal")}
+              </Link>
+            ) : (
+              <>
+                {/* Both triage actions stay visible regardless of
+                    current assignment state. Under the M2M model a CFF
+                    can spawn additional projects or be wired into more
+                    existing ones at any point — hiding the buttons
+                    after the first link is created would lock the
+                    triager out of that follow-up path. */}
+                <button
+                  type="button"
+                  onClick={onAssign}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  {t("assign.open")}
+                </button>
+                {/* Primary path: spin up the project + auto-assign
+                    the sales person from the CFF. */}
+                <button
+                  type="button"
+                  onClick={onCreateProject}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  {t("create_project.open")}
+                </button>
+              </>
+            )
           ) : null}
           <button
             type="button"
