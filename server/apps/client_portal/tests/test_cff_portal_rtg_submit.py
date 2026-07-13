@@ -543,6 +543,11 @@ class TestRTGCFFIsAssignedInTriageInbox:
         assert row["is_assigned"] is True
         assert row["drafted_proposal_code"] is not None
         assert row["drafted_proposal_code"].startswith("PROP-")
+        # ``provenance`` drives the staff-side pill fallback + the
+        # meta panel's portal-vs-Wix split. Without it in the payload
+        # the FE would render the row as "Unknown" instead of the
+        # portal-specific chip.
+        assert row["provenance"] == "portal"
 
     def test_rtg_row_appears_in_assigned_tab(self):
         org = OrganizationFactory()

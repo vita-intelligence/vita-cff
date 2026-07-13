@@ -97,6 +97,12 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             "rejected_at",
             "rejected_by",
             "rejection_reason",
+            # ``"wix"`` for rows ingested from the marketing form,
+            # ``"portal"`` for rows written by an authenticated
+            # customer in the portal wizard or the RTG order flow.
+            # Drives whether the staff FE renders Wix-only meta or a
+            # portal-specific chip.
+            "provenance",
             # RTG discriminator + auto-drafted proposal FK. Both
             # nullable / defaulted so Custom rows serialize
             # identically to before the RTG rollout.
