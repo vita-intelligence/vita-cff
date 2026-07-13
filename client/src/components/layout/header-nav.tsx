@@ -13,6 +13,7 @@ export type HeaderNavHref =
   | "/home"
   | "/catalogues"
   | "/formulations"
+  | "/rtg-catalog"
   | "/proposals"
   | "/pipeline"
   | "/rd-pipeline"
