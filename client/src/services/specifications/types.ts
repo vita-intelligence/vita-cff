@@ -78,6 +78,12 @@ export interface SpecificationSheetDto {
    *  Used by the MRPEasy price-hint component to look up the
    *  catalogue-suggested price by part number. */
   readonly formulation_code: string;
+  /** Engagement model of the parent formulation. Drives the
+   *  proposal-line spec picker's "already in use" gate: Custom specs
+   *  are one-per-proposal (each bespoke recipe belongs to a single
+   *  deal); Ready-to-Go specs are evergreen and stay selectable
+   *  across every customer and re-order. */
+  readonly formulation_project_type: "custom" | "ready_to_go";
   readonly formulation_version_number: number;
   /** Compact summary of the proposal linked to this sheet via
    *  ``Proposal.specification_sheet`` (OneToOne). ``null`` when no
