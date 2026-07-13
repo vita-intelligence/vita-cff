@@ -694,6 +694,23 @@ function AssignmentBadge({
       </span>
     );
   }
+  // Ready-to-Go submissions never get a project link — the
+  // auto-drafted proposal IS the attachment. Show it first (before
+  // the project-based chips) so the operator immediately knows the
+  // quote is already in the drawer and there's nothing left to
+  // triage on this row.
+  if (
+    row.submission_kind === "ready_to_go" &&
+    row.drafted_proposal_code
+  ) {
+    return (
+      <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+        {t("badge.drafted_as", {
+          proposal: row.drafted_proposal_code,
+        })}
+      </span>
+    );
+  }
   // One link → render its code/name directly so the row reads the
   // same as it did before the M2M migration. Many → fall back to a
   // count chip ("3 projects") and let the detail page surface the

@@ -74,6 +74,11 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
     rejected_by = serializers.SerializerMethodField()
 
     drafted_proposal_id = serializers.SerializerMethodField()
+    #: Human-readable code (e.g. ``"PROP-0042"``) of the auto-drafted
+    #: proposal for RTG rows. Exposed alongside the UUID so the
+    #: triage inbox can render a "Drafted as PROP-0042" chip without
+    #: a follow-up round-trip against the proposals endpoint.
+    drafted_proposal_code = serializers.SerializerMethodField()
 
     class Meta:
         model = CFFSubmission
@@ -97,6 +102,7 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             # identically to before the RTG rollout.
             "submission_kind",
             "drafted_proposal_id",
+            "drafted_proposal_code",
             "imported_at",
             "last_synced_at",
         )
@@ -114,6 +120,15 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
 
         proposal_id = getattr(obj, "drafted_proposal_id", None)
         return str(proposal_id) if proposal_id else None
+
+    def get_drafted_proposal_code(self, obj: CFFSubmission) -> str | None:
+        """Return the auto-drafted proposal's ``code`` (e.g.
+        ``"PROP-0042"``) for RTG rows. ``None`` when the FK is unset
+        (Custom rows) or the pointed row is missing (a race we don't
+        expect at rest but guard against defensively)."""
+
+        proposal = getattr(obj, "drafted_proposal", None)
+        return getattr(proposal, "code", None) if proposal else None
 
     def get_assignments(self, obj: CFFSubmission) -> list[dict]:
         """Materialise the prefetched assignment set.
@@ -152,14 +167,25 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
         ]
 
     def get_is_assigned(self, obj: CFFSubmission) -> bool:
-        """``True`` when the CFF has at least one project link.
+        """``True`` when the CFF has an attachment worth acting on.
 
-        Reads the prefetched ``assignments`` cache when present —
-        otherwise the cached list is empty after a fresh insert and
-        we fall back to the ``exists()`` query the model property
-        provides.
+        For **Custom** submissions that's a project link — same
+        semantics as the model property.
+
+        For **Ready-to-Go** submissions, the order flow auto-drafts a
+        proposal before the CFF even lands in triage, so a project
+        assignment is never expected: the drafted proposal IS the
+        attachment. Treating an RTG row with a drafted proposal as
+        ``is_assigned=True`` keeps the "Assigned" tab and the
+        "Attached to X" badge honest — otherwise every RTG order
+        would show as an unhandled triage item forever, and the
+        reject button would tempt operators to spike a submission
+        that already has a quote sitting on it.
         """
 
+        drafted_proposal_id = getattr(obj, "drafted_proposal_id", None)
+        if drafted_proposal_id:
+            return True
         cache = getattr(obj, "_prefetched_objects_cache", None) or {}
         if "assignments" in cache:
             return bool(cache["assignments"])

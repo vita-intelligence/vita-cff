@@ -88,6 +88,16 @@ export interface CFFSubmissionDto {
   readonly rejection_reason: string;
   readonly imported_at: string;
   readonly last_synced_at: string;
+  /** UUID of the auto-drafted proposal for RTG submissions. ``null``
+   *  on Custom rows (which don't get a proposal until triage picks a
+   *  project and the sales rep clicks New proposal). Populated the
+   *  moment the RTG order flow finishes on the backend. */
+  readonly drafted_proposal_id?: string | null;
+  /** Human-readable code of the drafted proposal — e.g.
+   *  ``"PROP-0042"``. Present iff ``drafted_proposal_id`` is. Used by
+   *  the triage inbox to render "Drafted as PROP-0042" instead of a
+   *  bare UUID. */
+  readonly drafted_proposal_code?: string | null;
 }
 
 

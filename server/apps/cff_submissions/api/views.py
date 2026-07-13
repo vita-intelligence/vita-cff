@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ParseError
 from rest_framework.pagination import CursorPagination
@@ -183,11 +184,25 @@ class CFFListView(APIView):
                     state = "unassigned"
 
         if state == "unassigned":
+            # Ready-to-Go submissions carry a ``drafted_proposal_id``
+            # from the moment the customer submits — the drafted
+            # proposal IS the attachment and stops them from being
+            # "unassigned triage items". Exclude both attachment paths
+            # (project M2M + drafted proposal FK) so RTG rows don't
+            # sit forever in the unassigned tab.
             queryset = queryset.filter(
-                assignments__isnull=True, rejected_at__isnull=True,
+                assignments__isnull=True,
+                rejected_at__isnull=True,
+                drafted_proposal__isnull=True,
             )
         elif state == "assigned":
-            queryset = queryset.filter(assignments__isnull=False).distinct()
+            # Mirror of the unassigned branch — an RTG row with an
+            # auto-drafted proposal counts as assigned, same as a
+            # Custom row with a project link.
+            queryset = queryset.filter(
+                Q(assignments__isnull=False)
+                | Q(drafted_proposal__isnull=False),
+            ).distinct()
         elif state == "rejected":
             queryset = queryset.filter(rejected_at__isnull=False)
         # ``state == "all"`` (or unknown) → no additional filter.

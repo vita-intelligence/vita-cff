@@ -436,7 +436,21 @@ export function CFFDetailModal({
               the assignment set is empty. The dedicated assign modal
               is the place for per-link detach; here we just surface
               the current state at a glance. */}
-          {submission.is_assigned ? (
+          {submission.submission_kind === "ready_to_go" &&
+          submission.drafted_proposal_code ? (
+            // Ready-to-Go path: the auto-drafted proposal IS the
+            // attachment. Skip the project-chip stack entirely — an
+            // RTG row never gets project links and the operator's
+            // next step is Send on the drafted quote, not attach to
+            // a project.
+            <div className="mb-4 flex flex-wrap gap-1.5">
+              <span className="inline-flex items-center rounded-full bg-emerald-50 px-3 py-1 text-xs text-emerald-900 ring-1 ring-inset ring-emerald-200">
+                {t("badge.drafted_as", {
+                  proposal: submission.drafted_proposal_code,
+                })}
+              </span>
+            </div>
+          ) : submission.is_assigned ? (
             <div className="mb-4 flex flex-wrap gap-1.5">
               {submission.assignments.map((assignment) => (
                 <span

@@ -490,3 +490,86 @@ class TestRTGProductsListSurface:
         card = rtg_cards[0]
         assert card["stage_key"] == "cff_awaiting_proposal"
         assert card.get("submission_kind") == "ready_to_go"
+
+
+class TestRTGCFFIsAssignedInTriageInbox:
+    """The RTG order flow auto-drafts a proposal before the CFF ever
+    lands in triage. From the staff inbox's perspective the drafted
+    proposal IS the attachment — treating the row as ``is_assigned``
+    keeps the "Assigned" tab honest, hides the reject button on a
+    row that already has a quote in the drawer, and stops RTG
+    submissions from piling up in the Unassigned tab forever.
+    """
+
+    @staticmethod
+    def _submit(org):
+        formulation = _make_rtg_sku(org=org)
+        customer = _make_customer(org=org)
+        account = _make_client_account(customer=customer)
+        submission = create_portal_rtg_submission(
+            client_account=account,
+            payload=PortalRTGSubmissionInput(
+                rtg_formulation_id=str(formulation.id),
+                quantity=150,
+                packaging="60ct bottle",
+                delivery_address="10 Downing Street",
+            ),
+        )
+        return org, submission
+
+    def _login_staff(self, org):
+        from apps.organizations.tests.factories import MembershipFactory
+
+        staff = UserFactory(email=f"staff+{org.id}@vita.test")
+        MembershipFactory(
+            user=staff,
+            organization=org,
+            permissions={"cff_submissions": ["view", "assign_project"]},
+        )
+        client = APIClient()
+        client.force_authenticate(user=staff)
+        return client
+
+    def test_serializer_marks_row_assigned(self):
+        org = OrganizationFactory()
+        _, submission = self._submit(org)
+        client = self._login_staff(org)
+
+        r = client.get(f"/api/organizations/{org.id}/cff-submissions/")
+        assert r.status_code == 200
+        rows = {row["id"]: row for row in r.json()["results"]}
+        row = rows[str(submission.id)]
+        assert row["submission_kind"] == "ready_to_go"
+        assert row["is_assigned"] is True
+        assert row["drafted_proposal_code"] is not None
+        assert row["drafted_proposal_code"].startswith("PROP-")
+
+    def test_rtg_row_appears_in_assigned_tab(self):
+        org = OrganizationFactory()
+        _, submission = self._submit(org)
+        client = self._login_staff(org)
+
+        r = client.get(
+            f"/api/organizations/{org.id}/cff-submissions/",
+            {"state": "assigned"},
+        )
+        assert r.status_code == 200
+        ids = {row["id"] for row in r.json()["results"]}
+        assert str(submission.id) in ids
+
+    def test_rtg_row_absent_from_unassigned_tab(self):
+        """The user's core complaint: RTG orders were sitting in the
+        Unassigned bucket because ``is_assigned`` only checked project
+        links. The drafted proposal now counts as an attachment."""
+
+        org = OrganizationFactory()
+        _, submission = self._submit(org)
+        client = self._login_staff(org)
+
+        r = client.get(
+            f"/api/organizations/{org.id}/cff-submissions/",
+            {"state": "unassigned"},
+        )
+        assert r.status_code == 200
+        ids = {row["id"] for row in r.json()["results"]}
+        assert str(submission.id) not in ids
