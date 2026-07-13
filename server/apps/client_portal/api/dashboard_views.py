@@ -246,6 +246,13 @@ _STAGE_LABELS: dict[str, str] = {
     "label_approved": "Label approved · ready for production",
     "on_hold": "On hold",
     "unknown": "In progress",
+    # Pre-project stages for un-converted CFFs surfaced on the
+    # products list so the customer sees "I submitted something" even
+    # before triage has spun up a Formulation. These stages don't
+    # exist on Formulation rows; they only appear on the CFF-side
+    # entries returned by ``_build_products``.
+    "cff_under_review": "Under review",
+    "cff_rejected": "Not proceeding",
 }
 
 
@@ -418,6 +425,11 @@ def _build_products(customer_ids) -> list[dict]:
         anchor_proposal = proposals[0] if proposals else None
         products.append(
             {
+                # ``kind`` discriminates a real project from a
+                # pre-project CFF card. FE renders them differently
+                # (muted card + "Under review" chip for CFFs) so the
+                # customer sees continuity of their submission.
+                "kind": "formulation",
                 "id": str(formulation.id),
                 "code": formulation.code,
                 "name": formulation.name,
@@ -431,11 +443,158 @@ def _build_products(customer_ids) -> list[dict]:
                 "proposal_code": anchor_proposal.code if anchor_proposal else "",
                 "label_design_id": str(label_design.id) if label_design else None,
                 "last_updated": formulation.updated_at.isoformat(),
+                # Where clicking the card should go. Formulations
+                # open on the products drill-down; CFFs go straight
+                # to the CFF detail so the customer keeps context.
+                "href": f"/portal/products/{formulation.id}",
             }
         )
-    # Most-recently-updated first.
+
+    # Pre-project CFF cards. Rules:
+    #   * Include CFFs the customer owns (via ``list_customer_cffs``)
+    #     that are NOT yet linked to any project. Converted CFFs are
+    #     already represented by the Formulation card above; duplicating
+    #     them here would clutter the list.
+    #   * Rejected CFFs stay in the list so the customer sees the
+    #     outcome ("Not proceeding") right next to their live projects
+    #     rather than having to hunt through /portal/cffs.
+    products.extend(_cff_product_cards_for_customer(customer_ids))
+
+    # Most-recently-updated first — mixes CFF cards and formulation
+    # cards on one timeline, which matches the customer's mental model
+    # of "everything I've done, newest first".
     products.sort(key=lambda p: p["last_updated"], reverse=True)
     return products
+
+
+def _cff_product_cards_for_customer(customer_ids) -> list[dict]:
+    """CFFs surfaced as pre-project 'draft product' cards.
+
+    Called from :func:`_build_products` so the customer's landing page
+    shows their submission the moment they hit Submit, without waiting
+    on the triage side to spin up a Formulation. Once triage converts
+    a CFF to a project, the corresponding Formulation card takes over
+    and this list excludes the CFF (guard: ``projects__isnull=True``).
+
+    Rejected CFFs stay in the list so the customer sees the outcome
+    inline with their live projects; they read as pre-project cards
+    with a red 'Not proceeding' chip.
+    """
+
+    # Lazy import — the module boots as part of the portal API stack
+    # and this branch is a leaf, so keeping the import local avoids
+    # dragging the CFF app into every dashboard warm-boot.
+    from apps.cff_submissions.services import list_customer_cffs
+
+    # ``client_account`` isn't in scope here; recover the caller's
+    # first covered account so ``list_customer_cffs`` can use the
+    # same email + project-link ownership union it does elsewhere.
+    # Falls back to an empty list on any lookup miss so the products
+    # page never 500s from a pre-project card branch.
+    from apps.client_portal.models import ClientAccount
+    from apps.customers.models import Customer
+
+    if not customer_ids:
+        return []
+
+    customers = Customer.objects.filter(id__in=customer_ids).select_related()
+    if not customers.exists():
+        return []
+
+    account = (
+        ClientAccount.objects
+        .filter(customer_id__in=customer_ids)
+        .order_by("created_at")
+        .first()
+    )
+    if account is None:
+        return []
+
+    cff_qs = (
+        list_customer_cffs(client_account=account)
+        # Only pre-project CFFs. Converted ones show up as Formulation
+        # cards via the main loop; duplicating them here would double
+        # the row per customer submission.
+        .filter(projects__isnull=True)
+        .distinct()
+        .order_by("-wix_updated_date", "-imported_at")
+    )
+
+    cards: list[dict] = []
+    for cff in cff_qs:
+        is_rejected = cff.rejected_at is not None
+        stage_key = "cff_rejected" if is_rejected else "cff_under_review"
+
+        # Name preference: the customer's typed answers on the form
+        # → market segment → generic "Custom formulation request".
+        # ``raw_payload`` is a dict for portal-authored rows and Wix
+        # rows both, so the walk is uniform.
+        summary = _cff_summary(cff)
+
+        # ``last_updated`` is what the sort key reads. Use the most
+        # recent lifecycle event (reject decision if present, else
+        # the last sync) so a just-rejected CFF surfaces above
+        # older projects.
+        last_updated = (
+            cff.rejected_at
+            or cff.wix_updated_date
+            or cff.imported_at
+        )
+        cards.append(
+            {
+                "kind": "cff",
+                "id": str(cff.id),
+                # No Formulation code exists yet — mirror the shape
+                # by using the short id so the FE doesn't blow up on
+                # a null. Prefix with `#` so operators reading the
+                # payload know it's not a real project code.
+                "code": f"#{str(cff.id)[:8]}",
+                "name": summary or "Custom formulation request",
+                "project_status": "",
+                "stage_key": stage_key,
+                "stage_label": _STAGE_LABELS[stage_key],
+                # No actionable next step from the customer side —
+                # the CFF is on our desk, not theirs.
+                "next_action_url": None,
+                "proposal_id": None,
+                "proposal_code": "",
+                "label_design_id": None,
+                "last_updated": last_updated.isoformat(),
+                # Click routes to the CFF detail page so the customer
+                # can re-read their submission + see the rejection
+                # reason if applicable.
+                "href": f"/portal/cffs/{cff.id}",
+            },
+        )
+    return cards
+
+
+def _cff_summary(cff) -> str:
+    """Copy of the CFF list's summary heuristic — kept in this
+    module so the products list doesn't import cff_views for one
+    helper. Walks a small set of preferred slugs on
+    ``raw_payload.submissions`` and returns the first non-empty
+    string, trimmed to 160 chars."""
+
+    raw = getattr(cff, "raw_payload", None)
+    subs = raw.get("submissions") if isinstance(raw, dict) else None
+    if not isinstance(subs, dict):
+        return ""
+    for prefix in (
+        "market_segment",
+        "product_type",
+        "product_category",
+        "brief",
+        "summary",
+        "company_name",
+        "company",
+    ):
+        for slug, value in subs.items():
+            if not slug.startswith(prefix):
+                continue
+            if isinstance(value, str) and value.strip():
+                return value.strip().replace("\n", " ")[:160]
+    return ""
 
 
 # ---------------------------------------------------------------------------

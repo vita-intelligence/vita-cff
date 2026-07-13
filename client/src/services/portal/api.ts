@@ -445,11 +445,24 @@ export interface PortalCFFListItem {
    *  as more than a row of timestamps. Empty string when the
    *  importer couldn't find a usable slug. */
   readonly summary: string;
+  /** Triage-side rejection state. Surfaced to the customer so the
+   *  outcome is visible without waiting on an email. */
+  readonly is_rejected: boolean;
+  readonly rejection_reason: string;
+  readonly rejected_at: string | null;
+  /** ``wix`` (anonymous marketing form) or ``portal`` (this
+   *  customer typed it into the in-portal wizard). */
+  readonly provenance: string;
+  /** Derived single-value lifecycle for the chip. One of
+   *  ``under_review`` | ``rejected`` | ``project_created``. */
+  readonly lifecycle_state: string;
 }
 
 
 export interface PortalCFFDetail extends PortalCFFListItem {
-  readonly wix_form_id: string;
+  /** Nullable now that portal-authored submissions exist — those
+   *  rows have no Wix form to point at. */
+  readonly wix_form_id: string | null;
   /** Full ``raw_payload`` from Wix so the customer can re-read
    *  their own submission verbatim. Shape varies by form
    *  version — render with the same heuristic dl approach the

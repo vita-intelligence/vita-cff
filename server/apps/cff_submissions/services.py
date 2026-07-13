@@ -843,6 +843,225 @@ def unreject(
 
 
 # ---------------------------------------------------------------------------
+# Portal-authored CFF submissions
+# ---------------------------------------------------------------------------
+#
+# Portal submissions land here from the authenticated customer portal
+# rather than the Wix marketing form. They ship as a typed payload
+# (see :class:`PortalSubmissionInput` below) and get flattened into
+# the same slug-keyed ``submissions`` dict Wix produces, so the
+# triage inbox, comments dock, list_customer_cffs, and every downstream
+# consumer read both shapes without branching.
+#
+# The slugs below are the canonical portal names — flat, snake_case,
+# no Wix-style ``_fc7d`` random suffix. The FE field-label rendering
+# falls back to slug prettification when a label isn't in the schema
+# cache, so a portal row displays cleanly without a bespoke label
+# table.
+
+
+class CFFPortalError(RuntimeError):
+    """Raised when a portal submission would violate an invariant
+    (unknown client account, empty required field, etc.). API maps
+    to 4xx. Distinct from :class:`CFFAssignmentError` /
+    :class:`CFFRejectionError` so the FE toast copy can differentiate."""
+
+
+#: Canonical slug for the "who's your Vita account manager?" field
+#: on portal submissions. Wix uses ``vita_manufacture_account_manager_email``;
+#: we keep the same suffix so :func:`_extract_sales_person_email` picks
+#: it up without a special case.
+_PORTAL_SLUG_SALES_PERSON_EMAIL = "vita_manufacture_account_manager_email"
+
+
+#: Canonical slug for the customer's own email. Also matched by
+#: :data:`SUBMITTER_EMAIL_SLUG_PREFIXES` for the denormalised
+#: ``submitter_email`` column.
+_PORTAL_SLUG_EMAIL = "email"
+
+
+@dataclass(frozen=True)
+class PortalSubmissionInput:
+    """Structured input for :func:`create_portal_submission`.
+
+    Every field is optional at the type level — the service layer
+    enforces required-ness with a single validator so we can produce
+    field-scoped error dicts the FE can attach to the right input.
+    """
+
+    # Step 1 — General information
+    first_name: str = ""
+    last_name: str = ""
+    email: str = ""
+    phone: str = ""
+    company_name: str = ""
+
+    # Step 2 — Product information
+    product_formats: tuple[str, ...] = ()
+    market_segment: str = ""
+    dose: str = ""
+    nutritional_requirements: tuple[str, ...] = ()
+    target_sex: tuple[str, ...] = ()
+    target_age: tuple[str, ...] = ()
+    other_nutritional_requirements: str = ""
+
+    # Step 3 — Formulation
+    dose_per_unit: str = ""
+    actives_requirements: str = ""
+
+    # Step 4 — Packaging
+    primary_package_type: str = ""
+    quantity_to_be_quoted: str = ""
+
+    # Step 5 — Address
+    country_region: str = ""
+    address: str = ""
+    city: str = ""
+    postal_code: str = ""
+    delivery_same_as_proposal: str = ""  # "yes" | "no" | ""
+
+    # Step 6 — Signoff
+    account_manager_email: str = ""
+
+
+#: Fields that must be non-blank for a portal submission to save.
+#: Mirrors the ``*`` markers on the Wix form so the two flows enforce
+#: the same minimum quality bar.
+_REQUIRED_PORTAL_FIELDS: tuple[tuple[str, str], ...] = (
+    ("first_name", "First name"),
+    ("last_name", "Last name"),
+    ("email", "Email"),
+    ("company_name", "Company name"),
+    ("dose", "Dose"),
+    ("primary_package_type", "Primary package type"),
+    ("quantity_to_be_quoted", "Quantity to be quoted"),
+    ("country_region", "Country / region"),
+    ("address", "Address"),
+    ("city", "City"),
+    ("postal_code", "Postal code"),
+)
+
+
+def _portal_input_to_submissions(inp: PortalSubmissionInput) -> dict[str, Any]:
+    """Flatten the typed input into the slug-keyed ``submissions``
+    dict Wix produces. Keys are stable snake_case slugs; multi-choice
+    fields collapse to a comma-separated string so a schema-agnostic
+    reader can still show them.
+
+    Empty strings survive the flatten so the triage inbox can render
+    "—" instead of hiding the field. Multi-choice tuples with no
+    picks land as ``""`` for the same reason.
+    """
+
+    def _join(values: tuple[str, ...]) -> str:
+        return ", ".join(v for v in values if v)
+
+    return {
+        # General information
+        "first_name": inp.first_name.strip(),
+        "last_name": inp.last_name.strip(),
+        _PORTAL_SLUG_EMAIL: inp.email.strip().lower(),
+        "phone": inp.phone.strip(),
+        "company_name": inp.company_name.strip(),
+        # Product
+        "product_format": _join(inp.product_formats),
+        "market_segment": inp.market_segment.strip(),
+        "dose": inp.dose.strip(),
+        "nutritional_requirements": _join(inp.nutritional_requirements),
+        "target_sex": _join(inp.target_sex),
+        "target_age": _join(inp.target_age),
+        "other_nutritional_requirements": inp.other_nutritional_requirements.strip(),
+        # Formulation
+        "dose_per_unit": inp.dose_per_unit.strip(),
+        "actives_requirements": inp.actives_requirements.strip(),
+        # Packaging
+        "primary_package_type": inp.primary_package_type.strip(),
+        "quantity_to_be_quoted": inp.quantity_to_be_quoted.strip(),
+        # Address
+        "country_region": inp.country_region.strip(),
+        "address": inp.address.strip(),
+        "city": inp.city.strip(),
+        "postal_code": inp.postal_code.strip(),
+        "delivery_same_as_proposal": inp.delivery_same_as_proposal.strip(),
+        # Signoff — same slug as Wix so the sales-person resolver
+        # picks it up without a special case.
+        _PORTAL_SLUG_SALES_PERSON_EMAIL: inp.account_manager_email.strip().lower(),
+    }
+
+
+@transaction.atomic
+def create_portal_submission(
+    *,
+    client_account: Any,
+    payload: PortalSubmissionInput,
+) -> CFFSubmission:
+    """Create a CFFSubmission from an authenticated portal customer.
+
+    The row lands in the triage queue immediately (provenance=portal,
+    no Wix ids). ``raw_payload`` is shaped like a Wix response so
+    every downstream reader — triage inbox, list_customer_cffs, the
+    portal detail page — works without branching.
+
+    Failure modes:
+
+    * Missing required fields -> ``CFFPortalError`` with a
+      per-field errors dict the API layer surfaces as 422.
+    * Missing ``client_account.customer.organization`` -> the
+      submission has no valid tenant to land in; refuse with a
+      generic ``CFFPortalError``.
+    """
+
+    field_errors: dict[str, str] = {}
+    for field_name, label in _REQUIRED_PORTAL_FIELDS:
+        value = getattr(payload, field_name, "") or ""
+        if not str(value).strip():
+            field_errors[field_name] = f"{label} is required."
+
+    if field_errors:
+        exc = CFFPortalError("Fill in every required field before submitting.")
+        exc.field_errors = field_errors  # type: ignore[attr-defined]
+        raise exc
+
+    # Resolve the tenant off the customer row on the account. Portal
+    # accounts are 1:1 with a customer today; if that guarantee ever
+    # breaks the API layer will need to pick which tenant to route to.
+    customer = getattr(client_account, "customer", None)
+    if customer is None or customer.organization_id is None:
+        raise CFFPortalError(
+            "This portal account isn't attached to a customer yet — "
+            "reach out to your account manager to get set up.",
+        )
+
+    now = django_timezone.now()
+    submissions = _portal_input_to_submissions(payload)
+
+    submission = CFFSubmission.objects.create(
+        organization_id=customer.organization_id,
+        provenance="portal",
+        # Portal rows carry no Wix ids; the fields are nullable now.
+        wix_submission_id=None,
+        wix_form_id=None,
+        wix_namespace="",
+        wix_status="",
+        wix_created_date=now,
+        wix_updated_date=now,
+        raw_payload={
+            "submissions": submissions,
+            # Match the top-level Wix envelope shape so tests / readers
+            # walking the payload don't hit an unfamiliar structure.
+            "_meta": {
+                "provenance": "portal",
+                "submitted_at": now.isoformat(),
+                "submitted_by_client_account_id": str(client_account.pk),
+            },
+        },
+        submitter_email=payload.email.strip().lower(),
+        submitted_by_client_account=client_account,
+    )
+    return submission
+
+
+# ---------------------------------------------------------------------------
 # "Create project from CFF" — one-click triage path
 # ---------------------------------------------------------------------------
 
@@ -1174,7 +1393,10 @@ def get_customer_cff(*, client_account, submission_id) -> CFFSubmission | None:
 
 __all__ = [
     "CFFAssignmentError",
+    "CFFPortalError",
     "CFFRejectionError",
+    "PortalSubmissionInput",
+    "create_portal_submission",
     "CreateFromCFFResult",
     "ImportResult",
     "WixAPIError",

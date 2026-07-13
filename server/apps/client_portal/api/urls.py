@@ -5,10 +5,12 @@ from __future__ import annotations
 from django.urls import path
 
 from .cff_views import (
+    PortalCFFCreateView,
     PortalCFFDetailView,
     PortalCFFListView,
     PortalCFFMessagesReadView,
     PortalCFFMessagesView,
+    PortalCFFSalesPeopleView,
 )
 from .inbox_views import (
     PortalInboxListView,
@@ -319,6 +321,19 @@ urlpatterns = [
     # .list_customer_cffs`) plus a shared comment thread on each
     # so they can follow up on the request they submitted.
     path("cffs/", PortalCFFListView.as_view(), name="cff-list"),
+    # Sales-people picker for the portal wizard. Static path MUST
+    # come before the ``<uuid>`` detail route, or "sales-people"
+    # would be parsed as a bogus UUID.
+    path(
+        "cffs/sales-people/",
+        PortalCFFSalesPeopleView.as_view(),
+        name="cff-sales-people",
+    ),
+    # In-portal CFF submission (the multi-step wizard). Distinct
+    # from the anonymous Wix marketing form, which continues to
+    # land via the poller. Both write to CFFSubmission — the
+    # ``provenance`` column disambiguates.
+    path("cffs/new/", PortalCFFCreateView.as_view(), name="cff-create"),
     path(
         "cffs/<uuid:submission_id>/",
         PortalCFFDetailView.as_view(),
