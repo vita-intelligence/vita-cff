@@ -36,7 +36,8 @@
   "badge": {
     "unassigned": "Not attached to any project",
     "assigned_to": "Attached to {project}",
-    "assigned_to_n": "Attached to {count} projects"
+    "assigned_to_n": "Attached to {count} projects",
+    "drafted_as": "Drafted as {proposal}"
   },
   "detail": {
     "title": "CFF submission",
