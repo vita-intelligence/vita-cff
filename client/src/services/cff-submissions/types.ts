@@ -49,12 +49,24 @@ export interface CFFAssignmentDto {
 
 export interface CFFSubmissionDto {
   readonly id: string;
-  readonly wix_submission_id: string;
-  readonly wix_form_id: string;
+  /** ``"wix"`` for rows ingested from the marketing form,
+   *  ``"portal"`` for rows submitted by an authenticated customer in
+   *  the portal wizard. Drives whether the ``wix_*`` fields carry
+   *  values or come back nullish. */
+  readonly provenance?: "wix" | "portal";
+  /** ``"custom"`` (default) or ``"ready_to_go"``. RTG rows carry a
+   *  pre-drafted proposal via ``drafted_proposal_id``. */
+  readonly submission_kind?: "custom" | "ready_to_go";
+  /** Every ``wix_*`` field is null / empty on portal-provenance rows
+   *  because they were never a Wix form submission. Wix-provenance
+   *  rows always carry them. Consumers should either branch on
+   *  ``provenance`` or fall back to a safe default. */
+  readonly wix_submission_id: string | null;
+  readonly wix_form_id: string | null;
   readonly wix_namespace: string;
-  readonly wix_status: CFFSubmissionStatus;
-  readonly wix_created_date: string;
-  readonly wix_updated_date: string;
+  readonly wix_status: CFFSubmissionStatus | "" | null;
+  readonly wix_created_date: string | null;
+  readonly wix_updated_date: string | null;
   /** Raw Wix payload — the UI walks ``submissions`` to render the
    *  form fields with labels from the schema cache. */
   readonly raw_payload: Record<string, unknown>;

@@ -287,7 +287,12 @@ export function CFFDetailModal({
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const labels = fieldLabels[submission.wix_form_id] ?? {};
+  // Portal rows have no ``wix_form_id``; there's no per-form label
+  // schema to look up, so we render slugs verbatim (they arrive as
+  // human-readable snake_case in the portal envelope).
+  const labels = submission.wix_form_id
+    ? fieldLabels[submission.wix_form_id] ?? {}
+    : {};
   const submissions =
     (submission.raw_payload?.submissions as Record<string, unknown> | undefined)
     ?? {};
@@ -365,7 +370,13 @@ export function CFFDetailModal({
               >
                 {customerName || t("detail.title")}
               </h2>
-              <StatusPill status={submission.wix_status} t={t} />
+              <StatusPill
+                status={
+                  submission.wix_status ||
+                  (submission.provenance === "portal" ? "PORTAL" : "UNKNOWN")
+                }
+                t={t}
+              />
             </div>
             {company ? (
               <p className="truncate text-sm text-ink-700">{company}</p>
@@ -373,7 +384,13 @@ export function CFFDetailModal({
             <p className="text-[11px] text-ink-500">
               {t("list.received", {
                 when: format.relativeTime(
-                  new Date(submission.wix_created_date),
+                  // Portal submissions have no ``wix_created_date`` —
+                  // fall back to ``imported_at`` (set on both paths)
+                  // so the "received X ago" line still renders.
+                  new Date(
+                    submission.wix_created_date ||
+                      submission.imported_at,
+                  ),
                   now,
                 ),
               })}
@@ -477,33 +494,58 @@ export function CFFDetailModal({
             )}
           </div>
 
-          {/* Source meta — always last, dimmer */}
+          {/* Source meta — always last, dimmer. Wix-only fields are
+              gated behind ``provenance === "wix"`` because portal
+              submissions carry ``null`` for every Wix column and would
+              otherwise crash rendering (``t("status.")`` misses,
+              ``new Date(null)`` renders "Invalid Date"). */}
           <details className="mt-6 rounded-xl bg-white p-3 ring-1 ring-ink-200">
             <summary className="cursor-pointer text-[11px] font-medium uppercase tracking-wider text-ink-500">
               {t("detail.section_meta")}
             </summary>
             <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-[140px_minmax(0,1fr)]">
-              <dt className="text-ink-500">{t("detail.wix_status")}</dt>
-              <dd className="text-ink-1000">
-                {t(`status.${submission.wix_status as "CONFIRMED"}`)}
-              </dd>
-              <dt className="text-ink-500">{t("detail.wix_created")}</dt>
-              <dd className="text-ink-1000">
-                {format.dateTime(new Date(submission.wix_created_date), {
-                  dateStyle: "medium",
-                  timeStyle: "short",
-                })}
-              </dd>
+              {submission.provenance === "portal" ? (
+                <>
+                  <dt className="text-ink-500">{t("detail.wix_status")}</dt>
+                  <dd className="text-ink-1000">Portal submission</dd>
+                </>
+              ) : (
+                <>
+                  <dt className="text-ink-500">{t("detail.wix_status")}</dt>
+                  <dd className="text-ink-1000">
+                    {t(
+                      `status.${(submission.wix_status || "UNKNOWN") as "CONFIRMED"}`,
+                    )}
+                  </dd>
+                  {submission.wix_created_date ? (
+                    <>
+                      <dt className="text-ink-500">
+                        {t("detail.wix_created")}
+                      </dt>
+                      <dd className="text-ink-1000">
+                        {format.dateTime(
+                          new Date(submission.wix_created_date),
+                          { dateStyle: "medium", timeStyle: "short" },
+                        )}
+                      </dd>
+                    </>
+                  ) : null}
+                </>
+              )}
               <dt className="text-ink-500">
                 {t("detail.imported_at", { when: "" }).trim() || "Imported"}
               </dt>
               <dd className="text-ink-1000">
                 {format.relativeTime(new Date(submission.imported_at), now)}
               </dd>
-              <dt className="text-ink-500">Wix ID</dt>
-              <dd className="break-all font-mono text-[11px] text-ink-700">
-                {submission.wix_submission_id}
-              </dd>
+              {submission.wix_submission_id ? (
+                <>
+                  <dt className="text-ink-500">Wix ID</dt>
+                  <dd className="break-all font-mono text-[11px] text-ink-700">
+                    {submission.wix_submission_id}
+                  </dd>
+                </>
+              ) : null}
             </dl>
           </details>
         </div>
@@ -1089,17 +1131,23 @@ function StatusPill({
   status: string;
   t: ReturnType<typeof useTranslations>;
 }) {
+  // Portal-provenance submissions have no Wix status, so callers may
+  // pass ``null``/``""`` here. Normalise to a defined translation key
+  // so ``t(`status.${key}`)`` can never miss and crash the render.
+  const key = status || "UNKNOWN";
   const tone =
-    status === "CONFIRMED"
+    key === "CONFIRMED"
       ? "bg-success/10 text-success ring-success/20"
-      : status === "UNKNOWN"
-        ? "bg-ink-100 text-ink-600 ring-ink-200"
-        : "bg-warning/10 text-warning ring-warning/20";
+      : key === "PORTAL"
+        ? "bg-blue-100 text-blue-700 ring-blue-200"
+        : key === "UNKNOWN"
+          ? "bg-ink-100 text-ink-600 ring-ink-200"
+          : "bg-warning/10 text-warning ring-warning/20";
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tone}`}
     >
-      {t(`status.${status as "CONFIRMED"}`)}
+      {t(`status.${key as "CONFIRMED"}`)}
     </span>
   );
 }

@@ -227,7 +227,9 @@ function ChooserModal({
                     </span>
                   ) : null}
                   <span className="text-[11px] text-ink-400">
-                    {new Date(row.wix_created_date).toLocaleDateString()}
+                    {new Date(
+                      row.wix_created_date || row.imported_at,
+                    ).toLocaleDateString()}
                   </span>
                 </button>
               </li>

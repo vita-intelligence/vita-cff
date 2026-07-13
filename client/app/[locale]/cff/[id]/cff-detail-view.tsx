@@ -130,6 +130,11 @@ export function CFFDetailView({
   const labelMap = useMemo(() => {
     const submission = cffQuery.data;
     if (!submission) return {} as Record<string, string>;
+    // Portal-provenance rows carry no ``wix_form_id`` — the shape's
+    // {slug: value} envelope is renderable without a per-form label
+    // schema (slugs are humanised via ``humanise``), so returning an
+    // empty label map is the correct fallback.
+    if (!submission.wix_form_id) return {} as Record<string, string>;
     return (
       labelsQuery.data?.field_labels_by_form?.[submission.wix_form_id] ?? {}
     );
@@ -209,14 +214,26 @@ export function CFFDetailView({
               <p className="text-xs text-ink-500">
                 {t("list.received", {
                   when: format.relativeTime(
-                    new Date(submission.wix_created_date),
+                    // Portal rows carry no ``wix_created_date``;
+                    // ``imported_at`` is populated on both paths so
+                    // the relative timestamp always renders.
+                    new Date(
+                      submission.wix_created_date ||
+                        submission.imported_at,
+                    ),
                     now,
                   ),
                 })}
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <StatusPill status={submission.wix_status} t={t} />
+              <StatusPill
+                status={
+                  submission.wix_status ||
+                  (submission.provenance === "portal" ? "PORTAL" : "UNKNOWN")
+                }
+                t={t}
+              />
               {/* Linked-project chips. Each assignment renders its own
                   pill linking to that project — the M2M lets one CFF
                   fan out to multiple workspaces and the operator
@@ -626,17 +643,22 @@ function StatusPill({
   status: string;
   t: ReturnType<typeof useTranslations>;
 }) {
+  // Portal-provenance submissions carry no Wix status, so callers
+  // may pass ``null``/``""`` here. Normalise so ``t()`` can't miss.
+  const key = status || "UNKNOWN";
   const tone =
-    status === "CONFIRMED"
+    key === "CONFIRMED"
       ? "bg-success/10 text-success ring-success/20"
-      : status === "UNKNOWN"
-        ? "bg-ink-100 text-ink-600 ring-ink-200"
-        : "bg-warning/10 text-warning ring-warning/20";
+      : key === "PORTAL"
+        ? "bg-blue-100 text-blue-700 ring-blue-200"
+        : key === "UNKNOWN"
+          ? "bg-ink-100 text-ink-600 ring-ink-200"
+          : "bg-warning/10 text-warning ring-warning/20";
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tone}`}
     >
-      {t(`status.${status as "CONFIRMED"}`)}
+      {t(`status.${key as "CONFIRMED"}`)}
     </span>
   );
 }
