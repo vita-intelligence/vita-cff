@@ -66,6 +66,14 @@ export interface CFFSubmissionDto {
    *  backend pre-computes it so the inbox can render the binary
    *  Assigned / Unassigned chip without walking the array. */
   readonly is_assigned: boolean;
+  /** Rejected state — the alternative to assigning. When true the
+   *  CFF sits in the Rejected tab and the details below are set. */
+  readonly is_rejected: boolean;
+  readonly rejected_at: string | null;
+  readonly rejected_by: CFFAuthorDto | null;
+  /** Reason typed by the triager when they rejected the CFF. Empty
+   *  string when ``is_rejected`` is false. */
+  readonly rejection_reason: string;
   readonly imported_at: string;
   readonly last_synced_at: string;
 }

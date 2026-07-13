@@ -8,9 +8,12 @@ export {
   fetchCFFSubmissionsPage,
   fetchCFFSyncStatus,
   fetchWixCFFConfig,
+  rejectCFF,
   saveWixCFFConfig,
   testWixCFFConnection,
   unassignCFF,
+  unrejectCFF,
+  type CFFTriageState,
 } from "./api";
 export {
   cffQueryKeys,
@@ -21,9 +24,11 @@ export {
   useClearWixCFFConfig,
   useCreateProjectFromCFF,
   useInfiniteCFFSubmissions,
+  useRejectCFF,
   useSaveWixCFFConfig,
   useTestWixCFFConnection,
   useUnassignCFF,
+  useUnrejectCFF,
   useWixCFFConfig,
 } from "./hooks";
 export type {

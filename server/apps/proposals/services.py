@@ -662,6 +662,23 @@ def create_proposal(
     if valid_until is None:
         valid_until = (timezone.now().date() + timedelta(days=14))
 
+    # Sync back to the parent formulation when the sales rep picked a
+    # template that disagrees with the formulation's current
+    # project_type — the two are supposed to travel together, and the
+    # workflow's roadmap (trial batch vs skip-to-payment) reads from
+    # formulation.project_type. Without this, picking "Ready to Go" on
+    # the proposal form only changes which .docx renders — the rest of
+    # the pipeline still runs the Custom trial-batch loop.
+    if (
+        chosen_template
+        and chosen_template != version.formulation.project_type
+    ):
+        version.formulation.project_type = chosen_template
+        version.formulation.updated_by = actor
+        version.formulation.save(
+            update_fields=["project_type", "updated_by", "updated_at"]
+        )
+
     proposal = Proposal.objects.create(
         organization=organization,
         formulation_version=version,

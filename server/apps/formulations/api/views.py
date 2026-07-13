@@ -53,6 +53,7 @@ from apps.formulations.services import (
     InvalidSweetenerItem,
     InvalidTabletSize,
     LeadScientistNotMember,
+    ProjectTypeLocked,
     RawMaterialNotInOrg,
     SalesPersonNotMember,
     assign_lead_scientist,
@@ -281,6 +282,11 @@ class FormulationDetailView(APIView):
         except FormulationCodeConflict:
             return Response(
                 {"code": ["formulation_code_conflict"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except ProjectTypeLocked:
+            return Response(
+                {"project_type": ["project_type_locked"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidDosageForm:

@@ -8,8 +8,10 @@ from .views import (
     CFFDetailView,
     CFFFieldLabelsView,
     CFFListView,
+    CFFRejectView,
     CFFSyncStatusView,
     CFFUnassignView,
+    CFFUnrejectView,
     WixCFFIntegrationView,
     WixCFFTestConnectionView,
 )
@@ -50,6 +52,16 @@ urlpatterns = [
         "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/unassign/",
         CFFUnassignView.as_view(),
         name="unassign",
+    ),
+    path(
+        "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/reject/",
+        CFFRejectView.as_view(),
+        name="reject",
+    ),
+    path(
+        "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/unreject/",
+        CFFUnrejectView.as_view(),
+        name="unreject",
     ),
     path(
         "organizations/<uuid:org_id>/cff-submissions/<uuid:submission_id>/create-project/",

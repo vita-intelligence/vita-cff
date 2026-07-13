@@ -29,9 +29,12 @@ import {
   fetchCFFSubmissionsPage,
   fetchCFFSyncStatus,
   fetchWixCFFConfig,
+  rejectCFF,
   saveWixCFFConfig,
   testWixCFFConnection,
   unassignCFF,
+  unrejectCFF,
+  type CFFTriageState,
   type FetchCFFSubmissionsPageOptions,
 } from "./api";
 import type {
@@ -52,7 +55,7 @@ export const cffQueryKeys = {
     orgId: string,
     filters: Pick<
       FetchCFFSubmissionsPageOptions,
-      "assigned" | "search" | "projectId" | "pageSize"
+      "state" | "assigned" | "search" | "projectId" | "pageSize"
     >,
   ) =>
     [
@@ -60,6 +63,7 @@ export const cffQueryKeys = {
       orgId,
       "list",
       {
+        state: filters.state ?? null,
         assigned: filters.assigned ?? null,
         search: filters.search ?? "",
         projectId: filters.projectId ?? null,
@@ -84,6 +88,9 @@ export const cffQueryKeys = {
 
 export interface UseInfiniteCFFArgs {
   readonly orgId: string;
+  /** Four-way triage lens. Preferred; overrides ``assigned`` when set. */
+  readonly state?: CFFTriageState;
+  /** @deprecated — prefer ``state``. Kept for callers that haven't migrated. */
   readonly assigned?: boolean;
   readonly search?: string;
   readonly projectId?: string;
@@ -107,6 +114,7 @@ export function useInfiniteCFFSubmissions(
     string | null
   >({
     queryKey: cffQueryKeys.list(args.orgId, {
+      state: args.state,
       assigned: args.assigned,
       search: args.search,
       projectId: args.projectId,
@@ -115,6 +123,7 @@ export function useInfiniteCFFSubmissions(
     queryFn: async ({ pageParam }) => {
       const page = await fetchCFFSubmissionsPage(args.orgId, {
         cursorUrl: pageParam ?? undefined,
+        state: args.state,
         assigned: args.assigned,
         search: args.search,
         projectId: args.projectId,
@@ -267,6 +276,56 @@ export function useUnassignCFF(
       // Seed the detail query with the post-detach row so the
       // assign modal's chip list reflows in place. Same reasoning
       // as the assign mutation above.
+      queryClient.setQueryData(
+        cffQueryKeys.detail(orgId, submissionId),
+        fresh,
+      );
+      queryClient.invalidateQueries({
+        queryKey: [...cffQueryKeys.all, orgId, "list"],
+      });
+    },
+  });
+}
+
+
+interface RejectVars {
+  readonly submissionId: string;
+  readonly reason: string;
+}
+
+
+export function useRejectCFF(
+  orgId: string,
+): UseMutationResult<CFFSubmissionDto, ApiError, RejectVars> {
+  const queryClient = useQueryClient();
+  return useMutation<CFFSubmissionDto, ApiError, RejectVars>({
+    mutationFn: ({ submissionId, reason }) =>
+      rejectCFF(orgId, submissionId, reason),
+    onSuccess: (fresh, { submissionId }) => {
+      queryClient.setQueryData(
+        cffQueryKeys.detail(orgId, submissionId),
+        fresh,
+      );
+      queryClient.invalidateQueries({
+        queryKey: [...cffQueryKeys.all, orgId, "list"],
+      });
+    },
+  });
+}
+
+
+interface UnrejectVars {
+  readonly submissionId: string;
+}
+
+
+export function useUnrejectCFF(
+  orgId: string,
+): UseMutationResult<CFFSubmissionDto, ApiError, UnrejectVars> {
+  const queryClient = useQueryClient();
+  return useMutation<CFFSubmissionDto, ApiError, UnrejectVars>({
+    mutationFn: ({ submissionId }) => unrejectCFF(orgId, submissionId),
+    onSuccess: (fresh, { submissionId }) => {
       queryClient.setQueryData(
         cffQueryKeys.detail(orgId, submissionId),
         fresh,

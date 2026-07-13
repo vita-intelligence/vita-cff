@@ -2,10 +2,12 @@
 
 import {
   AlertTriangle,
+  Ban,
   ChevronRight,
   Inbox,
   Loader2,
   RefreshCw,
+  RotateCcw,
   Search,
   X,
 } from "lucide-react";
@@ -19,11 +21,13 @@ import { NewFormulationButton } from "../formulations/new-formulation-button";
 import {
   useCFFSyncStatus,
   useInfiniteCFFSubmissions,
+  useRejectCFF,
+  useUnrejectCFF,
   type CFFSubmissionDto,
 } from "@/services/cff-submissions";
 
 
-type Filter = "all" | "unassigned" | "assigned";
+type Filter = "all" | "unassigned" | "assigned" | "rejected";
 
 
 /**
@@ -59,11 +63,11 @@ export function CFFInbox({
   // inbox queue.
   const [openAssign, setOpenAssign] = useState<CFFSubmissionDto | null>(null);
   const [openCreate, setOpenCreate] = useState<CFFSubmissionDto | null>(null);
+  const [openReject, setOpenReject] = useState<CFFSubmissionDto | null>(null);
 
   const listQuery = useInfiniteCFFSubmissions({
     orgId,
-    assigned:
-      filter === "all" ? undefined : filter === "assigned",
+    state: filter,
     search: search.trim() || undefined,
   });
 
@@ -99,11 +103,15 @@ export function CFFInbox({
               <CFFRow
                 key={row.id}
                 row={row}
+                orgId={orgId}
                 onAssign={
                   canAssign ? () => setOpenAssign(row) : undefined
                 }
                 onCreateProject={
                   canAssign ? () => setOpenCreate(row) : undefined
+                }
+                onReject={
+                  canAssign ? () => setOpenReject(row) : undefined
                 }
                 t={t}
               />
@@ -142,6 +150,14 @@ export function CFFInbox({
           initialDescription={deriveDescriptionHint(openCreate)}
           externallyOpen={true}
           onClose={() => setOpenCreate(null)}
+        />
+      ) : null}
+      {openReject ? (
+        <RejectCFFDialog
+          orgId={orgId}
+          submission={openReject}
+          onClose={() => setOpenReject(null)}
+          t={t}
         />
       ) : null}
     </>
@@ -256,7 +272,7 @@ function FilterBar({
         role="tablist"
         className="inline-flex rounded-full bg-ink-50 p-1 ring-1 ring-inset ring-ink-200"
       >
-        {(["unassigned", "all", "assigned"] as const).map((value) => (
+        {(["unassigned", "all", "assigned", "rejected"] as const).map((value) => (
           <button
             key={value}
             type="button"
@@ -314,13 +330,17 @@ function FilterBar({
 
 function CFFRow({
   row,
+  orgId,
   onAssign,
   onCreateProject,
+  onReject,
   t,
 }: {
   row: CFFSubmissionDto;
+  orgId: string;
   onAssign?: () => void;
   onCreateProject?: () => void;
+  onReject?: () => void;
   t: ReturnType<typeof useTranslations>;
 }) {
   const format = useFormatter();
@@ -329,6 +349,7 @@ function CFFRow({
   // it ``relativeTime`` defaults to ``Date.now()`` and the two
   // renders disagree, surfacing as a hydration warning.
   const now = useNow();
+  const unrejectMutation = useUnrejectCFF(orgId);
 
   const previewFields = extractPreview(row.raw_payload);
   const customerName = previewFields.name || previewFields.email || "—";
@@ -350,11 +371,49 @@ function CFFRow({
           {previewFields.email && previewFields.email !== customerName ? (
             <p className="text-xs text-ink-500">{previewFields.email}</p>
           ) : null}
-          <p className="text-[11px] text-ink-500">
+          {/* Received-when line pairs a relative timestamp with the
+              exact wall clock + short submission id. When the same
+              customer spams the form (or legitimately re-submits
+              with tweaks), every row looks identical without these
+              — the operator has no anchor to tell which reject they
+              already fired, and rejections read as no-ops. The full
+              ISO in `title` covers audit / timezone edge cases. */}
+          <p
+            className="text-[11px] text-ink-500"
+            title={new Date(row.wix_created_date).toISOString()}
+          >
             {t("list.received", {
               when: format.relativeTime(new Date(row.wix_created_date), now),
-            })}
+            })}{" "}
+            <span className="text-ink-400">
+              ·{" "}
+              {format.dateTime(new Date(row.wix_created_date), {
+                dateStyle: "short",
+                timeStyle: "short",
+              })}
+            </span>
+            <span className="ml-1.5 font-mono text-[10px] text-ink-400">
+              #{row.id.slice(0, 8)}
+            </span>
           </p>
+          {/* Rejected rows carry their reason inline so the operator
+              browsing the Rejected tab can see at a glance why we
+              said no without opening the detail page. */}
+          {row.is_rejected && row.rejection_reason ? (
+            <p className="mt-1 rounded-lg bg-rose-50 px-3 py-1.5 text-[11px] text-rose-900 ring-1 ring-inset ring-rose-200">
+              <span className="font-semibold">
+                {t("reject.reason_label")}:
+              </span>{" "}
+              <span className="whitespace-pre-wrap">
+                {row.rejection_reason}
+              </span>
+              {row.rejected_by ? (
+                <span className="ml-1 text-rose-700">
+                  — {row.rejected_by.full_name}
+                </span>
+              ) : null}
+            </p>
+          ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {/* Triage actions stay visible regardless of how many
@@ -363,25 +422,60 @@ function CFFRow({
               ``Attach to existing`` opens the picker so the operator
               can wire the CFF into another in-flight project. The
               "send back to triage" path lives inside the assign
-              modal so a stray click on the row doesn't drop links. */}
-          {onAssign ? (
+              modal so a stray click on the row doesn't drop links.
+
+              Rejected rows swap the triage buttons for a single
+              "Send back to triage" button so mistakes can be undone.
+              Reject is hidden once the CFF is assigned — you'd have
+              to unassign first, matching the backend guard. */}
+          {row.is_rejected ? (
             <button
               type="button"
-              onClick={onAssign}
-              className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+              disabled={unrejectMutation.isPending}
+              onClick={() =>
+                unrejectMutation.mutate({ submissionId: row.id })
+              }
+              className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-60"
             >
-              {t("assign.open")}
+              {unrejectMutation.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3" />
+              )}
+              {t("reject.undo")}
             </button>
-          ) : null}
-          {onCreateProject ? (
-            <button
-              type="button"
-              onClick={onCreateProject}
-              className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
-            >
-              {t("create_project.open")}
-            </button>
-          ) : null}
+          ) : (
+            <>
+              {onAssign ? (
+                <button
+                  type="button"
+                  onClick={onAssign}
+                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                >
+                  {t("assign.open")}
+                </button>
+              ) : null}
+              {onCreateProject ? (
+                <button
+                  type="button"
+                  onClick={onCreateProject}
+                  className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
+                >
+                  {t("create_project.open")}
+                </button>
+              ) : null}
+              {onReject && !row.is_assigned ? (
+                <button
+                  type="button"
+                  onClick={onReject}
+                  className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
+                >
+                  <Ban className="h-3 w-3" />
+                  {t("reject.open")}
+                </button>
+              ) : null}
+            </>
+          )}
           {/* Detail view lives on its own route. Spec / project
               detail still use the floating modal for quick-view,
               but the CFF surface always navigates to the dedicated
@@ -401,6 +495,141 @@ function CFFRow({
         </div>
       </article>
     </li>
+  );
+}
+
+
+/**
+ * Modal dialog for capturing a rejection reason before firing the
+ * mutation. Kept lightweight (no headlessui / Radix — the rest of
+ * the CFF surface has been rolling its own inline dialogs so
+ * pulling a new dep in for one screen isn't worth it).
+ *
+ * Escape / backdrop-click cancel; Submit runs the mutation and
+ * closes on success. Errors surface inline so the operator doesn't
+ * lose their typed reason on a validation bounce.
+ */
+function RejectCFFDialog({
+  orgId,
+  submission,
+  onClose,
+  t,
+}: {
+  orgId: string;
+  submission: CFFSubmissionDto;
+  onClose: () => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [reason, setReason] = useState(submission.rejection_reason ?? "");
+  const [error, setError] = useState<string | null>(null);
+  const mutation = useRejectCFF(orgId);
+  const preview = extractPreview(submission.raw_payload);
+  const who = preview.name || preview.email || preview.company || "—";
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = reason.trim();
+    if (!trimmed) {
+      setError(t("reject.reason_required"));
+      return;
+    }
+    setError(null);
+    mutation.mutate(
+      { submissionId: submission.id, reason: trimmed },
+      {
+        onSuccess: () => onClose(),
+        onError: (err) => {
+          setError(err.message || t("reject.error_generic"));
+        },
+      },
+    );
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reject-cff-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink-1000/40 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl ring-1 ring-ink-200"
+      >
+        <div className="mb-3 flex items-start gap-2">
+          <div className="mt-0.5 rounded-full bg-rose-100 p-1.5 text-rose-700">
+            <Ban className="h-4 w-4" />
+          </div>
+          <div className="flex-1">
+            <h2
+              id="reject-cff-title"
+              className="text-sm font-semibold text-ink-1000"
+            >
+              {t("reject.dialog_title", { who })}
+            </h2>
+            <p className="mt-0.5 text-xs text-ink-600">
+              {t("reject.dialog_body")}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label={t("reject.close_aria")}
+            className="rounded-md p-1 text-ink-500 hover:bg-ink-50"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <label className="block text-xs font-medium text-ink-700">
+          {t("reject.reason_label")}
+        </label>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={4}
+          maxLength={2000}
+          autoFocus
+          placeholder={t("reject.reason_placeholder")}
+          className="mt-1 w-full resize-y rounded-lg bg-white px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-rose-400"
+        />
+        {error ? (
+          <p className="mt-1 text-xs text-rose-700">{error}</p>
+        ) : (
+          <p className="mt-1 text-[11px] text-ink-500">
+            {t("reject.reason_hint")}
+          </p>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+          >
+            {t("reject.cancel")}
+          </button>
+          <button
+            type="submit"
+            disabled={mutation.isPending || !reason.trim()}
+            className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-rose-700 disabled:opacity-60"
+          >
+            {mutation.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Ban className="h-3 w-3" />
+            )}
+            {t("reject.confirm")}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 

@@ -49,7 +49,7 @@ from apps.formulations.constants import (
     capsule_size_by_key,
     normalize_use_as_value,
 )
-from apps.formulations.models import FormulationVersion, ProjectStatus
+from apps.formulations.models import FormulationVersion, ProjectStatus, ProjectType
 from apps.formulations.services import (
     _maybe_advance_project_status,
     instantiate_active_label,
@@ -1521,25 +1521,70 @@ def accept_as_customer(
     )
 
     # Customer signature is the project roadmap chip's only forward
-    # trigger past ``in_development``:
+    # trigger past ``in_development``. The target depends on both the
+    # document kind AND the parent project's engagement type:
     #
-    #   * a signed DRAFT sheet flips ``in_development`` → ``pilot``;
-    #   * a signed FINAL sheet flips any prior status → ``approved``.
+    # Custom projects (bespoke laboratory development):
+    #   * signed DRAFT sheet → ``pilot`` (unlocks trial batch phase)
+    #   * signed FINAL sheet → ``approved`` (unlocks label design)
     #
-    # Skip-ahead is fine — if the customer signs a final without
-    # ever signing a draft, the project goes straight to approved.
-    # Forward-only via :func:`_maybe_advance_project_status` so a
-    # later draft signature can never demote an already-approved
-    # project. Actor uses ``sheet.updated_by`` (the kiosk signer
-    # isn't a platform user) so the audit row's FK stays valid.
+    # Ready-to-go projects (existing validated recipe, straight to
+    # manufacture — no trial batch, no final spec ever exists):
+    #   * signed DRAFT sheet → ``approved`` (skip trial + final,
+    #     bootstraps the LabelDesign chain immediately via the
+    #     post_save signal on the spec sheet)
+    #
+    # Skip-ahead is fine — the roadmap is forward-only via
+    # :func:`_maybe_advance_project_status`, so a later draft
+    # signature can never demote an already-approved project. Actor
+    # uses ``sheet.updated_by`` (the kiosk signer isn't a platform
+    # user) so the audit row's FK stays valid.
+    formulation = sheet.formulation_version.formulation
+
+    # RTG signal: honour either the formulation's own project_type OR
+    # the linked proposal's template_type. The two are supposed to
+    # match — the create_proposal service defaults template_type from
+    # formulation.project_type — but the proposal form lets the sales
+    # rep override, and that override doesn't backfill the formulation.
+    # Reading both here means "whatever the customer signed for" wins
+    # over a stale formulation flag from before the sale.
+    linked_proposal = getattr(sheet, "proposal", None)
+    proposal_template_rtg = (
+        linked_proposal is not None
+        and getattr(linked_proposal, "template_type", None)
+        == ProjectType.READY_TO_GO.value
+    )
+    is_ready_to_go = (
+        formulation.project_type == ProjectType.READY_TO_GO.value
+        or proposal_template_rtg
+    )
+
+    # When the proposal signals RTG but the formulation is still
+    # tagged Custom, sync the formulation to match — that way the
+    # rest of the workflow (stepper shape, wizard next-action, etc.)
+    # reads a consistent story. Silently skipped when the formulation
+    # is already the right type or when the guard would refuse the
+    # switch anyway.
+    if (
+        is_ready_to_go
+        and formulation.project_type != ProjectType.READY_TO_GO.value
+    ):
+        formulation.project_type = ProjectType.READY_TO_GO.value
+        formulation.updated_by = sheet.updated_by
+        formulation.save(update_fields=["project_type", "updated_by", "updated_at"])
+
     target_status: str | None = None
     if sheet.document_kind == SpecificationDocumentKind.DRAFT:
-        target_status = ProjectStatus.PILOT.value
+        target_status = (
+            ProjectStatus.APPROVED.value
+            if is_ready_to_go
+            else ProjectStatus.PILOT.value
+        )
     elif sheet.document_kind == SpecificationDocumentKind.FINAL:
         target_status = ProjectStatus.APPROVED.value
     if target_status is not None:
         _maybe_advance_project_status(
-            formulation=sheet.formulation_version.formulation,
+            formulation=formulation,
             target_status=target_status,
             actor=sheet.updated_by,
         )

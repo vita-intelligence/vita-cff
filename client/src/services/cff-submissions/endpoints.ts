@@ -15,6 +15,10 @@ export const cffEndpoints = {
     `/api/organizations/${orgId}/cff-submissions/${submissionId}/assign/`,
   unassign: (orgId: string, submissionId: string) =>
     `/api/organizations/${orgId}/cff-submissions/${submissionId}/unassign/`,
+  reject: (orgId: string, submissionId: string) =>
+    `/api/organizations/${orgId}/cff-submissions/${submissionId}/reject/`,
+  unreject: (orgId: string, submissionId: string) =>
+    `/api/organizations/${orgId}/cff-submissions/${submissionId}/unreject/`,
   createProject: (orgId: string, submissionId: string) =>
     `/api/organizations/${orgId}/cff-submissions/${submissionId}/create-project/`,
   fieldLabels: (orgId: string) =>

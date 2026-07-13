@@ -36,11 +36,14 @@ from apps.cff_submissions.integration import (
 from apps.cff_submissions.models import CFFSubmission
 from apps.cff_submissions.services import (
     CFFAssignmentError,
+    CFFRejectionError,
     assign_to_project,
     create_project_from_cff,
     ensure_fresh_submissions,
     get_field_labels,
+    reject as reject_submission,
     unassign,
+    unreject as unreject_submission,
     verify_wix_cff_connection,
 )
 from apps.cff_submissions.wix_client import WixAPIError
@@ -65,6 +68,7 @@ from .serializers import (
     AssignToProjectRequestSerializer,
     CFFSubmissionSerializer,
     CreateProjectFromCFFRequestSerializer,
+    RejectRequestSerializer,
     UnassignFromProjectRequestSerializer,
 )
 
@@ -154,19 +158,39 @@ class CFFListView(APIView):
         return response
 
     def _filter(self, queryset, request: Request):
-        assigned_raw = request.query_params.get("assigned")
-        if assigned_raw is not None:
-            value = assigned_raw.strip().lower()
-            # ``assignments__isnull`` traverses the through-table
-            # reverse FK: ``False`` means "at least one row", ``True``
-            # means "no rows" — which is exactly the assigned vs
-            # unassigned semantics under the new M2M shape. The
-            # ``.distinct()`` guards against a CFF linked to multiple
-            # projects being returned once per link.
-            if value in {"true", "1", "yes"}:
-                queryset = queryset.filter(assignments__isnull=False).distinct()
-            elif value in {"false", "0", "no"}:
-                queryset = queryset.filter(assignments__isnull=True)
+        # ``state`` is the four-way triage filter — replaces the old
+        # binary ``assigned``. Rejected CFFs never appear alongside
+        # unassigned ones because the operator has already made the
+        # decision to say no; they get their own tab.
+        #
+        #   * ``unassigned`` — in the triage queue AND not rejected.
+        #     The default lens on the inbox page.
+        #   * ``assigned``   — has at least one project link.
+        #   * ``rejected``   — has been rejected via the reject action.
+        #   * ``all``        — no filter (every CFF in the org).
+        #
+        # The legacy ``assigned`` query-param stays supported for one
+        # release so an old bookmark keeps working — it maps onto the
+        # new state values.
+        state = (request.query_params.get("state") or "").strip().lower()
+        if not state:
+            assigned_raw = request.query_params.get("assigned")
+            if assigned_raw is not None:
+                value = assigned_raw.strip().lower()
+                if value in {"true", "1", "yes"}:
+                    state = "assigned"
+                elif value in {"false", "0", "no"}:
+                    state = "unassigned"
+
+        if state == "unassigned":
+            queryset = queryset.filter(
+                assignments__isnull=True, rejected_at__isnull=True,
+            )
+        elif state == "assigned":
+            queryset = queryset.filter(assignments__isnull=False).distinct()
+        elif state == "rejected":
+            queryset = queryset.filter(rejected_at__isnull=False)
+        # ``state == "all"`` (or unknown) → no additional filter.
 
         project_id = request.query_params.get("project_id")
         if project_id:
@@ -312,6 +336,86 @@ class CFFUnassignView(APIView):
                 raise NotFound() from exc
 
         unassign(submission=submission, actor=request.user, project=project)
+        submission = (
+            CFFSubmission.objects
+            .prefetch_related(*_CFF_PREFETCH)
+            .get(id=submission.id)
+        )
+        return Response(CFFSubmissionSerializer(submission).data)
+
+
+class CFFRejectView(APIView):
+    """``POST /api/organizations/<org>/cff-submissions/<id>/reject/``.
+
+    Body: ``{"reason": "<text>"}``. Marks the submission as rejected
+    with the given reason so it leaves the triage queue and files
+    into the Rejected tab. Idempotent — a second call refreshes the
+    stored reason + actor + timestamp on top of any existing reject.
+
+    Gated by the same ``assign_project`` capability as assign / unassign
+    — reject is just the other half of the triage decision, so anyone
+    who can route a CFF can also decline one. Splitting into its own
+    capability would add role-configuration noise without matching any
+    org's actual permissions matrix.
+    """
+
+    permission_classes = (HasCFFPermission,)
+    required_capability = CFFSubmissionsCapability.ASSIGN_PROJECT
+
+    def post(self, request: Request, org_id: str, submission_id: str) -> Response:
+        body = request.data if isinstance(request.data, dict) else {}
+        serializer = RejectRequestSerializer(data=body)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data["reason"]
+
+        try:
+            submission = CFFSubmission.objects.get(
+                id=submission_id, organization=self.organization,
+            )
+        except CFFSubmission.DoesNotExist as exc:
+            raise NotFound() from exc
+
+        try:
+            reject_submission(
+                submission=submission,
+                actor=request.user,
+                reason=reason,
+            )
+        except CFFRejectionError as exc:
+            return Response(
+                {"detail": [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        submission = (
+            CFFSubmission.objects
+            .prefetch_related(*_CFF_PREFETCH)
+            .get(id=submission.id)
+        )
+        return Response(CFFSubmissionSerializer(submission).data)
+
+
+class CFFUnrejectView(APIView):
+    """``POST /api/organizations/<org>/cff-submissions/<id>/unreject/``.
+
+    No body. Clears the rejection state (timestamp + actor + reason)
+    and files the CFF back into the Unassigned queue so triage can
+    reconsider. Idempotent on a CFF that was never rejected.
+    """
+
+    permission_classes = (HasCFFPermission,)
+    required_capability = CFFSubmissionsCapability.ASSIGN_PROJECT
+
+    def post(self, request: Request, org_id: str, submission_id: str) -> Response:
+        try:
+            submission = CFFSubmission.objects.get(
+                id=submission_id, organization=self.organization,
+            )
+        except CFFSubmission.DoesNotExist as exc:
+            raise NotFound() from exc
+
+        unreject_submission(submission=submission, actor=request.user)
+
         submission = (
             CFFSubmission.objects
             .prefetch_related(*_CFF_PREFETCH)

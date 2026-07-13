@@ -22,8 +22,19 @@ import type {
 } from "./types";
 
 
+/** Triage filter states. ``unassigned`` is the default lens; the
+ *  Rejected tab is separate so denied CFFs don't pile up alongside
+ *  the ones triage still owes a decision on. */
+export type CFFTriageState = "unassigned" | "assigned" | "rejected" | "all";
+
+
 export interface FetchCFFSubmissionsPageOptions {
   readonly cursorUrl?: string;
+  /** Four-way triage lens. Preferred over the legacy ``assigned``
+   *  boolean below because the boolean can't express "rejected". */
+  readonly state?: CFFTriageState;
+  /** @deprecated — use ``state`` instead. Kept for callers that
+   *  haven't migrated. When both are supplied, ``state`` wins. */
   readonly assigned?: boolean;
   readonly search?: string;
   readonly projectId?: string;
@@ -50,7 +61,11 @@ function buildListUrl(
   options: FetchCFFSubmissionsPageOptions,
 ): string {
   const params = new URLSearchParams();
-  if (options.assigned !== undefined) {
+  // ``state`` wins over the legacy ``assigned`` boolean so callers
+  // can migrate incrementally. The backend also accepts either.
+  if (options.state) {
+    params.set("state", options.state);
+  } else if (options.assigned !== undefined) {
     params.set("assigned", options.assigned ? "true" : "false");
   }
   if (options.search?.trim()) {
@@ -109,6 +124,33 @@ export async function unassignCFF(
   const { data } = await apiClient.post<CFFSubmissionDto>(
     cffEndpoints.unassign(orgId, submissionId),
     projectId ? { project_id: projectId } : {},
+  );
+  return data;
+}
+
+
+/** Reject a CFF with a required reason. */
+export async function rejectCFF(
+  orgId: string,
+  submissionId: string,
+  reason: string,
+): Promise<CFFSubmissionDto> {
+  const { data } = await apiClient.post<CFFSubmissionDto>(
+    cffEndpoints.reject(orgId, submissionId),
+    { reason },
+  );
+  return data;
+}
+
+
+/** Un-reject a previously-rejected CFF, sending it back to triage. */
+export async function unrejectCFF(
+  orgId: string,
+  submissionId: string,
+): Promise<CFFSubmissionDto> {
+  const { data } = await apiClient.post<CFFSubmissionDto>(
+    cffEndpoints.unreject(orgId, submissionId),
+    {},
   );
   return data;
 }
