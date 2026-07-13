@@ -44,6 +44,7 @@ from .integration import (
 from .models import (
     CFFProjectAssignment,
     CFFSubmission,
+    CFFSubmissionKind,
     CFFSubmissionStatus,
     WixFormSchemaCache,
 )
@@ -1038,6 +1039,7 @@ def create_portal_submission(
     submission = CFFSubmission.objects.create(
         organization_id=customer.organization_id,
         provenance="portal",
+        submission_kind=CFFSubmissionKind.CUSTOM,
         # Portal rows carry no Wix ids; the fields are nullable now.
         wix_submission_id=None,
         wix_form_id=None,
@@ -1391,11 +1393,359 @@ def get_customer_cff(*, client_account, submission_id) -> CFFSubmission | None:
     ).first()
 
 
+# ---------------------------------------------------------------------------
+# Ready-to-Go portal submissions
+# ---------------------------------------------------------------------------
+#
+# RTG rows come off a distinct portal path: the customer picks a
+# published SKU from the org's catalog, fills in a short quantity /
+# packaging / delivery form, and this service wires up the
+# CFFSubmission, source-project reference, and a draft Proposal all
+# in one atomic step. Triage's job on the resulting row is to open
+# the drafted proposal, sanity-check, and hit Send — no re-typing.
+
+
+class CFFRTGSubmissionError(CFFPortalError):
+    """Distinct subclass so the FE toast + FE inline-field errors can
+    differentiate an RTG validation failure from a Custom one.
+    Uses the same ``field_errors`` attribute pattern as
+    :class:`CFFPortalError` so callers can attach a per-field errors
+    dict."""
+
+
+@dataclass(frozen=True)
+class PortalRTGSubmissionInput:
+    """Structured input for :func:`create_portal_rtg_submission`.
+
+    Every field is required at submission time — validation lives in
+    the service so the same guard fires regardless of whether the
+    call came from a DRF view (JSON) or an internal test. Optional
+    entries (``target_ship_date``, ``notes``) surface as ``None`` /
+    ``""`` so ``dataclass(frozen=True)`` doesn't complain about
+    kw-only defaults.
+    """
+
+    rtg_formulation_id: str
+    quantity: int
+    packaging: str
+    delivery_address: str
+    target_ship_date: str | None = None
+    notes: str = ""
+
+
+def _extract_rtg_summary(formulation, packaging: str) -> str:
+    """Compose the human summary written into ``raw_payload`` and
+    used by the triage inbox + portal list as a preview line.
+
+    Short-lived — the drafted proposal takes over the display once
+    triage sends it — but useful for the 30-second window between
+    the customer hitting submit and staff hitting Send."""
+
+    parts = [formulation.name or "Ready-to-Go product"]
+    if packaging:
+        parts.append(packaging)
+    return " · ".join(parts)
+
+
+@transaction.atomic
+def create_portal_rtg_submission(
+    *,
+    client_account: Any,
+    payload: PortalRTGSubmissionInput,
+) -> CFFSubmission:
+    """Create the CFFSubmission + drafted Proposal for one RTG order.
+
+    Steps (all inside one transaction so a partial state can't
+    survive):
+
+    1. Resolve the source :class:`Formulation` on the customer's
+       org. Un-published rows or rows on a different org surface as
+       a 404-shaped ``CFFRTGSubmissionError``.
+    2. Enforce ``quantity >= rtg_moq`` and packaging membership.
+    3. Reuse the source formulation directly — the RTG customer's
+       project points at the same validated recipe. We do NOT clone
+       the recipe; a clone would fork the audit trail against a
+       spec that already exists and is approved.
+    4. Create a Proposal in ``draft`` status against the source
+       formulation's approved version. Line item is the SKU
+       description × quantity × ``rtg_base_price``, snapshotted so
+       later catalog re-pricing doesn't rewrite the drafted quote.
+    5. Create the CFFSubmission with ``submission_kind=ready_to_go``,
+       ``provenance=portal``, and ``drafted_proposal`` pointed at
+       the draft. ``raw_payload.submissions`` mirrors the Wix
+       envelope so the triage renderer treats it uniformly.
+
+    Failure modes surface as :class:`CFFRTGSubmissionError` with
+    ``code`` set to one of:
+
+    * ``rtg_sku_not_found`` — formulation unpublished / missing /
+      belongs to a different org.
+    * ``below_moq`` — quantity below the SKU's MOQ. ``field_errors``
+      carries ``{"quantity": …}``.
+    * ``invalid_packaging`` — packaging not in the allowed list.
+      ``field_errors`` carries ``{"packaging": …}``.
+    * ``rtg_no_approved_version`` — the source formulation has no
+      approved version yet, so a proposal can't quote against it.
+      An RTG SKU without an approved version shouldn't have been
+      published in the first place; guard rail against the drift.
+    """
+
+    from apps.customers.models import Customer
+    from apps.formulations.models import Formulation, ProjectType
+    from apps.proposals.models import (
+        Proposal,
+        ProposalLine,
+        ProposalStatus,
+        ProposalTemplateType,
+    )
+
+    customer = getattr(client_account, "customer", None)
+    if customer is None or customer.organization_id is None:
+        exc = CFFRTGSubmissionError(
+            "This portal account isn't attached to a customer yet — "
+            "reach out to your account manager to get set up.",
+        )
+        exc.code = "no_customer"  # type: ignore[attr-defined]
+        raise exc
+
+    # 1) Resolve + tenant-scope the RTG SKU.
+    formulation = (
+        Formulation.objects
+        .select_related("organization")
+        .filter(
+            pk=payload.rtg_formulation_id,
+            organization_id=customer.organization_id,
+            is_rtg_published=True,
+            project_type=ProjectType.READY_TO_GO,
+        )
+        .first()
+    )
+    if formulation is None:
+        exc = CFFRTGSubmissionError(
+            "That Ready-to-Go product isn't available anymore. "
+            "Head back to the catalog and pick another.",
+        )
+        exc.code = "rtg_sku_not_found"  # type: ignore[attr-defined]
+        raise exc
+
+    # 2) MOQ + packaging guards. Field errors so the FE can hang the
+    # message against the right input.
+    field_errors: dict[str, str] = {}
+    quantity = int(payload.quantity or 0)
+    moq = int(formulation.rtg_moq or 1)
+    if quantity < moq:
+        field_errors["quantity"] = (
+            f"Minimum order quantity is {moq}."
+        )
+    packaging_choice = (payload.packaging or "").strip()
+    allowed = [
+        str(entry).strip() for entry in (formulation.rtg_packaging_options or [])
+    ]
+    if not packaging_choice:
+        field_errors["packaging"] = "Pick a packaging option."
+    elif packaging_choice not in allowed:
+        field_errors["packaging"] = (
+            "That packaging isn't offered for this product."
+        )
+    delivery = (payload.delivery_address or "").strip()
+    if not delivery:
+        field_errors["delivery_address"] = "A delivery address is required."
+
+    if field_errors:
+        # Return the first specific machine code so the API layer
+        # can key the toast copy; the fields dict still carries every
+        # violation for the FE to highlight.
+        if "quantity" in field_errors:
+            code = "below_moq"
+        elif "packaging" in field_errors:
+            code = "invalid_packaging"
+        else:
+            code = "rtg_validation"
+        exc = CFFRTGSubmissionError(
+            "Please fix the highlighted fields before submitting."
+        )
+        exc.code = code  # type: ignore[attr-defined]
+        exc.field_errors = field_errors  # type: ignore[attr-defined]
+        raise exc
+
+    # 3) A valid RTG SKU must already have an approved version — the
+    # publish flow expects the recipe to be signed off. Guard against
+    # a rogue publish that skipped the approval step.
+    from apps.formulations.models import FormulationVersion
+
+    approved_number = formulation.approved_version_number
+    approved_version: FormulationVersion | None = None
+    if approved_number is not None:
+        approved_version = (
+            FormulationVersion.objects
+            .filter(
+                formulation=formulation,
+                version_number=approved_number,
+            )
+            .first()
+        )
+    if approved_version is None:
+        # Fall back to the latest version so a mis-configured RTG SKU
+        # (published without a signed approval) still produces a
+        # workable draft rather than a 500. Staff sees the row in
+        # triage and can decide what to do.
+        approved_version = (
+            FormulationVersion.objects
+            .filter(formulation=formulation)
+            .order_by("-version_number")
+            .first()
+        )
+    if approved_version is None:
+        exc = CFFRTGSubmissionError(
+            "This product isn't ready to quote yet. Our team has "
+            "been notified.",
+        )
+        exc.code = "rtg_no_version"  # type: ignore[attr-defined]
+        raise exc
+
+    now = django_timezone.now()
+    summary = _extract_rtg_summary(formulation, packaging_choice)
+    unit_price = formulation.rtg_base_price
+    currency = (formulation.rtg_currency_code or "GBP").upper()[:3]
+
+    # 4) Draft proposal — mirrors what ``create_proposal`` would emit
+    # for a template=ready_to_go quote. We build it directly (not via
+    # the service) so we can skirt the "must be approved version"
+    # guard on the shared helper — the RTG catalog is the source of
+    # truth here, not the version pin. The proposal starts in DRAFT
+    # so staff can review before hitting Send.
+    from apps.proposals.services import _generate_unique_code
+
+    proposal_code = _generate_unique_code(formulation.organization)
+    line_description = (
+        f"{formulation.name or 'Ready-to-Go product'} · {packaging_choice}"
+    ).strip(" ·")
+    # ``created_by`` / ``updated_by`` on Proposal are PROTECT + required.
+    # RTG rows come off an authenticated customer, not a staff user;
+    # attribute the create action to the sales person configured on
+    # the customer (if any), falling back to the first org member so
+    # the FK stays satisfied. The audit trail records the true
+    # portal account in the CFFSubmission's ``raw_payload`` and the
+    # ``submitted_by_client_account`` FK.
+    from django.contrib.auth import get_user_model
+
+    User = get_user_model()
+    proposal_actor = (
+        getattr(customer, "account_manager", None)
+        or getattr(customer, "sales_person", None)
+    )
+    if proposal_actor is None:
+        proposal_actor = (
+            User.objects
+            .filter(
+                memberships__organization_id=customer.organization_id,
+                is_active=True,
+            )
+            .order_by("date_joined")
+            .first()
+        )
+    if proposal_actor is None:
+        # A pathological org with zero members shouldn't have any
+        # published RTG SKUs; refuse rather than 500.
+        exc = CFFRTGSubmissionError(
+            "No staff member is available to review this order. "
+            "Contact your account manager.",
+        )
+        exc.code = "no_staff_actor"  # type: ignore[attr-defined]
+        raise exc
+
+    proposal = Proposal.objects.create(
+        organization=formulation.organization,
+        formulation_version=approved_version,
+        customer=customer,
+        code=proposal_code,
+        template_type=ProposalTemplateType.READY_TO_GO,
+        status=ProposalStatus.DRAFT,
+        customer_name=customer.name or "",
+        customer_email=customer.email or "",
+        customer_phone=getattr(customer, "phone", "") or "",
+        customer_company=customer.company or "",
+        invoice_address=getattr(customer, "invoice_address", "") or "",
+        delivery_address=delivery,
+        dear_name=customer.name or "",
+        reference=proposal_code,
+        currency=currency,
+        quantity=max(1, quantity),
+        unit_price=unit_price,
+        cover_notes=(payload.notes or "").strip(),
+        created_by=proposal_actor,
+        updated_by=proposal_actor,
+    )
+    ProposalLine.objects.create(
+        proposal=proposal,
+        formulation_version=approved_version,
+        product_code=formulation.code or "",
+        description=line_description,
+        quantity=max(1, quantity),
+        unit_price=unit_price,
+        display_order=0,
+    )
+
+    # 5) CFFSubmission with RTG discriminator + proposal FK.
+    submissions_dict: dict[str, Any] = {
+        # Customer identity so triage renders the row without a
+        # per-account lookup.
+        "first_name": (customer.name or "").split(" ", 1)[0],
+        "last_name": (
+            (customer.name or "").split(" ", 1)[1]
+            if " " in (customer.name or "")
+            else ""
+        ),
+        _PORTAL_SLUG_EMAIL: (customer.email or "").strip().lower(),
+        "company_name": customer.company or "",
+        # RTG-specific answers. These slugs stay stable so the
+        # dashboard's ``_cff_summary`` heuristic can pick up a
+        # useful preview line without a special case.
+        "rtg_sku_id": str(formulation.pk),
+        "rtg_sku_name": formulation.name or "",
+        "market_segment": summary,
+        "quantity_to_be_quoted": str(quantity),
+        "primary_package_type": packaging_choice,
+        "address": delivery,
+        "target_ship_date": payload.target_ship_date or "",
+    }
+
+    submission = CFFSubmission.objects.create(
+        organization=formulation.organization,
+        provenance="portal",
+        submission_kind=CFFSubmissionKind.READY_TO_GO,
+        wix_submission_id=None,
+        wix_form_id=None,
+        wix_namespace="",
+        wix_status="",
+        wix_created_date=now,
+        wix_updated_date=now,
+        raw_payload={
+            "submissions": submissions_dict,
+            "_meta": {
+                "provenance": "portal",
+                "submission_kind": CFFSubmissionKind.READY_TO_GO,
+                "submitted_at": now.isoformat(),
+                "submitted_by_client_account_id": str(client_account.pk),
+                "rtg_source_formulation_id": str(formulation.pk),
+                "rtg_drafted_proposal_id": str(proposal.pk),
+            },
+        },
+        submitter_email=(customer.email or "").strip().lower(),
+        submitted_by_client_account=client_account,
+        drafted_proposal=proposal,
+    )
+    return submission
+
+
 __all__ = [
     "CFFAssignmentError",
     "CFFPortalError",
+    "CFFRTGSubmissionError",
     "CFFRejectionError",
+    "PortalRTGSubmissionInput",
     "PortalSubmissionInput",
+    "create_portal_rtg_submission",
     "create_portal_submission",
     "CreateFromCFFResult",
     "ImportResult",

@@ -11,6 +11,8 @@ from .cff_views import (
     PortalCFFMessagesReadView,
     PortalCFFMessagesView,
     PortalCFFSalesPeopleView,
+    PortalRTGCatalogView,
+    PortalRTGCreateView,
 )
 from .inbox_views import (
     PortalInboxListView,
@@ -334,6 +336,27 @@ urlpatterns = [
     # land via the poller. Both write to CFFSubmission — the
     # ``provenance`` column disambiguates.
     path("cffs/new/", PortalCFFCreateView.as_view(), name="cff-create"),
+    # Ready-to-Go track — customer picks an existing published SKU
+    # off the org catalog and submits a short quantity + packaging
+    # + delivery form. Backend auto-drafts a Proposal so staff only
+    # needs to sanity-check and send. Static ``new-rtg`` path
+    # comes before ``<uuid>`` for the same reason ``sales-people``
+    # does above — string wouldn't parse as a UUID.
+    path(
+        "cffs/new-rtg/",
+        PortalRTGCreateView.as_view(),
+        name="cff-create-rtg",
+    ),
+    # Customer catalog of published RTG SKUs for the customer's org.
+    # Read-only; the publish surface lives on the staff formulation
+    # detail page. Nested under /portal/rtg-catalog/ (not /cffs/…) so
+    # the URL semantics match the mental model — the catalog is a
+    # product surface, not a request surface.
+    path(
+        "rtg-catalog/",
+        PortalRTGCatalogView.as_view(),
+        name="rtg-catalog",
+    ),
     path(
         "cffs/<uuid:submission_id>/",
         PortalCFFDetailView.as_view(),

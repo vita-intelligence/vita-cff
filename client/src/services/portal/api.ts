@@ -453,9 +453,60 @@ export interface PortalCFFListItem {
   /** ``wix`` (anonymous marketing form) or ``portal`` (this
    *  customer typed it into the in-portal wizard). */
   readonly provenance: string;
+  /** ``custom`` = bespoke brief that needs R&D. ``ready_to_go`` =
+   *  order off the RTG catalog with a drafted proposal already
+   *  queued. Optional so older payloads (pre-RTG rollout) still
+   *  parse cleanly. */
+  readonly submission_kind?: "custom" | "ready_to_go";
   /** Derived single-value lifecycle for the chip. One of
    *  ``under_review`` | ``rejected`` | ``project_created``. */
   readonly lifecycle_state: string;
+}
+
+
+// --- RTG catalog + order --------------------------------------------------
+
+
+export interface PortalRTGCatalogItem {
+  readonly id: string;
+  readonly name: string;
+  readonly short_description: string;
+  readonly hero_image_url: string | null;
+  readonly base_price: string;
+  readonly currency_code: string;
+  readonly moq: number;
+  readonly packaging_options: ReadonlyArray<string>;
+}
+
+
+export interface PortalRTGSubmitInput {
+  readonly rtg_formulation_id: string;
+  readonly quantity: number;
+  readonly packaging: string;
+  readonly delivery_address: string;
+  readonly target_ship_date?: string | null;
+  readonly notes?: string;
+}
+
+
+export async function fetchRTGCatalog(): Promise<{
+  results: PortalRTGCatalogItem[];
+}> {
+  const { data } = await apiClient.get<{ results: PortalRTGCatalogItem[] }>(
+    "/api/portal/rtg-catalog/",
+  );
+  return data;
+}
+
+
+export async function submitRTGOrder(
+  input: PortalRTGSubmitInput,
+): Promise<PortalCFFDetail> {
+  const { data } = await apiClient.post<PortalCFFDetail>(
+    "/api/portal/cffs/new-rtg/",
+    input,
+  );
+  return data;
 }
 
 

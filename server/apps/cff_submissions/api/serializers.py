@@ -73,6 +73,8 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
     is_rejected = serializers.SerializerMethodField()
     rejected_by = serializers.SerializerMethodField()
 
+    drafted_proposal_id = serializers.SerializerMethodField()
+
     class Meta:
         model = CFFSubmission
         fields = (
@@ -90,9 +92,28 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             "rejected_at",
             "rejected_by",
             "rejection_reason",
+            # RTG discriminator + auto-drafted proposal FK. Both
+            # nullable / defaulted so Custom rows serialize
+            # identically to before the RTG rollout.
+            "submission_kind",
+            "drafted_proposal_id",
             "imported_at",
             "last_synced_at",
         )
+
+    def get_drafted_proposal_id(self, obj: CFFSubmission) -> str | None:
+        """Expose the drafted-proposal FK as a plain UUID string so
+        the triage inbox can deep-link to the pre-drafted quote
+        without a follow-up round-trip.
+
+        NULL on Custom rows (no proposal yet exists — triage picks
+        that path via ``create_project_from_cff``). Populated on
+        RTG rows the moment :func:`create_portal_rtg_submission`
+        finishes.
+        """
+
+        proposal_id = getattr(obj, "drafted_proposal_id", None)
+        return str(proposal_id) if proposal_id else None
 
     def get_assignments(self, obj: CFFSubmission) -> list[dict]:
         """Materialise the prefetched assignment set.

@@ -42,7 +42,10 @@ type Stage =
   // backend to represent un-converted submissions inline with real
   // projects.
   | "cff_under_review"
-  | "cff_rejected";
+  | "cff_rejected"
+  // Ready-to-Go: customer ordered off the catalog; the drafted
+  // proposal is on our desk pending final send.
+  | "cff_awaiting_proposal";
 
 
 type ActionKind =
@@ -74,6 +77,10 @@ interface ProductItem {
    *  Drives card tone + navigation target so the same array carries
    *  both mental-model slices without duplicating a component. */
   readonly kind: "formulation" | "cff";
+  /** Populated only on ``kind === "cff"`` rows — ``custom`` for
+   *  bespoke briefs, ``ready_to_go`` for RTG catalog orders whose
+   *  drafted proposal is about to land. Drives the subtitle copy. */
+  readonly submission_kind?: "custom" | "ready_to_go";
   readonly id: string;
   readonly code: string;
   readonly name: string;
@@ -116,6 +123,10 @@ const STAGE_TONE: Record<Stage, string> = {
   // red flags a decline without shouting.
   cff_under_review: "bg-yellow-200 text-black",
   cff_rejected: "bg-red-700 text-white",
+  // Amber for the RTG "we're drafting your quote" state so it
+  // reads as active-in-flight rather than yellow "still waiting
+  // on us to look at your brief".
+  cff_awaiting_proposal: "bg-amber-200 text-black",
 };
 
 
@@ -314,9 +325,14 @@ export default async function PortalProductsPage() {
                       // Reinforce the "waiting on us" framing so the
                       // customer doesn't scan the page looking for an
                       // action they need to take on a pre-project
-                      // card — there isn't one.
+                      // card — there isn't one. RTG rows get the
+                      // more specific "we're drafting" copy so the
+                      // customer sees the difference from a Custom
+                      // brief that's still in triage review.
                       <p className="text-[11px] text-neutral-500">
-                        We&apos;ll review your submission and get back to you.
+                        {p.submission_kind === "ready_to_go"
+                          ? "We’re drafting your proposal — you’ll see it here shortly."
+                          : "We’ll review your submission and get back to you."}
                       </p>
                     ) : null}
                   </div>

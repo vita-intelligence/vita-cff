@@ -33,6 +33,7 @@ from apps.formulations.services import (
     FormulationCodeConflict,
     FormulationCodeRequired,
     FormulationNotFound,
+    FormulationRTGError,
     FormulationVersionNotFound,
     InvalidAcidityItem,
     InvalidCapsuleSize,
@@ -64,10 +65,12 @@ from apps.formulations.services import (
     get_formulation,
     list_formulations,
     list_versions,
+    publish_to_rtg_catalog,
     replace_lines,
     rollback_to_version,
     save_version,
     set_approved_version,
+    unpublish_from_rtg_catalog,
     update_formulation,
 )
 from apps.organizations.modules import FormulationsCapability
@@ -859,4 +862,128 @@ class FormulationCloneView(APIView):
         return Response(
             FormulationReadSerializer(result).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class FormulationRTGPublishView(APIView):
+    """``PATCH`` ``/.../formulations/<id>/rtg-publish/``.
+
+    Toggles the Ready-to-Go catalog publication and updates the
+    marketing block in one call. Multipart-capable so the hero image
+    can be uploaded alongside the descriptive fields — the FE panel
+    posts a ``FormData`` body with the optional file plus the
+    scalar fields.
+
+    Body keys (all optional apart from ``is_rtg_published``):
+
+    * ``is_rtg_published`` — ``"true"``/``"false"`` (form) or bool.
+      When ``true``, the marketing fields must satisfy every
+      guard enforced by :func:`publish_to_rtg_catalog`. When
+      ``false``, the record is taken off the catalog and marketing
+      fields are left untouched so a re-publish doesn't require
+      re-typing.
+    * ``rtg_short_description``, ``rtg_base_price``, ``rtg_moq``,
+      ``rtg_currency_code`` — scalar marketing fields.
+    * ``rtg_packaging_options`` — repeated form key, or a JSON list
+      inside a single value. The view accepts both shapes so the
+      FE can post a plain multipart form without JSON-encoding the
+      list itself.
+    * ``rtg_hero_image`` — optional file upload; ``""``/absent
+      leaves the current image untouched.
+
+    Gated on ``formulations.edit`` — same capability the main
+    detail-patch requires. Marketing publish is an edit surface,
+    not a separate role.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def patch(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization,
+                formulation_id=formulation_id,
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        data = request.data
+        is_published_raw = data.get("is_rtg_published")
+        # ``FormData`` submissions arrive as strings; JSON POSTs
+        # arrive as native bools. Accept both so the caller isn't
+        # forced to pick a content type based on whether they have
+        # a file to attach.
+        if isinstance(is_published_raw, str):
+            is_published = is_published_raw.strip().lower() in {
+                "true",
+                "1",
+                "yes",
+            }
+        else:
+            is_published = bool(is_published_raw)
+
+        packaging_raw = data.get("rtg_packaging_options")
+        packaging: list[str] | None = None
+        # ``getlist`` gives us the repeated-key shape when it exists;
+        # fall back to parsing a JSON blob for callers who post a
+        # single value.
+        if hasattr(data, "getlist"):
+            multi = data.getlist("rtg_packaging_options")
+            if multi:
+                packaging = list(multi)
+        if packaging is None and packaging_raw is not None:
+            if isinstance(packaging_raw, list):
+                packaging = packaging_raw
+            elif isinstance(packaging_raw, str):
+                import json
+
+                try:
+                    parsed = json.loads(packaging_raw)
+                except (TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, list):
+                    packaging = parsed
+
+        marketing_fields: dict[str, Any] = {}
+        for key in (
+            "rtg_short_description",
+            "rtg_base_price",
+            "rtg_moq",
+            "rtg_currency_code",
+        ):
+            if key in data:
+                marketing_fields[key] = data.get(key)
+        if packaging is not None:
+            marketing_fields["rtg_packaging_options"] = packaging
+        if "rtg_hero_image" in data and data.get("rtg_hero_image"):
+            marketing_fields["rtg_hero_image"] = data.get("rtg_hero_image")
+
+        try:
+            if is_published:
+                updated = publish_to_rtg_catalog(
+                    formulation,
+                    actor=request.user,
+                    marketing_fields=marketing_fields,
+                )
+            else:
+                updated = unpublish_from_rtg_catalog(
+                    formulation,
+                    actor=request.user,
+                )
+        except FormulationRTGError as exc:
+            field_errors = getattr(exc, "field_errors", None)
+            body: dict[str, Any] = {
+                "code": getattr(exc, "code", "formulation_rtg_error"),
+                "detail": str(exc),
+            }
+            if field_errors:
+                body["fields"] = field_errors
+            return Response(body, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            FormulationReadSerializer(updated).data,
+            status=status.HTTP_200_OK,
         )

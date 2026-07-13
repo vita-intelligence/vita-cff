@@ -253,6 +253,11 @@ _STAGE_LABELS: dict[str, str] = {
     # entries returned by ``_build_products``.
     "cff_under_review": "Under review",
     "cff_rejected": "Not proceeding",
+    # RTG orders — the short-lived state between "customer hit
+    # submit" and "staff hit Send". Shown as an amber "Awaiting
+    # proposal" chip so the customer knows the ball is in staff's
+    # court but there is a concrete next step landing shortly.
+    "cff_awaiting_proposal": "Awaiting proposal",
 }
 
 
@@ -523,7 +528,19 @@ def _cff_product_cards_for_customer(customer_ids) -> list[dict]:
     cards: list[dict] = []
     for cff in cff_qs:
         is_rejected = cff.rejected_at is not None
-        stage_key = "cff_rejected" if is_rejected else "cff_under_review"
+        # RTG rows already carry a drafted proposal — the customer's
+        # mental model is "we're preparing your quote", not "we're
+        # reviewing your brief". Keep the same "waiting on us" tone
+        # (they can't act) but with the more specific label.
+        is_rtg = (
+            getattr(cff, "submission_kind", "custom") == "ready_to_go"
+        )
+        if is_rejected:
+            stage_key = "cff_rejected"
+        elif is_rtg:
+            stage_key = "cff_awaiting_proposal"
+        else:
+            stage_key = "cff_under_review"
 
         # Name preference: the customer's typed answers on the form
         # → market segment → generic "Custom formulation request".
@@ -543,6 +560,12 @@ def _cff_product_cards_for_customer(customer_ids) -> list[dict]:
         cards.append(
             {
                 "kind": "cff",
+                # ``custom`` | ``ready_to_go`` — drives the pending
+                # card's subtitle so the customer sees the right
+                # framing ("we'll review" vs "we're drafting").
+                "submission_kind": (
+                    "ready_to_go" if is_rtg else "custom"
+                ),
                 "id": str(cff.id),
                 # No Formulation code exists yet — mirror the shape
                 # by using the short id so the FE doesn't blow up on

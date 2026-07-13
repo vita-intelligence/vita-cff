@@ -47,7 +47,10 @@ from rest_framework.response import Response
 
 from apps.cff_submissions.services import (
     CFFPortalError,
+    CFFRTGSubmissionError,
+    PortalRTGSubmissionInput,
     PortalSubmissionInput,
+    create_portal_rtg_submission,
     create_portal_submission,
     get_customer_cff,
     list_customer_cffs,
@@ -106,6 +109,11 @@ class PortalCFFListItemSerializer(serializers.Serializer):
     # render a subtle "Portal" badge on rows the customer submitted
     # here vs the ones that came in via Wix.
     provenance = serializers.CharField()
+    # ``custom`` | ``ready_to_go`` — RTG rows get a distinct chip on
+    # the pending state ("Awaiting proposal") because the drafted
+    # quote lands quickly and the customer's next action is
+    # different.
+    submission_kind = serializers.CharField()
     # Single-word lifecycle for chip rendering.
     lifecycle_state = serializers.SerializerMethodField()
     #: Short preview line so the list row reads as more than a
@@ -556,6 +564,136 @@ class PortalCFFMessagesView(PortalAPIView):
 
         return Response(
             _serialise_comment(comment),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PortalRTGCatalogItemSerializer(serializers.Serializer):
+    """Wire shape for one card on the customer-facing RTG catalog.
+
+    Deliberately lean — hides the recipe, ownership, and pricing
+    ancestry. Customers see only what they need to decide whether
+    to order: a hero, a headline, marketing sub-copy, the price
+    anchor, MOQ, and the packaging options they'll pick from.
+    ``hero_image_url`` may be ``null`` when staff hasn't uploaded an
+    image; the FE renders a monogram tile in that case.
+    """
+
+    id = serializers.UUIDField()
+    name = serializers.CharField()
+    short_description = serializers.CharField(source="rtg_short_description")
+    hero_image_url = serializers.SerializerMethodField()
+    base_price = serializers.DecimalField(
+        source="rtg_base_price", max_digits=12, decimal_places=2,
+    )
+    currency_code = serializers.CharField(source="rtg_currency_code")
+    moq = serializers.IntegerField(source="rtg_moq")
+    packaging_options = serializers.ListField(
+        source="rtg_packaging_options",
+        child=serializers.CharField(),
+    )
+
+    def get_hero_image_url(self, obj) -> str | None:
+        image = getattr(obj, "rtg_hero_image", None)
+        if image and hasattr(image, "url"):
+            try:
+                return image.url
+            except ValueError:
+                return None
+        return None
+
+
+class PortalRTGCatalogView(PortalAPIView):
+    """``GET /api/portal/rtg-catalog/``.
+
+    Returns the customer's org's published Ready-to-Go SKUs — the
+    grid the customer picks from on ``/portal/cffs/new/rtg``. Only
+    ``is_rtg_published=True`` rows are visible; unpublished drafts
+    stay hidden even if a customer pastes a UUID.
+    """
+
+    def get(self, request: Request) -> Response:
+        from apps.formulations.models import Formulation, ProjectType
+
+        client_account = request.user
+        customer = getattr(client_account, "customer", None)
+        if customer is None or customer.organization_id is None:
+            return Response({"results": []})
+
+        rows = list(
+            Formulation.objects
+            .filter(
+                organization_id=customer.organization_id,
+                is_rtg_published=True,
+                project_type=ProjectType.READY_TO_GO,
+            )
+            .order_by("name")
+        )
+        return Response(
+            {
+                "results": PortalRTGCatalogItemSerializer(
+                    rows, many=True,
+                ).data,
+            },
+        )
+
+
+class PortalRTGCreateSerializer(serializers.Serializer):
+    """Wire-shape for the short RTG order form."""
+
+    rtg_formulation_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1)
+    packaging = serializers.CharField(max_length=200)
+    delivery_address = serializers.CharField(max_length=1000)
+    target_ship_date = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(
+        required=False, allow_blank=True, max_length=2000,
+    )
+
+
+class PortalRTGCreateView(PortalAPIView):
+    """``POST /api/portal/cffs/new-rtg/``.
+
+    Wraps :func:`create_portal_rtg_submission`. Returns the same
+    ``PortalCFFDetail`` shape as the Custom-track submit so the FE
+    reads both flows with one type. Validation failures return 422
+    with ``{code, detail, fields}`` matching the Custom flow.
+    """
+
+    def post(self, request: Request) -> Response:
+        payload = PortalRTGCreateSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = dict(payload.validated_data)
+
+        typed = PortalRTGSubmissionInput(
+            rtg_formulation_id=str(data["rtg_formulation_id"]),
+            quantity=int(data["quantity"]),
+            packaging=str(data["packaging"]),
+            delivery_address=str(data["delivery_address"]),
+            target_ship_date=(
+                data["target_ship_date"].isoformat()
+                if data.get("target_ship_date")
+                else None
+            ),
+            notes=str(data.get("notes") or ""),
+        )
+
+        try:
+            submission = create_portal_rtg_submission(
+                client_account=request.user,
+                payload=typed,
+            )
+        except CFFRTGSubmissionError as exc:
+            code = getattr(exc, "code", "rtg_validation")
+            field_errors = getattr(exc, "field_errors", None) or {}
+            http_status = 404 if code == "rtg_sku_not_found" else 422
+            body = {"code": code, "detail": str(exc)}
+            if field_errors:
+                body["fields"] = field_errors
+            return Response(body, status=http_status)
+
+        return Response(
+            PortalCFFDetailSerializer(submission).data,
             status=status.HTTP_201_CREATED,
         )
 

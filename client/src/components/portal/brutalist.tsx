@@ -508,6 +508,11 @@ const STATUS_PALETTE: Record<
   // portal renders every workflow chip with one component.
   under_review:    { bg: "bg-yellow-200", text: "text-black", label: "Under review" },
   project_created: { bg: "bg-black",      text: "text-white", label: "Project created" },
+  // RTG-track pending state. The customer has ordered off the
+  // catalog and the drafted proposal is on our desk pending a
+  // final send — visually amber so it reads as "in flight" rather
+  // than "in review".
+  awaiting_proposal: { bg: "bg-amber-200", text: "text-black", label: "Awaiting proposal" },
 };
 
 

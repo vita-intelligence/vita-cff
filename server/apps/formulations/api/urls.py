@@ -16,6 +16,7 @@ from apps.formulations.api.views import (
     FormulationListCreateView,
     FormulationOverviewView,
     FormulationRollbackView,
+    FormulationRTGPublishView,
     FormulationSalesPersonView,
     FormulationVersionListView,
 )
@@ -77,6 +78,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/clone/",
         FormulationCloneView.as_view(),
         name="formulation-clone",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/rtg-publish/",
+        FormulationRTGPublishView.as_view(),
+        name="formulation-rtg-publish",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/rd-pipeline/",
