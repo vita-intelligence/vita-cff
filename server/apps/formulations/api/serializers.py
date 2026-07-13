@@ -200,6 +200,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             # ``project_type=='ready_to_go'`` so the extra fields
             # never surface on a Custom detail page.
             "is_rtg_published",
+            "rtg_display_name",
             "rtg_short_description",
             "rtg_hero_image",
             "rtg_base_price",

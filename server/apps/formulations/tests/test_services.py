@@ -129,6 +129,55 @@ class TestCreateFormulation:
                 capsule_size="absolutely_made_up",
             )
 
+    def test_project_type_defaults_to_custom(self) -> None:
+        """Unspecified ``project_type`` matches the model default so
+        every legacy caller keeps producing Custom projects — the
+        RTG track is opt-in."""
+
+        org = OrganizationFactory()
+        formulation = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="Legacy",
+            code="LEG-1",
+        )
+        assert formulation.project_type == "custom"
+
+    def test_project_type_ready_to_go_persists(self) -> None:
+        """The "New RTG" dialog on the catalog hub passes
+        ``project_type='ready_to_go'`` at create time so the row lands
+        with the marketing panel already visible on its overview
+        page. Without this pass-through the caller would have to
+        create-as-custom + PATCH-to-ready_to_go which duplicates the
+        audit trail and races with the initial project-type-lock
+        rule."""
+
+        org = OrganizationFactory()
+        formulation = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="Signature Vanilla Whey",
+            code="RTG-VWP-1",
+            project_type="ready_to_go",
+        )
+        assert formulation.project_type == "ready_to_go"
+
+    def test_invalid_project_type_falls_back_to_custom(self) -> None:
+        """A bogus value should not blow up the request — it silently
+        falls back to ``custom`` so a stale FE never 500s the endpoint.
+        The API's write serializer catches the typo before we reach
+        the service, so this is a belt-and-brace guard."""
+
+        org = OrganizationFactory()
+        formulation = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="Belt",
+            code="BELT-1",
+            project_type="not_a_real_type",
+        )
+        assert formulation.project_type == "custom"
+
 
 class TestListFormulations:
     def test_scoped_to_organization(self) -> None:

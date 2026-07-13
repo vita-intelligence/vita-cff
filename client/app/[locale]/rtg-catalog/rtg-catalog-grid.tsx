@@ -149,6 +149,7 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     code,
     name,
     is_rtg_published,
+    rtg_display_name,
     rtg_short_description,
     rtg_hero_image,
     rtg_base_price,
@@ -157,6 +158,9 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     rtg_packaging_options,
   } = formulation;
 
+  // Customer-facing name wins for the card title; the internal name
+  // stays visible in the code line below as an operator anchor.
+  const cardTitle = rtg_display_name.trim() || name;
   const priceLabel = formatPrice(rtg_base_price, rtg_currency_code);
 
   return (
@@ -208,7 +212,7 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
             {code || "—"}
           </p>
           <h2 className="mt-0.5 line-clamp-2 text-base font-semibold tracking-tight text-ink-1000 group-hover:text-orange-700">
-            {name}
+            {cardTitle}
           </h2>
         </div>
         {rtg_short_description ? (
@@ -252,20 +256,17 @@ function EmptyState({ canWrite }: { canWrite: boolean }) {
         No Ready-to-Go products yet.
       </p>
       <p className="mt-2 text-xs text-ink-500">
-        Any formulation with{" "}
-        <span className="font-mono">project_type = ready_to_go</span>{" "}
-        shows up here.{" "}
         {canWrite ? (
           <>
-            Create one from{" "}
+            Click <span className="font-semibold">New RTG product</span>{" "}
+            above to add one, or open an existing project on{" "}
             <Link
               href="/formulations"
               className="text-orange-700 underline-offset-2 hover:underline"
             >
               Formulations
             </Link>{" "}
-            (pick Ready-to-Go on the new-project form), or open an
-            existing project and switch its type.
+            and switch its type to Ready-to-Go.
           </>
         ) : (
           <>Ask a project owner to publish some RTG SKUs to your catalog.</>

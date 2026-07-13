@@ -202,6 +202,11 @@ class FormulationListCreateView(APIView):
                 suggested_dosage=data.get("suggested_dosage", ""),
                 appearance=data.get("appearance", ""),
                 disintegration_spec=data.get("disintegration_spec", ""),
+                # Passed through when the "New RTG" dialog on the RTG
+                # catalog page seeds a formulation as ``ready_to_go``
+                # from the start. Absent on the standard formulations
+                # create form → defaults to ``custom``.
+                project_type=data.get("project_type", "custom"),
             )
         except FormulationCodeRequired:
             return Response(
@@ -949,6 +954,7 @@ class FormulationRTGPublishView(APIView):
 
         marketing_fields: dict[str, Any] = {}
         for key in (
+            "rtg_display_name",
             "rtg_short_description",
             "rtg_base_price",
             "rtg_moq",
