@@ -100,6 +100,18 @@ export async function ProtectedHeader({
   // rights. The page itself re-checks server-side; the header link
   // just suppresses the entry for members without the cap.
   const canSeeCFF = hasFlatCapability(primaryOrg, "cff_submissions", "view");
+  // RTG Catalog rides its own module now — carved out from Projects
+  // so a catalog manager can be granted "view + publish" without
+  // recipe-edit rights on the underlying formulation. The backfill
+  // migration mirrors every existing ``formulations.edit`` grant
+  // onto ``rtg_catalog.view + manage + publish`` so no member loses
+  // access on upgrade; new members granted ``rtg_catalog.view`` see
+  // the nav entry without any Projects grant at all.
+  const canSeeRTGCatalog = hasFlatCapability(
+    primaryOrg,
+    "rtg_catalog",
+    "view",
+  );
   const canSeeApprovals =
     hasFlatCapability(primaryOrg, "formulations", "view_approvals") ||
     hasFlatCapability(primaryOrg, "proposals", "view_approvals");
@@ -166,11 +178,13 @@ export async function ProtectedHeader({
       href: "/formulations",
       label: tNav("main.formulations"),
     });
-    // RTG Catalog rides the same ``formulations.view`` gate — every
-    // RTG SKU IS a formulation, just tagged ``project_type='ready_to_go'``.
-    // Splitting it out as its own nav entry means the catalog manager
-    // doesn't have to remember to filter the projects list every time
-    // they want to see what's live in the portal.
+  }
+  // RTG Catalog is gated on its own module now, so a catalog manager
+  // sees this entry even without ``formulations.view``. The migration
+  // backfill grants ``rtg_catalog.view`` to every existing
+  // ``formulations.edit`` holder so operators who could already
+  // publish keep seeing the nav item.
+  if (canSeeRTGCatalog) {
     rndItems.push({
       key: "rtg_catalog",
       href: "/rtg-catalog",

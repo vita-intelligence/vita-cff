@@ -447,3 +447,105 @@ class TestRTGPublishParsers:
             format="json",
         )
         assert response.status_code == status.HTTP_200_OK
+
+
+class TestRTGPublishRBAC:
+    """The ``rtg-publish`` endpoint moved from the ``formulations``
+    module to the dedicated ``rtg_catalog`` module. These tests pin
+    the new gate so a future refactor can't silently return it to
+    ``formulations.edit`` — the whole point of the split was that
+    a catalog manager can go live without holding recipe-edit rights.
+    """
+
+    def test_publish_requires_rtg_publish_capability(self) -> None:
+        """A member with ``rtg_catalog.manage`` alone can save the
+        marketing block but flipping ``is_rtg_published`` requires
+        the paired ``publish`` capability. Segregation of duties:
+        drafting copy vs authorising customer visibility."""
+
+        user = UserFactory(
+            email="manager@rtg.test", password=DEFAULT_TEST_PASSWORD
+        )
+        org = create_organization(user=user, name="Manager Co")
+        # Second member with manage-only.
+        author = UserFactory(email="author@rtg.test", password=DEFAULT_TEST_PASSWORD)
+        MembershipFactory(
+            user=author,
+            organization=org,
+            permissions={"rtg_catalog": ["view", "manage"]},
+        )
+        formulation = FormulationFactory(
+            organization=org, project_type="ready_to_go"
+        )
+
+        client = APIClient()
+        _login(client, author)
+        # Marketing-only edit (no ``is_rtg_published`` key) → allowed
+        # on manage-only.
+        r = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"rtg_short_description": "author drafted copy"},
+            format="json",
+        )
+        assert r.status_code == status.HTTP_200_OK
+
+        # Flip-to-published → requires ``publish`` cap.
+        r = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"is_rtg_published": True},
+            format="json",
+        )
+        assert r.status_code == status.HTTP_403_FORBIDDEN
+
+    def test_publish_allowed_with_publish_capability(self) -> None:
+        user = UserFactory(
+            email="pub-owner@rtg.test", password=DEFAULT_TEST_PASSWORD
+        )
+        org = create_organization(user=user, name="Publisher Co")
+        publisher = UserFactory(
+            email="publisher@rtg.test", password=DEFAULT_TEST_PASSWORD
+        )
+        MembershipFactory(
+            user=publisher,
+            organization=org,
+            permissions={"rtg_catalog": ["view", "manage", "publish"]},
+        )
+        formulation = FormulationFactory(
+            organization=org, project_type="ready_to_go"
+        )
+
+        client = APIClient()
+        _login(client, publisher)
+        r = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"is_rtg_published": False},
+            format="json",
+        )
+        assert r.status_code == status.HTTP_200_OK
+
+    def test_missing_rtg_module_grant_is_forbidden(self) -> None:
+        """A member with the old ``formulations.edit`` grant but no
+        ``rtg_catalog`` entry at all should 403 — the migration is
+        what mirrors the grants, so this test guards against someone
+        deleting the migration and expecting things to still work."""
+
+        user = UserFactory(email="fowner@rtg.test", password=DEFAULT_TEST_PASSWORD)
+        org = create_organization(user=user, name="F Only Co")
+        legacy = UserFactory(email="legacy@rtg.test", password=DEFAULT_TEST_PASSWORD)
+        MembershipFactory(
+            user=legacy,
+            organization=org,
+            permissions={"formulations": ["view", "edit"]},
+        )
+        formulation = FormulationFactory(
+            organization=org, project_type="ready_to_go"
+        )
+
+        client = APIClient()
+        _login(client, legacy)
+        r = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"rtg_short_description": "should 403"},
+            format="json",
+        )
+        assert r.status_code == status.HTTP_403_FORBIDDEN

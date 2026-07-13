@@ -143,6 +143,8 @@
     "catalogues_description": "Raw materials, packaging, and any custom reference tables — scoped per catalogue.",
     "formulations": "Projects",
     "formulations_description": "Build projects, save versions, approve spec sheets, run QC validations.",
+    "rtg_catalog": "RTG Catalog",
+    "rtg_catalog_description": "Ready-to-Go catalog surface: browse, edit marketing copy, and publish / unpublish SKUs that appear in the customer portal. Split from Projects so a catalog manager can go live without holding recipe-edit rights on the underlying formulation.",
     "proposals": "Proposals",
     "proposals_description": "Customer-facing proposal pipeline — list, edit, approve, sign, browse approvals queue and signed archive. Split from Projects so commercial roles can own this workflow without project-edit rights.",
     "audit": "Audit log",
@@ -184,6 +186,11 @@
       "comments_write": "Post & reply to comments",
       "comments_moderate": "Moderate others' comments",
       "view_all_rd_pipeline": "View all R&D pipeline"
+    },
+    "rtg_catalog": {
+      "view": "View",
+      "manage": "Edit marketing block",
+      "publish": "Publish / unpublish"
     },
     "proposals": {
       "view": "View",
@@ -247,6 +254,11 @@
       "comments_moderate": "Edit, delete, or resolve OTHER users' comment threads. The moderator role — typically team leads only.",
       "view_all_rd_pipeline": "See every active project across the whole R&D pipeline, not just the ones you're assigned to. Useful for managers triaging workload or scientists scanning for similar formulations already in flight."
     },
+    "rtg_catalog": {
+      "view": "Open the RTG Catalog hub and read every Ready-to-Go SKU (published + drafts).",
+      "manage": "Edit the marketing block on any RTG SKU: display name, short description, hero image, base price, MOQ, packaging options.",
+      "publish": "Flip the Publish switch on / off. Split from Edit marketing block so drafting copy and authorising customer visibility can be different people (segregation of duties on what appears in the customer portal)."
+    },
     "proposals": {
       "view": "Read the proposals list, individual proposals, and the customer-facing PDF.",
       "edit": "Create proposals, edit lines, customer info, pricing, and acknowledgements. Render and re-render the PDF.",
@@ -309,6 +321,11 @@
       "comments_moderate": "Edit / delete / resolve OTHER users' comments anywhere a thread appears. The moderator role — typically team leads + owners only.",
       "view_all_rd_pipeline": "R&D pipeline page (/rd-pipeline) shows projects owned by other scientists; without this you only see projects you're assigned to."
     },
+    "rtg_catalog": {
+      "view": "RTG Catalog page (/rtg-catalog). Hub for every Ready-to-Go SKU with Published / Unpublished filter tabs.",
+      "manage": "RTG panel on each formulation → editable Display name, Short description, Hero image, Price, MOQ, Packaging options. New RTG product dialog on the catalog hub.",
+      "publish": "Publish / Unpublish toggle at the top of the RTG panel. Without this, edits to the marketing block save but the SKU cannot go live in the customer portal."
+    },
     "proposals": {
       "view": "Proposals list (/proposals). Proposal detail page. Customers list (/customers) and customer create/edit modals. Customer picker on Spec sheet + Proposal forms.",
       "edit": "New proposal button on Project → Proposals tab. Edit proposal lines, pricing, customer info, acknowledgements. Send-to-client button on the proposal detail page.",
@@ -348,6 +365,8 @@
     "catalogues": "Scientist: View + Edit on raw_materials & packaging. Bulk import for whoever loads new supplier sheets. Manage fields and Hard delete are admin-only.",
     "formulations_label": "Common roles",
     "formulations": "Scientist: View, Edit, Sign spec sheet, Comments view + write. R&D Manager / Director: everything above + Approve & send + Comments moderate. Read-only stakeholder: View only. (Sales typically does not need any Projects capability — they live in the Proposals module instead.)",
+    "rtg_catalog_label": "Common roles",
+    "rtg_catalog": "Catalog manager: View + Edit marketing block + Publish. Copy author: View + Edit marketing block (drafts changes, a manager clicks Publish). Read-only stakeholder: View only. R&D scientists and sales usually don't need this — the SKU already lives in Projects and Proposals from their point of view.",
     "proposals_label": "Common roles",
     "proposals": "Sales: View, Edit, View approvals queue, View signed. Sales lead: everything above + Manually close + View whole-team pipeline. Director: everything above + Approve + Sign proposal. Scientist: usually only Sign proposal so they can sign the internal slot when handed a draft. Read-only stakeholder: View only. (\"Assign sales person\" is granted under Projects — same toggle covers both modules.)",
     "audit_label": "Common roles",

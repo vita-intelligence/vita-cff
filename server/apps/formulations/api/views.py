@@ -16,6 +16,7 @@ from rest_framework.views import APIView
 
 from apps.formulations.api.pagination import FormulationCursorPagination
 from apps.formulations.api.permissions import HasFormulationsPermission
+from apps.formulations.api.rtg_permissions import HasRTGCatalogPermission
 from apps.formulations.api.serializers import (
     FormulationLineWriteSerializer,
     FormulationReadSerializer,
@@ -74,7 +75,10 @@ from apps.formulations.services import (
     unpublish_from_rtg_catalog,
     update_formulation,
 )
-from apps.organizations.modules import FormulationsCapability
+from apps.organizations.modules import (
+    FormulationsCapability,
+    RTGCatalogCapability,
+)
 
 
 def _totals_payload(totals) -> dict[str, Any]:
@@ -897,13 +901,43 @@ class FormulationRTGPublishView(APIView):
     * ``rtg_hero_image`` — optional file upload; ``""``/absent
       leaves the current image untouched.
 
-    Gated on ``formulations.edit`` — same capability the main
-    detail-patch requires. Marketing publish is an edit surface,
-    not a separate role.
+    Gated on the dedicated ``rtg_catalog`` module — ``manage`` for
+    marketing-only saves (edit description, price, packaging without
+    flipping visibility), ``publish`` when the request also flips
+    ``is_rtg_published``. Split from ``formulations.edit`` so a
+    catalog manager can publish RTG SKUs without holding recipe-edit
+    rights, and so an author can draft copy without the go-live
+    button — segregation of duties on what appears in the customer
+    portal. The membership backfill on ``0011_rtg_catalog_module``
+    mirrors every existing ``formulations.edit`` grant onto both
+    caps so no one loses access on upgrade.
     """
 
-    permission_classes = (HasFormulationsPermission,)
-    required_capability = FormulationsCapability.EDIT
+    permission_classes = (HasRTGCatalogPermission,)
+    required_capability = RTGCatalogCapability.MANAGE
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        # Whether the incoming request flips ``is_rtg_published`` gates
+        # the required capability: publish-toggle requires ``publish``,
+        # marketing-only edit requires ``manage``. We can't peek at
+        # ``request.data`` before ``super().initial`` runs the auth /
+        # parser stack, so instead we look at ``request.data`` directly
+        # — DRF hydrates it lazily on first read, which is safe here
+        # because ``parser_classes`` is already declared on the class.
+        raw = None
+        try:
+            raw = request.data.get("is_rtg_published")
+        except Exception:
+            raw = None
+        if isinstance(raw, str):
+            raw = raw.strip().lower()
+        flips_publish = raw not in (None, "")
+        self.required_capability = (
+            RTGCatalogCapability.PUBLISH
+            if flips_publish
+            else RTGCatalogCapability.MANAGE
+        )
+        super().initial(request, *args, **kwargs)
     # DRF's global ``DEFAULT_PARSER_CLASSES`` is JSON-only so the
     # hero-image upload can't ride the default parsers. Opt this view
     # in to multipart + urlencoded form bodies explicitly; JSON stays
