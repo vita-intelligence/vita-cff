@@ -113,6 +113,24 @@ class FormulationCodeConflict(Exception):
     code = "formulation_code_conflict"
 
 
+class ProjectTypeLocked(Exception):
+    """Raised when a caller tries to switch ``project_type`` after the
+    customer has signed anything on the project (proposal OR spec
+    sheet).
+
+    Switching between ``custom`` and ``ready_to_go`` re-shapes the
+    workflow — RTG skips trial batch + final specification while
+    Custom requires both. Mid-flight conversion would either orphan
+    already-signed documents (Custom → RTG loses the trial context
+    the customer signed off on) or resurrect stages the customer
+    thought were done (RTG → Custom brings back a final spec after
+    they signed a draft as the contract). Cleaner mental model: the
+    engagement model is fixed at the first customer signature.
+    """
+
+    code = "project_type_locked"
+
+
 class FormulationCodeRequired(Exception):
     """Raised when a caller omits the project code on create.
 
@@ -2451,6 +2469,19 @@ def update_formulation(
         if duplicate:
             raise FormulationCodeConflict()
 
+    # Lock project_type once the customer has signed anything on the
+    # project. See :class:`ProjectTypeLocked` for the rationale. Only
+    # fires when the caller actually wants to change the value — a
+    # no-op assignment (same string) passes through so bulk-update
+    # payloads that echo the current value don't 422.
+    incoming_type = changes.get("project_type")
+    if (
+        incoming_type is not None
+        and incoming_type != formulation.project_type
+        and _has_customer_signed_anything(formulation)
+    ):
+        raise ProjectTypeLocked()
+
     # Snapshot before mutating so the audit row can show the
     # diff. Freezing the dict (not the instance) is enough — the
     # coerced values are already immutable by construction.
@@ -2741,6 +2772,33 @@ def clone_formulation(
         return target_formulation
 
     raise InvalidCloneMode()
+
+
+def _has_customer_signed_anything(formulation: Formulation) -> bool:
+    """True when a customer has signed any proposal or spec sheet on
+    this project. Used by :func:`update_formulation` to lock the
+    ``project_type`` field once the engagement model has physically
+    left the building — see :class:`ProjectTypeLocked`.
+
+    Imports live inside the function to dodge the formulations →
+    (proposals | specifications) → formulations circular import that
+    happens if either app is loaded top-level from here.
+    """
+    from apps.proposals.models import Proposal
+    from apps.specifications.models import SpecificationSheet
+
+    signed_proposal = Proposal.objects.filter(
+        formulation_version__formulation=formulation,
+        customer_signed_at__isnull=False,
+    ).exists()
+    if signed_proposal:
+        return True
+
+    signed_sheet = SpecificationSheet.objects.filter(
+        formulation_version__formulation=formulation,
+        customer_signed_at__isnull=False,
+    ).exists()
+    return signed_sheet
 
 
 def _validate_dosage_form(value: str) -> None:

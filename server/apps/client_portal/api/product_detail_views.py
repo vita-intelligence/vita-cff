@@ -32,7 +32,7 @@ from rest_framework.response import Response
 
 from apps.cff_submissions.models import CFFSubmission
 from apps.client_portal.api.views import PortalAPIView
-from apps.formulations.models import Formulation, ProjectStatus
+from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.label_design.constants import LabelDesignPath, LabelDesignStatus
 from apps.label_design.models import LabelDesign, LabelDesignTransition
 from apps.payments.constants import PaymentStatus
@@ -396,7 +396,22 @@ def _build_pipeline(
         ),
     }
 
-    stages = [
+    # Ready-to-go projects manufacture an existing validated recipe —
+    # no lab development phase, so trial batch + final specification
+    # never happen. Emit 6 stages instead of 8 so the timeline reads
+    # honestly (as opposed to leaving two chips permanently stuck on
+    # "future"). Custom keeps the full 8.
+    if formulation.project_type == ProjectType.READY_TO_GO.value:
+        return [
+            request_stage,
+            proposal_stage,
+            draft_stage,
+            payment_stage,
+            label_stage,
+            production_stage,
+        ]
+
+    return [
         request_stage,
         proposal_stage,
         draft_stage,
@@ -406,7 +421,6 @@ def _build_pipeline(
         label_stage,
         production_stage,
     ]
-    return stages
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +430,7 @@ def _build_pipeline(
 
 def _build_next_action(
     *,
+    formulation: Formulation,
     proposals: list[Proposal],
     sheets: list[SpecificationSheet],
     label_design: LabelDesign | None,
@@ -468,22 +483,37 @@ def _build_next_action(
                 "urgency": "medium",
             }
 
-    # Final spec waiting for signature.
-    final_sent = _first_sent_unsigned(_final_specs(sheets))
-    if final_sent is not None:
-        return {
-            "label": "Sign your final specification",
-            "subtitle": "Your trial passed — sign to authorise production.",
-            "url": f"/portal/specs/{final_sent.id}",
-            "urgency": "high",
-        }
+    is_ready_to_go = (
+        formulation.project_type == ProjectType.READY_TO_GO.value
+    )
 
-    # Draft spec waiting for signature.
+    # Final spec waiting for signature. Ready-to-go projects never
+    # produce a final spec (the draft is the contract), so skip this
+    # branch — anything unsigned in `_final_specs(sheets)` on a RTG
+    # project is stale state that should not resurface as the next
+    # action.
+    if not is_ready_to_go:
+        final_sent = _first_sent_unsigned(_final_specs(sheets))
+        if final_sent is not None:
+            return {
+                "label": "Sign your final specification",
+                "subtitle": "Your trial passed — sign to authorise production.",
+                "url": f"/portal/specs/{final_sent.id}",
+                "urgency": "high",
+            }
+
+    # Draft spec waiting for signature. For a ready-to-go project the
+    # draft signature unlocks payment directly (no trial batch), so
+    # word the subtitle appropriately.
     draft_sent = _first_sent_unsigned(_draft_specs(sheets))
     if draft_sent is not None:
         return {
             "label": "Sign the draft specification",
-            "subtitle": "Approve the recipe so we can produce a trial batch.",
+            "subtitle": (
+                "Approve the recipe to unlock payment and label design."
+                if is_ready_to_go
+                else "Approve the recipe so we can produce a trial batch."
+            ),
             "url": f"/portal/specs/{draft_sent.id}",
             "urgency": "high",
         }
@@ -763,6 +793,7 @@ class PortalProductDetailView(PortalAPIView):
                     cff=cff,
                 ),
                 "next_action": _build_next_action(
+                    formulation=formulation,
                     proposals=proposals,
                     sheets=sheets,
                     label_design=label_design,

@@ -70,6 +70,8 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
 
     assignments = serializers.SerializerMethodField()
     is_assigned = serializers.SerializerMethodField()
+    is_rejected = serializers.SerializerMethodField()
+    rejected_by = serializers.SerializerMethodField()
 
     class Meta:
         model = CFFSubmission
@@ -84,6 +86,10 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             "raw_payload",
             "assignments",
             "is_assigned",
+            "is_rejected",
+            "rejected_at",
+            "rejected_by",
+            "rejection_reason",
             "imported_at",
             "last_synced_at",
         )
@@ -138,6 +144,24 @@ class CFFSubmissionSerializer(serializers.ModelSerializer):
             return bool(cache["assignments"])
         return obj.is_assigned
 
+    def get_is_rejected(self, obj: CFFSubmission) -> bool:
+        return obj.is_rejected
+
+    def get_rejected_by(self, obj: CFFSubmission) -> dict | None:
+        """Actor block matching the ``assignments[].assigned_by`` shape
+        so the FE can render either audit uniformly. Nulled on
+        unreject via the service so a stale user reference never
+        outlives the state."""
+
+        user = obj.rejected_by
+        if user is None:
+            return None
+        return {
+            "id": str(user.id),
+            "full_name": user.get_full_name() or user.email,
+            "email": user.email,
+        }
+
 
 class AssignToProjectRequestSerializer(serializers.Serializer):
     """Body for ``POST /cff-submissions/<id>/assign/``.
@@ -147,6 +171,16 @@ class AssignToProjectRequestSerializer(serializers.Serializer):
     """
 
     project_id = serializers.UUIDField()
+
+
+class RejectRequestSerializer(serializers.Serializer):
+    """Body for ``POST /cff-submissions/<id>/reject/``.
+
+    ``reason`` is required and non-blank — the point of storing the
+    rejection is that the audit trail can answer "why did we say no".
+    """
+
+    reason = serializers.CharField(min_length=1, max_length=2000, trim_whitespace=True)
 
 
 class UnassignFromProjectRequestSerializer(serializers.Serializer):

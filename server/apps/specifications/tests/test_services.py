@@ -499,6 +499,38 @@ class TestProjectStatusFromSpecLifecycle:
         formulation.refresh_from_db()
         assert formulation.project_status == ProjectStatus.APPROVED.value
 
+    def test_ready_to_go_draft_sign_skips_pilot_and_advances_to_approved(
+        self,
+    ) -> None:
+        """Ready-to-go projects skip the trial batch + final spec
+        phases entirely. A signed DRAFT-kind sheet on a RTG project
+        therefore jumps the roadmap straight to ``approved`` (which
+        is what unlocks the LabelDesign bootstrap chain on the
+        spec-sheet post_save signal).
+        """
+        from apps.formulations.models import ProjectType
+
+        org = OrganizationFactory()
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="draft",
+        )
+        formulation = sheet.formulation_version.formulation
+        formulation.project_type = ProjectType.READY_TO_GO.value
+        formulation.save(update_fields=["project_type"])
+
+        accept_as_customer(
+            sheet=sheet,
+            signer_name="Acme QA",
+            signer_email="qa@acme.test",
+            signer_company="Acme Co.",
+            signature_image=_SIG_FIXTURE,
+        )
+
+        formulation.refresh_from_db()
+        assert formulation.project_status == ProjectStatus.APPROVED.value
+
     def test_customer_signature_does_not_resurrect_discontinued(self) -> None:
         org = OrganizationFactory()
         sheet = SpecificationSheetFactory(

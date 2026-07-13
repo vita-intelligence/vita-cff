@@ -8,6 +8,7 @@
     "all": "All",
     "unassigned": "Unassigned",
     "assigned": "Assigned",
+    "rejected": "Rejected",
     "search_placeholder": "Search by email, company, market…"
   },
   "sync": {
@@ -82,6 +83,20 @@
     "toast_assigned": "Attached to {project}.",
     "toast_unassigned": "Detached from {project}.",
     "error_generic": "Couldn't update the assignment. Please try again."
+  },
+  "reject": {
+    "open": "Reject",
+    "undo": "Send back to triage",
+    "dialog_title": "Reject CFF from {who}?",
+    "dialog_body": "The CFF leaves the Unassigned queue and files into the Rejected tab. You can un-reject it later if you change your mind.",
+    "reason_label": "Reason",
+    "reason_placeholder": "Spam / duplicate / off-topic / not a fit — anything the team should know.",
+    "reason_hint": "Shown next to the row in the Rejected tab and captured in the audit trail.",
+    "reason_required": "Please explain why you're rejecting this CFF.",
+    "confirm": "Reject",
+    "cancel": "Cancel",
+    "close_aria": "Close reject dialog",
+    "error_generic": "Couldn't reject the CFF. Please try again."
   },
   "create_project": {
     "open": "Create new project",

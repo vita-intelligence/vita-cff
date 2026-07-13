@@ -21,6 +21,7 @@ from apps.formulations.services import (
     FormulationNotFound,
     FormulationVersionNotFound,
     InvalidCapsuleSize,
+    ProjectTypeLocked,
     InvalidCloneMode,
     InvalidDcpCarrierItem,
     InvalidDosageForm,
@@ -539,6 +540,89 @@ class TestUpdateFormulation:
                 actor=org.created_by,
                 code="LOCKED",
             )
+
+    def test_project_type_editable_before_any_signature(self) -> None:
+        """No customer signature anywhere on the project → the
+        engagement model is still a free-text field. Sales flips
+        between custom and ready-to-go while the deal is negotiated.
+        """
+        from apps.formulations.models import ProjectType
+
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        assert formulation.project_type == ProjectType.CUSTOM.value
+
+        update_formulation(
+            formulation=formulation,
+            actor=org.created_by,
+            project_type=ProjectType.READY_TO_GO.value,
+        )
+        formulation.refresh_from_db()
+        assert formulation.project_type == ProjectType.READY_TO_GO.value
+
+    def test_project_type_locked_after_signed_spec(self) -> None:
+        """The moment the customer signs anything the engagement
+        model freezes. Switching mid-flight would either orphan
+        signed documents or resurrect stages the customer thought
+        were done — see :class:`ProjectTypeLocked`.
+        """
+        from apps.formulations.models import ProjectType
+        from apps.specifications.tests.factories import (
+            SpecificationSheetFactory,
+        )
+        from django.utils import timezone
+
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="draft",
+        )
+        # Point the sheet's version at our formulation, then stamp
+        # the customer signature column so the guard reads it as
+        # "signed".
+        sheet.formulation_version.formulation = formulation
+        sheet.formulation_version.save(update_fields=["formulation"])
+        sheet.customer_signed_at = timezone.now()
+        sheet.save(update_fields=["customer_signed_at"])
+
+        with pytest.raises(ProjectTypeLocked):
+            update_formulation(
+                formulation=formulation,
+                actor=org.created_by,
+                project_type=ProjectType.READY_TO_GO.value,
+            )
+
+    def test_project_type_noop_ignored_even_when_signed(self) -> None:
+        """Echoing the current value passes through — bulk-update
+        payloads often re-send every field, and rejecting a no-op
+        would 422 those callers for no reason.
+        """
+        from apps.formulations.models import ProjectType
+        from apps.specifications.tests.factories import (
+            SpecificationSheetFactory,
+        )
+        from django.utils import timezone
+
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        sheet = SpecificationSheetFactory(
+            organization=org,
+            status="sent",
+            document_kind="draft",
+        )
+        sheet.formulation_version.formulation = formulation
+        sheet.formulation_version.save(update_fields=["formulation"])
+        sheet.customer_signed_at = timezone.now()
+        sheet.save(update_fields=["customer_signed_at"])
+
+        # Same value as current — must not raise.
+        update_formulation(
+            formulation=formulation,
+            actor=org.created_by,
+            project_type=formulation.project_type,
+        )
 
 
 class TestReplaceLines:

@@ -141,6 +141,42 @@ class CFFSubmission(models.Model):
         help_text=_("Stamped on every successful re-pull from Wix."),
     )
 
+    #: Triage decision — the alternative to routing a CFF to a project
+    #: is rejecting it (spam, duplicate, off-topic, unqualified enquiry).
+    #: Rejected submissions leave the main queue but stay on record so
+    #: a wrong call can be undone and audits can see who said no + why.
+    #: ``rejected_at`` doubles as the "is rejected?" flag — non-null →
+    #: rejected. Nulling all three fields un-rejects the submission
+    #: back to triage.
+    rejected_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "Set the moment a triage user marks the CFF as rejected. "
+            "NULL means the CFF is either in triage or already assigned."
+        ),
+    )
+    rejected_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="rejected_cff_submissions",
+        help_text=_(
+            "The triage user who rejected the CFF. Nulled on unreject "
+            "so subsequent re-rejections don't stack conflicting authorship."
+        ),
+    )
+    rejection_reason = models.TextField(
+        blank=True,
+        default="",
+        help_text=_(
+            "Free-text reason shown alongside the row in the rejected "
+            "list. Empty when the CFF isn't rejected."
+        ),
+    )
+
     class Meta:
         verbose_name = _("CFF submission")
         verbose_name_plural = _("CFF submissions")
@@ -157,6 +193,12 @@ class CFFSubmission(models.Model):
 
     def __str__(self) -> str:
         return f"CFF {self.wix_submission_id} ({self.wix_status})"
+
+    @property
+    def is_rejected(self) -> bool:
+        """``True`` when this CFF has been rejected via triage."""
+
+        return self.rejected_at is not None
 
     @property
     def is_assigned(self) -> bool:

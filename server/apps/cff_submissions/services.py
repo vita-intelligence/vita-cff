@@ -128,6 +128,18 @@ class CFFAssignmentError(RuntimeError):
     (project belongs to a different org, etc.). API maps to 4xx."""
 
 
+class CFFRejectionError(RuntimeError):
+    """Raised when a reject/unreject would violate an invariant.
+
+    Two triggers:
+
+    * Rejecting a CFF that's already been routed to a project — the
+      two decisions are contradictory. Detach first, then reject.
+    * Rejecting with an empty reason — the whole point of storing the
+      decision is that the audit trail can answer "why did we say no".
+    """
+
+
 # ---------------------------------------------------------------------------
 # Import
 # ---------------------------------------------------------------------------
@@ -695,6 +707,142 @@ def unassign(
 
 
 # ---------------------------------------------------------------------------
+# Reject / unreject — triage's "not our problem" verdict
+# ---------------------------------------------------------------------------
+
+
+#: Maximum length of the reject reason. Enough for a paragraph — this
+#: is an internal note, not a customer-facing letter. Enforced at the
+#: service so a shorter DB column can't sneak past this guard.
+_MAX_REJECTION_REASON = 2000
+
+
+@transaction.atomic
+def reject(
+    *,
+    submission: CFFSubmission,
+    actor: Any,
+    reason: str,
+) -> CFFSubmission:
+    """Mark ``submission`` as rejected with ``reason``.
+
+    Rejecting takes the CFF out of the triage queue and files it in
+    the Rejected tab so it stops re-appearing in the operator's
+    face — the alternative to routing it to a project. Idempotent
+    on the "already rejected" side; a second call with the same
+    submission refreshes the timestamp + actor + reason (so a
+    corrected note replaces the old one and the audit trail shows
+    who last touched it).
+
+    Guards:
+
+    * The reason must be a non-blank string. Silent-empty rejections
+      would defeat the entire audit purpose.
+    * The CFF must not currently be assigned to any project. Under
+      the M2M model a CFF can be routed AND rejected in theory, but
+      that combination reads as a contradiction — the routing means
+      "yes we picked this up" and the reject means "no we didn't".
+      Detach first, then reject.
+    """
+
+    from apps.audit.services import record as record_audit
+
+    trimmed = (reason or "").strip()
+    if not trimmed:
+        raise CFFRejectionError("A rejection reason is required.")
+    if len(trimmed) > _MAX_REJECTION_REASON:
+        raise CFFRejectionError(
+            f"Rejection reason too long ({len(trimmed)} > "
+            f"{_MAX_REJECTION_REASON} characters)."
+        )
+    if submission.assignments.exists():
+        raise CFFRejectionError(
+            "Detach the CFF from all projects before rejecting it."
+        )
+
+    before = {
+        "rejected_at": (
+            submission.rejected_at.isoformat()
+            if submission.rejected_at is not None
+            else None
+        ),
+        "rejection_reason": submission.rejection_reason,
+    }
+    submission.rejected_at = django_timezone.now()
+    submission.rejected_by = actor if hasattr(actor, "pk") else None
+    submission.rejection_reason = trimmed
+    submission.save(
+        update_fields=(
+            "rejected_at",
+            "rejected_by",
+            "rejection_reason",
+            "last_synced_at",
+        ),
+    )
+    record_audit(
+        organization=submission.organization,
+        actor=actor,
+        action="cff_submission.reject",
+        target=submission,
+        before=before,
+        after={
+            "rejected_at": submission.rejected_at.isoformat(),
+            "rejection_reason": trimmed,
+        },
+    )
+    return submission
+
+
+@transaction.atomic
+def unreject(
+    *,
+    submission: CFFSubmission,
+    actor: Any,
+) -> CFFSubmission:
+    """Un-reject a previously-rejected CFF.
+
+    Nulls all three reject fields and sends the CFF back to the
+    Unassigned queue so triage can decide again. Idempotent on the
+    "not rejected" side — calling on a fresh CFF is a no-op with an
+    audit row still written (so the log answers "did anyone touch
+    this and pull it back?").
+    """
+
+    from apps.audit.services import record as record_audit
+
+    was_rejected = submission.rejected_at is not None
+    before = {
+        "rejected_at": (
+            submission.rejected_at.isoformat()
+            if submission.rejected_at is not None
+            else None
+        ),
+        "rejection_reason": submission.rejection_reason,
+    }
+    submission.rejected_at = None
+    submission.rejected_by = None
+    submission.rejection_reason = ""
+    submission.save(
+        update_fields=(
+            "rejected_at",
+            "rejected_by",
+            "rejection_reason",
+            "last_synced_at",
+        ),
+    )
+    if was_rejected:
+        record_audit(
+            organization=submission.organization,
+            actor=actor,
+            action="cff_submission.unreject",
+            target=submission,
+            before=before,
+            after={"rejected_at": None, "rejection_reason": ""},
+        )
+    return submission
+
+
+# ---------------------------------------------------------------------------
 # "Create project from CFF" — one-click triage path
 # ---------------------------------------------------------------------------
 
@@ -1026,6 +1174,7 @@ def get_customer_cff(*, client_account, submission_id) -> CFFSubmission | None:
 
 __all__ = [
     "CFFAssignmentError",
+    "CFFRejectionError",
     "CreateFromCFFResult",
     "ImportResult",
     "WixAPIError",
@@ -1042,6 +1191,8 @@ __all__ = [
     "iter_orgs_with_live_wix_cff",
     "list_customer_cffs",
     "refresh_field_labels",
+    "reject",
     "unassign",
+    "unreject",
     "verify_wix_cff_connection",
 ]
