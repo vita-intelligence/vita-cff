@@ -52,6 +52,23 @@ class CFFProvenance(models.TextChoices):
     PORTAL = "portal", _("Portal (authenticated)")
 
 
+class CFFSubmissionKind(models.TextChoices):
+    """What flavour of engagement this CFF represents.
+
+    ``custom`` is the historical default — a bespoke brief that
+    needs R&D. ``ready_to_go`` is a customer picking an existing
+    published SKU off the RTG catalog: the submission service
+    auto-drafts a Proposal against the source formulation so
+    triage only needs to sanity-check + send.
+
+    Kept as a discriminator (not a computed property) so the
+    inbox list can filter without touching ``raw_payload``.
+    """
+
+    CUSTOM = "custom", _("Custom brief")
+    READY_TO_GO = "ready_to_go", _("Ready-to-Go order")
+
+
 class CFFSubmissionStatus(models.TextChoices):
     """Mirror of Wix's ``status`` field on a Submission object.
 
@@ -196,6 +213,43 @@ class CFFSubmission(models.Model):
         through_fields=("submission", "project"),
         related_name="cff_submissions",
         blank=True,
+    )
+
+    #: Coarse flow discriminator — ``custom`` (bespoke brief, needs
+    #: R&D) vs ``ready_to_go`` (customer picked an existing published
+    #: SKU off the RTG catalog). Set at creation time by
+    #: :func:`create_portal_submission` (custom) or
+    #: :func:`create_portal_rtg_submission` (ready_to_go). Wix rows
+    #: land as ``custom`` by default.
+    submission_kind = models.CharField(
+        _("submission kind"),
+        max_length=16,
+        choices=CFFSubmissionKind.choices,
+        default=CFFSubmissionKind.CUSTOM,
+        db_index=True,
+        help_text=_(
+            "Discriminates a bespoke Custom brief from a Ready-to-Go "
+            "order off the published catalog. Drives the triage-inbox "
+            "badge and, on the customer portal, whether the pending "
+            "card reads 'Under review' or 'Awaiting proposal'."
+        ),
+    )
+
+    #: The Proposal auto-drafted by the RTG submission service.
+    #: NULL for Custom rows (no proposal exists until triage creates
+    #: one manually). Cleared on proposal delete via ``SET_NULL``
+    #: so a rogue delete doesn't cascade the CFFSubmission away.
+    drafted_proposal = models.ForeignKey(
+        "proposals.Proposal",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="source_rtg_cff_submissions",
+        help_text=_(
+            "Auto-drafted proposal for RTG submissions. Triage opens "
+            "this proposal, sanity-checks the lines, and hits Send — "
+            "no re-typing. NULL on Custom rows."
+        ),
     )
 
     imported_at = models.DateTimeField(auto_now_add=True)

@@ -195,6 +195,17 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "sales_person",
             "lead_scientist",
             "lines",
+            # Ready-to-Go marketing block. Empty / default on Custom
+            # rows; the FE only mounts the publish panel when
+            # ``project_type=='ready_to_go'`` so the extra fields
+            # never surface on a Custom detail page.
+            "is_rtg_published",
+            "rtg_short_description",
+            "rtg_hero_image",
+            "rtg_base_price",
+            "rtg_moq",
+            "rtg_packaging_options",
+            "rtg_currency_code",
             "created_at",
             "updated_at",
         )

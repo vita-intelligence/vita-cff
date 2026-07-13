@@ -298,6 +298,20 @@ export interface FormulationDto {
   readonly sales_person: SalesPersonDto | null;
   readonly lead_scientist: LeadScientistDto | null;
   readonly lines: readonly FormulationLineDto[];
+  /** Ready-to-Go catalog fields. Populated only on
+   *  ``project_type === 'ready_to_go'`` rows; safe defaults
+   *  (``is_rtg_published=false``, empty arrays, null numbers)
+   *  otherwise. The staff RTG panel writes back through
+   *  PATCH ``/rtg-publish/`` — never through the main formulation
+   *  PATCH — so these fields stay read-only on the standard write
+   *  serializer. */
+  readonly is_rtg_published: boolean;
+  readonly rtg_short_description: string;
+  readonly rtg_hero_image: string | null;
+  readonly rtg_base_price: string | null;
+  readonly rtg_moq: number | null;
+  readonly rtg_packaging_options: readonly string[];
+  readonly rtg_currency_code: string;
   readonly created_at: string;
   readonly updated_at: string;
 }

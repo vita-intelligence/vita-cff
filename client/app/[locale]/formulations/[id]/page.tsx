@@ -5,6 +5,7 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { loadProjectForTab } from "./_shared/load-project";
 import { ProjectOverview } from "./project-overview";
 import { ProjectShell } from "./project-shell";
+import { RTGCatalogPanel } from "./rtg-catalog-panel";
 import { APP_VERSION } from "@/config/version";
 
 
@@ -16,10 +17,8 @@ export default async function ProjectOverviewPage({
   const { locale, id } = await params;
   setRequestLocale(locale);
 
-  const { user, organization, formulation, overview } = await loadProjectForTab(
-    locale,
-    id,
-  );
+  const { user, organization, formulation, overview, canWrite } =
+    await loadProjectForTab(locale, id);
 
   const tCommon = await getTranslations("common");
 
@@ -33,11 +32,21 @@ export default async function ProjectOverviewPage({
           overview={overview}
           activeTab="overview"
         >
-          <ProjectOverview
-            orgId={organization.id}
-            formulationId={formulation.id}
-            initialData={overview}
-          />
+          <div className="flex flex-col gap-6">
+            <ProjectOverview
+              orgId={organization.id}
+              formulationId={formulation.id}
+              initialData={overview}
+            />
+            {/* RTG catalog publish panel — self-gates on
+                ``project_type === 'ready_to_go'`` internally so the
+                page stays untouched for Custom projects. */}
+            <RTGCatalogPanel
+              orgId={organization.id}
+              formulation={formulation}
+              canEdit={canWrite}
+            />
+          </div>
         </ProjectShell>
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">

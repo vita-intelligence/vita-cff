@@ -96,6 +96,7 @@ from apps.formulations.models import (
     FormulationLine,
     FormulationVersion,
     ProjectStatus,
+    ProjectType,
 )
 from apps.organizations.models import Membership, Organization
 
@@ -348,6 +349,27 @@ class CloneTargetIsSource(Exception):
     switch to the ``new`` mode."""
 
     code = "clone_target_is_source"
+
+
+class FormulationRTGError(Exception):
+    """Raised when a caller tries to publish (or unpublish) a
+    formulation to the Ready-to-Go catalog in a way that would
+    violate the invariants:
+
+    * Custom (``project_type=custom``) formulations cannot be
+      published — the whole point of the RTG track is that the
+      recipe is already validated. A Custom project's recipe is
+      still under development.
+    * Publishing requires a marketing payload (description, base
+      price, MOQ >= 1, at least one packaging option). We refuse
+      to surface a half-configured card on the customer catalog.
+
+    ``field_errors`` (attached by the caller when relevant) lets
+    the API map to a 400 with a per-field errors dict the FE can
+    hang against the specific inputs.
+    """
+
+    code = "formulation_rtg_error"
 
 
 # ---------------------------------------------------------------------------
@@ -4774,5 +4796,210 @@ def rollback_to_version(
         after={
             "rolled_back_to_version_number": version_number,
         },
+    )
+    return formulation
+
+
+# ---------------------------------------------------------------------------
+# Ready-to-Go catalog — staff-side publish/unpublish
+# ---------------------------------------------------------------------------
+#
+# The publish step is the moment a validated RTG recipe crosses from
+# "internal record" to "customer-orderable SKU". We treat it as a
+# discrete action rather than a bag of editable fields on the
+# formulation form: a partially-configured publish would surface a
+# broken card on the portal catalog, and a Custom project has no
+# business being on the RTG track at all. Both invariants live here
+# so the model layer stays additive and the API stays a thin shim.
+
+
+#: Fields the marketing payload must carry before ``is_rtg_published``
+#: may flip true. Keys map to the ``rtg_*`` model attribute; values
+#: are the customer-facing label the API layer echoes back in the
+#: field-errors dict so the FE can attach the message to the right
+#: input.
+_RTG_PUBLISH_REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
+    ("rtg_short_description", "Short description"),
+    ("rtg_base_price", "Base price"),
+    ("rtg_moq", "Minimum order quantity"),
+    ("rtg_packaging_options", "Packaging options"),
+)
+
+
+def _rtg_marketing_field_errors(
+    payload: dict[str, Any],
+) -> dict[str, str]:
+    """Return ``{field: message}`` for every missing / invalid entry
+    on a publish payload. Empty dict means the payload is safe to
+    persist.
+
+    ``payload`` is the merged view of the incoming request over the
+    formulation's current values so partial patches keep the last
+    known-good state — the caller passes the merged dict, not the
+    raw request body.
+    """
+
+    errors: dict[str, str] = {}
+    description = (payload.get("rtg_short_description") or "").strip()
+    if not description:
+        errors["rtg_short_description"] = (
+            "A short description is required to publish."
+        )
+
+    base_price = payload.get("rtg_base_price")
+    if base_price is None:
+        errors["rtg_base_price"] = "A base price is required to publish."
+    else:
+        try:
+            as_decimal = Decimal(str(base_price))
+        except (InvalidOperation, TypeError, ValueError):
+            errors["rtg_base_price"] = "Base price must be a number."
+        else:
+            if as_decimal <= 0:
+                errors["rtg_base_price"] = "Base price must be positive."
+
+    moq = payload.get("rtg_moq")
+    if moq is None:
+        errors["rtg_moq"] = "Minimum order quantity is required."
+    else:
+        try:
+            as_int = int(moq)
+        except (TypeError, ValueError):
+            errors["rtg_moq"] = "MOQ must be a whole number."
+        else:
+            if as_int < 1:
+                errors["rtg_moq"] = "MOQ must be at least 1."
+
+    packaging = payload.get("rtg_packaging_options") or []
+    if not isinstance(packaging, (list, tuple)):
+        errors["rtg_packaging_options"] = (
+            "Packaging options must be a list of labels."
+        )
+    else:
+        cleaned = [
+            str(entry).strip() for entry in packaging if str(entry).strip()
+        ]
+        if not cleaned:
+            errors["rtg_packaging_options"] = (
+                "Add at least one packaging option before publishing."
+            )
+
+    return errors
+
+
+@transaction.atomic
+def publish_to_rtg_catalog(
+    formulation: Formulation,
+    *,
+    actor: Any,
+    marketing_fields: dict[str, Any],
+) -> Formulation:
+    """Flip ``is_rtg_published`` on with an accompanying marketing
+    payload, or update the marketing payload while the flag stays on.
+
+    Guards enforced here (rather than at the API):
+
+    * ``project_type`` must be ``ready_to_go``. Custom projects fail
+      with :class:`FormulationRTGError` (``code='not_ready_to_go'``).
+    * Every field in :data:`_RTG_PUBLISH_REQUIRED_FIELDS` must be
+      present + valid. Missing values raise ``FormulationRTGError``
+      with a ``field_errors`` dict the view echoes back as 400.
+
+    ``marketing_fields`` is a partial dict — the caller only needs to
+    thread the values they're changing. Missing keys fall back to the
+    formulation's current values so a re-save without a new image
+    doesn't wipe the existing one.
+    """
+
+    if formulation.project_type != ProjectType.READY_TO_GO:
+        exc = FormulationRTGError(
+            "Only Ready-to-Go projects can be published to the "
+            "customer catalog. Convert the project first."
+        )
+        exc.code = "not_ready_to_go"  # type: ignore[attr-defined]
+        raise exc
+
+    merged: dict[str, Any] = {
+        "rtg_short_description": formulation.rtg_short_description,
+        "rtg_base_price": formulation.rtg_base_price,
+        "rtg_moq": formulation.rtg_moq,
+        "rtg_packaging_options": list(formulation.rtg_packaging_options or []),
+        "rtg_currency_code": formulation.rtg_currency_code,
+    }
+    for key, value in marketing_fields.items():
+        # ``None`` on an ``rtg_hero_image`` upload = "don't touch the
+        # image"; we manage the image field separately below.
+        if key == "rtg_hero_image":
+            continue
+        merged[key] = value
+
+    field_errors = _rtg_marketing_field_errors(merged)
+    if field_errors:
+        exc = FormulationRTGError(
+            "Some marketing fields need attention before publishing."
+        )
+        exc.field_errors = field_errors  # type: ignore[attr-defined]
+        raise exc
+
+    before = snapshot(formulation)
+    formulation.is_rtg_published = True
+    formulation.rtg_short_description = str(
+        merged["rtg_short_description"]
+    ).strip()
+    formulation.rtg_base_price = Decimal(str(merged["rtg_base_price"]))
+    formulation.rtg_moq = int(merged["rtg_moq"])
+    formulation.rtg_packaging_options = [
+        str(entry).strip()
+        for entry in merged["rtg_packaging_options"]
+        if str(entry).strip()
+    ]
+    formulation.rtg_currency_code = (
+        str(merged.get("rtg_currency_code") or "GBP").strip().upper()[:3]
+    )
+    hero = marketing_fields.get("rtg_hero_image")
+    if hero is not None:
+        # ``False`` is Django's "clear this file" sentinel on
+        # ``ImageField``; anything else lands as the new upload.
+        formulation.rtg_hero_image = hero
+    formulation.updated_by = actor
+    formulation.save()
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.rtg_publish",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
+
+
+@transaction.atomic
+def unpublish_from_rtg_catalog(
+    formulation: Formulation,
+    *,
+    actor: Any,
+) -> Formulation:
+    """Take a formulation off the customer RTG catalog.
+
+    Leaves the marketing fields intact so a subsequent republish
+    doesn't require re-typing everything. Idempotent: calling on an
+    already-unpublished formulation still records an audit row so a
+    "did anyone touch this?" query can answer honestly.
+    """
+
+    before = snapshot(formulation)
+    formulation.is_rtg_published = False
+    formulation.updated_by = actor
+    formulation.save(
+        update_fields=["is_rtg_published", "updated_by", "updated_at"]
+    )
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.rtg_unpublish",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
     )
     return formulation

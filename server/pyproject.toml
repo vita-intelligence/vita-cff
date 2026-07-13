@@ -8,6 +8,14 @@ version = "0.1.0"
 description = "Vita NPD platform backend"
 requires-python = ">=3.12"
 
+# Django project — not a distributable Python package. ``apps/`` is
+# imported by Django at runtime via ``INSTALLED_APPS`` rather than
+# installed. Telling setuptools there are no packages skips flat-
+# layout auto-discovery (which otherwise trips over ``media/``,
+# ``docker/``, ``staticfiles/`` and refuses to build).
+[tool.setuptools]
+py-modules = []
+
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py", "*_test.py"]

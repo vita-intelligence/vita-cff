@@ -470,6 +470,91 @@ class Formulation(models.Model):
         ),
     )
 
+    # ------------------------------------------------------------------
+    # Ready-to-Go catalog marketing block. Populated only on
+    # ``project_type=ready_to_go`` formulations. Once ``is_rtg_published``
+    # flips true, the row is discoverable in the customer portal's
+    # RTG catalog at ``/portal/cffs/new/rtg`` — customers can order
+    # the product without a bespoke development cycle. The service
+    # layer (``publish_to_rtg_catalog``) enforces the invariants
+    # (marketing copy present, MOQ >= 1, at least one packaging
+    # option, project_type constraint) so the model stays additive.
+    # ------------------------------------------------------------------
+    is_rtg_published = models.BooleanField(
+        _("published to RTG catalog"),
+        default=False,
+        db_index=True,
+        help_text=_(
+            "When true, this Ready-to-Go recipe surfaces in the "
+            "portal catalog for org customers. Only meaningful when "
+            "``project_type=ready_to_go``; the publish service "
+            "refuses to flip this on for Custom projects."
+        ),
+    )
+    rtg_short_description = models.TextField(
+        _("RTG short description"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Marketing sub-copy shown on the catalog card (one to "
+            "two sentences). Kept short so the grid stays scannable."
+        ),
+    )
+    rtg_hero_image = models.ImageField(
+        _("RTG hero image"),
+        upload_to="rtg-hero/",
+        blank=True,
+        null=True,
+        help_text=_(
+            "Hero image for the catalog card. Optional — the FE "
+            "falls back to a monogram tile when unset."
+        ),
+    )
+    rtg_base_price = models.DecimalField(
+        _("RTG base price"),
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Per-unit price used to pre-fill the drafted proposal "
+            "line when a customer orders this SKU from the catalog. "
+            "Currency is ``rtg_currency_code``."
+        ),
+    )
+    rtg_moq = models.PositiveIntegerField(
+        _("RTG minimum order quantity"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Smallest quantity the customer may order in one go. "
+            "Enforced server-side at submission — the portal short "
+            "form refuses to submit below this value."
+        ),
+    )
+    rtg_packaging_options: models.JSONField = models.JSONField(
+        _("RTG packaging options"),
+        default=list,
+        blank=True,
+        help_text=_(
+            "List of packaging variant labels the customer picks "
+            "from at order time (e.g. ``[\"120g jar\", \"60-count "
+            "pouch\"]``). At least one entry required to publish. "
+            "The submission service validates the chosen packaging "
+            "against this list."
+        ),
+    )
+    rtg_currency_code = models.CharField(
+        _("RTG currency code"),
+        max_length=3,
+        default="GBP",
+        help_text=_(
+            "ISO 4217 code for ``rtg_base_price``. Snapshotted "
+            "onto the drafted proposal so the customer's quote "
+            "never drifts against a later catalog re-price."
+        ),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
