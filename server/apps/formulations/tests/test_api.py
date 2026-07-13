@@ -385,3 +385,65 @@ class TestVersioning:
         assert response.json()["version_number"] == [
             "formulation_version_not_found"
         ]
+
+
+def _rtg_publish_url(org_id: str, formulation_id: str) -> str:
+    return reverse(
+        "formulations:formulation-rtg-publish",
+        kwargs={"org_id": org_id, "formulation_id": formulation_id},
+    )
+
+
+class TestRTGPublishParsers:
+    """Regression guard: the ``rtg-publish`` endpoint must accept a
+    multipart body because the FE panel POSTs a ``FormData`` payload
+    with the optional hero image alongside the marketing scalars.
+
+    Broke previously in two places at once — DRF's global
+    ``DEFAULT_PARSER_CLASSES`` only carries ``JSONParser`` (so any
+    ``multipart/form-data`` request bounced with 415 before the view
+    ran), and the FE was hand-setting the Content-Type header
+    without a boundary (so even after the parser change the body
+    would fail to split). The parser opt-in is enforced here; the
+    FE fix is baked into the panel component.
+    """
+
+    def test_accepts_multipart_form_data(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        client, _, org = owner_client
+        formulation = FormulationFactory(
+            organization=org, project_type="ready_to_go"
+        )
+        # ``format="multipart"`` = APIClient sends multipart/form-data
+        # with the boundary set correctly. Just verifying the parser
+        # doesn't bounce it as 415; unpublish is the simplest happy
+        # path because it needs no marketing fields.
+        response = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"is_rtg_published": "false"},
+            format="multipart",
+        )
+        # Anything other than 415 means the parser accepted the body.
+        # Non-owner writes still go through the same permission
+        # pipeline so 200/400 both count as "parser worked".
+        assert response.status_code != status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
+        assert response.status_code == status.HTTP_200_OK
+
+    def test_accepts_json(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        """JSON is still valid on the same endpoint so callers that
+        don't need the file upload can send a plain application/json
+        patch. Multipart being added didn't kick JSON out."""
+
+        client, _, org = owner_client
+        formulation = FormulationFactory(
+            organization=org, project_type="ready_to_go"
+        )
+        response = client.patch(
+            _rtg_publish_url(str(org.id), str(formulation.id)),
+            {"is_rtg_published": False},
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK

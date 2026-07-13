@@ -118,12 +118,15 @@ function RTGCatalogPanelInner({
         if (heroFile) {
           form.append("rtg_hero_image", heroFile);
         }
+        // Do NOT hand-set ``Content-Type: multipart/form-data`` —
+        // axios will populate it including the ``boundary=…`` token
+        // when it sees a ``FormData`` body. Setting the header
+        // manually strips the boundary and DRF's multipart parser
+        // can't split the parts, which surfaces as a bewildering
+        // ``415 unsupported_media_type``. Trust the runtime.
         await apiClient.patch(
           `/api/organizations/${orgId}/formulations/${formulation.id}/rtg-publish/`,
           form,
-          {
-            headers: { "Content-Type": "multipart/form-data" },
-          },
         );
         setPublished(nextPublished);
         setBanner(

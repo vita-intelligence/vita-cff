@@ -9,6 +9,7 @@ from typing import Any
 from django.db.models import ProtectedError
 from rest_framework import status
 from rest_framework.exceptions import NotFound
+from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -903,6 +904,12 @@ class FormulationRTGPublishView(APIView):
 
     permission_classes = (HasFormulationsPermission,)
     required_capability = FormulationsCapability.EDIT
+    # DRF's global ``DEFAULT_PARSER_CLASSES`` is JSON-only so the
+    # hero-image upload can't ride the default parsers. Opt this view
+    # in to multipart + urlencoded form bodies explicitly; JSON stays
+    # in the list so a caller that skips the file upload can still
+    # send an application/json patch.
+    parser_classes = (MultiPartParser, FormParser, JSONParser)
 
     def patch(
         self, request: Request, org_id: str, formulation_id: str
