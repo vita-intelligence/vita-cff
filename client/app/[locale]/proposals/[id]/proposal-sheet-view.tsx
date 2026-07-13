@@ -1539,17 +1539,34 @@ function LineSpecPicker({
         // the *current* line's bound sheet from the "busy" rule —
         // otherwise re-saving the same spec on its own line would
         // look impossible.
+        //
+        // Ready-to-Go recipes are evergreen — the same spec sheet
+        // ships to many customers and the same customer can re-order
+        // under separate proposals. The "spec is bound to a proposal"
+        // concept only applies to Custom projects. For RTG we never
+        // mark the row busy; the chip still surfaces "also on
+        // PROP-0042" as context, but the option stays selectable.
+        const isReadyToGo =
+          sheet.formulation_project_type === "ready_to_go";
         const linkedProposalStatus = sheet.linked_proposal?.status;
-        const isBusyElsewhere = Boolean(
-          sheet.linked_proposal &&
-            linkedProposalStatus !== "rejected" &&
-            sheet.id !== line.specification_sheet_id,
-        );
+        const isBusyElsewhere =
+          !isReadyToGo &&
+          Boolean(
+            sheet.linked_proposal &&
+              linkedProposalStatus !== "rejected" &&
+              sheet.id !== line.specification_sheet_id,
+          );
         // Chip: free + approved → no chip (ideal pick); anything
         // else surfaces the lifecycle stage so the operator can
-        // tell at a glance which one is fresh vs in-flight.
+        // tell at a glance which one is fresh vs in-flight. For
+        // RTG, an existing binding is context ("also on PROP-0042"),
+        // not a gate — the current sale is a different order.
         let chip = "";
-        if (sheet.linked_proposal && isBusyElsewhere) {
+        if (isReadyToGo && sheet.linked_proposal) {
+          chip = ` · RTG · also on ${sheet.linked_proposal.code}`;
+        } else if (isReadyToGo) {
+          chip = " · RTG";
+        } else if (sheet.linked_proposal && isBusyElsewhere) {
           const statusLabel = tProposals(
             `create.spec_status.${sheet.status}` as
               "create.spec_status.approved",
