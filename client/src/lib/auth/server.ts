@@ -441,11 +441,16 @@ export async function getFormulationsFirstPageServer(
   options: {
     ordering?: string;
     pageSize?: number;
+    projectType?: "custom" | "ready_to_go";
   } = {},
 ): Promise<PaginatedFormulationsDto | null> {
   const params = new URLSearchParams();
   if (options.ordering) params.set("ordering", options.ordering);
   if (options.pageSize) params.set("page_size", String(options.pageSize));
+  // ``project_type`` narrows the list server-side. Used by the RTG
+  // Catalog page so we never ship Custom projects (which carry
+  // unpublished recipe drafts) into a marketing-listing surface.
+  if (options.projectType) params.set("project_type", options.projectType);
   const query = params.toString();
   const url = `${formulationsEndpoints.list(orgId)}${
     query ? `?${query}` : ""

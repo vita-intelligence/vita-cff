@@ -23,6 +23,7 @@ export type ProtectedNavKey =
   | "dashboard"
   | "catalogues"
   | "formulations"
+  | "rtg_catalog"
   | "proposals"
   | "pipeline"
   | "rd_pipeline"
@@ -164,6 +165,16 @@ export async function ProtectedHeader({
       key: "formulations",
       href: "/formulations",
       label: tNav("main.formulations"),
+    });
+    // RTG Catalog rides the same ``formulations.view`` gate — every
+    // RTG SKU IS a formulation, just tagged ``project_type='ready_to_go'``.
+    // Splitting it out as its own nav entry means the catalog manager
+    // doesn't have to remember to filter the projects list every time
+    // they want to see what's live in the portal.
+    rndItems.push({
+      key: "rtg_catalog",
+      href: "/rtg-catalog",
+      label: "RTG Catalog",
     });
   }
   if (canSeeApprovals) {
