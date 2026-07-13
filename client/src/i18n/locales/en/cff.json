@@ -30,7 +30,8 @@
     "PAYMENT_REQUIRED": "Payment required",
     "PAYMENT_PENDING": "Payment pending",
     "PAYMENT_CANCELED": "Payment canceled",
-    "UNKNOWN": "Unknown"
+    "UNKNOWN": "Unknown",
+    "PORTAL": "Portal submission"
   },
   "badge": {
     "unassigned": "Not attached to any project",

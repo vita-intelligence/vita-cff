@@ -362,7 +362,13 @@ function CFFRow({
             <p className="truncate text-sm font-semibold text-ink-1000">
               {customerName}
             </p>
-            <StatusChip status={row.wix_status} t={t} />
+            <StatusChip
+              status={
+                row.wix_status ||
+                (row.provenance === "portal" ? "PORTAL" : "UNKNOWN")
+              }
+              t={t}
+            />
             <AssignmentBadge row={row} t={t} />
           </div>
           {previewFields.company ? (
@@ -380,17 +386,25 @@ function CFFRow({
               ISO in `title` covers audit / timezone edge cases. */}
           <p
             className="text-[11px] text-ink-500"
-            title={new Date(row.wix_created_date).toISOString()}
+            title={new Date(
+              row.wix_created_date || row.imported_at,
+            ).toISOString()}
           >
             {t("list.received", {
-              when: format.relativeTime(new Date(row.wix_created_date), now),
+              when: format.relativeTime(
+                // Portal rows have no ``wix_created_date`` — fall back
+                // to ``imported_at`` (set on both paths) so the
+                // relative "received X ago" label still renders.
+                new Date(row.wix_created_date || row.imported_at),
+                now,
+              ),
             })}{" "}
             <span className="text-ink-400">
               ·{" "}
-              {format.dateTime(new Date(row.wix_created_date), {
-                dateStyle: "short",
-                timeStyle: "short",
-              })}
+              {format.dateTime(
+                new Date(row.wix_created_date || row.imported_at),
+                { dateStyle: "short", timeStyle: "short" },
+              )}
             </span>
             <span className="ml-1.5 font-mono text-[10px] text-ink-400">
               #{row.id.slice(0, 8)}
@@ -641,17 +655,22 @@ function StatusChip({
   status: string;
   t: ReturnType<typeof useTranslations>;
 }) {
+  // Portal-provenance submissions carry no Wix status, so callers
+  // may pass ``null``/``""`` here. Normalise so ``t()`` can't miss.
+  const key = status || "UNKNOWN";
   const tone =
-    status === "CONFIRMED"
+    key === "CONFIRMED"
       ? "bg-success/10 text-success ring-success/20"
-      : status === "UNKNOWN"
-        ? "bg-ink-100 text-ink-600 ring-ink-200"
-        : "bg-warning/10 text-warning ring-warning/20";
+      : key === "PORTAL"
+        ? "bg-blue-100 text-blue-700 ring-blue-200"
+        : key === "UNKNOWN"
+          ? "bg-ink-100 text-ink-600 ring-ink-200"
+          : "bg-warning/10 text-warning ring-warning/20";
   return (
     <span
       className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tone}`}
     >
-      {t(`status.${status as "CONFIRMED"}`)}
+      {t(`status.${key as "CONFIRMED"}`)}
     </span>
   );
 }
