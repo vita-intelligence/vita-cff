@@ -62,6 +62,13 @@ export interface PspItemDto {
    *  the FE's price-math layer can treat all sources identically). */
   readonly selling_price: string | null;
   readonly currency_code: string | null;
+  /** Full PSP attributes map — carries the compute-critical keys
+   *  the mirror needs (``purity``, ``overage``, ``extract_ratio``,
+   *  allergen flags, country of origin, …). Empty ``{}`` when the
+   *  row has no attributes recorded. ``use_as`` above is exposed as
+   *  a flat field for backward compat with early picker code that
+   *  reads only the projection. */
+  readonly attributes: Readonly<Record<string, unknown>>;
 }
 
 

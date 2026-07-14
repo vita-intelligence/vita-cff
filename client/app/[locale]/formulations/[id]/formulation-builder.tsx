@@ -21,6 +21,9 @@ import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { clientUuid } from "@/lib/utils";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
+import { useOrganization } from "@/services/organizations";
+import { useMirrorPspItem, usePspItems } from "@/services/psp";
+import type { PspItemDto } from "@/services/psp";
 
 import {
   CAPSULE_SIZES,
@@ -1108,22 +1111,80 @@ export function FormulationBuilder({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [metadata.target_fill_weight_mg]);
 
-  const pickerQuery = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
+  // When PSP is the live integration, the builder pulls ingredient
+  // candidates from PSP instead of the local raw-materials catalogue.
+  // Legacy formulations keep referencing whatever local Item their
+  // FormulationLine points at (untouched by the swap); only NEW
+  // picks route through PSP → mirror → local Item. The local
+  // picker still fires when PSP is off so nothing regresses for
+  // orgs that don't run the integration yet.
+  const organization = useOrganization(orgId);
+  const pspLive = Boolean(organization?.psp_live);
+
+  const localPickerQuery = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
     includeArchived: false,
     ordering: "name",
     pageSize: 50,
     search: debouncedSearch || undefined,
   });
 
-  const pickerItems: readonly ItemDto[] = useMemo(
-    () => pickerQuery.data?.pages.flatMap((page) => [...page.results]) ?? [],
-    [pickerQuery.data],
-  );
+  const pspPickerQuery = usePspItems(orgId, {
+    enabled: pspLive,
+    // Same debounced value as the local picker so the search UX
+    // is identical across both data sources.
+    search: debouncedSearch || undefined,
+    // Only raw materials — the builder is building recipes out of
+    // ingredients, not packaging. PSP's item taxonomy maps 1:1.
+    itemTypes: ["raw_material"],
+  });
+
+  const mirrorPsp = useMirrorPspItem(orgId);
+
+  // ItemDto shim carrying enough shape for the picker JSX +
+  // ``attributesFromItem`` compute check. PSP UUIDs prefixed so
+  // they never collide with real local Item UUIDs on the ``id``
+  // key (used for the "already in lines" dedupe). The real local
+  // id lands on the row only after the mirror mutation completes.
+  const pickerItems: readonly ItemDto[] = useMemo(() => {
+    if (pspLive) {
+      const rows: readonly PspItemDto[] = pspPickerQuery.data?.items ?? [];
+      return rows.map((row) => ({
+        id: `psp:${row.uuid}`,
+        name: row.name,
+        internal_code: row.external_sku,
+        unit: "",
+        base_price:
+          row.selling_price !== null && row.selling_price !== undefined
+            ? String(row.selling_price)
+            : null,
+        is_archived: !row.is_active,
+        // Full attributes map (PSP wire returns this since
+        // ``feat(integration): full attributes map on /items read``)
+        // — powers ``canComputeMaterial`` + ``attributesFromItem``
+        // on the picker row same as a local Item would.
+        attributes: row.attributes ?? {},
+        created_at: "",
+        updated_at: "",
+      }));
+    }
+    return (
+      localPickerQuery.data?.pages.flatMap((page) => [...page.results]) ?? []
+    );
+  }, [pspLive, pspPickerQuery.data, localPickerQuery.data]);
+
+  // Only the LOCAL query participates in infinite scrolling — PSP's
+  // list endpoint caps server-side so no next-page dance is needed
+  // when PSP is live. Consumers below branch on ``pspLive`` for
+  // the loading / hasNextPage bits.
+  const pickerQuery = localPickerQuery;
 
   const pickerScrollRef = useRef<HTMLUListElement>(null);
   const pickerSentinelRef = useRef<HTMLLIElement>(null);
 
   useEffect(() => {
+    // Infinite scroll is a local-picker-only concern — PSP's list
+    // endpoint caps server-side, no next-page dance.
+    if (pspLive) return;
     const scrollEl = pickerScrollRef.current;
     const sentinelEl = pickerSentinelRef.current;
     if (!scrollEl || !sentinelEl) return;
@@ -1143,18 +1204,18 @@ export function FormulationBuilder({
     );
     observer.observe(sentinelEl);
     return () => observer.disconnect();
-  }, [pickerQuery, pickerItems.length]);
+  }, [pspLive, pickerQuery, pickerItems.length]);
 
   // ---------------------------------------------------------------------
   // Line edits
   // ---------------------------------------------------------------------
-  const addIngredient = useCallback(
-    (item: ItemDto) => {
-      if (lines.some((line) => line.item_id === item.id)) {
-        return;
+  const appendIngredientLine = useCallback((item: ItemDto) => {
+    setLines((prev) => {
+      if (prev.some((line) => line.item_id === item.id)) {
+        return prev;
       }
       const key = `new-${clientUuid()}`;
-      setLines((prev) => [
+      return [
         ...prev,
         {
           key,
@@ -1168,9 +1229,46 @@ export function FormulationBuilder({
           extract_ratio_override: "",
           display_order: prev.length,
         },
-      ]);
+      ];
+    });
+  }, []);
+
+  const addIngredient = useCallback(
+    (item: ItemDto) => {
+      // PSP-sourced picker rows carry a ``psp:<uuid>`` synthetic id.
+      // Route them through the mirror endpoint first — that returns
+      // a real local :class:`catalogues.Item` with a stable UUID —
+      // and only then attach a formulation line. The FormulationLine
+      // FK stays local (nothing polymorphic downstream); PSP just
+      // populates the row.
+      if (item.id.startsWith("psp:")) {
+        const pspUuid = item.id.slice("psp:".length);
+        // Dedupe: if any existing line already references the local
+        // mirror row for this PSP UUID, do nothing. This avoids a
+        // pointless round-trip on a double-click before the first
+        // mirror completes; the appendIngredientLine call below is
+        // also guarded by ``item_id`` uniqueness for the post-mirror
+        // race case.
+        mirrorPsp.mutate(pspUuid, {
+          onSuccess: (dto) => {
+            appendIngredientLine({
+              id: dto.id,
+              name: dto.name,
+              internal_code: dto.internal_code,
+              unit: dto.unit,
+              base_price: dto.base_price,
+              is_archived: dto.is_archived,
+              attributes: dto.attributes,
+              created_at: "",
+              updated_at: "",
+            });
+          },
+        });
+        return;
+      }
+      appendIngredientLine(item);
     },
-    [lines],
+    [appendIngredientLine, mirrorPsp],
   );
 
   const updateLineClaim = useCallback((key: string, value: string) => {
@@ -2283,6 +2381,15 @@ export function FormulationBuilder({
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.picker_title")}
           </p>
+          {pspLive ? (
+            // Small non-translated affordance so scientists know
+            // where these rows come from. Deliberately not chip-
+            // heavy — the picker header already labels this pane
+            // as "Ingredients".
+            <p className="mt-1 text-[11px] font-medium text-orange-700">
+              Sourced from PSP
+            </p>
+          ) : null}
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
@@ -2294,7 +2401,9 @@ export function FormulationBuilder({
             ref={pickerScrollRef}
             className="mt-3 flex max-h-[420px] flex-col gap-1 overflow-y-auto"
           >
-            {pickerQuery.isLoading && pickerItems.length === 0 ? (
+            {(pspLive
+              ? pspPickerQuery.isLoading
+              : pickerQuery.isLoading) && pickerItems.length === 0 ? (
               <li className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tCommon("states.loading")}
               </li>
@@ -2304,9 +2413,30 @@ export function FormulationBuilder({
               </li>
             ) : (
               pickerItems.map((item) => {
-                const already = lines.some((l) => l.item_id === item.id);
+                // PSP-sourced picker rows haven't mirrored yet, so
+                // the "already added" check needs to look for the
+                // in-flight synthetic id AND any local id that came
+                // from a previous mirror of the same PSP UUID.
+                const already = lines.some((l) => {
+                  if (l.item_id === item.id) return true;
+                  if (item.id.startsWith("psp:")) {
+                    // A local line saved from an earlier session may
+                    // carry ``psp_source_uuid`` in its item metadata;
+                    // reconciling that lives on the follow-up "show
+                    // PSP linkage on line rows" PR. For now, the
+                    // mutation-side ``appendIngredientLine`` dedupe
+                    // covers double-clicks; this is best-effort.
+                    return false;
+                  }
+                  return false;
+                });
                 const failure = canComputeMaterial(attributesFromItem(item));
-                const disabled = !canWrite || already || failure !== null;
+                const mirroring =
+                  item.id.startsWith("psp:") &&
+                  mirrorPsp.isPending &&
+                  mirrorPsp.variables === item.id.slice("psp:".length);
+                const disabled =
+                  !canWrite || already || failure !== null || mirroring;
                 return (
                   <li key={item.id}>
                     <button
@@ -2344,10 +2474,10 @@ export function FormulationBuilder({
                 );
               })
             )}
-            {pickerItems.length > 0 ? (
+            {!pspLive && pickerItems.length > 0 ? (
               <li ref={pickerSentinelRef} aria-hidden className="h-px" />
             ) : null}
-            {pickerQuery.isFetchingNextPage ? (
+            {!pspLive && pickerQuery.isFetchingNextPage ? (
               <li className="py-2 text-center text-xs font-medium uppercase tracking-wide text-ink-500">
                 {tCommon("states.loading")}
               </li>

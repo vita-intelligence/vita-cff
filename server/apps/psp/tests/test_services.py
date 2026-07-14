@@ -355,6 +355,7 @@ def _stub_psp_item(uuid: str, **overrides) -> PspItem:
         product_family_name=None,
         selling_price=Decimal("12.50"),
         currency_code="GBP",
+        attributes={},
     )
     defaults.update(overrides)
     return PspItem(**defaults)
@@ -572,3 +573,54 @@ class TestMirrorPspItem:
             organization=org, slug=PSP_MIRROR_SLUG
         )
         assert mirror_catalogue.pk != raw_materials.pk
+
+    def test_upsert_copies_compute_critical_attributes(self):
+        """Compute-critical PSP attributes (purity, overage,
+        extract_ratio, allergen flags, country of origin) must
+        land on the local mirror ``Item.attributes`` map. Without
+        these, the formulation builder's dose math falls back to
+        defaults and every mirrored ingredient computes wrong.
+
+        This is the load-bearing regression guard for the
+        ``mirror_psp_item`` → ``FormulationLine`` compute path
+        that the builder-picker swap unlocks.
+        """
+
+        org = self._seed_org_with_psp()
+        psp_uuid = "11111111-2222-3333-4444-555555555555"
+
+        source_attrs = {
+            "use_as": "active",
+            "purity": "0.995",
+            "overage": "0.02",
+            "extract_ratio": "10:1",
+            "allergen_flags": ["soy"],
+            "country_of_origin": "IN",
+        }
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(psp_uuid, attributes=source_attrs)
+
+        psp._TEST_CLIENT = _Client
+        try:
+            item = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        # Compute-critical keys survived the mirror round-trip.
+        assert item.attributes["purity"] == "0.995"
+        assert item.attributes["overage"] == "0.02"
+        assert item.attributes["extract_ratio"] == "10:1"
+        assert item.attributes["allergen_flags"] == ["soy"]
+        assert item.attributes["country_of_origin"] == "IN"
+        # ``use_as`` overlay still wins — flat field is the
+        # authoritative source, even though PSP also carries it
+        # inside the attributes payload.
+        assert item.attributes["use_as"] == "active"

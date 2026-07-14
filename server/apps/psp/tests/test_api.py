@@ -240,6 +240,7 @@ class TestPickerEndpoints:
                         product_family_name=None,
                         selling_price=None,
                         currency_code=None,
+                        attributes={},
                     )
                 ]
 
@@ -299,6 +300,7 @@ class TestPickerEndpoints:
                     product_family_name=None,
                     selling_price=None,
                     currency_code=None,
+                    attributes={},
                 )
 
         psp_services._TEST_CLIENT = _FoundClient

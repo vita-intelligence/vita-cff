@@ -94,6 +94,14 @@ class PspItem:
     product_family_name: str | None
     selling_price: Decimal | None
     currency_code: str | None
+    #: Full PSP attributes map as returned on the wire. Carries the
+    #: compute-critical keys the mirror needs (``purity``,
+    #: ``overage``, ``extract_ratio``, allergen flags, country of
+    #: origin, ...). ``use_as`` above is the load-bearing picker
+    #: discriminator, so we keep it as its own field for backward-
+    #: compat with early caller code — but every other attribute
+    #: flows through this dict on the mirror path.
+    attributes: dict
 
 
 @dataclass(frozen=True)
@@ -361,6 +369,16 @@ def _project_item(row: dict[str, Any]) -> PspItem:
             str(row.get("currency_code"))
             if row.get("currency_code")
             else None
+        ),
+        # Full attributes map — PSP started returning this on
+        # 2026-07 to unblock NPD's compute path. Missing / non-dict
+        # payloads degrade to ``{}`` so an older PSP that predates
+        # the addition (or a defensive test double) doesn't crash
+        # the mapper.
+        attributes=(
+            dict(row["attributes"])
+            if isinstance(row.get("attributes"), dict)
+            else {}
         ),
     )
 
@@ -758,17 +776,29 @@ def mirror_psp_item(
 
 
 def _flatten_psp_attributes(psp_item: PspItem) -> dict:
-    """Rebuild the PSP item's attribute map from the flat dataclass.
+    """Build the ``Item.attributes`` map for a PSP-mirrored row.
 
-    :class:`PspItem` narrows PSP's response to the compute + picker
-    contract; the mirror stage inflates back to the shape the local
-    ``Item.attributes`` map uses so downstream code (builder filters,
-    compute cascade) doesn't need to branch on source. ``use_as`` is
-    the load-bearing key — it drives the builder's ingredient
-    category pickers.
+    Base is the full attributes map PSP now returns on the wire —
+    that's how compute-critical keys (``purity``, ``overage``,
+    ``extract_ratio``, allergen flags, country of origin) reach the
+    local mirror. On top of that we overlay:
+
+    * ``use_as`` — kept explicit so its origin is unambiguous even
+      if PSP one day drops it from the ``attributes`` payload.
+    * ``psp_item_type`` — the PSP-side item type (raw_material /
+      packaging / ...); useful for builder filters that already
+      look at "is this a raw material" without needing to introspect
+      the picker origin.
+    * ``description`` / ``barcode`` — top-level fields on the wire,
+      not part of ``attributes``. Overlaying keeps them accessible
+      through the same map every consumer already reads from.
+
+    Overlays are last-write-wins so a PSP-side ``attributes.barcode``
+    (if it ever exists) loses to the top-level ``barcode`` field,
+    which is the authoritative source.
     """
 
-    attrs: dict = {}
+    attrs: dict = dict(psp_item.attributes or {})
     if psp_item.use_as:
         attrs["use_as"] = psp_item.use_as
     if psp_item.item_type:
