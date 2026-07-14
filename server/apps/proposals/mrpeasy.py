@@ -649,6 +649,16 @@ def set_mrpeasy_config(
             ),
         }
         organization.save(update_fields=["mrpeasy_config", "updated_at"])
+        # Mutual exclusion with PSP — enabling MRPEasy clears any
+        # live PSP config on the same org. The pair share consumer
+        # paths (item picker, price hint) and both live at once
+        # would produce ambiguous "which source wins" behaviour.
+        # The inverse guard lives on the PSP setter symmetrically.
+        if bool(enabled) and ciphertext:
+            from apps.psp.services import clear_psp_config, is_psp_live
+
+            if is_psp_live(organization):
+                clear_psp_config(organization=organization, actor=actor)
         record_audit(
             organization=organization,
             actor=actor,

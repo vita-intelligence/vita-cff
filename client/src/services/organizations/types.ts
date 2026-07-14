@@ -44,6 +44,15 @@ export interface OrganizationDto {
    * to orgs that haven't connected the integration yet.
    */
   readonly mrpeasy_live: boolean;
+  /**
+   * ``true`` when the org has a live PSP integration (enabled +
+   * base URL + integration token stored). Mutually exclusive with
+   * ``mrpeasy_live`` at the setter level — enabling one clears the
+   * other on the same org. The FE reads both to route picker /
+   * price-hint components at the correct backend (PSP wins when
+   * live).
+   */
+  readonly psp_live: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }

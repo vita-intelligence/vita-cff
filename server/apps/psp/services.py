@@ -1,0 +1,663 @@
+"""PSP integration client + config service.
+
+PSP is Vita's own production platform (Phoenix + Elixir). NPD reads
+items from it via a machine-to-machine bearer-token API at
+``/api/integration/*``. Two consumer surfaces care about this
+integration:
+
+1. The formulation builder's ingredient pickers (raw materials,
+   packaging, sub-categories via ``attributes.use_as``).
+2. The proposal / spec-sheet price-hint UI (surfaces PSP's list
+   price so sales doesn't have to type it by hand).
+
+Both paths silently degrade on any failure: if PSP is unreachable,
+mis-configured, or has no matching row, the caller renders "no PSP
+price" / "no matches" the same way it would for MRPEasy. An outage
+must never block the operator's ability to type a value manually.
+
+The config lives on ``Organization.psp_config`` (JSONField):
+
+.. code-block:: json
+
+    {
+      "enabled": true,
+      "base_url": "https://psp.internal",
+      "integration_token_ciphertext": "<fernet ciphertext>",
+      "last_tested_at": "2026-07-14T12:00:00Z"
+    }
+
+Empty dict = integration disabled. The raw integration token is
+minted on the PSP side and pasted into the NPD settings tab once —
+Fernet-encrypted at rest, never round-tripped in the API read shape.
+Callers touch this module through the typed ``PspConfig`` dataclass
+rather than reaching into the JSON directly, so a future schema
+tweak (e.g. optional per-env base URL, cached scopes) doesn't ripple
+into every call site.
+
+Mutual exclusion with MRPEasy is enforced here — enabling PSP
+clears any live MRPEasy config, and vice versa. Both live at once
+would create ambiguous "which price wins" behaviour on the shared
+consumer paths, so the settings surface picks one lane.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import urllib.parse
+from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
+from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
+
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public types
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PspItem:
+    """Projection of one PSP ``Item`` row over the fields NPD's
+    consumers actually read.
+
+    PSP's response carries more (compliance status, storage tags,
+    default packaging JSON, etc.); we deliberately narrow to the
+    picker + price-hint contract so a future PSP-side schema
+    reshuffle stays a one-file update on the mapper.
+
+    ``use_as`` mirrors the local-catalogues convention verbatim —
+    NPD's ingredient pickers filter by this vocabulary
+    (flavouring / colour / sweetener / gummy_base / …). Null when
+    the PSP row has no such attribute set.
+
+    ``selling_price`` is nullable because PSP returns null when the
+    company has no active default pricelist OR the item has no row
+    on it. NPD's price hint renders "no PSP match" in both cases
+    identically.
+    """
+
+    uuid: str
+    name: str
+    description: str
+    item_type: str
+    external_sku: str
+    barcode: str
+    is_active: bool
+    use_as: str | None
+    product_family_uuid: str | None
+    product_family_name: str | None
+    selling_price: Decimal | None
+    currency_code: str | None
+
+
+@dataclass(frozen=True)
+class PspConfig:
+    """In-memory view of an org's PSP integration config.
+
+    Constructed by :func:`get_psp_config` from the JSON blob on
+    ``Organization.psp_config``. The plaintext token lives on this
+    dataclass and NEVER escapes the boundary — the API read shape
+    projects to a ``has_token`` boolean instead.
+    """
+
+    enabled: bool
+    base_url: str
+    integration_token: str
+
+    @property
+    def is_complete(self) -> bool:
+        """True when every required field has a non-empty value.
+
+        Callers gate on this rather than eyeballing individual
+        columns so a future addition (e.g. an optional scope list)
+        stays a one-file update.
+        """
+
+        return bool(
+            self.enabled and self.base_url and self.integration_token
+        )
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class PspError(Exception):
+    """Base class for every PSP-side failure.
+
+    The service layer catches the base class to silently degrade
+    the picker / price hint; the API layer catches specific
+    subclasses to map onto distinct settings-page UI states.
+    """
+
+
+class PspAuthFailed(PspError):
+    code = "psp_auth_failed"
+
+
+class PspUnreachable(PspError):
+    code = "psp_unreachable"
+
+
+class PspRateLimited(PspError):
+    code = "psp_rate_limited"
+
+
+class PspInvalidConfig(PspError):
+    code = "psp_invalid_config"
+
+
+class PspNotConfigured(Exception):
+    """The org has no usable PSP config (missing fields, or the
+    integration is disabled). The API layer maps this to a 400 so
+    the settings page can render a "set up PSP first" hint."""
+
+    code = "psp_not_configured"
+
+
+class PspDecryptionFailed(Exception):
+    """Stored ciphertext could not be decrypted (typically because
+    the shared secret key was rotated without re-encrypting)."""
+
+    code = "psp_decryption_failed"
+
+
+# ---------------------------------------------------------------------------
+# HTTP client
+# ---------------------------------------------------------------------------
+
+
+#: Hard ceiling on a single PSP round-trip. The picker fires inline
+#: during a modal open — anything longer than 4 seconds stalls the
+#: operator more than the "no PSP match" fallback would. Matches the
+#: MRPEasy ceiling for consistency.
+_PSP_TIMEOUT_SECONDS = 4.0
+
+
+class PspClient:
+    """HTTP client for PSP's ``/api/integration/*`` surface.
+
+    Stdlib ``urllib`` (no third-party HTTP dependency) — the request
+    shape is small and matches the same pattern the MRPEasy client
+    uses. Bearer auth via the ``X-Integration-Token`` header,
+    matching PSP's :class:`RequireIntegrationAuth` plug.
+
+    Every method raises typed exceptions on failure. Callers that
+    want silent degradation catch :class:`PspError` and treat it
+    as "no match".
+    """
+
+    def __init__(self, config: PspConfig) -> None:
+        if not config.is_complete:
+            raise PspInvalidConfig(
+                "PspClient requires a complete config."
+            )
+        self._config = config
+        self._auth_header = config.integration_token
+
+    def _request(
+        self,
+        path: str,
+        query: dict[str, str] | None = None,
+    ) -> Any:
+        base = self._config.base_url.rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        if query:
+            # Filter out None / empty-string values so URLs stay
+            # tidy and PSP's own defensive trim on server-side
+            # doesn't have to handle empty ``?search=`` strings.
+            cleaned = {
+                k: v for k, v in query.items() if v not in (None, "")
+            }
+            if cleaned:
+                url = f"{url}?{urllib.parse.urlencode(cleaned)}"
+        headers = {
+            "Accept": "application/json",
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+        }
+        req = Request(url, method="GET", headers=headers)
+        try:
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                raw = resp.read()
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise PspAuthFailed(
+                    f"PSP rejected the credentials (HTTP {exc.code})."
+                ) from exc
+            if exc.code == 429:
+                raise PspRateLimited(
+                    "PSP rate limit reached. Retry shortly."
+                ) from exc
+            if exc.code == 404:
+                # 404 from PSP on a picker path is data, not error —
+                # the caller decides whether to surface "no match" or
+                # re-raise (single-item lookup wants to distinguish).
+                # Return None; callers that want the exception can
+                # wrap with :meth:`get_item`.
+                return None
+            raise PspUnreachable(
+                f"PSP returned HTTP {exc.code}."
+            ) from exc
+        except URLError as exc:
+            raise PspUnreachable(
+                f"Couldn't reach PSP: {exc.reason}"
+            ) from exc
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PspUnreachable(
+                "PSP returned a non-JSON response body."
+            ) from exc
+
+    def test_connection(self) -> None:
+        """Round-trip against the health endpoint. Any success
+        response confirms auth. Any typed exception bubbles."""
+
+        payload = self._request("api/integration/health")
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            raise PspAuthFailed(
+                "PSP health endpoint didn't confirm ok=true."
+            )
+
+    def list_items(
+        self,
+        *,
+        search: str | None = None,
+        item_types: list[str] | None = None,
+        use_as: str | None = None,
+    ) -> list[PspItem]:
+        """List PSP items. Server-side filters via query string.
+
+        Empty result set (any of "no PSP items", "search matched
+        nothing", "typed exception") is normalised to an empty list
+        — the caller renders "no matches" identically for every
+        empty-list source.
+        """
+
+        query: dict[str, str] = {}
+        if search:
+            query["search"] = search
+        if item_types:
+            query["item_types"] = ",".join(item_types)
+        if use_as:
+            query["use_as"] = use_as
+        payload = self._request("api/integration/items", query=query)
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [_project_item(row) for row in rows if isinstance(row, dict)]
+
+    def get_item(self, uuid: str) -> PspItem | None:
+        """Look up a single PSP item by UUID. ``None`` when PSP has
+        no such row (404 from the server, or unexpected shape).
+        Errors still raise :class:`PspError` subclasses."""
+
+        cleaned = (uuid or "").strip()
+        if not cleaned:
+            return None
+        payload = self._request(f"api/integration/items/{cleaned}")
+        if not isinstance(payload, dict):
+            return None
+        row = payload.get("item")
+        if not isinstance(row, dict):
+            return None
+        return _project_item(row)
+
+
+def _project_item(row: dict[str, Any]) -> PspItem:
+    """Map a PSP JSON row onto the local :class:`PspItem` dataclass.
+
+    Defensive against string vs numeric ``selling_price`` and
+    against missing optional keys — a partial response mustn't
+    crash the picker. Missing / unparseable fields degrade to their
+    safe defaults.
+    """
+
+    raw_price = row.get("selling_price")
+    selling_price: Decimal | None = None
+    if raw_price is not None and raw_price != "":
+        try:
+            selling_price = Decimal(str(raw_price))
+        except (InvalidOperation, ValueError):
+            selling_price = None
+    product_family = row.get("product_family") or {}
+    if not isinstance(product_family, dict):
+        product_family = {}
+    return PspItem(
+        uuid=str(row.get("uuid") or ""),
+        name=str(row.get("name") or ""),
+        description=str(row.get("description") or ""),
+        item_type=str(row.get("item_type") or ""),
+        external_sku=str(row.get("external_sku") or ""),
+        barcode=str(row.get("barcode") or ""),
+        is_active=bool(row.get("is_active", True)),
+        use_as=(
+            str(row.get("use_as")) if row.get("use_as") else None
+        ),
+        product_family_uuid=(
+            str(product_family.get("uuid"))
+            if product_family.get("uuid")
+            else None
+        ),
+        product_family_name=(
+            str(product_family.get("name"))
+            if product_family.get("name")
+            else None
+        ),
+        selling_price=selling_price,
+        currency_code=(
+            str(row.get("currency_code"))
+            if row.get("currency_code")
+            else None
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Config service
+# ---------------------------------------------------------------------------
+
+
+def is_psp_live(organization: Any) -> bool:
+    """Return True when the org has an actually-usable PSP config
+    (``enabled`` AND base URL AND token stored).
+
+    Single source of truth for every "is PSP on?" branch — the
+    organization serializer's ``psp_live`` flag, the mutual-exclusion
+    guard on the MRPEasy setter, and the eventual picker branches
+    all read from here.
+    """
+
+    raw = (organization.psp_config or {}) if organization else {}
+    return bool(
+        raw.get("enabled")
+        and raw.get("base_url")
+        and raw.get("integration_token_ciphertext")
+    )
+
+
+def _decode_config(raw: dict) -> PspConfig:
+    """Hydrate the JSONField dict into a typed config (plaintext
+    token). Lazy-imports the encryption helpers so a test that
+    exercises only the projection doesn't pay the ``cryptography``
+    import cost."""
+
+    from apps.organizations.encryption import (
+        DecryptionFailed,
+        decrypt_secret,
+    )
+
+    ciphertext = str(raw.get("integration_token_ciphertext") or "")
+    try:
+        plaintext = decrypt_secret(ciphertext) if ciphertext else ""
+    except DecryptionFailed as exc:
+        raise PspDecryptionFailed(str(exc)) from exc
+    return PspConfig(
+        enabled=bool(raw.get("enabled")),
+        base_url=str(raw.get("base_url") or "").rstrip("/"),
+        integration_token=plaintext,
+    )
+
+
+def get_psp_config(*, organization: Any) -> PspConfig:
+    """Decode + return the org's PSP config (plaintext token).
+
+    Used internally by the client factory. Do NOT return this
+    directly from an API endpoint — the wire shape lives in
+    :func:`serialize_psp_config_for_api` which redacts the token.
+    """
+
+    return _decode_config(organization.psp_config or {})
+
+
+def serialize_psp_config_for_api(organization: Any) -> dict[str, Any]:
+    """Wire shape for ``GET /integrations/psp/``. Mirrors the
+    MRPEasy / Dynamics serializers: every field EXCEPT the plaintext
+    token, which becomes a boolean ``has_token`` so the form can
+    render a "●●●●●●●" placeholder without leaking the value."""
+
+    raw = organization.psp_config or {}
+    return {
+        "enabled": bool(raw.get("enabled")),
+        "base_url": str(raw.get("base_url") or ""),
+        "has_token": bool(raw.get("integration_token_ciphertext")),
+        "last_tested_at": raw.get("last_tested_at") or None,
+    }
+
+
+def set_psp_config(
+    *,
+    organization: Any,
+    actor: Any,
+    enabled: bool,
+    base_url: str,
+    integration_token: str | None,
+) -> dict[str, Any]:
+    """Persist the org's PSP config.
+
+    Mutual exclusion: enabling PSP with an active MRPEasy config
+    on the same org clears the MRPEasy side. The two integrations
+    share consumer paths (item pickers, price hints) and having
+    both live at once would produce ambiguous "which source wins"
+    behaviour. Owner picks one lane on the settings page.
+
+    ``integration_token`` is ``None`` or empty string when the
+    operator left the password field blank (the "keep existing
+    token" sentinel). In that case we preserve the stored
+    ciphertext.
+    """
+
+    from django.db import transaction
+
+    from apps.audit.services import record as record_audit, snapshot
+    from apps.organizations.encryption import encrypt_secret
+
+    with transaction.atomic():
+        before = snapshot(organization)
+        existing = organization.psp_config or {}
+        ciphertext: str
+        if integration_token is None or integration_token == "":
+            ciphertext = str(existing.get("integration_token_ciphertext") or "")
+        else:
+            ciphertext = encrypt_secret(integration_token)
+
+        # ``last_tested_at`` clears whenever the token rotates. A
+        # stale "Connected" badge on a rotated token would mislead
+        # the operator.
+        preserved_last_tested = (
+            existing.get("last_tested_at")
+            if integration_token is None or integration_token == ""
+            else None
+        )
+        organization.psp_config = {
+            "enabled": bool(enabled),
+            "base_url": (base_url or "").strip().rstrip("/"),
+            "integration_token_ciphertext": ciphertext,
+            "last_tested_at": preserved_last_tested,
+        }
+        organization.save(update_fields=["psp_config", "updated_at"])
+        # Mutual exclusion — enabling PSP clears MRPEasy so the
+        # shared consumer paths never see both live at once. The
+        # inverse guard lives on the MRPEasy setter symmetrically.
+        if bool(enabled) and ciphertext:
+            from apps.proposals.mrpeasy import is_mrpeasy_live
+
+            if is_mrpeasy_live(organization):
+                from apps.proposals.mrpeasy import clear_mrpeasy_config
+
+                clear_mrpeasy_config(organization=organization, actor=actor)
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="integration.psp.configure",
+            target=organization,
+            before=before,
+            after=snapshot(organization),
+        )
+    return serialize_psp_config_for_api(organization)
+
+
+def clear_psp_config(*, organization: Any, actor: Any) -> dict[str, Any]:
+    """Wipe the org's PSP config (DELETE endpoint)."""
+
+    from django.db import transaction
+
+    from apps.audit.services import record as record_audit, snapshot
+
+    with transaction.atomic():
+        before = snapshot(organization)
+        organization.psp_config = {}
+        organization.save(update_fields=["psp_config", "updated_at"])
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="integration.psp.clear",
+            target=organization,
+            before=before,
+            after=snapshot(organization),
+        )
+    return serialize_psp_config_for_api(organization)
+
+
+def verify_psp_connection(*, organization: Any, actor: Any) -> dict[str, Any]:
+    """Validate stored credentials against PSP. Stamps
+    ``last_tested_at`` on success. Raises typed exceptions on
+    failure so the API layer can map onto specific UI states."""
+
+    from django.db import transaction
+    from django.utils import timezone
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured("PSP is not configured or is disabled.")
+
+    config = get_psp_config(organization=organization)
+    client = _client_factory(config)
+    client.test_connection()
+
+    with transaction.atomic():
+        existing = organization.psp_config or {}
+        existing["last_tested_at"] = (
+            timezone.now().isoformat(timespec="seconds")
+        )
+        organization.psp_config = existing
+        organization.save(update_fields=["psp_config", "updated_at"])
+    return serialize_psp_config_for_api(organization)
+
+
+# ---------------------------------------------------------------------------
+# High-level consumer helpers (silent-degrading)
+# ---------------------------------------------------------------------------
+
+
+def list_psp_items(
+    *,
+    organization: Any,
+    search: str | None = None,
+    item_types: list[str] | None = None,
+    use_as: str | None = None,
+) -> list[PspItem]:
+    """List PSP items for the org. Empty list on any failure —
+    the picker's UX never blocks on an integration outage."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_items(
+            search=search, item_types=item_types, use_as=use_as
+        )
+    except PspError:
+        logger.exception(
+            "PSP list_items failed for org %s", organization.pk
+        )
+        return []
+
+
+def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
+    """Single-item lookup. ``None`` on any failure — same silent-
+    degrade contract as :func:`list_psp_items`."""
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    try:
+        client = _client_factory(config)
+        return client.get_item(uuid)
+    except PspError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Client factory — swappable for tests
+# ---------------------------------------------------------------------------
+
+
+#: Test hook — when a test sets ``apps.psp.services._TEST_CLIENT``
+#: to a callable returning a mock client, the factory routes there
+#: instead of hitting the real HTTP path. Preferred over
+#: ``unittest.mock.patch`` because it keeps the seam explicit and
+#: survives conftest re-imports.
+_TEST_CLIENT: Any = None
+
+
+def _client_factory(config: PspConfig) -> Any:
+    """Return the right client for the current environment. Tests
+    can set ``_TEST_CLIENT`` to a factory callable to return a mock
+    with the same shape."""
+
+    if _TEST_CLIENT is not None:
+        return _TEST_CLIENT(config)
+    if os.environ.get("PSP_MOCK", "").lower() in {"true", "1", "yes"}:
+        return _MockPspClient(config)
+    return PspClient(config)
+
+
+class _MockPspClient:
+    """In-memory PSP stand-in for dev + tests. Returns an empty
+    catalogue and a passing health check — enough to render the
+    settings page + picker flows without hitting a real PSP
+    instance."""
+
+    def __init__(self, config: PspConfig) -> None:
+        if not config.is_complete:
+            raise PspInvalidConfig(
+                "PSP mock client requires a complete config."
+            )
+        self._config = config
+
+    def test_connection(self) -> None:
+        return None
+
+    def list_items(
+        self,
+        *,
+        search: str | None = None,
+        item_types: list[str] | None = None,
+        use_as: str | None = None,
+    ) -> list[PspItem]:
+        return []
+
+    def get_item(self, uuid: str) -> PspItem | None:
+        return None

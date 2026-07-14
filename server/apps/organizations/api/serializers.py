@@ -42,6 +42,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
     permissions = serializers.SerializerMethodField()
     dynamics_customers_managed = serializers.SerializerMethodField()
     mrpeasy_live = serializers.SerializerMethodField()
+    psp_live = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -53,6 +54,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
             "permissions",
             "dynamics_customers_managed",
             "mrpeasy_live",
+            "psp_live",
             "created_at",
             "updated_at",
         )
@@ -109,6 +111,17 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         from apps.proposals.mrpeasy import is_mrpeasy_live
 
         return is_mrpeasy_live(obj)
+
+    def get_psp_live(self, obj: Organization) -> bool:
+        """``True`` when the org has a usable PSP integration
+        (enabled + base URL + token stored). Mutual-exclusive with
+        ``mrpeasy_live`` at the setter level — the two are never
+        simultaneously true, but the FE still reads both to render
+        the correct picker component and settings-page state."""
+
+        from apps.psp.services import is_psp_live
+
+        return is_psp_live(obj)
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):
