@@ -52,7 +52,10 @@ const PARAM_KEYS = {
   salesPerson: "sales",
   validFrom: "valid_from",
   validTo: "valid_to",
+  templateType: "template_type",
 } as const;
+
+export type ProposalsTemplateType = "" | "custom" | "ready_to_go";
 
 const ISO_DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -63,6 +66,11 @@ export interface ProposalsFiltersState {
   readonly salesPersonId: string;
   readonly validUntilFrom: string;
   readonly validUntilTo: string;
+  /** ``""`` = show both. Rendered as a top-of-list tab strip
+   *  (All / Custom / Ready-to-Go) rather than a filter chip, so the
+   *  separation is unmissable and the tab click doesn't cost an
+   *  Apply gesture. */
+  readonly templateType: ProposalsTemplateType;
 }
 
 
@@ -79,7 +87,19 @@ function readFromParams(
   const toRaw = params?.get(PARAM_KEYS.validTo) ?? "";
   const validUntilFrom = ISO_DATE_REGEX.test(fromRaw) ? fromRaw : "";
   const validUntilTo = ISO_DATE_REGEX.test(toRaw) ? toRaw : "";
-  return { search, statuses, salesPersonId, validUntilFrom, validUntilTo };
+  const rawTemplate = params?.get(PARAM_KEYS.templateType) ?? "";
+  const templateType: ProposalsTemplateType =
+    rawTemplate === "custom" || rawTemplate === "ready_to_go"
+      ? rawTemplate
+      : "";
+  return {
+    search,
+    statuses,
+    salesPersonId,
+    validUntilFrom,
+    validUntilTo,
+    templateType,
+  };
 }
 
 
@@ -88,6 +108,7 @@ function statesEqual(a: ProposalsFiltersState, b: ProposalsFiltersState): boolea
   if (a.salesPersonId !== b.salesPersonId) return false;
   if (a.validUntilFrom !== b.validUntilFrom) return false;
   if (a.validUntilTo !== b.validUntilTo) return false;
+  if (a.templateType !== b.templateType) return false;
   if (a.statuses.length !== b.statuses.length) return false;
   for (const s of a.statuses) if (!b.statuses.includes(s)) return false;
   return true;
@@ -135,6 +156,9 @@ export function useProposalsFiltersState() {
       if (next.validUntilTo && ISO_DATE_REGEX.test(next.validUntilTo)) {
         params.set(PARAM_KEYS.validTo, next.validUntilTo);
       }
+      if (next.templateType) {
+        params.set(PARAM_KEYS.templateType, next.templateType);
+      }
       const query = params.toString();
       router.replace(query ? `${pathname}?${query}` : pathname, {
         scroll: false,
@@ -178,6 +202,17 @@ export function useProposalsFiltersState() {
     (value: string) => setPending((p) => ({ ...p, validUntilTo: value })),
     [],
   );
+  // Tab click on the type strip applies IMMEDIATELY — no Apply
+  // gesture required. Every other filter batches through the pending
+  // → apply flow, but the tab is a primary "which list am I in"
+  // pivot and should feel like navigation, not a filter tweak.
+  const setTemplateType = useCallback(
+    (value: ProposalsTemplateType) => {
+      setPending((p) => ({ ...p, templateType: value }));
+      writeApplied({ ...pending, templateType: value });
+    },
+    [pending, writeApplied],
+  );
 
   const apply = useCallback(() => {
     const normalised: ProposalsFiltersState = {
@@ -191,16 +226,20 @@ export function useProposalsFiltersState() {
   const reset = useCallback(() => setPending(applied), [applied]);
 
   const clearAll = useCallback(() => {
+    // The type tab is a navigation pivot, not a filter — Clear all
+    // preserves it so an operator focused on "Ready-to-Go" doesn't
+    // get bounced back into the mixed view by a Reset click.
     const empty: ProposalsFiltersState = {
       search: "",
       statuses: [],
       salesPersonId: "",
       validUntilFrom: "",
       validUntilTo: "",
+      templateType: applied.templateType,
     };
     setPending(empty);
     writeApplied(empty);
-  }, [writeApplied]);
+  }, [applied.templateType, writeApplied]);
 
   const dirty = !statesEqual(pending, applied);
   const appliedActiveCount = activeCountFor(applied);
@@ -218,6 +257,7 @@ export function useProposalsFiltersState() {
     setSalesPersonId,
     setValidUntilFrom,
     setValidUntilTo,
+    setTemplateType,
     apply,
     reset,
     clearAll,

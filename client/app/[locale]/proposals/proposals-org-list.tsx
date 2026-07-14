@@ -49,6 +49,7 @@ import { CustomerFormModal } from "../customers/customers-list";
 import {
   ProposalsFilterBar,
   useProposalsFiltersState,
+  type ProposalsTemplateType,
 } from "./proposals-filter-bar";
 
 
@@ -83,6 +84,7 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
     salesPersonId: applied.salesPersonId || undefined,
     validUntilFrom: applied.validUntilFrom || undefined,
     validUntilTo: applied.validUntilTo || undefined,
+    templateType: applied.templateType || undefined,
   });
   const deleteMutation = useDeleteProposal(orgId);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -169,6 +171,18 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         <OrgNewProposalButton orgId={orgId} />
       </header>
 
+      {/* Top-of-list tab strip splits manually authored proposals
+          from the auto-drafted RTG orders coming out of the
+          customer portal. Tab click applies immediately — the tab
+          is a navigation pivot, not a filter, and shouldn't cost
+          the operator an Apply gesture. */}
+      <div className="mt-4">
+        <TemplateTypeTabs
+          value={filters.applied.templateType}
+          onChange={filters.setTemplateType}
+        />
+      </div>
+
       <div className="mt-4">
         <ProposalsFilterBar
           orgId={orgId}
@@ -247,6 +261,74 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
 }
 
 
+function TemplateTypeTabs({
+  value,
+  onChange,
+}: {
+  value: ProposalsTemplateType;
+  onChange: (next: ProposalsTemplateType) => void;
+}) {
+  const tabs: readonly {
+    key: ProposalsTemplateType;
+    label: string;
+  }[] = [
+    { key: "", label: "All" },
+    { key: "custom", label: "Custom" },
+    { key: "ready_to_go", label: "Ready-to-Go" },
+  ];
+  return (
+    <div
+      role="tablist"
+      aria-label="Proposal type"
+      className="inline-flex items-center gap-1 rounded-full bg-ink-50 p-1 ring-1 ring-ink-200"
+    >
+      {tabs.map((tab) => {
+        const active = value === tab.key;
+        return (
+          <button
+            key={tab.key || "__all__"}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.key)}
+            className={`inline-flex items-center rounded-full px-3.5 py-1.5 text-xs font-medium transition-colors ${
+              active
+                ? "bg-white text-ink-1000 shadow-sm"
+                : "text-ink-500 hover:text-ink-800"
+            }`}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+
+function TemplateTypeChip({
+  type,
+}: {
+  type: "custom" | "ready_to_go";
+}) {
+  // Two-tone treatment so the type is unmissable in the "All" tab
+  // view — sales can tell a manually authored quote from an
+  // auto-drafted RTG order without reading the metadata line.
+  if (type === "ready_to_go") {
+    return (
+      <span className="inline-flex items-center rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-blue-800">
+        RTG
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700">
+      Custom
+    </span>
+  );
+}
+
+
 function OrgProposalRow({
   proposal,
   onDelete,
@@ -271,15 +353,25 @@ function OrgProposalRow({
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 flex-col gap-0.5">
-        <Link
-          href={`/proposals/${proposal.id}`}
-          className="text-sm font-medium text-ink-1000 hover:text-orange-700"
-        >
-          {proposal.code} ·{" "}
-          {proposal.customer_company ||
-            proposal.customer_name ||
-            tProposals("list.no_customer")}
-        </Link>
+        <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/proposals/${proposal.id}`}
+            className="text-sm font-medium text-ink-1000 hover:text-orange-700"
+          >
+            {proposal.code} ·{" "}
+            {proposal.customer_company ||
+              proposal.customer_name ||
+              tProposals("list.no_customer")}
+          </Link>
+          {/* Type chip is coloured so it's unmissable inside the
+              "All" tab; RTG in blue, Custom in muted grey. Matches
+              the same two-tone convention used on the CFF inbox
+              and RTG catalog cards. */}
+          {(proposal.template_type === "ready_to_go" ||
+            proposal.template_type === "custom") && (
+            <TemplateTypeChip type={proposal.template_type} />
+          )}
+        </div>
         <span className="text-xs text-ink-500">
           {/* Project (formulation) name surfaces the recipe the
               proposal is quoting against. Listed first so a scientist
