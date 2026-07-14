@@ -14,6 +14,8 @@ import type {
   ItemDto,
   PaginatedItemsDto,
 } from "@/services/catalogues/types";
+import { customersEndpoints } from "@/services/customers/endpoints";
+import type { CustomerOverviewDto } from "@/services/customers/types";
 import { formulationsEndpoints } from "@/services/formulations/endpoints";
 import type {
   FormulationDto,
@@ -391,6 +393,21 @@ export async function getCataloguesServer(
 ): Promise<CatalogueDto[] | null> {
   return serverFetch<CatalogueDto[]>(
     cataloguesEndpoints.catalogueList(orgId),
+  );
+}
+
+
+/** Fetch the staff customer detail page's aggregator payload — the
+ *  customer row, portal accounts, proposal history, CFF submissions,
+ *  and pre-computed totals in one round-trip. Returns ``null`` on
+ *  auth-missing / not-found so the page can decide whether to redirect
+ *  to login or render a 404 view. */
+export async function getCustomerOverviewServer(
+  orgId: string,
+  customerId: string,
+): Promise<CustomerOverviewDto | null> {
+  return serverFetch<CustomerOverviewDto>(
+    customersEndpoints.overview(orgId, customerId),
   );
 }
 

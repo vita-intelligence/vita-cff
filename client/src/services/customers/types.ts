@@ -30,6 +30,91 @@ export interface CustomerDto {
   readonly updated_at: string;
 }
 
+/** Payload shape for ``GET /customers/<id>/overview/`` — the
+ *  aggregator endpoint the staff customer detail page renders from.
+ *  Every field the page needs to render in one round-trip so we
+ *  don't waterfall spinners for each panel. */
+export interface CustomerOverviewDto {
+  readonly customer: CustomerDto;
+  readonly portal_accounts: readonly CustomerPortalAccountDto[];
+  readonly proposals: readonly CustomerProposalSummaryDto[];
+  readonly cff_submissions: readonly CustomerCFFSummaryDto[];
+  readonly totals: {
+    readonly proposals_count: number;
+    readonly accepted_proposals_count: number;
+    /** ``total_excl_vat`` summed across every ``status="accepted"``
+     *  proposal for this customer. Renders as the "Revenue" chip on
+     *  the header. Decimal string so display code preserves the
+     *  precise value from the backend. */
+    readonly accepted_revenue: string;
+    readonly cff_submissions_count: number;
+    readonly portal_accounts_count: number;
+  };
+}
+
+
+export interface CustomerPortalAccountDto {
+  readonly id: string;
+  readonly email: string;
+  readonly is_active: boolean;
+  readonly activated_at: string | null;
+  readonly last_login_at: string | null;
+  readonly created_at: string;
+  readonly privacy_accepted_at: string | null;
+}
+
+
+export interface CustomerProposalSummaryDto {
+  readonly id: string;
+  readonly code: string;
+  readonly status: string;
+  readonly template_type: "custom" | "ready_to_go";
+  readonly currency: string;
+  readonly quantity: number | null;
+  readonly unit_price: string | null;
+  readonly total_excl_vat: string | null;
+  readonly valid_until: string | null;
+  readonly updated_at: string;
+  readonly created_at: string;
+  readonly formulation: {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+    readonly project_type: "custom" | "ready_to_go";
+  } | null;
+  readonly sales_person: {
+    readonly id: string;
+    readonly full_name: string;
+    readonly email: string;
+  } | null;
+}
+
+
+/** Trimmed CFFSubmission shape. Only the fields the detail page's
+ *  requests section actually renders; ``raw_payload`` and the Wix
+ *  meta are dropped because they're not on this surface. Server
+ *  serialiser still returns the full shape — the FE type is a
+ *  narrower view of the same JSON. */
+export interface CustomerCFFSummaryDto {
+  readonly id: string;
+  readonly submission_kind: "custom" | "ready_to_go";
+  readonly provenance: "wix" | "portal";
+  readonly is_rejected: boolean;
+  readonly is_assigned: boolean;
+  readonly rejection_reason: string;
+  readonly imported_at: string;
+  readonly drafted_proposal_id: string | null;
+  readonly drafted_proposal_code: string | null;
+  readonly assignments: readonly {
+    readonly project: {
+      readonly id: string;
+      readonly code: string;
+      readonly name: string;
+    };
+  }[];
+}
+
+
 export interface CreateCustomerRequestDto {
   readonly name?: string;
   readonly company?: string;

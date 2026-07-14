@@ -17,6 +17,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
 
+import { Link } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useCreateCustomer,
@@ -224,13 +225,18 @@ export function CustomersList({
                   className="border-b border-ink-100 last:border-b-0 hover:bg-ink-50/60"
                 >
                   <td className="px-3 py-2.5">
-                    <button
-                      type="button"
-                      onClick={() => setEditing(customer)}
+                    {/* Company name is now a route to the customer
+                        detail page — the primary "drill in" path.
+                        The old edit-on-click behaviour moved to the
+                        pencil button on the right; discoverable from
+                        the row and free from being conflated with
+                        "open this customer". */}
+                    <Link
+                      href={`/customers/${customer.id}`}
                       className="text-sm font-medium text-ink-1000 hover:text-orange-700"
                     >
                       {customer.company || "—"}
-                    </button>
+                    </Link>
                   </td>
                   <td className="px-3 py-2.5 text-ink-700">
                     <div className="flex items-center gap-2">
@@ -251,11 +257,11 @@ export function CustomersList({
                   </td>
                   <td className="px-3 py-2.5 text-right">
                     <div className="flex items-center justify-end gap-1">
-                      {/* Explicit Edit affordance. The company name
-                          on the left is also clickable for the same
-                          action, but a visible pencil button makes
-                          the edit path discoverable for operators
-                          who don't think to click the company text. */}
+                      {/* Explicit Edit affordance. Company name on
+                          the left now routes to the detail page —
+                          the pencil is the dedicated edit path so
+                          the two actions no longer conflict on the
+                          same click target. */}
                       <button
                         type="button"
                         onClick={() => setEditing(customer)}
