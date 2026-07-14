@@ -23,6 +23,7 @@ import {
   useSaveMrpeasyConfig,
   useTestMrpeasyConnection,
 } from "@/services/mrpeasy";
+import { PspCard } from "./psp-card";
 import {
   useClearWixCFFConfig,
   useSaveWixCFFConfig,
@@ -70,6 +71,11 @@ export function IntegrationsTab({
   return (
     <section className="flex flex-col gap-6">
       <DynamicsCard orgId={organization.id} />
+      {/* PSP + MRPEasy are mutually exclusive on the same org; both
+          cards render so the operator can see the current state and
+          switch lanes intentionally. Enabling one clears the other
+          server-side. */}
+      <PspCard organization={organization} />
       <MrpeasyCard orgId={organization.id} />
       <WixCFFCard orgId={organization.id} />
     </section>

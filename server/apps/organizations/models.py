@@ -147,6 +147,34 @@ class Organization(models.Model):
             "Empty dict = integration disabled."
         ),
     )
+    #: Per-org PSP (Vita's own production platform) integration
+    #: config. When live, replaces MRPEasy end-to-end — the two are
+    #: mutually exclusive on the settings surface. Schema:
+    #:
+    #: .. code-block:: json
+    #:
+    #:    {
+    #:      "enabled": true,
+    #:      "base_url": "https://psp.internal",
+    #:      "integration_token_ciphertext": "<fernet ciphertext>",
+    #:      "last_tested_at": "2026-07-14T12:00:00Z"
+    #:    }
+    #:
+    #: Empty dict = no integration. The raw integration token is
+    #: minted on the PSP side and pasted into the NPD settings tab
+    #: once — Fernet-encrypted at rest, never round-tripped in the
+    #: API read shape.
+    psp_config = models.JSONField(
+        _("PSP integration config"),
+        default=dict,
+        blank=True,
+        help_text=_(
+            "PSP (production platform) connection settings. Empty "
+            "dict = integration disabled. Mutually exclusive with "
+            "``mrpeasy_config`` at the settings-page level — enabling "
+            "one clears the other."
+        ),
+    )
     #: Per-org Wix CFF intake config. When live, the Celery poller
     #: pulls every submission of the configured form into the
     #: :mod:`apps.cff_submissions` workspace where the team can

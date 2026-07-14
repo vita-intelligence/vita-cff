@@ -64,6 +64,7 @@ urlpatterns = [
         "api/",
         include("apps.label_design.api.urls", namespace="label_design"),
     ),
+    path("api/", include("apps.psp.api.urls", namespace="psp")),
 ]
 
 

@@ -112,6 +112,13 @@ LOCAL_APPS = [
     "apps.client_portal",
     "apps.label_design",
     "apps.payments",
+    # PSP (Vita Manufacturing Systems' production platform) integration.
+    # Owner-only settings surface + HTTP client + item picker read
+    # endpoints. Config lives on ``Organization.psp_config``; this
+    # app carries the client + service + API surface. Consumers
+    # (formulation builder, proposal price hint) land in follow-up
+    # PRs.
+    "apps.psp",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
