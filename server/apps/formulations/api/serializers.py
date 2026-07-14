@@ -43,11 +43,20 @@ def _user_chip(user) -> dict[str, str] | None:
 
 
 class FormulationLineReadSerializer(serializers.ModelSerializer):
-    item_name = serializers.CharField(source="item.name", read_only=True)
-    item_internal_code = serializers.CharField(
-        source="item.internal_code", read_only=True
-    )
+    #: Polymorphic identity — every ``item_*`` field below routes
+    #: through the ``effective_item_*`` properties so a local-
+    #: sourced line and a PSP-sourced line serialise to the same
+    #: wire shape. FE consumers don't need to branch on source.
+    item_name = serializers.SerializerMethodField()
+    item_internal_code = serializers.SerializerMethodField()
     item_attributes = serializers.SerializerMethodField()
+    #: Source discriminator surfaced so the FE picker can decide
+    #: whether to render a local Item edit link or a PSP deep-link.
+    #: Every existing row is ``"local"`` after migration 0036.
+    item_source = serializers.CharField(read_only=True)
+    #: PSP UUID for lines with ``item_source == "psp"``; ``null``
+    #: on local-sourced lines.
+    psp_item_uuid = serializers.UUIDField(read_only=True, allow_null=True)
 
     class Meta:
         model = FormulationLine
@@ -57,6 +66,8 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "item_name",
             "item_internal_code",
             "item_attributes",
+            "item_source",
+            "psp_item_uuid",
             "display_order",
             "label_claim_mg",
             "serving_size_override",
@@ -67,6 +78,12 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "notes",
         )
         read_only_fields = fields
+
+    def get_item_name(self, obj: FormulationLine) -> str:
+        return obj.effective_item_name
+
+    def get_item_internal_code(self, obj: FormulationLine) -> str:
+        return obj.effective_item_internal_code
 
     def get_item_attributes(self, obj: FormulationLine) -> dict[str, object]:
         """Return the attributes the formulation math + label copy need.
@@ -82,7 +99,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
         extra round-trip per line.
         """
 
-        attributes = obj.item.attributes or {}
+        attributes = obj.effective_item_attributes
         return {
             "type": attributes.get("type"),
             "purity": attributes.get("purity"),

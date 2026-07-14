@@ -3401,8 +3401,13 @@ def _lines_snapshot(formulation: Formulation) -> list[dict[str, Any]]:
 
     return [
         {
-            "item_id": str(line.item_id),
-            "item_name": line.item.name,
+            # Polymorphic identity: local-sourced lines audit via
+            # the FK id; PSP-sourced lines via the PSP UUID. Same
+            # slot in the payload so downstream diff tooling stays
+            # source-agnostic.
+            "item_id": line.effective_item_reference,
+            "item_source": line.item_source,
+            "item_name": line.effective_item_name,
             "label_claim_mg": str(line.label_claim_mg),
             "serving_size_override": line.serving_size_override,
             "purity_override": (
@@ -4290,15 +4295,21 @@ _SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
 def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
     for line in formulation.lines.select_related("item").all():
-        attributes = line.item.attributes or {}
+        # Polymorphic read: local-sourced lines pull from the FK'd
+        # Item row; PSP-sourced lines pull from the snapshot
+        # captured at pick time. The rest of the snapshot logic
+        # stays source-agnostic — it operates on the ``attributes``
+        # dict shape.
+        attributes = line.effective_item_attributes
         snapshot_attributes = {
             key: attributes.get(key) for key in _SNAPSHOT_ATTRIBUTE_KEYS
         }
         lines.append(
             {
-                "item_id": str(line.item_id),
-                "item_name": line.item.name,
-                "item_internal_code": line.item.internal_code,
+                "item_id": line.effective_item_reference,
+                "item_source": line.item_source,
+                "item_name": line.effective_item_name,
+                "item_internal_code": line.effective_item_internal_code,
                 "item_attributes": snapshot_attributes,
                 "display_order": line.display_order,
                 "label_claim_mg": str(line.label_claim_mg),

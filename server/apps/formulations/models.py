@@ -636,10 +636,78 @@ class FormulationLine(models.Model):
         on_delete=models.CASCADE,
         related_name="lines",
     )
+    #: Source discriminator. ``"local"`` — the classic path: the
+    #: FK below points at a row in :mod:`apps.catalogues`. ``"psp"``
+    #: — the item lives in the org's PSP catalogue; ``item`` is
+    #: NULL and :attr:`psp_item_uuid` + :attr:`psp_item_snapshot`
+    #: carry the identity + snapshotted attributes. Every existing
+    #: row is ``"local"`` after the additive 0036 migration; new
+    #: rows on PSP-live orgs land as ``"psp"``. The compute layer
+    #: dispatches on this column so a single formulation line
+    #: renders + computes identically regardless of source.
+    item_source = models.CharField(
+        _("item source"),
+        max_length=16,
+        default="local",
+        choices=(("local", _("Local catalogue")), ("psp", _("PSP catalogue"))),
+        db_index=True,
+    )
+    #: The local catalogue Item this line quotes. Nullable now that
+    #: PSP-sourced lines exist — those carry ``item=None`` and
+    #: reference the PSP row via :attr:`psp_item_uuid` /
+    #: :attr:`psp_item_snapshot` instead. Downstream code that
+    #: dereferences ``line.item`` MUST branch on
+    #: :attr:`item_source` first (or use the ``line_item_*``
+    #: helpers on services.py) to avoid ``NoneType`` errors on
+    #: PSP rows.
     item = models.ForeignKey(
         "catalogues.Item",
         on_delete=models.PROTECT,
         related_name="formulation_lines",
+        null=True,
+        blank=True,
+    )
+    #: PSP integration items UUID. Populated iff
+    #: :attr:`item_source` == ``"psp"``. Together with the
+    #: snapshot below this is the durable identity of the picked
+    #: PSP row — an operator disabling the PSP integration doesn't
+    #: void the reference, and the compute layer can still render
+    #: the line from the snapshot even if PSP is unreachable.
+    psp_item_uuid = models.UUIDField(
+        _("PSP item UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    #: Snapshot of the PSP item's compute-critical fields at pick
+    #: time. Populated iff :attr:`item_source` == ``"psp"``. Shape:
+    #:
+    #: .. code-block:: json
+    #:
+    #:    {
+    #:      "name": "Ashwagandha KSM-66",
+    #:      "external_sku": "ASH-KSM",
+    #:      "description": "Root extract 5%",
+    #:      "attributes": {
+    #:        "use_as": "active",
+    #:        "purity": "0.05",
+    #:        "overage": "0.1",
+    #:        "extract_ratio": null,
+    #:        "powder_standard_mg_per_g": "1000",
+    #:        "powder_protein_mg_per_g": null,
+    #:        "carrier_share_pct": null
+    #:      }
+    #:    }
+    #:
+    #: Refreshed by the picker on pick and by an explicit "refresh
+    #: from PSP" action on the line — never silently drifted.
+    #: Keeping the compute-critical fields snapshotted here means
+    #: dose math doesn't need to hit PSP on every recompute + the
+    #: line stays computable when PSP is momentarily unreachable.
+    psp_item_snapshot = models.JSONField(
+        _("PSP item snapshot"),
+        default=dict,
+        blank=True,
     )
     display_order = models.PositiveIntegerField(_("display order"), default=0)
     label_claim_mg = models.DecimalField(
@@ -704,6 +772,63 @@ class FormulationLine(models.Model):
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
+
+    # ------------------------------------------------------------------
+    # Polymorphic helpers — every downstream reader that used to
+    # dereference ``line.item.X`` should now go through these. The
+    # helpers dispatch on :attr:`item_source` so the compute layer +
+    # serializers work identically for local + PSP lines without
+    # sprinkling ``if line.item_source ==`` branches at every call
+    # site. When ``item_source == 'psp'`` the values come from
+    # :attr:`psp_item_snapshot`; otherwise from the local FK.
+    # ------------------------------------------------------------------
+
+    @property
+    def effective_item_name(self) -> str:
+        if self.item_source == "psp":
+            snap = self.psp_item_snapshot or {}
+            return str(snap.get("name") or "")
+        return self.item.name if self.item_id else ""
+
+    @property
+    def effective_item_internal_code(self) -> str:
+        """The line's identifier as displayed on spec sheets + BOM.
+        Local: ``item.internal_code``. PSP: ``external_sku`` from
+        the snapshot (falls back to the PSP UUID's first 8 chars
+        when the SKU is blank, matching the picker's convention)."""
+
+        if self.item_source == "psp":
+            snap = self.psp_item_snapshot or {}
+            sku = str(snap.get("external_sku") or "").strip()
+            if sku:
+                return sku
+            uuid_hex = str(self.psp_item_uuid or "").replace("-", "")
+            return uuid_hex[:8]
+        return self.item.internal_code if self.item_id else ""
+
+    @property
+    def effective_item_attributes(self) -> dict:
+        """The catalogue-side ``attributes`` map. Local reads it
+        off the ``Item`` row; PSP reads it from the pick-time
+        snapshot. Compute paths that read ``use_as``, ``purity``,
+        ``powder_standard_mg_per_g``, etc. must route through this
+        property so a PSP line renders identically to a local one."""
+
+        if self.item_source == "psp":
+            snap = self.psp_item_snapshot or {}
+            attrs = snap.get("attributes")
+            return attrs if isinstance(attrs, dict) else {}
+        return (self.item.attributes or {}) if self.item_id else {}
+
+    @property
+    def effective_item_reference(self) -> str:
+        """Stable identity string for logging + audit rows: the
+        local Item UUID or the PSP item UUID. Never blank on a
+        legal row (each source guarantees one of the two)."""
+
+        if self.item_source == "psp":
+            return str(self.psp_item_uuid or "")
+        return str(self.item_id or "")
 
     class Meta:
         verbose_name = _("formulation line")
