@@ -80,9 +80,45 @@ def _make_label_design(status: str = LabelDesignStatus.PAYMENT_PENDING) -> Label
 # ---------------------------------------------------------------------------
 
 
+def _sign_final_spec(formulation, *, code_suffix="") -> "SpecificationSheet":
+    """Build a customer-signed **final** spec sheet on ``formulation``.
+
+    That's the trigger for the label-design bootstrap under the
+    post-migration-0005 semantics: only a customer-signed final
+    spec unlocks the label workflow (draft signatures authorise
+    the proposal, not production).
+    """
+
+    from datetime import datetime, timezone as dt_timezone
+
+    from apps.formulations.services import save_version
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    version = save_version(
+        formulation=formulation, actor=formulation.created_by
+    )
+    return SpecificationSheet.objects.create(
+        organization=formulation.organization,
+        formulation_version=version,
+        code=f"SPEC-{formulation.pk.hex[:6]}{code_suffix}",
+        document_kind=SpecificationDocumentKind.FINAL,
+        status=SpecificationStatus.ACCEPTED,
+        customer_signed_at=datetime(2026, 1, 1, tzinfo=dt_timezone.utc),
+        created_by=formulation.created_by,
+        updated_by=formulation.created_by,
+    )
+
+
 class TestBootstrapSignal:
-    def test_signal_creates_label_design_when_formulation_approved(self) -> None:
-        formulation = FormulationFactory(project_status=ProjectStatus.APPROVED)
+    def test_signal_creates_label_design_when_final_spec_signed(self) -> None:
+        formulation = FormulationFactory(
+            project_status=ProjectStatus.APPROVED
+        )
+        _sign_final_spec(formulation)
         ld = LabelDesign.objects.filter(formulation=formulation).first()
         assert ld is not None
         assert ld.status == LabelDesignStatus.PAYMENT_PENDING
@@ -97,25 +133,80 @@ class TestBootstrapSignal:
         assert bootstrap_row.actor is None
         assert bootstrap_row.actor_client_account is None
 
-    def test_signal_is_idempotent_on_repeat_save(self) -> None:
-        formulation = FormulationFactory(project_status=ProjectStatus.APPROVED)
-        formulation.save()  # second save triggers post_save again
-        formulation.save()  # third save
+    def test_signal_is_idempotent_across_multiple_final_specs(self) -> None:
+        """The regression this migration was born to fix: three
+        signed final specs on the same formulation produce ONE
+        LabelDesign, not three. Labels are per-product; spec
+        revisions on the same product don't spawn additional
+        workflows."""
+
+        formulation = FormulationFactory(
+            project_status=ProjectStatus.APPROVED
+        )
+        _sign_final_spec(formulation, code_suffix="-a")
+        _sign_final_spec(formulation, code_suffix="-b")
+        _sign_final_spec(formulation, code_suffix="-c")
         assert (
             LabelDesign.objects.filter(formulation=formulation).count() == 1
         )
 
+    def test_signal_does_not_fire_for_draft_spec(self) -> None:
+        """A customer signing a DRAFT spec authorises the proposal,
+        not production. Draft signatures must not seed a label
+        workflow."""
+
+        from datetime import datetime, timezone as dt_timezone
+
+        from apps.formulations.services import save_version
+        from apps.specifications.models import (
+            SpecificationDocumentKind,
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        formulation = FormulationFactory(
+            project_status=ProjectStatus.APPROVED
+        )
+        version = save_version(
+            formulation=formulation, actor=formulation.created_by
+        )
+        SpecificationSheet.objects.create(
+            organization=formulation.organization,
+            formulation_version=version,
+            code=f"SPEC-{formulation.pk.hex[:6]}-draft",
+            document_kind=SpecificationDocumentKind.DRAFT,
+            status=SpecificationStatus.ACCEPTED,
+            customer_signed_at=datetime(
+                2026, 1, 1, tzinfo=dt_timezone.utc
+            ),
+            created_by=formulation.created_by,
+            updated_by=formulation.created_by,
+        )
+        assert (
+            LabelDesign.objects.filter(formulation=formulation).count() == 0
+        )
+
     def test_signal_does_not_fire_for_non_approved_status(self) -> None:
-        formulation = FormulationFactory(project_status=ProjectStatus.IN_DEVELOPMENT)
-        assert LabelDesign.objects.filter(formulation=formulation).count() == 0
+        formulation = FormulationFactory(
+            project_status=ProjectStatus.IN_DEVELOPMENT
+        )
+        _sign_final_spec(formulation)
+        assert (
+            LabelDesign.objects.filter(formulation=formulation).count() == 0
+        )
 
     def test_bootstrap_service_is_idempotent(self) -> None:
-        formulation = FormulationFactory(project_status=ProjectStatus.APPROVED)
-        # The signal already created one row; calling again must
-        # return the existing instance without creating a duplicate.
+        formulation = FormulationFactory(
+            project_status=ProjectStatus.APPROVED
+        )
+        _sign_final_spec(formulation)
+        # The signal already created one row; calling the service
+        # again must return the existing instance.
         again = bootstrap_for_formulation(formulation)
         assert again is not None
-        assert LabelDesign.objects.filter(formulation=formulation).count() == 1
+        assert (
+            LabelDesign.objects.filter(formulation=formulation).count() == 1
+        )
 
 
 # ---------------------------------------------------------------------------

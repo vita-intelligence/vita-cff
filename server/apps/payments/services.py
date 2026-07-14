@@ -92,17 +92,15 @@ def record_payment(
 
 @transaction.atomic
 def approve_payment(*, payment: Payment, actor: Any) -> Payment:
-    """Approve a PENDING payment. Side effect: advance EVERY
-    ``LabelDesign`` for the same project that's still sitting in
-    ``PAYMENT_PENDING`` to ``LABEL_PATH_PENDING``.
+    """Approve a PENDING payment and advance its single LabelDesign
+    from ``PAYMENT_PENDING`` to ``LABEL_PATH_PENDING``.
 
-    Multi-spec projects carry multiple label-design rows (one per
-    customer-signed spec) but a single payment unlocks the whole
-    project — so the fan-out matters. We still also nudge the
-    legacy ``payment.label_design`` FK row if it points
-    somewhere different (rare; only when the column was set by
-    an older code path before the formulation-level fan-out
-    existed).
+    Migration ``label_design.0005`` collapsed the model to one
+    LabelDesign per formulation, so the historical fan-out (loop
+    over every pending label-design on the project) is no longer
+    needed. Look up the row by formulation, transition it if it's
+    still pending. A payment approval on a formulation whose label
+    workflow already advanced is a no-op on the LabelDesign side.
     """
 
     if payment.status == PaymentStatus.APPROVED:
@@ -117,41 +115,27 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
         update_fields=["status", "approved_by", "approved_at", "updated_at"]
     )
 
-    # Fan out across every pending label-design row for this
-    # project — newest first so a logged audit trail reads
-    # newest-spec-first.
-    pending = LabelDesign.objects.filter(
-        formulation_id=payment.formulation_id,
-        status=LabelDesignStatus.PAYMENT_PENDING,
-    ).order_by("-created_at")
+    # One LabelDesign per formulation. Prefer the explicit FK if the
+    # payment carried one; fall back to the formulation lookup for
+    # rows recorded before the FK was consistently populated.
+    label_design = payment.label_design
+    if label_design is None:
+        label_design = LabelDesign.objects.filter(
+            formulation_id=payment.formulation_id
+        ).first()
     advanced_ids: list[str] = []
-    for ld in pending:
+    if (
+        label_design is not None
+        and label_design.status == LabelDesignStatus.PAYMENT_PENDING
+    ):
         label_design_transition(
-            ld,
+            label_design,
             to_status=LabelDesignStatus.LABEL_PATH_PENDING,
             actor=actor,
             notes="payment approved",
             metadata={"payment_id": str(payment.id)},
         )
-        advanced_ids.append(str(ld.id))
-
-    # Safety net for legacy data: if the explicit FK pointed at a
-    # row outside the formulation set we just walked, advance that
-    # one too. New code never relies on this column.
-    legacy = payment.label_design
-    if (
-        legacy is not None
-        and legacy.formulation_id != payment.formulation_id
-        and legacy.status == LabelDesignStatus.PAYMENT_PENDING
-    ):
-        label_design_transition(
-            legacy,
-            to_status=LabelDesignStatus.LABEL_PATH_PENDING,
-            actor=actor,
-            notes="payment approved (legacy fk)",
-            metadata={"payment_id": str(payment.id)},
-        )
-        advanced_ids.append(str(legacy.id))
+        advanced_ids.append(str(label_design.id))
 
     record_audit(
         organization=payment.organization,

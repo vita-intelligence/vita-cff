@@ -136,22 +136,27 @@ def transition_status(
 
 
 def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
-    """Create a :class:`LabelDesign` for the (formulation, spec)
-    pair carried by ``spec_sheet`` if one does not already exist.
+    """Create-or-return the :class:`LabelDesign` for the formulation
+    that ``spec_sheet`` belongs to.
 
-    Multi-spec projects produce multiple label-design rows — one
-    per signed spec — so the upsert key is the composite
-    ``(formulation, specification_sheet)`` instead of just the
-    project. Idempotent: re-firing the signal on the same spec
-    short-circuits.
+    Exactly one LabelDesign per formulation — enforced by the DB
+    constraint installed in migration 0005. Revised spec sheets on
+    the same project reuse the existing row rather than spawning a
+    second label workflow. Labels are per-product; a spec revision
+    on the same product doesn't change the artwork surface.
 
-    Returns the row (whether new or existing) so the signal can
-    log helpfully, or ``None`` if the spec / formulation is not
-    eligible (project not yet approved, or no formulation
-    attached).
+    Filters out draft-kind specs: only a customer-signed **final**
+    spec authorises production, which is what unlocks the label
+    workflow. Signed drafts are the customer accepting the proposal,
+    not the finished-product spec.
+
+    Returns the row (new or existing) so the signal can log
+    helpfully, or ``None`` if the spec is not eligible (draft kind,
+    project not yet approved, or no formulation attached).
     """
 
     from apps.formulations.models import ProjectStatus
+    from apps.specifications.models import SpecificationDocumentKind
 
     formulation = getattr(
         getattr(spec_sheet, "formulation_version", None), "formulation", None
@@ -161,10 +166,17 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     if formulation.project_status != ProjectStatus.APPROVED:
         return None
 
-    existing = LabelDesign.objects.filter(
-        formulation=formulation, specification_sheet=spec_sheet
-    ).first()
+    # Only final specs kick off the label workflow. Draft signatures
+    # are the customer signing the PROPOSAL — that phase doesn't own
+    # any label artwork.
+    if getattr(spec_sheet, "document_kind", None) != SpecificationDocumentKind.FINAL:
+        return None
+
+    existing = LabelDesign.objects.filter(formulation=formulation).first()
     if existing is not None:
+        # Keep the existing row's spec pointer — it's an audit anchor
+        # to the spec that originally triggered the bootstrap. Later
+        # revisions ARE the same product for label purposes.
         return existing
 
     label_design = LabelDesign.objects.create(
