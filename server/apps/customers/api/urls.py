@@ -2,6 +2,7 @@
 
 from django.urls import path
 
+from apps.customers.api.overview_views import CustomerOverviewView
 from apps.customers.api.views import (
     CustomerDetailView,
     CustomerListCreateView,
@@ -34,6 +35,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/customers/<uuid:customer_id>/",
         CustomerDetailView.as_view(),
         name="customer-detail",
+    ),
+    # Aggregator route for the staff customer detail page. Bundles
+    # the customer row, portal accounts, proposal history, CFF
+    # submissions, and pre-computed totals in one round-trip so the
+    # detail page renders without a waterfall of spinners.
+    path(
+        "organizations/<uuid:org_id>/customers/<uuid:customer_id>/overview/",
+        CustomerOverviewView.as_view(),
+        name="customer-overview",
     ),
     # Staff-issued portal invite for a single customer. Public
     # redemption lives on the client_portal app at
