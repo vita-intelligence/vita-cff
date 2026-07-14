@@ -183,3 +183,53 @@ class TestListProposalsFilters:
             )
         )
         assert {p.id for p in results} == {match.id}
+
+
+class TestListProposalsTemplateType:
+    """The proposals list splits manually authored quotes from the
+    auto-drafted RTG orders coming out of the customer portal. The
+    filter drives the top-of-list tab strip; unknown values fall
+    through as no-filter so a stale URL never hides everything.
+    """
+
+    def test_custom_only(self) -> None:
+        org = OrganizationFactory()
+        custom = ProposalFactory(organization=org, template_type="custom")
+        ProposalFactory(organization=org, template_type="ready_to_go")
+
+        results = list(
+            list_proposals(organization=org, template_type="custom")
+        )
+        assert {p.id for p in results} == {custom.id}
+
+    def test_ready_to_go_only(self) -> None:
+        org = OrganizationFactory()
+        ProposalFactory(organization=org, template_type="custom")
+        rtg = ProposalFactory(organization=org, template_type="ready_to_go")
+
+        results = list(
+            list_proposals(organization=org, template_type="ready_to_go")
+        )
+        assert {p.id for p in results} == {rtg.id}
+
+    def test_omitted_returns_both_types(self) -> None:
+        org = OrganizationFactory()
+        custom = ProposalFactory(organization=org, template_type="custom")
+        rtg = ProposalFactory(organization=org, template_type="ready_to_go")
+
+        results = list(list_proposals(organization=org))
+        assert {p.id for p in results} == {custom.id, rtg.id}
+
+    def test_unknown_value_is_no_filter(self) -> None:
+        """Belt-and-brace guard: a bogus query param must not hide
+        every row. Sales pastes a stale URL and gets everything
+        rather than an empty page."""
+
+        org = OrganizationFactory()
+        ProposalFactory(organization=org, template_type="custom")
+        ProposalFactory(organization=org, template_type="ready_to_go")
+
+        results = list(
+            list_proposals(organization=org, template_type="not-a-type")
+        )
+        assert len(results) == 2

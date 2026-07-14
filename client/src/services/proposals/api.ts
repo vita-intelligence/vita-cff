@@ -43,6 +43,10 @@ export interface FetchProposalsPageArgs {
   readonly validUntilFrom?: string;
   /** ISO ``YYYY-MM-DD``. Inclusive bound. */
   readonly validUntilTo?: string;
+  /** ``"custom"`` (manually authored proposals) or ``"ready_to_go"``
+   *  (auto-drafted by the customer portal RTG flow). Omitted / any
+   *  other value means "no template filter". */
+  readonly templateType?: "custom" | "ready_to_go" | "";
   /** Cap per response. Default 50 (matches the cursor page size).
    *  Short surfaces (approvals inbox, signed archive) bump this to
    *  ~500 so the entire roster lands in one page without an
@@ -89,6 +93,7 @@ export async function fetchProposalsPage(
   if (args.salesPersonId) params.set("sales_person_id", args.salesPersonId);
   if (args.validUntilFrom) params.set("valid_until_from", args.validUntilFrom);
   if (args.validUntilTo) params.set("valid_until_to", args.validUntilTo);
+  if (args.templateType) params.set("template_type", args.templateType);
   const qs = params.toString();
   const url = qs
     ? `${proposalsEndpoints.list(orgId)}?${qs}`

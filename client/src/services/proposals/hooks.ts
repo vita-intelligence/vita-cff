@@ -69,6 +69,10 @@ export interface ProposalsListArgs {
   readonly salesPersonId?: string;
   readonly validUntilFrom?: string;
   readonly validUntilTo?: string;
+  /** ``"custom"`` (manually authored) or ``"ready_to_go"``
+   *  (auto-drafted by the customer portal RTG flow). Rendered as a
+   *  top-of-list tab on the org proposals page. */
+  readonly templateType?: "custom" | "ready_to_go";
 }
 
 
@@ -85,6 +89,7 @@ function listKeyFragment(args: ProposalsListArgs): readonly unknown[] {
     args.salesPersonId ?? "",
     args.validUntilFrom ?? "",
     args.validUntilTo ?? "",
+    args.templateType ?? "__all__",
   ] as const;
 }
 

@@ -442,6 +442,11 @@ class ProposalListCreateView(APIView):
         valid_until_to = _parse_date(
             request.query_params.get("valid_until_to")
         )
+        # ``template_type`` separates manually authored proposals from
+        # the RTG orders auto-drafted by the customer portal's
+        # Ready-to-Go flow. Unknown values fall through as no filter
+        # (service does the whitelist).
+        template_type = request.query_params.get("template_type") or None
         queryset = list_proposals(
             organization=self.organization,
             formulation_id=formulation_id,
@@ -451,6 +456,7 @@ class ProposalListCreateView(APIView):
             sales_person_id=sales_person_id,
             valid_until_from=valid_until_from,
             valid_until_to=valid_until_to,
+            template_type=template_type,
         )
         # Cursor pagination. Without it the bare ``APIView`` opts out
         # of DRF's global ``PAGE_SIZE`` and ships every proposal in

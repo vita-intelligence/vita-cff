@@ -419,6 +419,7 @@ def list_proposals(
     sales_person_id: Any = None,
     valid_until_from: Any = None,
     valid_until_to: Any = None,
+    template_type: str | None = None,
 ) -> QuerySet[Proposal]:
     """Return the org's proposals, newest first.
 
@@ -470,6 +471,15 @@ def list_proposals(
         queryset = queryset.filter(valid_until__gte=valid_until_from)
     if valid_until_to is not None:
         queryset = queryset.filter(valid_until__lte=valid_until_to)
+    # ``template_type`` splits the org list between manually authored
+    # proposals (``custom``) and the auto-drafted RTG orders that
+    # come out of the customer portal's Ready-to-Go flow
+    # (``ready_to_go``). Unknown values fall through as no-ops so a
+    # bogus query param never 500s the list.
+    if template_type:
+        cleaned = template_type.strip()
+        if cleaned in {"custom", "ready_to_go"}:
+            queryset = queryset.filter(template_type=cleaned)
     return queryset.select_related(
         "formulation_version__formulation",
         "formulation_version__formulation__sales_person",
