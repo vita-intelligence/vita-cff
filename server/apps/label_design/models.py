@@ -141,25 +141,29 @@ class LabelDesign(models.Model):
         on_delete=models.CASCADE,
         related_name="label_designs",
         help_text=_(
-            "The project this label belongs to. A project can carry "
-            "MORE THAN ONE label-design row when it has multiple "
-            "specs — each spec gets its own artwork workflow even "
-            "though the project shares a single payment."
+            "The project this label belongs to. Exactly one "
+            "LabelDesign per formulation — enforced by the unique "
+            "constraint in Meta. Revised spec sheets on the same "
+            "project reuse the existing row rather than spawning a "
+            "second label workflow (labels are per-product, and a "
+            "spec revision on the same product doesn't change the "
+            "artwork surface)."
         ),
     )
     specification_sheet = models.ForeignKey(
         "specifications.SpecificationSheet",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="label_designs",
         help_text=_(
             "The customer-signed final spec sheet whose acceptance "
-            "gated entry to this workflow. PROTECT because a spec "
-            "that was the basis of a label cannot be silently deleted. "
-            "Pinned 1:1 with this label-design row via the partial "
-            "UniqueConstraint in Meta so two specs in the same project "
-            "always produce two distinct label workflows."
+            "gated entry to this workflow. Kept for audit — points "
+            "at the spec whose signature originally triggered the "
+            "bootstrap. When a later revision is signed the pointer "
+            "stays put; the workflow doesn't restart. SET_NULL on "
+            "delete because losing the spec row shouldn't cascade "
+            "into losing the label workflow that followed from it."
         ),
     )
 
@@ -280,16 +284,17 @@ class LabelDesign(models.Model):
             models.Index(fields=("formulation",)),
         ]
         constraints = [
-            # One workflow per (project, spec). Partial — only
-            # enforced when a spec is set, because legacy / pre-spec
-            # rows can carry a NULL spec_sheet without two NULLs
-            # colliding. Multi-spec projects rely on this to prevent
-            # a duplicate bootstrap when the per-spec signal fires
-            # twice for the same sign event.
+            # Exactly one label workflow per formulation. The
+            # previous (formulation, specification_sheet) pair was
+            # a design mistake — it let a customer signing three
+            # spec revisions on the same product spawn three
+            # duplicate label-design queues. Labels are per-product,
+            # not per-spec-revision. Multi-PRODUCT proposals still
+            # get one label per formulation as expected because each
+            # product IS a separate formulation.
             models.UniqueConstraint(
-                fields=("formulation", "specification_sheet"),
-                condition=models.Q(specification_sheet__isnull=False),
-                name="label_design_unique_per_formulation_spec",
+                fields=("formulation",),
+                name="label_design_unique_per_formulation",
             ),
         ]
 

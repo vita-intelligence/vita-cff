@@ -1,27 +1,24 @@
 """Signal wiring for the label-design workflow.
 
-We bootstrap one :class:`LabelDesign` per **(project, spec)**
-pair — not per project. The trigger is the customer signing a
-spec sheet, which is the moment that particular product is ready
-to enter the label-design phase. Multi-spec projects produce
-multiple label-design rows as each spec gets signed; the shared
-payment still gates them all (see :func:`payments.services.
-approve_payment` which fans out across pending rows).
+We bootstrap **one** :class:`LabelDesign` per formulation. The
+trigger is the customer signing a **final** spec sheet, which is
+the moment that product is authorised for production. Revised
+final specs on the same project don't spawn a second workflow —
+:func:`bootstrap_for_spec` upserts on formulation.
 
-Two signals to keep the bootstrap reactive to either side:
+Two signals keep the bootstrap reactive to either side:
 
 1. ``SpecificationSheet`` ``post_save`` — fires on the spec the
-   moment the customer's signature lands. Idempotent because the
-   composite unique on ``(formulation, specification_sheet)``
-   makes duplicates impossible at the DB layer AND
-   :func:`bootstrap_for_spec` short-circuits when one already
-   exists.
-2. ``Formulation`` ``post_save`` — kept as a defensive fallback
-   for projects where the spec was already signed BEFORE the
-   project flipped to APPROVED (rare race: scientist marks the
-   project approved retroactively after a customer signed an
-   earlier spec). The handler walks every signed spec on the
-   project and upserts.
+   moment the customer's signature lands. Idempotent because
+   :func:`bootstrap_for_spec` short-circuits when a LabelDesign
+   already exists for the formulation, and the unique constraint
+   ``label_design_unique_per_formulation`` prevents duplicates at
+   the DB layer.
+2. ``Formulation`` ``post_save`` — defensive fallback for projects
+   where the customer signed the spec BEFORE the project reached
+   APPROVED (rare race: scientist marks approved retroactively).
+   Walks every customer-signed final spec on the project and
+   upserts.
 """
 
 from __future__ import annotations

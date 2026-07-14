@@ -28,8 +28,23 @@ pytestmark = pytest.mark.django_db
 
 
 def _make_approved_project():
+    """Build an APPROVED project with a LabelDesign at PAYMENT_PENDING.
+
+    The bootstrap signal now requires a customer-signed **final**
+    spec sheet to fire, and these tests care about the
+    payment→LabelDesign gate rather than the bootstrap trigger
+    itself. Materialising the LabelDesign directly keeps the test
+    focused on the transition being verified.
+    """
+
     formulation = FormulationFactory(project_status=ProjectStatus.APPROVED)
-    label_design = LabelDesign.objects.get(formulation=formulation)
+    label_design, _ = LabelDesign.objects.get_or_create(
+        formulation=formulation,
+        defaults={
+            "organization": formulation.organization,
+            "status": LabelDesignStatus.PAYMENT_PENDING,
+        },
+    )
     return formulation, label_design
 
 
