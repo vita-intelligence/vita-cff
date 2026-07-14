@@ -17,7 +17,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
 
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useCreateCustomer,
@@ -64,6 +64,7 @@ export function CustomersList({
     return () => clearTimeout(handle);
   }, [searchInput]);
 
+  const router = useRouter();
   const customersQuery = useCustomers(orgId, debouncedSearch);
   const deleteMutation = useDeleteCustomer(orgId);
   const inviteMutation = useCreateCustomerPortalInvite(orgId);
@@ -222,18 +223,44 @@ export function CustomersList({
               {customers.map((customer) => (
                 <tr
                   key={customer.id}
-                  className="border-b border-ink-100 last:border-b-0 hover:bg-ink-50/60"
+                  // Whole row is the "drill in" affordance now.
+                  // ``<tr>`` can't legally live inside an ``<a>``,
+                  // so we push through the router on click and mark
+                  // the row up as a link for a11y + keyboard nav.
+                  // The actions cell on the right calls
+                  // ``stopPropagation`` so the buttons stay
+                  // independently clickable (edit / invite / copy /
+                  // lock / delete each own their own click target
+                  // without triggering the row navigation).
+                  role="link"
+                  tabIndex={0}
+                  aria-label={`Open ${customer.company || customer.name || "customer"}`}
+                  onClick={() =>
+                    router.push({ pathname: `/customers/${customer.id}` })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      router.push({ pathname: `/customers/${customer.id}` });
+                    }
+                  }}
+                  className="cursor-pointer border-b border-ink-100 last:border-b-0 hover:bg-ink-50/60 focus:bg-ink-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400"
                 >
                   <td className="px-3 py-2.5">
-                    {/* Company name is now a route to the customer
-                        detail page — the primary "drill in" path.
-                        The old edit-on-click behaviour moved to the
-                        pencil button on the right; discoverable from
-                        the row and free from being conflated with
-                        "open this customer". */}
+                    {/* Company name stays a real link so screen
+                        readers announce the destination and
+                        middle-click / cmd-click still open a new
+                        tab. Row click routes to the same place. */}
                     <Link
                       href={`/customers/${customer.id}`}
                       className="text-sm font-medium text-ink-1000 hover:text-orange-700"
+                      onClick={(e) => {
+                        // The <tr> onClick also fires — swallow this
+                        // event so we don't route twice (harmless but
+                        // wasteful) and let the anchor's default
+                        // behaviour handle cmd-click / middle-click.
+                        e.stopPropagation();
+                      }}
                     >
                       {customer.company || "—"}
                     </Link>
@@ -255,7 +282,21 @@ export function CustomersList({
                   <td className="px-3 py-2.5 text-ink-700">
                     {customer.phone || "—"}
                   </td>
-                  <td className="px-3 py-2.5 text-right">
+                  <td
+                    className="px-3 py-2.5 text-right"
+                    // The whole row is a link, but the action
+                    // buttons must not trigger row navigation on
+                    // click — the operator picked pencil / copy /
+                    // lock / trash specifically. Stopping
+                    // propagation at the cell level covers every
+                    // button inside without each one having to
+                    // remember it. ``stopPropagation`` on keydown
+                    // too so keyboard activation of a button
+                    // doesn't fall through to the row's Enter
+                    // handler.
+                    onClick={(e) => e.stopPropagation()}
+                    onKeyDown={(e) => e.stopPropagation()}
+                  >
                     <div className="flex items-center justify-end gap-1">
                       {/* Explicit Edit affordance. Company name on
                           the left now routes to the detail page —
