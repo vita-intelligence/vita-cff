@@ -610,6 +610,204 @@ def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
 
 
 # ---------------------------------------------------------------------------
+# Mirror-on-pick — PSP items into local catalogues
+# ---------------------------------------------------------------------------
+
+
+class PspMirrorItemNotFound(Exception):
+    """PSP returned no row for the requested UUID (either the item
+    was deleted / archived on the PSP side, or the token's company
+    scope doesn't include it). The mirror endpoint maps this to a
+    404 so the FE picker can render a "picked item is gone —
+    refresh the search" hint."""
+
+    code = "psp_mirror_item_not_found"
+
+
+def mirror_psp_item(
+    *,
+    organization: Any,
+    actor: Any,
+    psp_item_uuid: str,
+) -> Any:
+    """Upsert a PSP integration item into the local ``catalogues``
+    table so the formulation builder can attach it to a
+    :class:`FormulationLine` through the existing FK.
+
+    Design intent — spelled out because this is the LOAD-BEARING
+    piece of the "PSP powers the builder" change:
+
+    * Existing local Items are NEVER touched. Legacy formulations
+      that reference them keep working exactly as before.
+    * PSP-sourced picks land in a **dedicated** catalogue keyed off
+      :data:`PSP_MIRROR_SLUG`. Created lazily on first mirror call
+      so orgs without an active PSP integration don't grow it.
+    * :attr:`Item.psp_source_uuid` is the upsert key — a re-pick
+      of the same PSP item finds the existing local mirror row
+      instead of duplicating it. The FormulationLine FK stays
+      stable across re-picks so downstream references (spec sheet
+      snapshots, audit rows) keep resolving.
+    * The mirror is a snapshot, not a live view. If PSP updates
+      the item's name / attributes, the local mirror stays frozen
+      until someone explicitly re-picks (a follow-up "refresh"
+      action can be added when there's actual demand).
+
+    Raises:
+
+    * :class:`PspNotConfigured` — org has no live PSP integration.
+      API layer maps to 400.
+    * :class:`PspMirrorItemNotFound` — PSP returned no row for
+      the UUID. API layer maps to 404.
+    * :class:`PspError` subclasses — auth / rate limit / network.
+      API layer maps to the same status codes as the picker.
+
+    Returns the local :class:`catalogues.Item` — new or existing.
+    The caller passes ``actor`` from ``request.user`` so the audit
+    row + created_by / updated_by pointers reflect who triggered
+    the mirror.
+    """
+
+    from django.db import transaction
+
+    from apps.audit.services import record as record_audit, snapshot
+    from apps.catalogues.models import PSP_MIRROR_SLUG, Catalogue, Item
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured(
+            "PSP is not configured or is disabled on this workspace."
+        )
+
+    psp_item = get_psp_item(organization=organization, uuid=psp_item_uuid)
+    if psp_item is None:
+        raise PspMirrorItemNotFound(
+            f"PSP has no item matching UUID {psp_item_uuid}."
+        )
+
+    with transaction.atomic():
+        catalogue = _get_or_create_mirror_catalogue(
+            organization=organization, actor=actor
+        )
+
+        existing = Item.objects.filter(
+            catalogue=catalogue, psp_source_uuid=psp_item.uuid
+        ).first()
+
+        # Attributes mapping — pull the compute-critical values off
+        # the PSP row's attribute map. Missing keys stay missing on
+        # our side, matching how a manually-authored local Item
+        # would look for the same field. ``use_as`` is the crucial
+        # discriminator for the builder's ingredient category
+        # pickers — without it, downstream filters won't route the
+        # item to the right slot.
+        source_attrs = (
+            psp_item.attributes if hasattr(psp_item, "attributes") else {}
+        )
+        # ``PspItem`` doesn't carry a nested attributes dict directly;
+        # rebuild from the flat fields we captured on the wire.
+        attributes = _flatten_psp_attributes(psp_item)
+
+        if existing is not None:
+            before = snapshot(existing)
+            existing.name = psp_item.name or existing.name
+            existing.internal_code = (
+                psp_item.external_sku or existing.internal_code
+            )
+            existing.attributes = attributes
+            if psp_item.selling_price is not None:
+                existing.base_price = psp_item.selling_price
+            existing.updated_by = actor
+            existing.save(
+                update_fields=[
+                    "name",
+                    "internal_code",
+                    "attributes",
+                    "base_price",
+                    "updated_by",
+                    "updated_at",
+                ]
+            )
+            record_audit(
+                organization=organization,
+                actor=actor,
+                action="catalogue_item.psp_mirror_refresh",
+                target=existing,
+                before=before,
+                after=snapshot(existing),
+            )
+            return existing
+
+        item = Item.objects.create(
+            catalogue=catalogue,
+            psp_source_uuid=psp_item.uuid,
+            name=psp_item.name or "",
+            internal_code=psp_item.external_sku or "",
+            unit="",
+            base_price=psp_item.selling_price,
+            attributes=attributes,
+            created_by=actor,
+            updated_by=actor,
+        )
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="catalogue_item.psp_mirror_create",
+            target=item,
+            after=snapshot(item),
+        )
+        return item
+
+
+def _flatten_psp_attributes(psp_item: PspItem) -> dict:
+    """Rebuild the PSP item's attribute map from the flat dataclass.
+
+    :class:`PspItem` narrows PSP's response to the compute + picker
+    contract; the mirror stage inflates back to the shape the local
+    ``Item.attributes`` map uses so downstream code (builder filters,
+    compute cascade) doesn't need to branch on source. ``use_as`` is
+    the load-bearing key — it drives the builder's ingredient
+    category pickers.
+    """
+
+    attrs: dict = {}
+    if psp_item.use_as:
+        attrs["use_as"] = psp_item.use_as
+    if psp_item.item_type:
+        attrs["psp_item_type"] = psp_item.item_type
+    if psp_item.description:
+        attrs["description"] = psp_item.description
+    if psp_item.barcode:
+        attrs["barcode"] = psp_item.barcode
+    return attrs
+
+
+def _get_or_create_mirror_catalogue(*, organization: Any, actor: Any):
+    """Return the org's PSP-mirror catalogue, creating it lazily on
+    first use so an org without PSP live never grows one."""
+
+    from apps.catalogues.models import PSP_MIRROR_SLUG, Catalogue
+
+    existing = Catalogue.objects.filter(
+        organization=organization, slug=PSP_MIRROR_SLUG
+    ).first()
+    if existing is not None:
+        return existing
+
+    return Catalogue.objects.create(
+        organization=organization,
+        slug=PSP_MIRROR_SLUG,
+        name="PSP mirror",
+        description=(
+            "Auto-populated by the PSP integration. Every row here "
+            "is a local snapshot of a PSP item that a scientist "
+            "picked in the formulation builder. Do not edit "
+            "directly — changes are overwritten on the next "
+            "re-pick or refresh."
+        ),
+        is_system=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Client factory — swappable for tests
 # ---------------------------------------------------------------------------
 

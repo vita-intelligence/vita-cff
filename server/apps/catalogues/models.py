@@ -35,6 +35,12 @@ RAW_MATERIALS_SLUG = "raw_materials"
 #: lids, labels, tubs). Referenced from specification sheets.
 PACKAGING_SLUG = "packaging"
 
+#: Slug of the org-scoped catalogue that mirrors PSP integration
+#: items into the local `Item` table on pick. Created lazily by
+#: :func:`apps.psp.services.mirror_psp_item` — orgs without an
+#: active PSP integration never grow this catalogue.
+PSP_MIRROR_SLUG = "psp_mirror"
+
 #: Slugs seeded automatically on every new organization. Marked
 #: ``is_system=True`` so users cannot delete or rename them.
 SYSTEM_CATALOGUE_SLUGS: tuple[str, ...] = (RAW_MATERIALS_SLUG, PACKAGING_SLUG)
@@ -141,6 +147,24 @@ class Item(models.Model):
         blank=True,
     )
     is_archived = models.BooleanField(_("archived"), default=False)
+
+    #: The PSP integration item this row mirrors, if any. Populated
+    #: on rows the PSP-mirror service (:func:`apps.psp.services.
+    #: mirror_psp_item`) creates when a scientist picks a PSP item
+    #: in the formulation builder. Nullable so legacy manually-
+    #: authored rows keep their identity — those stay canonically
+    #: local. Indexed so re-picks find the existing mirror in a
+    #: single lookup instead of scanning the catalogue.
+    #:
+    #: Never set on a manually-created row. The service is the sole
+    #: writer; the catalogues admin surface hides this column so an
+    #: operator can't accidentally spoof a PSP linkage.
+    psp_source_uuid = models.UUIDField(
+        _("PSP source UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
 
     attributes: models.JSONField = models.JSONField(
         _("attributes"),

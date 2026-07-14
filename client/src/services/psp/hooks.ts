@@ -21,6 +21,7 @@ import {
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
+  mirrorPspItem,
   savePspConfig,
   testPspConnection,
 } from "./api";
@@ -28,6 +29,7 @@ import type {
   PspConfigDto,
   PspItemListResponseDto,
   PspItemLookupResultDto,
+  PspItemMirrorResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -144,5 +146,28 @@ export function usePspItemDetail(
     queryKey: pspQueryKeys.itemDetail(orgId, itemUuid),
     queryFn: () => fetchPspItemDetail(orgId, itemUuid),
     enabled: Boolean(orgId) && Boolean(itemUuid) && enabled,
+  });
+}
+
+
+/** Mutation hook for the mirror-on-pick flow. Invalidates the
+ *  local catalogues cache on success so any concurrent picker on
+ *  the same page sees the new mirror row without a manual refetch.
+ *  The builder's active-ingredient picker consumes this to
+ *  materialise a PSP pick as a local Item before handing it to
+ *  ``addIngredient``. */
+export function useMirrorPspItem(
+  orgId: string,
+): UseMutationResult<PspItemMirrorResponseDto, ApiError, string> {
+  const qc = useQueryClient();
+  return useMutation<PspItemMirrorResponseDto, ApiError, string>({
+    mutationFn: (pspItemUuid: string) => mirrorPspItem(orgId, pspItemUuid),
+    onSuccess: () => {
+      // The mirror row lands in the org's ``psp_mirror`` catalogue —
+      // any hook listing local catalogues on the same page must
+      // refetch to see it. Broad invalidation keeps the FE simple;
+      // per-catalogue-slug scoping is an optimisation for later.
+      qc.invalidateQueries({ queryKey: ["catalogues"] });
+    },
   });
 }
