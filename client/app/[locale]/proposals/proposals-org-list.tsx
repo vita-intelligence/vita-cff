@@ -44,6 +44,7 @@ import {
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
+import { PspPriceHint } from "@/components/psp/psp-price-hint";
 import { useOrganization } from "@/services/organizations";
 import { CustomerFormModal } from "../customers/customers-list";
 import {
@@ -1196,12 +1197,20 @@ function OrgNewProposalButton({ orgId }: { orgId: string }) {
                               pricing is the source of truth on the
                               proposal; MRPEasy is reference only. */}
                           {pickedFormulation ? (
-                            <MrpeasyPriceHint
-                              orgId={orgId}
-                              code={pickedFormulation.code ?? ""}
-                              currency={specCurrency}
-                              className="self-start"
-                            />
+                            <>
+                              <MrpeasyPriceHint
+                                orgId={orgId}
+                                code={pickedFormulation.code ?? ""}
+                                currency={specCurrency}
+                                className="self-start"
+                              />
+                              <PspPriceHint
+                                orgId={orgId}
+                                code={pickedFormulation.code ?? ""}
+                                currency={specCurrency}
+                                className="self-start"
+                              />
+                            </>
                           ) : null}
                         </div>
                       ) : null}

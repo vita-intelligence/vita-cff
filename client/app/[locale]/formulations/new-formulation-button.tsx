@@ -15,6 +15,7 @@ import { useMemo, useState, type FormEvent } from "react";
 
 import { Chip } from "@/components/ui/chip";
 import { MrpeasyItemPicker } from "@/components/mrpeasy/mrpeasy-item-picker";
+import { PspItemPicker } from "@/components/psp/psp-item-picker";
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
@@ -184,6 +185,12 @@ export function NewFormulationButton({
   // managed-customers pattern: integration on → manual entry off.
   const organization = useOrganization(orgId);
   const mrpeasyLive = Boolean(organization?.mrpeasy_live);
+  // PSP and MRPEasy are mutually exclusive server-side, so this is
+  // effectively ``xor`` — but naming it ``sourcedLive`` makes the
+  // "some upstream integration is populating these fields" intent
+  // obvious at the field-lock sites below.
+  const pspLive = Boolean(organization?.psp_live);
+  const sourcedLive = mrpeasyLive || pspLive;
 
   const [internalOpen, setInternalOpen] = useState(false);
   // Single source of truth for "is the dialog open?": parent state
@@ -567,15 +574,22 @@ export function NewFormulationButton({
                 {/* ------------------------------------------------- */}
                 {/* Core metadata                                     */}
                 {/* ------------------------------------------------- */}
-                {/* MRPEasy picker sits above the code+name inputs.
-                    Mirrors the Dynamics customer picker pattern:
-                    the operator types, picks an item, and the two
-                    text inputs below autofill with the MRPEasy
-                    catalogue's part number + product title. The
-                    component self-hides when the org doesn't have
-                    MRPEasy live so the form behaves exactly as
-                    before for non-connected workspaces. */}
+                {/* Upstream item picker. Both MRPEasy and PSP
+                    versions self-gate on their respective ``*_live``
+                    flag; since the two integrations are mutually
+                    exclusive on the org, at most one renders. The
+                    picked item auto-fills the code + name inputs
+                    below via the same ``{code, title}`` callback
+                    shape. When neither is live, the form behaves as
+                    before with free-text entry. */}
                 <MrpeasyItemPicker
+                  orgId={orgId}
+                  onPick={(item) => {
+                    setCode(item.code);
+                    setName(item.title);
+                  }}
+                />
+                <PspItemPicker
                   orgId={orgId}
                   onPick={(item) => {
                     setCode(item.code);
@@ -594,22 +608,22 @@ export function NewFormulationButton({
                         value={code}
                         onChange={(e) => setCode(e.target.value)}
                         placeholder={
-                          mrpeasyLive
+                          sourcedLive
                             ? tFormulations(
                                 "mrpeasy_picker.locked_placeholder",
                               )
                             : tFormulations("placeholders.code")
                         }
                         maxLength={64}
-                        readOnly={mrpeasyLive}
-                        aria-readonly={mrpeasyLive}
+                        readOnly={sourcedLive}
+                        aria-readonly={sourcedLive}
                         // Read-only styling: muted background + a not-
                         // allowed cursor so the operator gets visual
                         // confirmation they can't type here, without
                         // killing copy-to-clipboard (which ``disabled``
                         // would block).
                         className={`w-full rounded-lg px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset outline-none focus:ring-2 focus:ring-orange-400 ${
-                          mrpeasyLive
+                          sourcedLive
                             ? "cursor-not-allowed bg-ink-100 ring-ink-200"
                             : "bg-ink-0 ring-ink-200"
                         }`}
@@ -624,23 +638,23 @@ export function NewFormulationButton({
                         value={name}
                         onChange={(e) => setName(e.target.value)}
                         placeholder={
-                          mrpeasyLive
+                          sourcedLive
                             ? tFormulations(
                                 "mrpeasy_picker.locked_placeholder",
                               )
                             : tFormulations("placeholders.name")
                         }
-                        readOnly={mrpeasyLive}
-                        aria-readonly={mrpeasyLive}
+                        readOnly={sourcedLive}
+                        aria-readonly={sourcedLive}
                         className={`w-full rounded-lg px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset outline-none focus:ring-2 focus:ring-orange-400 ${
-                          mrpeasyLive
+                          sourcedLive
                             ? "cursor-not-allowed bg-ink-100 ring-ink-200"
                             : "bg-ink-0 ring-ink-200"
                         }`}
                       />
                     </label>
                   </div>
-                  {mrpeasyLive ? (
+                  {sourcedLive ? (
                     <p className="text-[11px] text-ink-500">
                       {tFormulations("mrpeasy_picker.locked_hint")}
                     </p>

@@ -21,6 +21,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { CommentsPanel } from "@/components/comments";
 import { MrpeasyItemLink } from "@/components/mrpeasy/mrpeasy-item-link";
 import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
+import { PspPriceHint } from "@/components/psp/psp-price-hint";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
@@ -2066,7 +2067,15 @@ function ApprovalPricingForm({
           signing. Both surfaces self-hide when MRPEasy isn't
           live for this org. */}
       <div className="flex flex-wrap items-center gap-2">
+        {/* Both hints self-gate on their respective ``*_live``
+            flags. PSP and MRPEasy are mutually exclusive server-
+            side, so at most one renders. */}
         <MrpeasyPriceHint
+          orgId={orgId}
+          code={formulationCode}
+          currency={currency}
+        />
+        <PspPriceHint
           orgId={orgId}
           code={formulationCode}
           currency={currency}
