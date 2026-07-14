@@ -4610,14 +4610,77 @@ function CatalogueMultiPicker({
     }>,
   ) => void;
 }) {
-  const query = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
+  // Same "PSP powers the picker" pattern as the main active-
+  // ingredient picker: when the integration is live, source
+  // options from PSP instead of the local catalogue. Each check-
+  // click mirrors the PSP row into the org's local
+  // ``psp_mirror`` catalogue and pushes the returned local id
+  // into ``value`` — the parent form stays local-id-only, and
+  // legacy formulations that already have local ids in
+  // ``preselected`` keep rendering exactly as before.
+  const organization = useOrganization(orgId);
+  const pspLive = Boolean(organization?.psp_live);
+
+  const localQuery = useInfiniteItems(orgId, RAW_MATERIALS_SLUG, {
     includeArchived: false,
     ordering: "name",
     pageSize: 50,
     useAsIn,
   });
 
-  const fetched = query.data?.pages.flatMap((p) => p.results) ?? [];
+  const pspQuery = usePspItems(orgId, {
+    enabled: pspLive,
+    itemTypes: ["raw_material"],
+    // PSP's ``use_as`` filter accepts a comma-separated list
+    // (``feat(integration): accept comma-separated use_as on
+    // /items`` on PSP side). Sorted for stable cache keys.
+    useAs: [...useAsIn].sort().join(","),
+  });
+
+  const mirrorPsp = useMirrorPspItem(orgId);
+
+  // Local cache of PSP UUID → mirrored local Item so a check-
+  // click reconciles the option row's ``id`` with the local
+  // ``value`` array on subsequent renders. Without this, a
+  // freshly-mirrored row would flicker unchecked because the
+  // PSP row's synthetic ``psp:<uuid>`` id doesn't match the
+  // local id that ``onChange`` just pushed into ``value``.
+  const [pspToLocal, setPspToLocal] = useState<
+    Record<string, {
+      readonly id: string;
+      readonly name: string;
+      readonly internal_code: string;
+      readonly attributes: Readonly<Record<string, unknown>>;
+    }>
+  >({});
+
+  const fetched: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+    readonly attributes?: Readonly<Record<string, unknown>>;
+  }> = pspLive
+    ? (pspQuery.data?.items ?? []).map((row) => {
+        const cached = pspToLocal[row.uuid];
+        // Once we've mirrored a PSP row, render its option with
+        // the local id so ``selected.has(item.id)`` picks it up.
+        if (cached) {
+          return {
+            id: cached.id,
+            name: cached.name,
+            internal_code: cached.internal_code,
+            attributes: cached.attributes,
+          };
+        }
+        return {
+          id: `psp:${row.uuid}`,
+          name: row.name,
+          internal_code: row.external_sku,
+          attributes: row.attributes,
+        };
+      })
+    : (localQuery.data?.pages.flatMap((p) => p.results) ?? []);
+
   const knownIds = new Set(fetched.map((i) => i.id));
   const merged = [
     ...fetched,
@@ -4687,6 +4750,31 @@ function CatalogueMultiPicker({
   }, [valueKey, mergedKey]);
 
   const toggle = (id: string) => {
+    // PSP option that hasn't mirrored yet — mirror first, then
+    // push the returned local id into ``value``. Uncheck of a
+    // pre-mirrored PSP option lands in the ``next.has(id)`` /
+    // ``next.delete(id)`` branch below because by then the row's
+    // ``id`` is already the local id (via ``pspToLocal``).
+    if (id.startsWith("psp:")) {
+      const pspUuid = id.slice("psp:".length);
+      mirrorPsp.mutate(pspUuid, {
+        onSuccess: (dto) => {
+          setPspToLocal((prev) => ({
+            ...prev,
+            [pspUuid]: {
+              id: dto.id,
+              name: dto.name,
+              internal_code: dto.internal_code,
+              attributes: dto.attributes,
+            },
+          }));
+          const next = new Set(selected);
+          next.add(dto.id);
+          onChange([...next]);
+        },
+      });
+      return;
+    }
     const next = new Set(selected);
     if (next.has(id)) {
       next.delete(id);
@@ -4703,16 +4791,24 @@ function CatalogueMultiPicker({
       </span>
       <div
         className={`flex max-h-56 flex-col overflow-y-auto rounded-xl bg-ink-0 ring-1 ring-inset ring-ink-200 ${
-          disabled || query.isLoading ? "opacity-60" : ""
+          disabled || (pspLive ? pspQuery.isLoading : localQuery.isLoading)
+            ? "opacity-60"
+            : ""
         }`}
       >
         {merged.length === 0 ? (
           <p className="px-3 py-2 text-xs text-ink-500">
-            {query.isLoading ? loadingText : emptyText}
+            {(pspLive ? pspQuery.isLoading : localQuery.isLoading)
+              ? loadingText
+              : emptyText}
           </p>
         ) : (
           merged.map((item) => {
             const checked = selected.has(item.id);
+            const mirroring =
+              item.id.startsWith("psp:") &&
+              mirrorPsp.isPending &&
+              mirrorPsp.variables === item.id.slice("psp:".length);
             return (
               <label
                 key={item.id}
@@ -4725,7 +4821,7 @@ function CatalogueMultiPicker({
                 <input
                   type="checkbox"
                   checked={checked}
-                  disabled={disabled}
+                  disabled={disabled || mirroring}
                   onChange={() => toggle(item.id)}
                   className="h-4 w-4 cursor-pointer accent-orange-500"
                 />
