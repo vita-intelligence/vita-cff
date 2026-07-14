@@ -4,12 +4,14 @@ export {
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
+  mirrorPspItem,
   savePspConfig,
   testPspConnection,
 } from "./api";
 export {
   pspQueryKeys,
   useClearPspConfig,
+  useMirrorPspItem,
   usePspConfig,
   usePspItemDetail,
   usePspItems,
@@ -21,5 +23,6 @@ export type {
   PspItemDto,
   PspItemListResponseDto,
   PspItemLookupResultDto,
+  PspItemMirrorResponseDto,
   SavePspConfigRequestDto,
 } from "./types";

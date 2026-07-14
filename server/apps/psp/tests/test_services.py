@@ -336,3 +336,239 @@ class TestSilentDegradation:
     def test_get_item_returns_none_when_not_live(self):
         org = OrganizationFactory()
         assert psp.get_psp_item(organization=org, uuid="x") is None
+
+
+def _stub_psp_item(uuid: str, **overrides) -> PspItem:
+    """Build a PspItem dataclass with sensible defaults so tests
+    don't have to pass every field."""
+
+    defaults = dict(
+        uuid=uuid,
+        name="Ashwagandha KSM-66",
+        description="Root extract",
+        item_type="raw_material",
+        external_sku="ASH-KSM",
+        barcode="",
+        is_active=True,
+        use_as="active",
+        product_family_uuid=None,
+        product_family_name=None,
+        selling_price=Decimal("12.50"),
+        currency_code="GBP",
+    )
+    defaults.update(overrides)
+    return PspItem(**defaults)
+
+
+class TestMirrorPspItem:
+    """The mirror service is the load-bearing piece of the builder
+    swap — pinning behaviour here so a future refactor can't
+    silently regress the "PSP items land as local Item rows"
+    contract."""
+
+    def _seed_org_with_psp(self):
+        org = OrganizationFactory()
+        set_psp_config(
+            organization=org,
+            actor=org.created_by,
+            enabled=True,
+            base_url="https://psp",
+            integration_token="t",
+        )
+        return org
+
+    def test_upsert_creates_local_item(self):
+        from apps.catalogues.models import Item, PSP_MIRROR_SLUG
+
+        org = self._seed_org_with_psp()
+        psp_uuid = "11111111-2222-3333-4444-555555555555"
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(psp_uuid)
+
+        psp._TEST_CLIENT = _Client
+        try:
+            item = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        assert isinstance(item, Item)
+        assert str(item.psp_source_uuid) == psp_uuid
+        assert item.name == "Ashwagandha KSM-66"
+        assert item.internal_code == "ASH-KSM"
+        assert item.attributes["use_as"] == "active"
+        assert item.catalogue.slug == PSP_MIRROR_SLUG
+        # Catalogue is created lazily, not seeded on every org.
+        assert item.catalogue.is_system is True
+
+    def test_upsert_is_idempotent_on_repick(self):
+        """Second call with the same PSP UUID finds the existing
+        mirror row instead of creating a duplicate."""
+
+        from apps.catalogues.models import Item
+
+        org = self._seed_org_with_psp()
+        psp_uuid = "11111111-2222-3333-4444-555555555555"
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(psp_uuid, name="Rev A")
+
+        psp._TEST_CLIENT = _Client
+        try:
+            first = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+            second = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        assert first.pk == second.pk
+        assert (
+            Item.objects.filter(
+                catalogue__organization=org,
+                psp_source_uuid=psp_uuid,
+            ).count()
+            == 1
+        )
+
+    def test_upsert_refreshes_stale_snapshot(self):
+        """On a re-pick with different PSP attributes, the local
+        row is updated — this is how a scientist gets the latest
+        PSP name / attributes without waiting for a scheduled
+        sync job."""
+
+        org = self._seed_org_with_psp()
+        psp_uuid = "11111111-2222-3333-4444-555555555555"
+
+        class _StaleClient:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(psp_uuid, name="Old name")
+
+        class _FreshClient:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(
+                    psp_uuid,
+                    name="New name",
+                    use_as="colour",
+                )
+
+        psp._TEST_CLIENT = _StaleClient
+        try:
+            psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        psp._TEST_CLIENT = _FreshClient
+        try:
+            refreshed = psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        assert refreshed.name == "New name"
+        assert refreshed.attributes["use_as"] == "colour"
+
+    def test_not_configured_raises(self):
+        org = OrganizationFactory()  # no PSP config
+        with pytest.raises(psp.PspNotConfigured):
+            psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid="x",
+            )
+
+    def test_missing_psp_row_raises_not_found(self):
+        org = self._seed_org_with_psp()
+
+        class _EmptyClient:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return None
+
+        psp._TEST_CLIENT = _EmptyClient
+        try:
+            with pytest.raises(psp.PspMirrorItemNotFound):
+                psp.mirror_psp_item(
+                    organization=org,
+                    actor=org.created_by,
+                    psp_item_uuid="11111111-2222-3333-4444-555555555555",
+                )
+        finally:
+            psp._TEST_CLIENT = None
+
+    def test_legacy_local_items_unaffected(self):
+        """The mirror lives in its own catalogue. Existing raw
+        materials on the org are untouched — this is the whole
+        point of the mirror approach (legacy data stays as it is,
+        new picks route through PSP)."""
+
+        from apps.catalogues.models import Catalogue, PSP_MIRROR_SLUG
+        from apps.catalogues.tests.factories import (
+            ItemFactory,
+            raw_materials_catalogue,
+        )
+
+        org = self._seed_org_with_psp()
+        raw_materials = raw_materials_catalogue(org)
+        legacy_item = ItemFactory(catalogue=raw_materials, name="Legacy Vit C")
+        legacy_snapshot = {
+            "name": legacy_item.name,
+            "internal_code": legacy_item.internal_code,
+            "attributes": legacy_item.attributes,
+        }
+
+        psp_uuid = "11111111-2222-3333-4444-555555555555"
+
+        class _Client:
+            def __init__(self, cfg): ...
+
+            def get_item(self, uuid):
+                return _stub_psp_item(psp_uuid)
+
+        psp._TEST_CLIENT = _Client
+        try:
+            psp.mirror_psp_item(
+                organization=org,
+                actor=org.created_by,
+                psp_item_uuid=psp_uuid,
+            )
+        finally:
+            psp._TEST_CLIENT = None
+
+        legacy_item.refresh_from_db()
+        assert legacy_item.name == legacy_snapshot["name"]
+        assert legacy_item.internal_code == legacy_snapshot["internal_code"]
+        assert legacy_item.attributes == legacy_snapshot["attributes"]
+        # And the mirror lives in its own catalogue.
+        mirror_catalogue = Catalogue.objects.get(
+            organization=org, slug=PSP_MIRROR_SLUG
+        )
+        assert mirror_catalogue.pk != raw_materials.pk

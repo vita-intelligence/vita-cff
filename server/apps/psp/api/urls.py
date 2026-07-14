@@ -6,6 +6,7 @@ from apps.psp.api.views import (
     PspIntegrationView,
     PspItemDetailView,
     PspItemListView,
+    PspItemMirrorView,
     PspTestConnectionView,
 )
 
@@ -32,5 +33,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/items/<uuid:item_uuid>/",
         PspItemDetailView.as_view(),
         name="psp-item-detail",
+    ),
+    # Mirror-on-pick — POST-only endpoint the builder hits after
+    # the scientist picks a PSP item. Upserts into local catalogues
+    # and returns a local Item DTO so the formulation-line flow
+    # doesn't need to know PSP was involved.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/items/<uuid:item_uuid>/mirror/",
+        PspItemMirrorView.as_view(),
+        name="psp-item-mirror",
     ),
 ]

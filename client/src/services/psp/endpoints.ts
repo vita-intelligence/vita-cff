@@ -34,4 +34,6 @@ export const pspEndpoints = {
   },
   itemDetail: (orgId: string, itemUuid: string) =>
     `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/`,
+  itemMirror: (orgId: string, itemUuid: string) =>
+    `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/mirror/`,
 } as const;

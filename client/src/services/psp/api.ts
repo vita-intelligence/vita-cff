@@ -13,6 +13,7 @@ import type {
   PspConfigDto,
   PspItemListResponseDto,
   PspItemLookupResultDto,
+  PspItemMirrorResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -98,6 +99,21 @@ export async function fetchPspItemDetail(
 ): Promise<PspItemLookupResultDto> {
   const { data } = await apiClient.get<PspItemLookupResultDto>(
     pspEndpoints.itemDetail(orgId, itemUuid),
+  );
+  return data;
+}
+
+
+/** Mirror-on-pick: hand off a picked PSP item UUID and get back a
+ *  local ``catalogues.Item`` DTO. The mirror is upsert-idempotent —
+ *  re-picking the same PSP item returns the same local Item, no
+ *  duplication. Requires ``formulations.edit``. */
+export async function mirrorPspItem(
+  orgId: string,
+  pspItemUuid: string,
+): Promise<PspItemMirrorResponseDto> {
+  const { data } = await apiClient.post<PspItemMirrorResponseDto>(
+    pspEndpoints.itemMirror(orgId, pspItemUuid),
   );
   return data;
 }

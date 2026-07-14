@@ -35,12 +35,14 @@ from apps.psp.services import (
     PspDecryptionFailed,
     PspError,
     PspInvalidConfig,
+    PspMirrorItemNotFound,
     PspNotConfigured,
     PspRateLimited,
     PspUnreachable,
     clear_psp_config,
     get_psp_item,
     list_psp_items,
+    mirror_psp_item,
     serialize_psp_config_for_api,
     set_psp_config,
     verify_psp_connection,
@@ -234,6 +236,80 @@ class PspItemDetailView(APIView):
             )
         return Response(
             {"matched": True, "item": _serialize_item(item)},
+            status=status.HTTP_200_OK,
+        )
+
+
+class PspItemMirrorView(APIView):
+    """``POST`` ``/api/organizations/<org>/integrations/psp/items/<uuid>/mirror/``.
+
+    Load-bearing endpoint for the builder swap: takes a PSP item
+    UUID, fetches the row from PSP, upserts it into the org's
+    ``psp_mirror`` local catalogue, and returns the local
+    :class:`catalogues.Item` DTO. The FE picker calls this on pick
+    and then hands the local UUID to the formulation-builder's
+    existing "add ingredient" flow — every downstream consumer
+    (compute, spec sheet, BOM) operates on a normal local Item so
+    nothing else needs to change.
+
+    Gated on ``formulations.edit`` — same capability that already
+    permits adding an ingredient to a formulation. Non-editors get
+    403 so a view-only reviewer can browse but not mirror.
+
+    Failure modes:
+
+    * ``400 psp_not_configured`` — org has no live PSP integration.
+    * ``404 psp_mirror_item_not_found`` — PSP has no row for the
+      requested UUID (deleted / archived / wrong tenant scope).
+    * ``400 / 429 / 502`` — network / auth / rate-limit errors,
+      same mapping as the other PSP endpoints.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, item_uuid: str
+    ) -> Response:
+        try:
+            item = mirror_psp_item(
+                organization=self.organization,
+                actor=request.user,
+                psp_item_uuid=item_uuid,
+            )
+        except PspNotConfigured:
+            return Response(
+                {"detail": ["psp_not_configured"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspMirrorItemNotFound:
+            return Response(
+                {"detail": ["psp_mirror_item_not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except PspError as exc:
+            return _psp_error_response(exc)
+
+        # Return the local Item shape so the FE picker can push it
+        # into the builder's ``addIngredient(item)`` flow without a
+        # follow-up round-trip to the catalogues API. Mirrors the
+        # ``ItemDto`` the local catalogue endpoints already emit.
+        return Response(
+            {
+                "id": str(item.id),
+                "catalogue_id": str(item.catalogue_id),
+                "name": item.name,
+                "internal_code": item.internal_code,
+                "unit": item.unit,
+                "base_price": (
+                    str(item.base_price) if item.base_price is not None else None
+                ),
+                "attributes": item.attributes or {},
+                "is_archived": item.is_archived,
+                "psp_source_uuid": (
+                    str(item.psp_source_uuid) if item.psp_source_uuid else None
+                ),
+            },
             status=status.HTTP_200_OK,
         )
 

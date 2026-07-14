@@ -78,3 +78,22 @@ export interface PspItemListResponseDto {
 export type PspItemLookupResultDto =
   | { readonly matched: true; readonly item: PspItemDto }
   | { readonly matched: false; readonly uuid: string };
+
+
+/** Response shape from ``POST /integrations/psp/items/<uuid>/mirror/``.
+ *  Mirrors the local ``catalogues.Item`` DTO so the builder can hand
+ *  it to the existing ``addIngredient(item)`` flow verbatim — no
+ *  branching on source needed downstream. ``psp_source_uuid``
+ *  identifies the PSP item this mirror row was seeded from so a
+ *  future refresh action can find its way back. */
+export interface PspItemMirrorResponseDto {
+  readonly id: string;
+  readonly catalogue_id: string;
+  readonly name: string;
+  readonly internal_code: string;
+  readonly unit: string;
+  readonly base_price: string | null;
+  readonly attributes: Record<string, unknown>;
+  readonly is_archived: boolean;
+  readonly psp_source_uuid: string | null;
+}
