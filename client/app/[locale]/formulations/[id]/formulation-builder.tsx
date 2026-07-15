@@ -790,15 +790,18 @@ export function FormulationBuilder({
               } => entry !== null,
             )
         : [];
-    // Effective capsule size — the picked shell wins over the
-    // dropdown so procurement-driven picks stay in sync with
-    // compute. Reads the first pick's ``attributes.capsule_size``.
-    // Live picker cache takes precedence over the server echo so a
-    // freshly-toggled shell drives compute the moment the checkbox
-    // fires, not after the save round-trip. Falls back to
-    // ``metadata.capsule_size`` when no shell is picked / the pick
-    // lacks the attribute, preserving pre-picker behaviour.
-    let effectiveCapsuleSize = metadata.capsule_size || null;
+    // Compute's capsule size + fill capacity now come from the
+    // picked shell's attributes end-to-end. Reads:
+    //   * attributes.capsule_size → size key (Single 0, ...)
+    //   * attributes.max_weight_mg → fill capacity in mg
+    //   * attributes.shell_weight_mg → declared shell mass
+    // Live picker cache wins over server echo so freshly-toggled
+    // picks drive compute the moment the checkbox fires. Falls
+    // back to the legacy ``metadata.capsule_size`` string when no
+    // shell is picked — that's how pre-picker formulations still
+    // compute; when it's empty too, compute auto-picks from total.
+    let shellSizeKey: string | null = null;
+    let shellMaxWeightMg: number | null = null;
     if (
       metadata.dosage_form === "capsule" &&
       metadata.capsule_shell_item_ids.length > 0
@@ -808,16 +811,34 @@ export function FormulationBuilder({
       const echoedAttrs = (formulation.capsule_shell_items ?? []).find(
         (i) => i.id === firstId,
       )?.attributes;
-      const fromAttrs =
-        liveAttrs?.["capsule_size"] ?? echoedAttrs?.["capsule_size"];
-      if (typeof fromAttrs === "string" && fromAttrs.trim()) {
-        effectiveCapsuleSize = fromAttrs.trim();
+      const attrs = liveAttrs ?? echoedAttrs ?? {};
+
+      const sizeRaw = attrs["capsule_size"];
+      if (typeof sizeRaw === "string" && sizeRaw.trim()) {
+        shellSizeKey = sizeRaw.trim();
+      }
+
+      const maxRaw = attrs["max_weight_mg"];
+      const maxNum =
+        typeof maxRaw === "number"
+          ? maxRaw
+          : typeof maxRaw === "string"
+            ? Number.parseFloat(maxRaw)
+            : null;
+      if (typeof maxNum === "number" && Number.isFinite(maxNum) && maxNum > 0) {
+        shellMaxWeightMg = maxNum;
       }
     }
+    const effectiveCapsuleSize =
+      shellSizeKey ?? (metadata.capsule_size || null);
     return computeTotals({
       lines: computeInputs,
       dosageForm: metadata.dosage_form,
       capsuleSizeKey: effectiveCapsuleSize,
+      capsuleShellOverride:
+        shellSizeKey || shellMaxWeightMg
+          ? { sizeKey: shellSizeKey, maxWeightMg: shellMaxWeightMg }
+          : null,
       tabletSizeKey: metadata.tablet_size || null,
       defaultServingSize: metadata.serving_size,
       targetFillWeightMg: Number.isFinite(parsedFill) && parsedFill > 0
