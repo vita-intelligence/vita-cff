@@ -3538,54 +3538,78 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         dcpCarrierItems,
       );
 
-      if (excipients.mgStearateMg && excipients.mgStearateMg > 0) {
-        out.push({
-          slug: "mg_stearate",
-          label:
-            antiCakingPicks.names.length > 0
-              ? antiCakingPicks.names.join(" + ")
-              : "Magnesium Stearate",
-          code: antiCakingPicks.codes.join(" + "),
-          gramsPerKg: scale(excipients.mgStearateMg),
-          pct: (excipients.mgStearateMg / totalWeight) * 100,
-        });
-      }
-      if (excipients.silicaMg && excipients.silicaMg > 0) {
-        out.push({
-          slug: "silica",
-          label:
-            antiCakingPicks.names.length > 0
-              ? antiCakingPicks.names.join(" + ")
+      // One BOM row per pick, equal split of the band mass. Fall
+      // back to the canonical placeholder row when the band has
+      // no picks — procurement still sees the mass, just no SKU.
+      //
+      // ``pickedNames.length`` drives the divisor: 3 picks =>
+      // each row gets 1/3 of the band's total mg. Codes come off
+      // the parallel array so a pick with a blank ``internal_code``
+      // (PSP-mirrored row lacking ``external_sku``) still gets a
+      // dedicated row with an empty CODE cell.
+      const emitBandRows = (opts: {
+        slugPrefix: string;
+        totalMg: number;
+        picks: { names: string[]; codes: string[] };
+        placeholderLabel: string;
+      }) => {
+        const { slugPrefix, totalMg, picks, placeholderLabel } = opts;
+        if (totalMg <= 0) return;
+        if (picks.names.length === 0) {
+          out.push({
+            slug: slugPrefix,
+            label: placeholderLabel,
+            code: "",
+            gramsPerKg: scale(totalMg),
+            pct: (totalMg / totalWeight) * 100,
+          });
+          return;
+        }
+        const perPickMg = totalMg / picks.names.length;
+        for (let i = 0; i < picks.names.length; i++) {
+          out.push({
+            slug: `${slugPrefix}:${i}`,
+            label: picks.names[i]!,
+            code: picks.codes[i] ?? "",
+            gramsPerKg: scale(perPickMg),
+            pct: (perPickMg / totalWeight) * 100,
+          });
+        }
+      };
+
+      // Anti-caking splits stearate + silica into two math bands
+      // but shares one pick list — emit the combined mass then
+      // split across picks rather than keeping separate rows for
+      // stearate vs silica. That collapses the "picked two items"
+      // case into two clean rows instead of four confusing halves.
+      const antiCakingTotalMg =
+        (excipients.mgStearateMg || 0) + (excipients.silicaMg || 0);
+      emitBandRows({
+        slugPrefix: "anticaking",
+        totalMg: antiCakingTotalMg,
+        picks: antiCakingPicks,
+        // With no picks, keep the historical two-row placeholder
+        // (Magnesium Stearate + Silicon Dioxide) so procurement
+        // sees both defaults spelled out.
+        placeholderLabel:
+          excipients.mgStearateMg && excipients.silicaMg
+            ? "Magnesium Stearate + Silicon Dioxide"
+            : excipients.mgStearateMg
+              ? "Magnesium Stearate"
               : "Silicon Dioxide",
-          code: antiCakingPicks.codes.join(" + "),
-          gramsPerKg: scale(excipients.silicaMg),
-          pct: (excipients.silicaMg / totalWeight) * 100,
-        });
-      }
-      if (excipients.dcpMg && excipients.dcpMg > 0) {
-        out.push({
-          slug: "dcp",
-          label:
-            dcpCarrierPicks.names.length > 0
-              ? dcpCarrierPicks.names.join(" + ")
-              : "Dicalcium Phosphate",
-          code: dcpCarrierPicks.codes.join(" + "),
-          gramsPerKg: scale(excipients.dcpMg),
-          pct: (excipients.dcpMg / totalWeight) * 100,
-        });
-      }
-      if (excipients.mccMg && excipients.mccMg > 0) {
-        out.push({
-          slug: "mcc",
-          label:
-            mccCarrierPicks.names.length > 0
-              ? mccCarrierPicks.names.join(" + ")
-              : "Microcrystalline Cellulose",
-          code: mccCarrierPicks.codes.join(" + "),
-          gramsPerKg: scale(excipients.mccMg),
-          pct: (excipients.mccMg / totalWeight) * 100,
-        });
-      }
+      });
+      emitBandRows({
+        slugPrefix: "dcp",
+        totalMg: excipients.dcpMg || 0,
+        picks: dcpCarrierPicks,
+        placeholderLabel: "Dicalcium Phosphate",
+      });
+      emitBandRows({
+        slugPrefix: "mcc",
+        totalMg: excipients.mccMg || 0,
+        picks: mccCarrierPicks,
+        placeholderLabel: "Microcrystalline Cellulose",
+      });
     }
 
     // Sort by quantity ascending — procurement reads the BOM bottom-
