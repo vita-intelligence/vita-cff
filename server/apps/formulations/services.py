@@ -31,6 +31,7 @@ from apps.audit.services import record as record_audit, snapshot
 from apps.catalogues.models import INGREDIENT_CATALOGUE_SLUGS, Item
 from apps.formulations.constants import (
     ACIDITY_USE_CATEGORIES,
+    DEFAULT_STAGE_TEMPLATES,
     AMINO_ACID_GROUPS,
     AMINO_ACID_KEYS,
     ANTI_CAKING_TOTAL_PCT,
@@ -98,6 +99,7 @@ from apps.formulations.constants import (
 from apps.formulations.models import (
     Formulation,
     FormulationLine,
+    FormulationStage,
     FormulationVersion,
     ProjectStatus,
     ProjectType,
@@ -2372,6 +2374,7 @@ def create_formulation(
         created_by=actor,
         updated_by=actor,
     )
+    seed_default_stages(formulation=formulation)
     record_audit(
         organization=organization,
         actor=actor,
@@ -2380,6 +2383,142 @@ def create_formulation(
         after=snapshot(formulation),
     )
     return formulation
+
+
+def seed_default_stages(*, formulation: Formulation) -> list[FormulationStage]:
+    """Populate a fresh formulation with the default stage graph for
+    its dosage form.
+
+    Picks the template from :data:`DEFAULT_STAGE_TEMPLATES` — capsules
+    seed with *Blend → Encapsulate → Bottle → Label*, powders with
+    *Blend → Fill → Label*, gummies with *Cook → Deposit → Cure →
+    Coat → Package*, tablets with *Blend → Compress → Coat → Bottle
+    → Label*. Liquid / other-solid dosage forms fall through to an
+    empty template — the scientist adds stages by hand on the
+    builder.
+
+    No-op when the formulation already has stages (never overwrite a
+    user's edits). Workstation groups aren't matched here — that
+    happens either on the FE picker's first render or during the
+    push cascade in the PSP client. Returns the newly-created stage
+    list.
+    """
+
+    if formulation.stages.exists():
+        return list(formulation.stages.all())
+
+    template = DEFAULT_STAGE_TEMPLATES.get(formulation.dosage_form) or []
+    if not template:
+        return []
+
+    created: list[FormulationStage] = []
+    for sort_order, (stage_key, name, _workstation_hint) in enumerate(template):
+        stage = FormulationStage.objects.create(
+            formulation=formulation,
+            sort_order=sort_order,
+            name=name,
+            stage_key=stage_key,
+        )
+        created.append(stage)
+
+    return created
+
+
+@transaction.atomic
+def set_formulation_stages(
+    *,
+    formulation: Formulation,
+    stages: list[dict[str, Any]],
+    actor: Any,
+) -> list[FormulationStage]:
+    """Wholesale-replace a formulation's stage list.
+
+    ``stages`` is the full ordered list — every existing stage that
+    doesn't appear in the payload is deleted, and each entry is
+    upserted by its ``id`` (or created when omitted / unknown). This
+    mirrors the "wholesale replace on save" pattern PSP itself uses
+    for routing steps, so the two ends of the integration behave the
+    same way.
+
+    Lines whose stage disappears fall back to ``stage=NULL`` via the
+    ``on_delete=SET_NULL`` FK — they surface in a "no stage" bucket
+    on the builder and the operator reassigns.
+
+    Payload shape per stage:
+
+    .. code-block:: python
+
+        {
+          "id": "<uuid>",                     # optional; create if omitted
+          "sort_order": 0,
+          "name": "Powder blend",
+          "stage_key": "blend",
+          "workstation_group_uuid": "<uuid>|null",
+          "workstation_group_name": "Blender",
+          "setup_time_min": "5",
+          "cycle_time_min": "45",
+          "fixed_cost": "0",
+          "variable_cost": "0",
+          "notes": "...",
+        }
+    """
+
+    before = snapshot(formulation)
+    incoming_ids: set[str] = set()
+
+    # Shift every existing stage's ``sort_order`` into a private
+    # high range so the payload can freely renumber without tripping
+    # the ``(formulation, sort_order)`` uniqueness constraint mid-
+    # update. Reset happens naturally as each row's ``sort_order`` is
+    # overwritten below; any survivor left in the high range would
+    # indicate a bug in the caller (we assert on it after the loop).
+    from django.db.models import F
+
+    formulation.stages.update(sort_order=F("sort_order") + 100_000)
+
+    for index, raw in enumerate(stages):
+        raw_id = raw.get("id")
+        payload = {
+            "sort_order": raw.get("sort_order", index),
+            "name": (raw.get("name") or "").strip() or f"Stage {index + 1}",
+            "stage_key": raw.get("stage_key") or FormulationStage.StageKey.CUSTOM,
+            "workstation_group_uuid": raw.get("workstation_group_uuid") or None,
+            "workstation_group_name": (raw.get("workstation_group_name") or "").strip(),
+            "setup_time_min": raw.get("setup_time_min"),
+            "cycle_time_min": raw.get("cycle_time_min"),
+            "fixed_cost": raw.get("fixed_cost"),
+            "variable_cost": raw.get("variable_cost"),
+            "notes": raw.get("notes") or "",
+        }
+
+        if raw_id:
+            existing = FormulationStage.objects.filter(
+                formulation=formulation, id=raw_id
+            ).first()
+            if existing is not None:
+                for field, value in payload.items():
+                    setattr(existing, field, value)
+                existing.save()
+                incoming_ids.add(str(existing.id))
+                continue
+
+        created = FormulationStage.objects.create(formulation=formulation, **payload)
+        incoming_ids.add(str(created.id))
+
+    # Delete stages that fell out of the payload. Lines FK to the
+    # departing rows get ``stage=NULL`` via ``on_delete=SET_NULL``.
+    formulation.stages.exclude(id__in=incoming_ids).delete()
+
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.set_stages",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+
+    return list(formulation.stages.all())
 
 
 @transaction.atomic
