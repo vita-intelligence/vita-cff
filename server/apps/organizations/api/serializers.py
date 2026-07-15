@@ -126,17 +126,27 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         return is_psp_live(obj)
 
     def get_psp_base_url(self, obj: Organization) -> str:
-        """Public base URL of the org's PSP instance. Non-sensitive
-        — used by the FE to build deep-links back into PSP's UI
-        (item pages, BOM pages) from the NPD builder. The API token
-        stays owner-only via the dedicated ``psp/`` settings
-        endpoint; only the URL is exposed here so every builder-
-        capable user can click through, not just owners.
+        """Public UI base URL of the org's PSP instance — used by
+        the FE to build deep-links into PSP's Next.js UI (item
+        pages, BOM pages) from the NPD builder.
 
-        Empty string when PSP isn't configured or the URL wasn't
-        set — the FE hides the deep-link buttons in that case."""
+        PSP runs two hosts in dev: Phoenix on ``:4000`` for the
+        API + Next.js on ``:3010`` for the UI. The org's
+        ``psp_config`` carries both — ``base_url`` (API, used by
+        the integration client) and ``ui_base_url`` (UI, used by
+        deep-links). In production the two live on the same origin
+        behind an nginx proxy so the operator leaves ``ui_base_url``
+        blank; this field falls back to ``base_url`` in that case.
+
+        Non-sensitive: only the URL crosses the wire; the API
+        token stays owner-scoped via the dedicated ``psp/``
+        settings endpoint. Empty string when PSP isn't configured
+        — the FE hides deep-link buttons then."""
 
         raw = obj.psp_config or {}
+        ui = str(raw.get("ui_base_url") or "").rstrip("/")
+        if ui:
+            return ui
         return str(raw.get("base_url") or "").rstrip("/")
 
 

@@ -73,6 +73,7 @@ class TestConfigCRUD:
         assert r.json() == {
             "enabled": False,
             "base_url": "",
+            "ui_base_url": "",
             "has_token": False,
             "last_tested_at": None,
         }

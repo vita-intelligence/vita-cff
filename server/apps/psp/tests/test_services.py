@@ -248,6 +248,7 @@ class TestSerializeForApi:
         assert payload == {
             "enabled": True,
             "base_url": "https://psp",
+            "ui_base_url": "",
             "has_token": True,
             "last_tested_at": None,
         }

@@ -114,11 +114,18 @@ class PspIntegrationView(APIView):
 
     def put(self, request: Request, org_id: str) -> Response:
         body = request.data if isinstance(request.data, dict) else {}
+        # ``ui_base_url`` — pass the raw value through (empty string
+        # or absent = "no override"). Absent (``None``) preserves
+        # any stored value; empty string clears; non-empty replaces.
+        # Same key handling as ``integration_token``'s keep-existing
+        # sentinel.
+        raw_ui_base_url = body.get("ui_base_url")
         payload = set_psp_config(
             organization=self.organization,
             actor=request.user,
             enabled=bool(body.get("enabled", True)),
             base_url=str(body.get("base_url") or ""),
+            ui_base_url=raw_ui_base_url,
             # ``None`` is the "keep existing token" sentinel — same
             # UX as the MRPEasy / Dynamics forms. Empty string also
             # preserves, so an operator can save a URL change
