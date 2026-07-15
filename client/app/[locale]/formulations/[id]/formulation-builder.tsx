@@ -2799,6 +2799,17 @@ export function FormulationBuilder({
         gellingItems={formulation.gelling_items}
         premixSweetenerItems={formulation.premix_sweetener_items}
         acidityItems={formulation.acidity_items}
+        // Excipient-band picks feed the capsule / tablet BOM rows
+        // (Silicon Dioxide, MCC, DCP) with their actual SKUs +
+        // codes instead of the generic category placeholders.
+        mccCarrierItemIds={metadata.mcc_carrier_item_ids}
+        dcpCarrierItemIds={metadata.dcp_carrier_item_ids}
+        antiCakingItemIds={metadata.anti_caking_item_ids}
+        mccCarrierNames={mccCarrierNames}
+        antiCakingNames={antiCakingNames}
+        mccCarrierItems={formulation.mcc_carrier_items}
+        dcpCarrierItems={formulation.dcp_carrier_items}
+        antiCakingItems={formulation.anti_caking_items}
         formulationCode={formulation.code}
         formulationName={formulation.name}
         tFormulations={tFormulations}
@@ -3152,6 +3163,14 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   gellingItems,
   premixSweetenerItems,
   acidityItems,
+  mccCarrierItemIds,
+  dcpCarrierItemIds,
+  antiCakingItemIds,
+  mccCarrierNames,
+  antiCakingNames,
+  mccCarrierItems,
+  dcpCarrierItems,
+  antiCakingItems,
   formulationCode,
   formulationName,
   tFormulations,
@@ -3199,6 +3218,33 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     readonly name: string;
     readonly internal_code: string;
     readonly ingredient_list_name: string;
+  }[];
+  // Excipient-band picks — feed the capsule/tablet BOM rows so
+  // "Silicon Dioxide", "MCC", "DCP" show the actual picked
+  // SKUs + codes instead of blank placeholders. Live names come
+  // off the picker-toggled cache; server echos supply codes
+  // (post-save; pre-save the code column stays empty for
+  // freshly-toggled picks, which is still an upgrade over the
+  // previous always-empty state).
+  mccCarrierItemIds: readonly string[];
+  dcpCarrierItemIds: readonly string[];
+  antiCakingItemIds: readonly string[];
+  mccCarrierNames: Record<string, string>;
+  antiCakingNames: Record<string, string>;
+  mccCarrierItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+  }[];
+  dcpCarrierItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+  }[];
+  antiCakingItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
   }[];
   formulationCode: string;
   formulationName: string;
@@ -3251,6 +3297,41 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         itemLookup.set(item.id, item);
       }
     }
+
+    // Resolve picks for the capsule/tablet excipient bands (MCC
+    // carrier, DCP carrier, anti-caking). The compute layer emits
+    // these as synthetic category rows ("Microcrystalline
+    // Cellulose", "Silicon Dioxide", etc.) with blank codes; when
+    // the scientist has actually picked SKUs we swap in the picked
+    // names + concatenated codes so the BOM reads like a
+    // procurement doc, not a functional summary.
+    //
+    // Live picks live in the ``*Names`` caches (id → name) so a
+    // toggle reflects instantly. Codes come off the server echo
+    // (``formulation.*_items[]``) since the picker's callback
+    // doesn't currently plumb ``internal_code`` — a freshly-picked
+    // pre-save row therefore shows the picked NAME with an empty
+    // code, which is still a big win over the generic placeholder.
+    const resolvePickedBand = (
+      ids: readonly string[],
+      liveNames: Record<string, string>,
+      serverItems: ReadonlyArray<{
+        readonly id: string;
+        readonly name: string;
+        readonly internal_code: string;
+      }>,
+    ): { names: string[]; codes: string[] } => {
+      const names: string[] = [];
+      const codes: string[] = [];
+      for (const id of ids) {
+        const server = serverItems.find((i) => i.id === id);
+        const name = liveNames[id] ?? server?.name;
+        if (!name) continue;
+        names.push(name);
+        if (server?.internal_code) codes.push(server.internal_code);
+      }
+      return { names, codes };
+    };
 
     // 1) Actives — straight from the line list. Per-kg scaling
     //    uses each line's cached mg/serving. For gummies we collapse
@@ -3376,12 +3457,44 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         });
       }
 
-      // Capsule / tablet excipients — synthetic rows, no item code.
+      // Capsule / tablet excipients — synthetic category rows
+      // enriched with the picker's actual SKU picks when present.
+      // Anti-caking splits mg-stearate vs silica because the maths
+      // meter them separately, but each half gets the FULL anti-
+      // caking pick list attached — the operator's checkbox
+      // effectively says "these are the SKUs procurement should
+      // source for the anti-caking band," and both halves draw
+      // from the same shopping list. The code column concatenates
+      // multiple picks with " + " so a pack that runs Silicon
+      // Dioxide + Magnesium Stearate reads as
+      // ``MA200150 + MA200960`` in the SKU cell.
+      const antiCakingPicks = resolvePickedBand(
+        antiCakingItemIds,
+        antiCakingNames,
+        antiCakingItems,
+      );
+      const mccCarrierPicks = resolvePickedBand(
+        mccCarrierItemIds,
+        mccCarrierNames,
+        mccCarrierItems,
+      );
+      const dcpCarrierPicks = resolvePickedBand(
+        dcpCarrierItemIds,
+        // No live cache for DCP carrier — server echo carries
+        // everything after save, and a save re-hydrates the
+        // ``formulation`` prop so there's no post-save gap.
+        {},
+        dcpCarrierItems,
+      );
+
       if (excipients.mgStearateMg && excipients.mgStearateMg > 0) {
         out.push({
           slug: "mg_stearate",
-          label: "Magnesium Stearate",
-          code: "",
+          label:
+            antiCakingPicks.names.length > 0
+              ? antiCakingPicks.names.join(" + ")
+              : "Magnesium Stearate",
+          code: antiCakingPicks.codes.join(" + "),
           gramsPerKg: scale(excipients.mgStearateMg),
           pct: (excipients.mgStearateMg / totalWeight) * 100,
         });
@@ -3389,8 +3502,11 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
       if (excipients.silicaMg && excipients.silicaMg > 0) {
         out.push({
           slug: "silica",
-          label: "Silicon Dioxide",
-          code: "",
+          label:
+            antiCakingPicks.names.length > 0
+              ? antiCakingPicks.names.join(" + ")
+              : "Silicon Dioxide",
+          code: antiCakingPicks.codes.join(" + "),
           gramsPerKg: scale(excipients.silicaMg),
           pct: (excipients.silicaMg / totalWeight) * 100,
         });
@@ -3398,8 +3514,11 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
       if (excipients.dcpMg && excipients.dcpMg > 0) {
         out.push({
           slug: "dcp",
-          label: "Dicalcium Phosphate",
-          code: "",
+          label:
+            dcpCarrierPicks.names.length > 0
+              ? dcpCarrierPicks.names.join(" + ")
+              : "Dicalcium Phosphate",
+          code: dcpCarrierPicks.codes.join(" + "),
           gramsPerKg: scale(excipients.dcpMg),
           pct: (excipients.dcpMg / totalWeight) * 100,
         });
@@ -3407,8 +3526,11 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
       if (excipients.mccMg && excipients.mccMg > 0) {
         out.push({
           slug: "mcc",
-          label: "Microcrystalline Cellulose",
-          code: "",
+          label:
+            mccCarrierPicks.names.length > 0
+              ? mccCarrierPicks.names.join(" + ")
+              : "Microcrystalline Cellulose",
+          code: mccCarrierPicks.codes.join(" + "),
           gramsPerKg: scale(excipients.mccMg),
           pct: (excipients.mccMg / totalWeight) * 100,
         });
@@ -3436,6 +3558,17 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     gellingItems,
     premixSweetenerItems,
     acidityItems,
+    // Excipient-band picks — MCC carrier / DCP carrier / anti-
+    // caking. Live names + ids reflect the freshly-toggled state;
+    // the server echo carries the codes.
+    mccCarrierItemIds,
+    dcpCarrierItemIds,
+    antiCakingItemIds,
+    mccCarrierNames,
+    antiCakingNames,
+    mccCarrierItems,
+    dcpCarrierItems,
+    antiCakingItems,
   ]);
 
   // Sub-BOM for the Active Powder pre-blend. Only emitted on gummy
