@@ -1169,7 +1169,7 @@ export function FormulationBuilder({
       return rows.map((row) => ({
         id: `psp:${row.uuid}`,
         name: row.name,
-        internal_code: row.external_sku,
+        internal_code: row.code || row.external_sku,
         unit: "",
         base_price:
           row.selling_price !== null && row.selling_price !== undefined
@@ -4940,7 +4940,7 @@ function CatalogueMultiPicker({
         return {
           id: `psp:${row.uuid}`,
           name: row.name,
-          internal_code: row.external_sku,
+          internal_code: row.code || row.external_sku,
           attributes: row.attributes,
         };
       })

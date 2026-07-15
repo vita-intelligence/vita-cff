@@ -87,6 +87,13 @@ class PspItem:
     description: str
     item_type: str
     external_sku: str
+    #: System-generated display code (``MA00295``), rendered PSP-side
+    #: from the item's integer PK against the company's numbering
+    #: format. Every PSP item has one — this is what PSP's own UI
+    #: prints as "Code" and what NPD's BOM shows for procurement.
+    #: Empty string when PSP has no numbering format configured (the
+    #: mirror falls back to ``external_sku`` in that case).
+    code: str
     barcode: str
     is_active: bool
     use_as: str | None
@@ -357,6 +364,12 @@ def _project_item(row: dict[str, Any]) -> PspItem:
         description=str(row.get("description") or ""),
         item_type=str(row.get("item_type") or ""),
         external_sku=str(row.get("external_sku") or ""),
+        # PSP started emitting ``code`` on the integration wire in
+        # ``feat(integration): expose system code on /items``. Older
+        # PSP builds don't send it — degrade to empty string so the
+        # mirror falls back to ``external_sku`` (still preserves
+        # legacy behaviour on stale servers).
+        code=str(row.get("code") or ""),
         barcode=str(row.get("barcode") or ""),
         is_active=bool(row.get("is_active", True)),
         use_as=(
@@ -736,7 +749,7 @@ def mirror_psp_item(
             before = snapshot(existing)
             existing.name = psp_item.name or existing.name
             existing.internal_code = (
-                psp_item.external_sku or existing.internal_code
+                psp_item.code or psp_item.external_sku or existing.internal_code
             )
             existing.attributes = attributes
             if psp_item.selling_price is not None:
@@ -766,7 +779,12 @@ def mirror_psp_item(
             catalogue=catalogue,
             psp_source_uuid=psp_item.uuid,
             name=psp_item.name or "",
-            internal_code=psp_item.external_sku or "",
+            # System code (``MA00295``) wins over supplier SKU as
+            # the local ``internal_code``, so the BOM's CODE column
+            # matches what PSP's own UI prints. Fall back to
+            # ``external_sku`` when PSP has no numbering format
+            # configured (older backends before PR #48).
+            internal_code=psp_item.code or psp_item.external_sku or "",
             unit="",
             base_price=psp_item.selling_price,
             attributes=attributes,
