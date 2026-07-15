@@ -12,11 +12,40 @@ from apps.formulations.models import (
     DosageFormChoices,
     Formulation,
     FormulationLine,
+    FormulationStage,
     FormulationVersion,
     PowderTypeChoices,
     ProjectStatus,
     ProjectType,
 )
+
+
+class FormulationStageReadSerializer(serializers.ModelSerializer):
+    """Per-stage read shape emitted on the formulation detail
+    response. Mirrors the FE builder's stage-strip cards 1:1 — the
+    picker fetches PSP's ``/api/integration/workstation-groups``
+    separately for the "run on" dropdown; here we just carry the
+    stored UUID + the snapshot name so the strip can render even
+    when PSP is unreachable.
+    """
+
+    class Meta:
+        model = FormulationStage
+        fields = (
+            "id",
+            "sort_order",
+            "name",
+            "stage_key",
+            "workstation_group_uuid",
+            "workstation_group_name",
+            "setup_time_min",
+            "cycle_time_min",
+            "fixed_cost",
+            "variable_cost",
+            "psp_semi_finished_uuid",
+            "notes",
+        )
+        read_only_fields = fields
 
 
 def _code(value: str) -> ErrorDetail:
@@ -57,6 +86,11 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
     #: PSP UUID for lines with ``item_source == "psp"``; ``null``
     #: on local-sourced lines.
     psp_item_uuid = serializers.UUIDField(read_only=True, allow_null=True)
+    #: Stage this line runs in — ``null`` on legacy lines that
+    #: predate the stages model. The FE groups lines by stage in
+    #: the builder; NULL bucket rides along with the terminal stage
+    #: at push time.
+    stage_id = serializers.SerializerMethodField()
 
     class Meta:
         model = FormulationLine
@@ -68,6 +102,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "item_attributes",
             "item_source",
             "psp_item_uuid",
+            "stage_id",
             "display_order",
             "label_claim_mg",
             "serving_size_override",
@@ -78,6 +113,9 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "notes",
         )
         read_only_fields = fields
+
+    def get_stage_id(self, obj: FormulationLine) -> str | None:
+        return str(obj.stage_id) if obj.stage_id else None
 
     def get_item_name(self, obj: FormulationLine) -> str:
         return obj.effective_item_name
@@ -135,6 +173,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
 
 class FormulationReadSerializer(serializers.ModelSerializer):
     lines = FormulationLineReadSerializer(many=True, read_only=True)
+    stages = FormulationStageReadSerializer(many=True, read_only=True)
     sales_person = serializers.SerializerMethodField()
     lead_scientist = serializers.SerializerMethodField()
     gummy_base_item_ids = serializers.SerializerMethodField()
@@ -216,6 +255,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "sales_person",
             "lead_scientist",
             "lines",
+            "stages",
             # Ready-to-Go marketing block. Empty / default on Custom
             # rows; the FE only mounts the publish panel when
             # ``project_type=='ready_to_go'`` so the extra fields

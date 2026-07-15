@@ -745,6 +745,21 @@ class FormulationLine(models.Model):
         default=dict,
         blank=True,
     )
+    #: Which production stage consumes this line. Optional — nullable
+    #: for legacy formulations built before stages existed. On the push
+    #: cascade to PSP a NULL stage is treated as belonging to the
+    #: terminal (finished-product) stage so the flat-BOM behaviour
+    #: remains the fallback. Set at pick time from the stage strip in
+    #: the builder. ``SET_NULL`` on stage delete so removing a stage
+    #: doesn't cascade-nuke the lines — they surface in a "no stage"
+    #: bucket and the operator reassigns.
+    stage = models.ForeignKey(
+        "FormulationStage",
+        on_delete=models.SET_NULL,
+        related_name="lines",
+        null=True,
+        blank=True,
+    )
     display_order = models.PositiveIntegerField(_("display order"), default=0)
     label_claim_mg = models.DecimalField(
         _("label claim (mg)"),
@@ -876,6 +891,144 @@ class FormulationLine(models.Model):
 
     def __str__(self) -> str:
         return f"{self.item.name} ({self.label_claim_mg} mg)"
+
+
+class FormulationStage(models.Model):
+    """One production stage on a formulation.
+
+    Formulations are made in stages: a capsule product = *Powder Blend*
+    (blend actives + excipients) → *Encapsulate* (fill shells) →
+    *Bottle* (pack into container) → *Label*. Each non-terminal stage
+    outputs a semi-finished item; the next stage consumes it.
+
+    A stage carries the workstation group that runs it (a pointer at
+    PSP's ``workstation_groups`` table) + setup/cycle time + fixed/
+    variable cost that override the workstation-group defaults. When
+    NPD pushes the formulation to PSP:
+
+    * Each non-terminal stage becomes its own PSP semi-finished item
+      + BOM + Routing. ``psp_semi_finished_uuid`` caches the PSP-side
+      UUID after the first successful push so subsequent pushes hit
+      the same row (idempotency via ``external_sku``).
+    * The terminal stage becomes the finished product's own BOM +
+      Routing; it consumes the prior stages' semi-finished outputs
+      instead of raw materials directly.
+
+    ``sort_order`` defines the flow — the stage with the lowest
+    ``sort_order`` runs first; the highest is the terminal stage.
+    """
+
+    #: Well-known template keys — used to seed a default graph based
+    #: on the formulation's dosage form. Every stage carries one so
+    #: the FE can render a suitable icon / colour without matching on
+    #: the free-text name. ``custom`` covers user-added stages that
+    #: don't fit a known template.
+    class StageKey(models.TextChoices):
+        BLEND = "blend", _("Blend")
+        ENCAPSULATE = "encapsulate", _("Encapsulate")
+        BOTTLE = "bottle", _("Bottle")
+        LABEL = "label", _("Label")
+        FILL = "fill", _("Fill")
+        COOK = "cook", _("Cook")
+        DEPOSIT = "deposit", _("Deposit")
+        CURE = "cure", _("Cure")
+        COAT = "coat", _("Coat")
+        PACKAGE = "package", _("Package")
+        CUSTOM = "custom", _("Custom")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.CASCADE,
+        related_name="stages",
+    )
+    sort_order = models.PositiveIntegerField(_("sort order"), default=0)
+    name = models.CharField(_("name"), max_length=120)
+    stage_key = models.CharField(
+        _("stage key"),
+        max_length=32,
+        choices=StageKey.choices,
+        default=StageKey.CUSTOM,
+    )
+    #: PSP ``WorkstationGroup`` UUID this stage runs on. Nullable —
+    #: operator may draft a stage before picking the machine. The
+    #: builder's picker fetches the list from PSP's
+    #: ``/api/integration/workstation-groups`` endpoint.
+    workstation_group_uuid = models.UUIDField(
+        _("PSP workstation group UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    #: Snapshot of the workstation group's display name at pick time.
+    #: Rendered when PSP is unreachable so the stage strip still
+    #: shows something meaningful. Refreshed on every successful push
+    #: alongside ``psp_semi_finished_uuid``.
+    workstation_group_name = models.CharField(
+        _("workstation group name (snapshot)"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+    setup_time_min = models.DecimalField(
+        _("setup time (minutes)"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    cycle_time_min = models.DecimalField(
+        _("cycle time (minutes)"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    fixed_cost = models.DecimalField(
+        _("fixed cost"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    variable_cost = models.DecimalField(
+        _("variable cost"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    #: PSP semi-finished item this stage outputs. NULL until the
+    #: first successful push. On subsequent pushes NPD uses this to
+    #: skip re-creating the item + hits the same routing / BOM rows.
+    #: Terminal (finished-product) stages leave this NULL — the
+    #: finished-product item lives on
+    #: :attr:`Formulation.psp_finished_product_uuid`.
+    psp_semi_finished_uuid = models.UUIDField(
+        _("PSP semi-finished item UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    notes = models.TextField(_("notes"), blank=True, default="")
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("formulation stage")
+        verbose_name_plural = _("formulation stages")
+        ordering = ("formulation", "sort_order")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("formulation", "sort_order"),
+                name="uniq_formulation_stage_sort_order",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.formulation_id}#{self.sort_order} {self.name}"
 
 
 class FormulationVersion(models.Model):

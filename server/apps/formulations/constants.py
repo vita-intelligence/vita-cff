@@ -677,6 +677,51 @@ FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
 }
 
 
+#: Default production-stage graph seeded onto new formulations, keyed
+#: by ``DosageForm`` value. Each entry is a list of
+#: ``(stage_key, human name, workstation_group_name_hint)`` tuples in
+#: run order. The ``workstation_group_name_hint`` is matched (case-
+#: insensitive substring) against PSP's ``/api/integration/
+#: workstation-groups`` list on first pick to auto-select a machine —
+#: falls back to "no workstation picked yet" when nothing matches, so
+#: the operator sees the stage and picks manually.
+#:
+#: These defaults are intentionally NPD-side stopgaps. Longer term
+#: they belong on PSP as first-class ``ProductionTemplate`` rows an
+#: admin can curate; see ``project_stage_bom_decisions.md`` in the
+#: user's auto-memory. Until then this table is the single source
+#: of truth for "how is a capsule / powder / gummy made".
+DEFAULT_STAGE_TEMPLATES: dict[str, list[tuple[str, str, str]]] = {
+    "capsule": [
+        ("blend", "Powder blend", "blend"),
+        ("encapsulate", "Encapsulate", "encapsul"),
+        ("bottle", "Bottle", "bottl"),
+        ("label", "Label", "label"),
+    ],
+    "tablet": [
+        ("blend", "Powder blend", "blend"),
+        ("encapsulate", "Compress", "compress"),
+        ("coat", "Coat", "coat"),
+        ("bottle", "Bottle", "bottl"),
+        ("label", "Label", "label"),
+    ],
+    "powder": [
+        ("blend", "Powder blend", "blend"),
+        ("fill", "Fill", "fill"),
+        ("label", "Label", "label"),
+    ],
+    "gummy": [
+        ("cook", "Cook", "cook"),
+        ("deposit", "Deposit", "deposit"),
+        ("cure", "Cure", "cure"),
+        ("coat", "Coat", "coat"),
+        ("package", "Package", "packag"),
+    ],
+    # Liquid / other_solid fall through to an empty template — the
+    # scientist adds stages by hand.
+}
+
+
 def powder_flavour_system_for(
     powder_type: str | None,
 ) -> tuple[tuple[str, str, float], ...]:
