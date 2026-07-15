@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, CopyPlus, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { Check, Copy, CopyPlus, ExternalLink, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { useLocale, useTranslations } from "next-intl";
@@ -1788,6 +1788,28 @@ export function FormulationBuilder({
               </span>
             ) : null}
             <div className="flex flex-wrap gap-3">
+              {/* Deep-link into PSP when the formulation is bound
+                  to a finished-product item. Points at the item
+                  detail page (which shows every BOM version this
+                  formulation has pushed), not a specific BOM
+                  version — the item page is a stable target that
+                  keeps working across future version bumps. Hidden
+                  when either the link isn't set (formulation
+                  predates the picker) or PSP isn't configured
+                  (empty base url). */}
+              {formulation.psp_finished_product_uuid &&
+              organization?.psp_base_url ? (
+                <a
+                  href={`${organization.psp_base_url}/settings/items/${formulation.psp_finished_product_uuid}`}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                  title="Opens the linked finished product's item + BOM history on PSP in a new tab"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                  Open on PSP
+                </a>
+              ) : null}
               <DuplicateFormulationModal
                 orgId={orgId}
                 source={formulation}
