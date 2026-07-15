@@ -398,6 +398,24 @@ export function FormulationBuilder({
       initialFormulation.anti_caking_items.map((i) => [i.id, i.name]),
     ),
   );
+  // Parallel code caches so the BOM's excipient-band rows can show
+  // the picked SKU the moment the checkbox toggles — the server
+  // echo only lands after a save round-trip, and users expect
+  // instant feedback. Same merge pattern as the name caches.
+  const [mccCarrierCodes, setMccCarrierCodes] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      initialFormulation.mcc_carrier_items.map((i) => [i.id, i.internal_code]),
+    ),
+  );
+  const [antiCakingCodes, setAntiCakingCodes] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      initialFormulation.anti_caking_items.map((i) => [i.id, i.internal_code]),
+    ),
+  );
   // Same live-cache pattern as MCC + anti-caking: powder carrier
   // brackets ("Carrier (Maltodextrin)") need the picked item names
   // the moment the scientist toggles a checkbox, not after a save
@@ -1775,6 +1793,11 @@ export function FormulationBuilder({
                   for (const it of items) next[it.id] = it.name;
                   return next;
                 });
+                setMccCarrierCodes((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.internal_code;
+                  return next;
+                });
               }}
             />
           ) : null}
@@ -1831,6 +1854,11 @@ export function FormulationBuilder({
                 setAntiCakingNames((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+                setAntiCakingCodes((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.internal_code;
                   return next;
                 });
               }}
@@ -2059,6 +2087,11 @@ export function FormulationBuilder({
                 setAntiCakingNames((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+                setAntiCakingCodes((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.internal_code;
                   return next;
                 });
               }}
@@ -2807,6 +2840,8 @@ export function FormulationBuilder({
         antiCakingItemIds={metadata.anti_caking_item_ids}
         mccCarrierNames={mccCarrierNames}
         antiCakingNames={antiCakingNames}
+        mccCarrierCodes={mccCarrierCodes}
+        antiCakingCodes={antiCakingCodes}
         mccCarrierItems={formulation.mcc_carrier_items}
         dcpCarrierItems={formulation.dcp_carrier_items}
         antiCakingItems={formulation.anti_caking_items}
@@ -3168,6 +3203,8 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   antiCakingItemIds,
   mccCarrierNames,
   antiCakingNames,
+  mccCarrierCodes,
+  antiCakingCodes,
   mccCarrierItems,
   dcpCarrierItems,
   antiCakingItems,
@@ -3231,6 +3268,8 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   antiCakingItemIds: readonly string[];
   mccCarrierNames: Record<string, string>;
   antiCakingNames: Record<string, string>;
+  mccCarrierCodes: Record<string, string>;
+  antiCakingCodes: Record<string, string>;
   mccCarrierItems: readonly {
     readonly id: string;
     readonly name: string;
@@ -3313,22 +3352,31 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     // pre-save row therefore shows the picked NAME with an empty
     // code, which is still a big win over the generic placeholder.
     const resolvePickedBand = (
-      ids: readonly string[],
+      ids: readonly string[] | undefined,
       liveNames: Record<string, string>,
-      serverItems: ReadonlyArray<{
-        readonly id: string;
-        readonly name: string;
-        readonly internal_code: string;
-      }>,
+      liveCodes: Record<string, string>,
+      serverItems:
+        | ReadonlyArray<{
+            readonly id: string;
+            readonly name: string;
+            readonly internal_code: string;
+          }>
+        | undefined,
     ): { names: string[]; codes: string[] } => {
       const names: string[] = [];
       const codes: string[] = [];
-      for (const id of ids) {
-        const server = serverItems.find((i) => i.id === id);
+      // Legacy formulations that predate a given ``*_items`` echo
+      // may hand us ``undefined`` — treat it as "no server-side
+      // knowledge of these picks" and lean on the live caches.
+      const items = serverItems ?? [];
+      const pickedIds = ids ?? [];
+      for (const id of pickedIds) {
+        const server = items.find((i) => i.id === id);
         const name = liveNames[id] ?? server?.name;
         if (!name) continue;
         names.push(name);
-        if (server?.internal_code) codes.push(server.internal_code);
+        const code = liveCodes[id] ?? server?.internal_code ?? "";
+        if (code) codes.push(code);
       }
       return { names, codes };
     };
@@ -3471,11 +3519,13 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
       const antiCakingPicks = resolvePickedBand(
         antiCakingItemIds,
         antiCakingNames,
+        antiCakingCodes,
         antiCakingItems,
       );
       const mccCarrierPicks = resolvePickedBand(
         mccCarrierItemIds,
         mccCarrierNames,
+        mccCarrierCodes,
         mccCarrierItems,
       );
       const dcpCarrierPicks = resolvePickedBand(
@@ -3483,6 +3533,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         // No live cache for DCP carrier — server echo carries
         // everything after save, and a save re-hydrates the
         // ``formulation`` prop so there's no post-save gap.
+        {},
         {},
         dcpCarrierItems,
       );
@@ -3566,6 +3617,8 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
     antiCakingItemIds,
     mccCarrierNames,
     antiCakingNames,
+    mccCarrierCodes,
+    antiCakingCodes,
     mccCarrierItems,
     dcpCarrierItems,
     antiCakingItems,
@@ -4752,6 +4805,11 @@ function CatalogueMultiPicker({
     items: ReadonlyArray<{
       readonly id: string;
       readonly name: string;
+      /** Catalogue SKU. Empty when the underlying item carries
+       *  no code (PSP-mirrored rows that lack an ``external_sku``).
+       *  Consumers that display procurement codes fall back to
+       *  ``""`` — the BOM shows a ``—`` in the CODE column. */
+      readonly internal_code: string;
       readonly attributes?: Readonly<Record<string, unknown>>;
     }>,
   ) => void;
@@ -4868,6 +4926,7 @@ function CatalogueMultiPicker({
       string,
       {
         name: string;
+        internal_code: string;
         attributes?: Readonly<Record<string, unknown>>;
       }
     >(
@@ -4875,6 +4934,7 @@ function CatalogueMultiPicker({
         i.id,
         {
           name: i.name,
+          internal_code: i.internal_code ?? "",
           attributes: (i as { attributes?: Readonly<Record<string, unknown>> })
             .attributes,
         },
@@ -4884,8 +4944,13 @@ function CatalogueMultiPicker({
       .map((id) => {
         const hit = lookup.get(id);
         return hit
-          ? { id, name: hit.name, attributes: hit.attributes }
-          : { id, name: "" };
+          ? {
+              id,
+              name: hit.name,
+              internal_code: hit.internal_code,
+              attributes: hit.attributes,
+            }
+          : { id, name: "", internal_code: "" };
       })
       .filter((entry) => entry.name !== "");
     cb(picked);
