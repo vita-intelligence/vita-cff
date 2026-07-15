@@ -21,6 +21,7 @@ import {
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
+  fetchPspWorkstationGroups,
   mirrorPspItem,
   savePspConfig,
   testPspConnection,
@@ -30,6 +31,7 @@ import type {
   PspItemListResponseDto,
   PspItemLookupResultDto,
   PspItemMirrorResponseDto,
+  PspWorkstationGroupListResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -56,6 +58,8 @@ export const pspQueryKeys = {
     ] as const,
   itemDetail: (orgId: string, uuid: string) =>
     ["psp", orgId, "items", uuid] as const,
+  workstationGroups: (orgId: string) =>
+    ["psp", orgId, "workstation-groups"] as const,
 };
 
 
@@ -156,6 +160,24 @@ export function usePspItemDetail(
  *  The builder's active-ingredient picker consumes this to
  *  materialise a PSP pick as a local Item before handing it to
  *  ``addIngredient``. */
+/** Picker for the stage builder's "run on" dropdown. Fires only
+ *  when ``enabled`` — the builder only needs it when the operator
+ *  opens the stage strip's picker, not on every builder mount. */
+export function usePspWorkstationGroups(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspWorkstationGroupListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspWorkstationGroupListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.workstationGroups(orgId),
+    queryFn: () => fetchPspWorkstationGroups(orgId),
+    enabled: Boolean(orgId) && enabled,
+    // Groups change rarely and the operator won't refresh mid-build.
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
 export function useMirrorPspItem(
   orgId: string,
 ): UseMutationResult<PspItemMirrorResponseDto, ApiError, string> {

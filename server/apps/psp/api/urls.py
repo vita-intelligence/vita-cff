@@ -8,6 +8,7 @@ from apps.psp.api.views import (
     PspItemListView,
     PspItemMirrorView,
     PspTestConnectionView,
+    PspWorkstationGroupListView,
 )
 
 
@@ -42,5 +43,13 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/items/<uuid:item_uuid>/mirror/",
         PspItemMirrorView.as_view(),
         name="psp-item-mirror",
+    ),
+    # Stage builder's workstation-group picker. Proxies to PSP's
+    # ``/api/integration/workstation-groups`` — silent-degrade
+    # empty on any failure.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/workstation-groups/",
+        PspWorkstationGroupListView.as_view(),
+        name="psp-workstation-groups",
     ),
 ]

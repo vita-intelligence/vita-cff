@@ -20,6 +20,7 @@ import type {
   RollbackRequestDto,
   SaveVersionRequestDto,
   UpdateFormulationRequestDto,
+  UpsertStagesRequestDto,
 } from "./types";
 
 export interface FetchFormulationsPageArgs extends FormulationsListQuery {
@@ -250,6 +251,28 @@ export async function cloneFormulation(
 ): Promise<FormulationDto> {
   const { data } = await apiClient.post<FormulationDto>(
     formulationsEndpoints.clone(orgId, sourceFormulationId),
+    payload,
+  );
+  return data;
+}
+
+
+/**
+ * Wholesale-replace the formulation's production-stage graph. The
+ * backend upserts every stage in the payload (create when ``id``
+ * omitted, update when present) and deletes stages that fell out.
+ * Lines FK'd to a departing stage fall back to ``stage=NULL`` via
+ * ``SET_NULL`` — the FE renders them in a "no stage" bucket for
+ * the operator to reassign. Returns the fresh formulation DTO so
+ * the builder can re-hydrate stages + lines from one response.
+ */
+export async function upsertFormulationStages(
+  orgId: string,
+  formulationId: string,
+  payload: UpsertStagesRequestDto,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.put<FormulationDto>(
+    formulationsEndpoints.stages(orgId, formulationId),
     payload,
   );
   return data;

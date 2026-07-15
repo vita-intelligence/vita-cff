@@ -68,6 +68,7 @@ from apps.formulations.services import (
     get_formulation,
     list_formulations,
     list_versions,
+    set_formulation_stages,
     publish_to_rtg_catalog,
     replace_lines,
     rollback_to_version,
@@ -607,6 +608,49 @@ class FormulationLinesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        return Response(
+            FormulationReadSerializer(formulation).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class FormulationStagesView(APIView):
+    """``PUT`` ``/.../formulations/<id>/stages/`` — wholesale-replace
+    the production-stage graph on a formulation.
+
+    The FE builder's stage strip drives this — one PUT carries the
+    full ordered stage list. Every stage that doesn't appear in the
+    payload is deleted; the ones with an ``id`` are updated in-place;
+    the ones without an ``id`` are created. Lines FK'd to a departing
+    stage fall back to ``stage=NULL`` via ``SET_NULL`` — they surface
+    in a "no stage" bucket on the FE, they never cascade-delete.
+
+    Gated on ``formulations.edit`` — non-editors get 403.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def put(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        stages = request.data.get("stages") if isinstance(request.data, dict) else None
+        if not isinstance(stages, list):
+            return Response(
+                {"stages": ["stages_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        set_formulation_stages(
+            formulation=formulation, stages=stages, actor=request.user
+        )
         return Response(
             FormulationReadSerializer(formulation).data,
             status=status.HTTP_200_OK,

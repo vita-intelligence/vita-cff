@@ -105,6 +105,28 @@ export type PspItemLookupResultDto =
   | { readonly matched: false; readonly uuid: string };
 
 
+/** One workstation group from PSP's ``WorkstationGroup`` table.
+ *  Feeds the FE stage builder's "run on" dropdown. ``kind`` is
+ *  either ``"active_processing"`` (operator-driven) or
+ *  ``"passive_processing"`` (unattended after setup) — the picker
+ *  surfaces that distinction so scientists understand why some
+ *  options don't consume labour time. ``hourly_rate`` is null
+ *  when the group's rate toggle is off; ``color`` may be blank. */
+export interface PspWorkstationGroupDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly kind: "active_processing" | "passive_processing" | string;
+  readonly hourly_rate: string | null;
+  readonly color: string;
+  readonly default_operation_notes: string;
+}
+
+
+export interface PspWorkstationGroupListResponseDto {
+  readonly items: readonly PspWorkstationGroupDto[];
+}
+
+
 /** Response shape from ``POST /integrations/psp/items/<uuid>/mirror/``.
  *  Mirrors the local ``catalogues.Item`` DTO so the builder can hand
  *  it to the existing ``addIngredient(item)`` flow verbatim — no
