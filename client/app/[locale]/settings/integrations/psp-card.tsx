@@ -56,6 +56,12 @@ export function PspCard({
 
   const [enabled, setEnabled] = useState(true);
   const [baseUrl, setBaseUrl] = useState("");
+  // Optional UI host — see :attr:`PspConfigDto.ui_base_url`.
+  // Blank in production (both hosts share an nginx-proxied origin);
+  // set to PSP's Next.js URL (``https://localhost:3010``) in dev
+  // so the "Open on PSP" deep-link chip on the builder points at
+  // the frontend, not the Phoenix API.
+  const [uiBaseUrl, setUiBaseUrl] = useState("");
   const [token, setToken] = useState("");
   const [banner, setBanner] = useState<Banner>(null);
 
@@ -69,6 +75,7 @@ export function PspCard({
     // file (something real to toggle against).
     setEnabled(cfg.has_token ? cfg.enabled : true);
     setBaseUrl(cfg.base_url);
+    setUiBaseUrl(cfg.ui_base_url);
     setToken("");
   }, [configQuery.data]);
 
@@ -87,6 +94,11 @@ export function PspCard({
       await saveMutation.mutateAsync({
         enabled,
         base_url: baseUrl.trim(),
+        // Send the current ``ui_base_url`` even when blank — an
+        // empty string is an explicit "clear the override" from
+        // the operator's POV, not a "keep existing" sentinel.
+        // Backend distinguishes ``None`` (absent) from ``""``.
+        ui_base_url: uiBaseUrl.trim(),
         // Empty string is the "keep existing token" sentinel —
         // same UX as MRPEasy / Dynamics. Non-empty rotates.
         integration_token: token,
@@ -198,7 +210,7 @@ export function PspCard({
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <label className="text-xs font-medium text-ink-700">
-              Base URL
+              API base URL
             </label>
             <input
               type="url"
@@ -209,13 +221,33 @@ export function PspCard({
               className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
             />
             <p className="text-[11px] text-ink-500">
-              Root URL where PSP is reachable — e.g.{" "}
+              Root URL where PSP's <em>API</em> is reachable — the
+              Phoenix backend. E.g.{" "}
               <span className="font-mono">https://psp.internal</span> in
               prod, <span className="font-mono">http://localhost:4000</span>{" "}
               in dev. No trailing slash needed.
             </p>
           </div>
           <div className="flex flex-col gap-1.5">
+            <label className="text-xs font-medium text-ink-700">
+              UI base URL (optional)
+            </label>
+            <input
+              type="url"
+              value={uiBaseUrl}
+              onChange={(e) => setUiBaseUrl(e.target.value)}
+              placeholder="Same as API URL"
+              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
+            />
+            <p className="text-[11px] text-ink-500">
+              Where PSP's Next.js UI runs, if different from the API.
+              Used by deep-link chips ("Open on PSP") in the builder.
+              Leave blank in prod (single-origin nginx proxy);{" "}
+              <span className="font-mono">https://localhost:3010</span> in
+              dev.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5 md:col-span-2">
             <label className="text-xs font-medium text-ink-700">
               Integration token
             </label>

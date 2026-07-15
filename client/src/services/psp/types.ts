@@ -12,6 +12,14 @@
 export interface PspConfigDto {
   readonly enabled: boolean;
   readonly base_url: string;
+  /** Optional separate host for PSP's Next.js UI. In dev the API
+   *  (Phoenix) runs on ``:4000`` and the UI (Next.js) on
+   *  ``:3010``; NPD needs both — the API URL for integration
+   *  requests, the UI URL for deep-link chips ("Open on PSP").
+   *  In production the two share an origin behind an nginx
+   *  proxy, so the operator leaves this blank and consumers
+   *  fall back to ``base_url``. */
+  readonly ui_base_url: string;
   /** True when the org has a stored PSP integration token. Drives
    *  the "Connected — last tested …" badge + the Test button's
    *  enabled state on the settings card. Plaintext value never
@@ -27,6 +35,10 @@ export interface PspConfigDto {
 export interface SavePspConfigRequestDto {
   readonly enabled: boolean;
   readonly base_url: string;
+  /** Optional UI host — see :attr:`PspConfigDto.ui_base_url`.
+   *  ``null`` / omitted preserves whatever's stored; empty
+   *  string clears; non-empty replaces. */
+  readonly ui_base_url?: string | null;
   /** Plaintext integration token. ``null`` (or empty string) is
    *  the "keep the existing stored token" sentinel — the backend
    *  preserves whatever's already on file so the operator can

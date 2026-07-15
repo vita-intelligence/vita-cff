@@ -506,6 +506,14 @@ def serialize_psp_config_for_api(organization: Any) -> dict[str, Any]:
     return {
         "enabled": bool(raw.get("enabled")),
         "base_url": str(raw.get("base_url") or ""),
+        # Optional separate host for PSP's Next.js UI. In dev the
+        # API (Phoenix) runs on ``:4000`` and the UI (Next.js) on
+        # ``:3010``; NPD needs both — the API URL for integration
+        # requests, the UI URL for deep-link chips ("Open on PSP").
+        # In production the two live on the same origin behind a
+        # single nginx reverse proxy, so the operator leaves this
+        # blank and the FE falls back to ``base_url``.
+        "ui_base_url": str(raw.get("ui_base_url") or ""),
         "has_token": bool(raw.get("integration_token_ciphertext")),
         "last_tested_at": raw.get("last_tested_at") or None,
     }
@@ -518,6 +526,7 @@ def set_psp_config(
     enabled: bool,
     base_url: str,
     integration_token: str | None,
+    ui_base_url: str | None = None,
 ) -> dict[str, Any]:
     """Persist the org's PSP config.
 
@@ -555,9 +564,19 @@ def set_psp_config(
             if integration_token is None or integration_token == ""
             else None
         )
+        # ``ui_base_url`` is optional. ``None`` → preserve whatever
+        # the org already has (matches the "keep existing" pattern
+        # the integration_token uses). Empty string → explicit
+        # clear. Non-empty → normalise + persist.
+        if ui_base_url is None:
+            resolved_ui_base_url = str(existing.get("ui_base_url") or "")
+        else:
+            resolved_ui_base_url = (ui_base_url or "").strip().rstrip("/")
+
         organization.psp_config = {
             "enabled": bool(enabled),
             "base_url": (base_url or "").strip().rstrip("/"),
+            "ui_base_url": resolved_ui_base_url,
             "integration_token_ciphertext": ciphertext,
             "last_tested_at": preserved_last_tested,
         }
