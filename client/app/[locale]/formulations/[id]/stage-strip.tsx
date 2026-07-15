@@ -106,10 +106,30 @@ const inputClass =
   "w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50";
 
 
+export interface StageStripBuilderLine {
+  readonly key: string;
+  readonly item_id: string;
+  readonly item_name: string;
+  readonly item_internal_code: string;
+  readonly label_claim_mg: string;
+  readonly stage_id: string | null;
+}
+
+
 export interface StageStripProps {
   readonly orgId: string;
   readonly formulation: FormulationDto;
   readonly canEdit: boolean;
+  /** Sticky "adding to" stage — highlights the target stage card
+   *  in orange so the operator can see where the next pick will
+   *  land. Also drives the per-card "Add ingredient" button copy. */
+  readonly activeStageId: string | null;
+  readonly onActiveStageChange: (stageId: string | null) => void;
+  /** Live line drafts from the builder, keyed to
+   *  :attr:`StageStripBuilderLine.key`. Used to render each stage's
+   *  own BOM contents underneath the stage row so the operator can
+   *  see "what's in the Blend BOM" without leaving the strip. */
+  readonly lines: readonly StageStripBuilderLine[];
 }
 
 
@@ -117,6 +137,9 @@ export function StageStrip({
   orgId,
   formulation,
   canEdit,
+  activeStageId,
+  onActiveStageChange,
+  lines,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
@@ -253,10 +276,26 @@ export function StageStrip({
         </p>
       ) : (
         <ol className="mt-4 flex flex-col gap-3">
-          {drafts.map((draft, i) => (
+          {drafts.map((draft, i) => {
+            const stageId = draft.id ?? null;
+            const isActive =
+              stageId !== null && stageId === activeStageId;
+            // Lines already assigned to this stage — the operator's
+            // per-stage BOM in the making. Unsaved additions
+            // ("new-*" keys) also show up so the strip stays in
+            // sync with the picker in real time.
+            const stageLines = stageId
+              ? lines.filter((l) => l.stage_id === stageId)
+              : [];
+            const isTerminal = i === drafts.length - 1;
+            return (
             <li
               key={draft.clientKey}
-              className="rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
+              className={
+                isActive
+                  ? "rounded-xl bg-orange-50 p-4 ring-1 ring-inset ring-orange-300"
+                  : "rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
+              }
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]">
@@ -417,8 +456,80 @@ export function StageStrip({
                 ) : null}
               </div>
 
+              {/* Per-stage BOM contents. Renders the ingredient
+                  lines already assigned to this stage + a button
+                  that sets it as the sticky "adding to" target so
+                  the next pick from the picker lands here. On the
+                  terminal stage a hint reminds the operator that
+                  unassigned (null-stage) lines fold into this BOM
+                  on the push cascade. */}
+              {stageId !== null ? (
+                <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                      BOM · {stageLines.length}{" "}
+                      {stageLines.length === 1
+                        ? "ingredient"
+                        : "ingredients"}
+                    </p>
+                    {canEdit ? (
+                      <button
+                        type="button"
+                        onClick={() => onActiveStageChange(stageId)}
+                        disabled={upsert.isPending}
+                        className={
+                          isActive
+                            ? "rounded-md bg-orange-100 px-2 py-1 text-xs font-medium text-orange-800 ring-1 ring-inset ring-orange-300"
+                            : "rounded-md bg-ink-50 px-2 py-1 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-orange-50 hover:text-orange-700"
+                        }
+                      >
+                        {isActive
+                          ? "Active target"
+                          : "Add ingredients here"}
+                      </button>
+                    ) : null}
+                  </div>
+                  {stageLines.length === 0 ? (
+                    <p className="mt-2 text-xs text-ink-500">
+                      No ingredients assigned yet. Click "Add
+                      ingredients here" to make this stage the
+                      picker's target, then pick from the
+                      ingredient list.
+                    </p>
+                  ) : (
+                    <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
+                      {stageLines.map((line) => (
+                        <li
+                          key={line.key}
+                          className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
+                        >
+                          <span>
+                            {line.item_name}
+                            {line.item_internal_code ? (
+                              <span className="ml-2 text-xs text-ink-500">
+                                {line.item_internal_code}
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="text-xs tabular-nums text-ink-700">
+                            {line.label_claim_mg || "0"} mg
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {isTerminal ? (
+                    <p className="mt-2 text-[11px] italic text-ink-500">
+                      Terminal stage — any ingredient without a
+                      stage assignment folds into this BOM on the
+                      next save.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </li>
-          ))}
+            );
+          })}
         </ol>
       )}
 

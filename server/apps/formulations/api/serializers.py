@@ -886,6 +886,11 @@ class FormulationLineWriteSerializer(serializers.Serializer):
     )
     display_order = serializers.IntegerField(min_value=0, required=False)
     notes = serializers.CharField(required=False, allow_blank=True, default="")
+    # Stage this line runs in. Optional — nullable lines fall into
+    # the terminal stage's BOM on the push cascade. UUIDs referencing
+    # a stage on a different formulation are validated at save time
+    # by :func:`replace_lines`.
+    stage_id = serializers.UUIDField(required=False, allow_null=True)
 
 
 class ReplaceLinesSerializer(serializers.Serializer):

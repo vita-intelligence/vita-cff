@@ -78,6 +78,11 @@ interface BuilderLine {
   overage_override: string;
   extract_ratio_override: string;
   display_order: number;
+  /** Production stage this line belongs to on the multi-stage BOM
+   *  cascade. ``null`` on legacy lines that predate stages OR on new
+   *  picks made before the operator set a stage — they get folded
+   *  into the terminal stage's BOM at push time. */
+  stage_id: string | null;
 }
 
 interface MetadataDraft {
@@ -345,6 +350,7 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     overage_override: line.overage_override ?? "",
     extract_ratio_override: line.extract_ratio_override ?? "",
     display_order: line.display_order ?? index,
+    stage_id: line.stage_id ?? null,
   }));
 }
 
@@ -1400,29 +1406,54 @@ export function FormulationBuilder({
   // ---------------------------------------------------------------------
   // Line edits
   // ---------------------------------------------------------------------
-  const appendIngredientLine = useCallback((item: ItemDto) => {
-    setLines((prev) => {
-      if (prev.some((line) => line.item_id === item.id)) {
-        return prev;
-      }
-      const key = `new-${clientUuid()}`;
-      return [
-        ...prev,
-        {
-          key,
-          item_id: item.id,
-          item_name: item.name,
-          item_internal_code: item.internal_code,
-          item_attributes: attributesFromItem(item),
-          label_claim_mg: "0",
-          purity_override: "",
-          overage_override: "",
-          extract_ratio_override: "",
-          display_order: prev.length,
-        },
-      ];
-    });
-  }, []);
+  // Sticky "adding to which stage" context — set when the operator
+  // clicks "Add ingredient" on a specific stage card OR picks a
+  // stage from the "Adding to:" chip near the picker. Every pick
+  // that follows lands with this stage assigned. NULL falls into
+  // the terminal stage on the push cascade.
+  const [activeStageId, setActiveStageId] = useState<string | null>(
+    () => formulation.stages[0]?.id ?? null,
+  );
+  // Keep active stage in sync when stages get created / deleted on
+  // a save. If the previously-active stage disappeared, snap to the
+  // first available one so subsequent picks always have a target.
+  useEffect(() => {
+    if (
+      activeStageId &&
+      formulation.stages.some((s) => s.id === activeStageId)
+    ) {
+      return;
+    }
+    setActiveStageId(formulation.stages[0]?.id ?? null);
+  }, [activeStageId, formulation.stages]);
+
+  const appendIngredientLine = useCallback(
+    (item: ItemDto, stageId: string | null) => {
+      setLines((prev) => {
+        if (prev.some((line) => line.item_id === item.id)) {
+          return prev;
+        }
+        const key = `new-${clientUuid()}`;
+        return [
+          ...prev,
+          {
+            key,
+            item_id: item.id,
+            item_name: item.name,
+            item_internal_code: item.internal_code,
+            item_attributes: attributesFromItem(item),
+            label_claim_mg: "0",
+            purity_override: "",
+            overage_override: "",
+            extract_ratio_override: "",
+            display_order: prev.length,
+            stage_id: stageId,
+          },
+        ];
+      });
+    },
+    [],
+  );
 
   const addIngredient = useCallback(
     (item: ItemDto) => {
@@ -1438,19 +1469,26 @@ export function FormulationBuilder({
         // mirror round-trip. On success or failure it gets
         // replaced with a fresh message below.
         setErrorMessage(null);
+        // Snapshot the stage target at click-time so a race between
+        // the mirror round-trip and the operator switching stages
+        // can't land the line in the wrong bucket.
+        const targetStageId = activeStageId;
         mirrorPsp.mutate(pspUuid, {
           onSuccess: (dto) => {
-            appendIngredientLine({
-              id: dto.id,
-              name: dto.name,
-              internal_code: dto.internal_code,
-              unit: dto.unit,
-              base_price: dto.base_price,
-              is_archived: dto.is_archived,
-              attributes: dto.attributes,
-              created_at: "",
-              updated_at: "",
-            });
+            appendIngredientLine(
+              {
+                id: dto.id,
+                name: dto.name,
+                internal_code: dto.internal_code,
+                unit: dto.unit,
+                base_price: dto.base_price,
+                is_archived: dto.is_archived,
+                attributes: dto.attributes,
+                created_at: "",
+                updated_at: "",
+              },
+              targetStageId,
+            );
           },
           onError: (err) => {
             // Surface the mirror failure in the same error banner
@@ -1463,9 +1501,9 @@ export function FormulationBuilder({
         });
         return;
       }
-      appendIngredientLine(item);
+      appendIngredientLine(item, activeStageId);
     },
-    [appendIngredientLine, mirrorPsp],
+    [appendIngredientLine, mirrorPsp, activeStageId, tErrors],
   );
 
   const updateLineClaim = useCallback((key: string, value: string) => {
@@ -1669,6 +1707,7 @@ export function FormulationBuilder({
           overage_override: overrideOrNull(line.overage_override),
           extract_ratio_override: overrideOrNull(line.extract_ratio_override),
           display_order: index,
+          stage_id: line.stage_id,
         })),
       });
       setFormulation(updated);
@@ -2687,6 +2726,9 @@ export function FormulationBuilder({
         orgId={orgId}
         formulation={formulation}
         canEdit={canWrite}
+        activeStageId={activeStageId}
+        onActiveStageChange={setActiveStageId}
+        lines={lines}
       />
 
       {/* ------------------------------------------------------------ */}
@@ -2706,6 +2748,33 @@ export function FormulationBuilder({
             <p className="mt-1 text-[11px] font-medium text-orange-700">
               Sourced from PSP
             </p>
+          ) : null}
+          {formulation.stages.length > 0 ? (
+            // "Adding to" chip — every pick that follows lands on
+            // the selected stage's BOM. Sticky until the operator
+            // switches OR the stage disappears on save. Falls back
+            // to "no stage assignment" when null so legacy flat
+            // pushes still work.
+            <div className="mt-3 flex items-center gap-2 rounded-xl bg-orange-50 px-3 py-2 ring-1 ring-inset ring-orange-200">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-orange-700">
+                Adding to
+              </span>
+              <select
+                value={activeStageId ?? ""}
+                onChange={(e) =>
+                  setActiveStageId(e.target.value || null)
+                }
+                disabled={!canWrite}
+                className="flex-1 rounded-lg bg-ink-0 px-2 py-1 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+              >
+                <option value="">— no stage assignment —</option>
+                {formulation.stages.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    Stage {s.sort_order + 1} · {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
           ) : null}
           <input
             value={searchInput}

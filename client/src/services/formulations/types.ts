@@ -176,6 +176,11 @@ export interface FormulationLineDto {
   readonly extract_ratio_override: string | null;
   readonly mg_per_serving_cached: string | null;
   readonly notes: string;
+  /** Production stage this line belongs to on the multi-stage BOM
+   *  cascade. ``null`` on legacy lines that predate stages OR on
+   *  lines the operator hasn't assigned yet — they get folded into
+   *  the terminal stage's BOM at push time. */
+  readonly stage_id: string | null;
 }
 
 export interface SalesPersonDto {
@@ -540,6 +545,12 @@ export interface FormulationLineInput {
   readonly extract_ratio_override?: string | number | null;
   readonly display_order?: number;
   readonly notes?: string;
+  /** Production stage this line belongs to. ``null`` folds the line
+   *  into the terminal stage's BOM on the push cascade. Unknown
+   *  ``stage_id`` values (stage deleted since the FE cached) are
+   *  reset to ``null`` server-side so a stale cache never hard-fails
+   *  the save. */
+  readonly stage_id?: string | null;
 }
 
 export interface ReplaceLinesRequestDto {
