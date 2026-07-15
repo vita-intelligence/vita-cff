@@ -45,6 +45,20 @@ PSP_MIRROR_SLUG = "psp_mirror"
 #: ``is_system=True`` so users cannot delete or rename them.
 SYSTEM_CATALOGUE_SLUGS: tuple[str, ...] = (RAW_MATERIALS_SLUG, PACKAGING_SLUG)
 
+#: Slugs eligible to supply ingredients to a formulation line.
+#: ``raw_materials`` is the canonical local catalogue every org
+#: seeds on creation. ``psp_mirror`` is the shadow catalogue the
+#: PSP-integration mirror lazily populates on pick — those rows
+#: are functionally raw materials too, they just origin from PSP.
+#: All formulation-side item-scope validations (line save, gummy-
+#: base pick, flavour/colour multi-pick, etc.) accept items from
+#: either catalogue so the "PSP powers the builder" pivot works
+#: end-to-end without special-casing at every callsite.
+INGREDIENT_CATALOGUE_SLUGS: tuple[str, ...] = (
+    RAW_MATERIALS_SLUG,
+    PSP_MIRROR_SLUG,
+)
+
 
 class Catalogue(models.Model):
     """A typed reference table owned by a single organization.

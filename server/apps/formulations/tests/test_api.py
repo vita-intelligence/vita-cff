@@ -278,6 +278,56 @@ class TestLinesEndpoint:
         assert response.status_code == status.HTTP_400_BAD_REQUEST
         assert response.json()["lines"] == ["raw_material_not_in_org"]
 
+    def test_replace_lines_accepts_psp_mirror_item(
+        self, owner_client: tuple[APIClient, Any, Any]
+    ) -> None:
+        """Items in the org's ``psp_mirror`` catalogue must be
+        eligible as formulation-line ingredients. This is the
+        load-bearing regression guard for the "PSP powers the
+        builder" flow — without it every click on a PSP row
+        would blow up at the ``replace_lines`` boundary."""
+
+        from apps.catalogues.models import Catalogue, PSP_MIRROR_SLUG
+        from apps.catalogues.tests.factories import ItemFactory
+
+        client, _, org = owner_client
+        formulation = FormulationFactory(organization=org)
+        # Create the mirror catalogue explicitly — mirrors the
+        # lazy-create behaviour of ``mirror_psp_item`` but skips
+        # the PSP HTTP round-trip.
+        mirror_catalogue = Catalogue.objects.create(
+            organization=org,
+            slug=PSP_MIRROR_SLUG,
+            name="PSP Mirror",
+            is_system=True,
+        )
+        mirrored_item = ItemFactory(
+            catalogue=mirror_catalogue,
+            attributes={"purity": 1.0, "type": "Vitamin"},
+        )
+
+        response = client.put(
+            _lines_url(str(org.id), str(formulation.id)),
+            {
+                "lines": [
+                    {
+                        "item_id": str(mirrored_item.id),
+                        "label_claim_mg": "500",
+                    }
+                ]
+            },
+            format="json",
+        )
+        assert response.status_code == status.HTTP_200_OK
+        body = response.json()
+        assert len(body["lines"]) == 1
+        # Assert the line links back to the mirrored Item by DB
+        # lookup rather than the exact wire key name, so a future
+        # response-shape rename doesn't rot this guard silently.
+        from apps.formulations.models import FormulationLine
+        line = FormulationLine.objects.get(formulation=formulation)
+        assert str(line.item_id) == str(mirrored_item.id)
+
 
 class TestComputeEndpoint:
     def test_returns_totals_payload(
