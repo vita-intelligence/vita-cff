@@ -4898,6 +4898,18 @@ function CatalogueMultiPicker({
   ];
 
   const selected = new Set(value);
+  // Ref that always reflects the *current* ``value`` array. The
+  // mirror mutation's ``onSuccess`` fires asynchronously — if the
+  // scientist rapid-clicks multiple PSP options, each success
+  // callback captures the ``value`` snapshot from its click
+  // moment, so the second success overwrites the first's write
+  // (stale-closure race). Reading through the ref inside the
+  // callback picks up the latest ``value`` including any peer
+  // toggles that landed in the meantime, so all picks accumulate.
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  });
   // Pin the latest callback in a ref so the sync effect's dep list
   // depends only on the data, not on the callback's identity. Parent
   // components typically pass an inline arrow that gets a fresh
@@ -4990,7 +5002,11 @@ function CatalogueMultiPicker({
               attributes: dto.attributes,
             },
           }));
-          const next = new Set(selected);
+          // Read the latest ``value`` via ref — a peer toggle
+          // that landed while this mirror was in flight already
+          // committed its id, and we must merge with that not
+          // overwrite it.
+          const next = new Set(valueRef.current);
           next.add(dto.id);
           onChange([...next]);
         },
