@@ -508,6 +508,25 @@ class Formulation(models.Model):
             "refuses to flip this on for Custom projects."
         ),
     )
+    psp_finished_product_uuid = models.UUIDField(
+        _("PSP finished product UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+        help_text=_(
+            "PSP integration item this formulation is the recipe "
+            "for — populated when a scientist picks a finished "
+            "product from the 'Pick from PSP catalogue' surface on "
+            "new-project creation. On every ``save_version``, NPD "
+            "translates the formulation's actives + excipient picks "
+            "into a BOM payload and pushes it to PSP at "
+            "``PUT /api/integration/items/<uuid>/bom``, writing a "
+            "fresh ``bom_version`` snapshot each save so PSP's "
+            "history captures every R&D iteration. Nullable — "
+            "formulations without a PSP link save + version "
+            "normally, no push fires."
+        ),
+    )
     rtg_display_name = models.CharField(
         _("RTG display name"),
         max_length=200,

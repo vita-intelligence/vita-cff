@@ -16,10 +16,13 @@ formulation workspace, version snapshotting, rollback.
 from __future__ import annotations
 
 import html
+import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction
 from django.db.models import Max, Q, QuerySet
@@ -2290,6 +2293,7 @@ def create_formulation(
     powder_type: str = PowderType.STANDARD.value,
     water_volume_ml: Decimal | None = None,
     project_type: str = ProjectType.CUSTOM.value,
+    psp_finished_product_uuid: Any = None,
 ) -> Formulation:
     """Create a new formulation.
 
@@ -2364,6 +2368,7 @@ def create_formulation(
         powder_type=powder_type,
         water_volume_ml=water_volume_ml,
         project_type=project_type,
+        psp_finished_product_uuid=psp_finished_product_uuid or None,
         created_by=actor,
         updated_by=actor,
     )
@@ -2402,6 +2407,7 @@ def update_formulation(
         "water_volume_ml",
         "project_status",
         "project_type",
+        "psp_finished_product_uuid",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:
         _validate_dosage_form(changes["dosage_form"])
@@ -4647,6 +4653,25 @@ def save_version(
             "label": version.label,
         },
     )
+    # Push the fresh BOM snapshot to PSP if the formulation is
+    # linked to a finished product. Silent-degrade — the push
+    # service already swallows every PspError and logs it, so a
+    # PSP outage doesn't block the version save. Called outside
+    # any transaction on purpose: the local save is authoritative;
+    # PSP eventually catches up on the next successful push.
+    from apps.psp.services import push_bom_to_psp
+
+    try:
+        push_bom_to_psp(formulation=formulation)
+    except Exception:
+        # Defensive belt-and-braces — the service should already
+        # swallow everything, but if something slips through we
+        # don't want the save flow to inherit the failure.
+        logger.exception(
+            "push_bom_to_psp bubbled an unexpected exception for "
+            "formulation %s",
+            formulation.pk,
+        )
     return version
 
 

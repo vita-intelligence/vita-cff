@@ -248,6 +248,13 @@ export interface FormulationDto {
   readonly code: string;
   readonly name: string;
   readonly description: string;
+  /** PSP finished-product UUID this formulation is the recipe for.
+   *  Populated by the "Pick from PSP catalogue" picker at project
+   *  creation. On every save, NPD pushes the BOM snapshot to PSP
+   *  at ``PUT /api/integration/items/<uuid>/bom``. Null when the
+   *  formulation isn't linked (custom-only, non-PSP orgs, or
+   *  legacy pre-picker rows). */
+  readonly psp_finished_product_uuid: string | null;
   readonly dosage_form: DosageForm;
   readonly capsule_size: string;
   readonly tablet_size: string;
@@ -356,6 +363,9 @@ export interface AssignLeadScientistRequestDto {
 export interface CreateFormulationRequestDto {
   readonly name: string;
   readonly code: string;
+  /** PSP finished-product UUID from the "Pick from PSP catalogue"
+   *  picker. Optional — omitted for manual code entry. */
+  readonly psp_finished_product_uuid?: string | null;
   readonly description?: string;
   readonly dosage_form?: DosageForm;
   readonly capsule_size?: string;
