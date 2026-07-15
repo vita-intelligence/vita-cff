@@ -2891,17 +2891,22 @@ export function FormulationBuilder({
             // switches OR the stage disappears on save. Falls back
             // to "no stage assignment" when null so legacy flat
             // pushes still work.
-            <div className="mt-3 flex items-center gap-2 rounded-xl bg-orange-50 px-3 py-2 ring-1 ring-inset ring-orange-200">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-orange-700">
+            //
+            // Stacked (label above, dropdown below) so the label
+            // stays a single line even when the picker column is
+            // squeezed into the narrow left sidebar (1fr in a
+            // 3-column grid).
+            <div className="mt-3 rounded-xl bg-orange-50 p-2 ring-1 ring-inset ring-orange-200">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-orange-700">
                 Adding to
-              </span>
+              </p>
               <select
                 value={activeStageId ?? ""}
                 onChange={(e) =>
                   setActiveStageId(e.target.value || null)
                 }
                 disabled={!canWrite}
-                className="flex-1 rounded-lg bg-ink-0 px-2 py-1 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                className="mt-1 w-full rounded-lg bg-ink-0 px-2 py-1 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
               >
                 <option value="">— no stage assignment —</option>
                 {formulation.stages.map((s) => (
