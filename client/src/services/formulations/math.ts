@@ -1063,6 +1063,18 @@ function computeCapsule(
   hasStearateAntiCaking: boolean,
   hasSilicaAntiCaking: boolean,
   excipientOverrides: Readonly<Record<string, number>> | null | undefined,
+  /** When a capsule shell is picked, its own attributes drive the
+   *  fill capacity + shell mass — no per-size lookup. Overrides
+   *  the hardcoded ``CAPSULE_SIZES`` map entirely for the picked
+   *  path; the map only kicks in on legacy "no shell picked"
+   *  auto-pick where we have no data to read. Nullable fields
+   *  fall through the individual override cleanly (a shell that
+   *  sets only ``capsule_size`` on PSP still gets the physics-
+   *  reference max fill from the map). */
+  shellOverride?: {
+    readonly sizeKey?: string | null;
+    readonly maxWeightMg?: number | null;
+  } | null,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1075,8 +1087,36 @@ function computeCapsule(
   const warnings: string[] = [];
 
   let size: CapsuleSizeOption | null = null;
-  if (requestedSizeKey) {
-    size = capsuleSizeByKey(requestedSizeKey);
+  const overrideSizeKey =
+    shellOverride?.sizeKey && shellOverride.sizeKey.trim()
+      ? shellOverride.sizeKey.trim()
+      : null;
+  const overrideMaxWeightMg =
+    typeof shellOverride?.maxWeightMg === "number" &&
+    Number.isFinite(shellOverride.maxWeightMg) &&
+    shellOverride.maxWeightMg > 0
+      ? shellOverride.maxWeightMg
+      : null;
+
+  const resolvedSizeKey = overrideSizeKey ?? requestedSizeKey;
+  if (resolvedSizeKey) {
+    // Look up the standard-size record only for its label; the
+    // fill capacity comes off the shell override when present.
+    const fromMap = capsuleSizeByKey(resolvedSizeKey);
+    size = {
+      key: resolvedSizeKey,
+      label: fromMap?.label ?? resolvedSizeKey,
+      max_weight_mg: overrideMaxWeightMg ?? fromMap?.max_weight_mg ?? 0,
+    };
+    if (size.max_weight_mg <= 0) size = null;
+  } else if (overrideMaxWeightMg) {
+    // Shell has a fill capacity but no size key. Build a synthetic
+    // size record so downstream compute has something to work with.
+    size = {
+      key: "custom",
+      label: "Custom",
+      max_weight_mg: overrideMaxWeightMg,
+    };
   } else {
     size = autoPickCapsuleSize(totalActive);
     if (size === null) warnings.push("capsule_too_large");
@@ -1837,6 +1877,7 @@ export function computeTotals({
   lines,
   dosageForm,
   capsuleSizeKey,
+  capsuleShellOverride,
   tabletSizeKey,
   defaultServingSize,
   targetFillWeightMg,
@@ -1859,6 +1900,15 @@ export function computeTotals({
   lines: readonly ComputeLineInput[];
   dosageForm: DosageForm;
   capsuleSizeKey: string | null;
+  /** Fill capacity + size key override from the picked capsule
+   *  shell. Data-driven from ``attributes.capsule_size`` +
+   *  ``attributes.max_weight_mg`` on the shell's PSP row. When
+   *  set, wins over ``capsuleSizeKey`` (that's the legacy
+   *  dropdown value on the formulation model). */
+  capsuleShellOverride?: {
+    readonly sizeKey?: string | null;
+    readonly maxWeightMg?: number | null;
+  } | null;
   tabletSizeKey: string | null;
   defaultServingSize: number;
   targetFillWeightMg?: number | null;
@@ -2081,6 +2131,7 @@ export function computeTotals({
       hasStearateAntiCaking,
       hasSilicaAntiCaking,
       excipientOverrides,
+      capsuleShellOverride ?? null,
     );
     return {
       totalActiveMg: totalActive,
