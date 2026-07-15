@@ -211,6 +211,13 @@ export interface GummyBaseItemDto {
    *  in the formulation, so a page refresh keeps checked boxes
    *  ticked instead of showing an unchecked PSP twin. */
   readonly psp_source_uuid: string | null;
+  /** Full attributes map for the picked item — carries the
+   *  compute-critical keys downstream code needs without a
+   *  separate items-detail fetch. Capsule shell picks use
+   *  ``attributes.capsule_size`` (overrides the size dropdown)
+   *  and ``attributes.shell_weight_mg`` (drives the declared
+   *  shell mass). Empty object when the item has no attributes. */
+  readonly attributes: Readonly<Record<string, unknown>>;
 }
 
 
@@ -268,6 +275,15 @@ export interface FormulationDto {
   readonly premix_sweetener_items: readonly GummyBaseItemDto[];
   readonly acidity_item_ids: readonly string[];
   readonly acidity_items: readonly AcidityItemDto[];
+  /** Capsule shell picks. Items tagged ``use_as = "Capsule
+   *  Shell"``. Downstream compute reads the pick's
+   *  ``attributes.capsule_size`` (drives fill capacity) and
+   *  ``attributes.shell_weight_mg`` (drives the mg attributed to
+   *  the shell row on the declaration). Empty list falls back to
+   *  the hardcoded per-size CAPSULE_SHELL_WEIGHTS map. Capsule
+   *  dosage form only. */
+  readonly capsule_shell_item_ids: readonly string[];
+  readonly capsule_shell_items: readonly GummyBaseItemDto[];
   /** Capsule + tablet MCC carrier picks. Empty array means the spec
    *  sheet renders the generic "Microcrystalline Cellulose (Carrier)"
    *  placeholder and surfaces an ``mcc_carrier_unpicked`` warning. */
@@ -397,6 +413,10 @@ export type UpdateFormulationRequestDto = Partial<CreateFormulationRequestDto> &
    *  row is shown until items are picked. Server rejects items
    *  whose ``use_as`` ≠ 'Acidity Regulator'. */
   readonly acidity_item_ids?: readonly string[];
+  /** Array of Item ids for the capsule shell. Typically one pick;
+   *  M2M shape matches the other excipient pickers. Ignored on
+   *  non-capsule dosage forms. */
+  readonly capsule_shell_item_ids?: readonly string[];
   /** Array of Item ids for the capsule + tablet MCC carrier. Empty
    *  array clears, falls back to the generic placeholder + soft
    *  warning. Server rejects items whose ``use_as`` ≠ 'Bulking
