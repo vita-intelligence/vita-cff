@@ -132,6 +132,13 @@ interface MetadataDraft {
   //: etc.). 2% of target gummy weight split equally across picks.
   //: Empty list = a generic "Acidity Regulator" placeholder row.
   acidity_item_ids: readonly string[];
+  //: Picked capsule shell ids. Typically one pick per formulation.
+  //: The picked shell's ``attributes.capsule_size`` drives the
+  //: compute's fill capacity (overriding the ``capsule_size``
+  //: dropdown when set) and ``attributes.shell_weight_mg`` drives
+  //: the shell mass on the declaration. Empty list → hardcoded
+  //: per-size table. Capsule dosage form only.
+  capsule_shell_item_ids: readonly string[];
   //: Picked MCC carrier ids for capsules + tablets. Total MCC mg
   //: (capsule remainder / tablet 20%) splits equally across picks.
   //: Empty list → generic "Microcrystalline Cellulose (Carrier)"
@@ -240,6 +247,7 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     premix_sweetener_item_ids:
       formulation.premix_sweetener_item_ids ?? [],
     acidity_item_ids: formulation.acidity_item_ids ?? [],
+    capsule_shell_item_ids: formulation.capsule_shell_item_ids ?? [],
     mcc_carrier_item_ids: formulation.mcc_carrier_item_ids ?? [],
     dcp_carrier_item_ids: formulation.dcp_carrier_item_ids ?? [],
     anti_caking_item_ids: formulation.anti_caking_item_ids ?? [],
@@ -384,6 +392,30 @@ export function FormulationBuilder({
   // and "Anti-caking Agents (Silicon Dioxide)" the moment the
   // scientist toggles a checkbox -- without waiting for a save +
   // server round-trip to refresh the formulation prop.
+  // Live caches for capsule shell picks. Same pattern as MCC /
+  // anti-caking. Reads ``ingredient_list_name`` when non-empty so
+  // the label shows the marketed name (e.g. "Vegetable Capsule
+  // Shell") rather than the internal name if the two differ.
+  const [capsuleShellNames, setCapsuleShellNames] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      (initialFormulation.capsule_shell_items ?? []).map((i) => [
+        i.id,
+        i.name,
+      ]),
+    ),
+  );
+  const [capsuleShellCodes, setCapsuleShellCodes] = useState<
+    Record<string, string>
+  >(() =>
+    Object.fromEntries(
+      (initialFormulation.capsule_shell_items ?? []).map((i) => [
+        i.id,
+        i.internal_code,
+      ]),
+    ),
+  );
   const [mccCarrierNames, setMccCarrierNames] = useState<
     Record<string, string>
   >(() =>
@@ -742,10 +774,30 @@ export function FormulationBuilder({
               } => entry !== null,
             )
         : [];
+    // Effective capsule size — the picked shell wins over the
+    // dropdown so procurement-driven picks stay in sync with
+    // compute. Reads the first pick's ``attributes.capsule_size``
+    // (matches the "typically one pick" shell convention). Falls
+    // back to ``metadata.capsule_size`` when no shell is picked
+    // or the pick lacks the attribute, preserving legacy behaviour.
+    let effectiveCapsuleSize = metadata.capsule_size || null;
+    if (
+      metadata.dosage_form === "capsule" &&
+      metadata.capsule_shell_item_ids.length > 0
+    ) {
+      const firstId = metadata.capsule_shell_item_ids[0];
+      const pick = (formulation.capsule_shell_items ?? []).find(
+        (i) => i.id === firstId,
+      );
+      const fromAttrs = pick?.attributes?.["capsule_size"];
+      if (typeof fromAttrs === "string" && fromAttrs.trim()) {
+        effectiveCapsuleSize = fromAttrs.trim();
+      }
+    }
     return computeTotals({
       lines: computeInputs,
       dosageForm: metadata.dosage_form,
-      capsuleSizeKey: metadata.capsule_size || null,
+      capsuleSizeKey: effectiveCapsuleSize,
       tabletSizeKey: metadata.tablet_size || null,
       defaultServingSize: metadata.serving_size,
       targetFillWeightMg: Number.isFinite(parsedFill) && parsedFill > 0
@@ -828,6 +880,8 @@ export function FormulationBuilder({
     lines,
     metadata.dosage_form,
     metadata.capsule_size,
+    metadata.capsule_shell_item_ids,
+    formulation.capsule_shell_items,
     metadata.tablet_size,
     metadata.serving_size,
     metadata.target_fill_weight_mg,
@@ -931,6 +985,38 @@ export function FormulationBuilder({
     [metadata.dcp_carrier_item_ids, formulation.dcp_carrier_items],
   );
 
+  // Resolve the picked capsule shell (first pick — the M2M shape
+  // matches other pickers even though shells are typically one).
+  // Feeds both the declaration (label + shell mass) and, upstream,
+  // the compute (size override) — attribute values come off the
+  // server echo which now includes the full ``attributes`` map.
+  const capsuleShellPick = useMemo(() => {
+    if (metadata.dosage_form !== "capsule") return null;
+    if (metadata.capsule_shell_item_ids.length === 0) return null;
+    const firstId = metadata.capsule_shell_item_ids[0];
+    const pick = (formulation.capsule_shell_items ?? []).find(
+      (i) => i.id === firstId,
+    );
+    if (!pick) return null;
+    const rawWeight = pick.attributes?.["shell_weight_mg"];
+    const weight =
+      typeof rawWeight === "number"
+        ? rawWeight
+        : typeof rawWeight === "string"
+          ? Number.parseFloat(rawWeight)
+          : null;
+    return {
+      name:
+        (pick.attributes?.["ingredient_list_name"] as string | undefined) ||
+        pick.name,
+      shellWeightMg: Number.isFinite(weight) ? (weight as number) : null,
+    };
+  }, [
+    metadata.dosage_form,
+    metadata.capsule_shell_item_ids,
+    formulation.capsule_shell_items,
+  ]);
+
   // Consumer-facing ingredient declaration. Picked SKUs override
   // the canonical excipient placeholders ("Microcrystalline
   // Cellulose (Carrier)", "Anticaking Agents (...)") so the label
@@ -947,6 +1033,7 @@ export function FormulationBuilder({
         mccCarrierPicks: mccCarrierLabels,
         dcpCarrierPicks: dcpCarrierLabels,
         antiCakingPicks: antiCakingLabels,
+        capsuleShellPick,
       }),
     [
       lines,
@@ -954,6 +1041,7 @@ export function FormulationBuilder({
       mccCarrierLabels,
       dcpCarrierLabels,
       antiCakingLabels,
+      capsuleShellPick,
     ],
   );
 
@@ -1442,6 +1530,13 @@ export function FormulationBuilder({
           metadata.dosage_form === "powder"
             ? metadata.acidity_item_ids
             : [],
+        // Capsule shell is capsule-only. Swap to any other dosage
+        // form clears the picks so orphaned references don't
+        // linger — same discipline as the other picker fields.
+        capsule_shell_item_ids:
+          metadata.dosage_form === "capsule"
+            ? metadata.capsule_shell_item_ids
+            : [],
         // MCC carrier flows to BOTH capsules and tablets — they
         // share the same structural-filler slot. Other dosage forms
         // clear the picks so a one-off swap from capsule → powder
@@ -1786,6 +1881,43 @@ export function FormulationBuilder({
                   label: `${s.label} (${s.max_weight_mg} mg)`,
                 })),
               ]}
+            />
+          ) : null}
+          {/* Capsule shell picker — capsule-only. Picks flow into
+              compute via ``attributes.capsule_size`` (overriding the
+              size dropdown) and ``attributes.shell_weight_mg``
+              (declared shell mass). Empty list → hardcoded per-size
+              CAPSULE_SHELL_WEIGHTS table + the size dropdown drives
+              compute, matching the pre-picker behaviour. Copy is
+              inline (non-i18n) until the translation keys land in
+              the shared locale bundle. */}
+          {metadata.dosage_form === "capsule" ? (
+            <CatalogueMultiPicker
+              orgId={orgId}
+              value={metadata.capsule_shell_item_ids}
+              preselected={formulation.capsule_shell_items ?? []}
+              disabled={!canWrite}
+              useAsIn={CAPSULE_SHELL_USE_CATEGORIES}
+              label="Capsule Shell"
+              placeholderText="Pick a capsule shell SKU"
+              hint="Empty capsule shells (Size 0 HPMC, Size 00 Gelatin, …). The picked shell's attributes.capsule_size drives fill capacity and attributes.shell_weight_mg drives the declared shell mass — leaving this empty falls back to the size dropdown + hardcoded shell weights."
+              loadingText="Loading capsule shells…"
+              emptyText="No capsule shells tagged with use_as = 'Capsule Shell' on the integration yet."
+              onChange={(ids) =>
+                setMetadata({ ...metadata, capsule_shell_item_ids: ids })
+              }
+              onPickedItemsChange={(items) => {
+                setCapsuleShellNames((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.name;
+                  return next;
+                });
+                setCapsuleShellCodes((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.internal_code;
+                  return next;
+                });
+              }}
             />
           ) : null}
           {/* Capsule + tablet MCC carrier picker. Mirrors the gummy
@@ -5912,6 +6044,7 @@ const ACIDITY_USE_CATEGORIES = ["Acidity Regulator"] as const;
 // is generic now). Accepts both ``Carrier`` (canonical EU 1169/2011)
 // and ``Bulking Agent`` (the historical tag scientists used for MCC)
 // so legacy catalogue rows keep flowing through without retagging.
+const CAPSULE_SHELL_USE_CATEGORIES = ["Capsule Shell"] as const;
 const MCC_CARRIER_USE_CATEGORIES = ["Carrier", "Bulking Agent"] as const;
 // Tablet DCP carrier picker. Mirrors the carrier picker on the server
 // today (``DCP_CARRIER_USE_CATEGORIES``); kept as a separate constant

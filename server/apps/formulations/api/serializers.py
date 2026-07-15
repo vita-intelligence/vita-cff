@@ -406,6 +406,14 @@ class FormulationReadSerializer(serializers.ModelSerializer):
                         if item.psp_source_uuid
                         else None
                     ),
+                    # Full attributes map so downstream FE compute
+                    # can read pick-specific overrides without a
+                    # separate items-detail round-trip. Consumers:
+                    # capsule shell picks (``capsule_size``,
+                    # ``shell_weight_mg``), and any future picker
+                    # whose compute-critical fields live in the
+                    # dynamic attributes bag.
+                    "attributes": attrs,
                 }
             )
         return rows

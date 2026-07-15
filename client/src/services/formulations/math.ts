@@ -769,6 +769,7 @@ export function buildIngredientDeclaration({
   mccCarrierPicks = [],
   dcpCarrierPicks = [],
   antiCakingPicks = [],
+  capsuleShellPick = null,
 }: {
   lines: readonly {
     readonly externalId: string;
@@ -785,6 +786,16 @@ export function buildIngredientDeclaration({
   mccCarrierPicks?: readonly string[];
   dcpCarrierPicks?: readonly string[];
   antiCakingPicks?: readonly string[];
+  /** Picked capsule shell (typically one — the M2M shape mirrors
+   *  the other pickers). Non-null overrides the hardcoded
+   *  ``CAPSULE_SHELL_LABEL`` + ``CAPSULE_SHELL_WEIGHTS[sizeKey]``
+   *  with the pick's own name + ``shell_weight_mg`` from its
+   *  attributes. Null / attributes missing → the hardcoded
+   *  fallback path fires (legacy behaviour). */
+  capsuleShellPick?: {
+    readonly name: string;
+    readonly shellWeightMg: number | null;
+  } | null;
 }): IngredientDeclaration {
   const entries: IngredientDeclarationEntry[] = [];
 
@@ -903,10 +914,18 @@ export function buildIngredientDeclaration({
   }
 
   if (totals.dosageForm === "capsule" && totals.sizeKey) {
-    const shellWeight = CAPSULE_SHELL_WEIGHTS[totals.sizeKey];
+    // Picked shell overrides both the label and the shell mass —
+    // scientists procure a specific SKU, and the declaration should
+    // print what's actually in the pack, not the pharmaceutical
+    // placeholder. Fall back to the hardcoded map only when nothing
+    // is picked (legacy formulations or the "still selecting" state).
+    const shellWeight =
+      capsuleShellPick?.shellWeightMg ??
+      CAPSULE_SHELL_WEIGHTS[totals.sizeKey];
+    const shellLabel = capsuleShellPick?.name ?? CAPSULE_SHELL_LABEL;
     if (shellWeight && shellWeight > 0) {
       entries.push({
-        label: CAPSULE_SHELL_LABEL,
+        label: shellLabel,
         mg: shellWeight,
         category: "shell",
         isAllergen: false,
