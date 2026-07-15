@@ -204,6 +204,13 @@ export interface GummyBaseItemDto {
   readonly internal_code: string;
   readonly ingredient_list_name: string;
   readonly use_as: string;
+  /** PSP UUID this local item mirrors, when the pick came from
+   *  the PSP integration. ``null`` on manually-authored local
+   *  items. The picker uses this to reconcile PSP-fetched
+   *  options (keyed by ``psp:<uuid>``) with the local id stored
+   *  in the formulation, so a page refresh keeps checked boxes
+   *  ticked instead of showing an unchecked PSP twin. */
+  readonly psp_source_uuid: string | null;
 }
 
 

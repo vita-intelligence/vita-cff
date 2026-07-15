@@ -376,6 +376,16 @@ class FormulationReadSerializer(serializers.ModelSerializer):
                         attrs.get("ingredient_list_name") or ""
                     ),
                     "use_as": attrs.get("use_as") or "",
+                    # PSP origin marker — lets the picker map the
+                    # local pick back onto its PSP catalogue row on
+                    # mount, so a page refresh keeps the checkbox
+                    # ticked instead of showing the freshly-fetched
+                    # PSP option as an unchecked twin.
+                    "psp_source_uuid": (
+                        str(item.psp_source_uuid)
+                        if item.psp_source_uuid
+                        else None
+                    ),
                 }
             )
         return rows
