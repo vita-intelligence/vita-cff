@@ -1898,11 +1898,12 @@ export function FormulationBuilder({
               preselected={formulation.capsule_shell_items ?? []}
               disabled={!canWrite}
               useAsIn={CAPSULE_SHELL_USE_CATEGORIES}
-              // Empty capsule shells are ``packaging`` items by
-              // industry convention (they enclose the finished
-              // pack) — the default ``raw_material`` filter would
-              // hide them.
-              itemTypesIn={["packaging"]}
+              // Classify capsule shells as ``raw_material`` on the
+              // PSP side so the "Used as" compliance dropdown (only
+              // shown for raw_material) is available on the item
+              // form. That's the field the picker filters on. The
+              // default ``["raw_material"]`` filter picks them up
+              // without a per-mount override.
               label="Capsule Shell"
               placeholderText="Pick a capsule shell SKU"
               hint="Empty capsule shells (Size 0 HPMC, Size 00 Gelatin, …). The picked shell's attributes.capsule_size drives fill capacity and attributes.shell_weight_mg drives the declared shell mass — leaving this empty falls back to the size dropdown + hardcoded shell weights."
