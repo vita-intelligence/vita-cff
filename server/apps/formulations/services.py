@@ -3507,6 +3507,25 @@ def replace_lines(
         if str(line["item_id"]) not in items_by_id:
             raise RawMaterialNotInOrg()
 
+    # Resolve stage FKs — each ``stage_id`` in the payload must point
+    # to a stage on THIS formulation (never someone else's). Unknown
+    # ids fall back to null so a stale FE cache doesn't hard-fail the
+    # whole save; the line surfaces in the "no stage" bucket for the
+    # operator to reassign.
+    stage_ids = {
+        str(line["stage_id"]) for line in lines if line.get("stage_id")
+    }
+    known_stage_ids = (
+        set(
+            str(sid)
+            for sid in formulation.stages.filter(id__in=stage_ids).values_list(
+                "id", flat=True
+            )
+        )
+        if stage_ids
+        else set()
+    )
+
     # Snapshot the line set pre-replacement so the audit diff can
     # show exactly which ingredients came and went.
     before_lines = _lines_snapshot(formulation)
@@ -3537,6 +3556,12 @@ def replace_lines(
             overage_override=overage_o,
             extract_ratio_override=extract_o,
         )
+        raw_stage_id = data.get("stage_id")
+        stage_id = (
+            str(raw_stage_id)
+            if raw_stage_id and str(raw_stage_id) in known_stage_ids
+            else None
+        )
         created.append(
             FormulationLine.objects.create(
                 formulation=formulation,
@@ -3549,6 +3574,7 @@ def replace_lines(
                 extract_ratio_override=extract_o,
                 mg_per_serving_cached=mg,
                 notes=data.get("notes", ""),
+                stage_id=stage_id,
             )
         )
 
