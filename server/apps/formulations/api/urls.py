@@ -18,6 +18,7 @@ from apps.formulations.api.views import (
     FormulationRollbackView,
     FormulationRTGPublishView,
     FormulationSalesPersonView,
+    FormulationStagesView,
     FormulationVersionListView,
 )
 
@@ -38,6 +39,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/lines/",
         FormulationLinesView.as_view(),
         name="formulation-lines",
+    ),
+    # Stage builder — wholesale-replace endpoint. Payload:
+    # ``{"stages": [{id?, sort_order, name, stage_key,
+    # workstation_group_uuid?, ...}]}``.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/stages/",
+        FormulationStagesView.as_view(),
+        name="formulation-stages",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/compute/",

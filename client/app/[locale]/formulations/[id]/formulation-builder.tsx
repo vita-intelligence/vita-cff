@@ -4,6 +4,7 @@ import { Button } from "@heroui/react";
 import { Check, Copy, CopyPlus, ExternalLink, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
+import { StageStrip } from "./stage-strip";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Fragment,
@@ -2678,6 +2679,15 @@ export function FormulationBuilder({
           />
         </div>
       </section>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Production stages                                            */}
+      {/* ------------------------------------------------------------ */}
+      <StageStrip
+        orgId={orgId}
+        formulation={formulation}
+        canEdit={canWrite}
+      />
 
       {/* ------------------------------------------------------------ */}
       {/* Builder: picker + lines + totals                             */}

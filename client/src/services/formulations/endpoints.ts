@@ -24,4 +24,6 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/approved-version/`,
   clone: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/clone/`,
+  stages: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/stages/`,
 } as const;

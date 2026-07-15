@@ -775,6 +775,31 @@ def list_psp_items(
         return []
 
 
+def list_psp_workstation_groups(*, organization: Any) -> list[dict[str, Any]]:
+    """Fetch PSP's workstation groups for the org. Empty list on any
+    failure — the FE stage builder renders "no workstations picked
+    yet" the same way for a genuinely empty PSP catalog and a soft
+    outage."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_workstation_groups()
+    except PspError:
+        logger.exception(
+            "PSP list_workstation_groups failed for org %s", organization.pk
+        )
+        return []
+
+
 def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
     """Single-item lookup. ``None`` on any failure — same silent-
     degrade contract as :func:`list_psp_items`."""

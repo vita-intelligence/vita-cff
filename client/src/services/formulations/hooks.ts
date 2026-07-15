@@ -33,6 +33,7 @@ import {
   saveFormulationVersion,
   setApprovedVersion,
   updateFormulation,
+  upsertFormulationStages,
 } from "./api";
 import type {
   AssignLeadScientistRequestDto,
@@ -48,6 +49,7 @@ import type {
   RollbackRequestDto,
   SaveVersionRequestDto,
   UpdateFormulationRequestDto,
+  UpsertStagesRequestDto,
 } from "./types";
 
 export const formulationsQueryKeys = {
@@ -383,6 +385,28 @@ export function useReplaceLines(
     },
   });
 }
+
+/** Wholesale-replace the formulation's production-stage graph.
+ *  Updates the detail cache with the fresh formulation (which now
+ *  carries the new stage list + line stage_id assignments), so the
+ *  builder re-renders without a separate refetch. */
+export function useUpsertStages(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<FormulationDto, ApiError, UpsertStagesRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, UpsertStagesRequestDto>({
+    mutationFn: (payload) =>
+      upsertFormulationStages(orgId, formulationId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        updated,
+      );
+    },
+  });
+}
+
 
 export function useSaveVersion(
   orgId: string,

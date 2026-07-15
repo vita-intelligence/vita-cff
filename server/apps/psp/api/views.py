@@ -42,6 +42,7 @@ from apps.psp.services import (
     clear_psp_config,
     get_psp_item,
     list_psp_items,
+    list_psp_workstation_groups,
     mirror_psp_item,
     serialize_psp_config_for_api,
     set_psp_config,
@@ -319,6 +320,25 @@ class PspItemMirrorView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class PspWorkstationGroupListView(APIView):
+    """``GET``
+    ``/api/organizations/<org>/integrations/psp/workstation-groups/``.
+
+    Proxies PSP's ``/api/integration/workstation-groups`` for the
+    stage builder's "run on" dropdown. Silent-degrade on any
+    failure — empty ``items`` list is indistinguishable from a
+    genuinely empty PSP catalog so the FE renders the same "no
+    workstations picked yet" state either way.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_workstation_groups(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
 
 
 def _serialize_item(item: Any) -> dict[str, Any]:

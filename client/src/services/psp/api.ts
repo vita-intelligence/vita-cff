@@ -14,6 +14,7 @@ import type {
   PspItemListResponseDto,
   PspItemLookupResultDto,
   PspItemMirrorResponseDto,
+  PspWorkstationGroupListResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -115,5 +116,19 @@ export async function mirrorPspItem(
   const { data } = await apiClient.post<PspItemMirrorResponseDto>(
     pspEndpoints.itemMirror(orgId, pspItemUuid),
   );
+  return data;
+}
+
+
+/** Picker-facing. Feeds the stage builder's "run on" dropdown with
+ *  PSP's workstation groups. Silent-degrade — empty list on any
+ *  soft failure (integration off, PSP outage). */
+export async function fetchPspWorkstationGroups(
+  orgId: string,
+): Promise<PspWorkstationGroupListResponseDto> {
+  const { data } =
+    await apiClient.get<PspWorkstationGroupListResponseDto>(
+      pspEndpoints.workstationGroups(orgId),
+    );
   return data;
 }

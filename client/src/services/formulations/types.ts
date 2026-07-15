@@ -243,6 +243,72 @@ export interface PowderBandItemDto extends GummyBaseItemDto {
 }
 
 
+/** Well-known template keys. ``custom`` covers user-added stages
+ *  that don't fit a known template. Extended alongside the model's
+ *  ``StageKey`` — keep in sync. */
+export type StageKey =
+  | "blend"
+  | "encapsulate"
+  | "bottle"
+  | "label"
+  | "fill"
+  | "cook"
+  | "deposit"
+  | "cure"
+  | "coat"
+  | "package"
+  | "custom";
+
+
+/** One production stage on a formulation. Wire shape emitted by
+ *  ``FormulationStageReadSerializer``. */
+export interface FormulationStageDto {
+  readonly id: string;
+  readonly sort_order: number;
+  readonly name: string;
+  readonly stage_key: StageKey;
+  /** PSP workstation group UUID. Null until the operator picks a
+   *  machine on the stage strip. */
+  readonly workstation_group_uuid: string | null;
+  /** Snapshot of the picked group's name so the strip can render
+   *  when PSP is unreachable. */
+  readonly workstation_group_name: string;
+  readonly setup_time_min: string | null;
+  readonly cycle_time_min: string | null;
+  readonly fixed_cost: string | null;
+  readonly variable_cost: string | null;
+  /** PSP-side semi-finished item UUID this stage outputs. Null
+   *  until the first successful push cascades through the stage. */
+  readonly psp_semi_finished_uuid: string | null;
+  readonly notes: string;
+}
+
+
+/** Payload shape for ``PUT /formulations/<id>/stages/``. Wholesale-
+ *  replace: every stage in the array is upserted (create when
+ *  ``id`` omitted, update when present); stages not in the payload
+ *  are deleted. Lines FK'd to a departing stage fall back to
+ *  ``stage=NULL`` server-side. */
+export interface UpsertStageInput {
+  readonly id?: string;
+  readonly sort_order: number;
+  readonly name: string;
+  readonly stage_key: StageKey;
+  readonly workstation_group_uuid?: string | null;
+  readonly workstation_group_name?: string;
+  readonly setup_time_min?: string | null;
+  readonly cycle_time_min?: string | null;
+  readonly fixed_cost?: string | null;
+  readonly variable_cost?: string | null;
+  readonly notes?: string;
+}
+
+
+export interface UpsertStagesRequestDto {
+  readonly stages: readonly UpsertStageInput[];
+}
+
+
 export interface FormulationDto {
   readonly id: string;
   readonly code: string;
@@ -328,6 +394,16 @@ export interface FormulationDto {
   readonly sales_person: SalesPersonDto | null;
   readonly lead_scientist: LeadScientistDto | null;
   readonly lines: readonly FormulationLineDto[];
+  /** Production-stage graph — ordered by ``sort_order``. Each stage
+   *  optionally references a PSP workstation group + carries
+   *  setup/cycle times + fixed/variable costs. The push cascade to
+   *  PSP (``push_bom_to_psp``) walks this list and fires one BOM +
+   *  one Routing per stage; non-terminal stages produce PSP
+   *  semi-finished items whose UUIDs are cached back onto the
+   *  stage rows. Empty on legacy formulations that predate the
+   *  stages model — in that case the push falls back to a single
+   *  flat BOM against the finished-product item. */
+  readonly stages: readonly FormulationStageDto[];
   /** Ready-to-Go catalog fields. Populated only on
    *  ``project_type === 'ready_to_go'`` rows; safe defaults
    *  (``is_rtg_published=false``, empty arrays, null numbers)
