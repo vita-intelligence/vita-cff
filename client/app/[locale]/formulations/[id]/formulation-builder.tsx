@@ -2730,6 +2730,15 @@ export function FormulationBuilder({
         activeStageId={activeStageId}
         onActiveStageChange={setActiveStageId}
         lines={lines}
+        onSaved={(updated) => {
+          // Server has fresh stage state — mirror it into the
+          // builder's local ``formulation`` so the Stage BOMs
+          // preview + picker chip + line render + metadata pane
+          // all see the same data the strip does. Without this
+          // the parent stays stale and the four surfaces drift.
+          setFormulation(updated);
+          setLines(linesFrom(updated));
+        }}
       />
 
       {/* ------------------------------------------------------------ */}
