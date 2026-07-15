@@ -227,10 +227,21 @@ export function StageStrip({
   // parent updates ``formulation`` state on unrelated saves (lines,
   // metadata) which would previously wipe unsaved stage edits on
   // every keystroke that fired those flows.
+  //
+  // ``lastAppliedUpsert`` is the load-bearing guard: React parents
+  // typically pass an inline arrow for ``onSaved``, which
+  // changes reference every render. Without the ref check the
+  // effect would loop — calling onSaved → parent setState →
+  // new onSaved reference → effect fires → onSaved → ... —
+  // producing "Maximum update depth exceeded".
+  const lastAppliedUpsert = useRef<FormulationDto | null>(null);
   useEffect(() => {
-    if (!upsert.data) return;
-    setDrafts(upsert.data.stages.map(toDraft));
-    onSaved?.(upsert.data);
+    const fresh = upsert.data;
+    if (!fresh) return;
+    if (lastAppliedUpsert.current === fresh) return;
+    lastAppliedUpsert.current = fresh;
+    setDrafts(fresh.stages.map(toDraft));
+    onSaved?.(fresh);
   }, [upsert.data, onSaved]);
 
   const lastSyncedFormulationId = useRef(formulation.id);
