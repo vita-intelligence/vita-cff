@@ -36,7 +36,10 @@ import type {
   StageKey,
   UpsertStageInput,
 } from "@/services/formulations/types";
-import { usePspWorkstationGroups } from "@/services/psp/hooks";
+import {
+  usePspWorkstationGroups,
+  usePspWorkstationUsers,
+} from "@/services/psp/hooks";
 
 
 /** Local edit-state for one stage. Kept as strings for the inputs
@@ -59,6 +62,7 @@ interface StageDraft {
   other_fixed_cost: string;
   other_variable_cost: string;
   other_variable_cost_basis: string;
+  worker_psp_uuids: readonly string[];
 }
 
 
@@ -95,6 +99,7 @@ function toDraft(stage: FormulationStageDto): StageDraft {
     other_fixed_cost: stage.other_fixed_cost ?? "",
     other_variable_cost: stage.other_variable_cost ?? "",
     other_variable_cost_basis: stage.other_variable_cost_basis ?? "",
+    worker_psp_uuids: stage.worker_psp_uuids ?? [],
   };
 }
 
@@ -117,6 +122,7 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
     other_fixed_cost: emptyToNull(draft.other_fixed_cost),
     other_variable_cost: emptyToNull(draft.other_variable_cost),
     other_variable_cost_basis: emptyToNull(draft.other_variable_cost_basis),
+    worker_psp_uuids: draft.worker_psp_uuids,
   };
 }
 
@@ -125,6 +131,18 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
 // blends in with the surrounding form controls.
 const inputClass =
   "w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50";
+
+
+function uuidListsEqual(
+  a: readonly string[],
+  b: readonly string[],
+): boolean {
+  if (a.length !== b.length) return false;
+  const sorted = (xs: readonly string[]) => [...xs].sort();
+  const sa = sorted(a);
+  const sb = sorted(b);
+  return sa.every((v, i) => v === sb[i]);
+}
 
 
 export interface StageStripBuilderLine {
@@ -176,6 +194,17 @@ export function StageStrip({
     () => wsQuery.data?.items ?? [],
     [wsQuery.data],
   );
+  // Workers picker fetch — same "only when opened" gating so a
+  // builder page load doesn't hit PSP twice up-front. Any stage's
+  // Operation Details expander flipping the flag warms the cache
+  // once and every other stage's picker reuses it.
+  const workersQuery = usePspWorkstationUsers(orgId, {
+    enabled: pickerOpened,
+  });
+  const workerOptions = useMemo(
+    () => workersQuery.data?.items ?? [],
+    [workersQuery.data],
+  );
 
   // Re-sync when the server-side formulation changes (save,
   // rollback, stage-update by a peer). Deliberately by-id — a
@@ -202,7 +231,8 @@ export function StageStrip({
         (s.other_fixed_cost ?? "") !== d.other_fixed_cost ||
         (s.other_variable_cost ?? "") !== d.other_variable_cost ||
         (s.other_variable_cost_basis ?? "") !==
-          d.other_variable_cost_basis
+          d.other_variable_cost_basis ||
+        !uuidListsEqual(s.worker_psp_uuids ?? [], d.worker_psp_uuids)
       );
     });
   }, [drafts, formulation.stages]);
@@ -233,6 +263,7 @@ export function StageStrip({
         other_fixed_cost: "",
         other_variable_cost: "",
         other_variable_cost_basis: "",
+        worker_psp_uuids: [],
       },
     ]);
   }
@@ -628,6 +659,95 @@ export function StageStrip({
                         placeholder="1"
                       />
                     </div>
+                  </div>
+                  <div className="md:col-span-2 border-t border-dashed border-ink-100 pt-3">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                      Default crew
+                    </p>
+                    <p className="mt-1 text-[11px] text-ink-500">
+                      Operators pre-assigned to this stage's routing
+                      step on PSP. Empty = the scheduler falls back
+                      to whoever's on shift.
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {draft.worker_psp_uuids.map((uuid) => {
+                        const w = workerOptions.find(
+                          (o) => o.uuid === uuid,
+                        );
+                        const label = w?.name || uuid.slice(0, 8);
+                        return (
+                          <span
+                            key={uuid}
+                            className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-800"
+                          >
+                            {label}
+                            {canEdit ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  updateDraft(draft.clientKey, {
+                                    worker_psp_uuids:
+                                      draft.worker_psp_uuids.filter(
+                                        (u) => u !== uuid,
+                                      ),
+                                  })
+                                }
+                                disabled={upsert.isPending}
+                                className="text-ink-500 hover:text-red-600"
+                                title="Remove"
+                              >
+                                ×
+                              </button>
+                            ) : null}
+                          </span>
+                        );
+                      })}
+                      {draft.worker_psp_uuids.length === 0 ? (
+                        <span className="text-xs text-ink-500">
+                          None yet
+                        </span>
+                      ) : null}
+                    </div>
+                    {canEdit ? (
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const uuid = e.target.value;
+                          if (!uuid) return;
+                          if (draft.worker_psp_uuids.includes(uuid)) {
+                            return;
+                          }
+                          updateDraft(draft.clientKey, {
+                            worker_psp_uuids: [
+                              ...draft.worker_psp_uuids,
+                              uuid,
+                            ],
+                          });
+                        }}
+                        onFocus={() => setPickerOpened(true)}
+                        disabled={upsert.isPending}
+                        className={`${inputClass} mt-2`}
+                      >
+                        <option value="">
+                          {workersQuery.isLoading
+                            ? "Loading operators…"
+                            : workerOptions.length === 0
+                              ? "No operators on PSP yet"
+                              : "+ Add operator…"}
+                        </option>
+                        {workerOptions
+                          .filter(
+                            (w) =>
+                              !draft.worker_psp_uuids.includes(w.uuid),
+                          )
+                          .map((w) => (
+                            <option key={w.uuid} value={w.uuid}>
+                              {w.name}
+                              {w.is_admin ? " · admin" : ""}
+                            </option>
+                          ))}
+                      </select>
+                    ) : null}
                   </div>
                 </div>
               </details>

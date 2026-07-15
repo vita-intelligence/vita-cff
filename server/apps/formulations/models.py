@@ -1043,6 +1043,17 @@ class FormulationStage(models.Model):
         null=True,
         blank=True,
     )
+    #: Default workers assigned to this stage's operation. Each entry
+    #: is a PSP ``User`` UUID (the workers picker in the stage details
+    #: fetches from PSP's ``GET /api/integration/users``). Forwarded
+    #: to PSP as ``default_worker_uuids`` on the routing step so the
+    #: shop-floor MO starts with the crew already assigned. Empty list
+    #: = no default crew; scheduler falls back to whoever's on shift.
+    worker_psp_uuids = models.JSONField(
+        _("worker PSP UUIDs"),
+        default=list,
+        blank=True,
+    )
     #: PSP semi-finished item this stage outputs. NULL until the
     #: first successful push. On subsequent pushes NPD uses this to
     #: skip re-creating the item + hits the same routing / BOM rows.

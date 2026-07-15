@@ -43,6 +43,7 @@ from apps.psp.services import (
     get_psp_item,
     list_psp_items,
     list_psp_workstation_groups,
+    list_psp_workstation_users,
     mirror_psp_item,
     serialize_psp_config_for_api,
     set_psp_config,
@@ -320,6 +321,24 @@ class PspItemMirrorView(APIView):
             },
             status=status.HTTP_200_OK,
         )
+
+
+class PspWorkstationUserListView(APIView):
+    """``GET``
+    ``/api/organizations/<org>/integrations/psp/workstation-users/``.
+
+    Proxies PSP's ``/api/integration/users`` for the stage
+    builder's workers multi-picker. Silent-degrade on any failure —
+    empty ``items`` list is indistinguishable from a genuinely
+    empty PSP catalog.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_workstation_users(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
 
 
 class PspWorkstationGroupListView(APIView):

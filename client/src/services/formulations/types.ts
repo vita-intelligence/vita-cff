@@ -295,6 +295,12 @@ export interface FormulationStageDto {
   readonly other_fixed_cost: string | null;
   readonly other_variable_cost: string | null;
   readonly other_variable_cost_basis: string | null;
+  /** Default workers assigned to this stage's operation. Each entry
+   *  is a PSP ``User`` UUID; the workers multi-picker in the stage
+   *  details renders these. Forwarded to PSP as ``default_worker_uuids``
+   *  on the routing step. Empty list = scheduler falls back to
+   *  whoever's on shift. */
+  readonly worker_psp_uuids: readonly string[];
   /** PSP-side semi-finished item UUID this stage outputs. Null
    *  until the first successful push cascades through the stage. */
   readonly psp_semi_finished_uuid: string | null;
@@ -323,6 +329,7 @@ export interface UpsertStageInput {
   readonly other_fixed_cost?: string | null;
   readonly other_variable_cost?: string | null;
   readonly other_variable_cost_basis?: string | null;
+  readonly worker_psp_uuids?: readonly string[];
   readonly notes?: string;
 }
 

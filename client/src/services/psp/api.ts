@@ -15,6 +15,7 @@ import type {
   PspItemLookupResultDto,
   PspItemMirrorResponseDto,
   PspWorkstationGroupListResponseDto,
+  PspWorkstationUserListResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -129,6 +130,20 @@ export async function fetchPspWorkstationGroups(
   const { data } =
     await apiClient.get<PspWorkstationGroupListResponseDto>(
       pspEndpoints.workstationGroups(orgId),
+    );
+  return data;
+}
+
+
+/** Picker-facing. Feeds the stage builder's workers multi-picker
+ *  with PSP's operator list. Silent-degrade — empty list on any
+ *  soft failure (integration off, PSP outage). */
+export async function fetchPspWorkstationUsers(
+  orgId: string,
+): Promise<PspWorkstationUserListResponseDto> {
+  const { data } =
+    await apiClient.get<PspWorkstationUserListResponseDto>(
+      pspEndpoints.workstationUsers(orgId),
     );
   return data;
 }
