@@ -90,14 +90,12 @@ export function PspItemPicker({
   };
 
   const handlePick = (item: PspItemDto) => {
-    // The host form stores ``code`` — reuse PSP's ``external_sku``
-    // when the row carries one, else fall back to the UUID so a
-    // later price-hint lookup on the same code still has something
-    // deterministic to match against. Falling back to a raw UUID
-    // reads oddly in the code column but preserves lookup
-    // continuity for orgs that haven't populated ``external_sku``
-    // on every row yet.
-    const code = item.external_sku || item.uuid;
+    // Prefer PSP's system-generated code (``MA00295``, ``PT00007``)
+    // — every item has one by default. Fall back to ``external_sku``
+    // (supplier / customer code) when the system code is missing,
+    // then the raw UUID as a last-ditch identifier so later price-
+    // hint lookups still have something deterministic to match.
+    const code = item.code || item.external_sku || item.uuid;
     onPick({ code, title: item.name, uuid: item.uuid });
     setSearch("");
     setCommittedQuery("");
@@ -168,7 +166,7 @@ export function PspItemPicker({
                 className="flex w-full flex-col items-start gap-0.5 border-b border-ink-100 px-3 py-2 text-left last:border-b-0 hover:bg-orange-50"
               >
                 <span className="text-sm font-medium text-ink-1000">
-                  {item.external_sku || item.uuid.slice(0, 8)}
+                  {item.code || item.external_sku || item.uuid.slice(0, 8)}
                   <span className="ml-2 text-ink-500">{item.name}</span>
                 </span>
                 {item.selling_price ? (
