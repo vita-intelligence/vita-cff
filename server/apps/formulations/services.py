@@ -1914,23 +1914,48 @@ def compute_totals(
     # path (empty actives, non-math dosage forms, full math) surfaces
     # them. The sweep dedupes by item id so a raw material that
     # appears in two pickers warns once.
+    #
+    # Pickers vs. attributes:
+    #
+    # Every picker below is scoped to a specific compliance category
+    # (Anti-caking picker only lists Anti-caking Agent items, MCC
+    # picker only lists Carrier / Bulking Agent items, ...). So when
+    # the operator picks an item via a specific picker, the picker
+    # itself tells us the intended ``use_as`` regardless of what the
+    # item's own ``attributes.use_as`` says. PSP-mirrored items may
+    # arrive with an empty ``attributes.use_as`` (their compliance
+    # metadata lives on PSP's ``raw_material_compliance`` side-table
+    # and may not have been backfilled onto the wire); when that
+    # happens we fall back to the picker-implied category rather than
+    # firing a false-positive warning.
+    #
+    # The mutation below only touches the in-memory Item copy that
+    # ``compute_formulation_totals`` holds — the DB row is untouched.
+    # A subsequent PSP mirror refresh will overlay the authoritative
+    # value from ``attributes.use_as`` (or the compliance bridge) and
+    # replace this inference on the next compute pass.
+    bucket_implied_use_as: tuple[
+        tuple[tuple[Any, ...], str | None], ...
+    ] = (
+        (tuple(line_items), None),
+        (gummy_base_items, GUMMY_BASE_USE_CATEGORIES[0]),
+        (flavouring_items, FLAVOURING_USE_CATEGORIES[0]),
+        (colour_items, COLOUR_USE_CATEGORIES[0]),
+        (sweetener_items, SWEETENER_USE_CATEGORIES[0]),
+        (glazing_items, GLAZING_USE_CATEGORIES[0]),
+        (gelling_items, GELLING_USE_CATEGORIES[0]),
+        (premix_sweetener_items, PREMIX_SWEETENER_USE_CATEGORIES[0]),
+        (acidity_items, ACIDITY_USE_CATEGORIES[0]),
+        (mcc_carrier_items, MCC_CARRIER_USE_CATEGORIES[0]),
+        (dcp_carrier_items, DCP_CARRIER_USE_CATEGORIES[0]),
+        (anti_caking_items, ANTI_CAKING_USE_CATEGORIES[0]),
+        # Powder Carrier picker shares the Carrier vocabulary.
+        (powder_carrier_items, MCC_CARRIER_USE_CATEGORIES[0]),
+    )
+
     use_as_warnings: list[str] = []
     seen_item_ids: set[Any] = set()
-    for bucket in (
-        tuple(line_items),
-        gummy_base_items,
-        flavouring_items,
-        colour_items,
-        sweetener_items,
-        glazing_items,
-        gelling_items,
-        premix_sweetener_items,
-        acidity_items,
-        mcc_carrier_items,
-        dcp_carrier_items,
-        anti_caking_items,
-        powder_carrier_items,
-    ):
+    for bucket, implied in bucket_implied_use_as:
         for item in bucket:
             if item.id in seen_item_ids:
                 continue
@@ -1940,7 +1965,14 @@ def compute_totals(
             value = (
                 str(raw_use_as).strip() if raw_use_as is not None else ""
             )
+            if not value and implied:
+                # Picker context wins — stamp the implied category
+                # onto the in-memory item so downstream compute reads
+                # a consistent value. The DB row stays untouched.
+                item.attributes = {**(item.attributes or {}), "use_as": implied}
+                continue
             if not value:
+                # Actives bucket: no picker context to infer from.
                 # Include the internal code so a scientist with two
                 # items of the same display name (e.g. the duplicate
                 # row created when an attribute is corrected on a
