@@ -48,6 +48,12 @@ export interface PspItemDto {
   readonly description: string;
   readonly item_type: string;
   readonly external_sku: string;
+  /** System-generated display code (``MA00295``) — PSP renders
+   *  this from the item's integer PK against the company's
+   *  numbering format. Every item has one by default; picker /
+   *  BOM prefers this over ``external_sku`` since suppliers'
+   *  codes are optional. */
+  readonly code: string;
   readonly barcode: string;
   readonly is_active: boolean;
   /** From PSP's ``attributes.use_as``. Filters the ingredient

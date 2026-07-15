@@ -379,6 +379,7 @@ def _stub_psp_item(uuid: str, **overrides) -> PspItem:
         description="Root extract",
         item_type="raw_material",
         external_sku="ASH-KSM",
+        code="MA00042",
         barcode="",
         is_active=True,
         use_as="active",
@@ -434,7 +435,9 @@ class TestMirrorPspItem:
         assert isinstance(item, Item)
         assert str(item.psp_source_uuid) == psp_uuid
         assert item.name == "Ashwagandha KSM-66"
-        assert item.internal_code == "ASH-KSM"
+        # System code wins over external_sku as the local
+        # ``internal_code`` — matches what PSP's own UI prints.
+        assert item.internal_code == "MA00042"
         assert item.attributes["use_as"] == "active"
         assert item.catalogue.slug == PSP_MIRROR_SLUG
         # Catalogue is created lazily, not seeded on every org.

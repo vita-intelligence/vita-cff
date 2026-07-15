@@ -326,6 +326,11 @@ def _serialize_item(item: Any) -> dict[str, Any]:
         "description": item.description,
         "item_type": item.item_type,
         "external_sku": item.external_sku,
+        # System-generated display code (``MA00295``) — what PSP's
+        # UI prints as "Code". The FE picker prefers this over
+        # ``external_sku`` since every item has one by default,
+        # whereas supplier SKUs are optional.
+        "code": item.code,
         "barcode": item.barcode,
         "is_active": item.is_active,
         "use_as": item.use_as,
