@@ -1898,6 +1898,11 @@ export function FormulationBuilder({
               preselected={formulation.capsule_shell_items ?? []}
               disabled={!canWrite}
               useAsIn={CAPSULE_SHELL_USE_CATEGORIES}
+              // Empty capsule shells are ``packaging`` items by
+              // industry convention (they enclose the finished
+              // pack) — the default ``raw_material`` filter would
+              // hide them.
+              itemTypesIn={["packaging"]}
               label="Capsule Shell"
               placeholderText="Pick a capsule shell SKU"
               hint="Empty capsule shells (Size 0 HPMC, Size 00 Gelatin, …). The picked shell's attributes.capsule_size drives fill capacity and attributes.shell_weight_mg drives the declared shell mass — leaving this empty falls back to the size dropdown + hardcoded shell weights."
@@ -4956,6 +4961,7 @@ function CatalogueMultiPicker({
   preselected,
   disabled,
   useAsIn,
+  itemTypesIn,
   label,
   placeholderText,
   hint,
@@ -4970,6 +4976,14 @@ function CatalogueMultiPicker({
   preselected: readonly GummyBaseItemDto[];
   disabled?: boolean;
   useAsIn: readonly string[];
+  /** PSP-side item_type filter. Defaults to ``["raw_material"]``
+   *  since most excipient pickers (carrier / anti-caking / flavour
+   *  / colour / …) source from that catalogue. The capsule shell
+   *  picker overrides to ``["packaging"]`` because empty shells
+   *  are packaging by industry convention. Local-only mode is
+   *  unaffected — the ``useInfiniteItems`` query is already
+   *  scoped to the ``raw_materials`` catalogue by slug. */
+  itemTypesIn?: readonly string[];
   label: string;
   placeholderText: string;
   hint: string;
@@ -5025,7 +5039,7 @@ function CatalogueMultiPicker({
 
   const pspQuery = usePspItems(orgId, {
     enabled: pspLive,
-    itemTypes: ["raw_material"],
+    itemTypes: itemTypesIn ?? ["raw_material"],
     // PSP's ``use_as`` filter accepts a comma-separated list
     // (``feat(integration): accept comma-separated use_as on
     // /items`` on PSP side). Sorted for stable cache keys.
