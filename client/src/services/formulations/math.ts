@@ -1120,19 +1120,38 @@ function computeCapsule(
       max_weight_mg: overrideMaxWeightMg,
     };
   } else if (overrideProvided && overrideSizeKey && !overrideMaxWeightMg) {
-    // Shell picked but ``max_weight_mg`` isn't set on the PSP row
-    // yet — surface the gap explicitly so procurement + R&D can
-    // fix the data instead of computing against a synthetic value.
-    warnings.push("capsule_shell_missing_max_weight");
-    return {
-      sizeKey: null,
-      sizeLabel: null,
-      maxWeight: null,
-      totalWeight: null,
-      excipients: null,
-      viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
-      warnings,
-    };
+    // Shell picked with a ``capsule_size`` but no explicit
+    // ``max_weight_mg``. Fall through to the CAPSULE_SIZES physics
+    // reference table using the size key — matches the pre-strict
+    // behaviour (and the file-level comment on ``shellOverride``:
+    // "a shell that sets only capsule_size still gets the physics-
+    // reference max fill from the map"). If the size key is a non-
+    // standard value that the map doesn't know, surface the gap so
+    // procurement / R&D can populate max_weight_mg on the PSP row.
+    const fromMap = capsuleSizeByKey(overrideSizeKey);
+    if (fromMap) {
+      size = {
+        key: overrideSizeKey,
+        label: fromMap.label,
+        max_weight_mg: fromMap.max_weight_mg,
+      };
+      // Advisory: the shell should really carry its own
+      // ``max_weight_mg`` since real fill capacity varies by
+      // supplier + material. The warning stays soft — compute
+      // proceeds against the physics-reference value.
+      warnings.push("capsule_shell_max_weight_from_map");
+    } else {
+      warnings.push("capsule_shell_missing_max_weight");
+      return {
+        sizeKey: null,
+        sizeLabel: null,
+        maxWeight: null,
+        totalWeight: null,
+        excipients: null,
+        viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+        warnings,
+      };
+    }
   } else {
     // No shell picked — surface a "pick a shell" warning and stop.
     warnings.push("pick_capsule_shell");
