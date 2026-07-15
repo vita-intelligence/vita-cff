@@ -307,12 +307,20 @@ class PspClient:
             return []
         return [_project_item(row) for row in rows if isinstance(row, dict)]
 
-    def get_item(self, uuid: str) -> PspItem | None:
+    def get_item(self, uuid: Any) -> PspItem | None:
         """Look up a single PSP item by UUID. ``None`` when PSP has
         no such row (404 from the server, or unexpected shape).
-        Errors still raise :class:`PspError` subclasses."""
+        Errors still raise :class:`PspError` subclasses.
 
-        cleaned = (uuid or "").strip()
+        Accepts a string OR a :class:`uuid.UUID`. Django's URL
+        converters produce UUID objects from ``<uuid:...>`` path
+        params, so the mirror view hands us one of those directly;
+        the picker code path threads strings through. Coercing here
+        (rather than at every caller) keeps the client's contract
+        forgiving.
+        """
+
+        cleaned = str(uuid or "").strip()
         if not cleaned:
             return None
         payload = self._request(f"api/integration/items/{cleaned}")

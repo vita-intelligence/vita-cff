@@ -338,6 +338,37 @@ class TestSilentDegradation:
         assert psp.get_psp_item(organization=org, uuid="x") is None
 
 
+class TestClientGetItemAcceptsUuidObject:
+    """Regression guard: Django's ``<uuid:...>`` URL converter hands
+    the mirror view a :class:`uuid.UUID` object, not a string. If the
+    HTTP client blindly calls ``.strip()`` on the argument, the whole
+    mirror flow blows up with an ``AttributeError`` mid-request (the
+    button appears to do nothing from the operator's POV).
+    """
+
+    def test_get_item_accepts_uuid_object(self, monkeypatch):
+        import uuid as _uuid
+
+        cfg = psp.PspConfig(
+            enabled=True, base_url="https://psp", integration_token="t"
+        )
+        client = psp.PspClient(cfg)
+
+        captured = {}
+
+        def _fake_request(path):
+            captured["path"] = path
+            return {"item": None}
+
+        monkeypatch.setattr(client, "_request", _fake_request)
+
+        u = _uuid.uuid4()
+        assert client.get_item(u) is None
+        # UUID was stringified into the request path — no
+        # AttributeError, no dropped call.
+        assert str(u) in captured["path"]
+
+
 def _stub_psp_item(uuid: str, **overrides) -> PspItem:
     """Build a PspItem dataclass with sensible defaults so tests
     don't have to pass every field."""
