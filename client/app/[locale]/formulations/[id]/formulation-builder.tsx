@@ -891,6 +891,15 @@ export function FormulationBuilder({
         shellMaxWeightMg = maxNum;
       }
     }
+    // When the operator picks a capsule shell that has NO
+    // ``capsule_size`` or ``max_weight_mg`` on its PSP row (data
+    // gap that's genuinely common on shells mirrored before those
+    // attributes were part of the schema), fall back through the
+    // legacy ``metadata.capsule_size`` field so compute still runs
+    // against a sensible size. If neither is set, compute auto-picks
+    // from total active. This is what preserves the pre-strict math
+    // behaviour — the operator sees viability + math instead of a
+    // hard "over max weight" that's really a missing-attribute stop.
     const effectiveCapsuleSize =
       shellSizeKey ?? (metadata.capsule_size || null);
     return computeTotals({

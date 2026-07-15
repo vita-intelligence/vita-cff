@@ -1152,18 +1152,51 @@ function computeCapsule(
         warnings,
       };
     }
+  } else if (requestedSizeKey) {
+    // No shell attributes — but the operator has picked a
+    // ``capsule_size`` explicitly (legacy metadata field, or a
+    // ticked shell whose PSP row is missing both attributes and
+    // where the caller has echoed the size). Look it up in the
+    // physics-reference table and compute against that.
+    const fromMap = capsuleSizeByKey(requestedSizeKey);
+    if (fromMap) {
+      size = {
+        key: requestedSizeKey,
+        label: fromMap.label,
+        max_weight_mg: fromMap.max_weight_mg,
+      };
+    } else {
+      warnings.push("pick_capsule_shell");
+      return {
+        sizeKey: null,
+        sizeLabel: null,
+        maxWeight: null,
+        totalWeight: null,
+        excipients: null,
+        viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+        warnings,
+      };
+    }
   } else {
-    // No shell picked — surface a "pick a shell" warning and stop.
+    // No shell picked AND no explicit size — auto-pick the smallest
+    // capsule that fits the total active. Matches the pre-picker
+    // legacy behaviour, so a formulation without any capsule
+    // metadata still gets a sensible viability.
+    const auto = autoPickCapsuleSize(totalActive);
+    if (auto === null) {
+      warnings.push("capsule_too_large");
+      return {
+        sizeKey: null,
+        sizeLabel: null,
+        maxWeight: null,
+        totalWeight: null,
+        excipients: null,
+        viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+        warnings,
+      };
+    }
+    size = auto;
     warnings.push("pick_capsule_shell");
-    return {
-      sizeKey: null,
-      sizeLabel: null,
-      maxWeight: null,
-      totalWeight: null,
-      excipients: null,
-      viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
-      warnings,
-    };
   }
 
   if (size === null) {
