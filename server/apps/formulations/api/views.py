@@ -50,6 +50,7 @@ from apps.formulations.services import (
     InvalidGellingItem,
     InvalidGlazingItem,
     InvalidGummyBaseItem,
+    InvalidCapsuleShellItem,
     InvalidMccCarrierItem,
     InvalidPowderType,
     InvalidPremixSweetenerItem,
@@ -364,6 +365,11 @@ class FormulationDetailView(APIView):
         except InvalidAcidityItem:
             return Response(
                 {"acidity_item_ids": ["invalid_acidity_item"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except InvalidCapsuleShellItem:
+            return Response(
+                {"capsule_shell_item_ids": ["invalid_capsule_shell_item"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         except InvalidMccCarrierItem:
