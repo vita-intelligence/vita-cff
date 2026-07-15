@@ -2484,10 +2484,15 @@ def set_formulation_stages(
             "stage_key": raw.get("stage_key") or FormulationStage.StageKey.CUSTOM,
             "workstation_group_uuid": raw.get("workstation_group_uuid") or None,
             "workstation_group_name": (raw.get("workstation_group_name") or "").strip(),
+            "operation_description": raw.get("operation_description") or "",
             "setup_time_min": raw.get("setup_time_min"),
             "cycle_time_min": raw.get("cycle_time_min"),
             "fixed_cost": raw.get("fixed_cost"),
             "variable_cost": raw.get("variable_cost"),
+            "capacity": raw.get("capacity"),
+            "other_fixed_cost": raw.get("other_fixed_cost"),
+            "other_variable_cost": raw.get("other_variable_cost"),
+            "other_variable_cost_basis": raw.get("other_variable_cost_basis"),
             "notes": raw.get("notes") or "",
         }
 

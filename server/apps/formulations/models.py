@@ -971,6 +971,14 @@ class FormulationStage(models.Model):
         blank=True,
         default="",
     )
+    #: Free-text operation description shown on the PSP routing
+    #: detail page + on shop-floor MO cards. Auto-fills to the
+    #: workstation group's ``default_operation_notes`` on the PSP
+    #: side when blank. Distinct from :attr:`notes`, which is an
+    #: internal comment the operator uses on NPD only.
+    operation_description = models.TextField(
+        _("operation description"), blank=True, default=""
+    )
     setup_time_min = models.DecimalField(
         _("setup time (minutes)"),
         max_digits=10,
@@ -996,6 +1004,42 @@ class FormulationStage(models.Model):
         _("variable cost"),
         max_digits=12,
         decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    #: Number of parallel workstations available for this operation.
+    #: Mirrors PSP's ``routing_step.capacity`` — the scheduler uses
+    #: it to cap concurrent operator time. Positive-only.
+    capacity = models.DecimalField(
+        _("capacity"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    #: Routing-header overhead — fixed + variable costs that aren't
+    #: tied to a specific operation step. Mirrors PSP's
+    #: ``routings.other_fixed_cost`` + ``other_variable_cost``.
+    #: ``other_variable_cost_basis`` is the quantity the variable
+    #: cost scales against (default 1 = per unit of output).
+    other_fixed_cost = models.DecimalField(
+        _("other fixed cost"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    other_variable_cost = models.DecimalField(
+        _("other variable cost"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    other_variable_cost_basis = models.DecimalField(
+        _("other variable cost basis"),
+        max_digits=10,
+        decimal_places=2,
         null=True,
         blank=True,
     )

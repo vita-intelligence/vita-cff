@@ -50,8 +50,15 @@ interface StageDraft {
   stage_key: StageKey;
   workstation_group_uuid: string | null;
   workstation_group_name: string;
+  operation_description: string;
   setup_time_min: string;
   cycle_time_min: string;
+  fixed_cost: string;
+  variable_cost: string;
+  capacity: string;
+  other_fixed_cost: string;
+  other_variable_cost: string;
+  other_variable_cost_basis: string;
 }
 
 
@@ -79,8 +86,15 @@ function toDraft(stage: FormulationStageDto): StageDraft {
     stage_key: stage.stage_key,
     workstation_group_uuid: stage.workstation_group_uuid,
     workstation_group_name: stage.workstation_group_name,
+    operation_description: stage.operation_description ?? "",
     setup_time_min: stage.setup_time_min ?? "",
     cycle_time_min: stage.cycle_time_min ?? "",
+    fixed_cost: stage.fixed_cost ?? "",
+    variable_cost: stage.variable_cost ?? "",
+    capacity: stage.capacity ?? "",
+    other_fixed_cost: stage.other_fixed_cost ?? "",
+    other_variable_cost: stage.other_variable_cost ?? "",
+    other_variable_cost_basis: stage.other_variable_cost_basis ?? "",
   };
 }
 
@@ -94,8 +108,15 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
     stage_key: draft.stage_key,
     workstation_group_uuid: draft.workstation_group_uuid,
     workstation_group_name: draft.workstation_group_name,
+    operation_description: draft.operation_description.trim(),
     setup_time_min: emptyToNull(draft.setup_time_min),
     cycle_time_min: emptyToNull(draft.cycle_time_min),
+    fixed_cost: emptyToNull(draft.fixed_cost),
+    variable_cost: emptyToNull(draft.variable_cost),
+    capacity: emptyToNull(draft.capacity),
+    other_fixed_cost: emptyToNull(draft.other_fixed_cost),
+    other_variable_cost: emptyToNull(draft.other_variable_cost),
+    other_variable_cost_basis: emptyToNull(draft.other_variable_cost_basis),
   };
 }
 
@@ -172,8 +193,16 @@ export function StageStrip({
         s.name !== d.name ||
         s.stage_key !== d.stage_key ||
         s.workstation_group_uuid !== d.workstation_group_uuid ||
+        (s.operation_description ?? "") !== d.operation_description ||
         (s.setup_time_min ?? "") !== d.setup_time_min ||
-        (s.cycle_time_min ?? "") !== d.cycle_time_min
+        (s.cycle_time_min ?? "") !== d.cycle_time_min ||
+        (s.fixed_cost ?? "") !== d.fixed_cost ||
+        (s.variable_cost ?? "") !== d.variable_cost ||
+        (s.capacity ?? "") !== d.capacity ||
+        (s.other_fixed_cost ?? "") !== d.other_fixed_cost ||
+        (s.other_variable_cost ?? "") !== d.other_variable_cost ||
+        (s.other_variable_cost_basis ?? "") !==
+          d.other_variable_cost_basis
       );
     });
   }, [drafts, formulation.stages]);
@@ -195,8 +224,15 @@ export function StageStrip({
         stage_key: "custom",
         workstation_group_uuid: null,
         workstation_group_name: "",
+        operation_description: "",
         setup_time_min: "",
         cycle_time_min: "",
+        fixed_cost: "",
+        variable_cost: "",
+        capacity: "",
+        other_fixed_cost: "",
+        other_variable_cost: "",
+        other_variable_cost_basis: "",
       },
     ]);
   }
@@ -455,6 +491,146 @@ export function StageStrip({
                   </div>
                 ) : null}
               </div>
+
+              {/* Operation details — collapsed by default so the
+                  stage strip stays compact. Expands to reveal per-
+                  step overhead (operation description, fixed cost,
+                  variable cost, capacity) + routing-header overhead
+                  (other_fixed_cost, other_variable_cost + basis).
+                  Native <details> — no state, no toggle handler. */}
+              <details className="mt-3 rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200">
+                <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wide text-ink-600 hover:bg-ink-50">
+                  Operation details
+                </summary>
+                <div className="grid grid-cols-1 gap-3 border-t border-ink-100 p-3 md:grid-cols-2">
+                  <div className="md:col-span-2">
+                    <label className="text-xs font-medium text-ink-600">
+                      Operation description
+                    </label>
+                    <textarea
+                      value={draft.operation_description}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          operation_description: e.target.value,
+                        })
+                      }
+                      rows={2}
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                      placeholder="e.g. Blend actives + excipients for 20 min at 40 rpm"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Fixed cost (per run)
+                    </label>
+                    <input
+                      value={draft.fixed_cost}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          fixed_cost: e.target.value,
+                        })
+                      }
+                      inputMode="decimal"
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Variable cost (per unit)
+                    </label>
+                    <input
+                      value={draft.variable_cost}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          variable_cost: e.target.value,
+                        })
+                      }
+                      inputMode="decimal"
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Capacity (parallel machines)
+                    </label>
+                    <input
+                      value={draft.capacity}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          capacity: e.target.value,
+                        })
+                      }
+                      inputMode="decimal"
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                      placeholder="1"
+                    />
+                  </div>
+                  <div className="md:col-span-2 border-t border-dashed border-ink-100 pt-3">
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                      Routing overhead
+                    </p>
+                    <p className="mt-1 text-[11px] text-ink-500">
+                      Costs on the routing header — not tied to any
+                      one step. Mirrors PSP's routing detail page.
+                    </p>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Other fixed cost
+                    </label>
+                    <input
+                      value={draft.other_fixed_cost}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          other_fixed_cost: e.target.value,
+                        })
+                      }
+                      inputMode="decimal"
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="text-xs font-medium text-ink-600">
+                        Other variable cost
+                      </label>
+                      <input
+                        value={draft.other_variable_cost}
+                        onChange={(e) =>
+                          updateDraft(draft.clientKey, {
+                            other_variable_cost: e.target.value,
+                          })
+                        }
+                        inputMode="decimal"
+                        disabled={!canEdit || upsert.isPending}
+                        className={`${inputClass} mt-1`}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-ink-600">
+                        Basis
+                      </label>
+                      <input
+                        value={draft.other_variable_cost_basis}
+                        onChange={(e) =>
+                          updateDraft(draft.clientKey, {
+                            other_variable_cost_basis: e.target.value,
+                          })
+                        }
+                        inputMode="decimal"
+                        disabled={!canEdit || upsert.isPending}
+                        className={`${inputClass} mt-1`}
+                        placeholder="1"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </details>
 
               {/* Per-stage BOM contents. Renders the ingredient
                   lines already assigned to this stage + a button

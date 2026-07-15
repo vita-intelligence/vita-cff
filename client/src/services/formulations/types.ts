@@ -278,10 +278,23 @@ export interface FormulationStageDto {
   /** Snapshot of the picked group's name so the strip can render
    *  when PSP is unreachable. */
   readonly workstation_group_name: string;
+  /** Free-text operation description forwarded to PSP's routing
+   *  step; auto-fills to the workstation group's default on the
+   *  PSP side when blank. */
+  readonly operation_description: string;
   readonly setup_time_min: string | null;
   readonly cycle_time_min: string | null;
   readonly fixed_cost: string | null;
   readonly variable_cost: string | null;
+  /** Number of parallel workstations available for this operation.
+   *  Positive-only; drives PSP's scheduler concurrency cap. */
+  readonly capacity: string | null;
+  /** Routing-header overhead — fixed + variable costs that aren't
+   *  tied to a specific step, plus the quantity the variable cost
+   *  scales against. Mirrors PSP's ``routings.other_*`` columns. */
+  readonly other_fixed_cost: string | null;
+  readonly other_variable_cost: string | null;
+  readonly other_variable_cost_basis: string | null;
   /** PSP-side semi-finished item UUID this stage outputs. Null
    *  until the first successful push cascades through the stage. */
   readonly psp_semi_finished_uuid: string | null;
@@ -301,10 +314,15 @@ export interface UpsertStageInput {
   readonly stage_key: StageKey;
   readonly workstation_group_uuid?: string | null;
   readonly workstation_group_name?: string;
+  readonly operation_description?: string;
   readonly setup_time_min?: string | null;
   readonly cycle_time_min?: string | null;
   readonly fixed_cost?: string | null;
   readonly variable_cost?: string | null;
+  readonly capacity?: string | null;
+  readonly other_fixed_cost?: string | null;
+  readonly other_variable_cost?: string | null;
+  readonly other_variable_cost_basis?: string | null;
   readonly notes?: string;
 }
 
