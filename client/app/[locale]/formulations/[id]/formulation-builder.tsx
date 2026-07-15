@@ -18,6 +18,8 @@ import {
   type ReactNode,
 } from "react";
 
+import { useSearchParams } from "next/navigation";
+
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { clientUuid } from "@/lib/utils";
@@ -63,6 +65,13 @@ import {
 } from "@/services/formulations";
 
 const RAW_MATERIALS_SLUG = "raw_materials";
+
+/** The four workspace tabs on the formulation builder. Each tab is
+ *  a permanently-mounted section that toggles via the ``hidden``
+ *  Tailwind class so intermediate state (line edits, stage drafts,
+ *  scroll positions) survives tab switches. */
+type BuilderTab = "setup" | "stages" | "ingredients" | "preview";
+
 
 interface BuilderLine {
   /** Stable local id for rows we just added in the UI. */
@@ -376,6 +385,51 @@ export function FormulationBuilder({
   const tCommon = useTranslations("common");
   const locale = useLocale();
   const router = useRouter();
+
+  // Tabbed builder shell — the four sections below (Setup / Stages /
+  // Ingredients / Preview) mount permanently and toggle via the
+  // ``hidden`` Tailwind class so state (line edits, stage drafts,
+  // scroll position) is preserved across tab switches. State only
+  // ever loses on a real unmount, which happens on navigate-away.
+  //
+  // Active tab is URL-driven (?tab=setup|stages|ingredients|preview)
+  // so a scientist can share a link that lands on Ingredients OR
+  // reload without losing their place.
+  const searchParams = useSearchParams();
+  const rawTab = searchParams?.get("tab") ?? "setup";
+  const activeTab: BuilderTab = (
+    ["setup", "stages", "ingredients", "preview"] as const
+  ).includes(rawTab as BuilderTab)
+    ? (rawTab as BuilderTab)
+    : "setup";
+  const setActiveTab = useCallback(
+    (tab: BuilderTab) => {
+      // ``history.replaceState`` keeps the browser's back button
+      // tied to the project entry, not to per-tab micro-navigations.
+      // The ``router.replace`` path from ``@/i18n/navigation`` would
+      // also work but forces a full router event; a raw
+      // ``replaceState`` is cheaper for a same-page UI switch.
+      if (typeof window === "undefined") return;
+      const url = new URL(window.location.href);
+      if (tab === "setup") {
+        url.searchParams.delete("tab");
+      } else {
+        url.searchParams.set("tab", tab);
+      }
+      window.history.replaceState(null, "", url.toString());
+      // Force a re-render — useSearchParams doesn't observe
+      // history.replaceState by itself.
+      router.replace(
+        (url.pathname + url.search + url.hash) as string,
+        // ``scroll: false`` keeps the current scroll position so the
+        // operator's spot in a long tab doesn't jump to the top.
+        // The ``@/i18n/navigation`` wrapper accepts this via its
+        // second-arg options object.
+        { scroll: false } as never,
+      );
+    },
+    [router],
+  );
 
   const [formulation, setFormulation] = useState(initialFormulation);
   const [metadata, setMetadata] = useState<MetadataDraft>(
@@ -1907,8 +1961,72 @@ export function FormulationBuilder({
       ) : null}
 
       {/* ------------------------------------------------------------ */}
-      {/* Metadata form                                                */}
+      {/* Tab strip — Setup / Stages / Ingredients / Preview           */}
+      {/*                                                              */}
+      {/* Each tab wraps a subset of the builder's existing sections   */}
+      {/* in a permanently-mounted <div> that toggles via ``hidden``   */}
+      {/* — no unmounts, so state (line drafts, focus, scroll)         */}
+      {/* survives tab switches. The dirty dot on each tab surfaces    */}
+      {/* which sections carry unsaved edits so a scientist can see    */}
+      {/* what a Save Version would actually persist.                  */}
       {/* ------------------------------------------------------------ */}
+      <nav
+        aria-label="Formulation builder tabs"
+        className="sticky top-0 z-30 -mx-4 flex gap-1 border-b border-ink-200 bg-ink-0/95 px-4 backdrop-blur"
+      >
+        {(
+          [
+            {
+              id: "setup" as const,
+              label: "Setup",
+              dirty: metadataDirty,
+            },
+            {
+              id: "stages" as const,
+              label: "Stages",
+              // The StageStrip owns its own dirty flag; we can't
+              // observe it from here without lifting state. For
+              // now the dot is unavailable on Stages; a follow-up
+              // can lift the flag if operators want it.
+              dirty: false,
+            },
+            {
+              id: "ingredients" as const,
+              label: "Ingredients",
+              dirty: linesDirty,
+            },
+            {
+              id: "preview" as const,
+              label: "Preview",
+              dirty: false,
+            },
+          ] as const
+        ).map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            onClick={() => setActiveTab(t.id)}
+            className={
+              activeTab === t.id
+                ? "relative border-b-2 border-orange-500 px-4 py-3 text-sm font-medium text-orange-700"
+                : "relative border-b-2 border-transparent px-4 py-3 text-sm font-medium text-ink-700 hover:text-ink-1000"
+            }
+          >
+            {t.label}
+            {t.dirty ? (
+              <span
+                className="absolute right-1 top-2 h-2 w-2 rounded-full bg-orange-500"
+                aria-label="unsaved changes"
+              />
+            ) : null}
+          </button>
+        ))}
+      </nav>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Metadata form  (tab: SETUP)                                  */}
+      {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "setup" ? "flex flex-col gap-10" : "hidden"}>
       <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           {tFormulations("builder.metadata")}
@@ -2720,9 +2838,12 @@ export function FormulationBuilder({
         </div>
       </section>
 
+      </div>
+
       {/* ------------------------------------------------------------ */}
-      {/* Production stages                                            */}
+      {/* Production stages  (tab: STAGES)                             */}
       {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "stages" ? "flex flex-col gap-10" : "hidden"}>
       <StageStrip
         orgId={orgId}
         formulation={formulation}
@@ -2741,9 +2862,14 @@ export function FormulationBuilder({
         }}
       />
 
+      </div>
+
       {/* ------------------------------------------------------------ */}
-      {/* Builder: picker + lines + totals                             */}
+      {/* Builder: picker + lines + totals  (tab: INGREDIENTS)         */}
+      {/* Also carries the compliance + declaration panels since       */}
+      {/* those are derived from the ingredient list.                  */}
       {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "ingredients" ? "flex flex-col gap-10" : "hidden"}>
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
         {/* Picker */}
         <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
@@ -3176,10 +3302,13 @@ export function FormulationBuilder({
         />
       </section>
 
+      </div>
+
       {/* ------------------------------------------------------------ */}
-      {/* Stage BOMs preview — the multi-BOM cascade that will land   */}
-      {/* on PSP on the next save. One collapsible per stage.         */}
+      {/* Stage BOMs preview + legacy MRPeasy + version history       */}
+      {/* (tab: PREVIEW)                                              */}
       {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "preview" ? "flex flex-col gap-10" : "hidden"}>
       <StageBomsPreview
         formulationCode={formulation.code}
         formulationName={formulation.name}
@@ -3307,6 +3436,7 @@ export function FormulationBuilder({
           </ul>
         )}
       </section>
+      </div>
     </div>
   );
 }
