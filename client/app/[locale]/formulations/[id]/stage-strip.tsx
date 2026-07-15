@@ -27,7 +27,7 @@
 
 import { Button } from "@heroui/react";
 import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useUpsertStages } from "@/services/formulations/hooks";
 import type {
@@ -169,6 +169,13 @@ export interface StageStripProps {
    *  own BOM contents underneath the stage row so the operator can
    *  see "what's in the Blend BOM" without leaving the strip. */
   readonly lines: readonly StageStripBuilderLine[];
+  /** Fired with the fresh formulation DTO after a successful
+   *  ``Save stages`` round-trip. The builder wires this to its
+   *  own ``setFormulation`` so the Stage BOMs preview + picker
+   *  chip + line list see the same server state the strip does —
+   *  without this callback the parent stays on stale data and the
+   *  three surfaces drift. */
+  readonly onSaved?: (formulation: FormulationDto) => void;
 }
 
 
@@ -179,6 +186,7 @@ export function StageStrip({
   activeStageId,
   onActiveStageChange,
   lines,
+  onSaved,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
@@ -206,12 +214,31 @@ export function StageStrip({
     [workersQuery.data],
   );
 
-  // Re-sync when the server-side formulation changes (save,
-  // rollback, stage-update by a peer). Deliberately by-id — a
-  // rename doesn't stomp local edits mid-typing.
+  // Re-sync drafts from the server on TWO events, never on random
+  // parent re-renders:
+  //
+  // * Save success — ``upsert.data`` is the fresh formulation DTO
+  //   from the PUT round-trip. Mirroring drafts to it clears the
+  //   dirty flag + picks up server-set ids on newly-created stages.
+  // * The formulation ID itself changed (navigation between two
+  //   different projects sharing this component mount).
+  //
+  // Deliberately NOT depending on ``formulation.stages`` — the
+  // parent updates ``formulation`` state on unrelated saves (lines,
+  // metadata) which would previously wipe unsaved stage edits on
+  // every keystroke that fired those flows.
   useEffect(() => {
+    if (!upsert.data) return;
+    setDrafts(upsert.data.stages.map(toDraft));
+    onSaved?.(upsert.data);
+  }, [upsert.data, onSaved]);
+
+  const lastSyncedFormulationId = useRef(formulation.id);
+  useEffect(() => {
+    if (lastSyncedFormulationId.current === formulation.id) return;
+    lastSyncedFormulationId.current = formulation.id;
     setDrafts(formulation.stages.map(toDraft));
-  }, [formulation.stages]);
+  }, [formulation]);
 
   const dirty = useMemo(() => {
     if (drafts.length !== formulation.stages.length) return true;
