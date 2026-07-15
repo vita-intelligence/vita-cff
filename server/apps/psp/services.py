@@ -435,6 +435,9 @@ class PspClient:
         name: str,
         steps: list[dict[str, Any]],
         notes: str = "",
+        other_fixed_cost: str | None = None,
+        other_variable_cost: str | None = None,
+        other_variable_cost_basis: str | None = None,
     ) -> dict | None:
         """Upsert a routing on a PSP item. PSP keys the upsert by
         ``(item_uuid, name)`` and wholesale-replaces the step list —
@@ -442,22 +445,35 @@ class PspClient:
 
         Steps are dicts of ``{workstation_group_uuid, sort_order?,
         operation_description?, setup_time_min?, cycle_time_min?,
-        fixed_cost?, variable_cost?, capacity?}``. Returns PSP's
-        response (``{"routing": {"uuid": ..., "step_count": N}}``)
-        or ``None`` on soft error.
+        fixed_cost?, variable_cost?, capacity?}``.
+
+        The three ``other_*`` args are routing-header overhead —
+        fixed + variable costs that aren't tied to a specific step.
+        Nil values are dropped from the payload so a re-push that
+        omits them doesn't clobber an operator-set value on PSP.
+
+        Returns PSP's response (``{"routing": {"uuid": ...,
+        "step_count": N}}``) or ``None`` on soft error.
         """
 
         cleaned = str(item_uuid or "").strip()
         if not cleaned:
             return None
+        body: dict[str, Any] = {
+            "name": name,
+            "notes": notes,
+            "steps": steps,
+        }
+        if other_fixed_cost is not None:
+            body["other_fixed_cost"] = other_fixed_cost
+        if other_variable_cost is not None:
+            body["other_variable_cost"] = other_variable_cost
+        if other_variable_cost_basis is not None:
+            body["other_variable_cost_basis"] = other_variable_cost_basis
         response = self._request(
             f"api/integration/items/{cleaned}/routing",
             method="PUT",
-            body={
-                "name": name,
-                "notes": notes,
-                "steps": steps,
-            },
+            body=body,
         )
         if not isinstance(response, dict):
             return None
@@ -1054,34 +1070,41 @@ def _push_staged_cascade(
         # when the stage has no workstation picked yet — pushing
         # an empty-workstation routing would 422.
         if stage.workstation_group_uuid:
+            _stringify_decimal = (
+                lambda v: str(v) if v is not None else None  # noqa: E731
+            )
             client.put_routing(
                 output_uuid,
                 name=f"{formulation.code} — {stage_label} Routing",
+                other_fixed_cost=_stringify_decimal(stage.other_fixed_cost),
+                other_variable_cost=_stringify_decimal(
+                    stage.other_variable_cost
+                ),
+                other_variable_cost_basis=_stringify_decimal(
+                    stage.other_variable_cost_basis
+                ),
                 steps=[
                     {
                         "workstation_group_uuid": str(stage.workstation_group_uuid),
                         "sort_order": 0,
-                        "operation_description": stage_label,
-                        "setup_time_min": (
-                            str(stage.setup_time_min)
-                            if stage.setup_time_min is not None
-                            else None
+                        # Prefer the operator-authored description;
+                        # fall back to the stage label so shop-floor
+                        # cards always have something meaningful.
+                        "operation_description": (
+                            (stage.operation_description or "").strip()
+                            or stage_label
                         ),
-                        "cycle_time_min": (
-                            str(stage.cycle_time_min)
-                            if stage.cycle_time_min is not None
-                            else None
+                        "setup_time_min": _stringify_decimal(
+                            stage.setup_time_min
                         ),
-                        "fixed_cost": (
-                            str(stage.fixed_cost)
-                            if stage.fixed_cost is not None
-                            else None
+                        "cycle_time_min": _stringify_decimal(
+                            stage.cycle_time_min
                         ),
-                        "variable_cost": (
-                            str(stage.variable_cost)
-                            if stage.variable_cost is not None
-                            else None
+                        "fixed_cost": _stringify_decimal(stage.fixed_cost),
+                        "variable_cost": _stringify_decimal(
+                            stage.variable_cost
                         ),
+                        "capacity": _stringify_decimal(stage.capacity),
                     }
                 ],
             )
