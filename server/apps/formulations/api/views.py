@@ -648,9 +648,29 @@ class FormulationStagesView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        set_formulation_stages(
-            formulation=formulation, stages=stages, actor=request.user
-        )
+        try:
+            set_formulation_stages(
+                formulation=formulation, stages=stages, actor=request.user
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Catch-all so the operator sees the real reason instead
+            # of a bare 500. Common culprits: bad decimal input, an
+            # unknown ``stage_key`` slipping through the FE, a stale
+            # workstation_group_uuid pointing at something that no
+            # longer exists on the PSP snapshot. Ship the exception
+            # class + message so the FE banner is actionable.
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "set_formulation_stages failed"
+            )
+            return Response(
+                {
+                    "stages": ["invalid_stage_payload"],
+                    "message": f"{type(exc).__name__}: {exc}",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return Response(
             FormulationReadSerializer(formulation).data,
             status=status.HTTP_200_OK,
