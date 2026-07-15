@@ -416,6 +416,22 @@ export function FormulationBuilder({
       ]),
     ),
   );
+  // Compute-critical attributes (``capsule_size``,
+  // ``shell_weight_mg``) live on the picked shell's ``attributes``
+  // map. Server echo only refreshes after a save round-trip, so a
+  // freshly-toggled shell would miss its attributes on the FIRST
+  // compute — this cache holds the picker's ``onPickedItemsChange``
+  // snapshot so live compute reads the right values instantly.
+  const [capsuleShellAttrs, setCapsuleShellAttrs] = useState<
+    Record<string, Readonly<Record<string, unknown>>>
+  >(() =>
+    Object.fromEntries(
+      (initialFormulation.capsule_shell_items ?? []).map((i) => [
+        i.id,
+        i.attributes ?? {},
+      ]),
+    ),
+  );
   const [mccCarrierNames, setMccCarrierNames] = useState<
     Record<string, string>
   >(() =>
@@ -776,20 +792,24 @@ export function FormulationBuilder({
         : [];
     // Effective capsule size — the picked shell wins over the
     // dropdown so procurement-driven picks stay in sync with
-    // compute. Reads the first pick's ``attributes.capsule_size``
-    // (matches the "typically one pick" shell convention). Falls
-    // back to ``metadata.capsule_size`` when no shell is picked
-    // or the pick lacks the attribute, preserving legacy behaviour.
+    // compute. Reads the first pick's ``attributes.capsule_size``.
+    // Live picker cache takes precedence over the server echo so a
+    // freshly-toggled shell drives compute the moment the checkbox
+    // fires, not after the save round-trip. Falls back to
+    // ``metadata.capsule_size`` when no shell is picked / the pick
+    // lacks the attribute, preserving pre-picker behaviour.
     let effectiveCapsuleSize = metadata.capsule_size || null;
     if (
       metadata.dosage_form === "capsule" &&
       metadata.capsule_shell_item_ids.length > 0
     ) {
-      const firstId = metadata.capsule_shell_item_ids[0];
-      const pick = (formulation.capsule_shell_items ?? []).find(
+      const firstId = metadata.capsule_shell_item_ids[0] ?? "";
+      const liveAttrs = firstId ? capsuleShellAttrs[firstId] : undefined;
+      const echoedAttrs = (formulation.capsule_shell_items ?? []).find(
         (i) => i.id === firstId,
-      );
-      const fromAttrs = pick?.attributes?.["capsule_size"];
+      )?.attributes;
+      const fromAttrs =
+        liveAttrs?.["capsule_size"] ?? echoedAttrs?.["capsule_size"];
       if (typeof fromAttrs === "string" && fromAttrs.trim()) {
         effectiveCapsuleSize = fromAttrs.trim();
       }
@@ -882,6 +902,7 @@ export function FormulationBuilder({
     metadata.capsule_size,
     metadata.capsule_shell_item_ids,
     formulation.capsule_shell_items,
+    capsuleShellAttrs,
     metadata.tablet_size,
     metadata.serving_size,
     metadata.target_fill_weight_mg,
@@ -993,12 +1014,25 @@ export function FormulationBuilder({
   const capsuleShellPick = useMemo(() => {
     if (metadata.dosage_form !== "capsule") return null;
     if (metadata.capsule_shell_item_ids.length === 0) return null;
-    const firstId = metadata.capsule_shell_item_ids[0];
+    const firstId = metadata.capsule_shell_item_ids[0] ?? "";
+    if (!firstId) return null;
     const pick = (formulation.capsule_shell_items ?? []).find(
       (i) => i.id === firstId,
     );
-    if (!pick) return null;
-    const rawWeight = pick.attributes?.["shell_weight_mg"];
+    // Live cache first (freshly-toggled picks), server echo
+    // second (persisted picks). Either can drive the declaration
+    // row — the compute path uses the same precedence for
+    // ``capsule_size``.
+    const liveAttrs = capsuleShellAttrs[firstId];
+    const attrs = liveAttrs ?? pick?.attributes ?? {};
+    const liveName = capsuleShellNames[firstId];
+    const name =
+      (attrs["ingredient_list_name"] as string | undefined) ||
+      liveName ||
+      pick?.name ||
+      "";
+    if (!name) return null;
+    const rawWeight = attrs["shell_weight_mg"];
     const weight =
       typeof rawWeight === "number"
         ? rawWeight
@@ -1006,15 +1040,15 @@ export function FormulationBuilder({
           ? Number.parseFloat(rawWeight)
           : null;
     return {
-      name:
-        (pick.attributes?.["ingredient_list_name"] as string | undefined) ||
-        pick.name,
+      name,
       shellWeightMg: Number.isFinite(weight) ? (weight as number) : null,
     };
   }, [
     metadata.dosage_form,
     metadata.capsule_shell_item_ids,
     formulation.capsule_shell_items,
+    capsuleShellAttrs,
+    capsuleShellNames,
   ]);
 
   // Consumer-facing ingredient declaration. Picked SKUs override
@@ -1477,7 +1511,15 @@ export function FormulationBuilder({
         code: metadata.code,
         description: metadata.description,
         dosage_form: metadata.dosage_form,
-        capsule_size: metadata.capsule_size,
+        // Once a capsule shell is picked its ``attributes.capsule_size``
+        // is the source of truth for compute + fill capacity. Clear
+        // the legacy dropdown value so a later "unpick shell" doesn't
+        // fall back onto a stale manual override the scientist can't
+        // see (the dropdown is hidden while a shell is picked).
+        capsule_size:
+          metadata.capsule_shell_item_ids.length > 0
+            ? ""
+            : metadata.capsule_size,
         tablet_size: metadata.tablet_size,
         serving_size: metadata.serving_size,
         servings_per_pack: metadata.servings_per_pack,
@@ -1853,7 +1895,8 @@ export function FormulationBuilder({
               hint={tFormulations("fields.water_volume_ml_hint")}
             />
           ) : null}
-          {metadata.dosage_form === "capsule" ? (
+          {metadata.dosage_form === "capsule" &&
+          metadata.capsule_shell_item_ids.length === 0 ? (
             <SelectField
               label={tFormulations("fields.capsule_size")}
               value={metadata.capsule_size}
@@ -1867,6 +1910,20 @@ export function FormulationBuilder({
                 })),
               ]}
             />
+          ) : metadata.dosage_form === "capsule" ? (
+            <div className="flex flex-col gap-1.5">
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                Capsule size
+              </span>
+              <div className="flex items-center gap-2 rounded-xl bg-orange-50/60 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-orange-200">
+                <ShieldCheck className="h-4 w-4 shrink-0 text-orange-700" />
+                <span>
+                  Driven by the picked capsule shell — edit the shell's{" "}
+                  <span className="font-mono text-xs">capsule_size</span>{" "}
+                  attribute on PSP to change.
+                </span>
+              </div>
+            </div>
           ) : null}
           {metadata.dosage_form === "tablet" ? (
             <SelectField
@@ -1921,6 +1978,11 @@ export function FormulationBuilder({
                 setCapsuleShellCodes((prev) => {
                   const next = { ...prev };
                   for (const it of items) next[it.id] = it.internal_code;
+                  return next;
+                });
+                setCapsuleShellAttrs((prev) => {
+                  const next = { ...prev };
+                  for (const it of items) next[it.id] = it.attributes ?? {};
                   return next;
                 });
               }}
