@@ -1243,12 +1243,10 @@ export function FormulationBuilder({
       // populates the row.
       if (item.id.startsWith("psp:")) {
         const pspUuid = item.id.slice("psp:".length);
-        // Dedupe: if any existing line already references the local
-        // mirror row for this PSP UUID, do nothing. This avoids a
-        // pointless round-trip on a double-click before the first
-        // mirror completes; the appendIngredientLine call below is
-        // also guarded by ``item_id`` uniqueness for the post-mirror
-        // race case.
+        // Clear any stale error banner before we kick off the
+        // mirror round-trip. On success or failure it gets
+        // replaced with a fresh message below.
+        setErrorMessage(null);
         mirrorPsp.mutate(pspUuid, {
           onSuccess: (dto) => {
             appendIngredientLine({
@@ -1262,6 +1260,14 @@ export function FormulationBuilder({
               created_at: "",
               updated_at: "",
             });
+          },
+          onError: (err) => {
+            // Surface the mirror failure in the same error banner
+            // the rest of the builder uses. Without this the click
+            // fails silently — the button appears to do nothing
+            // and the operator can't tell PSP integration status
+            // from a real network / permission issue.
+            setErrorMessage(extractApiErrorMessage(err, tErrors));
           },
         });
         return;
@@ -4580,6 +4586,7 @@ function CatalogueMultiPicker({
   emptyText,
   onChange,
   onPickedItemsChange,
+  onMirrorError,
 }: {
   orgId: string;
   value: readonly string[];
@@ -4592,6 +4599,12 @@ function CatalogueMultiPicker({
   loadingText: string;
   emptyText: string;
   onChange: (ids: readonly string[]) => void;
+  /** Optional error surface for PSP mirror failures. Called with
+   *  the raw ``ApiError`` so the host can pipe it into whatever
+   *  banner / toast it already renders. Falls back to
+   *  ``console.error`` inside the picker when unset — silent
+   *  failures are the worst possible UX here. */
+  onMirrorError?: (err: unknown) => void;
   /** Optional side-channel that emits ``{id, name, attributes?}`` for
    *  the items currently checked, sourced from the picker's own
    *  merged list (fetched + preselected). Lets the parent render
@@ -4758,6 +4771,17 @@ function CatalogueMultiPicker({
     if (id.startsWith("psp:")) {
       const pspUuid = id.slice("psp:".length);
       mirrorPsp.mutate(pspUuid, {
+        onError: (err) => {
+          // Surface via the parent-owned error banner if the host
+          // wired one in — otherwise fall back to ``console.error``
+          // so at least the browser devtools show the failure and
+          // it doesn't disappear into silence.
+          if (onMirrorError) {
+            onMirrorError(err);
+          } else if (typeof console !== "undefined") {
+            console.error("PSP mirror failed", err);
+          }
+        },
         onSuccess: (dto) => {
           setPspToLocal((prev) => ({
             ...prev,
