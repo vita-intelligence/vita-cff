@@ -53,6 +53,13 @@ export interface OrganizationDto {
    * live).
    */
   readonly psp_live: boolean;
+  /** Base URL of the org's PSP instance (``https://psp.example
+   *  .com``, trailing slash stripped). Used to build deep-link
+   *  buttons back into PSP's UI from the NPD builder — e.g. the
+   *  "Open BOM on PSP" chip on a linked formulation. Empty
+   *  string when PSP isn't configured. Non-sensitive: only the
+   *  URL crosses the wire; the API token stays owner-scoped. */
+  readonly psp_base_url: string;
   readonly created_at: string;
   readonly updated_at: string;
 }

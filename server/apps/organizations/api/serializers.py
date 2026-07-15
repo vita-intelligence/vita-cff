@@ -43,6 +43,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
     dynamics_customers_managed = serializers.SerializerMethodField()
     mrpeasy_live = serializers.SerializerMethodField()
     psp_live = serializers.SerializerMethodField()
+    psp_base_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
@@ -55,6 +56,7 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
             "dynamics_customers_managed",
             "mrpeasy_live",
             "psp_live",
+            "psp_base_url",
             "created_at",
             "updated_at",
         )
@@ -122,6 +124,20 @@ class OrganizationReadSerializer(serializers.ModelSerializer):
         from apps.psp.services import is_psp_live
 
         return is_psp_live(obj)
+
+    def get_psp_base_url(self, obj: Organization) -> str:
+        """Public base URL of the org's PSP instance. Non-sensitive
+        — used by the FE to build deep-links back into PSP's UI
+        (item pages, BOM pages) from the NPD builder. The API token
+        stays owner-only via the dedicated ``psp/`` settings
+        endpoint; only the URL is exposed here so every builder-
+        capable user can click through, not just owners.
+
+        Empty string when PSP isn't configured or the URL wasn't
+        set — the FE hides the deep-link buttons in that case."""
+
+        raw = obj.psp_config or {}
+        return str(raw.get("base_url") or "").rstrip("/")
 
 
 class OrganizationCreateSerializer(serializers.ModelSerializer):
