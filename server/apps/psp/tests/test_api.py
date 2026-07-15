@@ -240,7 +240,11 @@ class TestPickerEndpoints:
                         product_family_name=None,
                         selling_price=None,
                         currency_code=None,
-                        attributes={},
+                        attributes={
+                            "purity": "0.98",
+                            "extract_ratio": 1.0,
+                            "type": "Vitamin",
+                        },
                     )
                 ]
 
@@ -264,6 +268,14 @@ class TestPickerEndpoints:
             assert len(items) == 1
             assert items[0]["uuid"] == "u1"
             assert items[0]["use_as"] == "active"
+            # Full attributes map must reach the FE, otherwise the
+            # builder's ``canComputeMaterial`` gate fires
+            # "missing_purity" on every PSP-sourced picker row.
+            assert items[0]["attributes"] == {
+                "purity": "0.98",
+                "extract_ratio": 1.0,
+                "type": "Vitamin",
+            }
             # Query params were parsed correctly.
             assert _StubClient.calls == {
                 "search": "Vit",
