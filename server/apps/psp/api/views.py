@@ -343,4 +343,11 @@ def _serialize_item(item: Any) -> dict[str, Any]:
             else None
         ),
         "currency_code": item.currency_code,
+        # Full attributes map — carries the compute-critical keys
+        # (``purity``, ``overage``, ``extract_ratio``, ``type``,
+        # allergen flags, country of origin, ...). Without this the
+        # builder's ``canComputeMaterial`` gate fires "missing_purity"
+        # on every PSP-sourced picker row, since ``item.attributes``
+        # on the FE would default to ``{}``.
+        "attributes": item.attributes or {},
     }
