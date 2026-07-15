@@ -876,19 +876,6 @@ export function FormulationBuilder({
     [lines],
   );
 
-  const declaration: IngredientDeclaration = useMemo(
-    () =>
-      buildIngredientDeclaration({
-        lines: lines.map((line) => ({
-          externalId: line.key,
-          attributes: line.item_attributes,
-          fallbackName: line.item_name,
-        })),
-        totals: liveTotals,
-      }),
-    [lines, liveTotals],
-  );
-
   // Stable arrays for the labels in the totals panel's bracket lists
   // ("Carrier (Maltodextrin)", "Anti-caking Agents (Silicon Dioxide)").
   // Previously rebuilt inline in JSX on every render which defeated
@@ -925,6 +912,48 @@ export function FormulationBuilder({
       metadata.anti_caking_item_ids,
       antiCakingNames,
       formulation.anti_caking_items,
+    ],
+  );
+
+  // Same live-name resolution for DCP carrier picks. No dedicated
+  // live-name cache exists (the picker doesn't emit
+  // ``onPickedItemsChange`` for DCP), so the server echo carries
+  // the whole load — post-save it's fresh, pre-save the fallback
+  // to the canonical label kicks in.
+  const dcpCarrierLabels = useMemo(
+    () =>
+      metadata.dcp_carrier_item_ids
+        .map(
+          (id) =>
+            formulation.dcp_carrier_items.find((i) => i.id === id)?.name ?? "",
+        )
+        .filter((name) => name !== ""),
+    [metadata.dcp_carrier_item_ids, formulation.dcp_carrier_items],
+  );
+
+  // Consumer-facing ingredient declaration. Picked SKUs override
+  // the canonical excipient placeholders ("Microcrystalline
+  // Cellulose (Carrier)", "Anticaking Agents (...)") so the label
+  // reads the actual pack contents, matching what the BOM prints.
+  const declaration: IngredientDeclaration = useMemo(
+    () =>
+      buildIngredientDeclaration({
+        lines: lines.map((line) => ({
+          externalId: line.key,
+          attributes: line.item_attributes,
+          fallbackName: line.item_name,
+        })),
+        totals: liveTotals,
+        mccCarrierPicks: mccCarrierLabels,
+        dcpCarrierPicks: dcpCarrierLabels,
+        antiCakingPicks: antiCakingLabels,
+      }),
+    [
+      lines,
+      liveTotals,
+      mccCarrierLabels,
+      dcpCarrierLabels,
+      antiCakingLabels,
     ],
   );
 

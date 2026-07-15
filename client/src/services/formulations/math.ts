@@ -766,6 +766,9 @@ export interface IngredientDeclaration {
 export function buildIngredientDeclaration({
   lines,
   totals,
+  mccCarrierPicks = [],
+  dcpCarrierPicks = [],
+  antiCakingPicks = [],
 }: {
   lines: readonly {
     readonly externalId: string;
@@ -773,6 +776,15 @@ export function buildIngredientDeclaration({
     readonly fallbackName?: string;
   }[];
   totals: FormulationTotals;
+  /** Names of items the scientist has ticked in the MCC-carrier
+   *  picker. When non-empty, the "Microcrystalline Cellulose
+   *  (Carrier)" placeholder is replaced with one entry per pick
+   *  (name split, mass shared equally). Same shape for DCP and
+   *  anti-caking. Empty array falls back to the canonical
+   *  category label — the pre-picker legacy behaviour. */
+  mccCarrierPicks?: readonly string[];
+  dcpCarrierPicks?: readonly string[];
+  antiCakingPicks?: readonly string[];
 }): IngredientDeclaration {
   const entries: IngredientDeclarationEntry[] = [];
 
@@ -795,42 +807,53 @@ export function buildIngredientDeclaration({
     });
   }
 
+  // One declaration entry per pick, equal mg split — falls back
+  // to the canonical category label when the band has no picks.
+  // Same logic the BOM uses for its excipient rows, kept as a
+  // helper so the two views stay in lockstep.
+  const pushBand = (
+    totalMg: number,
+    picks: readonly string[],
+    placeholderLabel: string,
+  ) => {
+    if (totalMg <= 0) return;
+    if (picks.length === 0) {
+      entries.push({
+        label: placeholderLabel,
+        mg: totalMg,
+        category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
+      });
+      return;
+    }
+    const perPickMg = totalMg / picks.length;
+    for (const name of picks) {
+      entries.push({
+        label: name,
+        mg: perPickMg,
+        category: "excipient",
+        isAllergen: false,
+        allergenSource: "",
+      });
+    }
+  };
+
   const excipients = totals.excipients;
   if (excipients) {
-    if (excipients.mccMg > 0) {
-      entries.push({
-        label: EXCIPIENT_LABEL_MCC,
-        mg: excipients.mccMg,
-        category: "excipient",
-        isAllergen: false,
-        allergenSource: "",
-      });
-    }
-    if (excipients.dcpMg !== null && excipients.dcpMg > 0) {
-      entries.push({
-        label: EXCIPIENT_LABEL_DCP,
-        mg: excipients.dcpMg,
-        category: "excipient",
-        isAllergen: false,
-        allergenSource: "",
-      });
+    pushBand(excipients.mccMg, mccCarrierPicks, EXCIPIENT_LABEL_MCC);
+    if (excipients.dcpMg !== null) {
+      pushBand(excipients.dcpMg, dcpCarrierPicks, EXCIPIENT_LABEL_DCP);
     }
     // Mg Stearate + Silica collapse into a single "Anticaking
-    // Agents" row on the consumer-facing declaration — same merge
+    // Agents" total on the consumer-facing declaration — same merge
     // the server's ``build_ingredient_declaration`` does. Combined
     // mg drives the sort order so the merged entry sits at the
     // right rank rather than each half landing at the bottom on
-    // its own tiny weight.
+    // its own tiny weight. When picks exist the total splits across
+    // them equally; empty picks keeps the pre-picker placeholder.
     const anticakingMg = excipients.mgStearateMg + excipients.silicaMg;
-    if (anticakingMg > 0) {
-      entries.push({
-        label: EXCIPIENT_LABEL_ANTICAKING,
-        mg: anticakingMg,
-        category: "excipient",
-        isAllergen: false,
-        allergenSource: "",
-      });
-    }
+    pushBand(anticakingMg, antiCakingPicks, EXCIPIENT_LABEL_ANTICAKING);
     // Gummy-only: per-pick gummy base rows + water + the flexible
     // ``rows`` list (acidity, flavouring, colour, glazing, gelling,
     // premix sweetener). Each per-pick row carries its source
