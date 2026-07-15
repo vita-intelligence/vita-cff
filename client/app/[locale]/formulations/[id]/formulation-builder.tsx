@@ -2138,6 +2138,33 @@ export function FormulationBuilder({
               ]}
             />
           ) : null}
+        </div>
+      </section>
+      </div>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Excipient pickers (tab: INGREDIENTS)                         */}
+      {/*                                                              */}
+      {/* Category-scoped pickers for the excipient bands the          */}
+      {/* formulation needs. Every pick lands on a formulation-level   */}
+      {/* M2M (mcc_carrier_items, anti_caking_items, ...) and feeds    */}
+      {/* the ingredient declaration + compute cascade. Moved out of   */}
+      {/* Setup because these are ingredients, not product setup —     */}
+      {/* the picker context also drives the compute's use_as          */}
+      {/* inference so keeping them near the actives picker below is   */}
+      {/* the right mental model.                                      */}
+      {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "ingredients" ? "flex flex-col gap-10" : "hidden"}>
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+          Excipients
+        </p>
+        <p className="mt-1 text-sm text-ink-700">
+          Pick the specific SKUs used for each band. Empty = the
+          declaration falls back to a generic placeholder for that
+          band. Every pick feeds the compute + declaration.
+        </p>
+        <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
           {/* Capsule shell picker — capsule-only. Picks flow into
               compute via ``attributes.capsule_size`` (overriding the
               size dropdown) and ``attributes.shell_weight_mg``
@@ -2739,6 +2766,19 @@ export function FormulationBuilder({
               }
             />
           ) : null}
+        </div>
+      </section>
+      </div>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Setup (continued) — trailing product-setup fields (tab: SETUP) */}
+      {/* Servings, appearance, disintegration spec, directions of     */}
+      {/* use, suggested dosage. Second Setup wrapper segment because  */}
+      {/* the excipient pickers above split the metadata form.         */}
+      {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "setup" ? "flex flex-col gap-10" : "hidden"}>
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
           {/* Serving-size units vary by form: capsules, tablets,
               gummies, and powders (scoops) each get their own label
               so the input reads naturally in the scientist's mental
