@@ -373,6 +373,96 @@ class PspClient:
             return None
         return response
 
+    def list_workstation_groups(self) -> list[dict[str, Any]]:
+        """Fetch PSP's workstation groups so the NPD stage builder
+        can render the "run on" dropdown. Returns the raw rows PSP
+        emits (``uuid``, ``name``, ``kind``, ``hourly_rate``,
+        ``color``, ``default_operation_notes``). Empty list on any
+        soft error — the FE renders "no workstations yet" the same
+        way as a genuinely empty PSP catalog.
+        """
+
+        payload = self._request("api/integration/workstation-groups")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def create_item(
+        self,
+        *,
+        name: str,
+        item_type: str,
+        external_sku: str,
+        description: str = "",
+    ) -> dict | None:
+        """Idempotently create a catalog Item on PSP. Restricted to
+        ``semi_finished`` + ``finished_product`` server-side. The
+        push cascade uses this to auto-materialise one PSP semi-
+        finished item per non-terminal stage — ``external_sku``
+        (typically ``NPD-STAGE-<formulation_uuid>-<sort_order>``) is
+        the load-bearing idempotency key, so a re-push after an
+        interrupted save doesn't spawn a duplicate row.
+
+        Returns PSP's ``{"uuid", "name", "item_type", "external_sku",
+        "created", ...}`` payload on 200 / 201, or ``None`` on soft
+        failure. Hard failures bubble as :class:`PspError` subclasses.
+        """
+
+        response = self._request(
+            "api/integration/items",
+            method="POST",
+            body={
+                "name": name,
+                "item_type": item_type,
+                "external_sku": external_sku,
+                "description": description,
+            },
+        )
+        if not isinstance(response, dict):
+            return None
+        row = response.get("item")
+        if not isinstance(row, dict):
+            return None
+        return row
+
+    def put_routing(
+        self,
+        item_uuid: Any,
+        *,
+        name: str,
+        steps: list[dict[str, Any]],
+        notes: str = "",
+    ) -> dict | None:
+        """Upsert a routing on a PSP item. PSP keys the upsert by
+        ``(item_uuid, name)`` and wholesale-replaces the step list —
+        one push carries the whole ordered set.
+
+        Steps are dicts of ``{workstation_group_uuid, sort_order?,
+        operation_description?, setup_time_min?, cycle_time_min?,
+        fixed_cost?, variable_cost?, capacity?}``. Returns PSP's
+        response (``{"routing": {"uuid": ..., "step_count": N}}``)
+        or ``None`` on soft error.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/items/{cleaned}/routing",
+            method="PUT",
+            body={
+                "name": name,
+                "notes": notes,
+                "steps": steps,
+            },
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
 
 def _project_item(row: dict[str, Any]) -> PspItem:
     """Map a PSP JSON row onto the local :class:`PspItem` dataclass.
@@ -708,28 +798,43 @@ def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
 
 
 def push_bom_to_psp(*, formulation: Any) -> dict | None:
-    """Push a formulation's active lines to PSP as a BOM against the
-    linked finished-product item. Called after every ``save_version``
-    (see :func:`apps.formulations.services.save_version`).
+    """Push a formulation's stage graph to PSP as a cascade of BOMs
+    + Routings. Called after every ``save_version``.
 
     Silent-degradation contract — no exception ever bubbles to the
     caller. If PSP is down, mis-configured, or the formulation
     isn't linked (``psp_finished_product_uuid IS NULL``), the push
-    is skipped and the return value is ``None``. The save flow
-    stays functional; PSP-side data catches up on the next successful
-    push.
+    is skipped and the return value is ``None``.
 
-    Scope (MVP):
+    Cascade shape (one round-trip per stage per BOM + one per
+    routing, all inside a single push):
 
-    * ACTIVE lines only — each ``FormulationLine`` whose ``item`` is
-      a mirrored PSP row (``item.psp_source_uuid IS NOT NULL``)
-      contributes one BOM line. The line's ``qty`` is
-      ``mg_per_serving_cached`` (mg per single serving), stringified
-      as a Decimal so PSP's decimal parser accepts it.
-    * Excipient picks (capsule shell, MCC carrier, anti-caking,
-      etc.) are deferred to a follow-up — the band-level mg splits
-      across multiple picks and needs the compute service to
-      reproduce that split server-side.
+    * Non-terminal stages — each becomes its own semi-finished
+      Item on PSP. On the first push NPD creates the item via
+      ``POST /items`` (idempotency key: ``external_sku =
+      NPD-STAGE-<formulation_uuid>-<sort_order>``), caches the
+      returned UUID onto :attr:`FormulationStage.psp_semi_finished_uuid`,
+      and pushes a BOM listing that stage's raw-material lines
+      **plus** a link to the prior stage's semi-finished item
+      (qty = 1) so the multi-level structure resolves. Then pushes
+      a single-step Routing anchored at the stage's workstation
+      group.
+
+    * Terminal stage — its output IS the finished product on PSP
+      (:attr:`Formulation.psp_finished_product_uuid`). BOM = the
+      stage's own raw-material lines + the prior stage's semi-
+      finished output; Routing = one step on the stage's
+      workstation.
+
+    * No-stages fallback — a formulation that predates the stages
+      model (or a dosage form with no default template — liquid,
+      other-solid) still pushes ONE flat BOM against the finished-
+      product item, matching the pre-stages behaviour. Ensures
+      legacy formulations keep syncing without a manual migration.
+
+    Excipient / band picks stay deferred (same MVP scope as before —
+    the band-level mg splits need the compute service to reproduce
+    server-side).
     """
 
     if not formulation.psp_finished_product_uuid:
@@ -748,45 +853,22 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
         )
         return None
 
-    lines: list[dict[str, Any]] = []
-    for index, line in enumerate(
-        formulation.lines.select_related("item").order_by("display_order")
-    ):
-        item = line.item
-        if not item.psp_source_uuid:
-            # Line references a legacy local Item that predates PSP
-            # mirror — skip. Without the source uuid PSP can't
-            # resolve it to a part. The FE picker + mirror flow
-            # guarantees new picks always have this set.
-            continue
-        qty = line.mg_per_serving_cached
-        if qty is None or qty <= 0:
-            continue
-        lines.append(
-            {
-                "part_uuid": str(item.psp_source_uuid),
-                "qty": str(qty),
-                "sort_order": index,
-            }
-        )
-
-    if not lines:
-        # Empty payload — PSP's endpoint bounces with ``empty_lines``,
-        # which would spam the logs. Short-circuit here instead.
-        return None
-
-    payload = {
-        "name": f"{formulation.code} — {formulation.name}",
-        "version_notes": f"NPD save at {formulation.updated_at.isoformat()}",
-        "lines": lines,
-    }
-
     try:
         client = _client_factory(config)
-        response = client.put_bom(
-            formulation.psp_finished_product_uuid, payload
+    except PspInvalidConfig:
+        logger.exception(
+            "PSP push_bom: invalid config for org %s", organization.pk
         )
-        return response
+        return None
+
+    stages = list(formulation.stages.order_by("sort_order"))
+
+    try:
+        if not stages:
+            return _push_flat_bom(client=client, formulation=formulation)
+        return _push_staged_cascade(
+            client=client, formulation=formulation, stages=stages
+        )
     except PspError:
         logger.exception(
             "PSP push_bom failed for formulation %s (org %s)",
@@ -794,6 +876,233 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
             organization.pk,
         )
         return None
+
+
+def _lines_for_stage(formulation: Any, stage_id: Any) -> list[Any]:
+    """Return the formulation's PSP-mirrored lines assigned to
+    ``stage_id`` (or, when ``stage_id is None``, the legacy "no
+    stage" bucket that flows into the terminal stage by default).
+    """
+
+    query = formulation.lines.select_related("item")
+    if stage_id is None:
+        query = query.filter(stage__isnull=True)
+    else:
+        query = query.filter(stage_id=stage_id)
+    return list(query.order_by("display_order"))
+
+
+def _bom_lines_from(items: list[Any], *, start_index: int = 0) -> list[dict[str, Any]]:
+    """Project a list of ``FormulationLine`` rows into the PSP BOM
+    line shape. Skips rows whose local Item has no ``psp_source_uuid``
+    (legacy pre-mirror items) or whose cached serving weight is
+    non-positive (a compute glitch we don't want to propagate)."""
+
+    out: list[dict[str, Any]] = []
+    for offset, line in enumerate(items):
+        item = line.item
+        if item is None or not getattr(item, "psp_source_uuid", None):
+            continue
+        qty = line.mg_per_serving_cached
+        if qty is None or qty <= 0:
+            continue
+        out.append(
+            {
+                "part_uuid": str(item.psp_source_uuid),
+                "qty": str(qty),
+                "sort_order": start_index + offset,
+            }
+        )
+    return out
+
+
+def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
+    """Legacy path: one flat BOM against the finished-product item.
+    Kept as the fallback for formulations that don't yet have a
+    stage graph (dosage forms with no default template, or rows
+    created before phase 2 landed)."""
+
+    lines = _bom_lines_from(_lines_for_stage(formulation, stage_id=None))
+    all_lines = _bom_lines_from(
+        list(
+            formulation.lines.select_related("item").order_by("display_order")
+        )
+    )
+    # A formulation with NULL-stage lines + no stages carries the
+    # same set both ways; keeping ``all_lines`` as the source of
+    # truth avoids double-counting.
+    payload_lines = all_lines or lines
+    if not payload_lines:
+        return None
+
+    payload = {
+        "name": f"{formulation.code} — {formulation.name}",
+        "version_notes": f"NPD save at {formulation.updated_at.isoformat()}",
+        "lines": payload_lines,
+    }
+    return client.put_bom(formulation.psp_finished_product_uuid, payload)
+
+
+def _push_staged_cascade(
+    *,
+    client: PspClient,
+    formulation: Any,
+    stages: list[Any],
+) -> dict | None:
+    """Walk stages in ``sort_order`` and push one BOM + one Routing
+    per stage. Non-terminal stages produce PSP semi-finished items;
+    the terminal stage IS the finished product.
+
+    Returns the finished-product BOM response so callers can log the
+    final version number. Intermediate responses are captured on
+    exception context but not returned.
+    """
+
+    terminal = stages[-1]
+    previous_semi_uuid: str | None = None
+    last_response: dict | None = None
+
+    for stage in stages:
+        is_terminal = stage.id == terminal.id
+        # Non-terminal stages produce semi-finished items; the
+        # terminal stage's output is the finished-product item the
+        # formulation already links to.
+        if is_terminal:
+            output_uuid = str(formulation.psp_finished_product_uuid)
+        else:
+            output_uuid = _ensure_semi_finished(
+                client=client, formulation=formulation, stage=stage
+            )
+            if output_uuid is None:
+                logger.warning(
+                    "PSP push_bom: stage %s produced no semi-finished uuid;"
+                    " aborting cascade for formulation %s",
+                    stage.id,
+                    formulation.pk,
+                )
+                return last_response
+
+        # BOM lines = raw-material picks assigned to this stage
+        # (+ any legacy null-stage lines when this is the terminal
+        # stage — they flow into the finished product by default).
+        assigned = _lines_for_stage(formulation, stage_id=stage.id)
+        if is_terminal:
+            assigned = assigned + _lines_for_stage(formulation, stage_id=None)
+        bom_lines = _bom_lines_from(assigned)
+
+        # Every stage after the first consumes the prior stage's
+        # semi-finished output at qty = 1 (one serving worth of
+        # blend feeds forward). Prepend so the FE + audit rows see
+        # the semi-finished dependency at the top of the BOM.
+        if previous_semi_uuid is not None:
+            bom_lines = [
+                {
+                    "part_uuid": previous_semi_uuid,
+                    "qty": "1",
+                    "sort_order": -1,
+                }
+            ] + bom_lines
+            # Renumber sort_order so PSP's storage stays dense.
+            for i, row in enumerate(bom_lines):
+                row["sort_order"] = i
+
+        # Skip stages with nothing to push — mostly relevant for
+        # non-terminal stages that carry no lines yet (operator
+        # hasn't assigned actives to that stage). The routing
+        # still gets pushed so the workstation reservation exists.
+        stage_label = stage.name or f"Stage {stage.sort_order + 1}"
+        bom_name = f"{formulation.code} — {stage_label}"
+
+        if bom_lines:
+            payload = {
+                "name": bom_name,
+                "version_notes": (
+                    f"NPD stage push at {formulation.updated_at.isoformat()}"
+                ),
+                "lines": bom_lines,
+            }
+            response = client.put_bom(output_uuid, payload)
+            if response is not None:
+                last_response = response
+
+        # Routing = one step for this stage's workstation. Skip
+        # when the stage has no workstation picked yet — pushing
+        # an empty-workstation routing would 422.
+        if stage.workstation_group_uuid:
+            client.put_routing(
+                output_uuid,
+                name=f"{formulation.code} — {stage_label} Routing",
+                steps=[
+                    {
+                        "workstation_group_uuid": str(stage.workstation_group_uuid),
+                        "sort_order": 0,
+                        "operation_description": stage_label,
+                        "setup_time_min": (
+                            str(stage.setup_time_min)
+                            if stage.setup_time_min is not None
+                            else None
+                        ),
+                        "cycle_time_min": (
+                            str(stage.cycle_time_min)
+                            if stage.cycle_time_min is not None
+                            else None
+                        ),
+                        "fixed_cost": (
+                            str(stage.fixed_cost)
+                            if stage.fixed_cost is not None
+                            else None
+                        ),
+                        "variable_cost": (
+                            str(stage.variable_cost)
+                            if stage.variable_cost is not None
+                            else None
+                        ),
+                    }
+                ],
+            )
+
+        previous_semi_uuid = output_uuid if not is_terminal else None
+
+    return last_response
+
+
+def _ensure_semi_finished(
+    *, client: PspClient, formulation: Any, stage: Any
+) -> str | None:
+    """Return the PSP semi-finished item UUID for a non-terminal
+    stage, creating it on the first push.
+
+    Idempotency: ``external_sku = NPD-STAGE-<formulation_uuid>-
+    <sort_order>``. PSP's ``POST /items`` returns the existing row
+    when the sku already exists so an interrupted push safely retries.
+    The returned UUID is cached back onto
+    :attr:`FormulationStage.psp_semi_finished_uuid` so subsequent
+    pushes skip the lookup.
+    """
+
+    if stage.psp_semi_finished_uuid:
+        return str(stage.psp_semi_finished_uuid)
+
+    external_sku = f"NPD-STAGE-{formulation.id}-{stage.sort_order}"
+    name = f"{formulation.code} — {stage.name or f'Stage {stage.sort_order + 1}'}"
+    response = client.create_item(
+        name=name,
+        item_type="semi_finished",
+        external_sku=external_sku,
+        description=(
+            f"Auto-created by NPD for formulation {formulation.code}"
+            f" stage {stage.sort_order + 1}."
+        ),
+    )
+    if not response or not response.get("uuid"):
+        return None
+    uuid = str(response["uuid"])
+
+    # Cache on the stage so we don't POST /items again. Save only
+    # this field so we don't race with concurrent stage edits.
+    stage.psp_semi_finished_uuid = uuid
+    stage.save(update_fields=["psp_semi_finished_uuid", "updated_at"])
+    return uuid
 
 
 # ---------------------------------------------------------------------------
