@@ -309,6 +309,23 @@ class Formulation(models.Model):
             "are also picked."
         ),
     )
+    capsule_shell_items = models.ManyToManyField(
+        "catalogues.Item",
+        verbose_name=_("capsule shell items"),
+        blank=True,
+        related_name="capsule_shell_formulations",
+        help_text=_(
+            "Empty capsule shell items the finished pack is filled "
+            "into. Each pick must carry use_as = 'Capsule Shell'. "
+            "The shell's attributes.capsule_size drives the fill "
+            "capacity for compute; attributes.shell_weight_mg "
+            "drives the mg the declaration attributes to the shell "
+            "row. Empty list falls back to the hardcoded per-size "
+            "table (CAPSULE_SHELL_WEIGHTS in the FE, matching "
+            "constants on the Python side) so legacy formulations "
+            "keep rendering. Ignored for tablet / powder / gummy."
+        ),
+    )
     mcc_carrier_items = models.ManyToManyField(
         "catalogues.Item",
         verbose_name=_("MCC carrier items"),

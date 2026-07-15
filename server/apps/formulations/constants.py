@@ -480,6 +480,15 @@ PREMIX_SWEETENER_USE_CATEGORIES: tuple[str, ...] = GUMMY_BASE_USE_CATEGORIES
 MCC_CARRIER_USE_CATEGORIES: tuple[str, ...] = ("Carrier", "Bulking Agent")
 
 
+#: Use-as vocabulary the capsule-shell picker admits. Empty
+#: capsule shells (Size 0 HPMC, Size 00 Gelatin, etc.) tagged
+#: on PSP with this exact string flow into the picker. Kept
+#: as a tuple so the picker filter stays a single set — no
+#: legacy aliases like MCC has ("Carrier" | "Bulking Agent")
+#: because "Capsule Shell" is a purpose-built category.
+CAPSULE_SHELL_USE_CATEGORIES: tuple[str, ...] = ("Capsule Shell",)
+
+
 #: The tablet DCP-carrier picker. Same ``Bulking Agent`` filter as
 #: the MCC carrier — DCP is a structural filler in the same family
 #: and lives under the same canonical category in the catalogue. Held

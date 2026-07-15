@@ -34,6 +34,7 @@ from apps.formulations.constants import (
     ANTI_CAKING_USE_CATEGORIES,
     CAPSULE_MG_STEARATE_PCT,
     CAPSULE_SHELL_LABEL,
+    CAPSULE_SHELL_USE_CATEGORIES,
     CAPSULE_SILICA_PCT,
     CAPSULE_SIZES,
     COMPLIANCE_FLAGS,
@@ -239,6 +240,18 @@ class InvalidPremixSweetenerItem(Exception):
     surface it on the right field."""
 
     code = "invalid_premix_sweetener_item"
+
+
+class InvalidCapsuleShellItem(Exception):
+    """Picked capsule shell item is not in the org's ingredient
+    catalogues or doesn't carry ``use_as == "Capsule Shell"``. The
+    capsule shell picker rejects every other category so a stray
+    "Active" or "Bulking Agent" pick never ends up as the shell —
+    downstream compute reads the picked shell's attributes.capsule_size
+    and attributes.shell_weight_mg, so a wrong pick would silently
+    corrupt the fill capacity + shell mass calculation."""
+
+    code = "invalid_capsule_shell_item"
 
 
 class InvalidMccCarrierItem(Exception):
@@ -2454,6 +2467,12 @@ def update_formulation(
             organization=formulation.organization,
             raw_ids=changes.pop("acidity_item_ids"),
         )
+    pending_capsule_shell: list[Item] | None = None
+    if "capsule_shell_item_ids" in changes:
+        pending_capsule_shell = _resolve_capsule_shell_items(
+            organization=formulation.organization,
+            raw_ids=changes.pop("capsule_shell_item_ids"),
+        )
     pending_mcc_carrier: list[Item] | None = None
     if "mcc_carrier_item_ids" in changes:
         pending_mcc_carrier = _resolve_mcc_carrier_items(
@@ -2541,6 +2560,8 @@ def update_formulation(
         formulation.premix_sweetener_items.set(pending_premix_sweetener)
     if pending_acidity is not None:
         formulation.acidity_items.set(pending_acidity)
+    if pending_capsule_shell is not None:
+        formulation.capsule_shell_items.set(pending_capsule_shell)
     if pending_mcc_carrier is not None:
         formulation.mcc_carrier_items.set(pending_mcc_carrier)
     if pending_dcp_carrier is not None:
@@ -3053,6 +3074,30 @@ def _resolve_premix_sweetener_items(
         raw_ids=raw_ids,
         allowed_categories=PREMIX_SWEETENER_USE_CATEGORIES,
         error_cls=InvalidPremixSweetenerItem,
+    )
+
+
+def _resolve_capsule_shell_items(
+    *,
+    organization: Organization,
+    raw_ids: Any,
+) -> list[Item]:
+    """Resolve incoming ``capsule_shell_item_ids`` — picks must
+    carry ``use_as == "Capsule Shell"``. Used by the capsule dosage
+    form's shell picker to swap the hardcoded "Capsule Shell
+    (Hypromellose)" placeholder for real catalogue items.
+
+    Downstream compute reads the picked shell's
+    ``attributes.capsule_size`` for fill capacity and
+    ``attributes.shell_weight_mg`` for the mass the declaration
+    attributes to the shell row.
+    """
+
+    return _resolve_use_as_picks(
+        organization=organization,
+        raw_ids=raw_ids,
+        allowed_categories=CAPSULE_SHELL_USE_CATEGORIES,
+        error_cls=InvalidCapsuleShellItem,
     )
 
 

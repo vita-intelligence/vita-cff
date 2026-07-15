@@ -153,6 +153,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     premix_sweetener_items = serializers.SerializerMethodField()
     acidity_item_ids = serializers.SerializerMethodField()
     acidity_items = serializers.SerializerMethodField()
+    capsule_shell_item_ids = serializers.SerializerMethodField()
+    capsule_shell_items = serializers.SerializerMethodField()
     mcc_carrier_item_ids = serializers.SerializerMethodField()
     mcc_carrier_items = serializers.SerializerMethodField()
     dcp_carrier_item_ids = serializers.SerializerMethodField()
@@ -193,6 +195,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "premix_sweetener_items",
             "acidity_item_ids",
             "acidity_items",
+            "capsule_shell_item_ids",
+            "capsule_shell_items",
             "mcc_carrier_item_ids",
             "mcc_carrier_items",
             "dcp_carrier_item_ids",
@@ -292,6 +296,22 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             POWDER_WATER_DOSE_ATTRIBUTE_KEY,
             "water_dose_mg_per_ml",
         )
+
+    def get_capsule_shell_item_ids(self, obj: Formulation) -> list[str]:
+        """Flat id list for the capsule shell picker. Typically
+        one pick per formulation — the M2M shape matches every
+        other excipient picker for a consistent FE component."""
+
+        return [str(item.id) for item in obj.capsule_shell_items.all()]
+
+    def get_capsule_shell_items(self, obj: Formulation) -> list[dict]:
+        """Light echo of picked capsule shells so the builder can
+        render the chip + drive the BOM SHELL row without an extra
+        round-trip. Downstream compute reads the shell's
+        ``attributes.capsule_size`` / ``attributes.shell_weight_mg``
+        for fill capacity + shell mass."""
+
+        return self._echo_picks(obj.capsule_shell_items)
 
     def get_mcc_carrier_item_ids(self, obj: Formulation) -> list[str]:
         """Flat id list for the capsule + tablet MCC carrier
@@ -651,6 +671,21 @@ class FormulationWriteSerializer(serializers.Serializer):
             "Regulator'. The acidity total (2% of target gummy "
             "weight) is split equally across picks. Empty list "
             "leaves a placeholder row."
+        ),
+    )
+    capsule_shell_item_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text=(
+            "IDs of catalogue Items used as the empty capsule "
+            "shell. Each pick must carry use_as = 'Capsule Shell'. "
+            "Downstream compute reads the pick's "
+            "``attributes.capsule_size`` (drives fill capacity) "
+            "and ``attributes.shell_weight_mg`` (drives declared "
+            "shell mass). Empty list falls back to the hardcoded "
+            "per-size shell weight table. Ignored for non-capsule "
+            "dosage forms."
         ),
     )
     mcc_carrier_item_ids = serializers.ListField(
