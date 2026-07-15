@@ -830,8 +830,41 @@ export function StageStrip({
       )}
 
       {upsert.isError ? (
-        <p className="mt-3 text-sm text-red-600">
-          Couldn't save stages. Please try again.
+        <p className="mt-3 whitespace-pre-wrap break-words text-sm text-red-600">
+          Couldn&apos;t save stages —{" "}
+          {(() => {
+            const err = upsert.error as unknown as {
+              response?: {
+                status?: number;
+                data?: {
+                  message?: unknown;
+                  stages?: unknown;
+                  detail?: unknown;
+                };
+              };
+              message?: string;
+            } | null;
+            const body = err?.response?.data;
+            if (body && typeof body === "object") {
+              if (typeof body.message === "string" && body.message) {
+                return body.message;
+              }
+              if (typeof body.detail === "string" && body.detail) {
+                return body.detail;
+              }
+              // Any string list under a key surfaces first.
+              for (const value of Object.values(body)) {
+                if (
+                  Array.isArray(value) &&
+                  value.length > 0 &&
+                  typeof value[0] === "string"
+                ) {
+                  return String(value[0]);
+                }
+              }
+            }
+            return err?.message ?? "unknown error";
+          })()}
         </p>
       ) : null}
     </section>
