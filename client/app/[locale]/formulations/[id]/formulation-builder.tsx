@@ -1511,11 +1511,15 @@ export function FormulationBuilder({
         code: metadata.code,
         description: metadata.description,
         dosage_form: metadata.dosage_form,
-        // Once a capsule shell is picked its ``attributes.capsule_size``
-        // is the source of truth for compute + fill capacity. Clear
-        // the legacy dropdown value so a later "unpick shell" doesn't
-        // fall back onto a stale manual override the scientist can't
-        // see (the dropdown is hidden while a shell is picked).
+        // The capsule size dropdown is gone — the shell picker is
+        // the single source of truth going forward. When a shell
+        // is picked, clear the legacy ``capsule_size`` so its
+        // ``attributes.capsule_size`` drives compute cleanly.
+        // When no shell is picked, preserve whatever the model
+        // already has: legacy formulations saved with an explicit
+        // size (before the picker existed) continue to compute
+        // against that size until the scientist picks a shell —
+        // no silent behaviour change on save-without-change.
         capsule_size:
           metadata.capsule_shell_item_ids.length > 0
             ? ""
@@ -1895,22 +1899,14 @@ export function FormulationBuilder({
               hint={tFormulations("fields.water_volume_ml_hint")}
             />
           ) : null}
-          {metadata.dosage_form === "capsule" &&
-          metadata.capsule_shell_item_ids.length === 0 ? (
-            <SelectField
-              label={tFormulations("fields.capsule_size")}
-              value={metadata.capsule_size}
-              onChange={(v) => setMetadata({ ...metadata, capsule_size: v })}
-              disabled={!canWrite}
-              options={[
-                { value: "", label: tFormulations("placeholders.auto_pick") },
-                ...CAPSULE_SIZES.map((s) => ({
-                  value: s.key,
-                  label: `${s.label} (${s.max_weight_mg} mg)`,
-                })),
-              ]}
-            />
-          ) : metadata.dosage_form === "capsule" ? (
+          {/* Capsule size: no dedicated dropdown any more.
+              * Shell picked → drives size via ``attributes.capsule_size``.
+              * No shell picked → compute auto-picks the smallest size
+                that fits the total active.
+              A small hint block replaces the old dropdown so scientists
+              know where the size comes from — the picker is the single
+              source of truth. */}
+          {metadata.dosage_form === "capsule" ? (
             <div className="flex flex-col gap-1.5">
               <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
                 Capsule size
@@ -1918,9 +1914,9 @@ export function FormulationBuilder({
               <div className="flex items-center gap-2 rounded-xl bg-orange-50/60 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-orange-200">
                 <ShieldCheck className="h-4 w-4 shrink-0 text-orange-700" />
                 <span>
-                  Driven by the picked capsule shell — edit the shell's{" "}
-                  <span className="font-mono text-xs">capsule_size</span>{" "}
-                  attribute on PSP to change.
+                  {metadata.capsule_shell_item_ids.length > 0
+                    ? "Driven by the picked capsule shell — edit the shell's capsule_size attribute on PSP to change."
+                    : "Auto-picked from total active weight — tick a capsule shell on the right to lock a specific size."}
                 </span>
               </div>
             </div>
