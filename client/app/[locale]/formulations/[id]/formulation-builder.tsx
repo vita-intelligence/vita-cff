@@ -3375,8 +3375,14 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         const name = liveNames[id] ?? server?.name;
         if (!name) continue;
         names.push(name);
+        // Always push the code (or an empty string) so the arrays
+        // stay index-aligned. Downstream ``emitBandRows`` iterates
+        // by index; skipping empties here shifts every subsequent
+        // pick's code onto the wrong row — a scientist ticks
+        // Beeswax (blank code) + Brown Rice (MA201141) and Brown
+        // Rice's code lands on Beeswax's row.
         const code = liveCodes[id] ?? server?.internal_code ?? "";
-        if (code) codes.push(code);
+        codes.push(code);
       }
       return { names, codes };
     };
