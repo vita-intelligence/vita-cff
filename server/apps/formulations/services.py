@@ -25,7 +25,7 @@ from django.db import transaction
 from django.db.models import Max, Q, QuerySet
 
 from apps.audit.services import record as record_audit, snapshot
-from apps.catalogues.models import Catalogue, Item, RAW_MATERIALS_SLUG
+from apps.catalogues.models import INGREDIENT_CATALOGUE_SLUGS, Item
 from apps.formulations.constants import (
     ACIDITY_USE_CATEGORIES,
     AMINO_ACID_GROUPS,
@@ -2872,16 +2872,13 @@ def _resolve_glazing_items(
     if not unique_ids:
         return []
 
-    catalogue = Catalogue.objects.filter(
-        organization=organization, slug=RAW_MATERIALS_SLUG
-    ).first()
-    if catalogue is None:
-        raise InvalidGlazingItem()
-
     items_by_id = {
         str(item.id): item
         for item in Item.objects.filter(
-            catalogue=catalogue, id__in=unique_ids, is_archived=False
+            catalogue__organization=organization,
+            catalogue__slug__in=INGREDIENT_CATALOGUE_SLUGS,
+            id__in=unique_ids,
+            is_archived=False,
         )
     }
     resolved: list[Item] = []
@@ -2931,16 +2928,13 @@ def _resolve_use_as_picks(
     if not unique_ids:
         return []
 
-    catalogue = Catalogue.objects.filter(
-        organization=organization, slug=RAW_MATERIALS_SLUG
-    ).first()
-    if catalogue is None:
-        raise error_cls()
-
     items_by_id = {
         str(item.id): item
         for item in Item.objects.filter(
-            catalogue=catalogue, id__in=unique_ids, is_archived=False
+            catalogue__organization=organization,
+            catalogue__slug__in=INGREDIENT_CATALOGUE_SLUGS,
+            id__in=unique_ids,
+            is_archived=False,
         )
     }
     resolved: list[Item] = []
@@ -3174,16 +3168,13 @@ def _resolve_gummy_base_items(
     if not unique_ids:
         return []
 
-    catalogue = Catalogue.objects.filter(
-        organization=organization, slug=RAW_MATERIALS_SLUG
-    ).first()
-    if catalogue is None:
-        raise InvalidGummyBaseItem()
-
     items_by_id = {
         str(item.id): item
         for item in Item.objects.filter(
-            catalogue=catalogue, id__in=unique_ids, is_archived=False
+            catalogue__organization=organization,
+            catalogue__slug__in=INGREDIENT_CATALOGUE_SLUGS,
+            id__in=unique_ids,
+            is_archived=False,
         )
     }
     resolved: list[Item] = []
@@ -3306,18 +3297,21 @@ def replace_lines(
     engine never crosses catalogue scopes.
     """
 
-    catalogue = Catalogue.objects.filter(
-        organization=formulation.organization, slug=RAW_MATERIALS_SLUG
-    ).first()
-    if catalogue is None:
-        # Every org seeds raw_materials on creation; hitting this is a
-        # system error, not a validation error.
-        raise RawMaterialNotInOrg()
-
+    # Ingredients can come from either the org's ``raw_materials``
+    # catalogue OR its lazily-created ``psp_mirror`` catalogue (which
+    # the PSP-integration mirror populates on pick). Both are
+    # functionally raw materials — the mirror is just an origin tag.
+    # ``INGREDIENT_CATALOGUE_SLUGS`` centralises the whitelist so a
+    # future third source (customer-supplied? proprietary blend?) is
+    # a one-line addition.
     item_ids = [line["item_id"] for line in lines]
     items_by_id = {
         str(i.id): i
-        for i in Item.objects.filter(catalogue=catalogue, id__in=item_ids)
+        for i in Item.objects.filter(
+            catalogue__organization=formulation.organization,
+            catalogue__slug__in=INGREDIENT_CATALOGUE_SLUGS,
+            id__in=item_ids,
+        )
     }
     for line in lines:
         if str(line["item_id"]) not in items_by_id:
