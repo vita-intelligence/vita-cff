@@ -221,6 +221,9 @@ class PspClient:
         self,
         path: str,
         query: dict[str, str] | None = None,
+        *,
+        method: str = "GET",
+        body: dict | None = None,
     ) -> Any:
         base = self._config.base_url.rstrip("/")
         url = f"{base}/{path.lstrip('/')}"
@@ -238,7 +241,11 @@ class PspClient:
             "X-Integration-Token": self._auth_header,
             "User-Agent": "VitaNPD/1.0",
         }
-        req = Request(url, method="GET", headers=headers)
+        data: bytes | None = None
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+            data = json.dumps(body).encode("utf-8")
+        req = Request(url, method=method, headers=headers, data=data)
         try:
             with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
                 raw = resp.read()
@@ -337,6 +344,34 @@ class PspClient:
         if not isinstance(row, dict):
             return None
         return _project_item(row)
+
+    def put_bom(self, item_uuid: Any, payload: dict) -> dict | None:
+        """Push a BOM snapshot onto a PSP finished-product item.
+
+        Called by :func:`push_bom_to_psp` after every formulation
+        save. PSP appends a new ``bom_version`` row so the version
+        history stays intact — this endpoint is idempotent from a
+        versioning POV, not from a "create vs update" POV.
+
+        Returns PSP's response payload (``{"bom": {"uuid": ...,
+        "version_no": N}}``) or ``None`` when the round-trip fails
+        with a soft error (empty body, unexpected shape). Hard
+        failures (auth, rate limit, network) bubble as
+        :class:`PspError` subclasses so the caller can decide to
+        log-and-continue vs surface.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/items/{cleaned}/bom",
+            method="PUT",
+            body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
 
 
 def _project_item(row: dict[str, Any]) -> PspItem:
@@ -645,6 +680,100 @@ def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
         client = _client_factory(config)
         return client.get_item(uuid)
     except PspError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# BOM push — NPD formulation → PSP finished-product BOM
+# ---------------------------------------------------------------------------
+
+
+def push_bom_to_psp(*, formulation: Any) -> dict | None:
+    """Push a formulation's active lines to PSP as a BOM against the
+    linked finished-product item. Called after every ``save_version``
+    (see :func:`apps.formulations.services.save_version`).
+
+    Silent-degradation contract — no exception ever bubbles to the
+    caller. If PSP is down, mis-configured, or the formulation
+    isn't linked (``psp_finished_product_uuid IS NULL``), the push
+    is skipped and the return value is ``None``. The save flow
+    stays functional; PSP-side data catches up on the next successful
+    push.
+
+    Scope (MVP):
+
+    * ACTIVE lines only — each ``FormulationLine`` whose ``item`` is
+      a mirrored PSP row (``item.psp_source_uuid IS NOT NULL``)
+      contributes one BOM line. The line's ``qty`` is
+      ``mg_per_serving_cached`` (mg per single serving), stringified
+      as a Decimal so PSP's decimal parser accepts it.
+    * Excipient picks (capsule shell, MCC carrier, anti-caking,
+      etc.) are deferred to a follow-up — the band-level mg splits
+      across multiple picks and needs the compute service to
+      reproduce that split server-side.
+    """
+
+    if not formulation.psp_finished_product_uuid:
+        return None
+
+    organization = formulation.organization
+    if not is_psp_live(organization):
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP push_bom: config decryption failed for org %s",
+            organization.pk,
+        )
+        return None
+
+    lines: list[dict[str, Any]] = []
+    for index, line in enumerate(
+        formulation.lines.select_related("item").order_by("display_order")
+    ):
+        item = line.item
+        if not item.psp_source_uuid:
+            # Line references a legacy local Item that predates PSP
+            # mirror — skip. Without the source uuid PSP can't
+            # resolve it to a part. The FE picker + mirror flow
+            # guarantees new picks always have this set.
+            continue
+        qty = line.mg_per_serving_cached
+        if qty is None or qty <= 0:
+            continue
+        lines.append(
+            {
+                "part_uuid": str(item.psp_source_uuid),
+                "qty": str(qty),
+                "sort_order": index,
+            }
+        )
+
+    if not lines:
+        # Empty payload — PSP's endpoint bounces with ``empty_lines``,
+        # which would spam the logs. Short-circuit here instead.
+        return None
+
+    payload = {
+        "name": f"{formulation.code} — {formulation.name}",
+        "version_notes": f"NPD save at {formulation.updated_at.isoformat()}",
+        "lines": lines,
+    }
+
+    try:
+        client = _client_factory(config)
+        response = client.put_bom(
+            formulation.psp_finished_product_uuid, payload
+        )
+        return response
+    except PspError:
+        logger.exception(
+            "PSP push_bom failed for formulation %s (org %s)",
+            formulation.pk,
+            organization.pk,
+        )
         return None
 
 

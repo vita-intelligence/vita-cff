@@ -213,6 +213,12 @@ class FormulationListCreateView(APIView):
                 # from the start. Absent on the standard formulations
                 # create form → defaults to ``custom``.
                 project_type=data.get("project_type", "custom"),
+                # PSP finished-product link — the picker at project
+                # creation emits it. Optional; None when the picker
+                # wasn't used or PSP isn't the active integration.
+                psp_finished_product_uuid=data.get(
+                    "psp_finished_product_uuid"
+                ),
             )
         except FormulationCodeRequired:
             return Response(

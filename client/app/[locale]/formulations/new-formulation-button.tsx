@@ -216,6 +216,15 @@ export function NewFormulationButton({
   // and the proposal without divergence.
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
+  // When the "Pick from PSP catalogue" picker is used at creation,
+  // the picked item's uuid lands here. The formulation is then
+  // linked back to that PSP finished product; every builder save
+  // triggers a BOM push via ``push_bom_to_psp``. Null when the
+  // scientist typed the code manually or PSP isn't the live
+  // integration.
+  const [pspFinishedProductUuid, setPspFinishedProductUuid] = useState<
+    string | null
+  >(null);
   const [description, setDescription] = useState(initialDescription ?? "");
   const [dosageForm, setDosageForm] = useState<DosageForm>("capsule");
   const [servingsPerPack, setServingsPerPack] = useState(60);
@@ -249,6 +258,7 @@ export function NewFormulationButton({
     setDraftError(null);
     setCode("");
     setName("");
+    setPspFinishedProductUuid(null);
     setDescription(initialDescription ?? "");
     setDosageForm("capsule");
     setServingsPerPack(60);
@@ -391,6 +401,7 @@ export function NewFormulationButton({
       suggested_dosage: suggestedDosage.trim(),
       appearance: appearance.trim(),
       disintegration_spec: disintegrationSpec.trim(),
+      psp_finished_product_uuid: pspFinishedProductUuid,
     });
 
     if (linesToSave.length > 0) {
@@ -594,6 +605,7 @@ export function NewFormulationButton({
                   onPick={(item) => {
                     setCode(item.code);
                     setName(item.title);
+                    setPspFinishedProductUuid(item.uuid);
                   }}
                 />
 

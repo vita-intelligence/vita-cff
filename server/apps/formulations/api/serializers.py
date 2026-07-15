@@ -220,6 +220,11 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             # rows; the FE only mounts the publish panel when
             # ``project_type=='ready_to_go'`` so the extra fields
             # never surface on a Custom detail page.
+            # PSP integration link — the finished-product Item on
+            # PSP this formulation is the recipe for. Populated by
+            # the "Pick from PSP catalogue" picker at new-project
+            # creation; drives the on-save BOM push.
+            "psp_finished_product_uuid",
             "is_rtg_published",
             "rtg_display_name",
             "rtg_short_description",
@@ -547,6 +552,14 @@ class FormulationWriteSerializer(serializers.Serializer):
     # caller who *does* submit it must still provide a non-blank value.
     code = serializers.CharField(max_length=64)
     name = serializers.CharField(max_length=200)
+    # PSP integration link. Optional — a formulation without a
+    # linked finished-product still saves + versions normally, no
+    # BOM push fires. Populated by the "Pick from PSP catalogue"
+    # picker at project creation (the picker emits the item's PSP
+    # uuid alongside the code+name it auto-fills).
+    psp_finished_product_uuid = serializers.UUIDField(
+        required=False, allow_null=True
+    )
     description = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
