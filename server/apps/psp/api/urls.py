@@ -9,6 +9,7 @@ from apps.psp.api.views import (
     PspItemMirrorView,
     PspTestConnectionView,
     PspWorkstationGroupListView,
+    PspWorkstationUserListView,
 )
 
 
@@ -51,5 +52,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/workstation-groups/",
         PspWorkstationGroupListView.as_view(),
         name="psp-workstation-groups",
+    ),
+    # Feeds the stage builder's workers multi-picker.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/workstation-users/",
+        PspWorkstationUserListView.as_view(),
+        name="psp-workstation-users",
     ),
 ]

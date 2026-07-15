@@ -127,6 +127,23 @@ export interface PspWorkstationGroupListResponseDto {
 }
 
 
+/** One PSP operator eligible for the stage builder's workers
+ *  multi-picker. Only active accounts appear on the wire; the
+ *  ``is_admin`` flag is surfaced so the UI can hint at which
+ *  entries have full access. */
+export interface PspWorkstationUserDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly email: string;
+  readonly is_admin: boolean;
+}
+
+
+export interface PspWorkstationUserListResponseDto {
+  readonly items: readonly PspWorkstationUserDto[];
+}
+
+
 /** Response shape from ``POST /integrations/psp/items/<uuid>/mirror/``.
  *  Mirrors the local ``catalogues.Item`` DTO so the builder can hand
  *  it to the existing ``addIngredient(item)`` flow verbatim — no

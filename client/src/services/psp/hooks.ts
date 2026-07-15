@@ -22,6 +22,7 @@ import {
   fetchPspItemDetail,
   fetchPspItems,
   fetchPspWorkstationGroups,
+  fetchPspWorkstationUsers,
   mirrorPspItem,
   savePspConfig,
   testPspConnection,
@@ -32,6 +33,7 @@ import type {
   PspItemLookupResultDto,
   PspItemMirrorResponseDto,
   PspWorkstationGroupListResponseDto,
+  PspWorkstationUserListResponseDto,
   SavePspConfigRequestDto,
 } from "./types";
 
@@ -60,6 +62,8 @@ export const pspQueryKeys = {
     ["psp", orgId, "items", uuid] as const,
   workstationGroups: (orgId: string) =>
     ["psp", orgId, "workstation-groups"] as const,
+  workstationUsers: (orgId: string) =>
+    ["psp", orgId, "workstation-users"] as const,
 };
 
 
@@ -173,6 +177,23 @@ export function usePspWorkstationGroups(
     queryFn: () => fetchPspWorkstationGroups(orgId),
     enabled: Boolean(orgId) && enabled,
     // Groups change rarely and the operator won't refresh mid-build.
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** Picker for the stage builder's workers multi-picker. Fires only
+ *  when ``enabled`` — matches the workstation-groups hook so we
+ *  don't burn PSP round-trips on every builder mount. */
+export function usePspWorkstationUsers(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspWorkstationUserListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspWorkstationUserListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.workstationUsers(orgId),
+    queryFn: () => fetchPspWorkstationUsers(orgId),
+    enabled: Boolean(orgId) && enabled,
     staleTime: 5 * 60 * 1000,
   });
 }

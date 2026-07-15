@@ -2493,6 +2493,9 @@ def set_formulation_stages(
             "other_fixed_cost": raw.get("other_fixed_cost"),
             "other_variable_cost": raw.get("other_variable_cost"),
             "other_variable_cost_basis": raw.get("other_variable_cost_basis"),
+            "worker_psp_uuids": [
+                str(u) for u in (raw.get("worker_psp_uuids") or []) if u
+            ],
             "notes": raw.get("notes") or "",
         }
 

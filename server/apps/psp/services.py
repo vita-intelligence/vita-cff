@@ -373,6 +373,23 @@ class PspClient:
             return None
         return response
 
+    def list_workstation_users(self) -> list[dict[str, Any]]:
+        """Fetch PSP's operator list for the stage builder's
+        workers multi-picker. Returns the raw rows PSP emits —
+        ``uuid``, ``name``, ``email``, ``is_admin``. Silent-degrade
+        empty on any soft failure so the picker just shows "no
+        operators picked yet" identically for a genuinely empty PSP
+        catalog and a transient outage.
+        """
+
+        payload = self._request("api/integration/users")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
     def list_workstation_groups(self) -> list[dict[str, Any]]:
         """Fetch PSP's workstation groups so the NPD stage builder
         can render the "run on" dropdown. Returns the raw rows PSP
@@ -791,6 +808,31 @@ def list_psp_items(
         return []
 
 
+def list_psp_workstation_users(*, organization: Any) -> list[dict[str, Any]]:
+    """Fetch PSP's operator list for the stage builder's workers
+    multi-picker. Empty on any soft failure — the FE renders "no
+    workers on PSP" identically for a real outage and a truly
+    empty PSP catalog."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_workstation_users()
+    except PspError:
+        logger.exception(
+            "PSP list_workstation_users failed for org %s", organization.pk
+        )
+        return []
+
+
 def list_psp_workstation_groups(*, organization: Any) -> list[dict[str, Any]]:
     """Fetch PSP's workstation groups for the org. Empty list on any
     failure — the FE stage builder renders "no workstations picked
@@ -1105,6 +1147,9 @@ def _push_staged_cascade(
                             stage.variable_cost
                         ),
                         "capacity": _stringify_decimal(stage.capacity),
+                        "default_worker_uuids": list(
+                            stage.worker_psp_uuids or []
+                        ),
                     }
                 ],
             )

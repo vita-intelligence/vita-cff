@@ -38,4 +38,6 @@ export const pspEndpoints = {
     `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/mirror/`,
   workstationGroups: (orgId: string) =>
     `/api/organizations/${orgId}/integrations/psp/workstation-groups/`,
+  workstationUsers: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/workstation-users/`,
 } as const;

@@ -47,6 +47,7 @@ class FormulationStageReadSerializer(serializers.ModelSerializer):
             "other_fixed_cost",
             "other_variable_cost",
             "other_variable_cost_basis",
+            "worker_psp_uuids",
             "psp_semi_finished_uuid",
             "notes",
         )
