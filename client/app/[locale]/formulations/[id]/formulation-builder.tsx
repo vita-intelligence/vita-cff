@@ -4,6 +4,7 @@ import { Button } from "@heroui/react";
 import { Check, Copy, CopyPlus, ExternalLink, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
+import { StageBomsPreview } from "./stage-boms-preview";
 import { StageStrip } from "./stage-strip";
 import { useLocale, useTranslations } from "next-intl";
 import {
@@ -3167,8 +3168,28 @@ export function FormulationBuilder({
       </section>
 
       {/* ------------------------------------------------------------ */}
-      {/* G3 — MRPeasy BOM (per 1 kg of finished product)              */}
+      {/* Stage BOMs preview — the multi-BOM cascade that will land   */}
+      {/* on PSP on the next save. One collapsible per stage.         */}
       {/* ------------------------------------------------------------ */}
+      <StageBomsPreview
+        formulationCode={formulation.code}
+        formulationName={formulation.name}
+        stages={formulation.stages}
+        lines={lines}
+      />
+
+      {/* ------------------------------------------------------------ */}
+      {/* Legacy MRPeasy BOM (per 1 kg of finished product) — kept    */}
+      {/* collapsed as a fallback view while the stage-aware cascade  */}
+      {/* becomes the primary. Slated for removal once operators      */}
+      {/* confirm the Stage BOMs preview covers every use case they   */}
+      {/* used the flat MRPeasy view for.                             */}
+      {/* ------------------------------------------------------------ */}
+      <details className="rounded-2xl bg-ink-0 p-4 shadow-sm ring-1 ring-ink-200">
+        <summary className="cursor-pointer select-none px-2 py-1 text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-800">
+          Legacy MRPeasy BOM (deprecated — use Stage BOMs above)
+        </summary>
+        <div className="mt-4">
       <MrpeasyBomCard
         totals={liveTotals}
         lines={lines}
@@ -3196,6 +3217,8 @@ export function FormulationBuilder({
         formulationName={formulation.name}
         tFormulations={tFormulations}
       />
+        </div>
+      </details>
 
       {/* ------------------------------------------------------------ */}
       {/* Version history                                              */}
