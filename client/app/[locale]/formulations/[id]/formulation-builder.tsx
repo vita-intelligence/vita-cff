@@ -4886,7 +4886,38 @@ function CatalogueMultiPicker({
       readonly internal_code: string;
       readonly attributes: Readonly<Record<string, unknown>>;
     }>
-  >({});
+  >(() => {
+    // Prime from ``preselected`` on mount so refreshing the page
+    // doesn't lose the checked state on PSP-mirrored picks. Each
+    // preselected item carries ``psp_source_uuid`` (populated on
+    // the server for rows that came from the mirror); we key the
+    // cache by that PSP UUID so when the PSP fetch later returns
+    // options as ``psp:<uuid>``, the merged list swaps in the
+    // known local id and ``selected.has(local-id)`` fires.
+    const seed: Record<
+      string,
+      {
+        id: string;
+        name: string;
+        internal_code: string;
+        attributes: Readonly<Record<string, unknown>>;
+      }
+    > = {};
+    for (const p of preselected) {
+      const pspUuid = (p as { psp_source_uuid?: string | null }).psp_source_uuid;
+      if (!pspUuid) continue;
+      seed[pspUuid] = {
+        id: p.id,
+        name: p.name,
+        internal_code: p.internal_code,
+        // No attributes on the echo shape; leave empty. The
+        // ``attributesFromItem`` fallback used elsewhere reads
+        // from a wider source; picker rendering doesn't need it.
+        attributes: {},
+      };
+    }
+    return seed;
+  });
 
   const fetched: ReadonlyArray<{
     readonly id: string;
