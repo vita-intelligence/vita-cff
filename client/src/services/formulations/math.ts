@@ -1098,28 +1098,53 @@ function computeCapsule(
       ? shellOverride.maxWeightMg
       : null;
 
-  const resolvedSizeKey = overrideSizeKey ?? requestedSizeKey;
-  if (resolvedSizeKey) {
-    // Look up the standard-size record only for its label; the
-    // fill capacity comes off the shell override when present.
-    const fromMap = capsuleSizeByKey(resolvedSizeKey);
+  // Strict mode: compute requires a picked shell with data. No
+  // ``CAPSULE_SIZES`` auto-pick, no ``metadata.capsule_size``
+  // legacy fallback. Physics constants aren't the source of truth
+  // for a formulation — the shell the operator will actually
+  // procure is. When neither the shell's ``max_weight_mg`` nor
+  // ``capsule_size`` are set (freshly-added item without
+  // attributes populated, or nothing picked at all), viability
+  // reports ``pick_capsule_shell`` and compute stops.
+  const overrideProvided =
+    (overrideSizeKey ?? null) !== null || overrideMaxWeightMg !== null;
+
+  if (overrideProvided && overrideMaxWeightMg) {
+    // Prefer the picked shell's fill capacity. If ``capsule_size``
+    // matches a standard key we borrow its label ("Single 0", etc.)
+    // for display; otherwise fall back to the raw key or "Custom".
+    const fromMap = overrideSizeKey ? capsuleSizeByKey(overrideSizeKey) : null;
     size = {
-      key: resolvedSizeKey,
-      label: fromMap?.label ?? resolvedSizeKey,
-      max_weight_mg: overrideMaxWeightMg ?? fromMap?.max_weight_mg ?? 0,
-    };
-    if (size.max_weight_mg <= 0) size = null;
-  } else if (overrideMaxWeightMg) {
-    // Shell has a fill capacity but no size key. Build a synthetic
-    // size record so downstream compute has something to work with.
-    size = {
-      key: "custom",
-      label: "Custom",
+      key: overrideSizeKey ?? "custom",
+      label: fromMap?.label ?? overrideSizeKey ?? "Custom",
       max_weight_mg: overrideMaxWeightMg,
     };
+  } else if (overrideProvided && overrideSizeKey && !overrideMaxWeightMg) {
+    // Shell picked but ``max_weight_mg`` isn't set on the PSP row
+    // yet — surface the gap explicitly so procurement + R&D can
+    // fix the data instead of computing against a synthetic value.
+    warnings.push("capsule_shell_missing_max_weight");
+    return {
+      sizeKey: null,
+      sizeLabel: null,
+      maxWeight: null,
+      totalWeight: null,
+      excipients: null,
+      viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+      warnings,
+    };
   } else {
-    size = autoPickCapsuleSize(totalActive);
-    if (size === null) warnings.push("capsule_too_large");
+    // No shell picked — surface a "pick a shell" warning and stop.
+    warnings.push("pick_capsule_shell");
+    return {
+      sizeKey: null,
+      sizeLabel: null,
+      maxWeight: null,
+      totalWeight: null,
+      excipients: null,
+      viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+      warnings,
+    };
   }
 
   if (size === null) {
