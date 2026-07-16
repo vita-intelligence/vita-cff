@@ -26,7 +26,7 @@
 "use client";
 
 import { Printer } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import type {
   FormulationStageDto,
@@ -49,6 +49,13 @@ export interface StageBomsPreviewProps {
   readonly formulationName: string;
   readonly stages: readonly FormulationStageDto[];
   readonly lines: readonly StageBomsPreviewLine[];
+  /** Compute-based BOM node injected into the terminal stage's
+   *  card. Owned by the parent so it can compose the memoised
+   *  ``<MrpeasyBomCard />`` (or successor) it already renders
+   *  elsewhere — this component doesn't run compute or reach into
+   *  excipient pickers. When null, the terminal stage falls back
+   *  to the raw label-claim table used for non-terminal stages. */
+  readonly terminalBom?: ReactNode;
 }
 
 
@@ -125,6 +132,7 @@ export function StageBomsPreview({
   formulationName,
   stages,
   lines,
+  terminalBom,
 }: StageBomsPreviewProps) {
   const stageBoms = useMemo(
     () => buildStageBoms(stages, lines),
@@ -171,16 +179,14 @@ export function StageBomsPreview({
       />
       <header className="flex flex-col gap-1">
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-          Stage graph preview
+          Stage BOMs preview
         </p>
         <p className="text-sm text-ink-700">
-          Multi-stage routing snapshot — one BOM + routing per stage
-          lands on PSP on the next save. Non-terminal stages spawn a
-          semi-finished item that the next stage consumes at
-          qty&nbsp;1. Ingredient weights here are label claims;
-          the authoritative per-1kg breakdown (with excipient bands
-          + extract-ratio adjustments) is on the Bill of Materials
-          card above.
+          What lands on PSP on the next save — one BOM + routing per
+          stage. Non-terminal stages spawn a semi-finished item that
+          the next stage consumes at qty&nbsp;1. The terminal stage's
+          BOM is the finished product's per-1kg breakdown (extract
+          ratios + purity + excipient bands all resolved by compute).
         </p>
       </header>
 
@@ -248,74 +254,100 @@ export function StageBomsPreview({
               </div>
 
               <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
-                <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
-                  Bill of materials —{" "}
-                  {formulationCode} · {formulationName}
-                </p>
-                <table className="mt-2 w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-ink-100 text-left text-[11px] uppercase tracking-wide text-ink-500">
-                      <th className="py-1.5 pr-2 font-medium">Part</th>
-                      <th className="py-1.5 pr-2 font-medium">Code</th>
-                      <th className="py-1.5 text-right font-medium">Qty</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-ink-100">
+                {/* Terminal stage's BOM is the finished product's
+                    per-1kg breakdown — the parent injects the
+                    compute-based ``<MrpeasyBomCard />`` here so
+                    weights include extract-ratio adjustments,
+                    excipient band splits, and every SKU procurement
+                    needs. Non-terminal stages (or the fallback when
+                    no ``terminalBom`` is passed) render the raw
+                    label-claim table below. */}
+                {bom.isTerminal && terminalBom ? (
+                  <>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                      Bill of materials —{" "}
+                      {formulationCode} · {formulationName}
+                    </p>
                     {bom.index > 0 && bom.priorSemiName ? (
-                      <tr className="bg-orange-50/50">
-                        <td className="py-2 pr-2 text-ink-900">
-                          {bom.priorSemiName}
-                          <span className="ml-2 text-[11px] italic text-orange-700">
-                            (auto — prior stage semi)
-                          </span>
-                        </td>
-                        <td className="py-2 pr-2 text-xs text-ink-500">
-                          semi-finished
-                        </td>
-                        <td className="py-2 text-right tabular-nums text-ink-900">
-                          1
-                        </td>
-                      </tr>
+                      <p className="mt-2 text-[11px] italic text-orange-700">
+                        Consumes 1 × {bom.priorSemiName} from the
+                        prior stage.
+                      </p>
                     ) : null}
-                    {combinedLines.length === 0 &&
-                    !(bom.index > 0 && bom.priorSemiName) ? (
-                      <tr>
-                        <td
-                          colSpan={3}
-                          className="py-3 text-center text-xs text-ink-500"
-                        >
-                          No ingredients assigned yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      combinedLines.map((line) => {
-                        const isNullStage =
-                          bom.isTerminal &&
-                          bom.nullStageLines.some(
-                            (n) => n.key === line.key,
-                          );
-                        return (
-                          <tr key={line.key}>
+                    <div className="mt-2">{terminalBom}</div>
+                  </>
+                ) : (
+                  <>
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
+                      Bill of materials —{" "}
+                      {formulationCode} · {formulationName}
+                    </p>
+                    <table className="mt-2 w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-ink-100 text-left text-[11px] uppercase tracking-wide text-ink-500">
+                          <th className="py-1.5 pr-2 font-medium">Part</th>
+                          <th className="py-1.5 pr-2 font-medium">Code</th>
+                          <th className="py-1.5 text-right font-medium">Qty</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-ink-100">
+                        {bom.index > 0 && bom.priorSemiName ? (
+                          <tr className="bg-orange-50/50">
                             <td className="py-2 pr-2 text-ink-900">
-                              {line.item_name}
-                              {isNullStage ? (
-                                <span className="ml-2 text-[11px] italic text-ink-500">
-                                  (unassigned — folds in on push)
-                                </span>
-                              ) : null}
+                              {bom.priorSemiName}
+                              <span className="ml-2 text-[11px] italic text-orange-700">
+                                (auto — prior stage semi)
+                              </span>
                             </td>
                             <td className="py-2 pr-2 text-xs text-ink-500">
-                              {line.item_internal_code || "—"}
+                              semi-finished
                             </td>
                             <td className="py-2 text-right tabular-nums text-ink-900">
-                              {line.label_claim_mg || "0"} mg
+                              1
                             </td>
                           </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
+                        ) : null}
+                        {combinedLines.length === 0 &&
+                        !(bom.index > 0 && bom.priorSemiName) ? (
+                          <tr>
+                            <td
+                              colSpan={3}
+                              className="py-3 text-center text-xs text-ink-500"
+                            >
+                              No ingredients assigned yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          combinedLines.map((line) => {
+                            const isNullStage =
+                              bom.isTerminal &&
+                              bom.nullStageLines.some(
+                                (n) => n.key === line.key,
+                              );
+                            return (
+                              <tr key={line.key}>
+                                <td className="py-2 pr-2 text-ink-900">
+                                  {line.item_name}
+                                  {isNullStage ? (
+                                    <span className="ml-2 text-[11px] italic text-ink-500">
+                                      (unassigned — folds in on push)
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="py-2 pr-2 text-xs text-ink-500">
+                                  {line.item_internal_code || "—"}
+                                </td>
+                                <td className="py-2 text-right tabular-nums text-ink-900">
+                                  {line.label_claim_mg || "0"} mg
+                                </td>
+                              </tr>
+                            );
+                          })
+                        )}
+                      </tbody>
+                    </table>
+                  </>
+                )}
                 {stage.psp_semi_finished_uuid ? (
                   <p className="mt-2 text-[11px] text-ink-500">
                     PSP semi-finished item:{" "}
