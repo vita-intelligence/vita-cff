@@ -2005,7 +2005,14 @@ export function FormulationBuilder({
                 variant="primary"
                 size="md"
                 className="gap-1.5 rounded-lg bg-orange-500 font-medium text-ink-0 hover:bg-orange-600"
-                isDisabled={isBusy}
+                // Gate on the same dirty flags as Save draft — a
+                // Version snapshots the current state, so firing
+                // it with nothing dirty just clones the previous
+                // version verbatim. Prevents accidental v2 / v3 /
+                // v4 stacks that all say "no changes".
+                isDisabled={
+                  isBusy || (!metadataDirty && !linesDirty)
+                }
                 onClick={handleSaveVersion}
               >
                 <Save className="h-4 w-4" />
