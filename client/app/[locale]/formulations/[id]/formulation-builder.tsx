@@ -3424,7 +3424,7 @@ export function FormulationBuilder({
         stages={formulation.stages}
         lines={lines}
         // Inject the compute-based per-1kg breakdown into the
-        // terminal stage's card. This is what MrpeasyBomCard has
+        // terminal stage's card. This is what BomCard has
         // always rendered — actives + all excipient bands + SKU
         // codes at their real weights (extract-ratio + purity
         // resolved). The Stage BOMs preview owns the routing
@@ -3432,7 +3432,7 @@ export function FormulationBuilder({
         // BOM is the finished product's authoritative recipe and
         // lives inside its card.
         terminalBom={
-          <MrpeasyBomCard
+          <BomCard
             totals={liveTotals}
             lines={lines}
             gummyBaseItems={formulation.gummy_base_items}
@@ -3798,7 +3798,7 @@ const DeclarationPanel = memo(function DeclarationPanel({
 // Memoised: BOM rows recompute only when totals / lines / picker
 // state change. Keystrokes elsewhere (search input, metadata fields)
 // no longer drive a full table re-render.
-const MrpeasyBomCard = memo(function MrpeasyBomCard({
+const BomCard = memo(function BomCard({
   totals,
   lines,
   gummyBaseItems,
@@ -4341,7 +4341,11 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
   );
 
   return (
-    <section className="bom-print-card rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 print:break-before-page">
+    // Nested inside the terminal stage's card on the Preview tab —
+    // no outer card chrome (padding/shadow/ring) so we don't stack
+    // three boxes on top of each other. The ``bom-print-card`` hook
+    // is preserved because the print stylesheet targets it.
+    <section className="bom-print-card print:break-before-page">
       {/* Print-scoped stylesheet — hides every other DOM node so a
           Cmd+P emits ONLY the BOM card. The "visibility: hidden"
           trick keeps React's ancestor tree rendered (so descendants
@@ -4391,21 +4395,16 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         }
       `}</style>
 
-      <div className="flex items-center justify-between gap-3 bom-print-hide">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            {tFormulations("mrpeasy_bom.title")}
-          </p>
-          <p className="mt-1 text-[11px] leading-snug text-ink-500">
-            {tFormulations("mrpeasy_bom.hint")}
-          </p>
-        </div>
+      {/* Header row — just the Print button now. The parent Stage
+          BOM card owns the "Bill of materials — CODE · NAME" title
+          block, so repeating it here would double-print. */}
+      <div className="flex items-center justify-end gap-3 bom-print-hide">
         <button
           type="button"
           onClick={() => window.print()}
-          className="rounded-xl bg-ink-1000 px-3 py-1.5 text-xs font-medium text-ink-0 hover:bg-ink-900"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
         >
-          {tFormulations("mrpeasy_bom.print")}
+          {tFormulations("bom.print")}
         </button>
       </div>
 
@@ -4418,16 +4417,16 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
           {formulationName}
         </h1>
         <p className="mt-1 text-[10pt] text-ink-700">
-          {tFormulations("mrpeasy_bom.print_subtitle")}
+          {tFormulations("bom.print_subtitle")}
         </p>
         <p className="text-[9pt] text-ink-500">
-          {tFormulations("mrpeasy_bom.print_printed_on", { date: printedOn })}
+          {tFormulations("bom.print_printed_on", { date: printedOn })}
         </p>
       </div>
 
       {rows.length === 0 ? (
         <p className="mt-4 text-sm text-ink-600">
-          {tFormulations("mrpeasy_bom.empty_hint")}
+          {tFormulations("bom.empty_hint")}
         </p>
       ) : (
         <>
@@ -4444,41 +4443,41 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
               <div className="bom-print-hide flex flex-wrap items-baseline justify-between gap-2">
                 <div className="flex flex-col">
                   <span className="inline-flex items-center gap-1.5 self-start rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-700">
-                    {tFormulations("mrpeasy_bom.pre_blend_badge")}
+                    {tFormulations("bom.pre_blend_badge")}
                   </span>
                   <p className="mt-1 text-sm font-semibold text-ink-1000">
-                    {tFormulations("mrpeasy_bom.active_powder.title")}
+                    {tFormulations("bom.active_powder.title")}
                   </p>
                 </div>
                 <p className="max-w-md text-[11px] leading-snug text-ink-500">
-                  {tFormulations("mrpeasy_bom.active_powder.hint")}
+                  {tFormulations("bom.active_powder.hint")}
                 </p>
               </div>
               <div className="bom-print-only border-b border-ink-300 pb-3">
                 <h2 className="text-[12pt] font-semibold text-ink-1000">
-                  {tFormulations("mrpeasy_bom.active_powder.title")}
+                  {tFormulations("bom.active_powder.title")}
                 </h2>
                 <p className="mt-1 text-[10pt] text-ink-700">
-                  {tFormulations("mrpeasy_bom.active_powder.print_subtitle")}
+                  {tFormulations("bom.active_powder.print_subtitle")}
                 </p>
               </div>
               <table className="mt-4 w-full text-xs">
                 <thead className="border-b border-orange-200 text-ink-500">
                   <tr>
                     <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                      {tFormulations("mrpeasy_bom.col_code")}
+                      {tFormulations("bom.col_code")}
                     </th>
                     <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                      {tFormulations("mrpeasy_bom.col_name")}
+                      {tFormulations("bom.col_name")}
                     </th>
                     <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                      {tFormulations("mrpeasy_bom.col_grams")}
+                      {tFormulations("bom.col_grams")}
                     </th>
                     <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                      {tFormulations("mrpeasy_bom.col_pct")}
+                      {tFormulations("bom.col_pct")}
                     </th>
                     <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
-                      {tFormulations("mrpeasy_bom.col_actual")}
+                      {tFormulations("bom.col_actual")}
                     </th>
                   </tr>
                 </thead>
@@ -4508,7 +4507,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
                   <tr className="border-t-2 border-orange-300 font-medium">
                     <td className="px-2 py-2 text-ink-700"></td>
                     <td className="px-2 py-2 text-ink-1000">
-                      {tFormulations("mrpeasy_bom.active_powder.total")}
+                      {tFormulations("bom.active_powder.total")}
                     </td>
                     <td className="px-2 py-2 text-right text-ink-1000 tabular-nums">
                       {(
@@ -4546,14 +4545,14 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
               <div className="bom-print-hide mb-3 flex flex-wrap items-baseline justify-between gap-2">
                 <div className="flex flex-col">
                   <span className="inline-flex items-center gap-1.5 self-start rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-700">
-                    {tFormulations("mrpeasy_bom.main_badge")}
+                    {tFormulations("bom.main_badge")}
                   </span>
                   <p className="mt-1 text-sm font-semibold text-ink-1000">
-                    {tFormulations("mrpeasy_bom.main_title")}
+                    {tFormulations("bom.main_title")}
                   </p>
                 </div>
                 <p className="max-w-md text-[11px] leading-snug text-ink-500">
-                  {tFormulations("mrpeasy_bom.main_hint")}
+                  {tFormulations("bom.main_hint")}
                 </p>
               </div>
             ) : null}
@@ -4561,22 +4560,22 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
               <thead className="border-b border-ink-200 text-ink-500">
                 <tr>
                   <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                    {tFormulations("mrpeasy_bom.col_code")}
+                    {tFormulations("bom.col_code")}
                   </th>
                   <th className="px-2 py-2 text-left font-medium uppercase tracking-wide">
-                    {tFormulations("mrpeasy_bom.col_name")}
+                    {tFormulations("bom.col_name")}
                   </th>
                   <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                    {tFormulations("mrpeasy_bom.col_grams")}
+                    {tFormulations("bom.col_grams")}
                   </th>
                   <th className="px-2 py-2 text-right font-medium uppercase tracking-wide">
-                    {tFormulations("mrpeasy_bom.col_pct")}
+                    {tFormulations("bom.col_pct")}
                   </th>
                   {/* Print-only Actual column — empty cell with a
                       horizontal rule so the technician writes the
                       actual measured kg next to each line in pen. */}
                   <th className="bom-print-only px-2 py-2 text-right font-medium uppercase tracking-wide">
-                    {tFormulations("mrpeasy_bom.col_actual")}
+                    {tFormulations("bom.col_actual")}
                   </th>
                 </tr>
               </thead>
@@ -4606,7 +4605,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
                           row.code
                         ) : row.missing ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-900">
-                            {tFormulations("mrpeasy_bom.missing")}
+                            {tFormulations("bom.missing")}
                           </span>
                         ) : (
                           "—"
@@ -4617,7 +4616,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
                           {row.label}
                           {fromSubBom ? (
                             <span className="inline-flex items-center rounded-full bg-orange-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-orange-700">
-                              {tFormulations("mrpeasy_bom.pre_blend_badge")}
+                              {tFormulations("bom.pre_blend_badge")}
                             </span>
                           ) : null}
                         </span>
@@ -4639,7 +4638,7 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
                 <tr className="border-t-2 border-ink-300 font-medium">
                   <td className="px-2 py-2 text-ink-700"></td>
                   <td className="px-2 py-2 text-ink-1000">
-                    {tFormulations("mrpeasy_bom.total")}
+                    {tFormulations("bom.total")}
                   </td>
                   <td className="px-2 py-2 text-right text-ink-1000 tabular-nums">
                     {totalKg.toFixed(4)}
@@ -4664,19 +4663,19 @@ const MrpeasyBomCard = memo(function MrpeasyBomCard({
         <div className="bom-print-only bom-print-signature mt-6 grid grid-cols-3 gap-6 text-[10pt] text-ink-1000">
           <div>
             <div className="text-[9pt] uppercase tracking-wide text-ink-500">
-              {tFormulations("mrpeasy_bom.print_signature_technician")}
+              {tFormulations("bom.print_signature_technician")}
             </div>
             <div className="mt-2 border-b border-ink-700">&nbsp;</div>
           </div>
           <div>
             <div className="text-[9pt] uppercase tracking-wide text-ink-500">
-              {tFormulations("mrpeasy_bom.print_signature_supervisor")}
+              {tFormulations("bom.print_signature_supervisor")}
             </div>
             <div className="mt-2 border-b border-ink-700">&nbsp;</div>
           </div>
           <div>
             <div className="text-[9pt] uppercase tracking-wide text-ink-500">
-              {tFormulations("mrpeasy_bom.print_signature_date")}
+              {tFormulations("bom.print_signature_date")}
             </div>
             <div className="mt-2 border-b border-ink-700">&nbsp;</div>
           </div>

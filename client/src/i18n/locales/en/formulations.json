@@ -328,9 +328,9 @@
       "missing_extract_ratio": "Missing extract ratio in raw material"
     }
   },
-  "mrpeasy_bom": {
-    "title": "MRPeasy BOM",
-    "hint": "Per-1 kg breakdown for procurement. Pectin Premix collapses the gelling agent + premix sweetener into a single in-house BOM line — the label declaration still lists the components separately. On gummies the actives also collapse into a single 'Active Powder' line; the sub-BOM below breaks the pre-blend down ingredient-by-ingredient.",
+  "bom": {
+    "title": "Bill of materials",
+    "hint": "Per-1 kg breakdown for procurement. Gummies collapse actives into a single Active Powder line — the sub-BOM below breaks the pre-blend down ingredient-by-ingredient.",
     "print": "Print",
     "print_subtitle": "Bill of materials per 1 kg of finished product.",
     "print_printed_on": "Printed {date}",
