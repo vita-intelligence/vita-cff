@@ -242,15 +242,23 @@ export function StageBomsPreview({
                     </p>
                   ) : null}
                 </div>
-                <button
-                  type="button"
-                  onClick={() => printOnly(stage.id)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 print:hidden"
-                  title="Print this stage's BOM only"
-                >
-                  <Printer className="h-3.5 w-3.5" />
-                  Print
-                </button>
+                {/* Suppress the per-stage Print on terminal stages
+                    when a compute-based ``terminalBom`` is injected —
+                    that card ships its own Print (with the full
+                    per-1kg spec sheet stylesheet). Non-terminal
+                    stages keep this button so operators can print
+                    just the semi-finished item's own BOM. */}
+                {bom.isTerminal && terminalBom ? null : (
+                  <button
+                    type="button"
+                    onClick={() => printOnly(stage.id)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 print:hidden"
+                    title="Print this stage's BOM only"
+                  >
+                    <Printer className="h-3.5 w-3.5" />
+                    Print
+                  </button>
+                )}
               </div>
 
               <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
@@ -358,12 +366,12 @@ export function StageBomsPreview({
                     its BOM + Routing rather than creating a new
                     item.
                   </p>
-                ) : bom.isTerminal ? (
+                ) : bom.isTerminal && !terminalBom ? (
                   <p className="mt-2 text-[11px] text-ink-500">
                     Terminal stage — pushes to the linked
                     finished-product item.
                   </p>
-                ) : (
+                ) : bom.isTerminal ? null : (
                   <p className="mt-2 text-[11px] text-ink-500">
                     First push will create the PSP semi-finished
                     item (external_sku ={" "}
