@@ -171,12 +171,16 @@ export function StageBomsPreview({
       />
       <header className="flex flex-col gap-1">
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-          Stage BOMs preview
+          Stage graph preview
         </p>
         <p className="text-sm text-ink-700">
-          What lands on PSP on the next save — one BOM + routing per
-          stage. Non-terminal stages spawn a semi-finished item on
-          PSP that the next stage consumes at qty&nbsp;1.
+          Multi-stage routing snapshot — one BOM + routing per stage
+          lands on PSP on the next save. Non-terminal stages spawn a
+          semi-finished item that the next stage consumes at
+          qty&nbsp;1. Ingredient weights here are label claims;
+          the authoritative per-1kg breakdown (with excipient bands
+          + extract-ratio adjustments) is on the Bill of Materials
+          card above.
         </p>
       </header>
 
