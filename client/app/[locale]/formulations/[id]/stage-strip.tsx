@@ -36,10 +36,7 @@ import type {
   StageKey,
   UpsertStageInput,
 } from "@/services/formulations/types";
-import {
-  usePspWorkstationGroups,
-  usePspWorkstationUsers,
-} from "@/services/psp/hooks";
+import { usePspWorkstationGroups } from "@/services/psp/hooks";
 
 
 /** Local edit-state for one stage. Kept as strings for the inputs
@@ -79,6 +76,30 @@ const STAGE_KEY_LABELS: Record<StageKey, string> = {
   package: "Package",
   custom: "Custom",
 };
+
+
+/** Best-guess mapping from a workstation display name to a
+ *  ``StageKey``. The Stages tab used to expose a manual "Kind"
+ *  dropdown, but every workstation on PSP already encodes its
+ *  purpose in its name (Blending, Encapsulating, Bottling,
+ *  Labelling, …). Deriving here means the scientist picks a
+ *  workstation and the stage_key just follows. Falls back to
+ *  ``custom`` when nothing matches — the FormulationStage still
+ *  saves cleanly. */
+function inferStageKey(workstationName: string): StageKey {
+  const n = workstationName.toLowerCase();
+  if (n.includes("blend")) return "blend";
+  if (n.includes("encapsul")) return "encapsulate";
+  if (n.includes("bottl")) return "bottle";
+  if (n.includes("label")) return "label";
+  if (n.includes("fill")) return "fill";
+  if (n.includes("cook")) return "cook";
+  if (n.includes("deposit")) return "deposit";
+  if (n.includes("cure")) return "cure";
+  if (n.includes("coat")) return "coat";
+  if (n.includes("packag")) return "package";
+  return "custom";
+}
 
 
 function toDraft(stage: FormulationStageDto): StageDraft {
@@ -202,17 +223,10 @@ export function StageStrip({
     () => wsQuery.data?.items ?? [],
     [wsQuery.data],
   );
-  // Workers picker fetch — same "only when opened" gating so a
-  // builder page load doesn't hit PSP twice up-front. Any stage's
-  // Operation Details expander flipping the flag warms the cache
-  // once and every other stage's picker reuses it.
-  const workersQuery = usePspWorkstationUsers(orgId, {
-    enabled: pickerOpened,
-  });
-  const workerOptions = useMemo(
-    () => workersQuery.data?.items ?? [],
-    [workersQuery.data],
-  );
+  // Workers picker fetch removed with the Default crew section —
+  // scientists shouldn't schedule crews. The FormulationStage
+  // model still has ``worker_psp_uuids`` (nullable / defaults to
+  // empty), so saves that don't touch it stay backward-compatible.
 
   // Re-sync drafts from the server on TWO events, never on random
   // parent re-renders:
@@ -402,8 +416,13 @@ export function StageStrip({
                   : "rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
               }
             >
+              {/* Row 1 — what operation. Workstation is the pick;
+                  the stage name auto-mirrors the workstation but
+                  stays editable so a scientist can override
+                  ("Blending — Vitamin C batch") when helpful. Kind
+                  auto-derives from workstation name; no dropdown. */}
               <div className="flex items-start justify-between gap-3">
-                <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]">
+                <div className="grid flex-1 grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_minmax(0,0.6fr)_minmax(0,0.6fr)]">
                   <div>
                     <label className="text-xs font-medium text-ink-600">
                       Stage {i + 1}
@@ -422,31 +441,7 @@ export function StageStrip({
 
                   <div>
                     <label className="text-xs font-medium text-ink-600">
-                      Kind
-                    </label>
-                    <select
-                      value={draft.stage_key}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          stage_key: e.target.value as StageKey,
-                        })
-                      }
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    >
-                      {Object.entries(STAGE_KEY_LABELS).map(
-                        ([key, label]) => (
-                          <option key={key} value={key}>
-                            {label}
-                          </option>
-                        ),
-                      )}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-medium text-ink-600">
-                      Workstation
+                      Operation (workstation)
                     </label>
                     <select
                       value={draft.workstation_group_uuid ?? ""}
@@ -455,9 +450,28 @@ export function StageStrip({
                         const picked = wsOptions.find(
                           (w) => w.uuid === v,
                         );
+                        // When the operator picks a workstation,
+                        // auto-mirror its name into the stage name
+                        // if the stage name is still the untouched
+                        // default ("Stage 1", "Stage 2", ...). Once
+                        // the operator has typed anything else we
+                        // leave it alone.
+                        const looksLikeDefault =
+                          !draft.name.trim() ||
+                          /^Stage \d+$/.test(draft.name.trim());
                         updateDraft(draft.clientKey, {
                           workstation_group_uuid: v || null,
                           workstation_group_name: picked?.name ?? "",
+                          name:
+                            looksLikeDefault && picked?.name
+                              ? picked.name
+                              : draft.name,
+                          // Kind auto-derives from the workstation
+                          // name via a simple substring match. Falls
+                          // back to ``custom`` for anything unknown.
+                          stage_key: inferStageKey(
+                            picked?.name ?? "",
+                          ),
                         });
                       }}
                       onFocus={() => setPickerOpened(true)}
@@ -466,7 +480,7 @@ export function StageStrip({
                     >
                       <option value="">
                         {draft.workstation_group_name ||
-                          "Pick a machine…"}
+                          "Pick an operation…"}
                       </option>
                       {wsOptions.map((w) => (
                         <option key={w.uuid} value={w.uuid}>
@@ -479,14 +493,14 @@ export function StageStrip({
                     </select>
                     {pickerOpened && wsQuery.isLoading ? (
                       <p className="mt-1 text-xs text-ink-500">
-                        Loading workstations…
+                        Loading operations from PSP…
                       </p>
                     ) : null}
                     {pickerOpened &&
                     !wsQuery.isLoading &&
                     wsOptions.length === 0 ? (
                       <p className="mt-1 text-xs text-ink-500">
-                        No workstations on PSP yet.
+                        No operations set up on PSP yet.
                       </p>
                     ) : null}
                   </div>
@@ -561,234 +575,33 @@ export function StageStrip({
                 ) : null}
               </div>
 
-              {/* Operation details — collapsed by default so the
-                  stage strip stays compact. Expands to reveal per-
-                  step overhead (operation description, fixed cost,
-                  variable cost, capacity) + routing-header overhead
-                  (other_fixed_cost, other_variable_cost + basis).
-                  Native <details> — no state, no toggle handler. */}
-              <details className="mt-3 rounded-lg bg-ink-0 ring-1 ring-inset ring-ink-200">
-                <summary className="cursor-pointer select-none px-3 py-2 text-xs font-medium uppercase tracking-wide text-ink-600 hover:bg-ink-50">
-                  Operation details
-                </summary>
-                <div className="grid grid-cols-1 gap-3 border-t border-ink-100 p-3 md:grid-cols-2">
-                  <div className="md:col-span-2">
-                    <label className="text-xs font-medium text-ink-600">
-                      Operation description
-                    </label>
-                    <textarea
-                      value={draft.operation_description}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          operation_description: e.target.value,
-                        })
-                      }
-                      rows={2}
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                      placeholder="e.g. Blend actives + excipients for 20 min at 40 rpm"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-600">
-                      Fixed cost (per run)
-                    </label>
-                    <input
-                      value={draft.fixed_cost}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          fixed_cost: e.target.value,
-                        })
-                      }
-                      inputMode="decimal"
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-600">
-                      Variable cost (per unit)
-                    </label>
-                    <input
-                      value={draft.variable_cost}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          variable_cost: e.target.value,
-                        })
-                      }
-                      inputMode="decimal"
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-600">
-                      Capacity (parallel machines)
-                    </label>
-                    <input
-                      value={draft.capacity}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          capacity: e.target.value,
-                        })
-                      }
-                      inputMode="decimal"
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                      placeholder="1"
-                    />
-                  </div>
-                  <div className="md:col-span-2 border-t border-dashed border-ink-100 pt-3">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
-                      Routing overhead
-                    </p>
-                    <p className="mt-1 text-[11px] text-ink-500">
-                      Costs on the routing header — not tied to any
-                      one step. Mirrors PSP's routing detail page.
-                    </p>
-                  </div>
-                  <div>
-                    <label className="text-xs font-medium text-ink-600">
-                      Other fixed cost
-                    </label>
-                    <input
-                      value={draft.other_fixed_cost}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          other_fixed_cost: e.target.value,
-                        })
-                      }
-                      inputMode="decimal"
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs font-medium text-ink-600">
-                        Other variable cost
-                      </label>
-                      <input
-                        value={draft.other_variable_cost}
-                        onChange={(e) =>
-                          updateDraft(draft.clientKey, {
-                            other_variable_cost: e.target.value,
-                          })
-                        }
-                        inputMode="decimal"
-                        disabled={!canEdit || upsert.isPending}
-                        className={`${inputClass} mt-1`}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-xs font-medium text-ink-600">
-                        Basis
-                      </label>
-                      <input
-                        value={draft.other_variable_cost_basis}
-                        onChange={(e) =>
-                          updateDraft(draft.clientKey, {
-                            other_variable_cost_basis: e.target.value,
-                          })
-                        }
-                        inputMode="decimal"
-                        disabled={!canEdit || upsert.isPending}
-                        className={`${inputClass} mt-1`}
-                        placeholder="1"
-                      />
-                    </div>
-                  </div>
-                  <div className="md:col-span-2 border-t border-dashed border-ink-100 pt-3">
-                    <p className="text-[11px] font-medium uppercase tracking-wide text-ink-500">
-                      Default crew
-                    </p>
-                    <p className="mt-1 text-[11px] text-ink-500">
-                      Operators pre-assigned to this stage's routing
-                      step on PSP. Empty = the scheduler falls back
-                      to whoever's on shift.
-                    </p>
-                    <div className="mt-2 flex flex-wrap gap-1">
-                      {draft.worker_psp_uuids.map((uuid) => {
-                        const w = workerOptions.find(
-                          (o) => o.uuid === uuid,
-                        );
-                        const label = w?.name || uuid.slice(0, 8);
-                        return (
-                          <span
-                            key={uuid}
-                            className="inline-flex items-center gap-1 rounded-full bg-ink-100 px-2 py-0.5 text-xs text-ink-800"
-                          >
-                            {label}
-                            {canEdit ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateDraft(draft.clientKey, {
-                                    worker_psp_uuids:
-                                      draft.worker_psp_uuids.filter(
-                                        (u) => u !== uuid,
-                                      ),
-                                  })
-                                }
-                                disabled={upsert.isPending}
-                                className="text-ink-500 hover:text-red-600"
-                                title="Remove"
-                              >
-                                ×
-                              </button>
-                            ) : null}
-                          </span>
-                        );
-                      })}
-                      {draft.worker_psp_uuids.length === 0 ? (
-                        <span className="text-xs text-ink-500">
-                          None yet
-                        </span>
-                      ) : null}
-                    </div>
-                    {canEdit ? (
-                      <select
-                        value=""
-                        onChange={(e) => {
-                          const uuid = e.target.value;
-                          if (!uuid) return;
-                          if (draft.worker_psp_uuids.includes(uuid)) {
-                            return;
-                          }
-                          updateDraft(draft.clientKey, {
-                            worker_psp_uuids: [
-                              ...draft.worker_psp_uuids,
-                              uuid,
-                            ],
-                          });
-                        }}
-                        onFocus={() => setPickerOpened(true)}
-                        disabled={upsert.isPending}
-                        className={`${inputClass} mt-2`}
-                      >
-                        <option value="">
-                          {workersQuery.isLoading
-                            ? "Loading operators…"
-                            : workerOptions.length === 0
-                              ? "No operators on PSP yet"
-                              : "+ Add operator…"}
-                        </option>
-                        {workerOptions
-                          .filter(
-                            (w) =>
-                              !draft.worker_psp_uuids.includes(w.uuid),
-                          )
-                          .map((w) => (
-                            <option key={w.uuid} value={w.uuid}>
-                              {w.name}
-                              {w.is_admin ? " · admin" : ""}
-                            </option>
-                          ))}
-                      </select>
-                    ) : null}
-                  </div>
-                </div>
-              </details>
+              {/* Row 2 — SOP notes. Always visible. This is the ONE
+                  thing scientists own: what to do on this operation
+                  for THIS product. Costs / capacity / crew belong
+                  on the workstation on PSP; scheduling belongs to
+                  ops. Everything else was clutter for R&D. */}
+              <div className="mt-3">
+                <label className="text-xs font-medium text-ink-600">
+                  SOP notes
+                </label>
+                <textarea
+                  value={draft.operation_description}
+                  onChange={(e) =>
+                    updateDraft(draft.clientKey, {
+                      operation_description: e.target.value,
+                    })
+                  }
+                  rows={2}
+                  disabled={!canEdit || upsert.isPending}
+                  className={`${inputClass} mt-1`}
+                  placeholder="e.g. Blend actives + excipients for 20 min at 40 rpm; screen through 40 mesh."
+                />
+                <p className="mt-1 text-[11px] text-ink-500">
+                  What the shop-floor operator should do on this
+                  operation for this product. Ships to PSP as the
+                  routing step's operation description.
+                </p>
+              </div>
 
               {/* Per-stage BOM contents. Renders the ingredient
                   lines already assigned to this stage + a button
