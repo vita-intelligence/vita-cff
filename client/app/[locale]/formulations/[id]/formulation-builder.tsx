@@ -643,6 +643,55 @@ export function FormulationBuilder({
   );
 
   // ---------------------------------------------------------------------
+  // PSP integration handles — need to sit above the live compute
+  // useMemo because the capsule-shell catalog it fetches is a compute
+  // input (auto-pick considers PSP's actual shells first).
+  // ---------------------------------------------------------------------
+  const organizationForCompute = useOrganization(orgId);
+  const pspLiveForCompute = Boolean(organizationForCompute?.psp_live);
+
+  // Full PSP capsule-shell catalog for auto-pick. Fires ONCE per
+  // mount (unfiltered by search) — separate from the picker's
+  // typeahead query so the catalog stays warm for compute
+  // regardless of what the operator is typing. Only enabled on
+  // capsule formulations with PSP live; other dosage forms don't
+  // need it.
+  const pspCapsuleShellQueryForCompute = usePspItems(orgId, {
+    enabled: pspLiveForCompute && metadata.dosage_form === "capsule",
+    useAs: "Capsule Shell",
+    itemTypes: ["raw_material"],
+  });
+  const pspCapsuleShellCatalog = useMemo(() => {
+    const rows = pspCapsuleShellQueryForCompute.data?.items ?? [];
+    // Project to compute's CapsuleShellCandidate shape. Skip
+    // shells with no ``max_weight_mg`` — auto-pick can only
+    // reason about shells whose fill capacity is known.
+    return rows
+      .map((r) => {
+        const rawMax = r.attributes?.["max_weight_mg"];
+        const num =
+          typeof rawMax === "number"
+            ? rawMax
+            : typeof rawMax === "string"
+              ? Number.parseFloat(rawMax)
+              : NaN;
+        if (!Number.isFinite(num) || num <= 0) return null;
+        const rawSize = r.attributes?.["capsule_size"];
+        return {
+          uuid: r.uuid,
+          name: r.name,
+          code: r.code || r.external_sku || "",
+          capsuleSize:
+            typeof rawSize === "string" && rawSize.trim()
+              ? rawSize.trim()
+              : null,
+          maxWeightMg: num,
+        };
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+  }, [pspCapsuleShellQueryForCompute.data]);
+
+  // ---------------------------------------------------------------------
   // Live client-side math — runs on every render, re-computes whenever
   // the metadata or lines state changes. No network calls, no
   // debounce; the totals block updates synchronously as the scientist
@@ -910,6 +959,12 @@ export function FormulationBuilder({
         shellSizeKey || shellMaxWeightMg
           ? { sizeKey: shellSizeKey, maxWeightMg: shellMaxWeightMg }
           : null,
+      // Auto-pick against PSP's real shell catalog when no shell
+      // is ticked yet. Compute picks the smallest shell (by
+      // ``attributes.max_weight_mg``) that fits with ~21% headroom
+      // for MCC / anti-caking / variance. Falls back to the
+      // hardcoded ladder when the catalog is empty.
+      capsuleShellCatalog: pspCapsuleShellCatalog,
       tabletSizeKey: metadata.tablet_size || null,
       defaultServingSize: metadata.serving_size,
       targetFillWeightMg: Number.isFinite(parsedFill) && parsedFill > 0
@@ -995,6 +1050,7 @@ export function FormulationBuilder({
     metadata.capsule_shell_item_ids,
     formulation.capsule_shell_items,
     capsuleShellAttrs,
+    pspCapsuleShellCatalog,
     metadata.tablet_size,
     metadata.serving_size,
     metadata.target_fill_weight_mg,

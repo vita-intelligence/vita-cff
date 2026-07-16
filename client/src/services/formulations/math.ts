@@ -1015,6 +1015,49 @@ function autoPickCapsuleSize(totalActiveMg: number): CapsuleSizeOption | null {
   return null;
 }
 
+
+/** One capsule-shell candidate for the PSP-backed auto-pick.
+ *  Emitted by the compute caller from the org's PSP catalog (items
+ *  with ``use_as = "capsule_shell"``) so auto-pick can consider
+ *  supplier-specific fill capacities instead of falling back to the
+ *  physics-reference ladder. */
+export interface CapsuleShellCandidate {
+  readonly uuid: string;
+  readonly name: string;
+  readonly code: string;
+  readonly capsuleSize: string | null;
+  readonly maxWeightMg: number;
+}
+
+
+/** Auto-pick against PSP's actual shell catalog. Returns the
+ *  smallest shell whose ``max_weight_mg`` exceeds ``totalActiveMg``
+ *  with the same ~21% headroom the hardcoded ladder gives (Size 1
+ *  has 380 mg max but a 300 mg threshold — that headroom is what
+ *  MCC carrier + anti-caking + variance fills). ``null`` when the
+ *  catalog is empty or nothing fits.
+ *
+ *  Ordering: ascending by max_weight_mg. Duplicates (multiple
+ *  suppliers of the same physical size) resolve on first-hit —
+ *  fine for auto-pick since the operator will typically tick the
+ *  authoritative supplier manually anyway. */
+function autoPickFromPspCatalog(
+  totalActiveMg: number,
+  catalog: readonly CapsuleShellCandidate[],
+): CapsuleShellCandidate | null {
+  if (!catalog || catalog.length === 0) return null;
+  const sorted = [...catalog]
+    .filter((s) => Number.isFinite(s.maxWeightMg) && s.maxWeightMg > 0)
+    .sort((a, b) => a.maxWeightMg - b.maxWeightMg);
+  const HEADROOM = 0.79;
+  for (const shell of sorted) {
+    if (totalActiveMg < shell.maxWeightMg * HEADROOM) {
+      return shell;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Totals block
 // ---------------------------------------------------------------------------
@@ -1075,6 +1118,15 @@ function computeCapsule(
     readonly sizeKey?: string | null;
     readonly maxWeightMg?: number | null;
   } | null,
+  /** PSP capsule-shell catalog for the org (items tagged
+   *  ``use_as = "capsule_shell"`` with a ``max_weight_mg``
+   *  attribute). Auto-pick prefers this over the hardcoded
+   *  ``CAPSULE_SIZES`` ladder so the picked size reflects the
+   *  supplier catalog the operator actually has to procure from.
+   *  Empty / omitted → falls back to the ladder (matches pre-
+   *  catalog behaviour for orgs without PSP or without any
+   *  classified shells). */
+  capsuleShellCatalog?: readonly CapsuleShellCandidate[] | null,
 ): {
   sizeKey: string | null;
   sizeLabel: string | null;
@@ -1178,25 +1230,59 @@ function computeCapsule(
       };
     }
   } else {
-    // No shell picked AND no explicit size — auto-pick the smallest
-    // capsule that fits the total active. Matches the pre-picker
-    // legacy behaviour, so a formulation without any capsule
-    // metadata still gets a sensible viability.
-    const auto = autoPickCapsuleSize(totalActive);
-    if (auto === null) {
-      warnings.push("capsule_too_large");
-      return {
-        sizeKey: null,
-        sizeLabel: null,
-        maxWeight: null,
-        totalWeight: null,
-        excipients: null,
-        viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
-        warnings,
+    // No shell picked AND no explicit size — try PSP's actual
+    // capsule-shell catalog first, then fall through to the
+    // hardcoded physics ladder if the catalog is empty. Preferring
+    // the catalog means auto-pick reflects the supplier stock the
+    // operator will really procure from, not a synthetic Excel-
+    // sourced size.
+    const fromPsp = autoPickFromPspCatalog(
+      totalActive,
+      capsuleShellCatalog ?? [],
+    );
+    if (fromPsp) {
+      size = {
+        // Prefer a known key from the physics table (so downstream
+        // consumers that look up ``size.key`` in CAPSULE_SIZES for
+        // the label still find it). Fallback to "custom" when the
+        // shell's capsule_size doesn't map to a standard entry.
+        key: fromPsp.capsuleSize && capsuleSizeByKey(fromPsp.capsuleSize)
+          ? fromPsp.capsuleSize
+          : "custom",
+        label: fromPsp.capsuleSize
+          ? capsuleSizeByKey(fromPsp.capsuleSize)?.label ?? fromPsp.name
+          : fromPsp.name,
+        max_weight_mg: fromPsp.maxWeightMg,
       };
+      // Soft advisory: identify the auto-picked shell so the
+      // operator can lock it manually in the Excipients picker.
+      // Interpolation payload lives on the warning code; the FE's
+      // ``resolveWarningLabel`` formatter reads it.
+      // Warning payload format: ``auto_picked_psp_shell:<label>``
+      // where <label> is a human-readable "Name (CODE)" string.
+      // The FE viability panel splits on the first colon and feeds
+      // the tail into the i18n label as ``{name}``.
+      const label = fromPsp.code
+        ? `${fromPsp.name} (${fromPsp.code})`
+        : fromPsp.name;
+      warnings.push(`auto_picked_psp_shell:${label}`);
+    } else {
+      const auto = autoPickCapsuleSize(totalActive);
+      if (auto === null) {
+        warnings.push("capsule_too_large");
+        return {
+          sizeKey: null,
+          sizeLabel: null,
+          maxWeight: null,
+          totalWeight: null,
+          excipients: null,
+          viability: { fits: false, comfortOk: false, codes: ["cannot_make"] },
+          warnings,
+        };
+      }
+      size = auto;
+      warnings.push("pick_capsule_shell");
     }
-    size = auto;
-    warnings.push("pick_capsule_shell");
   }
 
   if (size === null) {
@@ -1955,6 +2041,7 @@ export function computeTotals({
   dosageForm,
   capsuleSizeKey,
   capsuleShellOverride,
+  capsuleShellCatalog,
   tabletSizeKey,
   defaultServingSize,
   targetFillWeightMg,
@@ -1986,6 +2073,12 @@ export function computeTotals({
     readonly sizeKey?: string | null;
     readonly maxWeightMg?: number | null;
   } | null;
+  /** PSP capsule-shell catalog for the org — used by capsule
+   *  auto-pick when the operator hasn't ticked a shell yet.
+   *  Ordering is irrelevant (compute sorts ascending by
+   *  ``maxWeightMg``). Empty / omitted → auto-pick falls back to
+   *  the hardcoded physics ladder. */
+  capsuleShellCatalog?: readonly CapsuleShellCandidate[] | null;
   tabletSizeKey: string | null;
   defaultServingSize: number;
   targetFillWeightMg?: number | null;
@@ -2209,6 +2302,7 @@ export function computeTotals({
       hasSilicaAntiCaking,
       excipientOverrides,
       capsuleShellOverride ?? null,
+      capsuleShellCatalog ?? null,
     );
     return {
       totalActiveMg: totalActive,
