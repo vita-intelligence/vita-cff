@@ -273,6 +273,7 @@
         "pick_capsule_shell": "Pick a capsule shell to compute",
         "capsule_shell_missing_max_weight": "Picked shell has no Fill capacity (mg) attribute — set it on PSP",
         "capsule_shell_max_weight_from_map": "Using standard fill capacity — set attributes.max_weight_mg on the picked shell for a precise value",
+        "auto_picked_psp_shell": "Auto-picked shell from PSP catalog — tick {name} to lock",
         "mcc_carrier_unpicked": "MCC carrier not picked — spec sheet will use the generic placeholder",
         "dcp_carrier_unpicked": "DCP carrier not picked — spec sheet will use the generic placeholder"
       },
@@ -284,6 +285,7 @@
         "pick_capsule_shell": "Tick a capsule shell — compute needs the shell's capsule_size + max_weight_mg attributes.",
         "capsule_shell_missing_max_weight": "The picked capsule shell has no recognisable capsule_size attribute, so compute can't pick a fallback fill capacity from the standard table. Edit the item on PSP to set attributes.capsule_size (size_0, single_00, etc.) or attributes.max_weight_mg.",
         "capsule_shell_max_weight_from_map": "The picked capsule shell has capsule_size set but no explicit attributes.max_weight_mg — compute is using the standard fill capacity for that size. Set attributes.max_weight_mg on the PSP row for a supplier-specific value.",
+        "auto_picked_psp_shell": "No capsule shell ticked yet. Compute auto-picked {name} from the PSP catalog — the smallest shell whose max_weight_mg fits total active with ~21% headroom. Tick it in the Excipients section to lock the pick.",
         "gummy_base_below_floor": "Gummy base would fall below the structural floor — drop actives or raise the target so the gel can set.",
         "powder_flavour_water_volume_missing": "No water volume entered — set the per-serving water volume so the flavour-system bands can dose.",
         "powder_acidity_rate_missing": "Acidity item \"{name}\" has no Powder Water Dose set on the raw material.",
