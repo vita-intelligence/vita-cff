@@ -2166,28 +2166,6 @@ export function FormulationBuilder({
               hint={tFormulations("fields.water_volume_ml_hint")}
             />
           ) : null}
-          {/* Capsule size: no dedicated dropdown any more.
-              * Shell picked → drives size via ``attributes.capsule_size``.
-              * No shell picked → compute auto-picks the smallest size
-                that fits the total active.
-              A small hint block replaces the old dropdown so scientists
-              know where the size comes from — the picker is the single
-              source of truth. */}
-          {metadata.dosage_form === "capsule" ? (
-            <div className="flex flex-col gap-1.5">
-              <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                Capsule size
-              </span>
-              <div className="flex items-center gap-2 rounded-xl bg-orange-50/60 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-orange-200">
-                <ShieldCheck className="h-4 w-4 shrink-0 text-orange-700" />
-                <span>
-                  {metadata.capsule_shell_item_ids.length > 0
-                    ? "Driven by the picked capsule shell — edit the shell's capsule_size attribute on PSP to change."
-                    : "Auto-picked from total active weight — tick a capsule shell on the right to lock a specific size."}
-                </span>
-              </div>
-            </div>
-          ) : null}
           {metadata.dosage_form === "tablet" ? (
             <SelectField
               label={tFormulations("fields.tablet_size")}
@@ -2230,6 +2208,27 @@ export function FormulationBuilder({
           band. Every pick feeds the compute + declaration.
         </p>
         <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+          {/* Capsule size hint — lives on the Ingredients tab now
+              alongside the shell picker that drives it. No dropdown:
+              shell picked → drives size via ``attributes.capsule_size``;
+              no shell picked → compute auto-picks the smallest PSP
+              shell that fits total active (falling back to the
+              hardcoded ladder). Renders only for capsule form. */}
+          {metadata.dosage_form === "capsule" ? (
+            <div className="flex flex-col gap-1.5 md:col-span-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                Capsule size
+              </span>
+              <div className="flex items-center gap-2 rounded-xl bg-orange-50/60 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-orange-200">
+                <ShieldCheck className="h-4 w-4 shrink-0 text-orange-700" />
+                <span>
+                  {metadata.capsule_shell_item_ids.length > 0
+                    ? "Driven by the picked capsule shell — edit the shell's capsule_size attribute on PSP to change."
+                    : "Auto-picked from total active weight — tick a capsule shell below to lock a specific size."}
+                </span>
+              </div>
+            </div>
+          ) : null}
           {/* Capsule shell picker — capsule-only. Picks flow into
               compute via ``attributes.capsule_size`` (overriding the
               size dropdown) and ``attributes.shell_weight_mg``
