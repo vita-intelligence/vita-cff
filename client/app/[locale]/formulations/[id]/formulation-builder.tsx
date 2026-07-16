@@ -3414,56 +3414,49 @@ export function FormulationBuilder({
       </div>
 
       {/* ------------------------------------------------------------ */}
-      {/* Preview tab: BOM + stage graph + version history            */}
+      {/* Preview tab: Stage BOMs (with terminal-stage authoritative  */}
+      {/* MRPeasy-style BOM injected) + version history               */}
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "preview" ? "flex flex-col gap-10" : "hidden"}>
-      {/* Bill of Materials — the compute-based per-1kg breakdown     */}
-      {/* the operator reviews before quoting. Actives + all excipient */}
-      {/* band picks + shell in a single scaled table. This is the    */}
-      {/* number procurement runs off, and the one PSP should         */}
-      {/* eventually receive on save.                                 */}
-      <MrpeasyBomCard
-        totals={liveTotals}
-        lines={lines}
-        gummyBaseItems={formulation.gummy_base_items}
-        flavouringItems={formulation.flavouring_items}
-        colourItems={formulation.colour_items}
-        glazingItems={formulation.glazing_items}
-        gellingItems={formulation.gelling_items}
-        premixSweetenerItems={formulation.premix_sweetener_items}
-        acidityItems={formulation.acidity_items}
-        // Excipient-band picks feed the capsule / tablet BOM rows
-        // (Silicon Dioxide, MCC, DCP) with their actual SKUs +
-        // codes instead of the generic category placeholders.
-        mccCarrierItemIds={metadata.mcc_carrier_item_ids}
-        dcpCarrierItemIds={metadata.dcp_carrier_item_ids}
-        antiCakingItemIds={metadata.anti_caking_item_ids}
-        mccCarrierNames={mccCarrierNames}
-        antiCakingNames={antiCakingNames}
-        mccCarrierCodes={mccCarrierCodes}
-        antiCakingCodes={antiCakingCodes}
-        mccCarrierItems={formulation.mcc_carrier_items}
-        dcpCarrierItems={formulation.dcp_carrier_items}
-        antiCakingItems={formulation.anti_caking_items}
-        formulationCode={formulation.code}
-        formulationName={formulation.name}
-        tFormulations={tFormulations}
-      />
-
-      {/* Stage graph preview — shows the multi-stage split that will */}
-      {/* land on PSP on save. Kept below the BOM so operators see    */}
-      {/* the totals-correct table first, then the routing layout.    */}
-      {/* Ingredient weights on the stage cards are label claims (raw */}
-      {/* mg per line) — they don't yet include excipient bands or    */}
-      {/* extract-ratio adjustments. That's a scoped follow-up: the   */}
-      {/* row computation lives inside MrpeasyBomCard and needs a     */}
-      {/* proper extraction before it can drive per-stage math too.   */}
-      {/* For now, MrpeasyBomCard above is the authoritative BOM.     */}
       <StageBomsPreview
         formulationCode={formulation.code}
         formulationName={formulation.name}
         stages={formulation.stages}
         lines={lines}
+        // Inject the compute-based per-1kg breakdown into the
+        // terminal stage's card. This is what MrpeasyBomCard has
+        // always rendered — actives + all excipient bands + SKU
+        // codes at their real weights (extract-ratio + purity
+        // resolved). The Stage BOMs preview owns the routing
+        // layout + non-terminal per-line breakdowns; the terminal
+        // BOM is the finished product's authoritative recipe and
+        // lives inside its card.
+        terminalBom={
+          <MrpeasyBomCard
+            totals={liveTotals}
+            lines={lines}
+            gummyBaseItems={formulation.gummy_base_items}
+            flavouringItems={formulation.flavouring_items}
+            colourItems={formulation.colour_items}
+            glazingItems={formulation.glazing_items}
+            gellingItems={formulation.gelling_items}
+            premixSweetenerItems={formulation.premix_sweetener_items}
+            acidityItems={formulation.acidity_items}
+            mccCarrierItemIds={metadata.mcc_carrier_item_ids}
+            dcpCarrierItemIds={metadata.dcp_carrier_item_ids}
+            antiCakingItemIds={metadata.anti_caking_item_ids}
+            mccCarrierNames={mccCarrierNames}
+            antiCakingNames={antiCakingNames}
+            mccCarrierCodes={mccCarrierCodes}
+            antiCakingCodes={antiCakingCodes}
+            mccCarrierItems={formulation.mcc_carrier_items}
+            dcpCarrierItems={formulation.dcp_carrier_items}
+            antiCakingItems={formulation.anti_caking_items}
+            formulationCode={formulation.code}
+            formulationName={formulation.name}
+            tFormulations={tFormulations}
+          />
+        }
       />
 
       {/* ------------------------------------------------------------ */}
