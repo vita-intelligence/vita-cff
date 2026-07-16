@@ -176,6 +176,17 @@ export interface StageStripBuilderLine {
 }
 
 
+/** One row of the compute-based BOM the parent hands to the
+ *  terminal stage's card. Actives + all excipient bands, at their
+ *  real per-serving mg. Empty when no actives are picked yet. */
+export interface StageStripBomLine {
+  readonly key: string;
+  readonly label: string;
+  readonly code: string;
+  readonly mg: number;
+}
+
+
 export interface StageStripProps {
   readonly orgId: string;
   readonly formulation: FormulationDto;
@@ -190,6 +201,14 @@ export interface StageStripProps {
    *  own BOM contents underneath the stage row so the operator can
    *  see "what's in the Blend BOM" without leaving the strip. */
   readonly lines: readonly StageStripBuilderLine[];
+  /** Full compute-based BOM for the terminal stage — actives +
+   *  every excipient band the finished product carries, split
+   *  across picked SKUs. Undefined on formulations where compute
+   *  hasn't produced band-level output yet (liquid / other-solid
+   *  dosage forms today). The terminal stage renders this when
+   *  present, falling back to the simple ``lines`` filter
+   *  otherwise. */
+  readonly terminalBomLines?: readonly StageStripBomLine[];
   /** Fired with the fresh formulation DTO after a successful
    *  ``Save stages`` round-trip. The builder wires this to its
    *  own ``setFormulation`` so the Stage BOMs preview + picker
@@ -207,6 +226,7 @@ export function StageStrip({
   activeStageId,
   onActiveStageChange,
   lines,
+  terminalBomLines,
   onSaved,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
@@ -400,18 +420,17 @@ export function StageStrip({
             const isActive =
               stageId !== null && stageId === activeStageId;
             const isTerminal = i === drafts.length - 1;
-            // Lines assigned to this stage — the operator's per-
-            // stage BOM in the making. Unsaved additions ("new-*"
-            // keys) also show up so the strip stays in sync with
-            // the picker in real time.
+            // Non-terminal stage: show only the actives explicitly
+            // assigned to it.
             //
-            // Terminal stage additionally absorbs every ingredient
-            // that isn't explicitly assigned to a stage (see the
-            // "folds in on the next save" semantics in the push
-            // cascade). Counting + listing them here so the stage
-            // card shows the ingredients the operator ACTUALLY
-            // picked on the Ingredients tab — even before they've
-            // been re-saved with a stage_id.
+            // Terminal stage: prefer the parent-computed
+            // ``terminalBomLines`` (actives + every excipient band
+            // at compute-adjusted per-serving mg) so the list
+            // matches the Preview tab's BOM. When the parent hasn't
+            // supplied it (dosage forms compute doesn't fully
+            // handle, or a legacy no-compute path), fall back to
+            // the same "assigned + unassigned actives" split as
+            // before.
             const stageOwnLines = stageId
               ? lines.filter((l) => l.stage_id === stageId)
               : [];
@@ -419,6 +438,10 @@ export function StageStrip({
               ? lines.filter((l) => l.stage_id === null)
               : [];
             const stageLines = [...stageOwnLines, ...nullStageLines];
+            const showComputedBom =
+              isTerminal &&
+              terminalBomLines !== undefined &&
+              terminalBomLines.length > 0;
             return (
             <li
               key={draft.clientKey}
@@ -626,10 +649,11 @@ export function StageStrip({
                 <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                      Actives · {stageLines.length}{" "}
-                      {stageLines.length === 1
-                        ? "assigned"
-                        : "assigned"}
+                      {showComputedBom ? (
+                        <>BOM · {terminalBomLines!.length} ingredients</>
+                      ) : (
+                        <>Actives · {stageLines.length} assigned</>
+                      )}
                     </p>
                     {canEdit ? (
                       <button
@@ -648,7 +672,28 @@ export function StageStrip({
                       </button>
                     ) : null}
                   </div>
-                  {stageLines.length === 0 ? (
+                  {showComputedBom ? (
+                    <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
+                      {terminalBomLines!.map((line) => (
+                        <li
+                          key={line.key}
+                          className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
+                        >
+                          <span>
+                            {line.label}
+                            {line.code ? (
+                              <span className="ml-2 text-xs text-ink-500">
+                                {line.code}
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="text-xs tabular-nums text-ink-700">
+                            {line.mg.toFixed(4)} mg
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : stageLines.length === 0 ? (
                     <p className="mt-2 text-xs text-ink-500">
                       {isTerminal
                         ? "No actives assigned yet. Pick some on the Ingredients tab — every ingredient without an explicit stage lands here by default."
@@ -687,15 +732,6 @@ export function StageStrip({
                       })}
                     </ul>
                   )}
-                  {isTerminal ? (
-                    <p className="mt-3 border-t border-dashed border-ink-100 pt-2 text-[11px] italic text-ink-500">
-                      This lists the actives you tick on the
-                      Ingredients tab. The full BOM (with capsule
-                      shell, MCC carrier, anti-caking, and every
-                      excipient band computed at real per-serving
-                      weights) lives on the Preview tab.
-                    </p>
-                  ) : null}
                 </div>
               ) : null}
             </li>
