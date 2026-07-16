@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, CopyPlus, ExternalLink, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { Check, Copy, CopyPlus, ExternalLink, Loader2, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { StageBomsPreview } from "./stage-boms-preview";
@@ -3056,67 +3056,103 @@ export function FormulationBuilder({
                 {tFormulations("builder.picker_empty")}
               </li>
             ) : (
-              pickerItems.map((item) => {
-                // PSP-sourced picker rows haven't mirrored yet, so
-                // the "already added" check needs to look for the
-                // in-flight synthetic id AND any local id that came
-                // from a previous mirror of the same PSP UUID.
-                const already = lines.some((l) => {
-                  if (l.item_id === item.id) return true;
-                  if (item.id.startsWith("psp:")) {
-                    // A local line saved from an earlier session may
-                    // carry ``psp_source_uuid`` in its item metadata;
-                    // reconciling that lives on the follow-up "show
-                    // PSP linkage on line rows" PR. For now, the
-                    // mutation-side ``appendIngredientLine`` dedupe
-                    // covers double-clicks; this is best-effort.
-                    return false;
-                  }
-                  return false;
-                });
-                const failure = canComputeMaterial(attributesFromItem(item));
-                const mirroring =
-                  item.id.startsWith("psp:") &&
-                  mirrorPsp.isPending &&
-                  mirrorPsp.variables === item.id.slice("psp:".length);
-                const disabled =
-                  !canWrite || already || failure !== null || mirroring;
-                return (
-                  <li key={item.id}>
-                    <button
-                      type="button"
-                      disabled={disabled}
-                      onClick={() => addIngredient(item)}
-                      title={
-                        failure
-                          ? tFormulations(
-                              `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
-                            )
-                          : undefined
-                      }
-                      className={`flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs text-ink-1000 ring-1 ring-inset hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
-                        failure
-                          ? "ring-warning/30"
-                          : "ring-ink-200"
-                      }`}
-                    >
-                      <span>
-                        <span className="block font-semibold">{item.name}</span>
-                        <span className="text-ink-600">
-                          {item.internal_code || "—"}
+              // O(1) dedup: build two sets ONCE per render pass —
+              // one keyed on the local Item id (for legacy /
+              // already-mirrored picks), one keyed on the item's
+              // internal_code (a stable identifier that survives
+              // PSP → local mirror translation, so a PSP picker row
+              // with ``id=psp:<uuid>`` still matches its already-
+              // added local twin whose ``item_id`` is a local UUID).
+              // Replaces an O(N × M) ``lines.some(...)`` scan run
+              // per picker row on every render.
+              (() => {
+                const pickedIds = new Set<string>();
+                const pickedCodes = new Set<string>();
+                for (const l of lines) {
+                  if (l.item_id) pickedIds.add(l.item_id);
+                  if (l.item_internal_code)
+                    pickedCodes.add(l.item_internal_code);
+                }
+                const mirroringUuid =
+                  mirrorPsp.isPending && typeof mirrorPsp.variables === "string"
+                    ? mirrorPsp.variables
+                    : null;
+                return pickerItems.map((item) => {
+                  const already =
+                    pickedIds.has(item.id) ||
+                    (item.internal_code
+                      ? pickedCodes.has(item.internal_code)
+                      : false);
+                  const failure = canComputeMaterial(
+                    attributesFromItem(item),
+                  );
+                  const mirroring =
+                    item.id.startsWith("psp:") &&
+                    mirroringUuid === item.id.slice("psp:".length);
+                  const disabled =
+                    !canWrite || already || failure !== null || mirroring;
+                  return (
+                    <li key={item.id}>
+                      <button
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => addIngredient(item)}
+                        title={
+                          already
+                            ? "Already added on this formulation"
+                            : failure
+                              ? tFormulations(
+                                  `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                                )
+                              : undefined
+                        }
+                        className={`flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs text-ink-1000 ring-1 ring-inset hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
+                          failure ? "ring-warning/30" : "ring-ink-200"
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block font-semibold">
+                            {item.name}
+                          </span>
+                          <span className="text-ink-600">
+                            {item.internal_code || "—"}
+                          </span>
+                          {failure ? (
+                            <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-warning">
+                              {tFormulations(
+                                `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                              )}
+                            </span>
+                          ) : null}
                         </span>
-                        {failure ? (
-                          <span className="mt-1 block text-xs font-medium uppercase tracking-wide text-warning">
-                            {tFormulations(
-                              `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
-                            )}
+                        {/* Status pill on the right edge of the
+                            row. Priority: spinner while a mirror
+                            round-trip is in flight for THIS row →
+                            "Added" chip when the ingredient already
+                            sits on the formulation. Silent
+                            otherwise so the row stays scannable. */}
+                        {mirroring ? (
+                          <span
+                            aria-label="Adding to builder…"
+                            className="mt-0.5 inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-orange-700"
+                          >
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Adding
+                          </span>
+                        ) : already ? (
+                          <span
+                            aria-label="Already added"
+                            className="mt-0.5 inline-flex items-center gap-1 rounded-full bg-ink-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-600"
+                          >
+                            <Check className="h-3 w-3" />
+                            Added
                           </span>
                         ) : null}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })
+                      </button>
+                    </li>
+                  );
+                });
+              })()
             )}
             {!pspLive && pickerItems.length > 0 ? (
               <li ref={pickerSentinelRef} aria-hidden className="h-px" />
