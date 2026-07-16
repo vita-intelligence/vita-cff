@@ -399,14 +399,26 @@ export function StageStrip({
             const stageId = draft.id ?? null;
             const isActive =
               stageId !== null && stageId === activeStageId;
-            // Lines already assigned to this stage — the operator's
-            // per-stage BOM in the making. Unsaved additions
-            // ("new-*" keys) also show up so the strip stays in
-            // sync with the picker in real time.
-            const stageLines = stageId
+            const isTerminal = i === drafts.length - 1;
+            // Lines assigned to this stage — the operator's per-
+            // stage BOM in the making. Unsaved additions ("new-*"
+            // keys) also show up so the strip stays in sync with
+            // the picker in real time.
+            //
+            // Terminal stage additionally absorbs every ingredient
+            // that isn't explicitly assigned to a stage (see the
+            // "folds in on the next save" semantics in the push
+            // cascade). Counting + listing them here so the stage
+            // card shows the ingredients the operator ACTUALLY
+            // picked on the Ingredients tab — even before they've
+            // been re-saved with a stage_id.
+            const stageOwnLines = stageId
               ? lines.filter((l) => l.stage_id === stageId)
               : [];
-            const isTerminal = i === drafts.length - 1;
+            const nullStageLines = isTerminal
+              ? lines.filter((l) => l.stage_id === null)
+              : [];
+            const stageLines = [...stageOwnLines, ...nullStageLines];
             return (
             <li
               key={draft.clientKey}
@@ -614,10 +626,10 @@ export function StageStrip({
                 <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                      BOM · {stageLines.length}{" "}
+                      Actives · {stageLines.length}{" "}
                       {stageLines.length === 1
-                        ? "ingredient"
-                        : "ingredients"}
+                        ? "assigned"
+                        : "assigned"}
                     </p>
                     {canEdit ? (
                       <button
@@ -638,14 +650,15 @@ export function StageStrip({
                   </div>
                   {stageLines.length === 0 ? (
                     <p className="mt-2 text-xs text-ink-500">
-                      No ingredients assigned yet. Click "Add
-                      ingredients here" to make this stage the
-                      picker's target, then pick from the
-                      ingredient list.
+                      {isTerminal
+                        ? "No actives assigned yet. Pick some on the Ingredients tab — every ingredient without an explicit stage lands here by default."
+                        : "No ingredients assigned yet. Click \"Add ingredients here\" to make this stage the picker's target, then pick from the ingredient list."}
                     </p>
                   ) : (
                     <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
-                      {stageLines.map((line) => (
+                      {stageLines.map((line) => {
+                        const isUnassigned = line.stage_id === null;
+                        return (
                         <li
                           key={line.key}
                           className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
@@ -657,19 +670,30 @@ export function StageStrip({
                                 {line.item_internal_code}
                               </span>
                             ) : null}
+                            {isUnassigned ? (
+                              <span
+                                className="ml-2 text-[11px] italic text-ink-500"
+                                title="This ingredient has no explicit stage assignment. It will save into this terminal stage's BOM on the next save."
+                              >
+                                (unassigned — folds in on save)
+                              </span>
+                            ) : null}
                           </span>
                           <span className="text-xs tabular-nums text-ink-700">
                             {line.label_claim_mg || "0"} mg
                           </span>
                         </li>
-                      ))}
+                        );
+                      })}
                     </ul>
                   )}
                   {isTerminal ? (
-                    <p className="mt-2 text-[11px] italic text-ink-500">
-                      Terminal stage — any ingredient without a
-                      stage assignment folds into this BOM on the
-                      next save.
+                    <p className="mt-3 border-t border-dashed border-ink-100 pt-2 text-[11px] italic text-ink-500">
+                      This lists the actives you tick on the
+                      Ingredients tab. The full BOM (with capsule
+                      shell, MCC carrier, anti-caking, and every
+                      excipient band computed at real per-serving
+                      weights) lives on the Preview tab.
                     </p>
                   ) : null}
                 </div>
