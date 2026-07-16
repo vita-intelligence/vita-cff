@@ -2955,6 +2955,19 @@ export function FormulationBuilder({
         activeStageId={activeStageId}
         onActiveStageChange={setActiveStageId}
         lines={lines}
+        // Full compute-based ingredient list for the terminal
+        // stage's card — same numbers the Preview tab's BOM shows
+        // (actives at their extract-ratio-adjusted per-serving mg,
+        // MCC / DCP / anti-caking bands split equally across the
+        // picker's ticked SKUs). One source of truth so numbers
+        // don't drift between the two surfaces.
+        terminalBomLines={deriveStageBomLines({
+          totals: liveTotals,
+          lines,
+          mccCarrierItems: formulation.mcc_carrier_items ?? [],
+          dcpCarrierItems: formulation.dcp_carrier_items ?? [],
+          antiCakingItems: formulation.anti_caking_items ?? [],
+        })}
         onSaved={(updated) => {
           // Server has fresh stage state — mirror it into the
           // builder's local ``formulation`` so the Stage BOMs
@@ -3795,6 +3808,104 @@ const DeclarationPanel = memo(function DeclarationPanel({
  * Print stylesheet (``print:`` Tailwind variants) hides everything
  * except this card so a Cmd+P emits a clean handoff sheet.
  */
+/**
+ * Compact projection of the full BOM rows for the Stages tab.
+ * Returns one row per ingredient the finished product carries at
+ * its compute-adjusted mg / per-serving weight — actives with
+ * extract-ratio + purity resolved, MCC / DCP / anti-caking bands
+ * split equally across the picked SKUs.
+ *
+ * Deliberately narrower than :func:`BomCard`'s ~200-line row
+ * derivation — no per-1 kg scaling, no pectin premix collapse, no
+ * gummy pre-blend split. Those are Preview-tab concerns; the
+ * Stages tab just needs "what ships to production, at what weight
+ * per serving". Two callers, one source of truth for the numbers
+ * that fall out of compute; the BomCard's own useMemo below still
+ * runs the fancy per-1 kg + placeholders + procurement columns
+ * because the Preview tab needs them.
+ */
+type BomLine = {
+  key: string;
+  label: string;
+  code: string;
+  mg: number;
+};
+
+function deriveStageBomLines(inputs: {
+  totals: FormulationTotals;
+  lines: readonly BuilderLine[];
+  mccCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
+  dcpCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
+  antiCakingItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
+}): BomLine[] {
+  const { totals, lines, mccCarrierItems, dcpCarrierItems, antiCakingItems } = inputs;
+  const out: BomLine[] = [];
+
+  // Actives — real per-serving mg from compute (extract ratio,
+  // purity, overage all resolved). Skip zero rows so a stray
+  // 0-mg placeholder doesn't clutter the list.
+  for (const line of lines) {
+    const mg = totals.lineValues.get(line.key);
+    if (!mg || mg <= 0) continue;
+    out.push({
+      key: `active:${line.key}`,
+      label: line.item_name,
+      code: line.item_internal_code || "",
+      mg,
+    });
+  }
+
+  const excipients = totals.excipients;
+  if (excipients) {
+    // Split each band's total mg equally across the SKUs the
+    // operator picked. Empty picker → emit a single generic
+    // placeholder row with a blank code so procurement sees what
+    // still needs a SKU.
+    const emitBand = (
+      totalMg: number,
+      picks: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[],
+      placeholder: string,
+      slugPrefix: string,
+    ) => {
+      if (totalMg <= 0) return;
+      if (picks.length === 0) {
+        out.push({ key: slugPrefix, label: placeholder, code: "", mg: totalMg });
+        return;
+      }
+      const per = totalMg / picks.length;
+      for (const p of picks) {
+        out.push({
+          key: `${slugPrefix}:${p.id}`,
+          label: p.name,
+          code: p.internal_code || "",
+          mg: per,
+        });
+      }
+    };
+
+    // Anti-caking splits stearate + silica math but shares one
+    // pick list; combine before splitting across picks (matches
+    // BomCard's own behaviour).
+    const antiCakingTotal =
+      (excipients.mgStearateMg || 0) + (excipients.silicaMg || 0);
+    const antiCakingPlaceholder =
+      excipients.mgStearateMg && excipients.silicaMg
+        ? "Magnesium Stearate + Silicon Dioxide"
+        : excipients.mgStearateMg
+          ? "Magnesium Stearate"
+          : "Silicon Dioxide";
+    emitBand(antiCakingTotal, antiCakingItems, antiCakingPlaceholder, "anticaking");
+    emitBand(excipients.dcpMg || 0, dcpCarrierItems, "Dicalcium Phosphate", "dcp");
+    emitBand(excipients.mccMg || 0, mccCarrierItems, "Microcrystalline Cellulose", "mcc");
+  }
+
+  // Smallest first — matches BomCard's ordering so the same
+  // ingredient list reads the same on both surfaces.
+  out.sort((a, b) => a.mg - b.mg);
+  return out;
+}
+
+
 // Memoised: BOM rows recompute only when totals / lines / picker
 // state change. Keystrokes elsewhere (search input, metadata fields)
 // no longer drive a full table re-render.
