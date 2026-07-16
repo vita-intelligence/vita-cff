@@ -3414,29 +3414,14 @@ export function FormulationBuilder({
       </div>
 
       {/* ------------------------------------------------------------ */}
-      {/* Stage BOMs preview + legacy MRPeasy + version history       */}
-      {/* (tab: PREVIEW)                                              */}
+      {/* Preview tab: BOM + stage graph + version history            */}
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "preview" ? "flex flex-col gap-10" : "hidden"}>
-      <StageBomsPreview
-        formulationCode={formulation.code}
-        formulationName={formulation.name}
-        stages={formulation.stages}
-        lines={lines}
-      />
-
-      {/* ------------------------------------------------------------ */}
-      {/* Legacy MRPeasy BOM (per 1 kg of finished product) — kept    */}
-      {/* collapsed as a fallback view while the stage-aware cascade  */}
-      {/* becomes the primary. Slated for removal once operators      */}
-      {/* confirm the Stage BOMs preview covers every use case they   */}
-      {/* used the flat MRPeasy view for.                             */}
-      {/* ------------------------------------------------------------ */}
-      <details className="rounded-2xl bg-ink-0 p-4 shadow-sm ring-1 ring-ink-200">
-        <summary className="cursor-pointer select-none px-2 py-1 text-xs font-medium uppercase tracking-wide text-ink-500 hover:text-ink-800">
-          Legacy MRPeasy BOM (deprecated — use Stage BOMs above)
-        </summary>
-        <div className="mt-4">
+      {/* Bill of Materials — the compute-based per-1kg breakdown     */}
+      {/* the operator reviews before quoting. Actives + all excipient */}
+      {/* band picks + shell in a single scaled table. This is the    */}
+      {/* number procurement runs off, and the one PSP should         */}
+      {/* eventually receive on save.                                 */}
       <MrpeasyBomCard
         totals={liveTotals}
         lines={lines}
@@ -3464,8 +3449,22 @@ export function FormulationBuilder({
         formulationName={formulation.name}
         tFormulations={tFormulations}
       />
-        </div>
-      </details>
+
+      {/* Stage graph preview — shows the multi-stage split that will */}
+      {/* land on PSP on save. Kept below the BOM so operators see    */}
+      {/* the totals-correct table first, then the routing layout.    */}
+      {/* Ingredient weights on the stage cards are label claims (raw */}
+      {/* mg per line) — they don't yet include excipient bands or    */}
+      {/* extract-ratio adjustments. That's a scoped follow-up: the   */}
+      {/* row computation lives inside MrpeasyBomCard and needs a     */}
+      {/* proper extraction before it can drive per-stage math too.   */}
+      {/* For now, MrpeasyBomCard above is the authoritative BOM.     */}
+      <StageBomsPreview
+        formulationCode={formulation.code}
+        formulationName={formulation.name}
+        stages={formulation.stages}
+        lines={lines}
+      />
 
       {/* ------------------------------------------------------------ */}
       {/* Version history                                              */}
