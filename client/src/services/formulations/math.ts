@@ -2221,41 +2221,23 @@ export function computeTotals({
   const useAsWarnings: string[] = [];
   {
     const seen = new Set<string>();
-    type ItemLike = {
-      readonly id?: string;
-      readonly label?: string;
-      readonly useAs?: string;
-    };
-    const buckets: ReadonlyArray<readonly ItemLike[]> = [
-      gummyBaseItems ?? [],
-      flavouringItems ?? [],
-      colourItems ?? [],
-      sweetenerItems ?? [],
-      glazingItems ?? [],
-      gellingItems ?? [],
-      premixSweetenerItems ?? [],
-      acidityItems ?? [],
-      mccCarrierItems ?? [],
-      dcpCarrierItems ?? [],
-      antiCakingItems ?? [],
-      powderCarrierItems ?? [],
-    ];
-    for (const bucket of buckets) {
-      for (const pick of bucket) {
-        if (!pick?.id) continue;
-        if (seen.has(pick.id)) continue;
-        seen.add(pick.id);
-        const value = (pick.useAs ?? "").trim();
-        if (!value) {
-          useAsWarnings.push(
-            `item_missing_use_as:${pick.label ?? pick.id}`,
-          );
-        }
-      }
-    }
-    // Lines come from a different shape — the item id isn't on the
-    // input directly, so we key the dedup on the externalId (one
-    // line per row). use_as is on ``line.attributes``.
+    // Every excipient picker is scoped to a specific compliance
+    // category on its ``useAsIn`` prop (the Anti-caking picker only
+    // shows Anti-caking Agent items, the MCC picker only shows
+    // Carrier / Bulking Agent items, etc.). So an item ticked via
+    // a specific bucket is CLASSIFIED by the bucket regardless of
+    // whether the PSP-side attribute is populated — the picker's
+    // filter is the enforcement, not this compute warning.
+    // Consequently we no longer walk bucket picks for missing
+    // ``use_as``: doing so fired seven false-positive warnings the
+    // moment an operator picked PSP-sourced excipients that hadn't
+    // had their ``attributes.use_as`` backfilled yet. Server-side
+    // parity for this change landed in the calc-infer-use-as-from-
+    // picker PR.
+    //
+    // Actives (line items) DON'T carry a picker-context — the raw-
+    // materials picker is open-ended by design — so a missing
+    // ``use_as`` on a line is a genuine data gap worth surfacing.
     for (const line of lines) {
       const key = `line:${line.externalId}`;
       if (seen.has(key)) continue;
