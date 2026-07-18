@@ -134,6 +134,111 @@ class Formulation(models.Model):
     appearance = models.CharField(
         _("appearance"), max_length=200, blank=True, default=""
     )
+    #: EU regulatory classification for the finished product. Drives
+    #: which labelling rules apply on PSP + downstream compliance.
+    #: NPD stores it once at the formulation level; the push cascade
+    #: mirrors it into the finished-product stage's PSP spec.
+    REGULATORY_CATEGORY_CHOICES = (
+        ("food_supplement", _("Food supplement")),
+        ("functional_food", _("Functional food")),
+        ("cosmetic", _("Cosmetic")),
+        ("medical_device", _("Medical device")),
+    )
+    regulatory_category = models.CharField(
+        _("regulatory category"),
+        max_length=32,
+        choices=REGULATORY_CATEGORY_CHOICES,
+        blank=True,
+        default="",
+    )
+    #: Mandatory-on-label warnings text (EU 1169/2011 Art. 9(1)(j)).
+    warnings_text = models.TextField(
+        _("warnings text"), blank=True, default=""
+    )
+    #: Shelf life in months — drives the best-before stamp on the
+    #: PSP finished-product side.
+    shelf_life_months = models.PositiveIntegerField(
+        _("shelf life (months)"), null=True, blank=True
+    )
+    #: Storage conditions declaration (EU 1169/2011 Art. 25).
+    storage_conditions = models.TextField(
+        _("storage conditions"), blank=True, default=""
+    )
+    #: List of ISO 3166-1 alpha-2 country codes the formulation is
+    #: sold into. Empty list = no restriction declared.
+    target_markets = models.JSONField(
+        _("target markets"),
+        default=list,
+        blank=True,
+    )
+    #: Net quantity on the pack + its UOM. PSP resolves the UOM UUID
+    #: to a local id on push; unknown UUIDs get dropped silently.
+    net_quantity = models.DecimalField(
+        _("net quantity"),
+        max_digits=12,
+        decimal_places=4,
+        null=True,
+        blank=True,
+    )
+    net_quantity_uom_uuid = models.UUIDField(
+        _("net quantity UOM UUID"), null=True, blank=True
+    )
+    #: UOM UUID for the serving-size number (which is already an
+    #: integer on this model; the pair together forms "1 capsule",
+    #: "5 g", etc.).
+    serving_size_uom_uuid = models.UUIDField(
+        _("serving size UOM UUID"), null=True, blank=True
+    )
+    #: Warehouse storage tags applied to the finished-product PSP
+    #: item. Free-form strings; PSP's goods-in auto-routes lots
+    #: based on these tags at receive time.
+    storage_tags = models.JSONField(
+        _("storage tags"),
+        default=list,
+        blank=True,
+    )
+    #: Reorder-point pair mirrored to the finished-product PSP item.
+    #: ``min_stock_qty`` triggers the reorder alert on PSP;
+    #: ``target_stock_qty`` is the order-up-to level. Both nullable
+    #: — a formulation that leaves them null simply doesn't
+    #: participate in reorder tracking.
+    min_stock_qty = models.DecimalField(
+        _("min stock qty"),
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+    )
+    target_stock_qty = models.DecimalField(
+        _("target stock qty"),
+        max_digits=14,
+        decimal_places=3,
+        null=True,
+        blank=True,
+    )
+    #: Declared EU 1169 Annex II allergens on the finished product.
+    #: List of PSP allergen UUIDs; the cascade forwards them to
+    #: ``integration_item_controller`` which resolves + sets the M:N
+    #: on the finished-product PSP item.
+    allergen_uuids = models.JSONField(
+        _("allergen UUIDs"),
+        default=list,
+        blank=True,
+    )
+    #: "May contain" cross-contamination declaration — list of PSP
+    #: allergen ``key`` strings + a free-text justification. Both
+    #: land on ``finished_product_spec.may_contain_allergens`` /
+    #: ``may_contain_justification`` via the spec push.
+    may_contain_allergen_keys = models.JSONField(
+        _("may-contain allergen keys"),
+        default=list,
+        blank=True,
+    )
+    may_contain_justification = models.TextField(
+        _("may-contain justification"),
+        blank=True,
+        default="",
+    )
     disintegration_spec = models.CharField(
         _("disintegration spec"),
         max_length=200,
@@ -1066,6 +1171,122 @@ class FormulationStage(models.Model):
         blank=True,
         db_index=True,
     )
+    #: PSP item identity — the scientist's explicit call on how this
+    #: stage manifests on PSP. Previously the item_type was inferred
+    #: from position (last stage → finished_product, rest →
+    #: semi_finished). Making it a first-class field lets scientists
+    #: pick per stage; the cascade honours the pick instead of
+    #: guessing from ``sort_order``. Enforced to exactly one
+    #: ``finished_product`` per formulation at save time.
+    PSP_ITEM_TYPE_CHOICES = (
+        ("semi_finished", _("Semi-finished")),
+        ("finished_product", _("Finished product")),
+    )
+    psp_item_type = models.CharField(
+        _("PSP item type"),
+        max_length=20,
+        choices=PSP_ITEM_TYPE_CHOICES,
+        default="semi_finished",
+    )
+    #: Override for the PSP item's display name. Blank falls back to
+    #: the auto-derived ``{formulation.code} — {stage.name}`` the
+    #: cascade has always used. When set, ships verbatim to PSP so
+    #: scientists can override the label without contaminating the
+    #: NPD-side stage name (which drives internal identifiers, BOM
+    #: previews, and printed cards).
+    psp_item_name = models.CharField(
+        _("PSP item name"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+    #: Explicit external SKU for the PSP item this stage produces. NULL
+    #: falls back to the auto-generated ``NPD-STAGE-<id>-<sort_order>``
+    #: (semi-finished) / ``NPD-FINISHED-<id>`` (finished-product) key
+    #: the push cascade has always used, so legacy stages keep syncing.
+    #: When set, the value is used verbatim as PSP's ``external_sku``
+    #: — scientists can align it with their own SKU vocabulary.
+    psp_item_external_sku = models.CharField(
+        _("PSP external SKU"),
+        max_length=100,
+        blank=True,
+        default="",
+    )
+    #: Free-text description shown on the PSP item detail page. Empty
+    #: falls back to the auto-generated "Auto-created by NPD…" line.
+    psp_item_description = models.TextField(
+        _("PSP description"),
+        blank=True,
+        default="",
+    )
+    #: Custom-attributes bag mirrored to the PSP item's ``attributes``
+    #: JSON column. Same shape scientists use on PSP's own item form
+    #: (``use_as``, ``capsule_size``, ``shell_weight_mg``,
+    #: ``extract_ratio`` …). Empty = no override; the PSP row keeps
+    #: whatever it had. Downstream compute (NPD's own math) reads
+    #: these too, so tweaking here changes both what NPD calculates
+    #: and what PSP publishes.
+    psp_item_attributes = models.JSONField(
+        _("PSP item attributes"),
+        default=dict,
+        blank=True,
+    )
+    #: Barcode (GTIN-8 / 13 / 14) shown on the PSP item and used by
+    #: goods-in scanning. Blank = no barcode. Validated at PSP save
+    #: time; NPD forwards verbatim.
+    psp_item_barcode = models.CharField(
+        _("PSP barcode"),
+        max_length=32,
+        blank=True,
+        default="",
+    )
+    #: PSP unit-of-measurement UUID the stage's output ships in
+    #: (kg, mg, capsules, bottles, …). NPD fetches the catalogue from
+    #: PSP's ``/api/integration/units-of-measurement`` picker; the
+    #: cascade forwards the uuid on ``create_item`` and PSP resolves
+    #: to its local FK id. NULL = leave whatever PSP already has.
+    psp_item_stock_uom_uuid = models.UUIDField(
+        _("PSP stock UOM UUID"),
+        null=True,
+        blank=True,
+    )
+    #: PSP product-family UUID the stage's output belongs to. Same
+    #: mechanic as ``psp_item_stock_uom_uuid``. NULL = leave existing.
+    psp_item_product_family_uuid = models.UUIDField(
+        _("PSP product family UUID"),
+        null=True,
+        blank=True,
+    )
+    #: Finished-product spec bag mirrored to PSP's
+    #: ``item_finished_product_spec`` sub-table. Only meaningful when
+    #: this stage's ``psp_item_type == "finished_product"`` — the
+    #: finished stage is the shipping product; semi-finished blends
+    #: don't need EU 1169-style labelling data.
+    #:
+    #: Shape (all keys optional; missing = leave PSP's existing value
+    #: alone):
+    #:   * regulatory_category — food_supplement | functional_food |
+    #:     cosmetic | medical_device
+    #:   * dosage_form — capsule | tablet | powder | liquid | gummy |
+    #:     other
+    #:   * net_quantity — decimal, unit selected by
+    #:     ``net_quantity_uom_uuid``
+    #:   * net_quantity_uom_uuid — PSP UOM uuid
+    #:   * serving_size — decimal, unit selected by
+    #:     ``serving_size_uom_uuid``
+    #:   * serving_size_uom_uuid — PSP UOM uuid
+    #:   * servings_per_pack — integer
+    #:   * directions_of_use — string
+    #:   * suggested_dosage — string
+    #:   * warnings_text — string
+    #:   * shelf_life_months — integer
+    #:   * storage_conditions — string
+    #:   * target_markets — list of ISO 3166-1 alpha-2 codes
+    psp_finished_product_spec = models.JSONField(
+        _("PSP finished-product spec"),
+        default=dict,
+        blank=True,
+    )
     notes = models.TextField(_("notes"), blank=True, default="")
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)
@@ -1154,3 +1375,144 @@ class FormulationVersion(models.Model):
 
     def __str__(self) -> str:
         return f"{self.formulation.name} v{self.version_number}"
+
+
+class FormulationPhoto(models.Model):
+    """Marketing / spec photo attached to a formulation.
+
+    Photos live on NPD's own storage so the scientist gets instant
+    persistence + preview. On sync the push cascade forwards any row
+    with a null ``psp_uuid`` to PSP's finished-product item — the uuid
+    the response returns caches back onto this row so re-syncs skip it.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    image = models.ImageField(
+        _("image"),
+        upload_to="formulation-photos/",
+    )
+    caption = models.CharField(
+        _("caption"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+    is_primary = models.BooleanField(
+        _("is primary"),
+        default=False,
+        help_text=_(
+            "Marks the hero shot used on catalog cards + label "
+            "previews. Enforced single-primary in the service layer."
+        ),
+    )
+    sort_order = models.PositiveIntegerField(
+        _("sort order"),
+        default=0,
+    )
+    original_filename = models.CharField(max_length=200, blank=True, default="")
+    content_type = models.CharField(max_length=80, blank=True, default="")
+    byte_size = models.PositiveIntegerField(default=0)
+
+    psp_uuid = models.UUIDField(
+        _("PSP item image UUID"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "UUID PSP returned when this photo was first pushed to "
+            "the finished-product item. Idempotency marker — a "
+            "non-null value means PSP already has it, so re-syncs "
+            "skip re-uploading."
+        ),
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("formulation photo")
+        verbose_name_plural = _("formulation photos")
+        ordering = ("-is_primary", "sort_order", "uploaded_at")
+        indexes = [
+            models.Index(fields=("formulation", "-is_primary", "sort_order")),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.formulation.name} · photo {self.id}"
+
+
+class FormulationFile(models.Model):
+    """Compliance file (spec sheet, DoC, migration test, …) attached
+    to a formulation. Same push-cascade model as photos — mirror uuid
+    on ``psp_uuid`` gates re-syncs.
+    """
+
+    class Kind(models.TextChoices):
+        SPEC_SHEET = "spec_sheet", _("Spec sheet")
+        FOOD_CONTACT_DECLARATION = (
+            "food_contact_declaration",
+            _("Food-contact declaration"),
+        )
+        MIGRATION_TEST = "migration_test", _("Migration test")
+        SAFETY_DATA_SHEET = "safety_data_sheet", _("Safety data sheet")
+        ALLERGEN_DECLARATION = "allergen_declaration", _("Allergen declaration")
+        NUTRITIONAL_ANALYSIS = "nutritional_analysis", _("Nutritional analysis")
+        OTHER = "other", _("Other")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.CASCADE,
+        related_name="files",
+    )
+    file = models.FileField(
+        _("file"),
+        upload_to="formulation-files/",
+    )
+    kind = models.CharField(
+        _("kind"),
+        max_length=32,
+        choices=Kind.choices,
+        default=Kind.OTHER,
+    )
+    filename = models.CharField(max_length=255)
+    mime = models.CharField(max_length=120)
+    byte_size = models.PositiveIntegerField()
+
+    psp_uuid = models.UUIDField(
+        _("PSP item file UUID"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "UUID PSP returned when this file was first pushed to "
+            "the finished-product item. Idempotency marker."
+        ),
+    )
+
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("formulation file")
+        verbose_name_plural = _("formulation files")
+        ordering = ("-uploaded_at",)
+        indexes = [
+            models.Index(fields=("formulation", "-uploaded_at")),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.formulation.name} · {self.kind} · {self.filename}"

@@ -26,7 +26,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { ArrowDown, ArrowUp, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, ExternalLink, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useUpsertStages } from "@/services/formulations/hooks";
@@ -36,7 +36,12 @@ import type {
   StageKey,
   UpsertStageInput,
 } from "@/services/formulations/types";
-import { usePspWorkstationGroups } from "@/services/psp/hooks";
+import {
+  usePspItemDetail,
+  usePspProductFamilies,
+  usePspUnitsOfMeasurement,
+  usePspWorkstationGroups,
+} from "@/services/psp/hooks";
 
 
 /** Local edit-state for one stage. Kept as strings for the inputs
@@ -60,6 +65,26 @@ interface StageDraft {
   other_variable_cost: string;
   other_variable_cost_basis: string;
   worker_psp_uuids: readonly string[];
+  // Phase 1 PSP identity fields (see FormulationStageDto). Kept as
+  // strings on the draft so the inputs stay controlled without
+  // converting on every keystroke.
+  psp_item_type: "semi_finished" | "finished_product";
+  // Optional override for the PSP item's display name. Blank falls
+  // back to the auto-derived "{formulation.code} — {stage.name}".
+  psp_item_name: string;
+  psp_item_external_sku: string;
+  psp_item_description: string;
+  // Attributes bag rendered as an ordered key-value list on the
+  // stage form. Storing as a plain object mirrors the DTO shape so
+  // save-time is a no-op serialisation.
+  psp_item_attributes: Record<string, unknown>;
+  psp_item_barcode: string;
+  psp_item_stock_uom_uuid: string | null;
+  psp_item_product_family_uuid: string | null;
+  // Phase 3 spec bag. Only edited on the finished stage — semi-
+  // finished stages don't render the section (spec is a shipping
+  // product concern per EU 1169). Empty object = no override.
+  psp_finished_product_spec: Record<string, unknown>;
 }
 
 
@@ -102,6 +127,90 @@ function inferStageKey(workstationName: string): StageKey {
 }
 
 
+/**
+ * Tiny status chip next to each pre-populated identity input so the
+ * scientist knows whether they're looking at the auto-derived value
+ * (grey, italic) or an explicit override they typed (orange). The
+ * distinction matters because "auto" values change if the formulation
+ * code or stage name changes; "custom" values stay put on PSP.
+ */
+function AutoOrCustomBadge({ overridden }: { overridden: boolean }) {
+  if (overridden) {
+    return (
+      <span
+        className="rounded-full bg-orange-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-orange-700 ring-1 ring-inset ring-orange-200"
+        title="Custom value. Ships to PSP verbatim."
+      >
+        custom
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-ink-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-ink-600"
+      title="Auto-derived from the formulation code + stage. Edit to override."
+    >
+      auto
+    </span>
+  );
+}
+
+
+/**
+ * Read-only chip showing the PSP system code for a stage's mirror
+ * item. Fires only when we have a stage UUID (otherwise the picker
+ * silently skips). PSP's ``code`` is the numbering-sequence identifier
+ * scientists reference on shop-floor paperwork and audits — surfacing
+ * it here saves a trip back to PSP just to look it up.
+ */
+function PspCodeChip({
+  orgId,
+  pspItemUuid,
+}: {
+  orgId: string;
+  pspItemUuid: string;
+}) {
+  const detail = usePspItemDetail(orgId, pspItemUuid, {
+    enabled: !!pspItemUuid,
+  });
+  const code = detail.data?.matched ? detail.data.item.code : "";
+  if (!code) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-md bg-orange-50 px-2 py-1 font-mono text-[11px] font-medium text-orange-800 ring-1 ring-inset ring-orange-200"
+      title="PSP system code — the numbering-sequence identifier assigned by PSP on item creation."
+    >
+      PSP · {code}
+    </span>
+  );
+}
+
+
+/**
+ * Compute the auto-derived PSP identity a stage would fall back to
+ * when the corresponding override field is left blank. Mirrors the
+ * server-side derivation in ``_ensure_semi_finished`` /
+ * ``_ensure_finished_product`` so scientists see the same value on
+ * screen as what PSP would receive on an "auto" push.
+ */
+function derivedPspIdentity(
+  formulation: { id: string; code: string },
+  draft: Pick<StageDraft, "name" | "sort_order">,
+  isFinishedStage: boolean,
+): { name: string; sku: string; description: string } {
+  const stageLabel = draft.name?.trim() || `Stage ${draft.sort_order + 1}`;
+  return {
+    name: `${formulation.code} — ${stageLabel}`,
+    sku: isFinishedStage
+      ? `NPD-FINISHED-${formulation.id}`
+      : `NPD-STAGE-${formulation.id}-${draft.sort_order}`,
+    description: isFinishedStage
+      ? `Auto-created by NPD for formulation ${formulation.code} on first BOM push.`
+      : `Auto-created by NPD for formulation ${formulation.code} stage ${draft.sort_order + 1}.`,
+  };
+}
+
+
 function toDraft(stage: FormulationStageDto): StageDraft {
   return {
     clientKey: stage.id,
@@ -121,11 +230,27 @@ function toDraft(stage: FormulationStageDto): StageDraft {
     other_variable_cost: stage.other_variable_cost ?? "",
     other_variable_cost_basis: stage.other_variable_cost_basis ?? "",
     worker_psp_uuids: stage.worker_psp_uuids ?? [],
+    psp_item_type: stage.psp_item_type ?? "semi_finished",
+    psp_item_name: stage.psp_item_name ?? "",
+    psp_item_external_sku: stage.psp_item_external_sku ?? "",
+    psp_item_description: stage.psp_item_description ?? "",
+    psp_item_attributes: { ...(stage.psp_item_attributes ?? {}) },
+    psp_item_barcode: stage.psp_item_barcode ?? "",
+    psp_item_stock_uom_uuid: stage.psp_item_stock_uom_uuid ?? null,
+    psp_item_product_family_uuid:
+      stage.psp_item_product_family_uuid ?? null,
+    psp_finished_product_spec: {
+      ...(stage.psp_finished_product_spec ?? {}),
+    },
   };
 }
 
 
-function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
+function draftToInput(
+  draft: StageDraft,
+  index: number,
+  isTerminal: boolean,
+): UpsertStageInput {
   const emptyToNull = (v: string) => (v.trim() === "" ? null : v.trim());
   return {
     id: draft.id,
@@ -144,6 +269,19 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
     other_variable_cost: emptyToNull(draft.other_variable_cost),
     other_variable_cost_basis: emptyToNull(draft.other_variable_cost_basis),
     worker_psp_uuids: draft.worker_psp_uuids,
+    // Role is pinned to position — the last stage in the array is
+    // always the shipping product (finished_product); every earlier
+    // stage is a semi-finished intermediate. The FE no longer
+    // exposes a toggle; role changes only by reordering.
+    psp_item_type: isTerminal ? "finished_product" : "semi_finished",
+    psp_item_name: draft.psp_item_name.trim(),
+    psp_item_external_sku: draft.psp_item_external_sku.trim(),
+    psp_item_description: draft.psp_item_description.trim(),
+    psp_item_attributes: draft.psp_item_attributes,
+    psp_item_barcode: draft.psp_item_barcode.trim(),
+    psp_item_stock_uom_uuid: draft.psp_item_stock_uom_uuid,
+    psp_item_product_family_uuid: draft.psp_item_product_family_uuid,
+    psp_finished_product_spec: draft.psp_finished_product_spec,
   };
 }
 
@@ -152,6 +290,123 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
 // blends in with the surrounding form controls.
 const inputClass =
   "w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50";
+
+
+
+/**
+ * Key/value editor for a stage's ``psp_item_attributes`` bag. Rendered
+ * as a mini table with add / remove rows — matches the way PSP's own
+ * item form exposes custom attributes so scientists don't have to
+ * context-switch between the two UIs. Values persist as strings on
+ * the wire (PSP's ``attributes`` is a JSONB map keyed by
+ * ``attribute.key`` from PSP's ``attribute_definitions`` catalogue;
+ * scientists typing free-form keys here get free-form values
+ * respected by PSP's normalise function).
+ */
+function StageAttributesEditor({
+  attributes,
+  disabled,
+  onChange,
+}: {
+  attributes: Record<string, unknown>;
+  disabled: boolean;
+  onChange: (next: Record<string, unknown>) => void;
+}) {
+  const entries = Object.entries(attributes);
+
+  function setEntry(oldKey: string, key: string, value: string) {
+    const next: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(attributes)) {
+      if (k === oldKey) continue;
+      next[k] = v;
+    }
+    if (key.trim()) next[key.trim()] = value;
+    onChange(next);
+  }
+
+  function removeEntry(key: string) {
+    const next: Record<string, unknown> = { ...attributes };
+    delete next[key];
+    onChange(next);
+  }
+
+  function addEntry() {
+    let base = "new_attribute";
+    let candidate = base;
+    let i = 1;
+    while (candidate in attributes) {
+      candidate = `${base}_${i++}`;
+    }
+    onChange({ ...attributes, [candidate]: "" });
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-xs font-medium text-ink-600">
+          Custom attributes
+        </label>
+        {!disabled ? (
+          <button
+            type="button"
+            onClick={addEntry}
+            className="rounded-md bg-ink-50 px-2 py-1 text-[11px] font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-orange-50 hover:text-orange-700"
+          >
+            + Add attribute
+          </button>
+        ) : null}
+      </div>
+      {entries.length === 0 ? (
+        <p className="mt-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
+          No custom attributes. Use these for values scientists edit
+          alongside identity — <span className="font-medium">use_as</span>,
+          <span className="font-medium"> capsule_size</span>,
+          <span className="font-medium"> shell_weight_mg</span>,
+          <span className="font-medium"> extract_ratio</span>, etc. Empty
+          leaves PSP&apos;s existing bag untouched.
+        </p>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-1.5">
+          {entries.map(([key, value]) => (
+            <li
+              key={key}
+              className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)_28px] items-center gap-2"
+            >
+              <input
+                value={key}
+                onChange={(e) =>
+                  setEntry(key, e.target.value, String(value ?? ""))
+                }
+                disabled={disabled}
+                className={inputClass}
+                placeholder="attribute_key"
+              />
+              <input
+                value={String(value ?? "")}
+                onChange={(e) => setEntry(key, key, e.target.value)}
+                disabled={disabled}
+                className={inputClass}
+                placeholder="value"
+              />
+              {!disabled ? (
+                <button
+                  type="button"
+                  onClick={() => removeEntry(key)}
+                  className="rounded-md p-1.5 text-ink-500 hover:bg-red-50 hover:text-red-600"
+                  aria-label={`Remove ${key}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              ) : (
+                <span aria-hidden />
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
 
 
 function uuidListsEqual(
@@ -216,6 +471,31 @@ export interface StageStripProps {
    *  without this callback the parent stays on stale data and the
    *  three surfaces drift. */
   readonly onSaved?: (formulation: FormulationDto) => void;
+  /** Fired with a stage id when the operator clicks the per-stage
+   *  "Build ingredients" affordance. Drives the parent's stage
+   *  drill-down state so the whole tab body swaps to the ingredient
+   *  builder scoped to that stage. Optional so legacy consumers of
+   *  StageStrip (if any) keep working without it. */
+  readonly onOpenIngredientBuilder?: (stageId: string) => void;
+  /** PSP base URL from the org config — feeds the per-stage
+   *  "Open on PSP ↗" deep-link that lands on the semi-finished (or
+   *  finished, for the terminal) item's detail page. ``null`` /
+   *  empty when PSP isn't configured; the link then doesn't render.
+   */
+  readonly pspBaseUrl?: string | null;
+  /** Formulation-level finished-product UUID — needed to compute
+   *  the terminal stage's PSP deep-link, since the terminal stage
+   *  reuses ``formulation.psp_finished_product_uuid`` rather than
+   *  spawning its own ``psp_semi_finished_uuid``. */
+  readonly pspFinishedProductUuid?: string | null;
+  /** Fired when the operator clicks a per-stage "Sync now" button.
+   *  Pushes the current in-memory formulation state to PSP without
+   *  cutting a version. Optional — hidden if the parent doesn't wire
+   *  it (early formulations where nothing has been staged yet). */
+  readonly onSyncNow?: () => Promise<void> | void;
+  /** True while a manual sync push is in flight — disables every
+   *  Sync-now button so double-clicks can't fan out. */
+  readonly syncPending?: boolean;
 }
 
 
@@ -228,6 +508,11 @@ export function StageStrip({
   lines,
   terminalBomLines,
   onSaved,
+  onOpenIngredientBuilder,
+  pspBaseUrl,
+  pspFinishedProductUuid,
+  onSyncNow,
+  syncPending,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
@@ -242,6 +527,20 @@ export function StageStrip({
   const wsOptions = useMemo(
     () => wsQuery.data?.items ?? [],
     [wsQuery.data],
+  );
+  // UOM + product-family pickers on the PSP identity block. Fetch
+  // eagerly (no ``enabled`` gate) — the drop-downs render on every
+  // stage card so we'd hit the fetch on first paint anyway, and the
+  // ``staleTime: 5min`` on the hooks keeps this cheap.
+  const uomQuery = usePspUnitsOfMeasurement(orgId);
+  const uomOptions = useMemo(
+    () => uomQuery.data?.items ?? [],
+    [uomQuery.data],
+  );
+  const familyQuery = usePspProductFamilies(orgId);
+  const familyOptions = useMemo(
+    () => familyQuery.data?.items ?? [],
+    [familyQuery.data],
   );
   // Workers picker fetch removed with the Default crew section —
   // scientists shouldn't schedule crews. The FormulationStage
@@ -304,7 +603,20 @@ export function StageStrip({
         (s.other_variable_cost ?? "") !== d.other_variable_cost ||
         (s.other_variable_cost_basis ?? "") !==
           d.other_variable_cost_basis ||
-        !uuidListsEqual(s.worker_psp_uuids ?? [], d.worker_psp_uuids)
+        !uuidListsEqual(s.worker_psp_uuids ?? [], d.worker_psp_uuids) ||
+        (s.psp_item_type ?? "semi_finished") !== d.psp_item_type ||
+        (s.psp_item_name ?? "") !== d.psp_item_name ||
+        (s.psp_item_external_sku ?? "") !== d.psp_item_external_sku ||
+        (s.psp_item_description ?? "") !== d.psp_item_description ||
+        JSON.stringify(s.psp_item_attributes ?? {}) !==
+          JSON.stringify(d.psp_item_attributes) ||
+        (s.psp_item_barcode ?? "") !== d.psp_item_barcode ||
+        (s.psp_item_stock_uom_uuid ?? null) !==
+          d.psp_item_stock_uom_uuid ||
+        (s.psp_item_product_family_uuid ?? null) !==
+          d.psp_item_product_family_uuid ||
+        JSON.stringify(s.psp_finished_product_spec ?? {}) !==
+          JSON.stringify(d.psp_finished_product_spec)
       );
     });
   }, [drafts, formulation.stages]);
@@ -336,6 +648,15 @@ export function StageStrip({
         other_variable_cost: "",
         other_variable_cost_basis: "",
         worker_psp_uuids: [],
+        psp_item_type: "semi_finished",
+        psp_item_name: "",
+        psp_item_external_sku: "",
+        psp_item_description: "",
+        psp_item_attributes: {},
+        psp_item_barcode: "",
+        psp_item_stock_uom_uuid: null,
+        psp_item_product_family_uuid: null,
+        psp_finished_product_spec: {},
       },
     ]);
   }
@@ -361,7 +682,9 @@ export function StageStrip({
 
   function save() {
     upsert.mutate({
-      stages: drafts.map((d, i) => draftToInput(d, i)),
+      stages: drafts.map((d, i) =>
+        draftToInput(d, i, i === drafts.length - 1),
+      ),
     });
   }
 
@@ -451,6 +774,79 @@ export function StageStrip({
                   : "rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
               }
             >
+              {/* Per-stage PSP deep-link + Sync-now row. Renders only
+                  when PSP is live for the org AND the stage already has
+                  an item on PSP (or, for the terminal stage, the
+                  formulation has a linked finished product). The
+                  ``Sync now`` button pushes the current in-memory state
+                  to PSP without cutting a version — useful when the
+                  scientist wants to prototype one stage's BOM without
+                  going through the whole Save Version flow. */}
+              {(() => {
+                // Role is pinned to position — the last stage in the
+                // list is the finished product; every earlier stage is
+                // a semi-finished intermediate. Non-terminal stages
+                // deep-link to their own semi-finished uuid; the
+                // terminal stage links to the formulation's shared
+                // finished-product uuid.
+                const isFinishedStage = isTerminal;
+                const stagePspUuid = isFinishedStage
+                  ? pspFinishedProductUuid ?? null
+                  : formulation.stages.find(
+                      (s) => s.id === stageId,
+                    )?.psp_semi_finished_uuid ?? null;
+                const canShowPspLink = !!pspBaseUrl && !!stagePspUuid;
+                const canShowSync = !!onSyncNow && canEdit;
+                if (!canShowPspLink && !canShowSync) return null;
+                return (
+                  <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px]">
+                    {stagePspUuid ? (
+                      <PspCodeChip
+                        orgId={orgId}
+                        pspItemUuid={stagePspUuid}
+                      />
+                    ) : null}
+                    {canShowPspLink ? (
+                      <a
+                        href={`${pspBaseUrl}/production/items/${stagePspUuid}`}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-2 py-1 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                        title={
+                          isFinishedStage
+                            ? "Opens this formulation's finished-product item + BOM on PSP"
+                            : "Opens the semi-finished item + BOM this stage produces on PSP"
+                        }
+                      >
+                        <ExternalLink className="h-3 w-3" />
+                        Open on PSP
+                      </a>
+                    ) : null}
+                    {canShowSync ? (
+                      <button
+                        type="button"
+                        onClick={() => onSyncNow?.()}
+                        disabled={syncPending}
+                        className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-2 py-1 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+                        title="Push the current in-memory BOM cascade to PSP without cutting a version. Idempotent — safe to re-run."
+                      >
+                        {syncPending ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <Save className="h-3 w-3" />
+                        )}
+                        Sync now
+                      </button>
+                    ) : null}
+                    {!canShowPspLink && canShowSync ? (
+                      <span className="text-ink-500">
+                        Not on PSP yet — Sync now to create it.
+                      </span>
+                    ) : null}
+                  </div>
+                );
+              })()}
+
               {/* Row 1 — what operation. Workstation is the pick;
                   the stage name auto-mirrors the workstation but
                   stays editable so a scientist can override
@@ -600,15 +996,235 @@ export function StageStrip({
                     <button
                       type="button"
                       onClick={() => removeStage(draft.clientKey)}
-                      disabled={upsert.isPending}
+                      disabled={upsert.isPending || isTerminal}
                       className="rounded p-1 text-red-600 hover:bg-red-50 disabled:opacity-30"
-                      title="Remove stage"
+                      title={
+                        isTerminal
+                          ? "The finished-product stage is pinned — add another stage below to make this one removable."
+                          : "Remove stage"
+                      }
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
                   </div>
                 ) : null}
               </div>
+
+              {/* Row 1a — PSP identity (phase 1). Scientist picks
+                  whether this stage produces a semi-finished blend or
+                  the finished product. When Save Version pushes to
+                  PSP, this stage's ``external_sku`` becomes the PSP
+                  item's code and ``description`` its description.
+                  Blank stored values auto-derive (``NPD-STAGE-…`` /
+                  ``NPD-FINISHED-…``); the inputs pre-populate with the
+                  derived values so the scientist sees what's live and
+                  can edit in place. */}
+              {(() => {
+                const derived = derivedPspIdentity(
+                  formulation,
+                  draft,
+                  isTerminal,
+                );
+                const nameOverridden = !!draft.psp_item_name;
+                const skuOverridden = !!draft.psp_item_external_sku;
+                const descriptionOverridden = !!draft.psp_item_description;
+                const nameShown = draft.psp_item_name || derived.name;
+                const skuShown = draft.psp_item_external_sku || derived.sku;
+                const descriptionShown =
+                  draft.psp_item_description || derived.description;
+                const applyOverride =
+                  (field: "psp_item_name" | "psp_item_external_sku" | "psp_item_description",
+                   nextValue: string,
+                   derivedValue: string) => {
+                    // Empty OR equal-to-derived collapses to the "auto"
+                    // stored state (blank). Anything else counts as an
+                    // explicit override.
+                    const cleaned =
+                      nextValue.trim() === "" || nextValue === derivedValue
+                        ? ""
+                        : nextValue;
+                    updateDraft(draft.clientKey, { [field]: cleaned });
+                  };
+                return (
+              <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                    PSP identity
+                  </p>
+                  {isTerminal ? (
+                    <span
+                      className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-800 ring-1 ring-inset ring-orange-300"
+                      title="Terminal stage — becomes the formulation's finished product on PSP. Add another stage below to keep this one as semi-finished."
+                    >
+                      Finished product · pinned
+                    </span>
+                  ) : (
+                    <span
+                      className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-600"
+                      title="Non-terminal stage — becomes its own semi-finished PSP item on push."
+                    >
+                      Semi-finished
+                    </span>
+                  )}
+                </div>
+                <div className="mt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-ink-600">
+                      External SKU (code)
+                    </label>
+                    <AutoOrCustomBadge overridden={skuOverridden} />
+                  </div>
+                  <input
+                    value={skuShown}
+                    onChange={(e) =>
+                      applyOverride(
+                        "psp_item_external_sku",
+                        e.target.value,
+                        derived.sku,
+                      )
+                    }
+                    disabled={!canEdit || upsert.isPending}
+                    className={`${inputClass} mt-1 ${skuOverridden ? "" : "text-ink-500"}`}
+                  />
+                </div>
+                <div className="mt-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="text-xs font-medium text-ink-600">
+                      PSP item name
+                    </label>
+                    <AutoOrCustomBadge overridden={nameOverridden} />
+                  </div>
+                  <input
+                    value={nameShown}
+                    onChange={(e) =>
+                      applyOverride(
+                        "psp_item_name",
+                        e.target.value,
+                        derived.name,
+                      )
+                    }
+                    disabled={!canEdit || upsert.isPending}
+                    className={`${inputClass} mt-1 ${nameOverridden ? "" : "text-ink-500"}`}
+                    maxLength={200}
+                  />
+                  <p className="mt-1 text-[11px] text-ink-500">
+                    Edit to override the label shown on PSP. Clearing (or
+                    typing the auto value back) restores the derived name.
+                  </p>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Stock UOM
+                    </label>
+                    <select
+                      value={draft.psp_item_stock_uom_uuid ?? ""}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          psp_item_stock_uom_uuid:
+                            e.target.value || null,
+                        })
+                      }
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    >
+                      <option value="">— none —</option>
+                      {uomOptions.map((u) => (
+                        <option key={u.uuid} value={u.uuid}>
+                          {u.name}
+                          {u.symbol ? ` (${u.symbol})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Product family
+                    </label>
+                    <select
+                      value={draft.psp_item_product_family_uuid ?? ""}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          psp_item_product_family_uuid:
+                            e.target.value || null,
+                        })
+                      }
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    >
+                      <option value="">— none —</option>
+                      {familyOptions.map((f) => (
+                        <option key={f.uuid} value={f.uuid}>
+                          {f.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+                <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,0.5fr)]">
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-medium text-ink-600">
+                        Description
+                      </label>
+                      <AutoOrCustomBadge overridden={descriptionOverridden} />
+                    </div>
+                    <textarea
+                      value={descriptionShown}
+                      onChange={(e) =>
+                        applyOverride(
+                          "psp_item_description",
+                          e.target.value,
+                          derived.description,
+                        )
+                      }
+                      rows={2}
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1 ${descriptionOverridden ? "" : "text-ink-500"}`}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium text-ink-600">
+                      Barcode (GTIN)
+                    </label>
+                    <input
+                      value={draft.psp_item_barcode}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          psp_item_barcode: e.target.value,
+                        })
+                      }
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                      placeholder="e.g. 05012345678900"
+                    />
+                    <p className="mt-1 text-[11px] text-ink-500">
+                      Blank leaves PSP&apos;s existing value untouched.
+                    </p>
+                  </div>
+                </div>
+                <StageAttributesEditor
+                  attributes={draft.psp_item_attributes}
+                  disabled={!canEdit || upsert.isPending}
+                  onChange={(next) =>
+                    updateDraft(draft.clientKey, {
+                      psp_item_attributes: next,
+                    })
+                  }
+                />
+                {isTerminal ? (
+                  <p className="mt-3 rounded-lg bg-ink-50/60 p-3 text-[11px] leading-snug text-ink-500 ring-1 ring-inset ring-ink-100">
+                    <span className="font-medium">Finished-product spec</span>{" "}
+                    (regulatory category, net qty, servings per pack,
+                    warnings, storage, target markets…) lives on the
+                    Setup tab. The push cascade mirrors those values
+                    onto this stage&apos;s PSP spec on the next Save
+                    version / Sync now.
+                  </p>
+                ) : null}
+              </div>
+                );
+              })()}
 
               {/* Row 2 — SOP notes. Always visible. This is the ONE
                   thing scientists own: what to do on this operation
@@ -655,7 +1271,27 @@ export function StageStrip({
                         <>Actives · {stageLines.length} assigned</>
                       )}
                     </p>
-                    {canEdit ? (
+                    {canEdit && onOpenIngredientBuilder ? (
+                      // Primary affordance: opens the ingredient
+                      // builder scoped to this stage. Replaces the
+                      // old "Add ingredients here" (which only bumped
+                      // the picker target) — clicking here now takes
+                      // the operator into a dedicated view so the
+                      // "ingredients belong to this stage" mental
+                      // model reads at a glance.
+                      <button
+                        type="button"
+                        onClick={() => onOpenIngredientBuilder(stageId)}
+                        disabled={upsert.isPending}
+                        className="inline-flex items-center gap-1 rounded-md bg-orange-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-orange-600"
+                      >
+                        Build ingredients →
+                      </button>
+                    ) : canEdit ? (
+                      // Fallback path (parent didn't wire the
+                      // drill-down callback) — preserves the pre-
+                      // refactor behaviour so the picker target chip
+                      // still works standalone.
                       <button
                         type="button"
                         onClick={() => onActiveStageChange(stageId)}

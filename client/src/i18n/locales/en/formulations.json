@@ -321,6 +321,19 @@
       "compliant": "Compliant (fills to target)",
       "per_serving": "Per serving ({count, plural, one {# unit} other {# units}})"
     },
+    "fine_tune": {
+      "title": "Fine-tune formula",
+      "hint": "Every row from the BOM, editable. Sorted smallest to largest. Actives write the label claim directly (same field as the ingredients grid above). Excipient rows shift mass between picks inside their band — band totals stay locked to the compute. Empty an excipient row to revert it to the equal-split default.",
+      "col_ingredient": "Ingredient",
+      "col_mg": "mg",
+      "col_pct": "%",
+      "reset_row": "Revert to auto-split",
+      "reset_all": "Reset all overrides",
+      "revert_row": "Revert to last saved ({mg} mg)",
+      "revert_unsaved": "Revert unsaved",
+      "revert_unsaved_hint": "Discard every unsaved edit on this formulation (metadata, actives, and excipient overrides) and rewind to the last saved version.",
+      "overflow_warning": "Actives total {actives} mg — over the target/max weight, so every excipient band was pushed to 0 mg. Rows are kept visible so you can lower an active and watch the excipient mass return. Nothing was deleted."
+    },
     "unsupported_form": "Excipient math for this dosage form is not yet supported. You can still track ingredients and metadata.",
     "failure_reason": {
       "missing_claim": "Enter a label claim",

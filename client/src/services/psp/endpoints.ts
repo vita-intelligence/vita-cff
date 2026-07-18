@@ -40,4 +40,12 @@ export const pspEndpoints = {
     `/api/organizations/${orgId}/integrations/psp/workstation-groups/`,
   workstationUsers: (orgId: string) =>
     `/api/organizations/${orgId}/integrations/psp/workstation-users/`,
+  unitsOfMeasurement: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/units-of-measurement/`,
+  productFamilies: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/product-families/`,
+  allergens: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/allergens/`,
+  storageTags: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/storage-tags/`,
 } as const;

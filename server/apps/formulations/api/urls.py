@@ -6,6 +6,12 @@ from apps.formulations.api.rd_pipeline_views import (
     RDPipelineBoardView,
     RDPipelineColumnView,
 )
+from apps.formulations.api.photo_file_views import (
+    FormulationFileDetailView,
+    FormulationFilesView,
+    FormulationPhotoDetailView,
+    FormulationPhotosView,
+)
 from apps.formulations.api.views import (
     FormulationApprovedVersionView,
     FormulationCloneView,
@@ -16,6 +22,7 @@ from apps.formulations.api.views import (
     FormulationListCreateView,
     FormulationOverviewView,
     FormulationRollbackView,
+    FormulationSyncPspView,
     FormulationRTGPublishView,
     FormulationSalesPersonView,
     FormulationStagesView,
@@ -69,6 +76,11 @@ urlpatterns = [
         name="formulation-rollback",
     ),
     path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sync-psp/",
+        FormulationSyncPspView.as_view(),
+        name="formulation-sync-psp",
+    ),
+    path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",
         FormulationSalesPersonView.as_view(),
         name="formulation-sales-person",
@@ -92,6 +104,28 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/rtg-publish/",
         FormulationRTGPublishView.as_view(),
         name="formulation-rtg-publish",
+    ),
+    # Photos + files. Bytes live on NPD storage; the push cascade
+    # mirrors them onto the finished-product PSP item best-effort.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/photos/",
+        FormulationPhotosView.as_view(),
+        name="formulation-photos",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/photos/<uuid:photo_id>/",
+        FormulationPhotoDetailView.as_view(),
+        name="formulation-photo-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/files/",
+        FormulationFilesView.as_view(),
+        name="formulation-files",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/files/<uuid:file_id>/",
+        FormulationFileDetailView.as_view(),
+        name="formulation-file-detail",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/rd-pipeline/",

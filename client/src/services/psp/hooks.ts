@@ -21,11 +21,19 @@ import {
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
+  fetchPspAllergens,
+  fetchPspProductFamilies,
+  fetchPspStorageTags,
+  fetchPspUnitsOfMeasurement,
   fetchPspWorkstationGroups,
   fetchPspWorkstationUsers,
   mirrorPspItem,
   savePspConfig,
   testPspConnection,
+  type PspAllergensListResponseDto,
+  type PspProductFamiliesListResponseDto,
+  type PspStorageTagsListResponseDto,
+  type PspUnitsOfMeasurementListResponseDto,
 } from "./api";
 import type {
   PspConfigDto,
@@ -64,6 +72,12 @@ export const pspQueryKeys = {
     ["psp", orgId, "workstation-groups"] as const,
   workstationUsers: (orgId: string) =>
     ["psp", orgId, "workstation-users"] as const,
+  unitsOfMeasurement: (orgId: string) =>
+    ["psp", orgId, "units-of-measurement"] as const,
+  productFamilies: (orgId: string) =>
+    ["psp", orgId, "product-families"] as const,
+  allergens: (orgId: string) => ["psp", orgId, "allergens"] as const,
+  storageTags: (orgId: string) => ["psp", orgId, "storage-tags"] as const,
 };
 
 
@@ -193,6 +207,67 @@ export function usePspWorkstationUsers(
   return useQuery<PspWorkstationUserListResponseDto, ApiError>({
     queryKey: pspQueryKeys.workstationUsers(orgId),
     queryFn: () => fetchPspWorkstationUsers(orgId),
+    enabled: Boolean(orgId) && enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** Stage form's ``Stock UOM`` picker. Same lazy pattern as the
+ *  workstation hooks — only fires when the stage strip mounts. */
+export function usePspUnitsOfMeasurement(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspUnitsOfMeasurementListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspUnitsOfMeasurementListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.unitsOfMeasurement(orgId),
+    queryFn: () => fetchPspUnitsOfMeasurement(orgId),
+    enabled: Boolean(orgId) && enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** Stage form's ``Product family`` picker. */
+export function usePspProductFamilies(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspProductFamiliesListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspProductFamiliesListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.productFamilies(orgId),
+    queryFn: () => fetchPspProductFamilies(orgId),
+    enabled: Boolean(orgId) && enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** Setup form's Allergens checkboxes. */
+export function usePspAllergens(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspAllergensListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspAllergensListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.allergens(orgId),
+    queryFn: () => fetchPspAllergens(orgId),
+    enabled: Boolean(orgId) && enabled,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+
+/** Setup form's Storage tags multi-picker. */
+export function usePspStorageTags(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspStorageTagsListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspStorageTagsListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.storageTags(orgId),
+    queryFn: () => fetchPspStorageTags(orgId),
     enabled: Boolean(orgId) && enabled,
     staleTime: 5 * 60 * 1000,
   });
