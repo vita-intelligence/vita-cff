@@ -1185,7 +1185,20 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
         is_per_item_rate = key.startswith("powder_rate:") and len(key) > len(
             "powder_rate:"
         )
-        if not is_per_item_rate and key not in EXCIPIENT_OVERRIDE_KEYS:
+        # ``excipient_mg:<uuid>`` — per-item mg override for one pick in
+        # an anti-caking / DCP / MCC band. The band total mg is still
+        # computed by the server; this key just tells the client how to
+        # split that total across the picked SKUs on display (Ingredients
+        # tab, per-stage BOM, spec sheet BOM). Compute doesn't consume
+        # the value -- persistence + display only.
+        is_per_item_mg = key.startswith("excipient_mg:") and len(key) > len(
+            "excipient_mg:"
+        )
+        if (
+            not is_per_item_rate
+            and not is_per_item_mg
+            and key not in EXCIPIENT_OVERRIDE_KEYS
+        ):
             raise InvalidExcipientOverrides()
         if isinstance(raw, bool):
             raise InvalidExcipientOverrides()
@@ -1204,10 +1217,15 @@ def _validate_excipient_overrides(value: Any) -> dict[str, float]:
         # Per-item rates cap at 1000 mg/ml -- way above any
         # chemically sensible loading but high enough that a typo
         # surfaces as an obvious rejection rather than a silent
-        # truncation.
+        # truncation. Per-item mg overrides cap at 100_000 mg (100 g
+        # per single pick) -- higher than any realistic band total,
+        # so a typo trips the cap, but a legitimate large gummy base
+        # override still passes.
         upper = (
             1000.0
             if is_per_item_rate
+            else 100_000.0
+            if is_per_item_mg
             else EXCIPIENT_OVERRIDE_UPPER_BOUND.get(key, 1.0)
         )
         if num < 0 or num > upper:
@@ -2528,8 +2546,48 @@ def set_formulation_stages(
             "worker_psp_uuids": [
                 str(u) for u in (raw.get("worker_psp_uuids") or []) if u
             ],
+            # PSP identity (phase 1). Type falls back to
+            # ``semi_finished``; scientists explicitly set exactly one
+            # ``finished_product`` per formulation via the stage form
+            # dropdown. Bounds enforced after the loop so an interim
+            # invalid payload doesn't half-persist.
+            "psp_item_type": (
+                raw.get("psp_item_type")
+                or "semi_finished"
+            ),
+            "psp_item_name": (raw.get("psp_item_name") or "").strip()[:200],
+            "psp_item_external_sku": (
+                raw.get("psp_item_external_sku") or ""
+            ).strip(),
+            "psp_item_description": (
+                raw.get("psp_item_description") or ""
+            ).strip(),
+            "psp_item_attributes": (
+                raw.get("psp_item_attributes")
+                if isinstance(raw.get("psp_item_attributes"), dict)
+                else {}
+            ),
+            "psp_item_barcode": (raw.get("psp_item_barcode") or "").strip(),
+            "psp_item_stock_uom_uuid": raw.get("psp_item_stock_uom_uuid")
+            or None,
+            "psp_item_product_family_uuid": raw.get(
+                "psp_item_product_family_uuid"
+            )
+            or None,
+            "psp_finished_product_spec": (
+                raw.get("psp_finished_product_spec")
+                if isinstance(raw.get("psp_finished_product_spec"), dict)
+                else {}
+            ),
             "notes": raw.get("notes") or "",
         }
+        if payload["psp_item_type"] not in (
+            "semi_finished",
+            "finished_product",
+        ):
+            raise ValueError(
+                "psp_item_type must be 'semi_finished' or 'finished_product'"
+            )
 
         if raw_id:
             existing = FormulationStage.objects.filter(
@@ -2548,6 +2606,28 @@ def set_formulation_stages(
     # Delete stages that fell out of the payload. Lines FK to the
     # departing rows get ``stage=NULL`` via ``on_delete=SET_NULL``.
     formulation.stages.exclude(id__in=incoming_ids).delete()
+
+    # Exactly-one-finished invariant. Enforced after upsert +
+    # cleanup so partial payloads that briefly show 2 finished
+    # stages during the loop don't half-fail. Empty stage lists get
+    # a pass (a formulation with no stages doesn't need a finished
+    # anchor yet).
+    finished_count = formulation.stages.filter(
+        psp_item_type="finished_product"
+    ).count()
+    if finished_count > 1:
+        raise ValueError(
+            "A formulation may have at most one finished_product stage;"
+            f" got {finished_count}."
+        )
+    if finished_count == 0 and formulation.stages.exists():
+        # Auto-promote the last stage so the cascade always terminates
+        # in a finished product. Safety net for callers that forget to
+        # set the flag; the FE dropdown makes this rare.
+        last = formulation.stages.order_by("-sort_order").first()
+        if last is not None:
+            last.psp_item_type = "finished_product"
+            last.save(update_fields=["psp_item_type", "updated_at"])
 
     record_audit(
         organization=formulation.organization,
@@ -2587,6 +2667,24 @@ def update_formulation(
         "project_status",
         "project_type",
         "psp_finished_product_uuid",
+        # Finished-product spec (Setup tab source of truth — the
+        # push cascade mirrors these onto the finished stage's PSP
+        # spec sub-table).
+        "regulatory_category",
+        "warnings_text",
+        "shelf_life_months",
+        "storage_conditions",
+        "target_markets",
+        "net_quantity",
+        "net_quantity_uom_uuid",
+        "serving_size_uom_uuid",
+        # Phase 4a: warehouse identity + allergens
+        "storage_tags",
+        "min_stock_qty",
+        "target_stock_qty",
+        "allergen_uuids",
+        "may_contain_allergen_keys",
+        "may_contain_justification",
     }
     if "dosage_form" in changes and changes["dosage_form"] is not None:
         _validate_dosage_form(changes["dosage_form"])

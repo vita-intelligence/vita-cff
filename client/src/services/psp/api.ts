@@ -147,3 +147,84 @@ export async function fetchPspWorkstationUsers(
     );
   return data;
 }
+
+
+/** Stage form's ``Stock UOM`` picker. */
+export interface PspUnitOfMeasurementDto {
+  uuid: string;
+  name: string;
+  symbol: string;
+  dimension: string;
+}
+export interface PspUnitsOfMeasurementListResponseDto {
+  items: readonly PspUnitOfMeasurementDto[];
+}
+export async function fetchPspUnitsOfMeasurement(
+  orgId: string,
+): Promise<PspUnitsOfMeasurementListResponseDto> {
+  const { data } =
+    await apiClient.get<PspUnitsOfMeasurementListResponseDto>(
+      pspEndpoints.unitsOfMeasurement(orgId),
+    );
+  return data;
+}
+
+
+/** Setup form's ``Allergens`` checkboxes. Global read-only catalog
+ *  seeded on PSP; the finished-product PSP item M:N's these rows. */
+export interface PspAllergenDto {
+  uuid: string;
+  key: string;
+  label: string;
+  source: string;
+}
+export interface PspAllergensListResponseDto {
+  items: readonly PspAllergenDto[];
+}
+export async function fetchPspAllergens(
+  orgId: string,
+): Promise<PspAllergensListResponseDto> {
+  const { data } = await apiClient.get<PspAllergensListResponseDto>(
+    pspEndpoints.allergens(orgId),
+  );
+  return data;
+}
+
+
+/** Setup form's ``Storage tags`` multi-picker. Company-scoped on PSP. */
+export interface PspStorageTagDto {
+  uuid: string;
+  name: string;
+  color: string | null;
+}
+export interface PspStorageTagsListResponseDto {
+  items: readonly PspStorageTagDto[];
+}
+export async function fetchPspStorageTags(
+  orgId: string,
+): Promise<PspStorageTagsListResponseDto> {
+  const { data } = await apiClient.get<PspStorageTagsListResponseDto>(
+    pspEndpoints.storageTags(orgId),
+  );
+  return data;
+}
+
+
+/** Stage form's ``Product family`` picker. */
+export interface PspProductFamilyDto {
+  uuid: string;
+  name: string;
+  description: string | null;
+}
+export interface PspProductFamiliesListResponseDto {
+  items: readonly PspProductFamilyDto[];
+}
+export async function fetchPspProductFamilies(
+  orgId: string,
+): Promise<PspProductFamiliesListResponseDto> {
+  const { data } =
+    await apiClient.get<PspProductFamiliesListResponseDto>(
+      pspEndpoints.productFamilies(orgId),
+    );
+  return data;
+}

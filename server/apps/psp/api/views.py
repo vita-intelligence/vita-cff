@@ -41,7 +41,11 @@ from apps.psp.services import (
     PspUnreachable,
     clear_psp_config,
     get_psp_item,
+    list_psp_allergens,
     list_psp_items,
+    list_psp_product_families,
+    list_psp_storage_tags,
+    list_psp_units_of_measurement,
     list_psp_workstation_groups,
     list_psp_workstation_users,
     mirror_psp_item,
@@ -357,6 +361,60 @@ class PspWorkstationGroupListView(APIView):
 
     def get(self, request: Request, org_id: str) -> Response:
         rows = list_psp_workstation_groups(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspUnitsOfMeasurementListView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/units-of-measurement/``.
+
+    Proxies PSP's ``/api/integration/units-of-measurement`` for the
+    stage form's ``Stock UOM`` picker. Silent-degrade on any failure
+    — empty ``items`` mirrors an empty PSP catalog.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_units_of_measurement(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspAllergensListView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/allergens/``."""
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_allergens(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspStorageTagsListView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/storage-tags/``."""
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_storage_tags(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspProductFamiliesListView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/product-families/``.
+
+    Proxies PSP's ``/api/integration/product-families`` for the stage
+    form's ``Product family`` picker. Same silent-degrade contract as
+    the UOM list view.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = list_psp_product_families(organization=self.organization)
         return Response({"items": rows}, status=status.HTTP_200_OK)
 
 

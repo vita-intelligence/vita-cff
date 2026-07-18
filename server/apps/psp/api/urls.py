@@ -8,6 +8,10 @@ from apps.psp.api.views import (
     PspItemListView,
     PspItemMirrorView,
     PspTestConnectionView,
+    PspAllergensListView,
+    PspProductFamiliesListView,
+    PspStorageTagsListView,
+    PspUnitsOfMeasurementListView,
     PspWorkstationGroupListView,
     PspWorkstationUserListView,
 )
@@ -58,5 +62,29 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/workstation-users/",
         PspWorkstationUserListView.as_view(),
         name="psp-workstation-users",
+    ),
+    # Stage form's UOM + product family pickers (phase 2b). Both
+    # silent-degrade to an empty list on any failure so the FE
+    # renders "no options" the same way a genuinely empty catalogue
+    # would.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/units-of-measurement/",
+        PspUnitsOfMeasurementListView.as_view(),
+        name="psp-units-of-measurement",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/product-families/",
+        PspProductFamiliesListView.as_view(),
+        name="psp-product-families",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/allergens/",
+        PspAllergensListView.as_view(),
+        name="psp-allergens",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/storage-tags/",
+        PspStorageTagsListView.as_view(),
+        name="psp-storage-tags",
     ),
 ]

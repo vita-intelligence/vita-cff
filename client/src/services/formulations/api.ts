@@ -162,6 +162,27 @@ export async function saveFormulationVersion(
   return data;
 }
 
+/** POST /sync-psp — push the current in-memory BOM cascade to PSP
+ *  without cutting a version. Returns whether the sync fired and, if
+ *  so, the finished-product uuid (either the pre-existing one or the
+ *  one ``_ensure_finished_product`` just auto-created). */
+export interface SyncPspResponseDto {
+  synced: boolean;
+  finished_product_uuid?: string | null;
+  reason?: string;
+}
+
+export async function syncFormulationToPsp(
+  orgId: string,
+  formulationId: string,
+): Promise<SyncPspResponseDto> {
+  const { data } = await apiClient.post<SyncPspResponseDto>(
+    formulationsEndpoints.syncPsp(orgId, formulationId),
+    {},
+  );
+  return data;
+}
+
 export async function rollbackFormulation(
   orgId: string,
   formulationId: string,
@@ -276,4 +297,124 @@ export async function upsertFormulationStages(
     payload,
   );
   return data;
+}
+
+
+// ---- Photos + files ------------------------------------------------
+
+export interface FormulationPhotoDto {
+  readonly id: string;
+  readonly url: string | null;
+  readonly caption: string;
+  readonly is_primary: boolean;
+  readonly sort_order: number;
+  readonly original_filename: string;
+  readonly content_type: string;
+  readonly byte_size: number;
+  readonly psp_uuid: string | null;
+  readonly uploaded_at: string;
+}
+
+export interface FormulationPhotosListDto {
+  readonly items: readonly FormulationPhotoDto[];
+}
+
+export interface FormulationFileDto {
+  readonly id: string;
+  readonly url: string | null;
+  readonly kind: string;
+  readonly filename: string;
+  readonly mime: string;
+  readonly byte_size: number;
+  readonly psp_uuid: string | null;
+  readonly uploaded_at: string;
+}
+
+export interface FormulationFilesListDto {
+  readonly items: readonly FormulationFileDto[];
+}
+
+export async function fetchFormulationPhotos(
+  orgId: string,
+  formulationId: string,
+): Promise<FormulationPhotosListDto> {
+  const { data } = await apiClient.get<FormulationPhotosListDto>(
+    formulationsEndpoints.photos(orgId, formulationId),
+  );
+  return data;
+}
+
+export async function uploadFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+  args: { file: File; caption?: string; is_primary?: boolean },
+): Promise<{ photo: FormulationPhotoDto }> {
+  const form = new FormData();
+  form.append("file", args.file);
+  if (args.caption) form.append("caption", args.caption);
+  if (args.is_primary) form.append("is_primary", "true");
+  // Do NOT set Content-Type — axios populates boundary automatically.
+  const { data } = await apiClient.post<{ photo: FormulationPhotoDto }>(
+    formulationsEndpoints.photos(orgId, formulationId),
+    form,
+  );
+  return data;
+}
+
+export async function updateFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+  photoId: string,
+  patch: { caption?: string; is_primary?: boolean },
+): Promise<{ photo: FormulationPhotoDto }> {
+  const { data } = await apiClient.patch<{ photo: FormulationPhotoDto }>(
+    formulationsEndpoints.photoDetail(orgId, formulationId, photoId),
+    patch,
+  );
+  return data;
+}
+
+export async function deleteFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+  photoId: string,
+): Promise<void> {
+  await apiClient.delete(
+    formulationsEndpoints.photoDetail(orgId, formulationId, photoId),
+  );
+}
+
+export async function fetchFormulationFiles(
+  orgId: string,
+  formulationId: string,
+): Promise<FormulationFilesListDto> {
+  const { data } = await apiClient.get<FormulationFilesListDto>(
+    formulationsEndpoints.files(orgId, formulationId),
+  );
+  return data;
+}
+
+export async function uploadFormulationFile(
+  orgId: string,
+  formulationId: string,
+  args: { file: File; kind?: string },
+): Promise<{ file: FormulationFileDto }> {
+  const form = new FormData();
+  form.append("file", args.file);
+  form.append("kind", args.kind ?? "other");
+  const { data } = await apiClient.post<{ file: FormulationFileDto }>(
+    formulationsEndpoints.files(orgId, formulationId),
+    form,
+  );
+  return data;
+}
+
+export async function deleteFormulationFile(
+  orgId: string,
+  formulationId: string,
+  fileId: string,
+): Promise<void> {
+  await apiClient.delete(
+    formulationsEndpoints.fileDetail(orgId, formulationId, fileId),
+  );
 }

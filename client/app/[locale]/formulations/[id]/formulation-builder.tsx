@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, CopyPlus, ExternalLink, Loader2, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { Check, ChevronLeft, Copy, CopyPlus, ExternalLink, Loader2, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { StageBomsPreview } from "./stage-boms-preview";
@@ -26,7 +26,13 @@ import { clientUuid } from "@/lib/utils";
 import { useInfiniteItems } from "@/services/catalogues";
 import type { ItemDto } from "@/services/catalogues/types";
 import { useOrganization } from "@/services/organizations";
-import { useMirrorPspItem, usePspItems } from "@/services/psp";
+import {
+  useMirrorPspItem,
+  usePspAllergens,
+  usePspItems,
+  usePspStorageTags,
+  usePspUnitsOfMeasurement,
+} from "@/services/psp";
 import type { PspItemDto } from "@/services/psp";
 
 import {
@@ -43,10 +49,18 @@ import {
   computeTotals,
   explainLine,
   getNrvTargetMg,
+  useDeleteFormulationFile,
+  useDeleteFormulationPhoto,
+  useFormulationFiles,
+  useFormulationPhotos,
+  useUpdateFormulationPhoto,
+  useUploadFormulationFile,
+  useUploadFormulationPhoto,
   useFormulationVersions,
   useReplaceLines,
   useRollbackFormulation,
   useSaveVersion,
+  useSyncFormulationToPsp,
   useSetApprovedVersion,
   useUpdateFormulation,
   type AllergensResult,
@@ -70,7 +84,12 @@ const RAW_MATERIALS_SLUG = "raw_materials";
  *  a permanently-mounted section that toggles via the ``hidden``
  *  Tailwind class so intermediate state (line edits, stage drafts,
  *  scroll positions) survives tab switches. */
-type BuilderTab = "setup" | "stages" | "ingredients" | "preview";
+// Tabs after the ingredient-drill-down refactor: Ingredients is no
+// longer its own tab. Scientists click a stage inside the Stages tab
+// to drill into the ingredient builder scoped to that stage — same
+// panels (picker, lines, totals, fine-tune, compliance, declaration)
+// swap in place of the stage list with a back arrow to return.
+type BuilderTab = "setup" | "stages" | "preview";
 
 
 interface BuilderLine {
@@ -186,6 +205,28 @@ interface MetadataDraft {
   suggested_dosage: string;
   appearance: string;
   disintegration_spec: string;
+  // Finished-product spec on Setup — mirrored to the finished stage's
+  // PSP spec sub-table by the push cascade.
+  regulatory_category:
+    | ""
+    | "food_supplement"
+    | "functional_food"
+    | "cosmetic"
+    | "medical_device";
+  warnings_text: string;
+  shelf_life_months: string;
+  storage_conditions: string;
+  target_markets: readonly string[];
+  net_quantity: string;
+  net_quantity_uom_uuid: string | null;
+  serving_size_uom_uuid: string | null;
+  // Phase 4a — warehouse + allergens.
+  storage_tags: readonly string[];
+  min_stock_qty: string;
+  target_stock_qty: string;
+  allergen_uuids: readonly string[];
+  may_contain_allergen_keys: readonly string[];
+  may_contain_justification: string;
 }
 
 // Excel's unspoken convention: every powder sachet in the reference
@@ -274,6 +315,24 @@ function metadataFrom(formulation: FormulationDto): MetadataDraft {
     suggested_dosage: formulation.suggested_dosage,
     appearance: formulation.appearance,
     disintegration_spec: formulation.disintegration_spec,
+    regulatory_category: formulation.regulatory_category ?? "",
+    warnings_text: formulation.warnings_text ?? "",
+    shelf_life_months:
+      formulation.shelf_life_months !== null &&
+      formulation.shelf_life_months !== undefined
+        ? String(formulation.shelf_life_months)
+        : "",
+    storage_conditions: formulation.storage_conditions ?? "",
+    target_markets: formulation.target_markets ?? [],
+    net_quantity: formulation.net_quantity ?? "",
+    net_quantity_uom_uuid: formulation.net_quantity_uom_uuid ?? null,
+    serving_size_uom_uuid: formulation.serving_size_uom_uuid ?? null,
+    storage_tags: formulation.storage_tags ?? [],
+    min_stock_qty: formulation.min_stock_qty ?? "",
+    target_stock_qty: formulation.target_stock_qty ?? "",
+    allergen_uuids: formulation.allergen_uuids ?? [],
+    may_contain_allergen_keys: formulation.may_contain_allergen_keys ?? [],
+    may_contain_justification: formulation.may_contain_justification ?? "",
   };
 }
 
@@ -364,6 +423,695 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
   }));
 }
 
+/**
+ * Finished-product spec section on the Setup tab. Source of truth
+ * for every field PSP's ``item_finished_product_spec`` sub-table
+ * carries; the push cascade mirrors these onto the finished stage's
+ * PSP item on Save Version / Sync now. When there's no finished
+ * stage yet (or PSP isn't configured), the fields just persist on
+ * NPD and wait for the cascade to pick them up.
+ */
+const REGULATORY_CATEGORY_OPTIONS = [
+  "food_supplement",
+  "functional_food",
+  "cosmetic",
+  "medical_device",
+] as const;
+
+function FinishedProductSpecSetupSection({
+  orgId,
+  metadata,
+  onChange,
+  canWrite,
+}: {
+  orgId: string;
+  metadata: MetadataDraft;
+  onChange: (patch: Partial<MetadataDraft>) => void;
+  canWrite: boolean;
+}) {
+  const uomQuery = usePspUnitsOfMeasurement(orgId);
+  const uomOptions = uomQuery.data?.items ?? [];
+  const targetMarketsCsv = metadata.target_markets.join(", ");
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+        Finished-product spec
+      </p>
+      <p className="mt-1 text-sm text-ink-600">
+        Ships to PSP as the finished-product item&apos;s
+        <span className="font-medium"> spec sub-table</span> on the
+        next Save version or Sync now. If there&apos;s no finished
+        stage yet, values persist on NPD until one exists.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Regulatory category
+          </label>
+          <select
+            value={metadata.regulatory_category}
+            onChange={(e) =>
+              onChange({
+                regulatory_category:
+                  e.target.value as MetadataDraft["regulatory_category"],
+              })
+            }
+            disabled={!canWrite}
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          >
+            <option value="">— none —</option>
+            {REGULATORY_CATEGORY_OPTIONS.map((c) => (
+              <option key={c} value={c}>
+                {c.replace(/_/g, " ")}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-ink-500">
+            EU classification that determines which labelling rules
+            apply — read by QA on PSP&apos;s spec sheet review.
+          </p>
+        </div>
+
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Net quantity
+          </label>
+          <input
+            value={metadata.net_quantity}
+            onChange={(e) => onChange({ net_quantity: e.target.value })}
+            disabled={!canWrite}
+            inputMode="decimal"
+            placeholder="e.g. 60"
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Net qty unit
+          </label>
+          <select
+            value={metadata.net_quantity_uom_uuid ?? ""}
+            onChange={(e) =>
+              onChange({
+                net_quantity_uom_uuid: e.target.value || null,
+              })
+            }
+            disabled={!canWrite}
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          >
+            <option value="">— none —</option>
+            {uomOptions.map((u) => (
+              <option key={u.uuid} value={u.uuid}>
+                {u.name}
+                {u.symbol ? ` (${u.symbol})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Serving-size unit
+          </label>
+          <select
+            value={metadata.serving_size_uom_uuid ?? ""}
+            onChange={(e) =>
+              onChange({
+                serving_size_uom_uuid: e.target.value || null,
+              })
+            }
+            disabled={!canWrite}
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          >
+            <option value="">— none —</option>
+            {uomOptions.map((u) => (
+              <option key={u.uuid} value={u.uuid}>
+                {u.name}
+                {u.symbol ? ` (${u.symbol})` : ""}
+              </option>
+            ))}
+          </select>
+          <p className="mt-1 text-[11px] text-ink-500">
+            Pairs with{" "}
+            <span className="font-medium">serving size</span> above —
+            &quot;1 capsule&quot;, &quot;5 g&quot;, etc.
+          </p>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Shelf life (months)
+          </label>
+          <input
+            value={metadata.shelf_life_months}
+            onChange={(e) =>
+              onChange({ shelf_life_months: e.target.value })
+            }
+            disabled={!canWrite}
+            inputMode="numeric"
+            placeholder="e.g. 24"
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Warnings text
+          </label>
+          <textarea
+            value={metadata.warnings_text}
+            onChange={(e) => onChange({ warnings_text: e.target.value })}
+            disabled={!canWrite}
+            rows={2}
+            placeholder="Mandatory under EU 1169/2011 Art. 9(1)(j)."
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Storage conditions
+          </label>
+          <textarea
+            value={metadata.storage_conditions}
+            onChange={(e) =>
+              onChange({ storage_conditions: e.target.value })
+            }
+            disabled={!canWrite}
+            rows={2}
+            placeholder="e.g. Store below 25°C, away from direct light."
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Target markets (ISO 3166-1 alpha-2, comma-separated)
+          </label>
+          <input
+            value={targetMarketsCsv}
+            onChange={(e) => {
+              const parts = e.target.value
+                .split(",")
+                .map((s) => s.trim().toUpperCase())
+                .filter((s) => s.length === 2);
+              onChange({ target_markets: parts });
+            }}
+            disabled={!canWrite}
+            placeholder="e.g. GB, IE, DE"
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+/**
+ * Warehouse identity + allergens on the Setup tab. Storage tags and
+ * reorder points ride the same push as identity; allergens use PSP's
+ * M:N (uuid list resolves to allergen ids server-side); may-contain
+ * lands on the finished-product spec sub-table. Every stage on the
+ * formulation carries the same values — a formulation ships to
+ * warehouse under one identity, not one per stage.
+ */
+function WarehouseAndAllergensSetupSection({
+  orgId,
+  metadata,
+  onChange,
+  canWrite,
+}: {
+  orgId: string;
+  metadata: MetadataDraft;
+  onChange: (patch: Partial<MetadataDraft>) => void;
+  canWrite: boolean;
+}) {
+  const storageTagsQuery = usePspStorageTags(orgId);
+  const storageTagOptions = storageTagsQuery.data?.items ?? [];
+  const allergensQuery = usePspAllergens(orgId);
+  const allergenOptions = allergensQuery.data?.items ?? [];
+
+  const toggleAllergen = (uuid: string) => {
+    const set = new Set(metadata.allergen_uuids);
+    if (set.has(uuid)) {
+      set.delete(uuid);
+    } else {
+      set.add(uuid);
+    }
+    onChange({ allergen_uuids: Array.from(set) });
+  };
+  const toggleMayContain = (key: string) => {
+    const set = new Set(metadata.may_contain_allergen_keys);
+    if (set.has(key)) {
+      set.delete(key);
+    } else {
+      set.add(key);
+    }
+    onChange({ may_contain_allergen_keys: Array.from(set) });
+  };
+  const toggleStorageTag = (name: string) => {
+    const set = new Set(metadata.storage_tags);
+    if (set.has(name)) {
+      set.delete(name);
+    } else {
+      set.add(name);
+    }
+    onChange({ storage_tags: Array.from(set) });
+  };
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+        Warehouse identity + allergens
+      </p>
+      <p className="mt-1 text-sm text-ink-600">
+        Storage tags + reorder points ship to the finished-product
+        PSP item. Allergen decls land on the item&apos;s M:N;
+        may-contain lands on the spec sub-table.
+      </p>
+
+      <div className="mt-4 grid grid-cols-1 gap-5 md:grid-cols-2">
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Min stock qty
+          </label>
+          <input
+            value={metadata.min_stock_qty}
+            onChange={(e) => onChange({ min_stock_qty: e.target.value })}
+            disabled={!canWrite}
+            inputMode="decimal"
+            placeholder="Reorder trigger"
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-medium text-ink-600">
+            Target stock qty
+          </label>
+          <input
+            value={metadata.target_stock_qty}
+            onChange={(e) =>
+              onChange({ target_stock_qty: e.target.value })
+            }
+            disabled={!canWrite}
+            inputMode="decimal"
+            placeholder="Order-up-to level"
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Storage tags
+          </label>
+          {storageTagOptions.length === 0 ? (
+            <p className="mt-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
+              No storage tags in PSP&apos;s catalog yet — add them on
+              PSP → Warehouses → Storage tags.
+            </p>
+          ) : (
+            <div className="mt-1 flex flex-wrap gap-1.5">
+              {storageTagOptions.map((tag) => {
+                const active = metadata.storage_tags.includes(tag.name);
+                return (
+                  <button
+                    key={tag.uuid}
+                    type="button"
+                    onClick={() => toggleStorageTag(tag.name)}
+                    disabled={!canWrite}
+                    className={
+                      active
+                        ? "rounded-full bg-orange-500 px-2.5 py-1 text-xs font-medium text-white disabled:opacity-50"
+                        : "rounded-full bg-ink-50 px-2.5 py-1 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-orange-50 hover:text-orange-700 disabled:opacity-50"
+                    }
+                  >
+                    {tag.name}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            Declared allergens (EU FIC Annex II)
+          </label>
+          {allergenOptions.length === 0 ? (
+            <p className="mt-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
+              PSP&apos;s allergen catalog is empty — seed it via
+              migration.
+            </p>
+          ) : (
+            <div className="mt-1 grid grid-cols-2 gap-1.5 md:grid-cols-3">
+              {allergenOptions.map((a) => {
+                const active = metadata.allergen_uuids.includes(a.uuid);
+                return (
+                  <label
+                    key={a.uuid}
+                    className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-ink-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onChange={() => toggleAllergen(a.uuid)}
+                      disabled={!canWrite}
+                    />
+                    <span>{a.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            May contain (cross-contamination risk)
+          </label>
+          {allergenOptions.length === 0 ? null : (
+            <div className="mt-1 grid grid-cols-2 gap-1.5 md:grid-cols-3">
+              {allergenOptions.map((a) => {
+                const active = metadata.may_contain_allergen_keys.includes(
+                  a.key,
+                );
+                return (
+                  <label
+                    key={a.uuid}
+                    className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-ink-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={active}
+                      onChange={() => toggleMayContain(a.key)}
+                      disabled={!canWrite}
+                    />
+                    <span>{a.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="text-xs font-medium text-ink-600">
+            May-contain justification
+          </label>
+          <textarea
+            value={metadata.may_contain_justification}
+            onChange={(e) =>
+              onChange({ may_contain_justification: e.target.value })
+            }
+            disabled={!canWrite}
+            rows={2}
+            placeholder="Reason for the may-contain declaration (e.g. shared line with a milk-containing product)."
+            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+function FormulationPhotosSetupSection({
+  orgId,
+  formulationId,
+  canWrite,
+}: {
+  orgId: string;
+  formulationId: string;
+  canWrite: boolean;
+}) {
+  const photosQuery = useFormulationPhotos(orgId, formulationId);
+  const uploadPhoto = useUploadFormulationPhoto(orgId, formulationId);
+  const updatePhoto = useUpdateFormulationPhoto(orgId, formulationId);
+  const deletePhoto = useDeleteFormulationPhoto(orgId, formulationId);
+  const photos = photosQuery.data?.items ?? [];
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadPhoto.mutate({ file });
+    }
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            Product photos
+          </p>
+          <p className="mt-1 text-sm text-ink-600">
+            Ship to PSP&apos;s finished-product item on the next Save
+            version or Sync now. First upload becomes the primary
+            (catalog + label hero). PNG / JPEG / WebP / GIF, max 5 MB.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            onChange={onPick}
+            disabled={!canWrite || uploadPhoto.isPending}
+            className="hidden"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={() => inputRef.current?.click()}
+            isDisabled={!canWrite || uploadPhoto.isPending}
+          >
+            {uploadPhoto.isPending ? "Uploading…" : "Upload photo"}
+          </Button>
+        </div>
+      </div>
+
+      {photosQuery.isLoading ? (
+        <p className="mt-4 text-xs text-ink-500">Loading…</p>
+      ) : photos.length === 0 ? (
+        <p className="mt-4 text-xs text-ink-500">
+          No photos yet. Upload one to seed the catalog card.
+        </p>
+      ) : (
+        <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+          {photos.map((p) => (
+            <div
+              key={p.id}
+              className="relative overflow-hidden rounded-xl bg-ink-100 ring-1 ring-ink-200"
+            >
+              {p.url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={p.url}
+                  alt={p.caption || p.original_filename}
+                  className="h-32 w-full object-cover"
+                />
+              ) : (
+                <div className="flex h-32 items-center justify-center text-[11px] text-ink-500">
+                  no preview
+                </div>
+              )}
+              {p.is_primary && (
+                <span className="absolute left-2 top-2 rounded-full bg-orange-500 px-2 py-0.5 text-[10px] font-medium uppercase text-white shadow">
+                  primary
+                </span>
+              )}
+              <div className="flex items-center justify-between gap-1 border-t border-ink-200 bg-ink-0 px-2 py-1.5">
+                <span className="truncate text-[11px] text-ink-600">
+                  {p.original_filename || "photo"}
+                </span>
+                <div className="flex gap-1">
+                  {!p.is_primary && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        updatePhoto.mutate({
+                          photoId: p.id,
+                          patch: { is_primary: true },
+                        })
+                      }
+                      disabled={!canWrite || updatePhoto.isPending}
+                      className="rounded px-1 text-[10px] text-orange-600 hover:bg-orange-50 disabled:opacity-40"
+                    >
+                      make primary
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (window.confirm(`Delete "${p.original_filename || "photo"}"?`)) {
+                        deletePhoto.mutate(p.id);
+                      }
+                    }}
+                    disabled={!canWrite || deletePhoto.isPending}
+                    className="rounded p-1 text-ink-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                    aria-label="Delete photo"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+
+const FILE_KIND_OPTIONS: readonly { value: string; label: string }[] = [
+  { value: "spec_sheet", label: "Spec sheet" },
+  { value: "food_contact_declaration", label: "Food-contact declaration" },
+  { value: "migration_test", label: "Migration test" },
+  { value: "safety_data_sheet", label: "Safety data sheet" },
+  { value: "allergen_declaration", label: "Allergen declaration" },
+  { value: "nutritional_analysis", label: "Nutritional analysis" },
+  { value: "other", label: "Other" },
+];
+
+
+function FormulationFilesSetupSection({
+  orgId,
+  formulationId,
+  canWrite,
+}: {
+  orgId: string;
+  formulationId: string;
+  canWrite: boolean;
+}) {
+  const filesQuery = useFormulationFiles(orgId, formulationId);
+  const uploadFile = useUploadFormulationFile(orgId, formulationId);
+  const deleteFile = useDeleteFormulationFile(orgId, formulationId);
+  const files = filesQuery.data?.items ?? [];
+  const [pendingKind, setPendingKind] = useState<string>("spec_sheet");
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      uploadFile.mutate({ file, kind: pendingKind });
+    }
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const humanBytes = (n: number) => {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            Compliance files
+          </p>
+          <p className="mt-1 text-sm text-ink-600">
+            Ship to PSP&apos;s finished-product item as
+            <span className="font-medium"> item_files</span> on push.
+            PDF / images / Word / Excel / plain text, max 20 MB per file.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={pendingKind}
+            onChange={(e) => setPendingKind(e.target.value)}
+            disabled={!canWrite || uploadFile.isPending}
+            className="rounded-xl bg-ink-0 px-3 py-2 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          >
+            {FILE_KIND_OPTIONS.map((k) => (
+              <option key={k.value} value={k.value}>
+                {k.label}
+              </option>
+            ))}
+          </select>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/pdf,image/jpeg,image/png,image/webp,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+            onChange={onPick}
+            disabled={!canWrite || uploadFile.isPending}
+            className="hidden"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onPress={() => inputRef.current?.click()}
+            isDisabled={!canWrite || uploadFile.isPending}
+          >
+            {uploadFile.isPending ? "Uploading…" : "Upload file"}
+          </Button>
+        </div>
+      </div>
+
+      {filesQuery.isLoading ? (
+        <p className="mt-4 text-xs text-ink-500">Loading…</p>
+      ) : files.length === 0 ? (
+        <p className="mt-4 text-xs text-ink-500">
+          No compliance files yet. Pick a kind above and upload.
+        </p>
+      ) : (
+        <ul className="mt-4 divide-y divide-ink-200 rounded-xl ring-1 ring-ink-200">
+          {files.map((f) => {
+            const kindLabel =
+              FILE_KIND_OPTIONS.find((k) => k.value === f.kind)?.label ??
+              f.kind;
+            return (
+              <li
+                key={f.id}
+                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={f.url ?? "#"}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate font-medium text-ink-1000 hover:text-orange-600"
+                    >
+                      {f.filename}
+                    </a>
+                    <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-ink-600">
+                      {kindLabel}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-ink-500">
+                    {humanBytes(f.byte_size)} ·{" "}
+                    {new Date(f.uploaded_at).toLocaleDateString()}
+                    {f.psp_uuid ? " · pushed to PSP" : " · not yet on PSP"}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm(`Delete "${f.filename}"?`)) {
+                      deleteFile.mutate(f.id);
+                    }
+                  }}
+                  disabled={!canWrite || deleteFile.isPending}
+                  className="rounded p-1.5 text-ink-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                  aria-label="Delete file"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+
 export function FormulationBuilder({
   orgId,
   initialFormulation,
@@ -392,13 +1140,15 @@ export function FormulationBuilder({
   // scroll position) is preserved across tab switches. State only
   // ever loses on a real unmount, which happens on navigate-away.
   //
-  // Active tab is URL-driven (?tab=setup|stages|ingredients|preview)
-  // so a scientist can share a link that lands on Ingredients OR
-  // reload without losing their place.
+  // Active tab is URL-driven (?tab=setup|stages|preview) so a scientist
+  // can share a link that lands on a specific tab OR reload without
+  // losing their place. Historical ``?tab=ingredients`` links are
+  // absorbed by the fallthrough — the Ingredients tab is gone, and
+  // any bookmark pointing at it lands on Setup as the safe default.
   const searchParams = useSearchParams();
   const rawTab = searchParams?.get("tab") ?? "setup";
   const activeTab: BuilderTab = (
-    ["setup", "stages", "ingredients", "preview"] as const
+    ["setup", "stages", "preview"] as const
   ).includes(rawTab as BuilderTab)
     ? (rawTab as BuilderTab)
     : "setup";
@@ -620,6 +1370,7 @@ export function FormulationBuilder({
   const updateMutation = useUpdateFormulation(orgId, formulation.id);
   const replaceLinesMutation = useReplaceLines(orgId, formulation.id);
   const saveVersionMutation = useSaveVersion(orgId, formulation.id);
+  const syncPspMutation = useSyncFormulationToPsp(orgId, formulation.id);
   const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
@@ -1154,6 +1905,58 @@ export function FormulationBuilder({
     [metadata.dcp_carrier_item_ids, formulation.dcp_carrier_items],
   );
 
+  // Picked-item lookups keyed to id + name + code — feeds the editable
+  // per-item mg override on the Excipients panel and the shared
+  // ``allocateBandShares`` allocator used by BomCard / stage BOM. Names
+  // prefer the live picker cache (freshly-toggled picks) with a
+  // server-echo fallback; codes come off the echo only. Filter out
+  // ids we can't resolve to a name so a stale metadata id doesn't
+  // render as an empty row.
+  const mccCarrierPicks = useMemo<BandPick[]>(
+    () =>
+      metadata.mcc_carrier_item_ids
+        .map((id) => {
+          const server = formulation.mcc_carrier_items.find((i) => i.id === id);
+          const name = mccCarrierNames[id] ?? server?.name ?? "";
+          if (!name) return null;
+          return { id, name, internal_code: server?.internal_code ?? "" };
+        })
+        .filter((p): p is BandPick => p !== null),
+    [
+      metadata.mcc_carrier_item_ids,
+      mccCarrierNames,
+      formulation.mcc_carrier_items,
+    ],
+  );
+  const antiCakingPicks = useMemo<BandPick[]>(
+    () =>
+      metadata.anti_caking_item_ids
+        .map((id) => {
+          const server = formulation.anti_caking_items.find((i) => i.id === id);
+          const name = antiCakingNames[id] ?? server?.name ?? "";
+          if (!name) return null;
+          return { id, name, internal_code: server?.internal_code ?? "" };
+        })
+        .filter((p): p is BandPick => p !== null),
+    [
+      metadata.anti_caking_item_ids,
+      antiCakingNames,
+      formulation.anti_caking_items,
+    ],
+  );
+  const dcpCarrierPicks = useMemo<BandPick[]>(
+    () =>
+      metadata.dcp_carrier_item_ids
+        .map((id) => {
+          const server = formulation.dcp_carrier_items.find((i) => i.id === id);
+          const name = server?.name ?? "";
+          if (!name) return null;
+          return { id, name, internal_code: server?.internal_code ?? "" };
+        })
+        .filter((p): p is BandPick => p !== null),
+    [metadata.dcp_carrier_item_ids, formulation.dcp_carrier_items],
+  );
+
   // Resolve the picked capsule shell (first pick — the M2M shape
   // matches other pickers even though shells are typically one).
   // Feeds both the declaration (label + shell mass) and, upstream,
@@ -1534,6 +2337,34 @@ export function FormulationBuilder({
   const [activeStageId, setActiveStageId] = useState<string | null>(
     () => formulation.stages[0]?.id ?? null,
   );
+  // Drill-down state: null = show the stage list on the Stages tab,
+  // set = swap the tab body for the ingredient builder scoped to that
+  // stage (with a back arrow to return). Isolated from ``activeStageId``
+  // because that one tracks the picker's default target (kept even
+  // when we're not drilled in). Clicking "Build ingredients" on a
+  // stage sets both — the drill target AND the picker default —
+  // so subsequent picks land where the scientist is looking.
+  const [stageDrilldownId, setStageDrilldownId] = useState<string | null>(
+    null,
+  );
+  const openStageDrilldown = useCallback(
+    (stageId: string) => {
+      setStageDrilldownId(stageId);
+      setActiveStageId(stageId);
+    },
+    [],
+  );
+  const closeStageDrilldown = useCallback(() => setStageDrilldownId(null), []);
+  // Resolve the currently drilled stage's name for the back-arrow
+  // header — falls back to a generic label if the stage was renamed
+  // out from under us between openStageDrilldown and a re-render.
+  const drilledStage = useMemo(
+    () =>
+      stageDrilldownId
+        ? formulation.stages.find((s) => s.id === stageDrilldownId) ?? null
+        : null,
+    [stageDrilldownId, formulation.stages],
+  );
   // Keep active stage in sync when stages get created / deleted on
   // a save. If the previously-active stage disappeared, snap to the
   // first available one so subsequent picks always have a target.
@@ -1802,6 +2633,24 @@ export function FormulationBuilder({
         suggested_dosage: metadata.suggested_dosage,
         appearance: metadata.appearance,
         disintegration_spec: metadata.disintegration_spec,
+        // Finished-product spec (Setup tab source of truth; the push
+        // cascade mirrors these onto the finished stage's PSP spec).
+        regulatory_category: metadata.regulatory_category || null,
+        warnings_text: metadata.warnings_text,
+        shelf_life_months: metadata.shelf_life_months
+          ? Number(metadata.shelf_life_months)
+          : null,
+        storage_conditions: metadata.storage_conditions,
+        target_markets: metadata.target_markets,
+        net_quantity: metadata.net_quantity || null,
+        net_quantity_uom_uuid: metadata.net_quantity_uom_uuid,
+        serving_size_uom_uuid: metadata.serving_size_uom_uuid,
+        storage_tags: metadata.storage_tags,
+        min_stock_qty: metadata.min_stock_qty || null,
+        target_stock_qty: metadata.target_stock_qty || null,
+        allergen_uuids: metadata.allergen_uuids,
+        may_contain_allergen_keys: metadata.may_contain_allergen_keys,
+        may_contain_justification: metadata.may_contain_justification,
       });
       setFormulation(updated);
       setMetadata(metadataFrom(updated));
@@ -1916,6 +2765,32 @@ export function FormulationBuilder({
     return JSON.stringify(original) !== JSON.stringify(current);
   }, [formulation, lines]);
 
+  // Snapshot of the last-saved ``label_claim_mg`` per line, keyed by
+  // the builder line ``key`` (stable per item_id). Feeds the per-row
+  // undo affordance on the fine-tune panel: an active row shows a ↺
+  // when its current mg differs from this saved value, and clicking
+  // ↺ writes the saved value back. ``item_id`` on the saved line is
+  // the join key — lines share their key with the item id after the
+  // ``linesFrom`` projection.
+  const savedActiveMgByLineKey = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const line of linesFrom(formulation)) {
+      const mg = Number.parseFloat(line.label_claim_mg || "0");
+      map.set(line.key, Number.isFinite(mg) ? mg : 0);
+    }
+    return map;
+  }, [formulation]);
+
+  // Global "revert unsaved changes" — rewinds every in-memory edit
+  // back to the last-saved state. Used both by the fine-tune panel's
+  // header button and the top-of-page save banner. Cheap enough to
+  // recompute both projections inline since ``formulation`` only
+  // changes on save / restore.
+  const handleRevertAllUnsaved = useCallback(() => {
+    setMetadata(metadataFrom(formulation));
+    setLines(linesFrom(formulation));
+  }, [formulation]);
+
   const isBusy =
     updateMutation.isPending ||
     replaceLinesMutation.isPending ||
@@ -1927,27 +2802,21 @@ export function FormulationBuilder({
   const supported = FULLY_SUPPORTED_DOSAGE_FORMS.includes(metadata.dosage_form);
 
   return (
-    <div className="mt-10 flex flex-col gap-10">
+    <div className="mt-6 flex flex-col gap-6">
       {/* ------------------------------------------------------------ */}
-      {/* Header + primary actions                                     */}
+      {/* Action bar — the project shell above already renders the     */}
+      {/* code + name + status pills, so we don't repeat them here.    */}
+      {/* Just the primary CTAs (Open on PSP / Duplicate / Save        */}
+      {/* draft / Save version) plus an "unsaved" hint on the right.   */}
       {/* ------------------------------------------------------------ */}
-      <section className="flex items-end justify-between gap-6">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            {metadata.code || "—"}
-          </p>
-          <h1 className="mt-3 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
-            {metadata.name}
-          </h1>
-        </div>
-        {canWrite ? (
-          <div className="flex flex-col items-end gap-2">
-            {metadataDirty || linesDirty ? (
-              <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                {tFormulations("builder.unsaved_changes")}
-              </span>
-            ) : null}
-            <div className="flex flex-wrap gap-3">
+      {canWrite ? (
+        <section className="flex flex-wrap items-center justify-end gap-3">
+          {metadataDirty || linesDirty ? (
+            <span className="mr-auto text-xs font-medium uppercase tracking-wide text-ink-500">
+              {tFormulations("builder.unsaved_changes")}
+            </span>
+          ) : null}
+          <div className="flex flex-wrap gap-3">
               {/* Deep-link into PSP when the formulation is bound
                   to a finished-product item. Points at the item
                   detail page (which shows every BOM version this
@@ -2018,10 +2887,9 @@ export function FormulationBuilder({
                 <Save className="h-4 w-4" />
                 {tFormulations("builder.save_version")}
               </Button>
-            </div>
           </div>
-        ) : null}
-      </section>
+        </section>
+      ) : null}
 
       {errorMessage ? (
         <p
@@ -2042,58 +2910,92 @@ export function FormulationBuilder({
       {/* which sections carry unsaved edits so a scientist can see    */}
       {/* what a Save Version would actually persist.                  */}
       {/* ------------------------------------------------------------ */}
-      <nav
-        aria-label="Formulation builder tabs"
-        className="sticky top-0 z-30 -mx-4 flex gap-1 border-b border-ink-200 bg-ink-0/95 px-4 backdrop-blur"
-      >
-        {(
-          [
-            {
-              id: "setup" as const,
-              label: "Setup",
-              dirty: metadataDirty,
-            },
-            {
-              id: "stages" as const,
-              label: "Stages",
-              // The StageStrip owns its own dirty flag; we can't
-              // observe it from here without lifting state. For
-              // now the dot is unavailable on Stages; a follow-up
-              // can lift the flag if operators want it.
-              dirty: false,
-            },
-            {
-              id: "ingredients" as const,
-              label: "Ingredients",
-              dirty: linesDirty,
-            },
-            {
-              id: "preview" as const,
-              label: "Preview",
-              dirty: false,
-            },
-          ] as const
-        ).map((t) => (
+      {stageDrilldownId !== null ? (
+        // Drilled-in mode: the sub-tab strip is swapped for a
+        // breadcrumb so the operator always has a way back to the
+        // stage list, and the visual weight shifts from "navigate"
+        // to "you are here". Sticks to the top of the viewport so
+        // scrolling through the picker / lines / totals / fine-tune
+        // / compliance never scrolls the back arrow out of reach.
+        <nav
+          aria-label="Formulation builder — stage drill-down"
+          className="sticky top-0 z-30 -mx-4 flex items-center gap-2 border-b border-ink-200 bg-ink-0/95 px-4 py-2 backdrop-blur"
+        >
           <button
-            key={t.id}
             type="button"
-            onClick={() => setActiveTab(t.id)}
-            className={
-              activeTab === t.id
-                ? "relative border-b-2 border-orange-500 px-4 py-3 text-sm font-medium text-orange-700"
-                : "relative border-b-2 border-transparent px-4 py-3 text-sm font-medium text-ink-700 hover:text-ink-1000"
-            }
+            onClick={closeStageDrilldown}
+            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-1000"
           >
-            {t.label}
-            {t.dirty ? (
-              <span
-                className="absolute right-1 top-2 h-2 w-2 rounded-full bg-orange-500"
-                aria-label="unsaved changes"
-              />
-            ) : null}
+            <ChevronLeft className="h-4 w-4" />
+            Stages
           </button>
-        ))}
-      </nav>
+          <span className="text-ink-300">/</span>
+          <span className="min-w-0 truncate text-sm font-medium text-ink-1000">
+            Building {drilledStage?.name ?? "stage"}
+          </span>
+          {linesDirty ? (
+            <span
+              className="ml-2 h-2 w-2 rounded-full bg-orange-500"
+              aria-label="unsaved changes"
+            />
+          ) : null}
+        </nav>
+      ) : (
+        // Default mode: pill-style segmented control so the sub-tabs
+        // read as clearly secondary to the project shell's icon-based
+        // underline tabs above (Overview / Builder / Spec sheets /
+        // Proposals / Trial batches / QC). Two identical underline
+        // strips stacked was the ugliness we were fixing.
+        <nav
+          aria-label="Formulation builder tabs"
+          className="sticky top-0 z-30 -mx-4 flex justify-start bg-ink-0/95 px-4 py-2 backdrop-blur"
+        >
+          <div className="inline-flex items-center gap-1 rounded-full bg-ink-100 p-1">
+            {(
+              [
+                {
+                  id: "setup" as const,
+                  label: "Setup",
+                  dirty: metadataDirty,
+                },
+                {
+                  id: "stages" as const,
+                  label: "Stages",
+                  // ``linesDirty`` moved here after the Ingredients tab
+                  // was folded into the Stages drill-down — dirty line
+                  // edits now surface as a dot on Stages instead of on
+                  // its own tab that no longer exists.
+                  dirty: linesDirty,
+                },
+                {
+                  id: "preview" as const,
+                  label: "Preview",
+                  dirty: false,
+                },
+              ] as const
+            ).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setActiveTab(t.id)}
+                className={
+                  activeTab === t.id
+                    ? "relative rounded-full bg-ink-0 px-4 py-1.5 text-sm font-medium text-ink-1000 shadow-sm"
+                    : "relative rounded-full px-4 py-1.5 text-sm font-medium text-ink-600 hover:text-ink-1000"
+                }
+              >
+                {t.label}
+                {t.dirty ? (
+                  <span
+                    className="absolute right-1.5 top-1 h-1.5 w-1.5 rounded-full bg-orange-500"
+                    aria-label="unsaved changes"
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
+        </nav>
+      )}
 
       {/* ------------------------------------------------------------ */}
       {/* Metadata form  (tab: SETUP)                                  */}
@@ -2204,7 +3106,13 @@ export function FormulationBuilder({
       {/* inference so keeping them near the actives picker below is   */}
       {/* the right mental model.                                      */}
       {/* ------------------------------------------------------------ */}
-      <div className={activeTab === "ingredients" ? "flex flex-col gap-10" : "hidden"}>
+      <div
+        className={
+          activeTab === "stages" && stageDrilldownId !== null
+            ? "flex flex-col gap-10"
+            : "hidden"
+        }
+      >
       <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
         <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
           Excipients
@@ -2949,13 +3857,59 @@ export function FormulationBuilder({
         </div>
       </section>
 
+      {/* Finished-product spec — mirrored to the finished stage's PSP
+          spec sub-table on push. Setup is the source of truth so
+          scientists never re-type these on each stage. */}
+      <FinishedProductSpecSetupSection
+        orgId={orgId}
+        metadata={metadata}
+        onChange={(patch) => setMetadata({ ...metadata, ...patch })}
+        canWrite={canWrite}
+      />
+
+      {/* Warehouse identity + allergens — mirrored to the finished
+          stage's PSP item on push (storage tags, reorder points, EU
+          allergens, may-contain). */}
+      <WarehouseAndAllergensSetupSection
+        orgId={orgId}
+        metadata={metadata}
+        onChange={(patch) => setMetadata({ ...metadata, ...patch })}
+        canWrite={canWrite}
+      />
+
+      {/* Photos + files — persist on NPD immediately, mirror onto
+          the finished-product PSP item best-effort on push. */}
+      <FormulationPhotosSetupSection
+        orgId={orgId}
+        formulationId={formulation.id}
+        canWrite={canWrite}
+      />
+      <FormulationFilesSetupSection
+        orgId={orgId}
+        formulationId={formulation.id}
+        canWrite={canWrite}
+      />
+
       </div>
 
       {/* ------------------------------------------------------------ */}
       {/* Production stages  (tab: STAGES)                             */}
       {/* ------------------------------------------------------------ */}
-      <div className={activeTab === "stages" ? "flex flex-col gap-10" : "hidden"}>
+      <div
+        className={
+          activeTab === "stages" && stageDrilldownId === null
+            ? "flex flex-col gap-10"
+            : "hidden"
+        }
+      >
       <StageStrip
+        onOpenIngredientBuilder={openStageDrilldown}
+        pspBaseUrl={organization?.psp_base_url ?? null}
+        pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
+        onSyncNow={async () => {
+          await syncPspMutation.mutateAsync();
+        }}
+        syncPending={syncPspMutation.isPending}
         orgId={orgId}
         formulation={formulation}
         canEdit={canWrite}
@@ -2974,6 +3928,7 @@ export function FormulationBuilder({
           mccCarrierItems: formulation.mcc_carrier_items ?? [],
           dcpCarrierItems: formulation.dcp_carrier_items ?? [],
           antiCakingItems: formulation.anti_caking_items ?? [],
+          excipientOverrides: metadata.excipient_overrides,
         })}
         onSaved={(updated) => {
           // Server has fresh stage state — mirror it into the
@@ -2993,7 +3948,13 @@ export function FormulationBuilder({
       {/* Also carries the compliance + declaration panels since       */}
       {/* those are derived from the ingredient list.                  */}
       {/* ------------------------------------------------------------ */}
-      <div className={activeTab === "ingredients" ? "flex flex-col gap-10" : "hidden"}>
+      <div
+        className={
+          activeTab === "stages" && stageDrilldownId !== null
+            ? "flex flex-col gap-10"
+            : "hidden"
+        }
+      >
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
         {/* Picker */}
         <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
@@ -3422,8 +4383,14 @@ export function FormulationBuilder({
             tFormulations={tFormulations}
             // Stable refs from the parent's useMemo so the memoised
             // TotalsBlock can short-circuit when these don't change.
-            mccCarrierLabels={mccCarrierLabels}
-            antiCakingLabels={antiCakingLabels}
+            // Picks carry id + name + code so each SKU renders as its
+            // own row; overrides feed the ``allocateBandShares`` split.
+            // Editing happens in the dedicated fine-tune panel below —
+            // this column is a status readout only.
+            mccCarrierPicks={mccCarrierPicks}
+            antiCakingPicks={antiCakingPicks}
+            dcpCarrierPicks={dcpCarrierPicks}
+            excipientOverrides={metadata.excipient_overrides}
           />
           {hasTrialBatches ? (
             // Override editor only surfaces once a trial batch exists
@@ -3448,6 +4415,60 @@ export function FormulationBuilder({
           ) : null}
         </div>
       </section>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Excipient fine-tune — wide surface below the builder where   */}
+      {/* the scientist can shift mg / % between picks within each     */}
+      {/* band. The sidebar Excipients block is a read-only echo; all  */}
+      {/* editing lives here so the layout has room for two inputs +   */}
+      {/* a full ingredient name without wrap-hell. Only mounts when   */}
+      {/* at least one band has picks — no clutter for gummies or      */}
+      {/* early-build formulations.                                    */}
+      {/* ------------------------------------------------------------ */}
+      <ExcipientFineTunePanel
+        totalWeightMg={liveTotals.totalWeightMg}
+        activeLines={lines
+          .map((line) => {
+            const nominalMg = Number.parseFloat(line.label_claim_mg || "0");
+            return {
+              key: line.key,
+              name: line.item_name,
+              nominalMg: Number.isFinite(nominalMg) ? nominalMg : 0,
+              savedMg: savedActiveMgByLineKey.get(line.key) ?? null,
+            };
+          })
+          .filter((row) => row.nominalMg > 0)}
+        onActiveMgChange={canWrite ? updateLineClaim : null}
+        dirty={metadataDirty || linesDirty}
+        onRevertAllUnsaved={canWrite ? handleRevertAllUnsaved : null}
+        bands={[
+          {
+            key: "anti_caking",
+            label: tFormulations("builder.excipients.anti_caking"),
+            totalMg:
+              (liveTotals.excipients?.mgStearateMg ?? 0) +
+              (liveTotals.excipients?.silicaMg ?? 0),
+            picks: antiCakingPicks,
+          },
+          {
+            key: "dcp",
+            label: tFormulations("builder.excipients.dcp"),
+            totalMg: liveTotals.excipients?.dcpMg ?? 0,
+            picks: dcpCarrierPicks,
+          },
+          {
+            key: "mcc",
+            label: tFormulations("builder.excipients.mcc"),
+            totalMg: liveTotals.excipients?.mccMg ?? 0,
+            picks: mccCarrierPicks,
+          },
+        ]}
+        overrides={metadata.excipient_overrides}
+        onChange={canWrite ? handleExcipientOverridesChange : null}
+        canEdit={canWrite}
+        numberFormatter={numberFormatter}
+        tFormulations={tFormulations}
+      />
 
       {/* ------------------------------------------------------------ */}
       {/* F2a — compliance + ingredient declaration                    */}
@@ -3508,6 +4529,7 @@ export function FormulationBuilder({
             mccCarrierItems={formulation.mcc_carrier_items}
             dcpCarrierItems={formulation.dcp_carrier_items}
             antiCakingItems={formulation.anti_caking_items}
+            excipientOverrides={metadata.excipient_overrides}
             formulationCode={formulation.code}
             formulationName={formulation.name}
             tFormulations={tFormulations}
@@ -3880,8 +4902,16 @@ function deriveStageBomLines(inputs: {
   mccCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
   dcpCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
   antiCakingItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
+  excipientOverrides: Readonly<Record<string, number>>;
 }): BomLine[] {
-  const { totals, lines, mccCarrierItems, dcpCarrierItems, antiCakingItems } = inputs;
+  const {
+    totals,
+    lines,
+    mccCarrierItems,
+    dcpCarrierItems,
+    antiCakingItems,
+    excipientOverrides,
+  } = inputs;
   const out: BomLine[] = [];
 
   // Actives — real per-serving mg from compute (extract ratio,
@@ -3910,18 +4940,18 @@ function deriveStageBomLines(inputs: {
       placeholder: string,
       slugPrefix: string,
     ) => {
-      if (totalMg <= 0) return;
-      if (picks.length === 0) {
-        out.push({ key: slugPrefix, label: placeholder, code: "", mg: totalMg });
-        return;
-      }
-      const per = totalMg / picks.length;
-      for (const p of picks) {
+      const shares = allocateBandShares({
+        totalMg,
+        picks,
+        overrides: excipientOverrides,
+        placeholderName: placeholder,
+      });
+      for (const share of shares) {
         out.push({
-          key: `${slugPrefix}:${p.id}`,
-          label: p.name,
-          code: p.internal_code || "",
-          mg: per,
+          key: share.itemId ? `${slugPrefix}:${share.itemId}` : slugPrefix,
+          label: share.name,
+          code: share.code,
+          mg: share.mg,
         });
       }
     };
@@ -3972,6 +5002,7 @@ const BomCard = memo(function BomCard({
   mccCarrierItems,
   dcpCarrierItems,
   antiCakingItems,
+  excipientOverrides,
   formulationCode,
   formulationName,
   tFormulations,
@@ -4049,6 +5080,10 @@ const BomCard = memo(function BomCard({
     readonly name: string;
     readonly internal_code: string;
   }[];
+  /** Per-item mg overrides (``excipient_mg:<uuid>`` keys) — feed the
+   *  same allocator the Ingredients tab uses, so the BOM's per-pick
+   *  split matches what the scientist typed on the totals panel. */
+  excipientOverrides: Readonly<Record<string, number>>;
   formulationCode: string;
   formulationName: string;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
@@ -4126,7 +5161,8 @@ const BomCard = memo(function BomCard({
             readonly internal_code: string;
           }>
         | undefined,
-    ): { names: string[]; codes: string[] } => {
+    ): { ids: string[]; names: string[]; codes: string[] } => {
+      const outIds: string[] = [];
       const names: string[] = [];
       const codes: string[] = [];
       // Legacy formulations that predate a given ``*_items`` echo
@@ -4138,6 +5174,7 @@ const BomCard = memo(function BomCard({
         const server = items.find((i) => i.id === id);
         const name = liveNames[id] ?? server?.name;
         if (!name) continue;
+        outIds.push(id);
         names.push(name);
         // Always push the code (or an empty string) so the arrays
         // stay index-aligned. Downstream ``emitBandRows`` iterates
@@ -4148,7 +5185,7 @@ const BomCard = memo(function BomCard({
         const code = liveCodes[id] ?? server?.internal_code ?? "";
         codes.push(code);
       }
-      return { names, codes };
+      return { ids: outIds, names, codes };
     };
 
     // 1) Actives — straight from the line list. Per-kg scaling
@@ -4320,29 +5357,33 @@ const BomCard = memo(function BomCard({
       const emitBandRows = (opts: {
         slugPrefix: string;
         totalMg: number;
-        picks: { names: string[]; codes: string[] };
+        picks: { ids: string[]; names: string[]; codes: string[] };
         placeholderLabel: string;
       }) => {
         const { slugPrefix, totalMg, picks, placeholderLabel } = opts;
-        if (totalMg <= 0) return;
-        if (picks.names.length === 0) {
+        // Route through the shared allocator so per-item mg overrides
+        // (``excipient_mg:<uuid>``) render the same split here as they
+        // do in the Ingredients panel and stage BOM.
+        const bandPicks: BandPick[] = picks.ids.map((id, i) => ({
+          id,
+          name: picks.names[i] ?? "",
+          internal_code: picks.codes[i] ?? "",
+        }));
+        const shares = allocateBandShares({
+          totalMg,
+          picks: bandPicks,
+          overrides: excipientOverrides,
+          placeholderName: placeholderLabel,
+        });
+        for (const share of shares) {
           out.push({
-            slug: slugPrefix,
-            label: placeholderLabel,
-            code: "",
-            gramsPerKg: scale(totalMg),
-            pct: (totalMg / totalWeight) * 100,
-          });
-          return;
-        }
-        const perPickMg = totalMg / picks.names.length;
-        for (let i = 0; i < picks.names.length; i++) {
-          out.push({
-            slug: `${slugPrefix}:${i}`,
-            label: picks.names[i]!,
-            code: picks.codes[i] ?? "",
-            gramsPerKg: scale(perPickMg),
-            pct: (perPickMg / totalWeight) * 100,
+            slug: share.itemId
+              ? `${slugPrefix}:${share.itemId}`
+              : slugPrefix,
+            label: share.name,
+            code: share.code,
+            gramsPerKg: scale(share.mg),
+            pct: (share.mg / totalWeight) * 100,
           });
         }
       };
@@ -4416,6 +5457,9 @@ const BomCard = memo(function BomCard({
     mccCarrierItems,
     dcpCarrierItems,
     antiCakingItems,
+    // Per-item mg overrides — a scientist bumping one MCC pick's mg
+    // needs the BOM to recompute the split.
+    excipientOverrides,
   ]);
 
   // Sub-BOM for the Active Powder pre-blend. Only emitted on gummy
@@ -4863,6 +5907,772 @@ function CategoryBadge({
 }
 
 
+// Per-item override key prefix — ``excipient_mg:<itemId>``. Value is
+// the mg that pick should carry inside its band; remaining band mass
+// splits equally across un-overridden picks. Stored on
+// ``metadata.excipient_overrides`` alongside band-level percentages;
+// server-side ``_validate_excipient_overrides`` accepts the prefix,
+// the compute layer ignores it (band totals stay computed).
+const EXCIPIENT_ITEM_MG_PREFIX = "excipient_mg:";
+
+type BandPick = {
+  readonly id: string;
+  readonly name: string;
+  readonly internal_code: string;
+};
+
+type BandShare = {
+  itemId: string | null;
+  name: string;
+  code: string;
+  mg: number;
+  overridden: boolean;
+};
+
+/**
+ * Split a band total into per-item shares. Any pick with an
+ * ``excipient_mg:<id>`` override in ``overrides`` takes its overridden
+ * mg verbatim; the remaining mass is split equally across the picks
+ * without an override. If overrides sum to more than the band total,
+ * the remainder is clamped to zero (honest display — the sum reads
+ * higher than the band, so the scientist sees the mismatch).
+ */
+function allocateBandShares(args: {
+  totalMg: number;
+  picks: readonly BandPick[];
+  overrides: Readonly<Record<string, number>>;
+  placeholderName?: string;
+  placeholderCode?: string;
+  /** When true, still emit one row per pick even if the band total
+   *  is 0 mg. Every share.mg is 0 and every share.overridden is
+   *  false. Used by the fine-tune panel where the operator needs to
+   *  see the picks stay put during a temporary overflow instead of
+   *  the rows vanishing. BOM / stage BOM keep the default (skip
+   *  zero-mg bands so procurement doesn't print carrier rows at
+   *  0 kg/kg). */
+  keepZeroRows?: boolean;
+}): BandShare[] {
+  const {
+    totalMg,
+    picks,
+    overrides,
+    placeholderName,
+    placeholderCode,
+    keepZeroRows,
+  } = args;
+  if (totalMg <= 0 && !keepZeroRows) return [];
+  if (picks.length === 0) {
+    return [
+      {
+        itemId: null,
+        name: placeholderName ?? "",
+        code: placeholderCode ?? "",
+        mg: totalMg,
+        overridden: false,
+      },
+    ];
+  }
+  let overriddenSum = 0;
+  const overrideMg = new Map<string, number>();
+  for (const p of picks) {
+    const raw = overrides[`${EXCIPIENT_ITEM_MG_PREFIX}${p.id}`];
+    if (typeof raw === "number" && Number.isFinite(raw) && raw >= 0) {
+      overrideMg.set(p.id, raw);
+      overriddenSum += raw;
+    }
+  }
+  const remaining = Math.max(0, totalMg - overriddenSum);
+  const nonOverriddenCount = picks.length - overrideMg.size;
+  const perOther = nonOverriddenCount > 0 ? remaining / nonOverriddenCount : 0;
+  return picks.map((p) => {
+    const ov = overrideMg.get(p.id);
+    return {
+      itemId: p.id,
+      name: p.name,
+      code: p.internal_code || "",
+      mg: ov !== undefined ? ov : perOther,
+      overridden: ov !== undefined,
+    };
+  });
+}
+
+// Renders one excipient band (anti-caking / DCP / MCC) as a compact
+// read-only summary in the right-hand totals column: a small group
+// header (label + band total) with one row per picked SKU showing
+// mg + %. Editing lives in the wider ``ExcipientFineTunePanel`` below
+// the builder — the sidebar column is too narrow (~180 px) to fit
+// two inputs next to a wrapping ingredient name.
+function renderExcipientBand(args: {
+  totalMg: number;
+  picks: readonly BandPick[];
+  groupLabel: string;
+  totalWeightMg: number | null;
+  overrides: Readonly<Record<string, number>>;
+  format: (value: number | null | undefined) => string;
+  percentOf: (part: number, whole: number) => string;
+}) {
+  const {
+    totalMg,
+    picks,
+    groupLabel,
+    totalWeightMg,
+    overrides,
+    format,
+    percentOf,
+  } = args;
+  const showPct = totalWeightMg !== null && totalWeightMg > 0;
+  if (picks.length === 0) {
+    return (
+      <li className="flex items-baseline justify-between gap-3">
+        <span className="break-words">{groupLabel}</span>
+        <span className="shrink-0 whitespace-nowrap tabular-nums">
+          {format(totalMg)} mg
+          {showPct ? (
+            <span className="ml-1 text-ink-500">
+              ({percentOf(totalMg, totalWeightMg!)}%)
+            </span>
+          ) : null}
+        </span>
+      </li>
+    );
+  }
+  const shares = allocateBandShares({ totalMg, picks, overrides });
+  return (
+    <>
+      <li className="flex items-baseline justify-between gap-3 text-ink-500">
+        <span className="break-words text-[11px] font-medium uppercase tracking-wide">
+          {groupLabel}
+        </span>
+        <span className="shrink-0 whitespace-nowrap text-[11px] tabular-nums">
+          {format(totalMg)} mg
+          {showPct ? (
+            <span className="ml-1">
+              ({percentOf(totalMg, totalWeightMg!)}%)
+            </span>
+          ) : null}
+        </span>
+      </li>
+      {shares.map((share, idx) => (
+        <li
+          key={`${groupLabel}-${share.itemId ?? `placeholder-${idx}`}`}
+          className={`flex items-baseline justify-between gap-3 pl-3 ${
+            share.overridden ? "text-brand-700" : ""
+          }`}
+        >
+          <span className="min-w-0 break-words">{share.name}</span>
+          <span className="shrink-0 whitespace-nowrap tabular-nums">
+            {format(share.mg)} mg
+            {showPct ? (
+              <span className="ml-1 text-ink-500">
+                ({percentOf(share.mg, totalWeightMg!)}%)
+              </span>
+            ) : null}
+          </span>
+        </li>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Wide surface for editing per-SKU excipient shares. Sits below the
+ * ingredient builder on the Ingredients tab, before Compliance. Each
+ * band (Anti-caking / Carrier / DCP) renders as a group of rows with
+ * mg + % inputs. Editing either input persists as
+ * ``excipient_mg:<uuid>`` on the formulation's ``excipient_overrides``
+ * dict; the shared ``allocateBandShares`` allocator reads it back
+ * everywhere else (sidebar summary, per-stage BOM, spec sheet).
+ *
+ * Only mounts when at least one band has both a positive total mg
+ * AND picks — otherwise there's nothing meaningful to tune and
+ * showing an empty card is just noise.
+ */
+type FineTuneBand = {
+  key: string;
+  label: string;
+  totalMg: number;
+  picks: readonly BandPick[];
+};
+
+type FineTuneActiveRow = {
+  key: string;
+  name: string;
+  nominalMg: number;
+  /** Last-saved ``label_claim_mg`` for this line. When the current
+   *  ``nominalMg`` differs, the row shows a per-row ↺ that writes
+   *  ``savedMg`` back through ``onActiveMgChange``. ``null`` when
+   *  the line is brand-new (has no server-side baseline yet). */
+  savedMg: number | null;
+};
+
+const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
+  totalWeightMg,
+  activeLines,
+  onActiveMgChange,
+  bands,
+  overrides,
+  onChange,
+  canEdit,
+  dirty,
+  onRevertAllUnsaved,
+  numberFormatter,
+  tFormulations,
+}: {
+  totalWeightMg: number | null;
+  /** Actives — each line as its own row, showing the scientist's
+   *  ``label_claim_mg`` (nominal target). Editing this row edits the
+   *  same field the main line editor drives. */
+  activeLines: readonly FineTuneActiveRow[];
+  onActiveMgChange: ((lineKey: string, mg: string) => void) | null;
+  bands: readonly FineTuneBand[];
+  overrides: Readonly<Record<string, number>>;
+  onChange: ((next: Record<string, number>) => void) | null;
+  canEdit: boolean;
+  /** Any un-saved metadata or line edits exist. Drives the visibility
+   *  of the header-level "Revert unsaved changes" button. */
+  dirty: boolean;
+  onRevertAllUnsaved: (() => void) | null;
+  numberFormatter: Intl.NumberFormat;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  // Show every band that has at least one picked SKU, regardless of
+  // whether the compute currently allocates mg to it. When actives
+  // overshoot the target/max weight the compute crushes every
+  // excipient band to 0 mg — if we filtered those out the rows would
+  // vanish and the scientist would think their picks were deleted.
+  // Keeping them visible at ``0.00 mg`` (with a warning strip below)
+  // is the honest read: "your picks are still here, but the compute
+  // couldn't fit them because actives are too heavy — lower an active
+  // to bring the excipient mass back".
+  const activeBands = bands.filter((band) => band.picks.length > 0);
+  const hasActives = activeLines.length > 0;
+  const activesTotalMg = activeLines.reduce(
+    (acc, r) => acc + r.nominalMg,
+    0,
+  );
+  // Overflow detector — if we have picks but every band collapsed to
+  // 0 mg, the compute couldn't fit them. Bad but recoverable.
+  const overflowed =
+    activeBands.length > 0 &&
+    activeBands.every((band) => band.totalMg <= 0);
+  if (activeBands.length === 0 && !hasActives) return null;
+
+  const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
+  const editable = canEdit && !!onChange;
+
+  const format = (value: number | null | undefined) =>
+    value === null || value === undefined ? "—" : numberFormatter.format(value);
+  const percentOf = (part: number, whole: number): string => {
+    if (!whole || whole <= 0) return "0.0";
+    return ((part / whole) * 100).toFixed(1);
+  };
+
+  // Any per-item overrides in effect? Drives visibility of the "Reset
+  // all overrides" affordance in the header.
+  const hasAnyOverride = Object.keys(overrides).some((k) =>
+    k.startsWith(EXCIPIENT_ITEM_MG_PREFIX),
+  );
+  const resetAll = () => {
+    if (!editable || !onChange) return;
+    const next: Record<string, number> = {};
+    for (const [k, v] of Object.entries(overrides)) {
+      if (!k.startsWith(EXCIPIENT_ITEM_MG_PREFIX)) next[k] = v;
+    }
+    onChange(next);
+  };
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            {tFormulations("builder.fine_tune.title")}
+          </p>
+          <p className="mt-1 text-xs leading-snug text-ink-500">
+            {tFormulations("builder.fine_tune.hint")}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          {hasAnyOverride && editable ? (
+            <button
+              type="button"
+              onClick={resetAll}
+              className="text-[11px] font-medium uppercase tracking-wide text-ink-500 underline-offset-2 hover:text-ink-1000 hover:underline"
+            >
+              {tFormulations("builder.fine_tune.reset_all")}
+            </button>
+          ) : null}
+          {dirty && onRevertAllUnsaved ? (
+            <button
+              type="button"
+              onClick={onRevertAllUnsaved}
+              className="text-[11px] font-medium uppercase tracking-wide text-amber-700 underline-offset-2 hover:text-amber-900 hover:underline"
+              title={tFormulations("builder.fine_tune.revert_unsaved_hint")}
+            >
+              ↺ {tFormulations("builder.fine_tune.revert_unsaved")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      {overflowed ? (
+        <div className="mt-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs leading-snug text-amber-900">
+          {tFormulations("builder.fine_tune.overflow_warning", {
+            actives: format(activesTotalMg),
+          })}
+        </div>
+      ) : null}
+
+      {/* Flex layout with fixed-width numeric columns. Grid columns
+          with ``minmax(0,1fr)`` in an arbitrary value fight the
+          Tailwind parser and stack the cells vertically; flex + a
+          shared column-width contract renders reliably. */}
+      <div className="mt-4 overflow-hidden rounded-lg border border-ink-200">
+        <div className="flex items-center gap-4 border-b border-ink-200 bg-ink-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+          <span className="min-w-0 flex-1">
+            {tFormulations("builder.fine_tune.col_ingredient")}
+          </span>
+          <span className="w-28 text-right">
+            {tFormulations("builder.fine_tune.col_mg")}
+          </span>
+          <span className="w-28 text-right">
+            {tFormulations("builder.fine_tune.col_pct")}
+          </span>
+          <span className="w-6 shrink-0" aria-hidden />
+        </div>
+        {/* Flat rows — no grouping. Sorted mg ascending to match the
+            BOM's ordering so the scan pattern between the two surfaces
+            is the same (smallest weights on top, heaviest carriers at
+            the bottom). Row kind (``active`` vs ``excipient``) only
+            changes the edit callback — the visual is identical. */}
+        <div className="divide-y divide-ink-100">
+          {(() => {
+            type FlatRow =
+              | { kind: "active"; mg: number; row: FineTuneActiveRow }
+              | {
+                  kind: "excipient";
+                  mg: number;
+                  bandKey: string;
+                  share: BandShare;
+                };
+            const rows: FlatRow[] = [];
+            for (const row of activeLines) {
+              rows.push({ kind: "active", mg: row.nominalMg, row });
+            }
+            for (const band of activeBands) {
+              const shares = allocateBandShares({
+                totalMg: band.totalMg,
+                picks: band.picks,
+                overrides,
+                // Keep picks visible during a temporary overflow —
+                // the operator needs to see the SKUs are still there
+                // so they can lower an active without believing the
+                // rows were deleted.
+                keepZeroRows: true,
+              });
+              for (const share of shares) {
+                rows.push({
+                  kind: "excipient",
+                  mg: share.mg,
+                  bandKey: band.key,
+                  share,
+                });
+              }
+            }
+            rows.sort((a, b) => a.mg - b.mg);
+            return rows.map((r, idx) =>
+              r.kind === "active" ? (
+                <FineTuneActiveLineRow
+                  key={`active:${r.row.key}`}
+                  row={r.row}
+                  totalWeightMg={totalWeightMg}
+                  onMgChange={onActiveMgChange}
+                  editable={canEdit && !!onActiveMgChange}
+                  tFormulations={tFormulations}
+                />
+              ) : (
+                <FineTuneRow
+                  key={`${r.bandKey}:${r.share.itemId ?? `placeholder-${idx}`}`}
+                  share={r.share}
+                  totalWeightMg={totalWeightMg}
+                  overrides={overrides}
+                  onChange={onChange}
+                  editable={editable}
+                  tFormulations={tFormulations}
+                />
+              ),
+            );
+          })()}
+        </div>
+      </div>
+    </section>
+  );
+});
+
+/**
+ * Active-line row inside the fine-tune panel. Two inputs — mg + % —
+ * kept in sync via the underlying ``label_claim_mg`` on the line. mg
+ * writes ``label_claim_mg`` directly; % converts to mg via
+ * ``totalWeightMg`` and writes the same field. Local draft state so
+ * keystrokes don't churn the parent's ``lines`` array; commits on
+ * blur / Enter, reverts on Escape.
+ */
+function FineTuneActiveLineRow({
+  row,
+  totalWeightMg,
+  onMgChange,
+  editable,
+  tFormulations,
+}: {
+  row: FineTuneActiveRow;
+  totalWeightMg: number | null;
+  onMgChange: ((lineKey: string, mg: string) => void) | null;
+  editable: boolean;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
+  // Per-row revert affordance: the row is "dirty" when its current
+  // mg differs from the last-saved value on the ``formulation`` prop
+  // (delta > 0.005 mg absorbs float noise from the decimal <-> string
+  // round-trip). Clicking ↺ writes the saved value back through the
+  // normal ``onMgChange`` path, so the parent's dirty-tracking updates
+  // consistently. ``savedMg === null`` = the line was picked but not
+  // saved yet (no baseline to revert to).
+  const isDirtyRow =
+    row.savedMg !== null && Math.abs(row.nominalMg - row.savedMg) > 0.005;
+  const revert = useCallback(() => {
+    if (!editable || !onMgChange || row.savedMg === null) return;
+    onMgChange(row.key, row.savedMg.toString());
+  }, [editable, onMgChange, row.key, row.savedMg]);
+  const [mgDraft, setMgDraft] = useState<string>(() => row.nominalMg.toFixed(2));
+  const [pctDraft, setPctDraft] = useState<string>(() =>
+    canConvertPct ? ((row.nominalMg / totalWeightMg!) * 100).toFixed(2) : "",
+  );
+  const [focused, setFocused] = useState<"mg" | "pct" | null>(null);
+  useEffect(() => {
+    if (focused === "mg") return;
+    setMgDraft(row.nominalMg.toFixed(2));
+  }, [row.nominalMg, focused]);
+  useEffect(() => {
+    if (focused === "pct") return;
+    setPctDraft(
+      canConvertPct ? ((row.nominalMg / totalWeightMg!) * 100).toFixed(2) : "",
+    );
+  }, [row.nominalMg, canConvertPct, totalWeightMg, focused]);
+
+  const commitMg = useCallback(() => {
+    setFocused(null);
+    if (!editable || !onMgChange) return;
+    const parsed = Number.parseFloat(mgDraft);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    onMgChange(row.key, parsed.toString());
+  }, [mgDraft, editable, onMgChange, row.key]);
+
+  const commitPct = useCallback(() => {
+    setFocused(null);
+    if (!editable || !onMgChange || !canConvertPct) return;
+    const parsed = Number.parseFloat(pctDraft);
+    if (!Number.isFinite(parsed) || parsed < 0) return;
+    const mg = (parsed / 100) * totalWeightMg!;
+    onMgChange(row.key, mg.toString());
+  }, [pctDraft, editable, onMgChange, canConvertPct, totalWeightMg, row.key]);
+
+  const inputBase =
+    "w-full rounded border border-ink-200 bg-white px-2 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:cursor-not-allowed disabled:bg-ink-50";
+
+  return (
+    <div
+      className={`flex items-center gap-4 px-4 py-2 text-sm ${
+        isDirtyRow ? "bg-amber-50/40" : ""
+      }`}
+    >
+      <span
+        className="min-w-0 flex-1 break-words text-ink-800"
+        title={row.name}
+      >
+        {row.name}
+      </span>
+      {editable ? (
+        <>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              value={mgDraft}
+              onFocus={() => setFocused("mg")}
+              onChange={(e) => setMgDraft(e.target.value)}
+              onBlur={commitMg}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setMgDraft(row.nominalMg.toFixed(2));
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${
+                isDirtyRow ? "border-amber-300" : ""
+              }`}
+              aria-label={`${row.name} milligrams`}
+            />
+            <span className="text-[10px] text-ink-500">mg</span>
+          </span>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              disabled={!canConvertPct}
+              value={pctDraft}
+              onFocus={() => setFocused("pct")}
+              onChange={(e) => setPctDraft(e.target.value)}
+              onBlur={commitPct}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setPctDraft(
+                    canConvertPct
+                      ? ((row.nominalMg / totalWeightMg!) * 100).toFixed(2)
+                      : "",
+                  );
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${
+                isDirtyRow ? "border-amber-300" : ""
+              }`}
+              aria-label={`${row.name} percent`}
+            />
+            <span className="text-[10px] text-ink-500">%</span>
+          </span>
+          {isDirtyRow ? (
+            <button
+              type="button"
+              onClick={revert}
+              className="w-6 shrink-0 rounded p-1 text-center text-amber-700 hover:bg-amber-100 hover:text-amber-900"
+              title={tFormulations("builder.fine_tune.revert_row", {
+                mg: row.savedMg?.toFixed(2) ?? "0",
+              })}
+              aria-label={tFormulations("builder.fine_tune.revert_row", {
+                mg: row.savedMg?.toFixed(2) ?? "0",
+              })}
+            >
+              ↺
+            </button>
+          ) : (
+            <span className="w-6 shrink-0" aria-hidden />
+          )}
+        </>
+      ) : (
+        <>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-700">
+            {row.nominalMg.toFixed(2)} mg
+          </span>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-500">
+            {canConvertPct
+              ? `${((row.nominalMg / totalWeightMg!) * 100).toFixed(2)}%`
+              : "—"}
+          </span>
+          <span className="w-6 shrink-0" aria-hidden />
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One row inside the fine-tune panel. Two inputs — mg and % — kept
+ * in sync via the same underlying override (stored as mg). Local
+ * draft state lets the scientist type freely; commits on blur / Enter,
+ * reverts on Escape.
+ */
+function FineTuneRow({
+  share,
+  totalWeightMg,
+  overrides,
+  onChange,
+  editable,
+  tFormulations,
+}: {
+  share: BandShare;
+  totalWeightMg: number | null;
+  overrides: Readonly<Record<string, number>>;
+  onChange: ((next: Record<string, number>) => void) | null;
+  editable: boolean;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
+  const overrideKey = share.itemId
+    ? `${EXCIPIENT_ITEM_MG_PREFIX}${share.itemId}`
+    : null;
+  const canEditRow = editable && !!overrideKey && !!onChange;
+
+  const [mgDraft, setMgDraft] = useState<string>(() => share.mg.toFixed(2));
+  const [pctDraft, setPctDraft] = useState<string>(() =>
+    canConvertPct ? ((share.mg / totalWeightMg!) * 100).toFixed(2) : "",
+  );
+  const [focused, setFocused] = useState<"mg" | "pct" | null>(null);
+  useEffect(() => {
+    if (focused === "mg") return;
+    setMgDraft(share.mg.toFixed(2));
+  }, [share.mg, focused]);
+  useEffect(() => {
+    if (focused === "pct") return;
+    setPctDraft(
+      canConvertPct ? ((share.mg / totalWeightMg!) * 100).toFixed(2) : "",
+    );
+  }, [share.mg, canConvertPct, totalWeightMg, focused]);
+
+  const persistMg = useCallback(
+    (mgValue: number | null) => {
+      if (!canEditRow || !overrideKey || !onChange) return;
+      const next: Record<string, number> = { ...overrides };
+      if (mgValue === null || !Number.isFinite(mgValue) || mgValue < 0) {
+        delete next[overrideKey];
+      } else {
+        const capped = Math.min(mgValue, 100_000);
+        if (overrides[overrideKey] === capped) return;
+        next[overrideKey] = capped;
+      }
+      onChange(next);
+    },
+    [canEditRow, onChange, overrideKey, overrides],
+  );
+
+  const commitMg = useCallback(() => {
+    setFocused(null);
+    const parsed = Number.parseFloat(mgDraft);
+    persistMg(Number.isFinite(parsed) ? parsed : null);
+  }, [mgDraft, persistMg]);
+
+  const commitPct = useCallback(() => {
+    setFocused(null);
+    if (!canConvertPct) return;
+    const parsed = Number.parseFloat(pctDraft);
+    persistMg(
+      Number.isFinite(parsed) ? (parsed / 100) * totalWeightMg! : null,
+    );
+  }, [pctDraft, persistMg, canConvertPct, totalWeightMg]);
+
+  const reset = useCallback(() => {
+    if (!canEditRow || !overrideKey || !onChange) return;
+    if (!(overrideKey in overrides)) return;
+    const next: Record<string, number> = { ...overrides };
+    delete next[overrideKey];
+    onChange(next);
+  }, [canEditRow, onChange, overrideKey, overrides]);
+
+  const inputBase =
+    "w-full rounded border px-2 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-1 focus:ring-brand-500";
+  const inputTone = share.overridden
+    ? "border-brand-300 bg-brand-50/40"
+    : "border-ink-200 bg-white";
+
+  return (
+    <div
+      className={`flex items-center gap-4 px-4 py-2 text-sm ${
+        share.overridden ? "bg-brand-50/20" : ""
+      }`}
+    >
+      <span
+        className="min-w-0 flex-1 break-words text-ink-800"
+        title={share.name}
+      >
+        {share.name}
+      </span>
+      {canEditRow ? (
+        <>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              value={mgDraft}
+              onFocus={() => setFocused("mg")}
+              onChange={(e) => setMgDraft(e.target.value)}
+              onBlur={commitMg}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setMgDraft(share.mg.toFixed(2));
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${inputTone}`}
+              aria-label={`${share.name} milligrams`}
+            />
+            <span className="text-[10px] text-ink-500">mg</span>
+          </span>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              disabled={!canConvertPct}
+              value={pctDraft}
+              onFocus={() => setFocused("pct")}
+              onChange={(e) => setPctDraft(e.target.value)}
+              onBlur={commitPct}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setPctDraft(
+                    canConvertPct
+                      ? ((share.mg / totalWeightMg!) * 100).toFixed(2)
+                      : "",
+                  );
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${inputTone} disabled:cursor-not-allowed disabled:bg-ink-50`}
+              aria-label={`${share.name} percent`}
+            />
+            <span className="text-[10px] text-ink-500">%</span>
+          </span>
+          {share.overridden ? (
+            <button
+              type="button"
+              onClick={reset}
+              className="w-6 shrink-0 rounded p-1 text-center text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+              title={tFormulations("builder.fine_tune.reset_row")}
+              aria-label={tFormulations("builder.fine_tune.reset_row")}
+            >
+              ↺
+            </button>
+          ) : (
+            <span className="w-6 shrink-0" aria-hidden />
+          )}
+        </>
+      ) : (
+        <>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-700">
+            {share.mg.toFixed(2)} mg
+          </span>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-500">
+            {canConvertPct
+              ? `${((share.mg / totalWeightMg!) * 100).toFixed(2)}%`
+              : "—"}
+          </span>
+          <span className="w-6 shrink-0" aria-hidden />
+        </>
+      )}
+    </div>
+  );
+}
+
+
 // Memoised so that keystrokes in unrelated state (search input,
 // metadata fields, etc.) don't trigger a full re-render of the
 // excipients table + viability + warnings + override panel tree.
@@ -4875,23 +6685,30 @@ const TotalsBlock = memo(function TotalsBlock({
   dosageForm,
   numberFormatter,
   tFormulations,
-  mccCarrierLabels = [],
-  antiCakingLabels = [],
+  mccCarrierPicks = [],
+  antiCakingPicks = [],
+  dcpCarrierPicks = [],
+  excipientOverrides,
 }: {
   totals: FormulationTotals;
   servingSize: number;
   dosageForm: DosageForm;
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
-  /** Display labels of the picked MCC-carrier items so the MCC row
-   *  can render "MCC (Pregelatinised Starch, Maltodextrin)". Empty
-   *  array → the row stays as the bare placeholder label. */
-  mccCarrierLabels?: readonly string[];
-  /** Display labels of the picked anti-caking items so the Stearate +
-   *  Silica rows can echo the same picks (the band is a combined 1.4%
-   *  on the new picker, but the two-row display layout preserves the
-   *  workbook's mental model). */
-  antiCakingLabels?: readonly string[];
+  /** Picked MCC-carrier items ({id, name, internal_code}) so the MCC
+   *  band can render one row per pick showing the current split. */
+  mccCarrierPicks?: readonly BandPick[];
+  /** Picked anti-caking items — same shape as ``mccCarrierPicks``.
+   *  Anti-caking splits stearate + silica math but shares one pick
+   *  list, so we combine before splitting across picks. */
+  antiCakingPicks?: readonly BandPick[];
+  /** Picked DCP-carrier items — parallels MCC / anti-caking. */
+  dcpCarrierPicks?: readonly BandPick[];
+  /** Full override dict from ``metadata.excipient_overrides``. Per-item
+   *  mg entries live under ``excipient_mg:<uuid>`` keys — read-only
+   *  here; edits happen in ``ExcipientFineTunePanel`` below the
+   *  builder where the wider surface can host proper inputs. */
+  excipientOverrides: Readonly<Record<string, number>>;
 }) {
   const format = (value: number | null | undefined) =>
     value === null || value === undefined
@@ -5133,73 +6950,48 @@ const TotalsBlock = memo(function TotalsBlock({
                     Silicon Dioxide doesn't look like it conjured
                     Magnesium Stearate too. The total mg = stearate +
                     silica (1.4% of active). */}
-                {excipients.mgStearateMg + excipients.silicaMg > 0 ? (
-                  <li className="flex items-baseline justify-between gap-3">
-                    <span className="flex min-w-0 flex-col">
-                      <span className="break-words">
-                        {tFormulations("builder.excipients.anti_caking")}
-                        {antiCakingLabels.length > 0 ? (
-                          <span className="ml-1 text-ink-500">
-                            ({antiCakingLabels.join(", ")})
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap tabular-nums">
-                      {format(
-                        excipients.mgStearateMg + excipients.silicaMg,
-                      )}{" "}
-                      mg
-                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
-                        <span className="ml-1 text-ink-500">
-                          (
-                          {percentOf(
-                            excipients.mgStearateMg + excipients.silicaMg,
-                            totals.totalWeightMg,
-                          )}
-                          %)
-                        </span>
-                      ) : null}
-                    </span>
-                  </li>
-                ) : null}
-                {excipients.dcpMg !== null && excipients.dcpMg > 0 ? (
-                  <li className="flex items-baseline justify-between gap-3">
-                    <span className="break-words">
-                      {tFormulations("builder.excipients.dcp")}
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap tabular-nums">
-                      {format(excipients.dcpMg)} mg
-                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
-                        <span className="ml-1 text-ink-500">
-                          ({percentOf(excipients.dcpMg, totals.totalWeightMg)}%)
-                        </span>
-                      ) : null}
-                    </span>
-                  </li>
-                ) : null}
-                {excipients.mccMg > 0 ? (
-                  <li className="flex items-baseline justify-between gap-3">
-                    <span className="flex min-w-0 flex-col">
-                      <span className="break-words">
-                        {tFormulations("builder.excipients.mcc")}
-                        {mccCarrierLabels.length > 0 ? (
-                          <span className="ml-1 text-ink-500">
-                            ({mccCarrierLabels.join(", ")})
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                    <span className="shrink-0 whitespace-nowrap tabular-nums">
-                      {format(excipients.mccMg)} mg
-                      {totals.totalWeightMg && totals.totalWeightMg > 0 ? (
-                        <span className="ml-1 text-ink-500">
-                          ({percentOf(excipients.mccMg, totals.totalWeightMg)}%)
-                        </span>
-                      ) : null}
-                    </span>
-                  </li>
-                ) : null}
+                {/* Excipient bands render one row per picked SKU so
+                    scientists can see each ingredient's mg + %
+                    contribution independently (mirrors the BOM layout).
+                    Total mg = server-computed band total; per-item mg
+                    = equal split across picks. When no picks exist we
+                    fall back to a single generic label row so the band
+                    is still visible while the scientist is mid-build. */}
+                {excipients.mgStearateMg + excipients.silicaMg > 0
+                  ? renderExcipientBand({
+                      totalMg: excipients.mgStearateMg + excipients.silicaMg,
+                      picks: antiCakingPicks,
+                      groupLabel: tFormulations(
+                        "builder.excipients.anti_caking",
+                      ),
+                      totalWeightMg: totals.totalWeightMg,
+                      overrides: excipientOverrides,
+                      format,
+                      percentOf,
+                    })
+                  : null}
+                {excipients.dcpMg !== null && excipients.dcpMg > 0
+                  ? renderExcipientBand({
+                      totalMg: excipients.dcpMg,
+                      picks: dcpCarrierPicks,
+                      groupLabel: tFormulations("builder.excipients.dcp"),
+                      totalWeightMg: totals.totalWeightMg,
+                      overrides: excipientOverrides,
+                      format,
+                      percentOf,
+                    })
+                  : null}
+                {excipients.mccMg > 0
+                  ? renderExcipientBand({
+                      totalMg: excipients.mccMg,
+                      picks: mccCarrierPicks,
+                      groupLabel: tFormulations("builder.excipients.mcc"),
+                      totalWeightMg: totals.totalWeightMg,
+                      overrides: excipientOverrides,
+                      format,
+                      percentOf,
+                    })
+                  : null}
               </>
             ) : null}
           </ul>

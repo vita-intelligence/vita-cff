@@ -15,6 +15,10 @@ export {
   usePspConfig,
   usePspItemDetail,
   usePspItems,
+  usePspAllergens,
+  usePspProductFamilies,
+  usePspStorageTags,
+  usePspUnitsOfMeasurement,
   useSavePspConfig,
   useTestPspConnection,
 } from "./hooks";

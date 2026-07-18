@@ -26,4 +26,14 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/clone/`,
   stages: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/stages/`,
+  syncPsp: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/sync-psp/`,
+  photos: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/photos/`,
+  photoDetail: (orgId: string, formulationId: string, photoId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/photos/${photoId}/`,
+  files: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/files/`,
+  fileDetail: (orgId: string, formulationId: string, fileId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/files/${fileId}/`,
 } as const;

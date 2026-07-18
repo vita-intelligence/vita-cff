@@ -44,7 +44,9 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
+import secrets
 import urllib.parse
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -390,6 +392,57 @@ class PspClient:
             return []
         return [row for row in rows if isinstance(row, dict)]
 
+    def list_units_of_measurement(self) -> list[dict[str, Any]]:
+        """PSP UOM catalogue for the org (kg, mg, capsules, bottles…).
+        Same silent-degrade contract as ``list_workstation_groups``.
+        """
+
+        payload = self._request("api/integration/units-of-measurement")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def list_allergens(self) -> list[dict[str, Any]]:
+        """EU 1169 Annex II allergen catalogue (global read-only).
+        Silent-degrade contract."""
+
+        payload = self._request("api/integration/allergens")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def list_storage_tags(self) -> list[dict[str, Any]]:
+        """Storage tags for the caller's PSP company. Silent-degrade
+        contract."""
+
+        payload = self._request("api/integration/storage-tags")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
+    def list_product_families(self) -> list[dict[str, Any]]:
+        """PSP product-family catalogue. Same silent-degrade contract
+        as ``list_workstation_groups``. Groups items in reports + BOM
+        overviews on PSP.
+        """
+
+        payload = self._request("api/integration/product-families")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
     def list_workstation_groups(self) -> list[dict[str, Any]]:
         """Fetch PSP's workstation groups so the NPD stage builder
         can render the "run on" dropdown. Returns the raw rows PSP
@@ -414,6 +467,15 @@ class PspClient:
         item_type: str,
         external_sku: str,
         description: str = "",
+        attributes: dict | None = None,
+        barcode: str = "",
+        stock_uom_uuid: str | None = None,
+        product_family_uuid: str | None = None,
+        finished_product_spec: dict | None = None,
+        storage_tags: list[str] | None = None,
+        min_stock_qty: Any = None,
+        target_stock_qty: Any = None,
+        allergen_uuids: list[str] | None = None,
     ) -> dict | None:
         """Idempotently create a catalog Item on PSP. Restricted to
         ``semi_finished`` + ``finished_product`` server-side. The
@@ -423,20 +485,51 @@ class PspClient:
         the load-bearing idempotency key, so a re-push after an
         interrupted save doesn't spawn a duplicate row.
 
+        ``attributes`` is a JSON bag PSP stores on the row's
+        ``attributes`` column (same shape scientists edit on PSP's own
+        item form — ``use_as``, ``capsule_size``, etc.). ``barcode``
+        lands on PSP's ``barcode`` column and drives goods-in
+        scanning. Both are optional; empty falls back to whatever the
+        existing PSP row carries.
+
         Returns PSP's ``{"uuid", "name", "item_type", "external_sku",
         "created", ...}`` payload on 200 / 201, or ``None`` on soft
         failure. Hard failures bubble as :class:`PspError` subclasses.
         """
 
+        body: dict[str, Any] = {
+            "name": name,
+            "item_type": item_type,
+            "external_sku": external_sku,
+            "description": description,
+        }
+        if attributes:
+            body["attributes"] = attributes
+        if barcode:
+            body["barcode"] = barcode
+        if stock_uom_uuid:
+            body["stock_uom_uuid"] = str(stock_uom_uuid)
+        if product_family_uuid:
+            body["product_family_uuid"] = str(product_family_uuid)
+        if finished_product_spec:
+            # Only meaningful when ``item_type == "finished_product"``;
+            # PSP silently ignores the field on other types so it's
+            # safe to send unconditionally from the client side.
+            body["finished_product_spec"] = finished_product_spec
+        # Phase 4a: warehouse identity + allergens. All nullable; empty
+        # lists send explicitly so the operator can clear a value.
+        if storage_tags is not None:
+            body["storage_tags"] = storage_tags
+        if min_stock_qty is not None:
+            body["min_stock_qty"] = str(min_stock_qty)
+        if target_stock_qty is not None:
+            body["target_stock_qty"] = str(target_stock_qty)
+        if allergen_uuids is not None:
+            body["allergen_uuids"] = [str(u) for u in allergen_uuids]
         response = self._request(
             "api/integration/items",
             method="POST",
-            body={
-                "name": name,
-                "item_type": item_type,
-                "external_sku": external_sku,
-                "description": description,
-            },
+            body=body,
         )
         if not isinstance(response, dict):
             return None
@@ -444,6 +537,164 @@ class PspClient:
         if not isinstance(row, dict):
             return None
         return row
+
+    def upload_item_image(
+        self,
+        item_uuid: Any,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str | None = None,
+    ) -> dict | None:
+        """Push a photo onto a PSP catalog item. Returns the created
+        image row (``{uuid, blob_path, caption, ...}``) or ``None`` on
+        soft failure. Hard failures bubble as :class:`PspError`
+        subclasses.
+
+        NPD callers cache the returned ``uuid`` back onto the local
+        ``FormulationPhoto.psp_uuid`` so re-syncs skip pushed rows.
+        Requires ``item:files:write`` on the integration token.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return None
+        mime = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        response = self._multipart_request(
+            f"api/integration/items/{cleaned}/images",
+            fields=[],
+            files=[("file", filename, mime, content)],
+        )
+        if not isinstance(response, dict):
+            return None
+        row = response.get("image")
+        if not isinstance(row, dict):
+            return None
+        return row
+
+    def upload_item_file(
+        self,
+        item_uuid: Any,
+        *,
+        content: bytes,
+        filename: str,
+        content_type: str | None = None,
+        kind: str = "other",
+    ) -> dict | None:
+        """Push a compliance file onto a PSP catalog item. Same
+        idempotency contract as :meth:`upload_item_image`.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return None
+        mime = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        response = self._multipart_request(
+            f"api/integration/items/{cleaned}/files",
+            fields=[("kind", kind)],
+            files=[("file", filename, mime, content)],
+        )
+        if not isinstance(response, dict):
+            return None
+        row = response.get("file")
+        if not isinstance(row, dict):
+            return None
+        return row
+
+    def delete_item_image(self, item_uuid: Any, image_uuid: Any) -> bool:
+        """Best-effort delete on PSP's mirror image row. Returns True
+        on 2xx; False (silent-degrade) on any soft failure so the FE
+        delete on NPD isn't blocked by an unreachable PSP."""
+
+        item = str(item_uuid or "").strip()
+        image = str(image_uuid or "").strip()
+        if not (item and image):
+            return False
+        try:
+            self._request(
+                f"api/integration/items/{item}/images/{image}",
+                method="DELETE",
+            )
+            return True
+        except PspError:
+            return False
+
+    def delete_item_file(self, item_uuid: Any, file_uuid: Any) -> bool:
+        """Best-effort delete on PSP's mirror file row. Same contract
+        as :meth:`delete_item_image`."""
+
+        item = str(item_uuid or "").strip()
+        file = str(file_uuid or "").strip()
+        if not (item and file):
+            return False
+        try:
+            self._request(
+                f"api/integration/items/{item}/files/{file}",
+                method="DELETE",
+            )
+            return True
+        except PspError:
+            return False
+
+    def _multipart_request(
+        self,
+        path: str,
+        *,
+        fields: list[tuple[str, str]],
+        files: list[tuple[str, str, str, bytes]],
+    ) -> Any:
+        """POST a multipart/form-data body via stdlib urllib.
+
+        ``files`` entries are ``(part_name, filename, mime, bytes)``.
+        Boundary is generated per request (``secrets.token_hex``) so
+        collisions with binary bodies are astronomically unlikely.
+
+        Error handling matches :meth:`_request` — same typed
+        exceptions for auth / rate limit / network, same ``None``
+        return on empty / malformed responses.
+        """
+
+        base = self._config.base_url.rstrip("/")
+        url = f"{base}/{path.lstrip('/')}"
+        boundary = "----NpdBoundary" + secrets.token_hex(16)
+        body = _encode_multipart(boundary, fields, files)
+        headers = {
+            "Accept": "application/json",
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        }
+        req = Request(url, method="POST", headers=headers, data=body)
+        try:
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                raw = resp.read()
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise PspAuthFailed(
+                    f"PSP rejected the credentials (HTTP {exc.code})."
+                ) from exc
+            if exc.code == 429:
+                raise PspRateLimited(
+                    "PSP rate limit reached. Retry shortly."
+                ) from exc
+            if exc.code == 404:
+                return None
+            raise PspUnreachable(
+                f"PSP returned HTTP {exc.code}."
+            ) from exc
+        except URLError as exc:
+            raise PspUnreachable(
+                f"Couldn't reach PSP: {exc.reason}"
+            ) from exc
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise PspUnreachable(
+                "PSP returned a non-JSON response body."
+            ) from exc
 
     def put_routing(
         self,
@@ -495,6 +746,39 @@ class PspClient:
         if not isinstance(response, dict):
             return None
         return response
+
+
+def _encode_multipart(
+    boundary: str,
+    fields: list[tuple[str, str]],
+    files: list[tuple[str, str, str, bytes]],
+) -> bytes:
+    """Assemble a multipart/form-data body. Files listed after fields
+    so the receiver sees the ``kind`` (for file uploads) before it
+    starts streaming bytes — Phoenix's parser tolerates any order, but
+    the fixture output stays deterministic for tests."""
+
+    lines: list[bytes] = []
+    bnd = boundary.encode("ascii")
+    for name, value in fields:
+        lines.append(b"--" + bnd)
+        lines.append(
+            f'Content-Disposition: form-data; name="{name}"'.encode("utf-8")
+        )
+        lines.append(b"")
+        lines.append(str(value).encode("utf-8"))
+    for name, filename, mime, content in files:
+        lines.append(b"--" + bnd)
+        lines.append(
+            f'Content-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"'.encode("utf-8")
+        )
+        lines.append(f"Content-Type: {mime}".encode("utf-8"))
+        lines.append(b"")
+        lines.append(content)
+    lines.append(b"--" + bnd + b"--")
+    lines.append(b"")
+    return b"\r\n".join(lines)
 
 
 def _project_item(row: dict[str, Any]) -> PspItem:
@@ -833,6 +1117,99 @@ def list_psp_workstation_users(*, organization: Any) -> list[dict[str, Any]]:
         return []
 
 
+def list_psp_units_of_measurement(
+    *, organization: Any
+) -> list[dict[str, Any]]:
+    """Fetch PSP's UOM catalogue. Empty list on any failure — same
+    silent-degrade contract as :func:`list_psp_workstation_groups`."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_units_of_measurement()
+    except PspError:
+        logger.exception(
+            "PSP list_units_of_measurement failed for org %s",
+            organization.pk,
+        )
+        return []
+
+
+def list_psp_allergens(*, organization: Any) -> list[dict[str, Any]]:
+    """PSP allergen catalogue. Silent-degrade contract."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_allergens()
+    except PspError:
+        logger.exception(
+            "PSP list_allergens failed for org %s", organization.pk
+        )
+        return []
+
+
+def list_psp_storage_tags(*, organization: Any) -> list[dict[str, Any]]:
+    """PSP storage-tag catalogue. Silent-degrade contract."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_storage_tags()
+    except PspError:
+        logger.exception(
+            "PSP list_storage_tags failed for org %s", organization.pk
+        )
+        return []
+
+
+def list_psp_product_families(*, organization: Any) -> list[dict[str, Any]]:
+    """Fetch PSP's product-family catalogue. Same silent-degrade
+    contract as :func:`list_psp_workstation_groups`."""
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return []
+    try:
+        client = _client_factory(config)
+        return client.list_product_families()
+    except PspError:
+        logger.exception(
+            "PSP list_product_families failed for org %s", organization.pk
+        )
+        return []
+
+
 def list_psp_workstation_groups(*, organization: Any) -> list[dict[str, Any]]:
     """Fetch PSP's workstation groups for the org. Empty list on any
     failure — the FE stage builder renders "no workstations picked
@@ -920,9 +1297,6 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
     server-side).
     """
 
-    if not formulation.psp_finished_product_uuid:
-        return None
-
     organization = formulation.organization
     if not is_psp_live(organization):
         return None
@@ -943,6 +1317,20 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
             "PSP push_bom: invalid config for org %s", organization.pk
         )
         return None
+
+    # Auto-create the finished-product PSP item the first time we
+    # push. Historically the operator had to hand-pick it through the
+    # finished-product picker before any save-version push would work;
+    # that gate silently swallowed pushes for formulations the
+    # operator hadn't linked yet. Same idempotency mechanism the
+    # semi-finished stages use (external_sku key) so a re-run doesn't
+    # duplicate.
+    if not formulation.psp_finished_product_uuid:
+        finished_uuid = _ensure_finished_product(
+            client=client, formulation=formulation
+        )
+        if finished_uuid is None:
+            return None
 
     stages = list(formulation.stages.order_by("sort_order"))
 
@@ -1033,25 +1421,47 @@ def _push_staged_cascade(
     stages: list[Any],
 ) -> dict | None:
     """Walk stages in ``sort_order`` and push one BOM + one Routing
-    per stage. Non-terminal stages produce PSP semi-finished items;
-    the terminal stage IS the finished product.
+    per stage. Each stage's ``psp_item_type`` decides whether it
+    manifests on PSP as a semi-finished intermediate or as the
+    formulation's finished-product item. Exactly one
+    ``finished_product`` stage per formulation is enforced at
+    save-formulation-stages time; if a legacy formulation somehow
+    slips through with zero (all-semi) we fall back to treating the
+    last stage as finished so the cascade still terminates in a
+    finished product.
 
     Returns the finished-product BOM response so callers can log the
     final version number. Intermediate responses are captured on
     exception context but not returned.
     """
 
-    terminal = stages[-1]
+    # Terminal-stage detection: prefer the explicit type flag, fall
+    # back to sort_order when no stage carries it (legacy safety net).
+    finished_stage = next(
+        (s for s in stages if s.psp_item_type == "finished_product"),
+        stages[-1],
+    )
     previous_semi_uuid: str | None = None
     last_response: dict | None = None
 
     for stage in stages:
-        is_terminal = stage.id == terminal.id
-        # Non-terminal stages produce semi-finished items; the
-        # terminal stage's output is the finished-product item the
-        # formulation already links to.
-        if is_terminal:
-            output_uuid = str(formulation.psp_finished_product_uuid)
+        is_finished = stage.id == finished_stage.id
+        # Finished-product stages bind to the formulation's
+        # ``psp_finished_product_uuid`` (auto-created by
+        # ``_ensure_finished_product``). Semi-finished stages get their
+        # own per-stage uuid via ``_ensure_semi_finished``.
+        if is_finished:
+            output_uuid = _ensure_finished_product(
+                client=client, formulation=formulation, stage=stage
+            )
+            if output_uuid is None:
+                logger.warning(
+                    "PSP push_bom: finished stage %s produced no uuid;"
+                    " aborting cascade for formulation %s",
+                    stage.id,
+                    formulation.pk,
+                )
+                return last_response
         else:
             output_uuid = _ensure_semi_finished(
                 client=client, formulation=formulation, stage=stage
@@ -1066,10 +1476,10 @@ def _push_staged_cascade(
                 return last_response
 
         # BOM lines = raw-material picks assigned to this stage
-        # (+ any legacy null-stage lines when this is the terminal
+        # (+ any legacy null-stage lines when this is the finished
         # stage — they flow into the finished product by default).
         assigned = _lines_for_stage(formulation, stage_id=stage.id)
-        if is_terminal:
+        if is_finished:
             assigned = assigned + _lines_for_stage(formulation, stage_id=None)
         bom_lines = _bom_lines_from(assigned)
 
@@ -1154,7 +1564,7 @@ def _push_staged_cascade(
                 ],
             )
 
-        previous_semi_uuid = output_uuid if not is_terminal else None
+        previous_semi_uuid = output_uuid if not is_finished else None
 
     return last_response
 
@@ -1163,39 +1573,296 @@ def _ensure_semi_finished(
     *, client: PspClient, formulation: Any, stage: Any
 ) -> str | None:
     """Return the PSP semi-finished item UUID for a non-terminal
-    stage, creating it on the first push.
+    stage, creating it on the first push and syncing name changes on
+    every subsequent push.
 
-    Idempotency: ``external_sku = NPD-STAGE-<formulation_uuid>-
-    <sort_order>``. PSP's ``POST /items`` returns the existing row
-    when the sku already exists so an interrupted push safely retries.
+    Idempotency: ``external_sku = NPD-STAGE-<formulation_id>-<sort_order>``.
+    PSP's ``POST /items`` returns the existing row when the sku is
+    already present AND updates its ``name`` / ``description`` fields
+    to match the payload — so a stage rename in NPD propagates to
+    PSP on the next push without needing a separate ``PATCH`` call.
     The returned UUID is cached back onto
-    :attr:`FormulationStage.psp_semi_finished_uuid` so subsequent
-    pushes skip the lookup.
+    :attr:`FormulationStage.psp_semi_finished_uuid` so we know we've
+    seen it, but we still ``POST`` on repeat pushes so a rename can
+    take effect. Net cost: one extra HTTP call per stage per save
+    (typical formulation = 3-5 stages, save-version is user-
+    initiated → not a hot path).
     """
 
-    if stage.psp_semi_finished_uuid:
-        return str(stage.psp_semi_finished_uuid)
-
-    external_sku = f"NPD-STAGE-{formulation.id}-{stage.sort_order}"
-    name = f"{formulation.code} — {stage.name or f'Stage {stage.sort_order + 1}'}"
+    # Scientist-supplied identity wins; fall back to auto-derived
+    # values so legacy stages keep syncing without an operator touch.
+    external_sku = (
+        stage.psp_item_external_sku
+        or f"NPD-STAGE-{formulation.id}-{stage.sort_order}"
+    )
+    # Scientist-typed override wins over the auto-derived label.
+    name = stage.psp_item_name or (
+        f"{formulation.code} — {stage.name or f'Stage {stage.sort_order + 1}'}"
+    )
+    description = stage.psp_item_description or (
+        f"Auto-created by NPD for formulation {formulation.code}"
+        f" stage {stage.sort_order + 1}."
+    )
     response = client.create_item(
         name=name,
         item_type="semi_finished",
         external_sku=external_sku,
-        description=(
-            f"Auto-created by NPD for formulation {formulation.code}"
-            f" stage {stage.sort_order + 1}."
+        description=description,
+        attributes=stage.psp_item_attributes or None,
+        barcode=stage.psp_item_barcode or "",
+        stock_uom_uuid=stage.psp_item_stock_uom_uuid,
+        product_family_uuid=stage.psp_item_product_family_uuid,
+        # Warehouse identity + allergens live at the FORMULATION
+        # level. Every stage on a formulation ships with the same
+        # storage / reorder / allergen decls, so we forward the
+        # same values on every stage — PSP dedupes idempotently.
+        storage_tags=list(getattr(formulation, "storage_tags", []) or []),
+        min_stock_qty=getattr(formulation, "min_stock_qty", None),
+        target_stock_qty=getattr(formulation, "target_stock_qty", None),
+        allergen_uuids=list(
+            getattr(formulation, "allergen_uuids", []) or []
         ),
     )
     if not response or not response.get("uuid"):
-        return None
+        # Soft failure — return the cached uuid if we have one so the
+        # BOM push can still proceed against the last-known item.
+        return (
+            str(stage.psp_semi_finished_uuid)
+            if stage.psp_semi_finished_uuid
+            else None
+        )
     uuid = str(response["uuid"])
 
-    # Cache on the stage so we don't POST /items again. Save only
+    # Cache on the stage the first time we see the uuid. Save only
     # this field so we don't race with concurrent stage edits.
-    stage.psp_semi_finished_uuid = uuid
-    stage.save(update_fields=["psp_semi_finished_uuid", "updated_at"])
+    if str(stage.psp_semi_finished_uuid or "") != uuid:
+        stage.psp_semi_finished_uuid = uuid
+        stage.save(update_fields=["psp_semi_finished_uuid", "updated_at"])
     return uuid
+
+
+def _ensure_finished_product(
+    *,
+    client: PspClient,
+    formulation: Any,
+    stage: Any | None = None,
+) -> str | None:
+    """Return the PSP finished-product item UUID for a formulation,
+    creating it on the first push AND syncing its name on every
+    subsequent push (so a formulation rename in NPD propagates to
+    PSP without a separate PATCH).
+
+    Idempotency: ``external_sku = NPD-FINISHED-<formulation_id>``.
+    PSP's ``POST /items`` returns the existing row when the sku
+    matches AND updates the row's ``name`` / ``description`` to
+    match the payload. The returned UUID is cached on
+    :attr:`Formulation.psp_finished_product_uuid` so we know we've
+    seen it. See ``_ensure_semi_finished`` for the same rationale on
+    the trade-off (one extra HTTP call per push, not a hot path).
+    """
+
+    # If the finished-product stage carries scientist-supplied
+    # identity, honour it; otherwise auto-derive from the formulation
+    # (legacy shape). Semi-finished uses the same pattern in
+    # ``_ensure_semi_finished`` above.
+    stage_sku = stage.psp_item_external_sku if stage is not None else ""
+    stage_description = (
+        stage.psp_item_description if stage is not None else ""
+    )
+    stage_name_override = (
+        stage.psp_item_name if stage is not None else ""
+    )
+    stage_name = (
+        stage.name
+        if stage is not None and getattr(stage, "name", "")
+        else None
+    )
+    external_sku = stage_sku or f"NPD-FINISHED-{formulation.id}"
+    # Scientist-typed PSP name override on the finished stage wins;
+    # otherwise fall back to the auto-derived "{code} — {stage}" or
+    # the formulation's own name (legacy shape).
+    if stage_name_override:
+        name = stage_name_override
+    elif stage_name:
+        name = f"{formulation.code} — {stage_name}"
+    else:
+        name = formulation.name
+    description = stage_description or (
+        f"Auto-created by NPD for formulation {formulation.code}"
+        " on first BOM push."
+    )
+    stage_attributes = (
+        stage.psp_item_attributes if stage is not None else None
+    )
+    stage_barcode = stage.psp_item_barcode if stage is not None else ""
+    stage_uom_uuid = (
+        stage.psp_item_stock_uom_uuid if stage is not None else None
+    )
+    stage_family_uuid = (
+        stage.psp_item_product_family_uuid if stage is not None else None
+    )
+    # Setup tab is the source of truth for every spec field. Rebuild
+    # the spec bag from ``formulation`` on every push; any stage-
+    # level ``psp_finished_product_spec`` overrides layer on top
+    # (kept as an escape hatch for edge cases — normal flow leaves
+    # it empty). Missing formulation values fall through so PSP's
+    # existing row keeps whatever it already had.
+    stage_spec: dict[str, Any] = {}
+
+    def _put(key: str, value: Any) -> None:
+        if value in (None, "", []):
+            return
+        stage_spec[key] = value
+
+    _put("regulatory_category", getattr(formulation, "regulatory_category", ""))
+    _put("dosage_form", getattr(formulation, "dosage_form", ""))
+    _put("capsule_size", getattr(formulation, "capsule_size", ""))
+    _put("directions_of_use", getattr(formulation, "directions_of_use", ""))
+    _put("suggested_dosage", getattr(formulation, "suggested_dosage", ""))
+    _put("warnings_text", getattr(formulation, "warnings_text", ""))
+    _put("storage_conditions", getattr(formulation, "storage_conditions", ""))
+    _put("shelf_life_months", getattr(formulation, "shelf_life_months", None))
+    _put("target_markets", list(getattr(formulation, "target_markets", []) or []))
+    # Numeric + UOM pairs. PSP resolves the UUIDs to local ids;
+    # unknown UUIDs get dropped silently on the PSP side.
+    if getattr(formulation, "serving_size", None) is not None:
+        _put("serving_size", str(formulation.serving_size))
+    if getattr(formulation, "servings_per_pack", None) is not None:
+        _put("servings_per_pack", int(formulation.servings_per_pack))
+    if getattr(formulation, "net_quantity", None) is not None:
+        _put("net_quantity", str(formulation.net_quantity))
+    if getattr(formulation, "net_quantity_uom_uuid", None):
+        _put(
+            "net_quantity_uom_uuid",
+            str(formulation.net_quantity_uom_uuid),
+        )
+    if getattr(formulation, "serving_size_uom_uuid", None):
+        _put(
+            "serving_size_uom_uuid",
+            str(formulation.serving_size_uom_uuid),
+        )
+    # Phase 4a: may-contain declaration lives on the formulation
+    # and rides the same spec push. Empty list / string means no
+    # declaration; the changeset accepts both cases.
+    if hasattr(formulation, "may_contain_allergen_keys"):
+        _put(
+            "may_contain_allergens",
+            list(formulation.may_contain_allergen_keys or []),
+        )
+    if getattr(formulation, "may_contain_justification", ""):
+        _put(
+            "may_contain_justification",
+            formulation.may_contain_justification,
+        )
+    # Stage-level overrides last so a per-stage tweak still wins if
+    # someone hand-edited the JSONField for a specific finished stage.
+    if stage is not None and stage.psp_finished_product_spec:
+        stage_spec.update(stage.psp_finished_product_spec)
+    response = client.create_item(
+        name=name,
+        item_type="finished_product",
+        external_sku=external_sku,
+        description=description,
+        attributes=stage_attributes or None,
+        barcode=stage_barcode or "",
+        stock_uom_uuid=stage_uom_uuid,
+        product_family_uuid=stage_family_uuid,
+        finished_product_spec=stage_spec or None,
+        # Warehouse + allergens flow from the formulation.
+        storage_tags=list(getattr(formulation, "storage_tags", []) or []),
+        min_stock_qty=getattr(formulation, "min_stock_qty", None),
+        target_stock_qty=getattr(formulation, "target_stock_qty", None),
+        allergen_uuids=list(
+            getattr(formulation, "allergen_uuids", []) or []
+        ),
+    )
+    if not response or not response.get("uuid"):
+        # Soft failure — return the cached uuid if we have one.
+        return (
+            str(formulation.psp_finished_product_uuid)
+            if formulation.psp_finished_product_uuid
+            else None
+        )
+    uuid = str(response["uuid"])
+
+    # Cache on the formulation the first time we see the uuid. Save
+    # only this field so we don't race with concurrent metadata edits.
+    if str(formulation.psp_finished_product_uuid or "") != uuid:
+        formulation.psp_finished_product_uuid = uuid
+        formulation.save(
+            update_fields=["psp_finished_product_uuid", "updated_at"]
+        )
+
+    # Phase 4b: push any un-mirrored photos + files. NPD is source of
+    # truth for the bytes; the local ``psp_uuid`` per row is the
+    # idempotency marker so re-syncs skip rows PSP already has.
+    _push_finished_product_assets(client=client, formulation=formulation, item_uuid=uuid)
+
+    return uuid
+
+
+def _push_finished_product_assets(
+    *,
+    client: PspClient,
+    formulation: Any,
+    item_uuid: str,
+) -> None:
+    """Best-effort push of formulation photos + files onto the PSP
+    finished-product item. Silent-degrade — any failure is logged and
+    the cascade continues so a network blip on the photo endpoint
+    doesn't fail the whole BOM save.
+    """
+
+    # Photos
+    for photo in formulation.photos.filter(psp_uuid__isnull=True):
+        try:
+            with photo.image.open("rb") as fh:
+                content = fh.read()
+        except (OSError, ValueError):
+            logger.warning(
+                "PSP push: failed reading FormulationPhoto %s bytes; skipping.",
+                photo.id,
+            )
+            continue
+        try:
+            response = client.upload_item_image(
+                item_uuid,
+                content=content,
+                filename=photo.original_filename or f"photo-{photo.id}",
+                content_type=photo.content_type or None,
+            )
+        except PspError as exc:
+            logger.info("PSP push: image upload soft-failed: %s", exc)
+            continue
+        if response and response.get("uuid"):
+            photo.psp_uuid = str(response["uuid"])
+            photo.save(update_fields=["psp_uuid"])
+
+    # Files
+    for file_row in formulation.files.filter(psp_uuid__isnull=True):
+        try:
+            with file_row.file.open("rb") as fh:
+                content = fh.read()
+        except (OSError, ValueError):
+            logger.warning(
+                "PSP push: failed reading FormulationFile %s bytes; skipping.",
+                file_row.id,
+            )
+            continue
+        try:
+            response = client.upload_item_file(
+                item_uuid,
+                content=content,
+                filename=file_row.filename,
+                content_type=file_row.mime or None,
+                kind=file_row.kind,
+            )
+        except PspError as exc:
+            logger.info("PSP push: file upload soft-failed: %s", exc)
+            continue
+        if response and response.get("uuid"):
+            file_row.psp_uuid = str(response["uuid"])
+            file_row.save(update_fields=["psp_uuid"])
 
 
 # ---------------------------------------------------------------------------

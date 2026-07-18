@@ -32,8 +32,21 @@ import {
   rollbackFormulation,
   saveFormulationVersion,
   setApprovedVersion,
+  syncFormulationToPsp,
+  type SyncPspResponseDto,
   updateFormulation,
   upsertFormulationStages,
+  deleteFormulationFile,
+  deleteFormulationPhoto,
+  fetchFormulationFiles,
+  fetchFormulationPhotos,
+  updateFormulationPhoto,
+  uploadFormulationFile,
+  uploadFormulationPhoto,
+  type FormulationFileDto,
+  type FormulationFilesListDto,
+  type FormulationPhotoDto,
+  type FormulationPhotosListDto,
 } from "./api";
 import type {
   AssignLeadScientistRequestDto,
@@ -96,6 +109,10 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "versions", formulationId] as const,
   overview: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "overview", formulationId] as const,
+  photos: (orgId: string, formulationId: string) =>
+    [...formulationsQueryKeys.all, orgId, "photos", formulationId] as const,
+  files: (orgId: string, formulationId: string) =>
+    [...formulationsQueryKeys.all, orgId, "files", formulationId] as const,
 } as const;
 
 export function useFormulations(
@@ -428,6 +445,26 @@ export function useSaveVersion(
   });
 }
 
+export function useSyncFormulationToPsp(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<SyncPspResponseDto, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<SyncPspResponseDto, ApiError, void>({
+    mutationFn: () => syncFormulationToPsp(orgId, formulationId),
+    onSuccess: (result) => {
+      if (!result.synced) return;
+      // ``_ensure_finished_product`` may have just written back the
+      // finished-product uuid; refresh the formulation detail so the
+      // "Open on PSP" chip and the stage cards pick up the new link
+      // without a full reload.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, formulationId),
+      });
+    },
+  });
+}
+
 export function useRollbackFormulation(
   orgId: string,
   formulationId: string,
@@ -510,6 +547,121 @@ export function useSetApprovedVersion(
       );
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+      });
+    },
+  });
+}
+
+
+// ---- Photos + files ------------------------------------------------
+
+export function useFormulationPhotos(
+  orgId: string,
+  formulationId: string,
+): UseQueryResult<FormulationPhotosListDto, ApiError> {
+  return useQuery<FormulationPhotosListDto, ApiError>({
+    queryKey: formulationsQueryKeys.photos(orgId, formulationId),
+    queryFn: () => fetchFormulationPhotos(orgId, formulationId),
+    enabled: Boolean(orgId && formulationId),
+  });
+}
+
+export function useUploadFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { photo: FormulationPhotoDto },
+  ApiError,
+  { file: File; caption?: string; is_primary?: boolean }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args) => uploadFormulationPhoto(orgId, formulationId, args),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useUpdateFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { photo: FormulationPhotoDto },
+  ApiError,
+  { photoId: string; patch: { caption?: string; is_primary?: boolean } }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ photoId, patch }) =>
+      updateFormulationPhoto(orgId, formulationId, photoId, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useDeleteFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<void, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (photoId: string) =>
+      deleteFormulationPhoto(orgId, formulationId, photoId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useFormulationFiles(
+  orgId: string,
+  formulationId: string,
+): UseQueryResult<FormulationFilesListDto, ApiError> {
+  return useQuery<FormulationFilesListDto, ApiError>({
+    queryKey: formulationsQueryKeys.files(orgId, formulationId),
+    queryFn: () => fetchFormulationFiles(orgId, formulationId),
+    enabled: Boolean(orgId && formulationId),
+  });
+}
+
+export function useUploadFormulationFile(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { file: FormulationFileDto },
+  ApiError,
+  { file: File; kind?: string }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args) => uploadFormulationFile(orgId, formulationId, args),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.files(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useDeleteFormulationFile(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<void, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (fileId: string) =>
+      deleteFormulationFile(orgId, formulationId, fileId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.files(orgId, formulationId),
       });
     },
   });

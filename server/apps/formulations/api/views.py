@@ -701,6 +701,77 @@ class FormulationComputeView(APIView):
         return Response(_totals_payload(totals), status=status.HTTP_200_OK)
 
 
+class FormulationSyncPspView(APIView):
+    """``POST`` ``/.../formulations/<id>/sync-psp/`` — push the current
+    in-memory BOM cascade to PSP without cutting a version.
+
+    Useful for the "Sync now" affordance on the stage strip: the
+    scientist wants to prototype a stage's BOM against PSP without
+    forcing a v(n+1) bump in the version history. Reuses
+    ``push_bom_to_psp`` so all the idempotency + silent-degrade rules
+    are the same as the Save Version path.
+
+    Response shape mirrors the save-version endpoint so the FE can
+    reuse the same PSP-linked chip refresh logic:
+
+    * ``201 Created`` with ``{"synced": true, "finished_product_uuid":
+      "<uuid or null>"}`` on a successful push.
+    * ``200 OK`` with ``{"synced": false, "reason": "psp_not_live"}``
+      when PSP isn't configured for the org — not an error, just a
+      no-op. The FE surfaces this as "PSP not configured" rather
+      than a red toast.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        from apps.psp.services import is_psp_live, push_bom_to_psp
+
+        if not is_psp_live(self.organization):
+            return Response(
+                {"synced": False, "reason": "psp_not_live"},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            push_bom_to_psp(formulation=formulation)
+        except Exception:
+            # Same defensive envelope as the save-version hook — the
+            # service already swallows every PspError. Anything that
+            # slips through gets logged so a PSP outage doesn't fail
+            # the whole sync request.
+            logger.exception(
+                "sync-psp: push_bom_to_psp bubbled an unexpected exception"
+                " for formulation %s",
+                formulation.pk,
+            )
+
+        # Reload so we see the finished-product uuid ``_ensure_finished_product``
+        # may have just written back.
+        formulation.refresh_from_db()
+        return Response(
+            {
+                "synced": True,
+                "finished_product_uuid": (
+                    str(formulation.psp_finished_product_uuid)
+                    if formulation.psp_finished_product_uuid
+                    else None
+                ),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
 class FormulationVersionListView(APIView):
     """``GET`` / ``POST`` ``/.../formulations/<id>/versions/``."""
 

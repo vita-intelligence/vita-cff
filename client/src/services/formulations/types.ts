@@ -304,6 +304,39 @@ export interface FormulationStageDto {
   /** PSP-side semi-finished item UUID this stage outputs. Null
    *  until the first successful push cascades through the stage. */
   readonly psp_semi_finished_uuid: string | null;
+  /** Scientist-supplied PSP identity (phase 1). Type decides whether
+   *  the stage manifests on PSP as semi-finished or the finished
+   *  product; sku + description mirror the fields on PSP's own
+   *  item form. Empty sku/description → auto-derived defaults. */
+  readonly psp_item_type: "semi_finished" | "finished_product";
+  /** Override for the PSP item's display name. Blank falls back to
+   *  the auto-derived ``{formulation.code} — {stage.name}``. When set,
+   *  ships verbatim to PSP so scientists can customize the label
+   *  without touching NPD's internal stage name. */
+  readonly psp_item_name: string;
+  readonly psp_item_external_sku: string;
+  readonly psp_item_description: string;
+  /** Custom attributes JSON bag mirrored to the PSP item's ``attributes``
+   *  column. Same shape as PSP's own item form (``use_as``,
+   *  ``capsule_size``, ``shell_weight_mg`` …). Empty map = no
+   *  override. Editable per stage via the identity block on the
+   *  Stages tab. */
+  readonly psp_item_attributes: Readonly<Record<string, unknown>>;
+  /** GTIN barcode. Blank = no barcode. */
+  readonly psp_item_barcode: string;
+  /** Phase 2b — PSP UOM + product family uuids. NPD's stage form
+   *  renders pickers backed by the PSP catalog; on push the cascade
+   *  forwards the uuid and PSP resolves to its local FK id. */
+  readonly psp_item_stock_uom_uuid: string | null;
+  readonly psp_item_product_family_uuid: string | null;
+  /** Phase 3 — finished-product spec bag mirrored to PSP's
+   *  ``item_finished_product_spec`` sub-table. Only meaningful when
+   *  ``psp_item_type === "finished_product"``. Shape mirrors PSP's
+   *  own spec form (regulatory category, dosage form, net qty, serving
+   *  size, servings per pack, directions, warnings, shelf life,
+   *  storage, target markets). All keys optional; missing = leave
+   *  PSP's existing value alone. */
+  readonly psp_finished_product_spec: Readonly<Record<string, unknown>>;
   readonly notes: string;
 }
 
@@ -330,6 +363,18 @@ export interface UpsertStageInput {
   readonly other_variable_cost?: string | null;
   readonly other_variable_cost_basis?: string | null;
   readonly worker_psp_uuids?: readonly string[];
+  /** Phase 1 PSP identity — see FormulationStageDto for semantics. */
+  readonly psp_item_type?: "semi_finished" | "finished_product";
+  readonly psp_item_name?: string;
+  readonly psp_item_external_sku?: string;
+  readonly psp_item_description?: string;
+  /** Phase 2a — mirrored to the PSP item's ``attributes`` bag +
+   *  ``barcode`` column. See FormulationStageDto for shape. */
+  readonly psp_item_attributes?: Readonly<Record<string, unknown>>;
+  readonly psp_item_barcode?: string;
+  readonly psp_item_stock_uom_uuid?: string | null;
+  readonly psp_item_product_family_uuid?: string | null;
+  readonly psp_finished_product_spec?: Readonly<Record<string, unknown>>;
   readonly notes?: string;
 }
 
@@ -418,6 +463,30 @@ export interface FormulationDto {
   readonly suggested_dosage: string;
   readonly appearance: string;
   readonly disintegration_spec: string;
+  /** Finished-product spec fields on the Setup tab. Push cascade
+   *  mirrors these onto the finished stage's PSP spec sub-table. */
+  readonly regulatory_category:
+    | ""
+    | "food_supplement"
+    | "functional_food"
+    | "cosmetic"
+    | "medical_device";
+  readonly warnings_text: string;
+  readonly shelf_life_months: number | null;
+  readonly storage_conditions: string;
+  readonly target_markets: readonly string[];
+  readonly net_quantity: string | null;
+  readonly net_quantity_uom_uuid: string | null;
+  readonly serving_size_uom_uuid: string | null;
+  /** Phase 4a — warehouse identity + allergens. Setup tab source of
+   *  truth; the cascade forwards on every stage push (semi + finished)
+   *  so PSP's item + goods-in stay aligned. */
+  readonly storage_tags: readonly string[];
+  readonly min_stock_qty: string | null;
+  readonly target_stock_qty: string | null;
+  readonly allergen_uuids: readonly string[];
+  readonly may_contain_allergen_keys: readonly string[];
+  readonly may_contain_justification: string;
   readonly project_status: ProjectStatus;
   readonly project_type: ProjectType;
   readonly approved_version_number: number | null;
@@ -485,6 +554,26 @@ export interface CreateFormulationRequestDto {
   readonly suggested_dosage?: string;
   readonly appearance?: string;
   readonly disintegration_spec?: string;
+  /** Finished-product spec on Setup — see FormulationDto for shape. */
+  readonly regulatory_category?:
+    | "food_supplement"
+    | "functional_food"
+    | "cosmetic"
+    | "medical_device"
+    | null;
+  readonly warnings_text?: string;
+  readonly shelf_life_months?: number | null;
+  readonly storage_conditions?: string;
+  readonly target_markets?: readonly string[];
+  readonly net_quantity?: string | null;
+  readonly net_quantity_uom_uuid?: string | null;
+  readonly serving_size_uom_uuid?: string | null;
+  readonly storage_tags?: readonly string[];
+  readonly min_stock_qty?: string | null;
+  readonly target_stock_qty?: string | null;
+  readonly allergen_uuids?: readonly string[];
+  readonly may_contain_allergen_keys?: readonly string[];
+  readonly may_contain_justification?: string;
   /** Optional at create — defaults to ``"custom"`` server-side.
    *  Set to ``"ready_to_go"`` from the RTG catalog page's "New RTG"
    *  dialog so the row lands with the marketing panel already

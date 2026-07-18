@@ -1,4 +1,10 @@
 export { formulationsEndpoints } from "./endpoints";
+export type {
+  FormulationFileDto,
+  FormulationFilesListDto,
+  FormulationPhotoDto,
+  FormulationPhotosListDto,
+} from "./api";
 export {
   assignFormulationLeadScientist,
   assignFormulationSalesPerson,
@@ -24,7 +30,11 @@ export {
   useCloneFormulation,
   useCreateFormulation,
   useDeleteFormulation,
+  useDeleteFormulationFile,
+  useDeleteFormulationPhoto,
   useFormulation,
+  useFormulationFiles,
+  useFormulationPhotos,
   useFormulationTotals,
   useFormulationVersions,
   useFormulations,
@@ -34,7 +44,11 @@ export {
   useRollbackFormulation,
   useSaveVersion,
   useSetApprovedVersion,
+  useSyncFormulationToPsp,
   useUpdateFormulation,
+  useUpdateFormulationPhoto,
+  useUploadFormulationFile,
+  useUploadFormulationPhoto,
 } from "./hooks";
 export {
   CAPSULE_SHELL_LABEL,
