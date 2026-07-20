@@ -2638,6 +2638,28 @@ def set_formulation_stages(
         after=snapshot(formulation),
     )
 
+    # Auto-sync the cascade to PSP so scientists don't have to hit
+    # "Sync now" separately. Silent-degrade: any PSP failure is logged
+    # inside push_bom_to_psp; the stage save always succeeds
+    # regardless. Deferred to ``on_commit`` so the HTTP round-trip
+    # doesn't hold the DB write lock — and so failed PSP calls can't
+    # roll back the successful stage upsert.
+    def _sync_to_psp() -> None:
+        from apps.psp.services import push_bom_to_psp
+
+        try:
+            push_bom_to_psp(formulation=formulation)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "set_formulation_stages: PSP push failed for %s (org %s)",
+                formulation.pk,
+                formulation.organization_id,
+            )
+
+    transaction.on_commit(_sync_to_psp)
+
     return list(formulation.stages.all())
 
 

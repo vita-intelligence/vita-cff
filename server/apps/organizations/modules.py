@@ -129,6 +129,14 @@ class FormulationsCapability:
     #: only. Required to close out a thread a teammate forgot to
     #: resolve, or to take down an accidental client-facing comment.
     COMMENTS_MODERATE = "comments_moderate"
+    #: Create / edit / delete the org's reusable stage templates
+    #: (Capsule / Gummy / Tablet / etc). Scientists with ``VIEW``
+    #: still see the templates in the picker and can apply them —
+    #: only editing the template library itself is gated. Kept
+    #: separate from ``EDIT`` so the R&D lead can curate templates
+    #: without every rank-and-file scientist reshaping the org's
+    #: canonical routes.
+    MANAGE_STAGE_TEMPLATES = "manage_stage_templates"
 
 
 class ProposalsCapability:
@@ -386,6 +394,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.COMMENTS_VIEW,
             FormulationsCapability.COMMENTS_WRITE,
             FormulationsCapability.COMMENTS_MODERATE,
+            FormulationsCapability.MANAGE_STAGE_TEMPLATES,
         ),
     ),
     RTG_CATALOG_MODULE: Module(

@@ -267,8 +267,18 @@ class PspClient:
                 # Return None; callers that want the exception can
                 # wrap with :meth:`get_item`.
                 return None
+            # Read the response body so validation errors from PSP
+            # (typically 4xx with an ``{error, detail}`` JSON body)
+            # actually surface in NPD logs. Without this, downstream
+            # PspUnreachable messages are useless "HTTP 422" strings.
+            body_snippet = ""
+            try:
+                body_snippet = (exc.read() or b"").decode("utf-8", errors="replace")[:500]
+            except Exception:  # pragma: no cover — defensive
+                body_snippet = ""
             raise PspUnreachable(
                 f"PSP returned HTTP {exc.code}."
+                + (f" Body: {body_snippet}" if body_snippet else "")
             ) from exc
         except URLError as exc:
             raise PspUnreachable(
@@ -346,6 +356,32 @@ class PspClient:
         if not isinstance(row, dict):
             return None
         return _project_item(row)
+
+    def get_item_bom(self, item_uuid: Any) -> dict | None:
+        """Fetch the item's active primary BOM (header + lines) from
+        PSP so NPD can hydrate a formulation from the recipe of
+        record. Returns the raw response dict on 200, ``None`` when
+        PSP has the item but no primary BOM (404 → soft ``None``).
+
+        Response shape (per PSP's ``GET
+        /api/integration/items/:uuid/bom``):
+
+            {"bom": {"uuid", "name", "notes", "item_uuid",
+                     "lines": [{"sort_order", "qty", "is_fixed",
+                                "notes", "uom_uuid", "uom_symbol",
+                                "part": {<full item shape>}}]}}
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(f"api/integration/items/{cleaned}/bom")
+        if not isinstance(response, dict):
+            return None
+        row = response.get("bom")
+        if not isinstance(row, dict):
+            return None
+        return row
 
     def put_bom(self, item_uuid: Any, payload: dict) -> dict | None:
         """Push a BOM snapshot onto a PSP finished-product item.
@@ -526,17 +562,77 @@ class PspClient:
             body["target_stock_qty"] = str(target_stock_qty)
         if allergen_uuids is not None:
             body["allergen_uuids"] = [str(u) for u in allergen_uuids]
-        response = self._request(
-            "api/integration/items",
-            method="POST",
-            body=body,
-        )
+        try:
+            response = self._request(
+                "api/integration/items",
+                method="POST",
+                body=body,
+            )
+        except PspUnreachable as exc:
+            # Name-conflict fallback: PSP enforces a unique (company,
+            # name) constraint on items. When two NPD formulations
+            # try to auto-create the same-named finished product (or a
+            # scientist created the PSP item by hand first), the
+            # create returns 422 with ``name already exists``. Rather
+            # than surface a scary error, look the item up by exact
+            # name + item_type and return it — the scientist gets a
+            # link to the existing SKU without a manual re-picker
+            # step. The 422 body is embedded in the exception message
+            # by ``_request``; we probe for the marker substring so
+            # the fallback is precise (any other 422 rethrows).
+            message = str(exc)
+            name_conflict = (
+                "name already exists" in message.lower()
+                or "duplicate name" in message.lower()
+            )
+            if not name_conflict:
+                raise
+            match = self._find_item_by_exact_name(name=name, item_type=item_type)
+            if match is None:
+                raise
+            return match
         if not isinstance(response, dict):
             return None
         row = response.get("item")
         if not isinstance(row, dict):
             return None
         return row
+
+    def _find_item_by_exact_name(
+        self, *, name: str, item_type: str
+    ) -> dict | None:
+        """Look up a PSP item by exact ``name`` (case-insensitive) +
+        ``item_type``. Used as the name-conflict fallback in
+        :meth:`create_item` so a duplicate-name auto-create resolves
+        to a link instead of an error.
+
+        Returns the same shape ``create_item`` normally returns
+        (``{uuid, name, item_type, external_sku, code, ...}``) or
+        ``None`` when zero exact matches surface.
+        """
+
+        needle = (name or "").strip()
+        if not needle:
+            return None
+        try:
+            payload = self._request(
+                "api/integration/items",
+                query={"search": needle, "item_types": item_type},
+            )
+        except PspError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return None
+        cleaned = needle.casefold()
+        for row in rows:
+            if isinstance(row, dict) and str(row.get("name") or "").casefold() == cleaned:
+                # Synthesize the ``created: false`` marker so the
+                # caller can log the link vs create split if it wants.
+                return {**row, "created": False, "resolved_by_name": True}
+        return None
 
     def upload_item_image(
         self,
@@ -1318,23 +1414,23 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
         )
         return None
 
-    # Auto-create the finished-product PSP item the first time we
-    # push. Historically the operator had to hand-pick it through the
-    # finished-product picker before any save-version push would work;
-    # that gate silently swallowed pushes for formulations the
-    # operator hadn't linked yet. Same idempotency mechanism the
-    # semi-finished stages use (external_sku key) so a re-run doesn't
-    # duplicate.
-    if not formulation.psp_finished_product_uuid:
-        finished_uuid = _ensure_finished_product(
-            client=client, formulation=formulation
-        )
-        if finished_uuid is None:
-            return None
-
     stages = list(formulation.stages.order_by("sort_order"))
 
     try:
+        # Auto-create the finished-product PSP item the first time we
+        # push. Historically the operator had to hand-pick it through
+        # the finished-product picker before any save-version push
+        # would work; that gate silently swallowed pushes for
+        # formulations the operator hadn't linked yet. Same idempotency
+        # mechanism the semi-finished stages use (external_sku key) so
+        # a re-run doesn't duplicate.
+        if not formulation.psp_finished_product_uuid:
+            finished_uuid = _ensure_finished_product(
+                client=client, formulation=formulation
+            )
+            if finished_uuid is None:
+                return None
+
         if not stages:
             return _push_flat_bom(client=client, formulation=formulation)
         return _push_staged_cascade(
@@ -1880,6 +1976,86 @@ class PspMirrorItemNotFound(Exception):
     code = "psp_mirror_item_not_found"
 
 
+class PspCreateFinishedProductFailed(Exception):
+    """PSP accepted the request but returned an unexpected shape (no
+    uuid on the response). API layer maps to 502 — soft failure
+    that's neither auth nor rate limit."""
+
+    code = "psp_create_finished_product_failed"
+
+
+def create_psp_finished_product(
+    *,
+    organization: Any,
+    actor: Any,
+    name: str,
+    external_sku: str = "",
+    description: str = "",
+    barcode: str = "",
+) -> dict:
+    """Create a brand-new PSP finished-product item on demand — used
+    by the New-formulation dialog when the scientist doesn't want to
+    link an existing PSP item.
+
+    Delegates to :meth:`PspClient.create_item` with
+    ``item_type="finished_product"`` locked. Returns the raw PSP
+    response ``{"uuid", "name", "item_type", "external_sku",
+    "code"?, "created"}`` so the caller can populate the new-form
+    fields + link the returned uuid onto the formulation.
+
+    Idempotency: ``external_sku`` is the load-bearing key on PSP. If
+    the caller provides a value that already exists, PSP returns the
+    existing row with ``created: false``. If the caller leaves it
+    blank we auto-generate ``NPD-FP-<random>`` so back-to-back
+    submissions of the same form don't collide on empty strings.
+    """
+
+    import secrets
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured(
+            "PSP is not configured or is disabled on this workspace."
+        )
+
+    cleaned_name = (name or "").strip()
+    if not cleaned_name:
+        raise ValueError("name is required to create a PSP finished product")
+
+    cleaned_sku = (external_sku or "").strip()
+    if not cleaned_sku:
+        cleaned_sku = f"NPD-FP-{secrets.token_hex(4).upper()}"
+
+    config = get_psp_config(organization=organization)
+    client = _client_factory(config)
+    response = client.create_item(
+        name=cleaned_name,
+        item_type="finished_product",
+        external_sku=cleaned_sku,
+        description=(description or "").strip(),
+        barcode=(barcode or "").strip(),
+    )
+    if not response or not response.get("uuid"):
+        raise PspCreateFinishedProductFailed(
+            "PSP accepted the create request but returned no uuid."
+        )
+
+    from apps.audit.services import record as record_audit
+
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="psp.finished_product.create",
+        target=organization,
+        after={
+            "uuid": str(response.get("uuid")),
+            "name": response.get("name"),
+            "external_sku": response.get("external_sku"),
+            "created": bool(response.get("created")),
+        },
+    )
+    return response
+
+
 def mirror_psp_item(
     *,
     organization: Any,
@@ -2078,6 +2254,243 @@ def _get_or_create_mirror_catalogue(*, organization: Any, actor: Any):
         ),
         is_system=True,
     )
+
+
+# ---------------------------------------------------------------------------
+# Pull-from-PSP — hydrate a formulation from PSP's existing BOM
+# ---------------------------------------------------------------------------
+
+
+class PspFinishedProductNotLinked(Exception):
+    """Formulation has no ``psp_finished_product_uuid`` yet, so there
+    is no PSP item to pull a BOM from. API layer maps to 400.
+    """
+
+    code = "psp_finished_product_not_linked"
+
+
+class PspBomNotFound(Exception):
+    """PSP has the linked item but no primary active BOM on it — the
+    caller can't hydrate from an empty recipe. API layer maps to 404.
+    """
+
+    code = "psp_bom_not_found"
+
+
+class PspBomEmpty(Exception):
+    """PSP returned a BOM header but no lines — treated the same as
+    "no BOM" so the API layer surfaces a clear message rather than a
+    silent no-op."""
+
+    code = "psp_bom_empty"
+
+
+#: UOM symbol → conversion factor to milligrams. Anything not in the
+#: map is stored verbatim as ``label_claim_mg`` with the raw numeric
+#: qty, and flagged in the summary so the scientist knows to adjust.
+_UOM_TO_MG: dict[str, Decimal] = {
+    "mg": Decimal("1"),
+    "g": Decimal("1000"),
+    "kg": Decimal("1000000"),
+    "µg": Decimal("0.001"),
+    "ug": Decimal("0.001"),
+    "mcg": Decimal("0.001"),
+}
+
+
+def pull_psp_bom_into_formulation(
+    *,
+    organization: Any,
+    formulation: Any,
+    actor: Any,
+) -> dict:
+    """Wholesale-replace a formulation's finished-stage BOM with the
+    active primary BOM PSP has for the linked finished-product item.
+
+    Steps (all inside one transaction so a mid-pull failure leaves
+    NPD untouched):
+
+    1. Cut a ``FormulationVersion`` snapshot BEFORE the pull with an
+       auto-label so the pre-pull state is always in the version
+       drawer (recoverable via rollback).
+    2. Fetch the BOM from PSP (raise ``PspBomNotFound`` on 404).
+    3. For every line, mirror the raw material into the local
+       ``psp_mirror`` catalog (idempotent via ``psp_source_uuid``).
+    4. Delete every existing ``FormulationLine`` on the finished
+       stage. Semi-finished stages' lines are left alone.
+    5. Create fresh lines for the finished stage with
+       ``label_claim_mg`` converted from ``qty`` × UOM. Purity and
+       overage overrides pin to 100 / 0 so the compute pass-through
+       matches what PSP just handed us — the scientist can adjust
+       later.
+
+    Returns a summary dict the caller renders in a toast:
+
+        {
+          "lines_pulled": 10,
+          "items_mirrored": 3,
+          "items_reused": 7,
+          "unconvertible_uom_lines": ["capsules", "bottles"],
+          "pre_pull_version_number": 6,
+        }
+
+    Raises:
+      * ``PspNotConfigured`` — org has no live PSP integration.
+      * ``PspFinishedProductNotLinked`` — formulation not linked.
+      * ``PspBomNotFound`` — PSP returned no primary BOM.
+      * ``PspBomEmpty`` — PSP BOM has zero lines.
+    """
+
+    from django.db import transaction
+
+    from apps.formulations.models import FormulationLine, FormulationStage
+    from apps.formulations.services import save_version
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured(
+            "PSP is not configured or is disabled on this workspace."
+        )
+    if not formulation.psp_finished_product_uuid:
+        raise PspFinishedProductNotLinked(
+            "This formulation has no linked PSP finished product yet."
+        )
+
+    config = get_psp_config(organization=organization)
+    client = _client_factory(config)
+
+    payload = client.get_item_bom(formulation.psp_finished_product_uuid)
+    if not payload:
+        raise PspBomNotFound(
+            "PSP has no primary BOM for the linked finished-product item."
+        )
+    raw_lines = payload.get("lines") or []
+    if not raw_lines:
+        raise PspBomEmpty("PSP's BOM has no component lines.")
+
+    # Snapshot the pre-pull state so an accidental overwrite is
+    # recoverable from the version drawer. Uses save_version so all
+    # its side effects (audit + compute cache + BOM push retry) fire
+    # exactly as they would for a normal save.
+    pre_pull_version = save_version(
+        formulation=formulation,
+        actor=actor,
+        label="pre-pull-from-psp",
+    )
+
+    # Reload so we see any concurrent edits + the freshly saved
+    # version number.
+    formulation.refresh_from_db()
+
+    with transaction.atomic():
+        finished_stage = (
+            formulation.stages.filter(psp_item_type="finished_product")
+            .order_by("sort_order")
+            .first()
+        )
+        if finished_stage is None:
+            # Fall back to the last stage — matches the server-side
+            # invariant used everywhere else.
+            finished_stage = (
+                formulation.stages.order_by("-sort_order").first()
+            )
+        # If there are no stages at all yet, seed one so the pulled
+        # lines have somewhere to land. Scientists typically create
+        # stages first, but we shouldn't block the pull on it.
+        if finished_stage is None:
+            finished_stage = FormulationStage.objects.create(
+                formulation=formulation,
+                sort_order=0,
+                name="Finished product",
+                stage_key="custom",
+                psp_item_type="finished_product",
+            )
+
+        items_mirrored = 0
+        items_reused = 0
+        unconvertible: list[str] = []
+        new_lines: list[FormulationLine] = []
+
+        for display_order, raw_line in enumerate(raw_lines):
+            part_payload = raw_line.get("part") or {}
+            part_uuid = str(part_payload.get("uuid") or "").strip()
+            if not part_uuid:
+                continue
+
+            existed_before = _has_mirror_row(
+                organization=organization, psp_uuid=part_uuid
+            )
+            mirrored_item = mirror_psp_item(
+                organization=organization,
+                actor=actor,
+                psp_item_uuid=part_uuid,
+            )
+            if existed_before:
+                items_reused += 1
+            else:
+                items_mirrored += 1
+
+            qty_raw = raw_line.get("qty") or "0"
+            try:
+                qty_dec = Decimal(str(qty_raw))
+            except (InvalidOperation, TypeError):
+                qty_dec = Decimal("0")
+            uom_symbol = (raw_line.get("uom_symbol") or "").strip().lower()
+            factor = _UOM_TO_MG.get(uom_symbol)
+            if factor is None:
+                # Store the raw qty as mg so the row still lands and
+                # the scientist can adjust. Track the flagged UOM.
+                if uom_symbol:
+                    unconvertible.append(uom_symbol)
+                label_claim_mg = qty_dec
+            else:
+                label_claim_mg = qty_dec * factor
+
+            new_lines.append(
+                FormulationLine(
+                    formulation=formulation,
+                    item=mirrored_item,
+                    stage=finished_stage,
+                    display_order=display_order,
+                    label_claim_mg=label_claim_mg,
+                    purity_override=Decimal("100"),
+                    overage_override=Decimal("0"),
+                    notes=(raw_line.get("notes") or "").strip(),
+                )
+            )
+
+        # Wholesale-replace: drop only the finished stage's lines. Any
+        # semi-finished stage's lines survive so the multi-stage
+        # cascade stays intact — matches the user's "only finished
+        # stage" scope decision.
+        FormulationLine.objects.filter(
+            formulation=formulation, stage=finished_stage
+        ).delete()
+        FormulationLine.objects.bulk_create(new_lines)
+
+    return {
+        "lines_pulled": len(new_lines),
+        "items_mirrored": items_mirrored,
+        "items_reused": items_reused,
+        "unconvertible_uom_lines": sorted(set(unconvertible)),
+        "pre_pull_version_number": getattr(
+            pre_pull_version, "version_number", None
+        ),
+    }
+
+
+def _has_mirror_row(*, organization: Any, psp_uuid: str) -> bool:
+    """Return True when the PSP UUID already has a local mirror row.
+    Used by ``pull_psp_bom_into_formulation`` to distinguish "newly
+    mirrored" from "reused an existing mirror" in the response
+    summary, without an extra DB call downstream."""
+
+    from apps.catalogues.models import PSP_MIRROR_SLUG, Item
+
+    return Item.objects.filter(
+        catalogue__organization=organization,
+        catalogue__slug=PSP_MIRROR_SLUG,
+        psp_source_uuid=psp_uuid,
+    ).exists()
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,7 @@
 export { pspEndpoints } from "./endpoints";
 export {
   clearPspConfig,
+  createPspFinishedProduct,
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
@@ -8,9 +9,14 @@ export {
   savePspConfig,
   testPspConnection,
 } from "./api";
+export type {
+  CreatePspFinishedProductRequestDto,
+  CreatePspFinishedProductResponseDto,
+} from "./api";
 export {
   pspQueryKeys,
   useClearPspConfig,
+  useCreatePspFinishedProduct,
   useMirrorPspItem,
   usePspConfig,
   usePspItemDetail,
@@ -19,6 +25,7 @@ export {
   usePspProductFamilies,
   usePspStorageTags,
   usePspUnitsOfMeasurement,
+  usePspWorkstationGroups,
   useSavePspConfig,
   useTestPspConnection,
 } from "./hooks";

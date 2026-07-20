@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict
 from decimal import Decimal
 from typing import Any
 
 from django.db.models import ProtectedError
+
+logger = logging.getLogger(__name__)
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
@@ -743,13 +746,16 @@ class FormulationSyncPspView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        push_error: str | None = None
         try:
             push_bom_to_psp(formulation=formulation)
-        except Exception:
-            # Same defensive envelope as the save-version hook — the
-            # service already swallows every PspError. Anything that
-            # slips through gets logged so a PSP outage doesn't fail
-            # the whole sync request.
+        except Exception as exc:
+            # push_bom_to_psp is meant to be silent-degrade, but a
+            # bad-payload path (e.g. a duplicate-name 422 on the very
+            # first PSP item create) can still surface. Capture the
+            # message on the response so the FE toast is useful; log
+            # for post-mortem.
+            push_error = str(exc)
             logger.exception(
                 "sync-psp: push_bom_to_psp bubbled an unexpected exception"
                 " for formulation %s",
@@ -759,6 +765,20 @@ class FormulationSyncPspView(APIView):
         # Reload so we see the finished-product uuid ``_ensure_finished_product``
         # may have just written back.
         formulation.refresh_from_db()
+        if push_error is not None:
+            return Response(
+                {
+                    "synced": False,
+                    "reason": "psp_push_failed",
+                    "detail": push_error,
+                    "finished_product_uuid": (
+                        str(formulation.psp_finished_product_uuid)
+                        if formulation.psp_finished_product_uuid
+                        else None
+                    ),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         return Response(
             {
                 "synced": True,
@@ -769,6 +789,459 @@ class FormulationSyncPspView(APIView):
                 ),
             },
             status=status.HTTP_201_CREATED,
+        )
+
+
+class FormulationPullPspBomView(APIView):
+    """``POST`` ``/.../formulations/<id>/pull-psp-bom/`` — hydrate the
+    finished-stage BOM from PSP's active primary BOM.
+
+    PSP is source of truth here — the endpoint auto-snapshots the
+    formulation's current state to a version labelled
+    ``pre-pull-from-psp`` before overwriting, so a mis-click is
+    recoverable from the version drawer. Only the finished stage's
+    lines are replaced; semi-finished stages stay intact.
+
+    Response codes:
+
+      * 200 OK + summary dict on success.
+      * 400 ``psp_not_configured`` / ``psp_finished_product_not_linked``.
+      * 404 ``psp_bom_not_found`` — item has no primary BOM yet.
+      * 422 ``psp_bom_empty`` — PSP returned a BOM header with no
+        lines (defensive; typically means someone cleared it).
+      * 502 ``psp_unreachable`` — PSP network / auth failure.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        from apps.psp.services import (
+            PspAuthFailed,
+            PspBomEmpty,
+            PspBomNotFound,
+            PspError,
+            PspFinishedProductNotLinked,
+            PspNotConfigured,
+            PspRateLimited,
+            PspUnreachable,
+            pull_psp_bom_into_formulation,
+        )
+
+        try:
+            summary = pull_psp_bom_into_formulation(
+                organization=self.organization,
+                formulation=formulation,
+                actor=request.user,
+            )
+        except PspNotConfigured as exc:
+            return Response(
+                {"error": "psp_not_configured", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspFinishedProductNotLinked as exc:
+            return Response(
+                {
+                    "error": "psp_finished_product_not_linked",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspBomNotFound as exc:
+            return Response(
+                {"error": "psp_bom_not_found", "detail": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except PspBomEmpty as exc:
+            return Response(
+                {"error": "psp_bom_empty", "detail": str(exc)},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        except PspAuthFailed as exc:
+            return Response(
+                {"error": "psp_auth_failed", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PspRateLimited as exc:
+            return Response(
+                {"error": "psp_rate_limited", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except (PspUnreachable, PspError) as exc:
+            return Response(
+                {"error": "psp_unreachable", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        formulation.refresh_from_db()
+        return Response(
+            {
+                "summary": summary,
+                "formulation": FormulationReadSerializer(formulation).data,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+def _stage_template_payload(row: Any) -> dict[str, Any]:
+    """Wire shape for a template row. Shared by list + detail
+    responses so create / update / read all emit the same fields."""
+
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "description": row.description,
+        "dosage_form": row.dosage_form,
+        "is_seeded": row.is_seeded,
+        "stages": row.stages_json or [],
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _normalise_template_stages(raw: Any) -> list[dict[str, Any]]:
+    """Coerce an incoming ``stages`` payload into the shape the
+    ``UpsertStageInput`` set_formulation_stages expects. Rejects
+    malformed rows so a bad template can never brick the picker."""
+
+    if not isinstance(raw, list):
+        raise ValueError("stages must be a list")
+
+    normalised: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise ValueError(f"stage[{index}] must be an object")
+        name = str(item.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"stage[{index}] name is required")
+        stage_key = str(item.get("stage_key") or "").strip() or "custom"
+        psp_item_type = str(item.get("psp_item_type") or "semi_finished")
+        if psp_item_type not in ("semi_finished", "finished_product"):
+            raise ValueError(
+                f"stage[{index}] psp_item_type must be semi_finished or finished_product"
+            )
+        normalised.append(
+            {
+                "sort_order": index,
+                "name": name[:150],
+                "stage_key": stage_key,
+                "psp_item_type": psp_item_type,
+                # Optional workstation defaults + times. Pass through
+                # only when set so downstream consumers keep behaving
+                # the same way they do for hand-authored stages.
+                "workstation_group_uuid": item.get("workstation_group_uuid")
+                or None,
+                "workstation_group_name": str(
+                    item.get("workstation_group_name") or ""
+                ),
+                "operation_description": str(
+                    item.get("operation_description") or ""
+                ),
+                "setup_time_min": item.get("setup_time_min") or None,
+                "cycle_time_min": item.get("cycle_time_min") or None,
+                "fixed_cost": item.get("fixed_cost") or None,
+                "variable_cost": item.get("variable_cost") or None,
+                "capacity": item.get("capacity") or None,
+                "other_fixed_cost": item.get("other_fixed_cost") or None,
+                "other_variable_cost": item.get("other_variable_cost") or None,
+                "other_variable_cost_basis": item.get(
+                    "other_variable_cost_basis"
+                )
+                or None,
+            }
+        )
+    return normalised
+
+
+class StageTemplateListView(APIView):
+    """``GET`` list + ``POST`` create for the org's stage templates.
+
+    ``GET`` is open to anyone with ``VIEW`` so scientists see the
+    picker options. ``POST`` requires ``MANAGE_STAGE_TEMPLATES`` — the
+    reshape right sits with the workspace admin, not every operator.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        self.required_capability = (
+            FormulationsCapability.MANAGE_STAGE_TEMPLATES
+            if request.method == "POST"
+            else FormulationsCapability.VIEW
+        )
+        super().initial(request, *args, **kwargs)
+
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.formulations.models import FormulationStageTemplate
+
+        rows = FormulationStageTemplate.objects.filter(
+            organization=self.organization
+        ).order_by("name")
+        return Response(
+            {"items": [_stage_template_payload(row) for row in rows]},
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request: Request, org_id: str) -> Response:
+        from apps.formulations.models import FormulationStageTemplate
+
+        raw = request.data if isinstance(request.data, dict) else {}
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"error": "invalid_payload", "detail": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            stages = _normalise_template_stages(raw.get("stages") or [])
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_stages", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if FormulationStageTemplate.objects.filter(
+            organization=self.organization, name=name
+        ).exists():
+            return Response(
+                {
+                    "error": "duplicate_name",
+                    "detail": "A template with this name already exists.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        template = FormulationStageTemplate.objects.create(
+            organization=self.organization,
+            name=name[:200],
+            description=str(raw.get("description") or "")[:2000],
+            dosage_form=str(raw.get("dosage_form") or "")[:32],
+            stages_json=stages,
+            is_seeded=False,
+            created_by=request.user,
+            updated_by=request.user,
+        )
+        return Response(
+            _stage_template_payload(template),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class StageTemplateDetailView(APIView):
+    """``PATCH`` update + ``DELETE`` for a single template. Both
+    require ``MANAGE_STAGE_TEMPLATES``. Deleting a seeded template is
+    allowed — admins should be free to prune the reference set when
+    they want a leaner picker.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.MANAGE_STAGE_TEMPLATES
+
+    def _get(self, template_id: str) -> Any:
+        from apps.formulations.models import FormulationStageTemplate
+
+        row = FormulationStageTemplate.objects.filter(
+            organization=self.organization, id=template_id
+        ).first()
+        if row is None:
+            raise NotFound()
+        return row
+
+    def patch(
+        self, request: Request, org_id: str, template_id: str
+    ) -> Response:
+        from apps.formulations.models import FormulationStageTemplate
+
+        row = self._get(template_id)
+        raw = request.data if isinstance(request.data, dict) else {}
+
+        if "name" in raw:
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                return Response(
+                    {
+                        "error": "invalid_payload",
+                        "detail": "name cannot be blank",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if (
+                FormulationStageTemplate.objects.filter(
+                    organization=self.organization, name=name
+                )
+                .exclude(id=row.id)
+                .exists()
+            ):
+                return Response(
+                    {
+                        "error": "duplicate_name",
+                        "detail": (
+                            "A template with this name already exists."
+                        ),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            row.name = name[:200]
+        if "description" in raw:
+            row.description = str(raw.get("description") or "")[:2000]
+        if "dosage_form" in raw:
+            row.dosage_form = str(raw.get("dosage_form") or "")[:32]
+        if "stages" in raw:
+            try:
+                row.stages_json = _normalise_template_stages(
+                    raw.get("stages") or []
+                )
+            except ValueError as exc:
+                return Response(
+                    {"error": "invalid_stages", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        row.updated_by = request.user
+        row.save()
+        return Response(_stage_template_payload(row), status=status.HTTP_200_OK)
+
+    def delete(
+        self, request: Request, org_id: str, template_id: str
+    ) -> Response:
+        row = self._get(template_id)
+        row.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+def _resolve_workstations_by_name(
+    *, organization: Any, stages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """For each stage without an explicit workstation_group_uuid,
+    look up PSP's catalog by exact stage-name match and pin the uuid.
+    Silent-degrade — a PSP outage / mis-config just returns the input
+    unchanged so apply still succeeds with a null workstation.
+    """
+
+    # Fast path: every stage already has an explicit workstation.
+    if not any(
+        (s.get("workstation_group_uuid") in (None, ""))
+        and s.get("name")
+        for s in stages
+        if isinstance(s, dict)
+    ):
+        return stages
+
+    try:
+        from apps.psp.services import list_psp_workstation_groups
+
+        catalog = list_psp_workstation_groups(organization=organization)
+    except Exception:  # pragma: no cover — silent-degrade contract
+        return stages
+    if not catalog:
+        return stages
+
+    by_name = {
+        str(row.get("name") or "").strip().casefold(): row for row in catalog
+    }
+    resolved: list[dict[str, Any]] = []
+    for s in stages:
+        if not isinstance(s, dict):
+            resolved.append(s)
+            continue
+        if s.get("workstation_group_uuid"):
+            resolved.append(s)
+            continue
+        needle = str(s.get("name") or "").strip().casefold()
+        match = by_name.get(needle)
+        if match is None:
+            resolved.append(s)
+            continue
+        merged = dict(s)
+        merged["workstation_group_uuid"] = str(match.get("uuid") or "")
+        merged["workstation_group_name"] = str(match.get("name") or "")
+        resolved.append(merged)
+    return resolved
+
+
+class FormulationApplyStageTemplateView(APIView):
+    """``POST`` ``/.../formulations/<id>/apply-stage-template/`` —
+    wholesale-replace the formulation's stages with the template's
+    ``stages_json``. Delegates to ``set_formulation_stages`` so the
+    existing invariants (exactly-one-finished promotion, orphan-line
+    reassignment on stage delete) all fire the same way as a normal
+    save.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.formulations.models import FormulationStageTemplate
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        raw = request.data if isinstance(request.data, dict) else {}
+        template_id = str(raw.get("template_id") or "").strip()
+        if not template_id:
+            return Response(
+                {"error": "invalid_payload", "detail": "template_id required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        template = (
+            FormulationStageTemplate.objects.filter(
+                organization=self.organization, id=template_id
+            ).first()
+        )
+        if template is None:
+            raise NotFound()
+
+        stages = template.stages_json or []
+        # Auto-resolve any missing workstation_group_uuid on apply by
+        # matching the stage name against PSP's workstation catalog.
+        # Templates authored before the workstation picker landed have
+        # ``workstation_group_uuid: null`` — but the stage NAMES
+        # ("Blending", "Encapsulation") already match PSP workstation
+        # names exactly. Rather than force the operator to hand-pick
+        # the same thing twice, resolve by name on apply so the stage
+        # cards land with the operation pre-selected.
+        stages = _resolve_workstations_by_name(
+            organization=self.organization, stages=stages
+        )
+        try:
+            set_formulation_stages(
+                formulation=formulation,
+                actor=request.user,
+                stages=stages,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_template", "detail": str(exc)},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        formulation.refresh_from_db()
+        return Response(
+            {
+                "summary": {
+                    "template_id": template_id,
+                    "template_name": template.name,
+                    "stages_applied": len(stages),
+                },
+                "formulation": FormulationReadSerializer(formulation).data,
+            },
+            status=status.HTTP_200_OK,
         )
 
 

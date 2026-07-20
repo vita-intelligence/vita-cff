@@ -1516,3 +1516,98 @@ class FormulationFile(models.Model):
 
     def __str__(self) -> str:
         return f"{self.formulation.name} · {self.kind} · {self.filename}"
+
+
+class FormulationStageTemplate(models.Model):
+    """Per-organization reusable stage graph — scientists pick one on
+    project create (or apply to an existing formulation) to seed the
+    stages tab without re-typing the same 3-5 rows every time.
+
+    ``stages_json`` is a list of dicts matching the UpsertStageInput
+    payload the wholesale-replace endpoint accepts, so applying a
+    template is a straight pass-through to ``set_formulation_stages``.
+
+    Templates are org-owned so an admin can tailor the default set to
+    their workflow (rename "Blend" to "Compound", swap in the org's
+    real workstation UUIDs, add a "QC Sampling" stage before Bottle).
+    A seed migration lands sensible defaults for every dosage form
+    on every existing org so nothing starts empty.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="formulation_stage_templates",
+    )
+    name = models.CharField(
+        _("template name"),
+        max_length=200,
+    )
+    description = models.TextField(
+        _("description"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Short human-readable summary shown next to the template "
+            "in the picker (e.g. 'Standard 3-stage capsule route')."
+        ),
+    )
+    #: Optional dosage-form hint. When set, the new-formulation dialog
+    #: auto-suggests this template as the operator picks a matching
+    #: dosage form. Blank = template shows for every dosage form.
+    dosage_form = models.CharField(
+        _("dosage form hint"),
+        max_length=32,
+        choices=DosageFormChoices.choices,
+        blank=True,
+        default="",
+    )
+    #: Ordered list of stage payloads. Shape mirrors
+    #: :class:`UpsertStageInput` on the FE so apply is a straight
+    #: pass-through with no field renaming.
+    stages_json: models.JSONField = models.JSONField(
+        _("stages"),
+        default=list,
+        blank=True,
+    )
+    #: Marks templates that came from the initial seed migration so
+    #: the UI can prevent accidental deletion of the reference set
+    #: (admins can still delete them via the settings CRUD when they
+    #: want to prune, but the default guardrail is on).
+    is_seeded = models.BooleanField(
+        _("is seeded"),
+        default=False,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("formulation stage template")
+        verbose_name_plural = _("formulation stage templates")
+        ordering = ("name",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="formulation_stage_template_unique_name_per_org",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.organization_id})"

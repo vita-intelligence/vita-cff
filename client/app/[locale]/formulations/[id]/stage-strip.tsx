@@ -29,7 +29,12 @@ import { Button } from "@heroui/react";
 import { ArrowDown, ArrowUp, ExternalLink, Loader2, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { useUpsertStages } from "@/services/formulations/hooks";
+import {
+  useApplyStageTemplate,
+  usePullPspBom,
+  useStageTemplates,
+  useUpsertStages,
+} from "@/services/formulations/hooks";
 import type {
   FormulationDto,
   FormulationStageDto,
@@ -195,16 +200,16 @@ function PspCodeChip({
  */
 function derivedPspIdentity(
   formulation: { id: string; code: string },
-  draft: Pick<StageDraft, "name" | "sort_order">,
-  isFinishedStage: boolean,
+  draft: Pick<StageDraft, "name" | "sort_order" | "psp_item_type">,
 ): { name: string; sku: string; description: string } {
   const stageLabel = draft.name?.trim() || `Stage ${draft.sort_order + 1}`;
+  const isFinished = draft.psp_item_type === "finished_product";
   return {
     name: `${formulation.code} — ${stageLabel}`,
-    sku: isFinishedStage
+    sku: isFinished
       ? `NPD-FINISHED-${formulation.id}`
       : `NPD-STAGE-${formulation.id}-${draft.sort_order}`,
-    description: isFinishedStage
+    description: isFinished
       ? `Auto-created by NPD for formulation ${formulation.code} on first BOM push.`
       : `Auto-created by NPD for formulation ${formulation.code} stage ${draft.sort_order + 1}.`,
   };
@@ -246,11 +251,7 @@ function toDraft(stage: FormulationStageDto): StageDraft {
 }
 
 
-function draftToInput(
-  draft: StageDraft,
-  index: number,
-  isTerminal: boolean,
-): UpsertStageInput {
+function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
   const emptyToNull = (v: string) => (v.trim() === "" ? null : v.trim());
   return {
     id: draft.id,
@@ -269,11 +270,7 @@ function draftToInput(
     other_variable_cost: emptyToNull(draft.other_variable_cost),
     other_variable_cost_basis: emptyToNull(draft.other_variable_cost_basis),
     worker_psp_uuids: draft.worker_psp_uuids,
-    // Role is pinned to position — the last stage in the array is
-    // always the shipping product (finished_product); every earlier
-    // stage is a semi-finished intermediate. The FE no longer
-    // exposes a toggle; role changes only by reordering.
-    psp_item_type: isTerminal ? "finished_product" : "semi_finished",
+    psp_item_type: draft.psp_item_type,
     psp_item_name: draft.psp_item_name.trim(),
     psp_item_external_sku: draft.psp_item_external_sku.trim(),
     psp_item_description: draft.psp_item_description.trim(),
@@ -519,11 +516,34 @@ export function StageStrip({
   );
   const [pickerOpened, setPickerOpened] = useState(false);
   const upsert = useUpsertStages(orgId, formulation.id);
+  const pullPspBom = usePullPspBom(orgId, formulation.id);
+  const applyTemplate = useApplyStageTemplate(orgId, formulation.id);
+  const stageTemplatesQuery = useStageTemplates(orgId);
+  const stageTemplates = stageTemplatesQuery.data?.items ?? [];
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  const [templateApplyError, setTemplateApplyError] = useState<string | null>(
+    null,
+  );
+  const [pullConfirmOpen, setPullConfirmOpen] = useState(false);
+  const [pullResult, setPullResult] = useState<null | {
+    lines: number;
+    mirrored: number;
+    reused: number;
+    unconvertible: readonly string[];
+  }>(null);
+  const [pullError, setPullError] = useState<string | null>(null);
 
   // Only fetch workstation groups when the operator touches a
   // stage's workstation dropdown — the builder mount shouldn't
   // trigger a PSP round-trip for every project view.
-  const wsQuery = usePspWorkstationGroups(orgId, { enabled: pickerOpened });
+  // Fetch workstation groups on mount (not gated behind picker-open)
+  // so drafts that already have a ``workstation_group_uuid`` — from a
+  // stage-template apply, a rehydration after save, or a legacy row —
+  // can resolve the uuid to the visible option label. Without this
+  // eager fetch the ``<select>`` has a ``value`` set but no matching
+  // ``<option>`` yet, so it renders the empty placeholder and looks
+  // like the pick was lost. staleTime on the hook keeps this cheap.
+  const wsQuery = usePspWorkstationGroups(orgId);
   const wsOptions = useMemo(
     () => wsQuery.data?.items ?? [],
     [wsQuery.data],
@@ -621,6 +641,21 @@ export function StageStrip({
     });
   }, [drafts, formulation.stages]);
 
+  // "Save + sync" should also be clickable when nothing changed
+  // locally but a stage hasn't been pushed to PSP yet — otherwise
+  // scientists get stuck with a "not on PSP yet" hint next to a
+  // disabled button. Any stage missing its PSP mirror uuid counts;
+  // the terminal stage uses the formulation-level
+  // ``psp_finished_product_uuid`` instead of its own semi uuid.
+  const needsSync = useMemo(() => {
+    return formulation.stages.some((s) => {
+      if (s.psp_item_type === "finished_product") {
+        return !pspFinishedProductUuid;
+      }
+      return !s.psp_semi_finished_uuid;
+    });
+  }, [formulation.stages, pspFinishedProductUuid]);
+
   function updateDraft(clientKey: string, patch: Partial<StageDraft>) {
     setDrafts((prev) =>
       prev.map((d) => (d.clientKey === clientKey ? { ...d, ...patch } : d)),
@@ -682,14 +717,216 @@ export function StageStrip({
 
   function save() {
     upsert.mutate({
-      stages: drafts.map((d, i) =>
-        draftToInput(d, i, i === drafts.length - 1),
-      ),
+      stages: drafts.map((d, i) => draftToInput(d, i)),
     });
   }
 
+  const runPull = () => {
+    setPullError(null);
+    pullPspBom.mutate(undefined, {
+      onSuccess: (result) => {
+        setPullConfirmOpen(false);
+        setPullResult({
+          lines: result.summary.lines_pulled,
+          mirrored: result.summary.items_mirrored,
+          reused: result.summary.items_reused,
+          unconvertible: result.summary.unconvertible_uom_lines,
+        });
+        // Re-hydrate drafts from the fresh formulation server-side
+        // returned so stage cards + BOM totals reflect the pulled
+        // state without a manual page refresh.
+        setDrafts(result.formulation.stages.map(toDraft));
+        onSaved?.(result.formulation);
+      },
+      onError: (err) => {
+        setPullError(err.message || "PSP pull failed.");
+      },
+    });
+  };
+
+  const runApplyTemplate = (templateId: string) => {
+    setTemplateApplyError(null);
+    applyTemplate.mutate(templateId, {
+      onSuccess: (result) => {
+        setDrafts(result.formulation.stages.map(toDraft));
+        onSaved?.(result.formulation);
+        setTemplatePickerOpen(false);
+      },
+      onError: (err) => {
+        setTemplateApplyError(err.message || "Couldn't apply template.");
+      },
+    });
+  };
+
   return (
     <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      {templatePickerOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-1000/40 p-4"
+          onClick={() =>
+            applyTemplate.isPending ? null : setTemplatePickerOpen(false)
+          }
+        >
+          <div
+            className="w-full max-w-lg rounded-2xl bg-ink-0 p-5 shadow-xl ring-1 ring-ink-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold text-ink-1000">
+              Apply stage template
+            </h2>
+            <p className="mt-1 text-xs text-ink-600">
+              Wholesale-replaces this project&apos;s stages with the
+              template&apos;s. Existing stages + their lines are
+              re-linked where names match; lines that reference a
+              stage that&apos;s removed fall back to the terminal
+              stage.
+            </p>
+            {templateApplyError ? (
+              <p className="mt-3 rounded-lg bg-red-50 p-2 text-[12px] text-red-700 ring-1 ring-inset ring-red-200">
+                {templateApplyError}
+              </p>
+            ) : null}
+            <ul className="mt-4 max-h-80 divide-y divide-ink-100 overflow-y-auto rounded-xl ring-1 ring-ink-200">
+              {stageTemplates.map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-start justify-between gap-3 p-3 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="font-medium text-ink-1000">{t.name}</p>
+                    {t.description ? (
+                      <p className="mt-0.5 text-[11px] text-ink-600">
+                        {t.description}
+                      </p>
+                    ) : null}
+                    <p className="mt-1 text-[10px] uppercase tracking-wide text-ink-500">
+                      {t.stages.length} stage
+                      {t.stages.length === 1 ? "" : "s"}
+                      {t.dosage_form ? ` · ${t.dosage_form}` : ""}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => runApplyTemplate(t.id)}
+                    disabled={applyTemplate.isPending}
+                    className="inline-flex items-center gap-1 rounded-lg bg-orange-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+                  >
+                    {applyTemplate.isPending ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : null}
+                    Apply
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setTemplatePickerOpen(false)}
+                disabled={applyTemplate.isPending}
+                className="rounded-lg px-3 py-1.5 text-sm text-ink-700 hover:bg-ink-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pullConfirmOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink-1000/40 p-4"
+          onClick={() => (pullPspBom.isPending ? null : setPullConfirmOpen(false))}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl bg-ink-0 p-5 shadow-xl ring-1 ring-ink-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 className="text-base font-semibold text-ink-1000">
+              Replace finished-stage BOM with PSP&apos;s?
+            </h2>
+            <p className="mt-2 text-sm text-ink-700">
+              PSP is treated as source of truth here. This will
+              wholesale-replace the finished stage&apos;s ingredient
+              lines ({" "}
+              <span className="font-medium">
+                {drafts.length > 0
+                  ? lines.filter(
+                      (l) =>
+                        l.stage_id === null ||
+                        l.stage_id === drafts[drafts.length - 1]?.id,
+                    ).length
+                  : 0}{" "}
+                current
+              </span>{" "}
+              → PSP&apos;s active BOM). Semi-finished stages stay
+              intact.
+            </p>
+            <p className="mt-2 text-[12px] text-ink-600">
+              A snapshot version labelled{" "}
+              <span className="font-mono">pre-pull-from-psp</span> is
+              saved before the overwrite, so you can roll back from
+              the version drawer if the wrong recipe was pulled.
+            </p>
+            {pullError ? (
+              <p className="mt-3 rounded-lg bg-red-50 p-2 text-[12px] text-red-700 ring-1 ring-inset ring-red-200">
+                {pullError}
+              </p>
+            ) : null}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setPullConfirmOpen(false)}
+                disabled={pullPspBom.isPending}
+                className="rounded-lg px-3 py-1.5 text-sm text-ink-700 hover:bg-ink-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={runPull}
+                disabled={pullPspBom.isPending}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-orange-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+              >
+                {pullPspBom.isPending ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : null}
+                Replace with PSP&apos;s BOM
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {pullResult ? (
+        <div className="mb-3 flex items-start justify-between gap-3 rounded-xl bg-green-50 p-3 text-[12px] text-green-800 ring-1 ring-inset ring-green-200">
+          <div>
+            <p className="font-medium">
+              Loaded {pullResult.lines} lines from PSP.
+            </p>
+            <p className="mt-0.5 text-[11px]">
+              {pullResult.mirrored} newly mirrored,{" "}
+              {pullResult.reused} reused from existing mirrors.
+              {pullResult.unconvertible.length > 0 ? (
+                <>
+                  {" "}
+                  Non-mg UOMs stored verbatim (adjust in the builder):{" "}
+                  <span className="font-medium">
+                    {pullResult.unconvertible.join(", ")}
+                  </span>
+                  .
+                </>
+              ) : null}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPullResult(null)}
+            className="rounded p-1 text-green-700 hover:bg-green-100"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
       <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
@@ -702,7 +939,22 @@ export function StageStrip({
           </p>
         </div>
         {canEdit ? (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {stageTemplates.length > 0 ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setTemplateApplyError(null);
+                  setTemplatePickerOpen(true);
+                }}
+                isDisabled={upsert.isPending || applyTemplate.isPending}
+                className="gap-1.5"
+              >
+                Apply template
+              </Button>
+            ) : null}
             <Button
               type="button"
               variant="outline"
@@ -719,11 +971,17 @@ export function StageStrip({
               variant="primary"
               size="sm"
               onClick={save}
-              isDisabled={!dirty || upsert.isPending}
+              isDisabled={(!dirty && !needsSync) || upsert.isPending}
               className="gap-1.5"
             >
               <Save className="h-4 w-4" />
-              {upsert.isPending ? "Saving…" : "Save stages"}
+              {upsert.isPending
+                ? "Saving + syncing…"
+                : dirty
+                  ? "Save + sync to PSP"
+                  : needsSync
+                    ? "Sync to PSP"
+                    : "Save + sync to PSP"}
             </Button>
           </div>
         ) : null}
@@ -765,15 +1023,40 @@ export function StageStrip({
               isTerminal &&
               terminalBomLines !== undefined &&
               terminalBomLines.length > 0;
+            const isFinishedCard =
+              draft.psp_item_type === "finished_product";
             return (
             <li
               key={draft.clientKey}
               className={
                 isActive
                   ? "rounded-xl bg-orange-50 p-4 ring-1 ring-inset ring-orange-300"
-                  : "rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
+                  : isFinishedCard
+                    ? "rounded-xl bg-ink-0 p-4 ring-2 ring-inset ring-orange-400"
+                    : "rounded-xl bg-ink-50 p-4 ring-1 ring-inset ring-ink-200"
               }
             >
+              {/* Big obvious role banner at the top of every stage
+                  card. Orange = finished product (the shipping SKU on
+                  PSP); grey = semi-finished intermediate. Removes any
+                  ambiguity about which stage will publish as MA00xxx
+                  vs which spawns its own semi-finished PSP item. */}
+              <div
+                className={
+                  isFinishedCard
+                    ? "mb-3 flex items-center justify-between gap-2 rounded-lg bg-orange-500 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-white"
+                    : "mb-3 flex items-center justify-between gap-2 rounded-lg bg-ink-200 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-ink-700"
+                }
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  {isFinishedCard ? "✦ Finished product" : "◇ Semi-finished"}
+                </span>
+                <span className="text-[10px] font-normal opacity-80">
+                  {isFinishedCard
+                    ? "Ships to PSP as this project's shipping SKU"
+                    : `Spawns its own PSP item · stage ${i + 1}`}
+                </span>
+              </div>
               {/* Per-stage PSP deep-link + Sync-now row. Renders only
                   when PSP is live for the org AND the stage already has
                   an item on PSP (or, for the terminal stage, the
@@ -783,13 +1066,14 @@ export function StageStrip({
                   scientist wants to prototype one stage's BOM without
                   going through the whole Save Version flow. */}
               {(() => {
-                // Role is pinned to position — the last stage in the
-                // list is the finished product; every earlier stage is
-                // a semi-finished intermediate. Non-terminal stages
-                // deep-link to their own semi-finished uuid; the
-                // terminal stage links to the formulation's shared
-                // finished-product uuid.
-                const isFinishedStage = isTerminal;
+                // Which PSP item this stage produces depends on the
+                // stage's own ``psp_item_type`` — NOT its position in
+                // the list. A semi-finished stage that happens to be
+                // last still maps to its own semi-finished uuid; only
+                // stages explicitly marked ``finished_product``
+                // resolve to the formulation's finished-product uuid.
+                const isFinishedStage =
+                  draft.psp_item_type === "finished_product";
                 const stagePspUuid = isFinishedStage
                   ? pspFinishedProductUuid ?? null
                   : formulation.stages.find(
@@ -822,25 +1106,37 @@ export function StageStrip({
                         Open on PSP
                       </a>
                     ) : null}
-                    {canShowSync ? (
+                    {/* Load-from-PSP: pulls the finished-product item's
+                        active primary BOM and wholesale-replaces the
+                        finished stage's lines. Only shows on stages
+                        marked ``finished_product`` AND when the
+                        formulation is linked to a PSP item — otherwise
+                        there's no BOM to pull. */}
+                    {isFinishedStage &&
+                    !!pspFinishedProductUuid &&
+                    canEdit ? (
                       <button
                         type="button"
-                        onClick={() => onSyncNow?.()}
-                        disabled={syncPending}
+                        onClick={() => {
+                          setPullError(null);
+                          setPullResult(null);
+                          setPullConfirmOpen(true);
+                        }}
+                        disabled={pullPspBom.isPending}
                         className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-2 py-1 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
-                        title="Push the current in-memory BOM cascade to PSP without cutting a version. Idempotent — safe to re-run."
+                        title="Replace this stage's ingredient list with PSP's active BOM. Auto-snapshots the current state to a new version before overwriting."
                       >
-                        {syncPending ? (
+                        {pullPspBom.isPending ? (
                           <Loader2 className="h-3 w-3 animate-spin" />
                         ) : (
-                          <Save className="h-3 w-3" />
+                          <ExternalLink className="h-3 w-3 rotate-180" />
                         )}
-                        Sync now
+                        Load BOM from PSP
                       </button>
                     ) : null}
-                    {!canShowPspLink && canShowSync ? (
-                      <span className="text-ink-500">
-                        Not on PSP yet — Sync now to create it.
+                    {!canShowPspLink ? (
+                      <span className="rounded-md bg-amber-50 px-2 py-1 font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+                        Not on PSP yet — save the stages to create it.
                       </span>
                     ) : null}
                   </div>
@@ -996,13 +1292,9 @@ export function StageStrip({
                     <button
                       type="button"
                       onClick={() => removeStage(draft.clientKey)}
-                      disabled={upsert.isPending || isTerminal}
+                      disabled={upsert.isPending}
                       className="rounded p-1 text-red-600 hover:bg-red-50 disabled:opacity-30"
-                      title={
-                        isTerminal
-                          ? "The finished-product stage is pinned — add another stage below to make this one removable."
-                          : "Remove stage"
-                      }
+                      title="Remove stage"
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -1020,11 +1312,7 @@ export function StageStrip({
                   derived values so the scientist sees what's live and
                   can edit in place. */}
               {(() => {
-                const derived = derivedPspIdentity(
-                  formulation,
-                  draft,
-                  isTerminal,
-                );
+                const derived = derivedPspIdentity(formulation, draft);
                 const nameOverridden = !!draft.psp_item_name;
                 const skuOverridden = !!draft.psp_item_external_sku;
                 const descriptionOverridden = !!draft.psp_item_description;
@@ -1047,45 +1335,50 @@ export function StageStrip({
                   };
                 return (
               <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                    PSP identity
-                  </p>
-                  {isTerminal ? (
-                    <span
-                      className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-800 ring-1 ring-inset ring-orange-300"
-                      title="Terminal stage — becomes the formulation's finished product on PSP. Add another stage below to keep this one as semi-finished."
-                    >
-                      Finished product · pinned
-                    </span>
-                  ) : (
-                    <span
-                      className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-600"
-                      title="Non-terminal stage — becomes its own semi-finished PSP item on push."
-                    >
-                      Semi-finished
-                    </span>
-                  )}
-                </div>
-                <div className="mt-2">
-                  <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                  PSP identity
+                </p>
+                <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-[minmax(0,0.6fr)_minmax(0,1fr)]">
+                  <div>
                     <label className="text-xs font-medium text-ink-600">
-                      External SKU (code)
+                      Item type
                     </label>
-                    <AutoOrCustomBadge overridden={skuOverridden} />
+                    <select
+                      value={draft.psp_item_type}
+                      onChange={(e) =>
+                        updateDraft(draft.clientKey, {
+                          psp_item_type: e.target.value as
+                            | "semi_finished"
+                            | "finished_product",
+                        })
+                      }
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1`}
+                    >
+                      <option value="semi_finished">Semi-finished</option>
+                      <option value="finished_product">Finished product</option>
+                    </select>
                   </div>
-                  <input
-                    value={skuShown}
-                    onChange={(e) =>
-                      applyOverride(
-                        "psp_item_external_sku",
-                        e.target.value,
-                        derived.sku,
-                      )
-                    }
-                    disabled={!canEdit || upsert.isPending}
-                    className={`${inputClass} mt-1 ${skuOverridden ? "" : "text-ink-500"}`}
-                  />
+                  <div>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-medium text-ink-600">
+                        External SKU (code)
+                      </label>
+                      <AutoOrCustomBadge overridden={skuOverridden} />
+                    </div>
+                    <input
+                      value={skuShown}
+                      onChange={(e) =>
+                        applyOverride(
+                          "psp_item_external_sku",
+                          e.target.value,
+                          derived.sku,
+                        )
+                      }
+                      disabled={!canEdit || upsert.isPending}
+                      className={`${inputClass} mt-1 ${skuOverridden ? "" : "text-ink-500"}`}
+                    />
+                  </div>
                 </div>
                 <div className="mt-2">
                   <div className="flex items-center justify-between gap-2">
@@ -1212,7 +1505,7 @@ export function StageStrip({
                     })
                   }
                 />
-                {isTerminal ? (
+                {draft.psp_item_type === "finished_product" ? (
                   <p className="mt-3 rounded-lg bg-ink-50/60 p-3 text-[11px] leading-snug text-ink-500 ring-1 ring-inset ring-ink-100">
                     <span className="font-medium">Finished-product spec</span>{" "}
                     (regulatory category, net qty, servings per pack,

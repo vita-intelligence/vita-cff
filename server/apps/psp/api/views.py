@@ -36,10 +36,12 @@ from apps.psp.services import (
     PspError,
     PspInvalidConfig,
     PspMirrorItemNotFound,
+    PspCreateFinishedProductFailed,
     PspNotConfigured,
     PspRateLimited,
     PspUnreachable,
     clear_psp_config,
+    create_psp_finished_product,
     get_psp_item,
     list_psp_allergens,
     list_psp_items,
@@ -416,6 +418,90 @@ class PspProductFamiliesListView(APIView):
     def get(self, request: Request, org_id: str) -> Response:
         rows = list_psp_product_families(organization=self.organization)
         return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspCreateFinishedProductView(APIView):
+    """``POST`` ``/api/organizations/<org>/integrations/psp/finished-products/``.
+
+    Create a brand-new PSP finished-product item on demand — powers
+    the "Create new PSP item" branch of the New-formulation dialog.
+
+    The New-formulation flow needs a finished-product uuid to link
+    against; historically the scientist could only pick an existing
+    PSP item. When a CFF lands with a genuinely new SKU the scientist
+    now hits Create new, fills a short name / SKU form, and the
+    returned uuid feeds straight into ``create_formulation``.
+
+    Payload:
+
+        {"name": "Vitamin C 500mg — 60ct", "external_sku": "VC500-60",
+         "description": "…", "barcode": "05012345678900"}
+
+    ``name`` is required; everything else optional. Blank
+    ``external_sku`` auto-generates a ``NPD-FP-<random-hex>`` fallback
+    (PSP requires the field for idempotency).
+
+    Response mirrors the PSP wire shape:
+
+        {"uuid", "name", "external_sku", "code", "created"}
+
+    ``created: false`` means the SKU collided with an existing PSP
+    row — the caller gets the existing uuid back so the link is
+    still established. This matches how PSP's write endpoint always
+    behaves; NPD doesn't invent a new race here.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(self, request: Request, org_id: str) -> Response:
+        raw = request.data if isinstance(request.data, dict) else {}
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"error": "invalid_payload", "detail": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            response = create_psp_finished_product(
+                organization=self.organization,
+                actor=request.user,
+                name=name,
+                external_sku=str(raw.get("external_sku") or ""),
+                description=str(raw.get("description") or ""),
+                barcode=str(raw.get("barcode") or ""),
+            )
+        except PspNotConfigured as exc:
+            return Response(
+                {"error": "psp_not_configured", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspAuthFailed as exc:
+            return Response(
+                {"error": "psp_auth_failed", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PspRateLimited as exc:
+            return Response(
+                {"error": "psp_rate_limited", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PspCreateFinishedProductFailed as exc:
+            return Response(
+                {
+                    "error": "psp_create_finished_product_failed",
+                    "detail": str(exc),
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except (PspUnreachable, PspError) as exc:
+            return Response(
+                {"error": "psp_unreachable", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(response, status=status.HTTP_201_CREATED)
 
 
 def _serialize_item(item: Any) -> dict[str, Any]:

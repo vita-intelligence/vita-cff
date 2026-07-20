@@ -28,6 +28,17 @@ import {
   fetchFormulations,
   fetchFormulationsPage,
   fetchProjectOverview,
+  applyStageTemplate,
+  createStageTemplate,
+  deleteStageTemplate,
+  fetchStageTemplates,
+  updateStageTemplate,
+  type ApplyStageTemplateResponseDto,
+  type StageTemplateDto,
+  type StageTemplateListResponseDto,
+  type UpsertStageTemplateRequestDto,
+  pullPspBomIntoFormulation,
+  type PullPspBomResponseDto,
   replaceFormulationLines,
   rollbackFormulation,
   saveFormulationVersion,
@@ -113,6 +124,8 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "photos", formulationId] as const,
   files: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "files", formulationId] as const,
+  stageTemplates: (orgId: string) =>
+    [...formulationsQueryKeys.all, orgId, "stage-templates"] as const,
 } as const;
 
 export function useFormulations(
@@ -465,6 +478,37 @@ export function useSyncFormulationToPsp(
   });
 }
 
+/**
+ * Wholesale-hydrate the finished-stage BOM from PSP's active primary
+ * BOM. On success, the server has already saved a ``pre-pull-from-psp``
+ * version snapshot so the pre-pull state is in the version drawer for
+ * rollback. Invalidates detail + totals + versions so the builder
+ * reloads the fresh lines + refreshed version list without a page
+ * refresh.
+ */
+export function usePullPspBom(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<PullPspBomResponseDto, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<PullPspBomResponseDto, ApiError, void>({
+    mutationFn: () => pullPspBomIntoFormulation(orgId, formulationId),
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        result.formulation,
+      );
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.totals(orgId, formulationId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.versions(orgId, formulationId),
+      });
+    },
+  });
+}
+
+
 export function useRollbackFormulation(
   orgId: string,
   formulationId: string,
@@ -662,6 +706,110 @@ export function useDeleteFormulationFile(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.files(orgId, formulationId),
+      });
+    },
+  });
+}
+
+
+/**
+ * Fetch the org's stage templates. Enabled by default because the
+ * New-formulation dialog + Stages tab picker both need the list up
+ * front — but honours ``enabled`` so callers can gate on dialog open.
+ */
+export function useStageTemplates(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<StageTemplateListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<StageTemplateListResponseDto, ApiError>({
+    queryKey: formulationsQueryKeys.stageTemplates(orgId),
+    queryFn: () => fetchStageTemplates(orgId),
+    enabled: Boolean(orgId) && enabled,
+    // Templates change rarely — a 10-min stale window is plenty.
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+
+export function useApplyStageTemplate(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<ApplyStageTemplateResponseDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<ApplyStageTemplateResponseDto, ApiError, string>({
+    mutationFn: (templateId: string) =>
+      applyStageTemplate(orgId, formulationId, templateId),
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        result.formulation,
+      );
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.totals(orgId, formulationId),
+      });
+    },
+  });
+}
+
+
+export function useCreateStageTemplate(
+  orgId: string,
+): UseMutationResult<
+  StageTemplateDto,
+  ApiError,
+  UpsertStageTemplateRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    StageTemplateDto,
+    ApiError,
+    UpsertStageTemplateRequestDto
+  >({
+    mutationFn: (payload) => createStageTemplate(orgId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.stageTemplates(orgId),
+      });
+    },
+  });
+}
+
+
+export function useUpdateStageTemplate(
+  orgId: string,
+): UseMutationResult<
+  StageTemplateDto,
+  ApiError,
+  { templateId: string; patch: Partial<UpsertStageTemplateRequestDto> }
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    StageTemplateDto,
+    ApiError,
+    { templateId: string; patch: Partial<UpsertStageTemplateRequestDto> }
+  >({
+    mutationFn: ({ templateId, patch }) =>
+      updateStageTemplate(orgId, templateId, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.stageTemplates(orgId),
+      });
+    },
+  });
+}
+
+
+export function useDeleteStageTemplate(
+  orgId: string,
+): UseMutationResult<void, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (templateId: string) =>
+      deleteStageTemplate(orgId, templateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.stageTemplates(orgId),
       });
     },
   });

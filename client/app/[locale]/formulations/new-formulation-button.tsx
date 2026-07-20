@@ -16,6 +16,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Chip } from "@/components/ui/chip";
 import { MrpeasyItemPicker } from "@/components/mrpeasy/mrpeasy-item-picker";
 import { PspItemPicker } from "@/components/psp/psp-item-picker";
+import { useCreatePspFinishedProduct } from "@/services/psp";
 import { useRouter } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import { translateCode } from "@/lib/errors/translate";
@@ -25,8 +26,10 @@ import {
   type IngredientSuggestionDto,
 } from "@/services/ai";
 import {
+  applyStageTemplate,
   replaceFormulationLines,
   useCreateFormulation,
+  useStageTemplates,
   type DosageForm,
   type FormulationLineInput,
 } from "@/services/formulations";
@@ -225,8 +228,29 @@ export function NewFormulationButton({
   const [pspFinishedProductUuid, setPspFinishedProductUuid] = useState<
     string | null
   >(null);
+  // "Create new PSP item" branch state — collapsed by default, opens
+  // an inline form the scientist can fill in without leaving the
+  // dialog. Successful create populates ``pspFinishedProductUuid``
+  // (same slot the picker uses) so the downstream flow doesn't need
+  // to branch on whether the item was picked or created.
+  const [pspCreateOpen, setPspCreateOpen] = useState(false);
+  const [pspNewName, setPspNewName] = useState("");
+  const [pspNewSku, setPspNewSku] = useState("");
+  const [pspNewDescription, setPspNewDescription] = useState("");
+  const [pspNewBarcode, setPspNewBarcode] = useState("");
+  const [pspCreateError, setPspCreateError] = useState<string | null>(null);
+  // Shown after a successful create so the scientist can see what
+  // was just linked. Kept until the dialog closes.
+  const [pspCreatedChip, setPspCreatedChip] = useState<{
+    name: string;
+    externalSku: string;
+  } | null>(null);
   const [description, setDescription] = useState(initialDescription ?? "");
   const [dosageForm, setDosageForm] = useState<DosageForm>("capsule");
+  // Optional stage template applied post-create so the Stages tab
+  // isn't blank when the scientist lands there. Empty string = skip
+  // (formulation created with no stages, matching legacy behaviour).
+  const [stageTemplateId, setStageTemplateId] = useState<string>("");
   const [servingsPerPack, setServingsPerPack] = useState(60);
   const [servingSize, setServingSize] = useState(1);
   const [directionsOfUse, setDirectionsOfUse] = useState("");
@@ -237,6 +261,11 @@ export function NewFormulationButton({
 
   const draftMutation = useGenerateFormulationDraft(orgId);
   const createMutation = useCreateFormulation(orgId);
+  const createPspFinishedMutation = useCreatePspFinishedProduct(orgId);
+  // Load once when the dialog mounts. staleTime on the hook keeps
+  // subsequent opens cheap.
+  const stageTemplatesQuery = useStageTemplates(orgId);
+  const stageTemplates = stageTemplatesQuery.data?.items ?? [];
   // CFF triage path uses a dedicated endpoint that creates the
   // project + attaches the CFF + auto-assigns the sales person
   // in one transaction. Both hooks are instantiated so the choice
@@ -259,8 +288,16 @@ export function NewFormulationButton({
     setCode("");
     setName("");
     setPspFinishedProductUuid(null);
+    setPspCreateOpen(false);
+    setPspNewName("");
+    setPspNewSku("");
+    setPspNewDescription("");
+    setPspNewBarcode("");
+    setPspCreateError(null);
+    setPspCreatedChip(null);
     setDescription(initialDescription ?? "");
     setDosageForm("capsule");
+    setStageTemplateId("");
     setServingsPerPack(60);
     setServingSize(1);
     setDirectionsOfUse("");
@@ -368,6 +405,19 @@ export function NewFormulationButton({
         ? await submitViaCFF()
         : await submitDirect();
       if (projectId === null) return;
+
+      // Optional stage-template seed. Fires after the project (and
+      // any AI-matched lines) exist so the wholesale-replace endpoint
+      // can attach lines to the freshly-created stages. Silent-degrade
+      // on failure — the project is already created, so we don't
+      // want a template apply blip to poison the redirect.
+      if (stageTemplateId) {
+        try {
+          await applyStageTemplate(orgId, projectId, stageTemplateId);
+        } catch {
+          // Non-fatal; scientist can re-apply from the Stages tab.
+        }
+      }
 
       close();
       router.push(`/formulations/${projectId}`);
@@ -606,8 +656,177 @@ export function NewFormulationButton({
                     setCode(item.code);
                     setName(item.title);
                     setPspFinishedProductUuid(item.uuid);
+                    setPspCreatedChip(null);
                   }}
                 />
+                {/* "Create new PSP item" branch — visible only when
+                    PSP is the live integration. Fires a POST to
+                    /integrations/psp/finished-products/ and populates
+                    the same code/name/uuid state slots the picker
+                    fills, so the downstream ``create_formulation``
+                    call doesn't need to branch on how the item got
+                    there. */}
+                {pspLive ? (
+                  <div className="rounded-lg bg-ink-50 p-3 ring-1 ring-inset ring-ink-200">
+                    {pspCreatedChip ? (
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-medium text-ink-700">
+                            New PSP item linked
+                          </p>
+                          <p className="mt-0.5 text-[11px] text-ink-600">
+                            <span className="font-medium">
+                              {pspCreatedChip.name}
+                            </span>{" "}
+                            · SKU {pspCreatedChip.externalSku}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPspCreatedChip(null);
+                            setPspFinishedProductUuid(null);
+                            setCode("");
+                            setName("");
+                          }}
+                          className="rounded p-1 text-[11px] text-ink-500 hover:bg-ink-100"
+                        >
+                          Unlink
+                        </button>
+                      </div>
+                    ) : !pspCreateOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => setPspCreateOpen(true)}
+                        className="text-xs font-medium text-orange-600 hover:text-orange-700"
+                      >
+                        + Or create a brand-new PSP finished-product item
+                      </button>
+                    ) : (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-xs font-medium text-ink-700">
+                          Create new PSP item (finished product)
+                        </p>
+                        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[11px] text-ink-600">
+                              Name *
+                            </span>
+                            <input
+                              value={pspNewName}
+                              onChange={(e) => setPspNewName(e.target.value)}
+                              placeholder="e.g. Vitamin C 500 mg — 60 ct"
+                              maxLength={200}
+                              className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1">
+                            <span className="text-[11px] text-ink-600">
+                              External SKU (optional)
+                            </span>
+                            <input
+                              value={pspNewSku}
+                              onChange={(e) => setPspNewSku(e.target.value)}
+                              placeholder="Blank → auto NPD-FP-…"
+                              maxLength={100}
+                              className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 md:col-span-2">
+                            <span className="text-[11px] text-ink-600">
+                              Description (optional)
+                            </span>
+                            <input
+                              value={pspNewDescription}
+                              onChange={(e) =>
+                                setPspNewDescription(e.target.value)
+                              }
+                              maxLength={500}
+                              className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                            />
+                          </label>
+                          <label className="flex flex-col gap-1 md:col-span-2">
+                            <span className="text-[11px] text-ink-600">
+                              Barcode (GTIN, optional)
+                            </span>
+                            <input
+                              value={pspNewBarcode}
+                              onChange={(e) => setPspNewBarcode(e.target.value)}
+                              placeholder="e.g. 05012345678900"
+                              maxLength={32}
+                              className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                            />
+                          </label>
+                        </div>
+                        {pspCreateError ? (
+                          <p className="rounded bg-red-50 p-2 text-[11px] text-red-700 ring-1 ring-inset ring-red-200">
+                            {pspCreateError}
+                          </p>
+                        ) : null}
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPspCreateOpen(false);
+                              setPspCreateError(null);
+                            }}
+                            disabled={createPspFinishedMutation.isPending}
+                            className="rounded-lg px-2.5 py-1 text-xs text-ink-700 hover:bg-ink-100 disabled:opacity-50"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              setPspCreateError(null);
+                              const trimmedName = pspNewName.trim();
+                              if (!trimmedName) {
+                                setPspCreateError("Name is required.");
+                                return;
+                              }
+                              try {
+                                const res =
+                                  await createPspFinishedMutation.mutateAsync({
+                                    name: trimmedName,
+                                    external_sku: pspNewSku.trim() || undefined,
+                                    description:
+                                      pspNewDescription.trim() || undefined,
+                                    barcode: pspNewBarcode.trim() || undefined,
+                                  });
+                                setPspFinishedProductUuid(res.uuid);
+                                // Prefer PSP's system numbering code
+                                // (``MA00295``) — that's the value the
+                                // scientist recognises. Fall back to
+                                // the load-bearing ``external_sku`` on
+                                // older PSP builds that don't emit
+                                // ``code`` on the create response.
+                                setCode(res.code || res.external_sku);
+                                setName(res.name);
+                                setPspCreatedChip({
+                                  name: res.name,
+                                  externalSku: res.code || res.external_sku,
+                                });
+                                setPspCreateOpen(false);
+                              } catch (err) {
+                                setPspCreateError(
+                                  err instanceof Error
+                                    ? err.message
+                                    : "Couldn't create the PSP item.",
+                                );
+                              }
+                            }}
+                            disabled={createPspFinishedMutation.isPending}
+                            className="inline-flex items-center gap-1 rounded-lg bg-orange-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-orange-600 disabled:opacity-50"
+                          >
+                            {createPspFinishedMutation.isPending
+                              ? "Creating…"
+                              : "Create + link"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : null}
 
                 <div className="flex flex-col gap-1.5">
                   <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
@@ -722,6 +941,63 @@ export function NewFormulationButton({
                     />
                   </label>
                 </div>
+
+                {/* Stage template — optional. Seeds the Stages tab
+                    with a canonical route so the scientist doesn't
+                    start with a blank canvas. Filtered by the picked
+                    dosage form so the dropdown surfaces the most
+                    relevant options first; templates without a
+                    ``dosage_form`` hint always show. */}
+                {stageTemplates.length > 0 ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      Stage template
+                    </span>
+                    <select
+                      value={stageTemplateId}
+                      onChange={(e) => setStageTemplateId(e.target.value)}
+                      className="w-full cursor-pointer rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    >
+                      <option value="">— no template (blank) —</option>
+                      {(() => {
+                        const matching = stageTemplates.filter(
+                          (t) => !t.dosage_form || t.dosage_form === dosageForm,
+                        );
+                        const others = stageTemplates.filter(
+                          (t) => t.dosage_form && t.dosage_form !== dosageForm,
+                        );
+                        return (
+                          <>
+                            {matching.map((t) => (
+                              <option key={t.id} value={t.id}>
+                                {t.name}
+                                {t.stages.length > 0
+                                  ? ` (${t.stages.length} stages)`
+                                  : ""}
+                              </option>
+                            ))}
+                            {others.length > 0 ? (
+                              <optgroup label="Other dosage forms">
+                                {others.map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name}
+                                    {t.stages.length > 0
+                                      ? ` (${t.stages.length} stages)`
+                                      : ""}
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ) : null}
+                          </>
+                        );
+                      })()}
+                    </select>
+                    <p className="text-[11px] text-ink-500">
+                      Optional. Seeds the Stages tab on create; you
+                      can also apply / re-apply from the Stages tab.
+                    </p>
+                  </label>
+                ) : null}
 
                 {/* ------------------------------------------------- */}
                 {/* AI-only extras — surfaced only when populated so  */}

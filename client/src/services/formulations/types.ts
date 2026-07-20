@@ -854,4 +854,9 @@ export interface ProjectOverviewDto {
   readonly compliance: ComplianceSnapshotDto;
   readonly totals: OverviewTotalsDto;
   readonly activity: readonly ProjectActivityEntryDto[];
+  /** PSP finished-product UUID this project is linked to. Powers
+   *  the "Open on PSP" chip in the workspace header + shortcuts to
+   *  the item's BOM on PSP. ``null`` when the formulation isn't
+   *  linked. */
+  readonly psp_finished_product_uuid: string | null;
 }

@@ -13,6 +13,7 @@ from apps.formulations.api.photo_file_views import (
     FormulationPhotosView,
 )
 from apps.formulations.api.views import (
+    FormulationApplyStageTemplateView,
     FormulationApprovedVersionView,
     FormulationCloneView,
     FormulationComputeView,
@@ -21,12 +22,15 @@ from apps.formulations.api.views import (
     FormulationLinesView,
     FormulationListCreateView,
     FormulationOverviewView,
+    FormulationPullPspBomView,
     FormulationRollbackView,
     FormulationSyncPspView,
     FormulationRTGPublishView,
     FormulationSalesPersonView,
     FormulationStagesView,
     FormulationVersionListView,
+    StageTemplateDetailView,
+    StageTemplateListView,
 )
 
 app_name = "formulations"
@@ -79,6 +83,33 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sync-psp/",
         FormulationSyncPspView.as_view(),
         name="formulation-sync-psp",
+    ),
+    # Hydrate the finished-stage BOM from PSP's primary BOM (PSP as
+    # source of truth). Auto-snapshots the pre-pull state so a
+    # mis-click is recoverable from the version drawer.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/pull-psp-bom/",
+        FormulationPullPspBomView.as_view(),
+        name="formulation-pull-psp-bom",
+    ),
+    # Stage templates — org-owned reusable stage graphs. List drives
+    # the New-formulation dropdown + Stages tab picker; apply
+    # wholesale-replaces the formulation's stages with the template's
+    # payload.
+    path(
+        "organizations/<uuid:org_id>/formulation-stage-templates/",
+        StageTemplateListView.as_view(),
+        name="stage-template-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulation-stage-templates/<uuid:template_id>/",
+        StageTemplateDetailView.as_view(),
+        name="stage-template-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/apply-stage-template/",
+        FormulationApplyStageTemplateView.as_view(),
+        name="formulation-apply-stage-template",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",

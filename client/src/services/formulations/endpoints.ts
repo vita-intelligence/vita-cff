@@ -28,6 +28,14 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/stages/`,
   syncPsp: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sync-psp/`,
+  pullPspBom: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/pull-psp-bom/`,
+  stageTemplates: (orgId: string) =>
+    `/api/organizations/${orgId}/formulation-stage-templates/`,
+  stageTemplateDetail: (orgId: string, templateId: string) =>
+    `/api/organizations/${orgId}/formulation-stage-templates/${templateId}/`,
+  applyStageTemplate: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/apply-stage-template/`,
   photos: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/photos/`,
   photoDetail: (orgId: string, formulationId: string, photoId: string) =>

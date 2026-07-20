@@ -166,6 +166,29 @@ export async function saveFormulationVersion(
  *  without cutting a version. Returns whether the sync fired and, if
  *  so, the finished-product uuid (either the pre-existing one or the
  *  one ``_ensure_finished_product`` just auto-created). */
+export interface PullPspBomSummaryDto {
+  readonly lines_pulled: number;
+  readonly items_mirrored: number;
+  readonly items_reused: number;
+  readonly unconvertible_uom_lines: readonly string[];
+  readonly pre_pull_version_number: number | null;
+}
+
+export interface PullPspBomResponseDto {
+  readonly summary: PullPspBomSummaryDto;
+  readonly formulation: FormulationDto;
+}
+
+export async function pullPspBomIntoFormulation(
+  orgId: string,
+  formulationId: string,
+): Promise<PullPspBomResponseDto> {
+  const { data } = await apiClient.post<PullPspBomResponseDto>(
+    formulationsEndpoints.pullPspBom(orgId, formulationId),
+  );
+  return data;
+}
+
 export interface SyncPspResponseDto {
   synced: boolean;
   finished_product_uuid?: string | null;
@@ -295,6 +318,109 @@ export async function upsertFormulationStages(
   const { data } = await apiClient.put<FormulationDto>(
     formulationsEndpoints.stages(orgId, formulationId),
     payload,
+  );
+  return data;
+}
+
+
+// ---- Stage templates ----------------------------------------------
+
+export interface StageTemplateStageDto {
+  readonly sort_order?: number;
+  readonly name?: string;
+  readonly stage_key?: string;
+  readonly psp_item_type?: "semi_finished" | "finished_product";
+  readonly workstation_group_uuid?: string | null;
+  readonly workstation_group_name?: string;
+  readonly operation_description?: string;
+  readonly setup_time_min?: string | null;
+  readonly cycle_time_min?: string | null;
+  readonly fixed_cost?: string | null;
+  readonly variable_cost?: string | null;
+  readonly capacity?: string | null;
+  readonly other_fixed_cost?: string | null;
+  readonly other_variable_cost?: string | null;
+  readonly other_variable_cost_basis?: string | null;
+}
+
+export interface StageTemplateDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly dosage_form: string;
+  readonly is_seeded: boolean;
+  readonly stages: readonly StageTemplateStageDto[];
+}
+
+export interface StageTemplateListResponseDto {
+  readonly items: readonly StageTemplateDto[];
+}
+
+export interface ApplyStageTemplateResponseDto {
+  readonly summary: {
+    readonly template_id: string;
+    readonly template_name: string;
+    readonly stages_applied: number;
+  };
+  readonly formulation: FormulationDto;
+}
+
+export async function fetchStageTemplates(
+  orgId: string,
+): Promise<StageTemplateListResponseDto> {
+  const { data } = await apiClient.get<StageTemplateListResponseDto>(
+    formulationsEndpoints.stageTemplates(orgId),
+  );
+  return data;
+}
+
+export interface UpsertStageTemplateRequestDto {
+  readonly name: string;
+  readonly description?: string;
+  readonly dosage_form?: string;
+  readonly stages: readonly StageTemplateStageDto[];
+}
+
+export async function createStageTemplate(
+  orgId: string,
+  payload: UpsertStageTemplateRequestDto,
+): Promise<StageTemplateDto> {
+  const { data } = await apiClient.post<StageTemplateDto>(
+    formulationsEndpoints.stageTemplates(orgId),
+    payload,
+  );
+  return data;
+}
+
+export async function updateStageTemplate(
+  orgId: string,
+  templateId: string,
+  patch: Partial<UpsertStageTemplateRequestDto>,
+): Promise<StageTemplateDto> {
+  const { data } = await apiClient.patch<StageTemplateDto>(
+    formulationsEndpoints.stageTemplateDetail(orgId, templateId),
+    patch,
+  );
+  return data;
+}
+
+export async function deleteStageTemplate(
+  orgId: string,
+  templateId: string,
+): Promise<void> {
+  await apiClient.delete(
+    formulationsEndpoints.stageTemplateDetail(orgId, templateId),
+  );
+}
+
+export async function applyStageTemplate(
+  orgId: string,
+  formulationId: string,
+  templateId: string,
+): Promise<ApplyStageTemplateResponseDto> {
+  const { data } = await apiClient.post<ApplyStageTemplateResponseDto>(
+    formulationsEndpoints.applyStageTemplate(orgId, formulationId),
+    { template_id: templateId },
   );
   return data;
 }

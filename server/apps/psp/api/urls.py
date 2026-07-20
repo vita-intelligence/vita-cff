@@ -3,6 +3,7 @@
 from django.urls import path
 
 from apps.psp.api.views import (
+    PspCreateFinishedProductView,
     PspIntegrationView,
     PspItemDetailView,
     PspItemListView,
@@ -86,5 +87,13 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/storage-tags/",
         PspStorageTagsListView.as_view(),
         name="psp-storage-tags",
+    ),
+    # Create a new PSP finished-product item from the New-formulation
+    # dialog when the scientist doesn't want to link an existing SKU.
+    # Locked to ``item_type=finished_product`` inside the service.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/finished-products/",
+        PspCreateFinishedProductView.as_view(),
+        name="psp-create-finished-product",
     ),
 ]

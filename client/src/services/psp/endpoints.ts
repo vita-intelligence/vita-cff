@@ -48,4 +48,6 @@ export const pspEndpoints = {
     `/api/organizations/${orgId}/integrations/psp/allergens/`,
   storageTags: (orgId: string) =>
     `/api/organizations/${orgId}/integrations/psp/storage-tags/`,
+  createFinishedProduct: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp/finished-products/`,
 } as const;
