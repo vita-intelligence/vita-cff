@@ -3,6 +3,7 @@
 import {
   ArrowLeft,
   Building2,
+  FlaskConical,
   Layers,
   Plug,
   ScrollText,
@@ -21,7 +22,8 @@ export type SettingsTabKey =
   | "members"
   | "integrations"
   | "audit-log"
-  | "labelling-templates";
+  | "labelling-templates"
+  | "stage-templates";
 
 
 const ALL_TABS: readonly SettingsTabKey[] = [
@@ -31,6 +33,7 @@ const ALL_TABS: readonly SettingsTabKey[] = [
   "integrations",
   "audit-log",
   "labelling-templates",
+  "stage-templates",
 ] as const;
 
 
@@ -105,6 +108,12 @@ export function SettingsShell({
         label: "Labelling templates",
         href: "/settings/labelling-templates",
         icon: <Layers className="h-4 w-4" />,
+      },
+      {
+        key: "stage-templates" as const,
+        label: "Stage templates",
+        href: "/settings/stage-templates",
+        icon: <FlaskConical className="h-4 w-4" />,
       },
     ] as const
   ).filter((tab) => allowedTabs.includes(tab.key));

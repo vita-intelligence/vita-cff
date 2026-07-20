@@ -152,6 +152,11 @@ class ProjectOverview:
     compliance: ComplianceSnapshot
     totals: TotalsSnapshot
     activity: list[ActivityEntry]
+    #: PSP finished-product UUID this project is linked to. Powers
+    #: the "Open on PSP" chip in the workspace header + the shortcut
+    #: to the item's BOM page on PSP. ``None`` for custom-only
+    #: formulations or orgs without PSP live.
+    psp_finished_product_uuid: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -598,4 +603,9 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         compliance=_compliance_snapshot(latest),
         totals=_totals_snapshot(latest),
         activity=_activity_feed(formulation),
+        psp_finished_product_uuid=(
+            str(formulation.psp_finished_product_uuid)
+            if formulation.psp_finished_product_uuid
+            else None
+        ),
     )

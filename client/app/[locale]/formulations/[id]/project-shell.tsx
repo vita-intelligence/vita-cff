@@ -2,6 +2,7 @@
 
 import {
   ArrowLeft,
+  ExternalLink,
   FileText,
   FlaskConical,
   LayoutDashboard,
@@ -124,14 +125,32 @@ function CompactHeader({
   organization: OrganizationDto;
   overview: ProjectOverviewDto;
 }) {
+  const pspHref =
+    organization.psp_base_url && overview.psp_finished_product_uuid
+      ? `${organization.psp_base_url}/production/items/${overview.psp_finished_product_uuid}`
+      : null;
   return (
     <header className="flex flex-wrap items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col">
-        {overview.code ? (
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            {overview.code}
-          </p>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-2">
+          {overview.code ? (
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              {overview.code}
+            </p>
+          ) : null}
+          {pspHref ? (
+            <a
+              href={pspHref}
+              target="_blank"
+              rel="noreferrer noopener"
+              title="Opens this project's linked PSP finished-product item + BOM in a new tab"
+              className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-orange-800 ring-1 ring-inset ring-orange-200 hover:bg-orange-100"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Open on PSP
+            </a>
+          ) : null}
+        </div>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
           {overview.name}
         </h1>

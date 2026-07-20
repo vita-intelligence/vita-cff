@@ -18,6 +18,7 @@ import { type ApiError } from "@/lib/api";
 
 import {
   clearPspConfig,
+  createPspFinishedProduct,
   fetchPspConfig,
   fetchPspItemDetail,
   fetchPspItems,
@@ -30,6 +31,8 @@ import {
   mirrorPspItem,
   savePspConfig,
   testPspConnection,
+  type CreatePspFinishedProductRequestDto,
+  type CreatePspFinishedProductResponseDto,
   type PspAllergensListResponseDto,
   type PspProductFamiliesListResponseDto,
   type PspStorageTagsListResponseDto,
@@ -286,6 +289,34 @@ export function useMirrorPspItem(
       // refetch to see it. Broad invalidation keeps the FE simple;
       // per-catalogue-slug scoping is an optimisation for later.
       qc.invalidateQueries({ queryKey: ["catalogues"] });
+    },
+  });
+}
+
+
+/**
+ * Create a brand-new PSP finished-product item so the New-formulation
+ * dialog can link it as ``psp_finished_product_uuid`` on the
+ * subsequent ``create_formulation`` call — no context switch to PSP
+ * required. Invalidates the PSP items list caches so a follow-up
+ * search inside the picker on the same page sees the new row.
+ */
+export function useCreatePspFinishedProduct(
+  orgId: string,
+): UseMutationResult<
+  CreatePspFinishedProductResponseDto,
+  ApiError,
+  CreatePspFinishedProductRequestDto
+> {
+  const qc = useQueryClient();
+  return useMutation<
+    CreatePspFinishedProductResponseDto,
+    ApiError,
+    CreatePspFinishedProductRequestDto
+  >({
+    mutationFn: (payload) => createPspFinishedProduct(orgId, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
     },
   });
 }

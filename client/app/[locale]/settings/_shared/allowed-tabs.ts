@@ -42,5 +42,14 @@ export function computeAllowedSettingsTabs(
   if (hasFlatCapability(primaryOrg, "labelling", "manage")) {
     tabs.push("labelling-templates");
   }
+  // Stage template library — curated by the R&D lead / permission
+  // admin. Hidden for scientists who can still apply templates from
+  // the New-formulation dialog + Stages tab but can't reshape the
+  // canonical set.
+  if (
+    hasFlatCapability(primaryOrg, "formulations", "manage_stage_templates")
+  ) {
+    tabs.push("stage-templates");
+  }
   return tabs;
 }

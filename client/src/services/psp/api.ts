@@ -228,3 +228,43 @@ export async function fetchPspProductFamilies(
     );
   return data;
 }
+
+
+/** New-formulation dialog: create a brand-new PSP finished-product
+ *  item so the scientist doesn't have to switch UIs when a CFF lands
+ *  with a genuinely new SKU. Server locks ``item_type`` to
+ *  ``finished_product``. Blank ``external_sku`` auto-generates
+ *  server-side. */
+export interface CreatePspFinishedProductRequestDto {
+  readonly name: string;
+  readonly external_sku?: string;
+  readonly description?: string;
+  readonly barcode?: string;
+}
+
+export interface CreatePspFinishedProductResponseDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly item_type: string;
+  readonly external_sku: string;
+  /** PSP's system-generated numbering-format code (``MA00295`` etc.).
+   *  This is the value the scientist sees on the PSP UI and what NPD
+   *  should render as the project "Code" — not the idempotency-key
+   *  ``external_sku``. Null on old PSP builds that predate the field
+   *  being on the create response. */
+  readonly code?: string | null;
+  readonly description?: string;
+  readonly is_active?: boolean;
+  readonly created: boolean;
+}
+
+export async function createPspFinishedProduct(
+  orgId: string,
+  payload: CreatePspFinishedProductRequestDto,
+): Promise<CreatePspFinishedProductResponseDto> {
+  const { data } = await apiClient.post<CreatePspFinishedProductResponseDto>(
+    pspEndpoints.createFinishedProduct(orgId),
+    payload,
+  );
+  return data;
+}
