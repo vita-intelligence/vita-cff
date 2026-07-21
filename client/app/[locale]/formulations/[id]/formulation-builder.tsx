@@ -61,6 +61,7 @@ import {
   useReplaceLines,
   useRollbackFormulation,
   useSaveVersion,
+  useSaveWizardRouting,
   useSyncFormulationToPsp,
   useSetApprovedVersion,
   useUpdateFormulation,
@@ -120,7 +121,12 @@ function resolveAutoPickedShell(
 // to drill into the ingredient builder scoped to that stage — same
 // panels (picker, lines, totals, fine-tune, compliance, declaration)
 // swap in place of the stage list with a back arrow to return.
-type BuilderTab = "setup" | "stages" | "preview";
+type BuilderTab =
+  | "setup"
+  | "formulation"
+  | "stages"
+  | "routing"
+  | "preview";
 
 
 interface BuilderLine {
@@ -143,6 +149,10 @@ interface BuilderLine {
    *  picks made before the operator set a stage — they get folded
    *  into the terminal stage's BOM at push time. */
   stage_id: string | null;
+  /** Wizard routing provenance — mirrors the server field so
+   *  Step 3 (Routing tab) can group / label rows correctly. */
+  source_kind: "active" | "band_pick";
+  band_key: string | null;
 }
 
 interface MetadataDraft {
@@ -451,6 +461,8 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     extract_ratio_override: line.extract_ratio_override ?? "",
     display_order: line.display_order ?? index,
     stage_id: line.stage_id ?? null,
+    source_kind: line.source_kind ?? "active",
+    band_key: line.band_key ?? null,
   }));
 }
 
@@ -1179,7 +1191,7 @@ export function FormulationBuilder({
   const searchParams = useSearchParams();
   const rawTab = searchParams?.get("tab") ?? "setup";
   const activeTab: BuilderTab = (
-    ["setup", "stages", "preview"] as const
+    ["setup", "formulation", "stages", "routing", "preview"] as const
   ).includes(rawTab as BuilderTab)
     ? (rawTab as BuilderTab)
     : "setup";
@@ -1336,6 +1348,12 @@ export function FormulationBuilder({
       string,
       {
         readonly label: string;
+        /** Raw PSP catalog name. ``label`` above is the EU-1169
+         *  declaration string (``ingredient_list_name || name``) —
+         *  which the ingredient declaration wants but the BOM /
+         *  Routing / Fine-tune displays should show the actual SKU
+         *  name the operator picked. */
+        readonly name: string;
         readonly useAs: string;
         readonly waterDoseMgPerMl: number | null;
       }
@@ -1346,6 +1364,7 @@ export function FormulationBuilder({
         i.id,
         {
           label: i.ingredient_list_name || i.name,
+          name: i.name,
           useAs: i.use_as || "",
           waterDoseMgPerMl: i.water_dose_mg_per_ml,
         },
@@ -1362,6 +1381,12 @@ export function FormulationBuilder({
   // math the same render.
   type PowderBandLiveEntry = {
     readonly label: string;
+    /** Raw PSP catalog name — what the operator sees in the picker
+     *  list. ``label`` above prefers ``ingredient_list_name`` (EU-
+     *  1169 declaration string, often generic) for compute; the BOM
+     *  / Fine-tune / Routing UI wants ``name`` (the specific SKU
+     *  they clicked). */
+    readonly name: string;
     readonly useAs: string;
     readonly powderRateMgPerG: number | null;
   };
@@ -1379,6 +1404,7 @@ export function FormulationBuilder({
         i.id,
         {
           label: i.ingredient_list_name || i.name,
+          name: i.name,
           useAs: i.use_as || "",
           powderRateMgPerG: i.powder_rate_mg_per_g,
         },
@@ -1402,6 +1428,140 @@ export function FormulationBuilder({
   const replaceLinesMutation = useReplaceLines(orgId, formulation.id);
   const saveVersionMutation = useSaveVersion(orgId, formulation.id);
   const syncPspMutation = useSyncFormulationToPsp(orgId, formulation.id);
+  const wizardRoutingMutation = useSaveWizardRouting(orgId, formulation.id);
+
+  // Wizard step 3 — draft routing state keyed by row-key.
+  // ``routing_key`` shape:
+  //   * ``active:${line.id}`` — an operator-picked ingredient line
+  //   * ``band:${band_key}:${item_id}`` — a compute-derived pick
+  // Value is the target stage_id (string) or null (unassigned).
+  const [routingByKey, setRoutingByKey] = useState<Map<string, string | null>>(
+    () => new Map(),
+  );
+  // Baseline from server so we can compute dirty + skip un-changed
+  // rows on save. Recomputed when ``lines`` reload.
+  const routingBaseline = useMemo(() => {
+    const map = new Map<string, string | null>();
+    for (const line of lines) {
+      const key =
+        (line as unknown as { source_kind?: string }).source_kind === "band_pick"
+          ? `band:${(line as unknown as { band_key?: string }).band_key ?? ""}:${line.item_id}`
+          : `active:${line.key}`;
+      map.set(key, line.stage_id);
+    }
+    return map;
+  }, [lines]);
+  // Re-seed the draft from the fresh baseline whenever the server
+  // returns new line data (initial mount, after a save round-trip,
+  // after a version rollback). Keeps the draft in sync without
+  // clobbering an unsaved edit — if the user hasn't touched
+  // anything, draft === baseline anyway.
+  useEffect(() => {
+    setRoutingByKey(new Map(routingBaseline));
+  }, [routingBaseline]);
+
+  const routingDirty = useMemo(() => {
+    if (routingByKey.size !== routingBaseline.size) return true;
+    for (const [key, val] of routingByKey.entries()) {
+      if (routingBaseline.get(key) !== val) return true;
+    }
+    return false;
+  }, [routingByKey, routingBaseline]);
+
+  // Late-bound ref so handleSaveRouting can read the latest
+  // ``bomLinesByStage`` at click-time without pulling its declaration
+  // above where the useMemo lives (would force a big reshuffle of
+  // the component body). Populated in an effect further down.
+  const bomLinesByStageRef = useRef<
+    ReadonlyMap<string, readonly BomLine[]>
+  >(new Map());
+
+  const handleSaveRouting = useCallback(async () => {
+    // Split the flat draft into the two payload shapes the endpoint
+    // expects: line_assignments for existing active lines,
+    // band_assignments for every band pick (new + updated). Band
+    // picks always ride the payload since the endpoint wholesale-
+    // replaces them; actives only ride when their stage changed
+    // (small optimisation to keep the audit trail focused).
+    const line_assignments: Record<string, string | null> = {};
+    const band_assignments: {
+      item_id: string;
+      band_key: string;
+      mg: number;
+      stage_id: string | null;
+    }[] = [];
+    // Build a quick lookup: for every row in the current full BOM,
+    // resolve its mg + item_id + band_key (via bomLinesByStage) so
+    // band picks can ship their compute-derived mg to the server.
+    const bomIndex = new Map<
+      string,
+      { itemId: string; bandKey: string; mg: number }
+    >();
+    bomLinesByStageRef.current.forEach((rows) => {
+      for (const row of rows) {
+        if (!row.itemId) continue;
+        // Row keys look like ``active:<line.key>``,
+        // ``anticaking:<item_id>``, ``dcp:<item_id>``, ``mcc:<item_id>``,
+        // ``capsule-shell:<item_id>``. Extract the band-key prefix.
+        const [prefix] = row.key.split(":");
+        if (!prefix || prefix === "active") continue;
+        const bandKey =
+          prefix === "anticaking"
+            ? "anti_caking"
+            : prefix === "mcc"
+              ? "mcc"
+              : prefix === "dcp"
+                ? "dcp"
+                : prefix === "capsule-shell"
+                  ? "capsule_shell"
+                  : prefix;
+        bomIndex.set(`band:${bandKey}:${row.itemId}`, {
+          itemId: row.itemId,
+          bandKey,
+          mg: row.mg,
+        });
+      }
+    });
+    // Active line rows come straight from ``lines``; band rows come
+    // from the bomIndex above.
+    for (const [key, stageId] of routingByKey.entries()) {
+      if (key.startsWith("active:")) {
+        // Only ship lines whose stage_id changed vs baseline —
+        // reduces payload noise for a mostly-unchanged save.
+        if (routingBaseline.get(key) === stageId) continue;
+        const lineId = key.slice("active:".length);
+        // ``line.key`` in this file is the FormulationLine id for
+        // server-round-tripped lines (via ``linesFrom``); newly
+        // added client-only lines get a ``new-...`` prefix. Filter
+        // those out — they don't have a server id yet, and saving
+        // routing before Save draft would fail on the server.
+        if (lineId.startsWith("new-")) continue;
+        line_assignments[lineId] = stageId;
+      } else if (key.startsWith("band:")) {
+        const entry = bomIndex.get(key);
+        if (!entry) continue;
+        band_assignments.push({
+          item_id: entry.itemId,
+          band_key: entry.bandKey,
+          mg: entry.mg,
+          stage_id: stageId,
+        });
+      }
+    }
+    try {
+      await wizardRoutingMutation.mutateAsync({
+        line_assignments,
+        band_assignments,
+      });
+    } catch (err) {
+      setErrorMessage(extractApiErrorMessage(err, tErrors));
+    }
+  }, [
+    routingByKey,
+    routingBaseline,
+    wizardRoutingMutation,
+    tErrors,
+  ]);
   const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
@@ -1955,7 +2115,7 @@ export function FormulationBuilder({
             };
           })()
         : null;
-    const fullBom = deriveStageBomLines({
+    const fullBomRaw = deriveStageBomLines({
       totals: liveTotals,
       lines,
       mccCarrierItems: formulation.mcc_carrier_items ?? [],
@@ -1965,6 +2125,164 @@ export function FormulationBuilder({
       autoCapsuleShell,
       excipientOverrides: metadata.excipient_overrides,
     });
+    // Rewrite each row's label to the raw PSP item name when we
+    // can resolve it — compute's default label falls back to
+    // ``ingredient_list_name`` (which is the EU-1169 declaration
+    // string, often generic like "Flavouring"). Every BOM / Fine-
+    // tune / Routing surface wants the SKU's actual name so the
+    // operator sees exactly what they picked, not a category
+    // placeholder. Build a single {id → name} lookup across every
+    // M2M so the loop stays O(1) per row.
+    const nameByItemId = new Map<string, string>();
+    const nameLookupSources: readonly (readonly {
+      readonly id: string;
+      readonly name: string;
+    }[])[] = [
+      formulation.flavouring_items ?? [],
+      formulation.sweetener_items ?? [],
+      formulation.colour_items ?? [],
+      formulation.acidity_items ?? [],
+      formulation.gelling_items ?? [],
+      formulation.glazing_items ?? [],
+      formulation.premix_sweetener_items ?? [],
+      formulation.powder_carrier_items ?? [],
+      formulation.gummy_base_items ?? [],
+      formulation.mcc_carrier_items ?? [],
+      formulation.dcp_carrier_items ?? [],
+      formulation.anti_caking_items ?? [],
+      formulation.capsule_shell_items ?? [],
+    ];
+    for (const source of nameLookupSources) {
+      for (const pick of source) {
+        if (pick.id && pick.name) nameByItemId.set(pick.id, pick.name);
+      }
+    }
+    const fullBomComputed: BomLine[] = fullBomRaw.map((row) => {
+      if (!row.itemId) return row;
+      const realName = nameByItemId.get(row.itemId);
+      if (!realName || realName === row.label) return row;
+      return { ...row, label: realName };
+    });
+    // Guaranteed-visibility pass — some picks drop out of compute
+    // silently (e.g. a powder flavouring picked without a
+    // ``powder_flavouring_mg_per_g`` attribute → compute pushes a
+    // warning + skips the row → operator sees no BOM entry despite
+    // the tick). Walk every M2M relevant to the current dosage
+    // form and append missing picks at mg=0 with a "rate missing"
+    // note so the scientist always sees what they've ticked.
+    const seenItemIds = new Set<string>(
+      fullBomComputed
+        .map((r) => r.itemId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    // Iterate the LIVE M2M ids the operator has ticked (from
+    // ``metadata.*_item_ids``, updates on click, no save needed) so
+    // freshly-added picks show up immediately. Name resolution
+    // walks in priority order:
+    //   1. Live cache populated by the picker's onPickedItemsChange
+    //      (has the label the operator just clicked).
+    //   2. Server echo (persisted picks — has the full attribute
+    //      bag including allergens, use_as etc).
+    //   3. Item id as a last-ditch label so the row still renders
+    //      even when both caches missed.
+    const ensuredRows: BomLine[] = [];
+    type EchoLike = {
+      readonly id: string;
+      readonly name?: string;
+      readonly internal_code?: string;
+      readonly ingredient_list_name?: string;
+    };
+    const buildEchoMap = (rows: readonly EchoLike[]) =>
+      new Map(rows.map((r) => [r.id, r]));
+    const echoMaps = {
+      flavouring: buildEchoMap(formulation.flavouring_items ?? []),
+      sweetener: buildEchoMap(formulation.sweetener_items ?? []),
+      colour: buildEchoMap(formulation.colour_items ?? []),
+      acidity: buildEchoMap(formulation.acidity_items ?? []),
+      gelling: buildEchoMap(formulation.gelling_items ?? []),
+      glazing: buildEchoMap(formulation.glazing_items ?? []),
+      premix_sweetener: buildEchoMap(formulation.premix_sweetener_items ?? []),
+      powder_carrier: buildEchoMap(formulation.powder_carrier_items ?? []),
+      gummy_base: buildEchoMap(formulation.gummy_base_items ?? []),
+      mcc: buildEchoMap(formulation.mcc_carrier_items ?? []),
+      dcp: buildEchoMap(formulation.dcp_carrier_items ?? []),
+      anti_caking: buildEchoMap(formulation.anti_caking_items ?? []),
+      capsule_shell: buildEchoMap(formulation.capsule_shell_items ?? []),
+    } as const;
+    type BandKind = keyof typeof echoMaps;
+    const resolveName = (
+      band: BandKind,
+      itemId: string,
+    ): { name: string; code: string } => {
+      // Live caches — prefer the raw PSP name (``it.name``) over
+      // the declaration label (``ingredient_list_name``). The BOM /
+      // Fine-tune / Routing displays show the SKU the operator
+      // actually clicked ("Apple Flavouring 2sp-86644 (Natural)"),
+      // not the generic declaration string ("Apple").
+      const liveMap: Record<BandKind, string | undefined> = {
+        flavouring: flavouringLive[itemId]?.name,
+        sweetener: sweetenerLive[itemId]?.name,
+        colour: colourLive[itemId]?.name,
+        acidity: acidityLive[itemId]?.name,
+        mcc: mccCarrierNames[itemId],
+        anti_caking: antiCakingNames[itemId],
+        powder_carrier: powderCarrierNames[itemId],
+        capsule_shell: capsuleShellNames[itemId],
+        // No live cache exposed for these bands yet — resolution
+        // falls straight through to the server echo.
+        gelling: undefined,
+        glazing: undefined,
+        premix_sweetener: undefined,
+        gummy_base: undefined,
+        dcp: undefined,
+      };
+      const liveName = liveMap[band];
+      const echo = echoMaps[band].get(itemId);
+      const code =
+        band === "capsule_shell"
+          ? capsuleShellCodes[itemId] ?? echo?.internal_code ?? ""
+          : echo?.internal_code ?? "";
+      const name = liveName || echo?.name || itemId;
+      return { name, code };
+    };
+    const bandsToEnsure: readonly {
+      readonly bandKey: BandKind;
+      readonly ids: readonly string[];
+    }[] = [
+      { bandKey: "flavouring", ids: metadata.flavouring_item_ids },
+      { bandKey: "sweetener", ids: metadata.sweetener_item_ids },
+      { bandKey: "colour", ids: metadata.colour_item_ids },
+      { bandKey: "acidity", ids: metadata.acidity_item_ids },
+      { bandKey: "gelling", ids: metadata.gelling_item_ids },
+      { bandKey: "glazing", ids: metadata.glazing_item_ids },
+      {
+        bandKey: "premix_sweetener",
+        ids: metadata.premix_sweetener_item_ids,
+      },
+      { bandKey: "powder_carrier", ids: metadata.powder_carrier_item_ids },
+      { bandKey: "gummy_base", ids: metadata.gummy_base_item_ids },
+      { bandKey: "mcc", ids: metadata.mcc_carrier_item_ids },
+      { bandKey: "dcp", ids: metadata.dcp_carrier_item_ids },
+      { bandKey: "anti_caking", ids: metadata.anti_caking_item_ids },
+      { bandKey: "capsule_shell", ids: metadata.capsule_shell_item_ids },
+    ];
+    for (const band of bandsToEnsure) {
+      for (const itemId of band.ids) {
+        if (!itemId || seenItemIds.has(itemId)) continue;
+        const { name, code } = resolveName(band.bandKey, itemId);
+        ensuredRows.push({
+          key: `${band.bandKey}:${itemId}`,
+          label: name,
+          code,
+          mg: 0,
+          itemId,
+        });
+        seenItemIds.add(itemId);
+      }
+    }
+    const fullBom: BomLine[] = ensuredRows.length
+      ? [...fullBomComputed, ...ensuredRows].sort((a, b) => a.mg - b.mg)
+      : fullBomComputed;
     stages.forEach((stage, i) => {
       const prior = i > 0 ? stages[i - 1] : undefined;
       if (prior) {
@@ -1992,16 +2310,51 @@ export function FormulationBuilder({
     formulation.dcp_carrier_items,
     formulation.anti_caking_items,
     formulation.capsule_shell_items,
+    formulation.flavouring_items,
+    formulation.sweetener_items,
+    formulation.colour_items,
+    formulation.acidity_items,
+    formulation.gelling_items,
+    formulation.glazing_items,
+    formulation.premix_sweetener_items,
+    formulation.powder_carrier_items,
+    formulation.gummy_base_items,
     formulation.stages,
     metadata.dosage_form,
     metadata.capsule_size,
     metadata.capsule_shell_item_ids,
+    metadata.flavouring_item_ids,
+    metadata.sweetener_item_ids,
+    metadata.colour_item_ids,
+    metadata.acidity_item_ids,
+    metadata.gelling_item_ids,
+    metadata.glazing_item_ids,
+    metadata.premix_sweetener_item_ids,
+    metadata.powder_carrier_item_ids,
+    metadata.gummy_base_item_ids,
+    metadata.mcc_carrier_item_ids,
+    metadata.dcp_carrier_item_ids,
+    metadata.anti_caking_item_ids,
     metadata.excipient_overrides,
     capsuleShellAttrs,
     capsuleShellNames,
     capsuleShellCodes,
+    flavouringLive,
+    sweetenerLive,
+    colourLive,
+    acidityLive,
+    mccCarrierNames,
+    antiCakingNames,
+    powderCarrierNames,
     pspCapsuleShellCatalog,
   ]);
+
+  // Late-bind bomLinesByStage into the ref that ``handleSaveRouting``
+  // reads at click-time. Keeps the wizard save handler's closure
+  // dependency graph small (routingByKey + routingBaseline only).
+  useEffect(() => {
+    bomLinesByStageRef.current = bomLinesByStage;
+  }, [bomLinesByStage]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
   //: render from the same lines array. Both are pure and cheap.
@@ -2362,6 +2715,7 @@ export function FormulationBuilder({
                 : null;
           next[it.id] = {
             label,
+            name: it.name,
             useAs: useAs || prev[it.id]?.useAs || defaultUseAs,
             powderRateMgPerG:
               attrs !== null
@@ -2520,10 +2874,18 @@ export function FormulationBuilder({
   );
   const openStageDrilldown = useCallback(
     (stageId: string) => {
-      setStageDrilldownId(stageId);
+      // Wizard restructure: the builder is now its own top-level
+      // Formulation tab (no per-stage drill-down). Preserve the
+      // callback contract so the stage strip's "Build ingredients"
+      // button still works — clicking it now routes the operator
+      // to the shared formulation builder + pins the sticky picker
+      // target to the stage they clicked from (helpful when they
+      // want to add a new active that they'll route to this stage
+      // later on the Routing tab).
       setActiveStageId(stageId);
+      setActiveTab("formulation");
     },
-    [],
+    [setActiveTab],
   );
   const closeStageDrilldown = useCallback(() => setStageDrilldownId(null), []);
   // Resolve the currently drilled stage's name for the back-arrow
@@ -2592,6 +2954,8 @@ export function FormulationBuilder({
             extract_ratio_override: "",
             display_order: prev.length,
             stage_id: stageId,
+            source_kind: "active",
+            band_key: null,
           },
         ];
       });
@@ -3222,13 +3586,19 @@ export function FormulationBuilder({
                   dirty: metadataDirty,
                 },
                 {
+                  id: "formulation" as const,
+                  label: "Formulation",
+                  dirty: linesDirty,
+                },
+                {
                   id: "stages" as const,
                   label: "Stages",
-                  // ``linesDirty`` moved here after the Ingredients tab
-                  // was folded into the Stages drill-down — dirty line
-                  // edits now surface as a dot on Stages instead of on
-                  // its own tab that no longer exists.
-                  dirty: linesDirty,
+                  dirty: false,
+                },
+                {
+                  id: "routing" as const,
+                  label: "Routing",
+                  dirty: routingDirty,
                 },
                 {
                   id: "preview" as const,
@@ -3371,7 +3741,7 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <div
         className={
-          activeTab === "stages" && stageDrilldownId !== null
+          activeTab === "formulation"
             ? "flex flex-col gap-10"
             : "hidden"
         }
@@ -3780,6 +4150,7 @@ export function FormulationBuilder({
                       typeof rawUseAs === "string" ? rawUseAs : "";
                     next[it.id] = {
                       label,
+                      name: it.name,
                       useAs: useAs || prev[it.id]?.useAs || "",
                       waterDoseMgPerMl:
                         attrs !== null
@@ -3925,6 +4296,7 @@ export function FormulationBuilder({
                       typeof rawUseAs === "string" ? rawUseAs : "";
                     next[it.id] = {
                       label,
+                      name: it.name,
                       useAs: useAs || prev[it.id]?.useAs || "",
                       waterDoseMgPerMl:
                         prev[it.id]?.waterDoseMgPerMl ?? null,
@@ -4268,13 +4640,15 @@ export function FormulationBuilder({
       </div>
 
       {/* ------------------------------------------------------------ */}
-      {/* Builder: picker + lines + totals  (tab: INGREDIENTS)         */}
+      {/* Builder: picker + lines + totals  (tab: FORMULATION)         */}
       {/* Also carries the compliance + declaration panels since       */}
-      {/* those are derived from the ingredient list.                  */}
+      {/* those are derived from the ingredient list. Standalone tab   */}
+      {/* — the operator builds the flat recipe here (no stage         */}
+      {/* awareness); stage routing lives on the Routing tab.          */}
       {/* ------------------------------------------------------------ */}
       <div
         className={
-          activeTab === "stages" && stageDrilldownId !== null
+          activeTab === "formulation"
             ? "flex flex-col gap-10"
             : "hidden"
         }
@@ -4798,28 +5172,41 @@ export function FormulationBuilder({
         onActiveMgChange={canWrite ? updateLineClaim : null}
         dirty={metadataDirty || linesDirty}
         onRevertAllUnsaved={canWrite ? handleRevertAllUnsaved : null}
-        bands={[
-          {
-            key: "anti_caking",
-            label: tFormulations("builder.excipients.anti_caking"),
-            totalMg:
-              (liveTotals.excipients?.mgStearateMg ?? 0) +
-              (liveTotals.excipients?.silicaMg ?? 0),
-            picks: antiCakingPicks,
-          },
-          {
-            key: "dcp",
-            label: tFormulations("builder.excipients.dcp"),
-            totalMg: liveTotals.excipients?.dcpMg ?? 0,
-            picks: dcpCarrierPicks,
-          },
-          {
-            key: "mcc",
-            label: tFormulations("builder.excipients.mcc"),
-            totalMg: liveTotals.excipients?.mccMg ?? 0,
-            picks: mccCarrierPicks,
-          },
-        ]}
+        bands={
+          // Band-total dosing (compute picks a band total, split
+          // across the SKUs the scientist ticked) only applies to
+          // capsule + tablet forms. For powder / gummy the same SKUs
+          // route through the per-item ``excipients.rows`` branch
+          // (each SKU carries its own ``powder_water_dose_mg_per_ml``
+          // rate). Passing empty ``bands`` for those forms keeps the
+          // per-item rows as the single source of truth and avoids
+          // showing a phantom 0-mg row for every band.
+          metadata.dosage_form === "capsule" ||
+          metadata.dosage_form === "tablet"
+            ? [
+                {
+                  key: "anti_caking",
+                  label: tFormulations("builder.excipients.anti_caking"),
+                  totalMg:
+                    (liveTotals.excipients?.mgStearateMg ?? 0) +
+                    (liveTotals.excipients?.silicaMg ?? 0),
+                  picks: antiCakingPicks,
+                },
+                {
+                  key: "dcp",
+                  label: tFormulations("builder.excipients.dcp"),
+                  totalMg: liveTotals.excipients?.dcpMg ?? 0,
+                  picks: dcpCarrierPicks,
+                },
+                {
+                  key: "mcc",
+                  label: tFormulations("builder.excipients.mcc"),
+                  totalMg: liveTotals.excipients?.mccMg ?? 0,
+                  picks: mccCarrierPicks,
+                },
+              ]
+            : []
+        }
         overrides={metadata.excipient_overrides}
         onChange={canWrite ? handleExcipientOverridesChange : null}
         canEdit={canWrite}
@@ -4828,74 +5215,72 @@ export function FormulationBuilder({
         // resolved from PSP), just shown here so the scientist sees
         // the full BOM the finished product actually ships with.
         extraRows={(() => {
+          // Reuse the same "full BOM" list that feeds the stage cards
+          // + routing tab. Drop rows already covered by other props on
+          // this panel — actives are in ``activeLines``, and
+          // anti-caking / DCP / MCC are the editable ``bands``. What
+          // remains: capsule shells, flavourings, sweeteners, colours,
+          // acidity regulators, gelling / glazing / premix sweetener,
+          // powder carrier, gummy base, and any pick compute couldn't
+          // dose (rate missing → mg=0 fallback from the ensured-
+          // visibility pass). Sync-to-PSP + stage cards + this panel
+          // then read from one source.
+          const stages = formulation.stages;
+          const firstStageId = stages[0]?.id;
+          const source: readonly BomLine[] =
+            (firstStageId
+              ? bomLinesByStage.get(firstStageId) ?? []
+              : []);
+          const alreadyCovered = new Set<string>([
+            // Capsule-branch band slug (from ``deriveStageBomLines``
+            // ``emitBand`` — line 5865). Rendered by the editable
+            // ``bands`` prop above.
+            "anticaking",
+            // Powder-branch per-item slug for the same band (from
+            // ``math.ts`` per-item loop). Excluded here so we don't
+            // double-render Silica in editable ``bands`` AND read-only
+            // ``extraRows`` when both branches emit at once.
+            "anti_caking",
+            "mcc",
+            "dcp",
+          ]);
           const rows: {
             key: string;
             label: string;
             mg: number;
             hint?: string;
+            itemId?: string;
+            notDosed?: boolean;
           }[] = [];
-          if (metadata.dosage_form !== "capsule") return rows;
-          const picked = metadata.capsule_shell_item_ids
-            .map((id) => {
-              const echo = (formulation.capsule_shell_items ?? []).find(
-                (i) => i.id === id,
-              );
-              const attrs =
-                capsuleShellAttrs[id] ?? echo?.attributes ?? {};
-              const name =
-                echo?.name || capsuleShellNames[id] || "Capsule shell";
-              const rawWeight = attrs["shell_weight_mg"];
-              const w =
-                typeof rawWeight === "number"
-                  ? rawWeight
-                  : typeof rawWeight === "string"
-                    ? Number.parseFloat(rawWeight)
-                    : null;
-              return {
-                id,
-                name,
-                mg: Number.isFinite(w) && (w as number) > 0
-                  ? (w as number)
-                  : CAPSULE_SHELL_WEIGHTS[metadata.capsule_size || ""] ?? 0,
-              };
-            })
-            .filter((r) => r.mg > 0);
-          if (picked.length > 0) {
-            for (const p of picked) {
-              rows.push({ key: `shell:${p.id}`, label: p.name, mg: p.mg });
+          for (const row of source) {
+            const [prefix] = row.key.split(":");
+            if (!prefix) continue;
+            // Skip actives — they're the editable ``activeLines``.
+            if (prefix === "active") continue;
+            // For capsule / tablet forms the anti-caking / MCC / DCP
+            // rows are rendered by the editable ``bands`` prop above.
+            // For powder / gummy those bands don't exist (``bands ===
+            // []``) so we KEEP the per-item rows in ``extraRows``
+            // instead — otherwise Silica / DCP would vanish from
+            // powder Fine-tune. This mirrors the FE compute branch
+            // that dosage-form-gates the band split.
+            if (
+              (metadata.dosage_form === "capsule" ||
+                metadata.dosage_form === "tablet") &&
+              alreadyCovered.has(prefix)
+            ) {
+              continue;
             }
-            return rows;
-          }
-          // Auto-pick fallback — matches the stage-BOM behaviour.
-          const match = resolveAutoPickedShell(
-            pspCapsuleShellCatalog,
-            liveTotals.totalActiveMg,
-          );
-          if (match) {
-            const sizeKey =
-              match.capsuleSize || metadata.capsule_size || "";
-            const weight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
-            if (weight > 0) {
-              rows.push({
-                key: "shell:auto",
-                label: match.name,
-                mg: weight,
-                hint: `Auto-picked from PSP catalog (${sizeKey || "custom"})`,
-              });
-            }
-          } else {
-            const sizeKey = metadata.capsule_size || "";
-            const hardcodedWeight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
-            if (hardcodedWeight > 0) {
-              rows.push({
-                key: "shell:auto",
-                label: sizeKey
-                  ? `Capsule Shell (${sizeKey})`
-                  : "Capsule Shell (Hypromellose)",
-                mg: hardcodedWeight,
-                hint: "Auto-picked from hardcoded shell-weight table",
-              });
-            }
+            // Skip the synthesised "prior semi" link — not a real
+            // ingredient, doesn't belong here.
+            if (prefix === "semi") continue;
+            rows.push({
+              key: row.key,
+              label: row.label,
+              mg: row.mg,
+              itemId: row.itemId ?? undefined,
+              notDosed: row.mg <= 0 && !!row.itemId,
+            });
           }
           return rows;
         })()}
@@ -4921,6 +5306,29 @@ export function FormulationBuilder({
         />
       </section>
 
+      </div>
+
+      {/* ------------------------------------------------------------ */}
+      {/* Routing tab — Wizard Step 3: assign every ingredient        */}
+      {/* (actives + compute-derived band picks) to a manufacturing   */}
+      {/* stage. Save materialises band picks as FormulationLine rows */}
+      {/* with source_kind='band_pick' so the PSP push cascade reads  */}
+      {/* each stage's real BOM from the ORM.                          */}
+      {/* ------------------------------------------------------------ */}
+      <div className={activeTab === "routing" ? "flex flex-col gap-6" : "hidden"}>
+        <RoutingTabBody
+          formulation={formulation}
+          lines={lines}
+          bomLinesByStage={bomLinesByStage}
+          routingByKey={routingByKey}
+          setRoutingByKey={setRoutingByKey}
+          onSave={handleSaveRouting}
+          isSaving={wizardRoutingMutation.isPending}
+          routingDirty={routingDirty}
+          canWrite={canWrite}
+          numberFormatter={numberFormatter}
+          errorMessage={wizardRoutingMutation.error?.message ?? null}
+        />
       </div>
 
       {/* ------------------------------------------------------------ */}
@@ -5461,6 +5869,14 @@ function deriveStageBomLines(inputs: {
       placeholder: string,
       slugPrefix: string,
     ) => {
+      // For powder/gummy the anti-caking / DCP / MCC band totals are
+      // zero (the compute doses those SKUs via ``excipients.rows``
+      // per-item instead). Emitting a zero-mg placeholder row here
+      // would collide with the real per-item row further down and
+      // show every SKU twice in the Fine-tune panel + Stage BOM.
+      // Skip the whole band when the total is zero so the per-item
+      // branch is the single source of truth.
+      if (totalMg <= 0) return;
       const shares = allocateBandShares({
         totalMg,
         picks,
@@ -5489,6 +5905,55 @@ function deriveStageBomLines(inputs: {
     emitBand(antiCakingTotal, antiCakingItems, antiCakingPlaceholder, "anticaking");
     emitBand(excipients.dcpMg || 0, dcpCarrierItems, "Dicalcium Phosphate", "dcp");
     emitBand(excipients.mccMg || 0, mccCarrierItems, "Microcrystalline Cellulose", "mcc");
+
+    // Powder / gummy per-item rows — compute produces one entry per
+    // picked SKU across the flavour-system + acidity + gelling +
+    // glazing + sweetener + colour + gummy-base + carrier bands.
+    // ``slug`` shape is ``<band>:<item_id>`` for real picks and
+    // ``<band>`` (no colon) for synthetic placeholder rows. Emit
+    // each so the routing wizard + stage BOMs list them alongside
+    // the capsule/tablet bands.
+    for (const row of excipients.rows ?? []) {
+      if (!row || row.mg <= 0) continue;
+      const [bandSlug, itemId] = row.slug.split(":");
+      out.push({
+        key: `${bandSlug}:${itemId ?? row.slug}`,
+        label: row.label,
+        code: "",
+        mg: row.mg,
+        itemId: itemId || null,
+      });
+    }
+
+    // Gummy base rows — one per picked gummy-base SKU with an equal
+    // share of the total base weight. Kept separate on
+    // ``gummyBaseRows`` (not on ``rows``) so the compute layer can
+    // decorate them with allergen info at declaration time; here we
+    // just need the per-item mg for BOM parity.
+    for (const row of excipients.gummyBaseRows ?? []) {
+      if (!row || row.mg <= 0) continue;
+      out.push({
+        key: `gummy-base:${row.itemId}`,
+        label: row.label,
+        code: "",
+        mg: row.mg,
+        itemId: row.itemId,
+      });
+    }
+
+    // Deionised water for gummies — a fixed 5.5% of the target
+    // gummy mass, not tied to any picked SKU. Emit as a synthetic
+    // row (no itemId → not pushed to PSP) so the operator at
+    // least sees it in the recipe.
+    if (excipients.waterMg && excipients.waterMg > 0) {
+      out.push({
+        key: "gummy-water",
+        label: "Deionised Water (gummy base)",
+        code: "",
+        mg: excipients.waterMg,
+        itemId: null,
+      });
+    }
   }
 
   out.sort((a, b) => a.mg - b.mg);
@@ -5499,6 +5964,403 @@ function deriveStageBomLines(inputs: {
 // Memoised: BOM rows recompute only when totals / lines / picker
 // state change. Keystrokes elsewhere (search input, metadata fields)
 // no longer drive a full table re-render.
+/**
+ * Wizard step 3 body — split view: full ingredient inventory on the
+ * left, stage cards on the right. Scientist assigns each row to a
+ * stage via a dropdown; Save persists the layout to the DB (actives
+ * update stage_id in place, band picks materialise as
+ * source_kind='band_pick' lines). Legacy formulations open with
+ * everything unassigned — Save is blocked until every row lands
+ * on a stage OR is explicitly parked on "Terminal (unassigned)"
+ * which the push cascade treats as "flows into the finished
+ * product" for backwards compat.
+ */
+const RoutingTabBody = memo(function RoutingTabBody({
+  formulation,
+  lines,
+  bomLinesByStage,
+  routingByKey,
+  setRoutingByKey,
+  onSave,
+  isSaving,
+  routingDirty,
+  canWrite,
+  numberFormatter,
+  errorMessage,
+}: {
+  formulation: FormulationDto;
+  lines: readonly BuilderLine[];
+  bomLinesByStage: ReadonlyMap<string, readonly BomLine[]>;
+  routingByKey: Map<string, string | null>;
+  setRoutingByKey: React.Dispatch<
+    React.SetStateAction<Map<string, string | null>>
+  >;
+  onSave: () => Promise<void>;
+  isSaving: boolean;
+  routingDirty: boolean;
+  canWrite: boolean;
+  numberFormatter: Intl.NumberFormat;
+  errorMessage: string | null;
+}) {
+  const stages = formulation.stages;
+  const terminalStageId =
+    stages.find((s) => s.psp_item_type === "finished_product")?.id ??
+    stages[stages.length - 1]?.id ??
+    null;
+
+  // Build a de-duplicated inventory of every ingredient the
+  // formulation carries. Walks the full-BOM map once (any stage's
+  // list is identical after Phase 2's revert), then annotates each
+  // row with its wizard routing key + whether it maps to an
+  // existing FormulationLine (so we can show a chip like "on PSP").
+  const inventory = useMemo(() => {
+    const seen = new Set<string>();
+    const rows: {
+      routingKey: string;
+      label: string;
+      code: string;
+      mg: number;
+      band: "active" | string;
+      itemId: string | null;
+      linePresent: boolean;
+    }[] = [];
+    const linesByItemBand = new Map<string, BuilderLine>();
+    for (const l of lines) {
+      const bandKey =
+        l.source_kind === "band_pick" ? l.band_key ?? "" : "active";
+      linesByItemBand.set(`${bandKey}:${l.item_id}`, l);
+    }
+    // Prefer the first stage's rows as the canonical "one of each"
+    // list — every stage's fullBom carries the same items after the
+    // Phase 2 revert. Fallback to iterating every stage in case a
+    // future refactor makes them diverge.
+    const firstStageRows = stages[0]
+      ? (bomLinesByStage.get(stages[0].id) ?? [])
+      : [];
+    const allSources: readonly (readonly BomLine[])[] = firstStageRows.length
+      ? [firstStageRows]
+      : Array.from(bomLinesByStage.values());
+    for (const source of allSources) {
+      for (const row of source) {
+        // Skip the synthesised "prior semi" links — they're not
+        // routable, they're a derived visual only.
+        if (row.key.startsWith("semi:")) continue;
+        const [prefix] = row.key.split(":");
+        const band =
+          prefix === "active"
+            ? "active"
+            : prefix === "anticaking"
+              ? "anti_caking"
+              : prefix === "mcc"
+                ? "mcc"
+                : prefix === "dcp"
+                  ? "dcp"
+                  : prefix === "capsule-shell"
+                    ? "capsule_shell"
+                    : prefix ?? "";
+        const routingKey =
+          band === "active"
+            ? `active:${row.key.slice("active:".length)}`
+            : `band:${band}:${row.itemId ?? ""}`;
+        if (seen.has(routingKey)) continue;
+        seen.add(routingKey);
+        const linePresent =
+          band === "active"
+            ? Boolean(row.itemId)
+            : linesByItemBand.has(`${band}:${row.itemId}`);
+        rows.push({
+          routingKey,
+          label: row.label,
+          code: row.code,
+          mg: row.mg,
+          band,
+          itemId: row.itemId ?? null,
+          linePresent,
+        });
+      }
+    }
+    rows.sort((a, b) => a.mg - b.mg);
+    return rows;
+  }, [bomLinesByStage, lines, stages]);
+
+  // Per-stage view — what's currently assigned to each stage.
+  const rowsByStage = useMemo(() => {
+    const map = new Map<string, typeof inventory>();
+    for (const stage of stages) map.set(stage.id, []);
+    const unassigned: typeof inventory = [];
+    for (const row of inventory) {
+      const stageId = routingByKey.get(row.routingKey) ?? null;
+      if (stageId && map.has(stageId)) {
+        map.get(stageId)!.push(row);
+      } else {
+        unassigned.push(row);
+      }
+    }
+    return { map, unassigned };
+  }, [inventory, routingByKey, stages]);
+
+  const setStageForRow = useCallback(
+    (routingKey: string, stageId: string | null) => {
+      setRoutingByKey((prev) => {
+        const next = new Map(prev);
+        next.set(routingKey, stageId);
+        return next;
+      });
+    },
+    [setRoutingByKey],
+  );
+
+  const autoRouteRemaining = useCallback(() => {
+    // Default any unassigned rows to the terminal stage — matches
+    // the push-cascade fallback and legacy behaviour.
+    if (!terminalStageId) return;
+    setRoutingByKey((prev) => {
+      const next = new Map(prev);
+      for (const row of inventory) {
+        if (!next.get(row.routingKey)) {
+          next.set(row.routingKey, terminalStageId);
+        }
+      }
+      return next;
+    });
+  }, [inventory, terminalStageId, setRoutingByKey]);
+
+  const bandChip = (band: string) =>
+    band === "active" ? null : (
+      <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-600">
+        {band.replace(/_/g, " ")}
+      </span>
+    );
+
+  if (stages.length === 0) {
+    return (
+      <section className="rounded-2xl bg-ink-0 p-8 shadow-sm ring-1 ring-ink-200">
+        <p className="text-sm text-ink-600">
+          Add manufacturing stages on the <strong>Stages</strong> tab
+          before routing ingredients — the routing wizard needs at
+          least one stage to assign items to.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <>
+      <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              Wizard · Step 3 · Routing
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-ink-1000">
+              Assign each ingredient to a manufacturing stage
+            </h2>
+            <p className="mt-1 max-w-2xl text-sm text-ink-600">
+              Left: everything the formulation carries. Right: each
+              stage&apos;s Consumes list + the SKU it produces. Every
+              stage&apos;s output feeds the next stage automatically
+              — you only route the raw ingredients here.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            {rowsByStage.unassigned.length > 0 ? (
+              <button
+                type="button"
+                onClick={autoRouteRemaining}
+                disabled={!canWrite || isSaving}
+                className="rounded-lg bg-ink-100 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-200 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Auto-route unassigned → terminal
+              </button>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => {
+                void onSave();
+              }}
+              disabled={!canWrite || !routingDirty || isSaving}
+              className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isSaving ? "Saving…" : "Save routing"}
+            </button>
+          </div>
+        </div>
+        {errorMessage ? (
+          <p className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20">
+            {errorMessage}
+          </p>
+        ) : null}
+      </section>
+
+      <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
+        {/* ────────── Inventory column ────────── */}
+        <div className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            Ingredient inventory · {inventory.length}
+          </p>
+          <p className="mt-1 text-xs text-ink-500">
+            Every SKU the formulation ships. Change the stage on any
+            row to move it.
+          </p>
+          <ul className="mt-3 flex flex-col gap-1">
+            {inventory.length === 0 ? (
+              <li className="rounded-lg bg-ink-50 px-3 py-4 text-center text-xs text-ink-500">
+                Add ingredients + carriers on the Setup tab first.
+              </li>
+            ) : (
+              inventory.map((row) => {
+                const assigned = routingByKey.get(row.routingKey) ?? null;
+                return (
+                  <li
+                    key={row.routingKey}
+                    className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${
+                      assigned
+                        ? "border-ink-200 bg-ink-0"
+                        : "border-orange-300 bg-orange-50/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          {bandChip(row.band)}
+                          <span className="truncate font-medium text-ink-1000">
+                            {row.label}
+                          </span>
+                        </div>
+                        <span className="mt-0.5 block text-[11px] text-ink-500">
+                          {row.code || "—"} ·{" "}
+                          {numberFormatter.format(row.mg)} mg
+                        </span>
+                      </div>
+                      <select
+                        value={assigned ?? ""}
+                        onChange={(e) =>
+                          setStageForRow(
+                            row.routingKey,
+                            e.target.value || null,
+                          )
+                        }
+                        disabled={!canWrite || isSaving}
+                        className="min-w-[140px] rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
+                      >
+                        <option value="">Unassigned</option>
+                        {stages.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            Stage {s.sort_order + 1} · {s.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </li>
+                );
+              })
+            )}
+          </ul>
+        </div>
+
+        {/* ────────── Stage cards column ────────── */}
+        <div className="flex flex-col gap-4">
+          {rowsByStage.unassigned.length > 0 ? (
+            <div className="rounded-2xl bg-orange-50/70 p-4 ring-1 ring-inset ring-orange-200">
+              <p className="text-xs font-semibold uppercase tracking-wide text-orange-800">
+                {rowsByStage.unassigned.length} unassigned ·
+                won&apos;t ship on any stage&apos;s BOM
+              </p>
+              <p className="mt-1 text-xs text-orange-700">
+                Assign these to a stage or click &quot;Auto-route unassigned →
+                terminal&quot; to park them on the finished product.
+              </p>
+            </div>
+          ) : null}
+          {stages.map((stage, i) => {
+            const rows = rowsByStage.map.get(stage.id) ?? [];
+            const prior = i > 0 ? stages[i - 1] : undefined;
+            const isFinished = stage.psp_item_type === "finished_product";
+            return (
+              <div
+                key={stage.id}
+                className={`rounded-2xl border-2 bg-ink-0 p-5 shadow-sm ${
+                  isFinished
+                    ? "border-orange-300"
+                    : "border-ink-200"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                      Stage {stage.sort_order + 1} ·{" "}
+                      {isFinished ? "Finished product" : "Semi-finished"}
+                    </p>
+                    <h3 className="mt-0.5 text-base font-semibold text-ink-1000">
+                      {stage.name || "Untitled stage"}
+                    </h3>
+                  </div>
+                  <span className="text-xs font-medium text-ink-500">
+                    Produces →{" "}
+                    <span className="text-ink-1000">
+                      {stage.psp_item_name ||
+                        (isFinished ? "Finished product" : "Semi output")}
+                    </span>
+                  </span>
+                </div>
+
+                <div className="mt-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                    Consumes
+                  </p>
+                  <ul className="mt-2 flex flex-col gap-1 text-sm">
+                    {prior ? (
+                      <li className="flex items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-700 ring-1 ring-inset ring-ink-200">
+                        <span className="flex items-center gap-2">
+                          <span className="rounded-full bg-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-700">
+                            Semi
+                          </span>
+                          <span>
+                            1× {prior.psp_item_name || prior.name} (from
+                            Stage {prior.sort_order + 1})
+                          </span>
+                        </span>
+                        <span className="text-[10px] uppercase tracking-wide text-ink-400">
+                          Auto
+                        </span>
+                      </li>
+                    ) : null}
+                    {rows.length === 0 ? (
+                      <li className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-500">
+                        No ingredients routed here yet — pick a row on
+                        the left and set its stage to{" "}
+                        &quot;{stage.name || "this stage"}&quot;.
+                      </li>
+                    ) : (
+                      rows.map((row) => (
+                        <li
+                          key={row.routingKey}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2 text-xs"
+                        >
+                          <span className="flex items-center gap-2">
+                            {bandChip(row.band)}
+                            <span className="font-medium text-ink-1000">
+                              {row.label}
+                            </span>
+                          </span>
+                          <span className="tabular-nums text-ink-700">
+                            {numberFormatter.format(row.mg)} mg
+                          </span>
+                        </li>
+                      ))
+                    )}
+                  </ul>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+    </>
+  );
+});
+
+
 const BomCard = memo(function BomCard({
   totals,
   lines,
@@ -6650,15 +7512,25 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
    *  of the header-level "Revert unsaved changes" button. */
   dirty: boolean;
   onRevertAllUnsaved: (() => void) | null;
-  /** Read-only rows appended below the active + band rows so items
-   *  that aren't editable from this panel (capsule shells picked
-   *  in Setup, auto-picked fallbacks) still show up as part of the
-   *  "BOM view" the scientist reads here. */
+  /** Extra rows appended below the active + band rows so items
+   *  that aren't part of the editable ``bands`` list still show up
+   *  as part of the "BOM view" the scientist reads here. When
+   *  ``itemId`` is set the row becomes editable — the scientist can
+   *  type an mg value that lands in ``overrides`` under
+   *  ``excipient_mg:<itemId>`` (same key the capsule bands use),
+   *  which the compute honours as an absolute mg override. When
+   *  ``itemId`` is missing (e.g. auto-picked capsule shell) the
+   *  row stays read-only. */
   extraRows?: readonly {
     readonly key: string;
     readonly label: string;
     readonly mg: number;
     readonly hint?: string;
+    readonly itemId?: string;
+    /** Compute couldn't dose this pick (missing rate attribute on
+     *  the PSP item) — surface an inline warning pill so the
+     *  scientist notices the SKU needs attention. */
+    readonly notDosed?: boolean;
   }[];
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
@@ -6831,40 +7703,27 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
               ),
             );
           })()}
-          {/* Read-only "everything else the BOM carries" rows —
-              capsule shells picked in Setup or auto-picked from
-              the PSP catalog. Not editable here (change the shell
-              via the Setup picker); shown so the operator's mental
-              model of "the BOM" matches what actually ships. */}
+          {/* Extra rows — per-item excipients that aren't part of a
+              capsule-style band-total split, plus read-only rows like
+              the auto-picked capsule shell. Rows carrying an
+              ``itemId`` become editable via the per-item mg override
+              (``excipient_mg:<itemId>``) that both the capsule-band
+              and powder per-item compute branches honour. */}
           {extraRows && extraRows.length > 0
             ? [...extraRows]
                 .sort((a, b) => a.mg - b.mg)
                 .map((row) => (
-                  <div
+                  <FineTuneExtraRow
                     key={row.key}
-                    className="grid grid-cols-[minmax(0,1fr)_140px_100px] items-center gap-3 border-t border-ink-100 px-4 py-3 text-sm"
-                    title={row.hint}
-                  >
-                    <div className="flex flex-col">
-                      <span className="font-medium text-ink-1000">
-                        {row.label}
-                      </span>
-                      {row.hint ? (
-                        <span className="text-[11px] text-ink-500">
-                          {row.hint}
-                        </span>
-                      ) : null}
-                    </div>
-                    <span className="text-right text-xs tabular-nums text-ink-700">
-                      {numberFormatter.format(row.mg)}{" "}
-                      <span className="text-ink-500">mg</span>
-                    </span>
-                    <span className="text-right text-xs tabular-nums text-ink-500">
-                      {totalWeightMg && totalWeightMg > 0
-                        ? `${percentOf(row.mg, totalWeightMg)}%`
-                        : "—"}
-                    </span>
-                  </div>
+                    row={row}
+                    totalWeightMg={totalWeightMg}
+                    overrides={overrides}
+                    onChange={onChange}
+                    editable={editable}
+                    numberFormatter={numberFormatter}
+                    percentOf={percentOf}
+                    tFormulations={tFormulations}
+                  />
                 ))
             : null}
         </div>
@@ -7227,6 +8086,219 @@ function FineTuneRow({
           <span className="w-28 shrink-0 text-right tabular-nums text-ink-500">
             {canConvertPct
               ? `${((share.mg / totalWeightMg!) * 100).toFixed(2)}%`
+              : "—"}
+          </span>
+          <span className="w-6 shrink-0" aria-hidden />
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Per-item row in the Fine-tune panel's "everything else" section.
+ * Editable when the row carries an ``itemId`` (writes an mg override
+ * under ``excipient_mg:<itemId>``); read-only otherwise. Surfaces a
+ * visible amber pill when the compute couldn't dose the pick (missing
+ * rate on the PSP item) — the scientist can either type an mg here or
+ * fix the SKU on PSP.
+ */
+function FineTuneExtraRow({
+  row,
+  totalWeightMg,
+  overrides,
+  onChange,
+  editable,
+  numberFormatter,
+  percentOf,
+  tFormulations,
+}: {
+  row: {
+    readonly key: string;
+    readonly label: string;
+    readonly mg: number;
+    readonly hint?: string;
+    readonly itemId?: string;
+    readonly notDosed?: boolean;
+  };
+  totalWeightMg: number | null;
+  overrides: Readonly<Record<string, number>>;
+  onChange: ((next: Record<string, number>) => void) | null;
+  editable: boolean;
+  numberFormatter: Intl.NumberFormat;
+  percentOf: (part: number, whole: number) => string;
+  tFormulations: ReturnType<typeof useTranslations<"formulations">>;
+}) {
+  const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
+  const overrideKey = row.itemId
+    ? `${EXCIPIENT_ITEM_MG_PREFIX}${row.itemId}`
+    : null;
+  const canEditRow = editable && !!overrideKey && !!onChange;
+  const overridden = overrideKey ? overrideKey in overrides : false;
+
+  const [mgDraft, setMgDraft] = useState<string>(() => row.mg.toFixed(2));
+  const [pctDraft, setPctDraft] = useState<string>(() =>
+    canConvertPct ? ((row.mg / totalWeightMg!) * 100).toFixed(2) : "",
+  );
+  const [focused, setFocused] = useState<"mg" | "pct" | null>(null);
+  useEffect(() => {
+    if (focused === "mg") return;
+    setMgDraft(row.mg.toFixed(2));
+  }, [row.mg, focused]);
+  useEffect(() => {
+    if (focused === "pct") return;
+    setPctDraft(
+      canConvertPct ? ((row.mg / totalWeightMg!) * 100).toFixed(2) : "",
+    );
+  }, [row.mg, canConvertPct, totalWeightMg, focused]);
+
+  const persistMg = useCallback(
+    (mgValue: number | null) => {
+      if (!canEditRow || !overrideKey || !onChange) return;
+      const next: Record<string, number> = { ...overrides };
+      if (mgValue === null || !Number.isFinite(mgValue) || mgValue < 0) {
+        delete next[overrideKey];
+      } else {
+        const capped = Math.min(mgValue, 100_000);
+        if (overrides[overrideKey] === capped) return;
+        next[overrideKey] = capped;
+      }
+      onChange(next);
+    },
+    [canEditRow, onChange, overrideKey, overrides],
+  );
+
+  const commitMg = useCallback(() => {
+    setFocused(null);
+    const parsed = Number.parseFloat(mgDraft);
+    persistMg(Number.isFinite(parsed) ? parsed : null);
+  }, [mgDraft, persistMg]);
+
+  const commitPct = useCallback(() => {
+    setFocused(null);
+    if (!canConvertPct) return;
+    const parsed = Number.parseFloat(pctDraft);
+    persistMg(
+      Number.isFinite(parsed) ? (parsed / 100) * totalWeightMg! : null,
+    );
+  }, [pctDraft, persistMg, canConvertPct, totalWeightMg]);
+
+  const reset = useCallback(() => {
+    if (!canEditRow || !overrideKey || !onChange) return;
+    if (!overridden) return;
+    const next: Record<string, number> = { ...overrides };
+    delete next[overrideKey];
+    onChange(next);
+  }, [canEditRow, onChange, overrideKey, overrides, overridden]);
+
+  const inputBase =
+    "w-full rounded border px-2 py-1 text-right text-xs tabular-nums focus:outline-none focus:ring-1 focus:ring-brand-500";
+  const inputTone = overridden
+    ? "border-brand-300 bg-brand-50/40"
+    : row.notDosed && !overridden
+      ? "border-amber-300 bg-amber-50/40"
+      : "border-ink-200 bg-white";
+
+  return (
+    <div
+      className={`flex items-center gap-4 border-t border-ink-100 px-4 py-2 text-sm ${
+        overridden
+          ? "bg-brand-50/20"
+          : row.notDosed
+            ? "bg-amber-50/30"
+            : ""
+      }`}
+    >
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="break-words font-medium text-ink-1000" title={row.label}>
+          {row.label}
+        </span>
+        {row.notDosed && !overridden ? (
+          <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+            <span aria-hidden>⚠</span>
+            {tFormulations("builder.fine_tune.not_dosed")}
+          </span>
+        ) : row.hint ? (
+          <span className="text-[11px] text-ink-500">{row.hint}</span>
+        ) : null}
+      </div>
+      {canEditRow ? (
+        <>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              value={mgDraft}
+              onFocus={() => setFocused("mg")}
+              onChange={(e) => setMgDraft(e.target.value)}
+              onBlur={commitMg}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setMgDraft(row.mg.toFixed(2));
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${inputTone}`}
+              aria-label={`${row.label} milligrams`}
+            />
+            <span className="text-[10px] text-ink-500">mg</span>
+          </span>
+          <span className="flex w-28 shrink-0 items-center gap-1">
+            <input
+              type="number"
+              inputMode="decimal"
+              step="0.01"
+              min="0"
+              disabled={!canConvertPct}
+              value={pctDraft}
+              onFocus={() => setFocused("pct")}
+              onChange={(e) => setPctDraft(e.target.value)}
+              onBlur={commitPct}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  (e.target as HTMLInputElement).blur();
+                } else if (e.key === "Escape") {
+                  setPctDraft(
+                    canConvertPct
+                      ? ((row.mg / totalWeightMg!) * 100).toFixed(2)
+                      : "",
+                  );
+                  (e.target as HTMLInputElement).blur();
+                }
+              }}
+              className={`${inputBase} ${inputTone} disabled:cursor-not-allowed disabled:bg-ink-50`}
+              aria-label={`${row.label} percent`}
+            />
+            <span className="text-[10px] text-ink-500">%</span>
+          </span>
+          {overridden ? (
+            <button
+              type="button"
+              onClick={reset}
+              className="w-6 shrink-0 rounded p-1 text-center text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+              title={tFormulations("builder.fine_tune.reset_row")}
+              aria-label={tFormulations("builder.fine_tune.reset_row")}
+            >
+              ↺
+            </button>
+          ) : (
+            <span className="w-6 shrink-0" aria-hidden />
+          )}
+        </>
+      ) : (
+        <>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-700">
+            {numberFormatter.format(row.mg)} mg
+          </span>
+          <span className="w-28 shrink-0 text-right tabular-nums text-ink-500">
+            {totalWeightMg && totalWeightMg > 0
+              ? `${percentOf(row.mg, totalWeightMg)}%`
               : "—"}
           </span>
           <span className="w-6 shrink-0" aria-hidden />

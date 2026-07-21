@@ -118,6 +118,8 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "item_source",
             "psp_item_uuid",
             "stage_id",
+            "source_kind",
+            "band_key",
             "display_order",
             "label_claim_mg",
             "serving_size_override",
@@ -968,6 +970,30 @@ class SaveVersionSerializer(serializers.Serializer):
 
 class RollbackVersionSerializer(serializers.Serializer):
     version_number = serializers.IntegerField(min_value=1)
+
+
+class WizardRoutingSerializer(serializers.Serializer):
+    """POST body for ``/formulations/<id>/wizard-routing/``.
+
+    ``line_assignments`` — ``{line_uuid: stage_uuid_or_null}``. Updates
+    the ``stage`` FK on each existing active :class:`FormulationLine`.
+
+    ``band_assignments`` — list of
+    ``{item_id, band_key, mg, stage_id}``. Wholesale-replaces the
+    formulation's ``band_pick`` lines (upsert on (item, band_key),
+    delete orphans).
+    """
+
+    line_assignments = serializers.DictField(
+        child=serializers.UUIDField(allow_null=True),
+        required=False,
+        default=dict,
+    )
+    band_assignments = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        default=list,
+    )
 
 
 class SetApprovedVersionSerializer(serializers.Serializer):

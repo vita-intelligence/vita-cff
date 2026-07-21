@@ -332,7 +332,8 @@
       "revert_row": "Revert to last saved ({mg} mg)",
       "revert_unsaved": "Revert unsaved",
       "revert_unsaved_hint": "Discard every unsaved edit on this formulation (metadata, actives, and excipient overrides) and rewind to the last saved version.",
-      "overflow_warning": "Actives total {actives} mg — over the target/max weight, so every excipient band was pushed to 0 mg. Rows are kept visible so you can lower an active and watch the excipient mass return. Nothing was deleted."
+      "overflow_warning": "Actives total {actives} mg — over the target/max weight, so every excipient band was pushed to 0 mg. Rows are kept visible so you can lower an active and watch the excipient mass return. Nothing was deleted.",
+      "not_dosed": "Not dosed — missing PSP rate"
     },
     "unsupported_form": "Excipient math for this dosage form is not yet supported. You can still track ingredients and metadata.",
     "failure_reason": {

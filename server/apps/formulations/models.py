@@ -865,6 +865,69 @@ class FormulationLine(models.Model):
         null=True,
         blank=True,
     )
+    #: Provenance of this line so the routing wizard (Step 3) can
+    #: differentiate operator-picked actives from compute-derived
+    #: band picks (anti-caking, MCC, DCP, capsule shell, sweetener,
+    #: flavour, colour, gelling, glazing, acidity, powder carrier,
+    #: gummy base, premix sweetener). Both flavours persist as
+    #: FormulationLine rows so per-stage BOM routing, PSP push, and
+    #: version snapshots use one code path. Band picks get their
+    #: mg re-derived from compute on every save; actives keep their
+    #: hand-entered label_claim_mg untouched.
+    SOURCE_KIND_ACTIVE = "active"
+    SOURCE_KIND_BAND_PICK = "band_pick"
+    SOURCE_KIND_CHOICES = (
+        (SOURCE_KIND_ACTIVE, _("Operator-picked active ingredient")),
+        (SOURCE_KIND_BAND_PICK, _("Compute-derived excipient / band pick")),
+    )
+    source_kind = models.CharField(
+        _("source kind"),
+        max_length=16,
+        default=SOURCE_KIND_ACTIVE,
+        choices=SOURCE_KIND_CHOICES,
+        db_index=True,
+    )
+    #: When source_kind == 'band_pick' this identifies which excipient
+    #: band the pick belongs to so the wizard can group and label
+    #: rows correctly ("Anti-caking · Silicon Dioxide"). Also used
+    #: by the sync service to figure out which M2M drives the row.
+    #: NULL for source_kind == 'active'.
+    BAND_KEY_ANTI_CAKING = "anti_caking"
+    BAND_KEY_MCC = "mcc"
+    BAND_KEY_DCP = "dcp"
+    BAND_KEY_CAPSULE_SHELL = "capsule_shell"
+    BAND_KEY_FLAVOURING = "flavouring"
+    BAND_KEY_COLOUR = "colour"
+    BAND_KEY_SWEETENER = "sweetener"
+    BAND_KEY_GELLING = "gelling"
+    BAND_KEY_GLAZING = "glazing"
+    BAND_KEY_ACIDITY = "acidity"
+    BAND_KEY_POWDER_CARRIER = "powder_carrier"
+    BAND_KEY_GUMMY_BASE = "gummy_base"
+    BAND_KEY_PREMIX_SWEETENER = "premix_sweetener"
+    BAND_KEY_CHOICES = (
+        (BAND_KEY_ANTI_CAKING, _("Anti-caking")),
+        (BAND_KEY_MCC, _("MCC carrier")),
+        (BAND_KEY_DCP, _("DCP carrier")),
+        (BAND_KEY_CAPSULE_SHELL, _("Capsule shell")),
+        (BAND_KEY_FLAVOURING, _("Flavouring")),
+        (BAND_KEY_COLOUR, _("Colour")),
+        (BAND_KEY_SWEETENER, _("Sweetener")),
+        (BAND_KEY_GELLING, _("Gelling agent")),
+        (BAND_KEY_GLAZING, _("Glazing")),
+        (BAND_KEY_ACIDITY, _("Acidity regulator")),
+        (BAND_KEY_POWDER_CARRIER, _("Powder carrier")),
+        (BAND_KEY_GUMMY_BASE, _("Gummy base")),
+        (BAND_KEY_PREMIX_SWEETENER, _("Premix sweetener")),
+    )
+    band_key = models.CharField(
+        _("band key"),
+        max_length=32,
+        null=True,
+        blank=True,
+        choices=BAND_KEY_CHOICES,
+        db_index=True,
+    )
     display_order = models.PositiveIntegerField(_("display order"), default=0)
     label_claim_mg = models.DecimalField(
         _("label claim (mg)"),

@@ -42,6 +42,8 @@ import {
   replaceFormulationLines,
   rollbackFormulation,
   saveFormulationVersion,
+  saveWizardRouting,
+  type WizardRoutingRequestDto,
   setApprovedVersion,
   syncFormulationToPsp,
   type SyncPspResponseDto,
@@ -495,6 +497,31 @@ export function useSyncFormulationToPsp(
     },
   });
 }
+
+/**
+ * Wizard step 3 — persist per-ingredient stage routing. Updates the
+ * formulation detail cache with the fresh DTO so the builder + strip
+ * see the new stage assignments + materialised band-pick lines
+ * without a follow-up fetch. Also invalidates PSP item cache so any
+ * downstream sync sees fresh state.
+ */
+export function useSaveWizardRouting(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<FormulationDto, ApiError, WizardRoutingRequestDto> {
+  const queryClient = useQueryClient();
+  return useMutation<FormulationDto, ApiError, WizardRoutingRequestDto>({
+    mutationFn: (payload) => saveWizardRouting(orgId, formulationId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.detail(orgId, formulationId),
+        updated,
+      );
+      queryClient.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
+    },
+  });
+}
+
 
 /**
  * Wholesale-hydrate the finished-stage BOM from PSP's active primary
