@@ -5,6 +5,7 @@ from django.urls import path
 from apps.psp.api.views import (
     PspCreateFinishedProductView,
     PspIntegrationView,
+    PspItemBomView,
     PspItemDetailView,
     PspItemListView,
     PspItemMirrorView,
@@ -40,6 +41,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/items/<uuid:item_uuid>/",
         PspItemDetailView.as_view(),
         name="psp-item-detail",
+    ),
+    # Live per-stage BOM read — each FE stage card fetches its own
+    # item's active primary BOM so what the operator sees is the
+    # authoritative recipe on PSP, not a synthesized display.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/items/<uuid:item_uuid>/bom/",
+        PspItemBomView.as_view(),
+        name="psp-item-bom",
     ),
     # Mirror-on-pick — POST-only endpoint the builder hits after
     # the scientist picks a PSP item. Upserts into local catalogues

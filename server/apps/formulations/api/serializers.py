@@ -941,6 +941,7 @@ class FormulationVersionReadSerializer(serializers.ModelSerializer):
             "snapshot_metadata",
             "snapshot_lines",
             "snapshot_totals",
+            "snapshot_stage_boms",
             "created_at",
         )
         read_only_fields = fields
@@ -949,6 +950,19 @@ class FormulationVersionReadSerializer(serializers.ModelSerializer):
 class SaveVersionSerializer(serializers.Serializer):
     label = serializers.CharField(
         max_length=150, required=False, allow_blank=True, default=""
+    )
+    #: Per-stage compute-derived BOM snapshot, keyed by stage uuid.
+    #: Each row: ``{"item_id": "<local uuid>", "mg": <float>,
+    #: "sort_order": <int>, "label": "...", "code": "..."}``.
+    #: Optional — omitted payloads store an empty dict and history
+    #: falls back to the (denormalised) ``snapshot_lines`` per-line
+    #: ``stage_id`` for reconstruction. FE always sends it now so
+    #: version history preserves exactly what each stage's PSP BOM
+    #: held at save time (actives + excipient bands + prior-semi).
+    stage_boms = serializers.DictField(
+        child=serializers.ListField(child=serializers.DictField()),
+        required=False,
+        default=dict,
     )
 
 

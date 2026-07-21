@@ -230,6 +230,47 @@ export async function fetchPspProductFamilies(
 }
 
 
+/** Live per-stage BOM read. Each stage card on the strip fetches
+ *  its own item's active primary BOM so the display mirrors PSP —
+ *  no local synthesis. ``bom: null`` = the item has no primary BOM
+ *  (never pushed, or PSP off / mis-configured / round-trip failed);
+ *  the FE renders "not on PSP yet" for every one of those cases. */
+export interface PspBomLinePartDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly internal_code: string;
+  readonly item_type: string;
+}
+export interface PspBomLineDto {
+  readonly sort_order: number;
+  readonly qty: string | number;
+  readonly is_fixed: boolean;
+  readonly notes: string;
+  readonly uom_uuid: string | null;
+  readonly uom_symbol: string;
+  readonly part: PspBomLinePartDto;
+}
+export interface PspBomDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly notes: string;
+  readonly item_uuid: string;
+  readonly lines: readonly PspBomLineDto[];
+}
+export interface PspItemBomResponseDto {
+  readonly bom: PspBomDto | null;
+}
+export async function fetchPspItemBom(
+  orgId: string,
+  itemUuid: string,
+): Promise<PspItemBomResponseDto> {
+  const { data } = await apiClient.get<PspItemBomResponseDto>(
+    pspEndpoints.itemBom(orgId, itemUuid),
+  );
+  return data;
+}
+
+
 /** New-formulation dialog: create a brand-new PSP finished-product
  *  item so the scientist doesn't have to switch UIs when a CFF lands
  *  with a genuinely new SKU. Server locks ``item_type`` to

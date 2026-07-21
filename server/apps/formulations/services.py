@@ -2603,6 +2603,47 @@ def set_formulation_stages(
         created = FormulationStage.objects.create(formulation=formulation, **payload)
         incoming_ids.add(str(created.id))
 
+    # Guard the finished-product stage from accidental removal. It's
+    # the project's identity on PSP (linked to
+    # ``formulation.psp_finished_product_uuid`` — which anchors
+    # sales orders, price lists, labels), and silently auto-promoting
+    # a semi to fill the gap would swap the entire product's PSP
+    # identity out from under the operator. Reject rather than
+    # cascade so the error surfaces in the FE toast.
+    if formulation.stages.exists():
+        removed_finished_exists = (
+            formulation.stages.exclude(id__in=incoming_ids)
+            .filter(psp_item_type="finished_product")
+            .exists()
+        )
+        payload_has_finished = any(
+            (r.get("psp_item_type") or "").strip() == "finished_product"
+            for r in stages
+            if isinstance(r, dict)
+        )
+        if removed_finished_exists and not payload_has_finished:
+            raise ValueError(
+                "The finished-product stage can't be removed — it's"
+                " the project's PSP identity. Convert an existing"
+                " stage to finished_product first, or reassign the"
+                " finished flag before removing this stage."
+            )
+
+    # Capture stages about to be deleted so we can clean up their
+    # PSP counterparts after the transaction commits. Only
+    # ``semi_finished`` stages with a cached PSP uuid are candidates
+    # — the finished-product stage outlives a formulation edit
+    # (it may be attached to sales orders, price lists, labels), and
+    # stages that were never pushed have no PSP uuid to delete.
+    departing_semi_uuids: list[str] = list(
+        formulation.stages.exclude(id__in=incoming_ids)
+        .filter(
+            psp_item_type="semi_finished",
+            psp_semi_finished_uuid__isnull=False,
+        )
+        .values_list("psp_semi_finished_uuid", flat=True)
+    )
+
     # Delete stages that fell out of the payload. Lines FK to the
     # departing rows get ``stage=NULL`` via ``on_delete=SET_NULL``.
     formulation.stages.exclude(id__in=incoming_ids).delete()
@@ -2645,7 +2686,7 @@ def set_formulation_stages(
     # doesn't hold the DB write lock — and so failed PSP calls can't
     # roll back the successful stage upsert.
     def _sync_to_psp() -> None:
-        from apps.psp.services import push_bom_to_psp
+        from apps.psp.services import delete_psp_item, push_bom_to_psp
 
         try:
             push_bom_to_psp(formulation=formulation)
@@ -2657,6 +2698,30 @@ def set_formulation_stages(
                 formulation.pk,
                 formulation.organization_id,
             )
+
+        # Clean up PSP semi-finished items for stages the operator
+        # just removed from this formulation. delete_psp_item is
+        # silent-degrade and safety-gated on the PSP side (refuses
+        # when the item is referenced in another BOM, has history,
+        # or its external_sku doesn't match the NPD pattern), so a
+        # skipped delete is expected and just gets logged.
+        if departing_semi_uuids:
+            import logging
+
+            log = logging.getLogger(__name__)
+            organization = formulation.organization
+            for uuid in departing_semi_uuids:
+                result = delete_psp_item(
+                    organization=organization, uuid=uuid
+                )
+                if not result.get("deleted"):
+                    log.info(
+                        "set_formulation_stages: skipped PSP delete for"
+                        " item %s (org %s) — reason %s",
+                        uuid,
+                        organization.pk,
+                        result.get("reason"),
+                    )
 
     transaction.on_commit(_sync_to_psp)
 
@@ -4902,6 +4967,7 @@ def save_version(
     formulation: Formulation,
     actor: Any,
     label: str = "",
+    stage_boms: dict[str, list[dict[str, Any]]] | None = None,
 ) -> FormulationVersion:
     """Freeze the formulation's current state into a new version.
 
@@ -4910,6 +4976,14 @@ def save_version(
     historical versions preserve exactly what the label would have
     said at that moment — later catalogue edits cannot rewrite old
     snapshots.
+
+    ``stage_boms`` — optional FE-computed per-stage BOM snapshot,
+    keyed by stage uuid. When present it's persisted verbatim as
+    :attr:`FormulationVersion.snapshot_stage_boms` and also flows
+    into the PSP push cascade as a stage-BOM override so PSP
+    receives exactly what NPD shows on each stage card. Missing
+    payloads persist ``{}`` and the push falls back to the
+    per-stage line derivation.
     """
 
     totals = compute_formulation_totals(formulation=formulation)
@@ -4958,6 +5032,15 @@ def save_version(
         ]
         or 0
     )
+    normalised_stage_boms: dict[str, list[dict[str, Any]]] = {}
+    if isinstance(stage_boms, dict):
+        for stage_uuid, rows in stage_boms.items():
+            if not isinstance(rows, list):
+                continue
+            normalised_stage_boms[str(stage_uuid)] = [
+                row for row in rows if isinstance(row, dict)
+            ]
+
     version = FormulationVersion.objects.create(
         formulation=formulation,
         version_number=highest + 1,
@@ -4965,6 +5048,7 @@ def save_version(
         snapshot_metadata=_snapshot_metadata(formulation),
         snapshot_lines=_snapshot_lines(formulation),
         snapshot_totals=serialized_totals,
+        snapshot_stage_boms=normalised_stage_boms,
         created_by=actor,
     )
     record_audit(
@@ -4987,7 +5071,15 @@ def save_version(
     from apps.psp.services import push_bom_to_psp
 
     try:
-        push_bom_to_psp(formulation=formulation)
+        # Use the FE-computed per-stage snapshot as the PSP push
+        # override so each stage's PSP BOM matches what NPD's stage
+        # card holds (actives + excipient bands + prior-semi link).
+        # Falls back to the ORM-line derivation for stages the FE
+        # didn't include (or when the payload is empty).
+        push_bom_to_psp(
+            formulation=formulation,
+            stage_bom_overrides=normalised_stage_boms or None,
+        )
     except Exception:
         # Defensive belt-and-braces — the service should already
         # swallow everything, but if something slips through we

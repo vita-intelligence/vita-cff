@@ -36,6 +36,7 @@ import {
 import type { PspItemDto } from "@/services/psp";
 
 import {
+  CAPSULE_SHELL_WEIGHTS,
   CAPSULE_SIZES,
   DOSAGE_FORMS,
   FULLY_SUPPORTED_DOSAGE_FORMS,
@@ -79,6 +80,36 @@ import {
 } from "@/services/formulations";
 
 const RAW_MATERIALS_SLUG = "raw_materials";
+
+/**
+ * Auto-picks the smallest PSP shell whose ``max_weight_mg`` fits
+ * ``totalActiveMg`` with ~21% headroom. Mirrors the compute-layer
+ * ``autoPickFromPspCatalog`` (kept in sync manually — the helper
+ * isn't exported from the math module). Returns ``null`` when the
+ * catalog is empty or nothing fits.
+ */
+const CAPSULE_SHELL_AUTOPICK_HEADROOM = 0.79;
+function resolveAutoPickedShell(
+  catalog: readonly {
+    readonly uuid: string;
+    readonly name: string;
+    readonly code: string;
+    readonly capsuleSize: string | null;
+    readonly maxWeightMg: number;
+  }[],
+  totalActiveMg: number,
+) {
+  if (!catalog || catalog.length === 0) return null;
+  const sorted = [...catalog]
+    .filter((s) => Number.isFinite(s.maxWeightMg) && s.maxWeightMg > 0)
+    .sort((a, b) => a.maxWeightMg - b.maxWeightMg);
+  for (const shell of sorted) {
+    if (totalActiveMg < shell.maxWeightMg * CAPSULE_SHELL_AUTOPICK_HEADROOM) {
+      return shell;
+    }
+  }
+  return null;
+}
 
 /** The four workspace tabs on the formulation builder. Each tab is
  *  a permanently-mounted section that toggles via the ``hidden``
@@ -1375,6 +1406,18 @@ export function FormulationBuilder({
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
 
+  // Bubble-up dirty state + inline-save handle from the stage strip
+  // so the top-of-page Save version / Save draft buttons react to
+  // stage edits (rename, add / remove stage, workstation swap, PSP
+  // identity change) the same way they react to line + metadata
+  // edits. Without this the operator can rearrange stages, see the
+  // "unsaved changes" chip on the strip, but the header CTAs stay
+  // greyed out.
+  const [stagesDirty, setStagesDirty] = useState(false);
+  const stagesSaveHandleRef = useRef<
+    (() => Promise<FormulationDto>) | null
+  >(null);
+
   const numberFormatter = useMemo(
     () =>
       new Intl.NumberFormat(locale, {
@@ -1830,6 +1873,134 @@ export function FormulationBuilder({
     formulation.gelling_items,
     formulation.premix_sweetener_items,
     formulation.acidity_items,
+  ]);
+
+  // Per-stage BOM — every stage's card renders the FULL formulation
+  // BOM (all actives across the main builder + every excipient band
+  // split across picked SKUs). Same rows the Fine-tune panel edits.
+  // Each stage's PSP item then holds the same complete recipe so
+  // what NPD shows = what PSP holds, and no ingredient silently
+  // drops off because it was assigned to a different stage bucket.
+  //
+  // Every stage after the first also prepends a synthesized "1×
+  // prior stage's semi-finished" row so the multi-level structure
+  // reads at a glance.
+  const bomLinesByStage = useMemo(() => {
+    const map = new Map<string, readonly BomLine[]>();
+    const stages = formulation.stages;
+    // Capsule shell picks — merge the picker's live attribute cache
+    // (populated on toggle) with the server echo so freshly-toggled
+    // shells emit with a resolvable ``shell_weight_mg`` before the
+    // save round-trip refreshes ``formulation.capsule_shell_items``.
+    // Restricted to ``dosage_form === "capsule"`` — other forms
+    // don't ship a shell on the BOM.
+    const capsuleShellRows =
+      metadata.dosage_form === "capsule"
+        ? metadata.capsule_shell_item_ids
+            .map((id) => {
+              const echo = (formulation.capsule_shell_items ?? []).find(
+                (i) => i.id === id,
+              );
+              const liveAttrs = capsuleShellAttrs[id];
+              const liveName = capsuleShellNames[id];
+              const liveCode = capsuleShellCodes[id];
+              if (!echo && !liveName) return null;
+              return {
+                id,
+                name: echo?.name || liveName || "Capsule shell",
+                internal_code: echo?.internal_code || liveCode || "",
+                attributes: liveAttrs ?? echo?.attributes ?? {},
+              };
+            })
+            .filter((r): r is NonNullable<typeof r> => r !== null)
+        : [];
+
+    // Auto-picked shell fallback — every capsule ships with a shell,
+    // so the BOM must list one even when the operator hasn't ticked
+    // anything explicit. Prefer a PSP catalog match by capsule size
+    // (real SKU + real name + PSP uuid the push cascade can send);
+    // fall back to the hardcoded per-size weight with a generic
+    // label when the catalog is empty / offline.
+    // Match compute's own auto-pick: smallest PSP shell whose
+    // ``max_weight_mg`` fits total active with ~21% headroom.
+    // Falls back to the hardcoded shell-weight table (indexed by
+    // whatever size compute settled on) when the catalog is empty
+    // or nothing fits. Only fires when nothing is explicitly ticked.
+    const autoCapsuleShell =
+      metadata.dosage_form === "capsule" && capsuleShellRows.length === 0
+        ? (() => {
+            const match = resolveAutoPickedShell(
+              pspCapsuleShellCatalog,
+              liveTotals.totalActiveMg,
+            );
+            if (match) {
+              const sizeKey = match.capsuleSize || metadata.capsule_size || "";
+              return {
+                pspItemUuid: match.uuid,
+                name: match.name,
+                code: match.code,
+                shellWeightMg: CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0,
+              };
+            }
+            const sizeKey = metadata.capsule_size || "";
+            const hardcodedWeight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
+            if (hardcodedWeight <= 0) return null;
+            return {
+              pspItemUuid: null,
+              name: sizeKey
+                ? `Capsule Shell (${sizeKey})`
+                : "Capsule Shell (Hypromellose)",
+              code: "",
+              shellWeightMg: hardcodedWeight,
+            };
+          })()
+        : null;
+    const fullBom = deriveStageBomLines({
+      totals: liveTotals,
+      lines,
+      mccCarrierItems: formulation.mcc_carrier_items ?? [],
+      dcpCarrierItems: formulation.dcp_carrier_items ?? [],
+      antiCakingItems: formulation.anti_caking_items ?? [],
+      capsuleShellItems: capsuleShellRows,
+      autoCapsuleShell,
+      excipientOverrides: metadata.excipient_overrides,
+    });
+    stages.forEach((stage, i) => {
+      const prior = i > 0 ? stages[i - 1] : undefined;
+      if (prior) {
+        const priorLabel =
+          prior.psp_item_name?.trim() ||
+          prior.name?.trim() ||
+          `Stage ${prior.sort_order + 1}`;
+        const semiRow: BomLine = {
+          key: `semi:${prior.id}`,
+          label: `${priorLabel} (semi-finished)`,
+          code: "",
+          mg: 1,
+          itemId: null,
+        };
+        map.set(stage.id, [semiRow, ...fullBom]);
+      } else {
+        map.set(stage.id, fullBom);
+      }
+    });
+    return map;
+  }, [
+    liveTotals,
+    lines,
+    formulation.mcc_carrier_items,
+    formulation.dcp_carrier_items,
+    formulation.anti_caking_items,
+    formulation.capsule_shell_items,
+    formulation.stages,
+    metadata.dosage_form,
+    metadata.capsule_size,
+    metadata.capsule_shell_item_ids,
+    metadata.excipient_overrides,
+    capsuleShellAttrs,
+    capsuleShellNames,
+    capsuleShellCodes,
+    pspCapsuleShellCatalog,
   ]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
@@ -2378,6 +2549,28 @@ export function FormulationBuilder({
     setActiveStageId(formulation.stages[0]?.id ?? null);
   }, [activeStageId, formulation.stages]);
 
+
+  // Pick-in-flight tracking so the picker overlay + row-disable
+  // fire on EVERY click, not just PSP-mirror round-trips. Local
+  // catalogue picks skip the HTTP mutation and would otherwise
+  // never trigger a visible loader — but compute + re-render on
+  // the resulting state change still takes long enough for the
+  // operator to feel a lag. Min-visible window (150ms) keeps the
+  // spinner on-screen long enough to register even when the pick
+  // resolves in <10ms.
+  const pickingRef = useRef(false);
+  const [pickingVisible, setPickingVisible] = useState(false);
+  const releasePickLock = useCallback(() => {
+    // 500ms min-visible window so the operator actually clocks
+    // the overlay — 150ms felt like a flicker on fast local picks.
+    // The picker stays blocked for the whole window; that's the
+    // whole point (prevents the race we're guarding).
+    setTimeout(() => {
+      pickingRef.current = false;
+      setPickingVisible(false);
+    }, 500);
+  }, []);
+
   const appendIngredientLine = useCallback(
     (item: ItemDto, stageId: string | null) => {
       setLines((prev) => {
@@ -2408,6 +2601,23 @@ export function FormulationBuilder({
 
   const addIngredient = useCallback(
     (item: ItemDto) => {
+      // Hard-block re-entry while any pick (PSP mirror OR local
+      // append) is being processed. Belt-and-braces with the
+      // disabled state on every picker button — a fast operator
+      // can still fire multiple clicks in the ~milliseconds
+      // between mutation start and the re-render that flips
+      // ``disabled`` on the DOM. Without this guard, back-to-back
+      // picks can race the ``activeStageId`` snapshot + the
+      // ``already``-added dedup, landing an ingredient in the
+      // wrong stage bucket (or with the wrong ``use_as``
+      // classification if the operator meant a different band).
+      if (mirrorPsp.isPending || pickingRef.current) return;
+      // Flip the visible-loader flag synchronously so the overlay
+      // shows on the very next paint — even for local picks where
+      // no HTTP round-trip fires. Cleared with a min-visible
+      // window below so the flash isn't imperceptible.
+      pickingRef.current = true;
+      setPickingVisible(true);
       // PSP-sourced picker rows carry a ``psp:<uuid>`` synthetic id.
       // Route them through the mirror endpoint first — that returns
       // a real local :class:`catalogues.Item` with a stable UUID —
@@ -2440,6 +2650,7 @@ export function FormulationBuilder({
               },
               targetStageId,
             );
+            releasePickLock();
           },
           onError: (err) => {
             // Surface the mirror failure in the same error banner
@@ -2448,13 +2659,15 @@ export function FormulationBuilder({
             // and the operator can't tell PSP integration status
             // from a real network / permission issue.
             setErrorMessage(extractApiErrorMessage(err, tErrors));
+            releasePickLock();
           },
         });
         return;
       }
       appendIngredientLine(item, activeStageId);
+      releasePickLock();
     },
-    [appendIngredientLine, mirrorPsp, activeStageId, tErrors],
+    [appendIngredientLine, mirrorPsp, activeStageId, tErrors, releasePickLock],
   );
 
   const updateLineClaim = useCallback((key: string, value: string) => {
@@ -2691,7 +2904,52 @@ export function FormulationBuilder({
     try {
       await handleSaveMetadata();
       await handleSaveLines();
-      await saveVersionMutation.mutateAsync({ label: "" });
+      // Persist any pending stage edits before cutting the version
+      // so the snapshot reflects them + so the auto-push cascade
+      // fires with the latest workstation / operation / cost data.
+      // The strip's save mutation already updates our local
+      // ``formulation`` state via ``onSaved``, so bomLinesByStage
+      // re-derives against the fresh stage graph before the save-
+      // version payload is built below.
+      if (stagesDirty && stagesSaveHandleRef.current) {
+        await stagesSaveHandleRef.current();
+      }
+      // Ship the FE-computed per-stage BOM as part of the save so
+      // (1) version history preserves exactly what each stage's PSP
+      // BOM held at this save, and (2) the auto-push inside
+      // save_version uses the snapshot as the PSP override — PSP
+      // ends up with the same rows the operator sees. Compute-only
+      // placeholder rows without a picked SKU (empty excipient
+      // bands, the synthesized "prior semi" row) are dropped.
+      const stageBoms: Record<
+        string,
+        {
+          item_id: string | null;
+          psp_item_uuid?: string | null;
+          mg: number;
+          sort_order: number;
+          label: string;
+          code: string;
+        }[]
+      > = {};
+      bomLinesByStage.forEach((rows, stageId) => {
+        stageBoms[stageId] = rows
+          // Keep rows that resolve to either a local item id (the
+          // usual mirror path) OR a raw PSP uuid (auto-picked
+          // capsule shell before any explicit tick). Drop rows with
+          // neither — those are compute-only placeholders (empty
+          // excipient bands, the synthesized prior-semi link).
+          .filter((row) => Boolean(row.itemId) || Boolean(row.pspItemUuid))
+          .map((row, idx) => ({
+            item_id: row.itemId,
+            psp_item_uuid: row.pspItemUuid ?? null,
+            mg: row.mg,
+            sort_order: idx,
+            label: row.label,
+            code: row.code,
+          }));
+      });
+      await saveVersionMutation.mutateAsync({ label: "", stage_boms: stageBoms });
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
@@ -2699,6 +2957,8 @@ export function FormulationBuilder({
     handleSaveMetadata,
     handleSaveLines,
     saveVersionMutation,
+    bomLinesByStage,
+    stagesDirty,
     tErrors,
   ]);
 
@@ -2811,29 +3071,29 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       {canWrite ? (
         <section className="flex flex-wrap items-center justify-end gap-3">
-          {metadataDirty || linesDirty ? (
+          {metadataDirty || linesDirty || stagesDirty ? (
             <span className="mr-auto text-xs font-medium uppercase tracking-wide text-ink-500">
               {tFormulations("builder.unsaved_changes")}
             </span>
           ) : null}
           <div className="flex flex-wrap gap-3">
-              {/* Deep-link into PSP when the formulation is bound
-                  to a finished-product item. Points at the item
-                  detail page (which shows every BOM version this
-                  formulation has pushed), not a specific BOM
-                  version — the item page is a stable target that
-                  keeps working across future version bumps. Hidden
-                  when either the link isn't set (formulation
-                  predates the picker) or PSP isn't configured
-                  (empty base url). */}
+              {/* Deep-link into PSP — always targets the finished
+                  product (the terminal stage's PSP item). Points at
+                  the item detail page (shows every BOM version this
+                  formulation has pushed), not a specific BOM version
+                  — the item page is a stable target that keeps
+                  working across future version bumps. Hidden when
+                  either the finished-product link isn't set
+                  (formulation predates the picker) or PSP isn't
+                  configured (empty base url). */}
               {formulation.psp_finished_product_uuid &&
               organization?.psp_base_url ? (
                 <a
-                  href={`${organization.psp_base_url}/settings/items/${formulation.psp_finished_product_uuid}`}
+                  href={`${organization.psp_base_url}/production/items/${formulation.psp_finished_product_uuid}`}
                   target="_blank"
                   rel="noreferrer noopener"
                   className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                  title="Opens the linked finished product's item + BOM history on PSP in a new tab"
+                  title="Opens the finished product's item + BOM history on PSP in a new tab"
                 >
                   <ExternalLink className="h-4 w-4" />
                   Open on PSP
@@ -2860,10 +3120,13 @@ export function FormulationBuilder({
                 variant="outline"
                 size="md"
                 className="gap-1.5 rounded-lg bg-ink-0 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                isDisabled={isBusy || (!metadataDirty && !linesDirty)}
+                isDisabled={isBusy || (!metadataDirty && !linesDirty && !stagesDirty)}
                 onClick={async () => {
                   if (metadataDirty) await handleSaveMetadata();
                   if (linesDirty) await handleSaveLines();
+                  if (stagesDirty && stagesSaveHandleRef.current) {
+                    await stagesSaveHandleRef.current();
+                  }
                 }}
               >
                 <Save className="h-4 w-4" />
@@ -2880,7 +3143,7 @@ export function FormulationBuilder({
                 // version verbatim. Prevents accidental v2 / v3 /
                 // v4 stacks that all say "no changes".
                 isDisabled={
-                  isBusy || (!metadataDirty && !linesDirty)
+                  isBusy || (!metadataDirty && !linesDirty && !stagesDirty)
                 }
                 onClick={handleSaveVersion}
               >
@@ -3137,9 +3400,47 @@ export function FormulationBuilder({
               <div className="flex items-center gap-2 rounded-xl bg-orange-50/60 px-3 py-2 text-sm text-ink-700 ring-1 ring-inset ring-orange-200">
                 <ShieldCheck className="h-4 w-4 shrink-0 text-orange-700" />
                 <span>
-                  {metadata.capsule_shell_item_ids.length > 0
-                    ? "Driven by the picked capsule shell — edit the shell's capsule_size attribute on PSP to change."
-                    : "Auto-picked from total active weight — tick a capsule shell below to lock a specific size."}
+                  {(() => {
+                    // With an explicit pick: point the operator at
+                    // where to change it. Without: name the shell
+                    // NPD auto-picked so it's not a mystery which
+                    // SKU / size the BOM inherits by default.
+                    if (metadata.capsule_shell_item_ids.length > 0) {
+                      return "Driven by the picked capsule shell — edit the shell's capsule_size attribute on PSP to change.";
+                    }
+                    const match = resolveAutoPickedShell(
+                      pspCapsuleShellCatalog,
+                      liveTotals.totalActiveMg,
+                    );
+                    if (match) {
+                      const sizeKey =
+                        match.capsuleSize || metadata.capsule_size || "";
+                      const shellWeight =
+                        CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
+                      return (
+                        <>
+                          Auto-picked from PSP:{" "}
+                          <strong>{match.name}</strong>
+                          {sizeKey ? ` (${sizeKey})` : ""}
+                          {shellWeight > 0 ? ` — ${shellWeight} mg` : ""}.
+                          Tick a shell below to lock a different one.
+                        </>
+                      );
+                    }
+                    const sizeKey = metadata.capsule_size || "";
+                    const shellWeight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
+                    if (shellWeight > 0) {
+                      return (
+                        <>
+                          Auto-picked from the hardcoded shell-weight
+                          table: <strong>Capsule Shell ({sizeKey})</strong>{" "}
+                          — {shellWeight} mg. Tick a shell below to
+                          use a specific SKU on PSP.
+                        </>
+                      );
+                    }
+                    return "Auto-picked from total active weight — tick a capsule shell below to lock a specific size.";
+                  })()}
                 </span>
               </div>
             </div>
@@ -3907,7 +4208,33 @@ export function FormulationBuilder({
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
         onSyncNow={async () => {
-          await syncPspMutation.mutateAsync();
+          // Ship the FE-computed full BOM per stage so PSP's per-
+          // stage BOM matches what NPD displays (actives + every
+          // excipient band at compute-adjusted mg). Rows without a
+          // resolvable local item id (compute-only placeholders) are
+          // dropped server-side.
+          const stageBoms: Record<
+            string,
+            {
+              item_id: string | null;
+              psp_item_uuid?: string | null;
+              mg: number;
+              sort_order: number;
+            }[]
+          > = {};
+          bomLinesByStage.forEach((rows, stageId) => {
+            stageBoms[stageId] = rows
+              .filter(
+                (row) => Boolean(row.itemId) || Boolean(row.pspItemUuid),
+              )
+              .map((row, idx) => ({
+                item_id: row.itemId,
+                psp_item_uuid: row.pspItemUuid ?? null,
+                mg: row.mg,
+                sort_order: idx,
+              }));
+          });
+          await syncPspMutation.mutateAsync({ stageBoms });
         }}
         syncPending={syncPspMutation.isPending}
         orgId={orgId}
@@ -3916,20 +4243,13 @@ export function FormulationBuilder({
         activeStageId={activeStageId}
         onActiveStageChange={setActiveStageId}
         lines={lines}
-        // Full compute-based ingredient list for the terminal
-        // stage's card — same numbers the Preview tab's BOM shows
-        // (actives at their extract-ratio-adjusted per-serving mg,
-        // MCC / DCP / anti-caking bands split equally across the
-        // picker's ticked SKUs). One source of truth so numbers
-        // don't drift between the two surfaces.
-        terminalBomLines={deriveStageBomLines({
-          totals: liveTotals,
-          lines,
-          mccCarrierItems: formulation.mcc_carrier_items ?? [],
-          dcpCarrierItems: formulation.dcp_carrier_items ?? [],
-          antiCakingItems: formulation.anti_caking_items ?? [],
-          excipientOverrides: metadata.excipient_overrides,
-        })}
+        // Live per-stage BOMs from PSP. Each entry is the active
+        // primary BOM for that stage's PSP item (semi-finished for
+        // non-terminal stages, finished-product for the terminal).
+        // Stages without a PSP link yet map to an empty list, which
+        // the strip renders as "not on PSP yet". No local synthesis,
+        // no cross-stage bleed — the card is a mirror of PSP.
+        bomLinesByStage={bomLinesByStage}
         onSaved={(updated) => {
           // Server has fresh stage state — mirror it into the
           // builder's local ``formulation`` so the Stage BOMs
@@ -3938,6 +4258,10 @@ export function FormulationBuilder({
           // the parent stays stale and the four surfaces drift.
           setFormulation(updated);
           setLines(linesFrom(updated));
+        }}
+        onDirtyChange={setStagesDirty}
+        onRegisterSave={(fn) => {
+          stagesSaveHandleRef.current = fn;
         }}
       />
 
@@ -3957,7 +4281,35 @@ export function FormulationBuilder({
       >
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)]">
         {/* Picker */}
-        <div className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+        <div className="relative rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+          {/* Blocking overlay while a mirror round-trip is in
+              flight. Sits above every interactive control in the
+              picker card (search input + rows) so no click lands
+              during the wait. Keeps the card outline visible so the
+              operator doesn't lose their place in the layout. */}
+          {mirrorPsp.isPending || pickingVisible ? (
+            <div
+              className="pointer-events-auto fixed inset-0 z-[999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+              role="status"
+              aria-live="assertive"
+              style={{ position: "fixed" }}
+            >
+              <div className="flex min-w-[320px] flex-col items-center gap-4 rounded-2xl bg-white px-8 py-6 shadow-2xl ring-1 ring-black/10">
+                <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100">
+                  <Loader2 className="h-10 w-10 animate-spin text-orange-500" />
+                </div>
+                <div className="text-center">
+                  <p className="text-base font-semibold text-ink-1000">
+                    Adding ingredient…
+                  </p>
+                  <p className="mt-1 text-xs text-ink-600">
+                    Waiting for PSP so this pick lands on the right
+                    stage.
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : null}
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.picker_title")}
           </p>
@@ -3970,44 +4322,12 @@ export function FormulationBuilder({
               Sourced from PSP
             </p>
           ) : null}
-          {formulation.stages.length > 0 ? (
-            // "Adding to" chip — every pick that follows lands on
-            // the selected stage's BOM. Sticky until the operator
-            // switches OR the stage disappears on save. Falls back
-            // to "no stage assignment" when null so legacy flat
-            // pushes still work.
-            //
-            // Stacked (label above, dropdown below) so the label
-            // stays a single line even when the picker column is
-            // squeezed into the narrow left sidebar (1fr in a
-            // 3-column grid).
-            <div className="mt-3 rounded-xl bg-orange-50 p-2 ring-1 ring-inset ring-orange-200">
-              <p className="text-[10px] font-medium uppercase tracking-wide text-orange-700">
-                Adding to
-              </p>
-              <select
-                value={activeStageId ?? ""}
-                onChange={(e) =>
-                  setActiveStageId(e.target.value || null)
-                }
-                disabled={!canWrite}
-                className="mt-1 w-full rounded-lg bg-ink-0 px-2 py-1 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-              >
-                <option value="">— no stage assignment —</option>
-                {formulation.stages.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    Stage {s.sort_order + 1} · {s.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          ) : null}
           <input
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             placeholder={tFormulations("builder.picker_search")}
-            disabled={!canWrite}
-            className="mt-3 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            disabled={!canWrite || mirrorPsp.isPending || pickingVisible}
+            className="mt-3 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
           />
           <ul
             ref={pickerScrollRef}
@@ -4034,9 +4354,17 @@ export function FormulationBuilder({
               // Replaces an O(N × M) ``lines.some(...)`` scan run
               // per picker row on every render.
               (() => {
+                // Drill-down: dedup scoped to THIS stage so the same
+                // active can be picked into a different stage (each
+                // stage is its own BOM). Falls back to the whole
+                // ``lines`` array when not drilled in.
+                const scopedLines =
+                  stageDrilldownId !== null
+                    ? lines.filter((l) => l.stage_id === stageDrilldownId)
+                    : lines;
                 const pickedIds = new Set<string>();
                 const pickedCodes = new Set<string>();
-                for (const l of lines) {
+                for (const l of scopedLines) {
                   if (l.item_id) pickedIds.add(l.item_id);
                   if (l.item_internal_code)
                     pickedCodes.add(l.item_internal_code);
@@ -4045,6 +4373,15 @@ export function FormulationBuilder({
                   mirrorPsp.isPending && typeof mirrorPsp.variables === "string"
                     ? mirrorPsp.variables
                     : null;
+                // Lock EVERY picker row while any mirror round-trip
+                // is in flight — not just the row being mirrored.
+                // The delay between click → server response is where
+                // multi-click races happen (operator taps three rows
+                // in quick succession, all three fan out, ordering
+                // of resolutions decides which stage / use_as each
+                // ends up bound to). A page-wide lock forces one
+                // pick to fully land before the next can start.
+                const pickerLocked = mirrorPsp.isPending || pickingVisible;
                 return pickerItems.map((item) => {
                   const already =
                     pickedIds.has(item.id) ||
@@ -4058,7 +4395,11 @@ export function FormulationBuilder({
                     item.id.startsWith("psp:") &&
                     mirroringUuid === item.id.slice("psp:".length);
                   const disabled =
-                    !canWrite || already || failure !== null || mirroring;
+                    !canWrite ||
+                    already ||
+                    failure !== null ||
+                    mirroring ||
+                    pickerLocked;
                   return (
                     <li key={item.id}>
                       <button
@@ -4068,11 +4409,15 @@ export function FormulationBuilder({
                         title={
                           already
                             ? "Already added on this formulation"
-                            : failure
-                              ? tFormulations(
-                                  `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
-                                )
-                              : undefined
+                            : mirroring
+                              ? "Adding to builder…"
+                              : pickerLocked
+                                ? "Wait — finishing the previous pick"
+                                : failure
+                                  ? tFormulations(
+                                      `builder.failure_reason.${failure}` as `builder.failure_reason.missing_claim`,
+                                    )
+                                  : undefined
                         }
                         className={`flex w-full items-start justify-between gap-2 rounded-lg px-3 py-2 text-left text-xs text-ink-1000 ring-1 ring-inset hover:bg-ink-100 disabled:cursor-not-allowed disabled:bg-ink-100 disabled:text-ink-500 ${
                           failure ? "ring-warning/30" : "ring-ink-200"
@@ -4145,7 +4490,18 @@ export function FormulationBuilder({
               })}
             </p>
           ) : null}
-          {lines.length === 0 ? (
+          {(() => {
+            // Drill-down = scoped to a single stage. Filter the
+            // ingredient table + empty-state to that stage's lines
+            // only, so "Build ingredients on Stage 1" shows Stage 1's
+            // picks — not the whole formulation's line list. Legacy
+            // no-drill callers (activeTab==="ingredients", historical)
+            // fall through to the full ``lines`` array unchanged.
+            const visibleLines =
+              stageDrilldownId !== null
+                ? lines.filter((l) => l.stage_id === stageDrilldownId)
+                : lines;
+            return visibleLines.length === 0 ? (
             <p className="mt-6 text-sm text-ink-600">
               {tFormulations("builder.picker_none_added")}
             </p>
@@ -4170,7 +4526,7 @@ export function FormulationBuilder({
                   </tr>
                 </thead>
               <tbody>
-                {lines.map((line) => {
+                {visibleLines.map((line) => {
                   const computed = liveTotals.lineValues.get(line.key) ?? null;
                   const failure: LineFailureReason | null =
                     liveTotals.lineFailures.get(line.key) ??
@@ -4360,7 +4716,8 @@ export function FormulationBuilder({
               </tbody>
             </table>
             </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Totals + viability */}
@@ -4466,6 +4823,82 @@ export function FormulationBuilder({
         overrides={metadata.excipient_overrides}
         onChange={canWrite ? handleExcipientOverridesChange : null}
         canEdit={canWrite}
+        // Capsule shell rows — same source as the stage BOMs. Read-
+        // only in this panel (the shell is picked in Setup / auto-
+        // resolved from PSP), just shown here so the scientist sees
+        // the full BOM the finished product actually ships with.
+        extraRows={(() => {
+          const rows: {
+            key: string;
+            label: string;
+            mg: number;
+            hint?: string;
+          }[] = [];
+          if (metadata.dosage_form !== "capsule") return rows;
+          const picked = metadata.capsule_shell_item_ids
+            .map((id) => {
+              const echo = (formulation.capsule_shell_items ?? []).find(
+                (i) => i.id === id,
+              );
+              const attrs =
+                capsuleShellAttrs[id] ?? echo?.attributes ?? {};
+              const name =
+                echo?.name || capsuleShellNames[id] || "Capsule shell";
+              const rawWeight = attrs["shell_weight_mg"];
+              const w =
+                typeof rawWeight === "number"
+                  ? rawWeight
+                  : typeof rawWeight === "string"
+                    ? Number.parseFloat(rawWeight)
+                    : null;
+              return {
+                id,
+                name,
+                mg: Number.isFinite(w) && (w as number) > 0
+                  ? (w as number)
+                  : CAPSULE_SHELL_WEIGHTS[metadata.capsule_size || ""] ?? 0,
+              };
+            })
+            .filter((r) => r.mg > 0);
+          if (picked.length > 0) {
+            for (const p of picked) {
+              rows.push({ key: `shell:${p.id}`, label: p.name, mg: p.mg });
+            }
+            return rows;
+          }
+          // Auto-pick fallback — matches the stage-BOM behaviour.
+          const match = resolveAutoPickedShell(
+            pspCapsuleShellCatalog,
+            liveTotals.totalActiveMg,
+          );
+          if (match) {
+            const sizeKey =
+              match.capsuleSize || metadata.capsule_size || "";
+            const weight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
+            if (weight > 0) {
+              rows.push({
+                key: "shell:auto",
+                label: match.name,
+                mg: weight,
+                hint: `Auto-picked from PSP catalog (${sizeKey || "custom"})`,
+              });
+            }
+          } else {
+            const sizeKey = metadata.capsule_size || "";
+            const hardcodedWeight = CAPSULE_SHELL_WEIGHTS[sizeKey] ?? 0;
+            if (hardcodedWeight > 0) {
+              rows.push({
+                key: "shell:auto",
+                label: sizeKey
+                  ? `Capsule Shell (${sizeKey})`
+                  : "Capsule Shell (Hypromellose)",
+                mg: hardcodedWeight,
+                hint: "Auto-picked from hardcoded shell-weight table",
+              });
+            }
+          }
+          return rows;
+        })()}
         numberFormatter={numberFormatter}
         tFormulations={tFormulations}
       />
@@ -4874,34 +5307,72 @@ const DeclarationPanel = memo(function DeclarationPanel({
  * except this card so a Cmd+P emits a clean handoff sheet.
  */
 /**
- * Compact projection of the full BOM rows for the Stages tab.
- * Returns one row per ingredient the finished product carries at
- * its compute-adjusted mg / per-serving weight — actives with
- * extract-ratio + purity resolved, MCC / DCP / anti-caking bands
- * split equally across the picked SKUs.
- *
- * Deliberately narrower than :func:`BomCard`'s ~200-line row
- * derivation — no per-1 kg scaling, no pectin premix collapse, no
- * gummy pre-blend split. Those are Preview-tab concerns; the
- * Stages tab just needs "what ships to production, at what weight
- * per serving". Two callers, one source of truth for the numbers
- * that fall out of compute; the BomCard's own useMemo below still
- * runs the fancy per-1 kg + placeholders + procurement columns
- * because the Preview tab needs them.
+ * Compact projection of the full formulation BOM for the Stages
+ * tab. Same rows the Fine-tune panel edits (actives at their
+ * extract-ratio-adjusted per-serving mg + every excipient band
+ * split across the picked SKUs). One list per formulation — every
+ * stage card renders the same list so the operator sees "the
+ * whole recipe" on each stage. Sorted smallest first.
  */
 type BomLine = {
   key: string;
   label: string;
   code: string;
   mg: number;
+  /** Local ``catalogues.Item.id`` for the row's SKU when one is
+   *  picked (and mirrored). ``null`` for compute-only placeholder
+   *  rows OR for auto-picked-from-PSP rows that haven't been
+   *  mirrored locally yet — those carry a raw ``pspItemUuid``
+   *  instead so the server can bypass the local lookup. */
+  itemId: string | null;
+  /** Raw PSP item UUID for rows where NPD hasn't yet mirrored the
+   *  underlying SKU into its local catalogue (e.g. an auto-picked
+   *  capsule shell that the operator didn't explicitly tick). The
+   *  BE ``stage_bom_overrides`` handler prefers ``item_id`` when
+   *  present; falls back to this uuid otherwise. */
+  pspItemUuid?: string | null;
 };
 
 function deriveStageBomLines(inputs: {
   totals: FormulationTotals;
   lines: readonly BuilderLine[];
-  mccCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
-  dcpCarrierItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
-  antiCakingItems: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[];
+  mccCarrierItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+  }[];
+  dcpCarrierItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+  }[];
+  antiCakingItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+  }[];
+  /** Picked capsule-shell SKUs. Empty for non-capsule dosage forms
+   *  or when the operator hasn't picked a shell yet. Each pick
+   *  emits a row on the stage BOM using its ``shell_weight_mg``
+   *  attribute (falls back to 1 mg so the row still shows). */
+  capsuleShellItems: readonly {
+    readonly id: string;
+    readonly name: string;
+    readonly internal_code: string;
+    readonly attributes?: Readonly<Record<string, unknown>>;
+  }[];
+  /** When ``capsuleShellItems`` is empty AND the formulation is a
+   *  capsule, we auto-pick from PSP's shell catalog. This is the
+   *  fallback candidate — the row still emits even when the
+   *  operator hasn't ticked a shell explicitly, since the finished
+   *  capsule cannot ship without one. Undefined for non-capsule
+   *  forms. */
+  autoCapsuleShell?: {
+    readonly pspItemUuid: string | null;
+    readonly name: string;
+    readonly code: string;
+    readonly shellWeightMg: number;
+  } | null;
   excipientOverrides: Readonly<Record<string, number>>;
 }): BomLine[] {
   const {
@@ -4910,13 +5381,58 @@ function deriveStageBomLines(inputs: {
     mccCarrierItems,
     dcpCarrierItems,
     antiCakingItems,
+    capsuleShellItems,
+    autoCapsuleShell,
     excipientOverrides,
   } = inputs;
   const out: BomLine[] = [];
 
-  // Actives — real per-serving mg from compute (extract ratio,
-  // purity, overage all resolved). Skip zero rows so a stray
-  // 0-mg placeholder doesn't clutter the list.
+  // Capsule shells — one row per picked shell SKU with the shell's
+  // own ``shell_weight_mg`` attribute as its per-serving mg. Every
+  // capsule uses one shell per serving, so quantity = weight. Rows
+  // without a resolvable weight fall back to 1 mg so the SKU still
+  // appears on the BOM (procurement then knows the shell is needed
+  // even if the weight attribute wasn't populated on the mirror).
+  if (capsuleShellItems.length > 0) {
+    for (const shell of capsuleShellItems) {
+      const rawWeight = shell.attributes?.["shell_weight_mg"];
+      const weight =
+        typeof rawWeight === "number"
+          ? rawWeight
+          : typeof rawWeight === "string"
+            ? Number.parseFloat(rawWeight)
+            : null;
+      const mg = Number.isFinite(weight) && (weight as number) > 0
+        ? (weight as number)
+        : 1;
+      out.push({
+        key: `capsule-shell:${shell.id}`,
+        label: shell.name,
+        code: shell.internal_code || "",
+        mg,
+        itemId: shell.id,
+      });
+    }
+  } else if (autoCapsuleShell && autoCapsuleShell.shellWeightMg > 0) {
+    // No explicit shell pick — synthesize the auto-picked row so
+    // the finished capsule's BOM still lists a shell. Weight comes
+    // from PSP's catalog match (or the hardcoded per-size fallback
+    // when the catalog is empty). Sent to PSP with its raw PSP uuid
+    // (no local mirror row yet).
+    out.push({
+      key: `capsule-shell:auto`,
+      label: autoCapsuleShell.name,
+      code: autoCapsuleShell.code,
+      mg: autoCapsuleShell.shellWeightMg,
+      itemId: null,
+      pspItemUuid: autoCapsuleShell.pspItemUuid,
+    });
+  }
+
+  // Include every main-builder line (regardless of ``stage_id``).
+  // The stage strip renders this whole list on every stage's card
+  // because the operator's mental model is "the formulation has one
+  // recipe; every manufacturing stage lists it in full."
   for (const line of lines) {
     const mg = totals.lineValues.get(line.key);
     if (!mg || mg <= 0) continue;
@@ -4925,18 +5441,23 @@ function deriveStageBomLines(inputs: {
       label: line.item_name,
       code: line.item_internal_code || "",
       mg,
+      itemId: line.item_id || null,
     });
   }
 
   const excipients = totals.excipients;
+  // Emit every excipient band split across picked SKUs — anti-
+  // caking, DCP, MCC — on every stage. Matches the Fine-tune
+  // panel rows so what NPD displays per stage = what the operator
+  // has actually picked into the formulation.
   if (excipients) {
-    // Split each band's total mg equally across the SKUs the
-    // operator picked. Empty picker → emit a single generic
-    // placeholder row with a blank code so procurement sees what
-    // still needs a SKU.
     const emitBand = (
       totalMg: number,
-      picks: readonly { readonly id: string; readonly name: string; readonly internal_code: string }[],
+      picks: readonly {
+        readonly id: string;
+        readonly name: string;
+        readonly internal_code: string;
+      }[],
       placeholder: string,
       slugPrefix: string,
     ) => {
@@ -4952,13 +5473,11 @@ function deriveStageBomLines(inputs: {
           label: share.name,
           code: share.code,
           mg: share.mg,
+          itemId: share.itemId,
         });
       }
     };
 
-    // Anti-caking splits stearate + silica math but shares one
-    // pick list; combine before splitting across picks (matches
-    // BomCard's own behaviour).
     const antiCakingTotal =
       (excipients.mgStearateMg || 0) + (excipients.silicaMg || 0);
     const antiCakingPlaceholder =
@@ -4972,8 +5491,6 @@ function deriveStageBomLines(inputs: {
     emitBand(excipients.mccMg || 0, mccCarrierItems, "Microcrystalline Cellulose", "mcc");
   }
 
-  // Smallest first — matches BomCard's ordering so the same
-  // ingredient list reads the same on both surfaces.
   out.sort((a, b) => a.mg - b.mg);
   return out;
 }
@@ -6115,6 +6632,7 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   canEdit,
   dirty,
   onRevertAllUnsaved,
+  extraRows,
   numberFormatter,
   tFormulations,
 }: {
@@ -6132,6 +6650,16 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
    *  of the header-level "Revert unsaved changes" button. */
   dirty: boolean;
   onRevertAllUnsaved: (() => void) | null;
+  /** Read-only rows appended below the active + band rows so items
+   *  that aren't editable from this panel (capsule shells picked
+   *  in Setup, auto-picked fallbacks) still show up as part of the
+   *  "BOM view" the scientist reads here. */
+  extraRows?: readonly {
+    readonly key: string;
+    readonly label: string;
+    readonly mg: number;
+    readonly hint?: string;
+  }[];
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
@@ -6155,7 +6683,7 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   const overflowed =
     activeBands.length > 0 &&
     activeBands.every((band) => band.totalMg <= 0);
-  if (activeBands.length === 0 && !hasActives) return null;
+  if (activeBands.length === 0 && !hasActives && (!extraRows || extraRows.length === 0)) return null;
 
   const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
   const editable = canEdit && !!onChange;
@@ -6303,6 +6831,42 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
               ),
             );
           })()}
+          {/* Read-only "everything else the BOM carries" rows —
+              capsule shells picked in Setup or auto-picked from
+              the PSP catalog. Not editable here (change the shell
+              via the Setup picker); shown so the operator's mental
+              model of "the BOM" matches what actually ships. */}
+          {extraRows && extraRows.length > 0
+            ? [...extraRows]
+                .sort((a, b) => a.mg - b.mg)
+                .map((row) => (
+                  <div
+                    key={row.key}
+                    className="grid grid-cols-[minmax(0,1fr)_140px_100px] items-center gap-3 border-t border-ink-100 px-4 py-3 text-sm"
+                    title={row.hint}
+                  >
+                    <div className="flex flex-col">
+                      <span className="font-medium text-ink-1000">
+                        {row.label}
+                      </span>
+                      {row.hint ? (
+                        <span className="text-[11px] text-ink-500">
+                          {row.hint}
+                        </span>
+                      ) : null}
+                    </div>
+                    <span className="text-right text-xs tabular-nums text-ink-700">
+                      {numberFormatter.format(row.mg)}{" "}
+                      <span className="text-ink-500">mg</span>
+                    </span>
+                    <span className="text-right text-xs tabular-nums text-ink-500">
+                      {totalWeightMg && totalWeightMg > 0
+                        ? `${percentOf(row.mg, totalWeightMg)}%`
+                        : "—"}
+                    </span>
+                  </div>
+                ))
+            : null}
         </div>
       </div>
     </section>
@@ -7649,12 +8213,40 @@ function CatalogueMultiPicker({
 
   return (
     <div className="flex flex-col gap-1.5">
+      {/* Viewport-covering loader while any mirror round-trip is in
+          flight. Mirrors the main ingredient-picker overlay so every
+          excipient / carrier / shell picker gets the same blocking
+          feedback — clicks can't queue up while PSP resolves. */}
+      {mirrorPsp.isPending ? (
+        <div
+          className="pointer-events-auto fixed inset-0 z-[999] flex items-center justify-center bg-black/60 backdrop-blur-sm"
+          role="status"
+          aria-live="assertive"
+          style={{ position: "fixed" }}
+        >
+          <div className="flex min-w-[320px] flex-col items-center gap-4 rounded-2xl bg-white px-8 py-6 shadow-2xl ring-1 ring-black/10">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-orange-100">
+              <Loader2 className="h-10 w-10 animate-spin text-orange-500" />
+            </div>
+            <div className="text-center">
+              <p className="text-base font-semibold text-ink-1000">
+                Adding {label.toLowerCase()}…
+              </p>
+              <p className="mt-1 text-xs text-ink-600">
+                Waiting for PSP so this pick lands cleanly.
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <span className="text-xs font-medium uppercase tracking-wide text-ink-500">
         {label}
       </span>
       <div
         className={`flex max-h-56 flex-col overflow-y-auto rounded-xl bg-ink-0 ring-1 ring-inset ring-ink-200 ${
-          disabled || (pspLive ? pspQuery.isLoading : localQuery.isLoading)
+          disabled ||
+          mirrorPsp.isPending ||
+          (pspLive ? pspQuery.isLoading : localQuery.isLoading)
             ? "opacity-60"
             : ""
         }`}
@@ -7672,21 +8264,26 @@ function CatalogueMultiPicker({
               item.id.startsWith("psp:") &&
               mirrorPsp.isPending &&
               mirrorPsp.variables === item.id.slice("psp:".length);
+            // Lock EVERY checkbox in the list while any mirror is
+            // in flight — belt-and-braces with the fixed overlay
+            // above, so a fast operator can't fire a second pick
+            // in the ms before the modal paints and traps clicks.
+            const rowLocked = mirrorPsp.isPending;
             return (
               <label
                 key={item.id}
-                className={`flex cursor-pointer items-center gap-2 border-b border-ink-100 px-3 py-2 text-sm last:border-b-0 ${
+                className={`flex items-center gap-2 border-b border-ink-100 px-3 py-2 text-sm last:border-b-0 ${
                   checked
                     ? "bg-orange-50 text-ink-1000"
                     : "text-ink-700 hover:bg-ink-50"
-                }`}
+                } ${rowLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
               >
                 <input
                   type="checkbox"
                   checked={checked}
-                  disabled={disabled || mirroring}
+                  disabled={disabled || mirroring || rowLocked}
                   onChange={() => toggle(item.id)}
-                  className="h-4 w-4 cursor-pointer accent-orange-500"
+                  className="h-4 w-4 cursor-pointer accent-orange-500 disabled:cursor-not-allowed"
                 />
                 <span className="flex-1">
                   {item.internal_code

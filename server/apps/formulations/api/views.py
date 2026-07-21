@@ -424,6 +424,24 @@ class FormulationDetailView(APIView):
         before = snapshot(formulation)
         organization = formulation.organization
         target_id = str(formulation.pk)
+
+        # Capture every PSP item this formulation owns so we can
+        # clean them up after the local delete succeeds. Finished-
+        # product item first (the project's identity on PSP), then
+        # every stage's semi-finished. delete_psp_item is safety-
+        # gated on the PSP side (refuses when the item is
+        # referenced in another BOM, has stock/MO/PO history, or
+        # its external_sku doesn't match the NPD-owned pattern) so
+        # items shared with other work stay put.
+        psp_uuids_to_reap: list[str] = []
+        if formulation.psp_finished_product_uuid:
+            psp_uuids_to_reap.append(str(formulation.psp_finished_product_uuid))
+        for uuid in formulation.stages.filter(
+            psp_semi_finished_uuid__isnull=False
+        ).values_list("psp_semi_finished_uuid", flat=True):
+            if uuid:
+                psp_uuids_to_reap.append(str(uuid))
+
         try:
             formulation.delete()
         except ProtectedError:
@@ -450,6 +468,29 @@ class FormulationDetailView(APIView):
             target_id=target_id,
             before=before,
         )
+
+        # PSP cleanup runs after the local delete is authoritative.
+        # Silent-degrade: skip reasons (item referenced elsewhere,
+        # has history, sku doesn't match NPD pattern, PSP offline)
+        # just get logged and the formulation delete still succeeds.
+        if psp_uuids_to_reap:
+            import logging
+
+            from apps.psp.services import delete_psp_item
+
+            log = logging.getLogger(__name__)
+            for uuid in psp_uuids_to_reap:
+                result = delete_psp_item(organization=organization, uuid=uuid)
+                if not result.get("deleted"):
+                    log.info(
+                        "formulation.delete: skipped PSP delete for item %s"
+                        " (formulation %s, org %s) — reason %s",
+                        uuid,
+                        target_id,
+                        organization.pk,
+                        result.get("reason"),
+                    )
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -746,9 +787,34 @@ class FormulationSyncPspView(APIView):
                 status=status.HTTP_200_OK,
             )
 
+        # The FE ships a per-stage BOM snapshot (actives + every
+        # excipient band at compute-adjusted mg per SKU) so PSP's
+        # per-stage BOMs mirror exactly what the operator sees on
+        # each stage card. Missing / malformed → we fall back to
+        # the line-based derivation inside push_bom_to_psp.
+        raw_stage_boms = (
+            request.data.get("stage_boms")
+            if isinstance(request.data, dict)
+            else None
+        )
+        stage_bom_overrides: dict[str, list[dict]] | None = None
+        if isinstance(raw_stage_boms, dict):
+            cleaned: dict[str, list[dict]] = {}
+            for stage_uuid, rows in raw_stage_boms.items():
+                if not isinstance(rows, list):
+                    continue
+                cleaned[str(stage_uuid)] = [
+                    row for row in rows if isinstance(row, dict)
+                ]
+            if cleaned:
+                stage_bom_overrides = cleaned
+
         push_error: str | None = None
         try:
-            push_bom_to_psp(formulation=formulation)
+            push_bom_to_psp(
+                formulation=formulation,
+                stage_bom_overrides=stage_bom_overrides,
+            )
         except Exception as exc:
             # push_bom_to_psp is meant to be silent-degrade, but a
             # bad-payload path (e.g. a duplicate-name 422 on the very
@@ -1286,6 +1352,7 @@ class FormulationVersionListView(APIView):
             formulation=formulation,
             actor=request.user,
             label=serializer.validated_data.get("label", ""),
+            stage_boms=serializer.validated_data.get("stage_boms") or None,
         )
         return Response(
             FormulationVersionReadSerializer(version).data,

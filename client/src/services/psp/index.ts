@@ -3,6 +3,7 @@ export {
   clearPspConfig,
   createPspFinishedProduct,
   fetchPspConfig,
+  fetchPspItemBom,
   fetchPspItemDetail,
   fetchPspItems,
   mirrorPspItem,
@@ -12,6 +13,10 @@ export {
 export type {
   CreatePspFinishedProductRequestDto,
   CreatePspFinishedProductResponseDto,
+  PspBomDto,
+  PspBomLineDto,
+  PspBomLinePartDto,
+  PspItemBomResponseDto,
 } from "./api";
 export {
   pspQueryKeys,
@@ -19,6 +24,7 @@ export {
   useCreatePspFinishedProduct,
   useMirrorPspItem,
   usePspConfig,
+  usePspItemBom,
   usePspItemDetail,
   usePspItems,
   usePspAllergens,

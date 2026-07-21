@@ -760,11 +760,41 @@ export interface FormulationVersionDto {
   readonly snapshot_metadata: Readonly<Record<string, unknown>>;
   readonly snapshot_lines: readonly Readonly<Record<string, unknown>>[];
   readonly snapshot_totals: Readonly<Record<string, unknown>>;
+  /** Per-stage compute-derived BOM the FE displayed at save time,
+   *  keyed by stage uuid. Each row: ``{item_id, mg, sort_order,
+   *  label, code}``. Empty object on legacy versions saved before
+   *  this field landed. */
+  readonly snapshot_stage_boms: Readonly<
+    Record<string, readonly Readonly<Record<string, unknown>>[]>
+  >;
   readonly created_at: string;
+}
+
+/** One row of the per-stage BOM snapshot the FE sends with a save.
+ *  Either ``item_id`` (local mirror row → server resolves to
+ *  ``psp_source_uuid``) or ``psp_item_uuid`` (raw PSP identity for
+ *  auto-picked rows without a local mirror yet, e.g. a capsule
+ *  shell the operator never ticked explicitly). ``label`` + ``code``
+ *  are informational so the history viewer doesn't have to re-join
+ *  to the catalogue to render the row. */
+export interface SaveVersionStageBomRowDto {
+  readonly item_id: string | null;
+  readonly psp_item_uuid?: string | null;
+  readonly mg: number;
+  readonly sort_order: number;
+  readonly label?: string;
+  readonly code?: string;
 }
 
 export interface SaveVersionRequestDto {
   readonly label?: string;
+  /** Per-stage compute-derived BOM keyed by stage uuid. Persisted
+   *  onto :attr:`FormulationVersion.snapshot_stage_boms` and used
+   *  as the PSP push override so PSP holds exactly what the FE
+   *  displays at save time. */
+  readonly stage_boms?: Readonly<
+    Record<string, readonly SaveVersionStageBomRowDto[]>
+  >;
 }
 
 export interface RollbackRequestDto {
