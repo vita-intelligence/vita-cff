@@ -181,6 +181,15 @@ export interface FormulationLineDto {
    *  lines the operator hasn't assigned yet — they get folded into
    *  the terminal stage's BOM at push time. */
   readonly stage_id: string | null;
+  /** Wizard routing discriminator. ``active`` — operator-picked
+   *  ingredient. ``band_pick`` — materialised excipient / carrier /
+   *  shell / etc from a compute-derived band. Wizard step 3 groups
+   *  and labels rows by this. */
+  readonly source_kind?: "active" | "band_pick";
+  /** When source_kind === 'band_pick': which excipient band the row
+   *  belongs to (anti_caking | mcc | dcp | capsule_shell | ...).
+   *  Null on actives. */
+  readonly band_key?: string | null;
 }
 
 export interface SalesPersonDto {

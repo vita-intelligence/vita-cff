@@ -230,6 +230,34 @@ export async function syncFormulationToPsp(
   return data;
 }
 
+
+/** Body for POST /formulations/:id/wizard-routing/. Persists the
+ *  wizard's per-ingredient stage assignments (both operator-picked
+ *  actives and compute-derived band picks). Materialises band picks
+ *  as ``FormulationLine`` rows so the PSP push cascade reads each
+ *  stage's real BOM from the ORM without a separate override. */
+export interface WizardRoutingBandAssignmentDto {
+  readonly item_id: string;
+  readonly band_key: string;
+  readonly mg: number;
+  readonly stage_id: string | null;
+}
+export interface WizardRoutingRequestDto {
+  readonly line_assignments?: Readonly<Record<string, string | null>>;
+  readonly band_assignments?: readonly WizardRoutingBandAssignmentDto[];
+}
+export async function saveWizardRouting(
+  orgId: string,
+  formulationId: string,
+  payload: WizardRoutingRequestDto,
+): Promise<FormulationDto> {
+  const { data } = await apiClient.post<FormulationDto>(
+    formulationsEndpoints.wizardRouting(orgId, formulationId),
+    payload,
+  );
+  return data;
+}
+
 export async function rollbackFormulation(
   orgId: string,
   formulationId: string,

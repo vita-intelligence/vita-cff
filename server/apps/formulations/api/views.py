@@ -29,6 +29,7 @@ from apps.formulations.api.serializers import (
     RollbackVersionSerializer,
     SetApprovedVersionSerializer,
     SaveVersionSerializer,
+    WizardRoutingSerializer,
 )
 from apps.formulations.overview import compute_project_overview
 from apps.formulations.services import (
@@ -76,6 +77,7 @@ from apps.formulations.services import (
     replace_lines,
     rollback_to_version,
     save_version,
+    save_wizard_routing,
     set_approved_version,
     unpublish_from_rtg_catalog,
     update_formulation,
@@ -1357,6 +1359,59 @@ class FormulationVersionListView(APIView):
         return Response(
             FormulationVersionReadSerializer(version).data,
             status=status.HTTP_201_CREATED,
+        )
+
+
+class FormulationWizardRoutingView(APIView):
+    """``POST`` ``/.../formulations/<id>/wizard-routing/``.
+
+    Persists the routing wizard's per-ingredient stage assignments.
+    Body:
+
+    .. code-block:: json
+
+        {
+          "line_assignments": {"<line_uuid>": "<stage_uuid_or_null>"},
+          "band_assignments": [
+            {"item_id": "<uuid>", "band_key": "anti_caking",
+             "mg": 12.5, "stage_id": "<uuid_or_null>"}
+          ]
+        }
+
+    Line assignments update ``stage`` on existing operator-picked
+    active lines. Band assignments wholesale-replace the
+    formulation's compute-derived band-pick lines (upsert on
+    ``(item, band_key)``, delete orphans). Returns the refreshed
+    formulation DTO so the caller can re-render off one round-trip.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+        serializer = WizardRoutingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        formulation = save_wizard_routing(
+            formulation=formulation,
+            actor=request.user,
+            line_assignments=serializer.validated_data.get(
+                "line_assignments"
+            ),
+            band_assignments=serializer.validated_data.get(
+                "band_assignments"
+            ),
+        )
+        return Response(
+            FormulationReadSerializer(formulation).data,
+            status=status.HTTP_200_OK,
         )
 
 

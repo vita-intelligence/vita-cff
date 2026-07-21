@@ -5302,6 +5302,211 @@ def rollback_to_version(
 
 
 # ---------------------------------------------------------------------------
+# Wizard step 3 — routing: assign each ingredient (active + band pick)
+# to a manufacturing stage.
+# ---------------------------------------------------------------------------
+
+
+@transaction.atomic
+def save_wizard_routing(
+    *,
+    formulation: Formulation,
+    actor: Any,
+    line_assignments: dict[str, str | None] | None = None,
+    band_assignments: list[dict[str, Any]] | None = None,
+) -> Formulation:
+    """Persist the routing wizard's per-ingredient stage assignments.
+
+    Two payloads work together — one for existing operator-picked
+    actives (already ``FormulationLine`` rows with
+    ``source_kind='active'``), one for compute-derived band picks
+    (materialised as ``FormulationLine(source_kind='band_pick')``
+    rows keyed by ``(item, band_key)``).
+
+    ``line_assignments`` — ``{formulation_line_id: stage_id | null}``.
+      Updates ``stage_id`` on each existing line. Unknown line ids
+      silently skip so a stale FE cache doesn't hard-fail the save.
+
+    ``band_assignments`` — list of
+      ``{item_id, band_key, mg, stage_id}``. Wholesale-replaces the
+      formulation's ``band_pick`` lines: upsert on
+      ``(item_id, band_key)``, delete any band-pick row not in the
+      payload (the operator un-ticked it in the picker).
+
+    Both payloads validate stage ids against THIS formulation's
+    stages — a passed-through id from another formulation falls
+    back to ``null`` rather than corrupting cross-formulation state.
+    """
+
+    before = snapshot(formulation)
+
+    # Resolve stage ids to FormulationStage instances scoped to this
+    # formulation; anything else nulls out. One query for all ids
+    # referenced across both payloads.
+    referenced_stage_ids: set[str] = set()
+    for stage_id in (line_assignments or {}).values():
+        if stage_id:
+            referenced_stage_ids.add(str(stage_id))
+    for row in band_assignments or []:
+        if isinstance(row, dict):
+            stage_id = row.get("stage_id")
+            if stage_id:
+                referenced_stage_ids.add(str(stage_id))
+    stages_by_id: dict[str, FormulationStage] = {}
+    if referenced_stage_ids:
+        stages_by_id = {
+            str(s.id): s
+            for s in FormulationStage.objects.filter(
+                formulation=formulation, id__in=referenced_stage_ids
+            )
+        }
+
+    def _resolve_stage(stage_id: str | None) -> FormulationStage | None:
+        if not stage_id:
+            return None
+        return stages_by_id.get(str(stage_id))
+
+    # ---- 1. Update active line stage assignments --------------------
+    if line_assignments:
+        existing_lines_by_id: dict[str, FormulationLine] = {
+            str(l.id): l
+            for l in formulation.lines.filter(
+                source_kind=FormulationLine.SOURCE_KIND_ACTIVE,
+                id__in=list(line_assignments.keys()),
+            )
+        }
+        for line_id, target_stage_id in line_assignments.items():
+            line = existing_lines_by_id.get(str(line_id))
+            if line is None:
+                continue
+            line.stage = _resolve_stage(target_stage_id)
+            line.save(update_fields=["stage", "updated_at"])
+
+    # ---- 2. Wholesale-replace band-pick lines ----------------------
+    if band_assignments is not None:
+        # Resolve item ids to catalogue rows scoped to the org so a
+        # payload can't sneak in items from another tenant.
+        wanted_item_ids: set[str] = set()
+        for row in band_assignments:
+            if not isinstance(row, dict):
+                continue
+            item_id = row.get("item_id")
+            if item_id:
+                wanted_item_ids.add(str(item_id))
+        items_by_id: dict[str, Item] = {}
+        if wanted_item_ids:
+            items_by_id = {
+                str(i.id): i
+                for i in Item.objects.filter(
+                    catalogue__organization=formulation.organization,
+                    id__in=list(wanted_item_ids),
+                )
+            }
+
+        # Existing band-pick rows keyed by (item_id, band_key) so we
+        # can upsert-or-create + collect orphans for deletion.
+        existing_band_lines = list(
+            formulation.lines.filter(
+                source_kind=FormulationLine.SOURCE_KIND_BAND_PICK
+            )
+        )
+        existing_by_key: dict[tuple[str, str], FormulationLine] = {}
+        for line in existing_band_lines:
+            if line.item_id and line.band_key:
+                existing_by_key[(str(line.item_id), line.band_key)] = line
+
+        seen_keys: set[tuple[str, str]] = set()
+        # Preserve display order relative to the operator's picker
+        # order (payload order). Actives already own low display_order
+        # values; band picks land above the max so the ingredient list
+        # groups actives-first, excipients-after naturally.
+        active_max_order = (
+            formulation.lines.filter(
+                source_kind=FormulationLine.SOURCE_KIND_ACTIVE
+            ).count()
+            or 0
+        )
+        for offset, row in enumerate(band_assignments):
+            if not isinstance(row, dict):
+                continue
+            item_id = str(row.get("item_id") or "").strip()
+            band_key = str(row.get("band_key") or "").strip()
+            if not item_id or not band_key:
+                continue
+            item = items_by_id.get(item_id)
+            if item is None:
+                continue
+            # Only accept known band_key values so a fat-fingered
+            # payload can't pollute the column.
+            valid_band_keys = {
+                choice for choice, _ in FormulationLine.BAND_KEY_CHOICES
+            }
+            if band_key not in valid_band_keys:
+                continue
+            raw_mg = row.get("mg")
+            try:
+                mg = Decimal(str(raw_mg)) if raw_mg is not None else Decimal("0")
+            except (InvalidOperation, TypeError):
+                mg = Decimal("0")
+            if mg < 0:
+                mg = Decimal("0")
+            stage = _resolve_stage(row.get("stage_id"))
+            key = (item_id, band_key)
+            seen_keys.add(key)
+            existing = existing_by_key.get(key)
+            if existing is not None:
+                existing.mg_per_serving_cached = mg
+                existing.stage = stage
+                existing.display_order = active_max_order + offset
+                existing.save(
+                    update_fields=[
+                        "mg_per_serving_cached",
+                        "stage",
+                        "display_order",
+                        "updated_at",
+                    ]
+                )
+            else:
+                FormulationLine.objects.create(
+                    formulation=formulation,
+                    item=item,
+                    item_source="local",
+                    source_kind=FormulationLine.SOURCE_KIND_BAND_PICK,
+                    band_key=band_key,
+                    stage=stage,
+                    # Band picks don't carry a label claim in the
+                    # scientist-authored sense — the mg is the
+                    # compute-derived share the FE calculated. We
+                    # store it both on ``label_claim_mg`` (so
+                    # existing code that reads it doesn't NPE) and
+                    # on ``mg_per_serving_cached`` (the canonical
+                    # per-serving value).
+                    label_claim_mg=mg,
+                    mg_per_serving_cached=mg,
+                    display_order=active_max_order + offset,
+                )
+
+        # Orphans: existing band-pick rows the payload no longer
+        # references — the operator un-ticked them in the sidebar
+        # picker. Delete so the routing view stays in sync with the
+        # M2M selections upstream.
+        for key, line in existing_by_key.items():
+            if key not in seen_keys:
+                line.delete()
+
+    formulation.refresh_from_db()
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.save_wizard_routing",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
+
+
+# ---------------------------------------------------------------------------
 # Ready-to-Go catalog — staff-side publish/unpublish
 # ---------------------------------------------------------------------------
 #

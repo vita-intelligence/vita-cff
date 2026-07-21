@@ -36,6 +36,8 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulation-stage-templates/${templateId}/`,
   applyStageTemplate: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/apply-stage-template/`,
+  wizardRouting: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/wizard-routing/`,
   photos: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/photos/`,
   photoDetail: (orgId: string, formulationId: string, photoId: string) =>

@@ -29,6 +29,7 @@ from apps.formulations.api.views import (
     FormulationSalesPersonView,
     FormulationStagesView,
     FormulationVersionListView,
+    FormulationWizardRoutingView,
     StageTemplateDetailView,
     StageTemplateListView,
 )
@@ -78,6 +79,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/rollback/",
         FormulationRollbackView.as_view(),
         name="formulation-rollback",
+    ),
+    # Wizard step 3 — persist per-ingredient stage routing (actives
+    # + materialised band picks) so the PSP push cascade reads each
+    # stage's real BOM from the ORM instead of an FE override.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/wizard-routing/",
+        FormulationWizardRoutingView.as_view(),
+        name="formulation-wizard-routing",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sync-psp/",

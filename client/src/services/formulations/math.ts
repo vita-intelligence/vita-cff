@@ -1703,10 +1703,36 @@ function computeFillTarget(
           ];
           for (const band of allPerItemBands) {
             for (const pick of band.picks) {
-              // Per-formulation override beats the catalogue rate:
-              // the scientist tweaks one pick's mg/ml here and the
-              // math reflects it without touching the raw material
-              // that other formulations share.
+              // Direct per-item mg override — takes precedence over
+              // both the ``powder_rate:`` rate override and the
+              // catalogue rate. Same key the capsule-band editor
+              // uses (``excipient_mg:<id>``) so a single Fine-tune
+              // input drives both dosing models.
+              const mgOverrideRaw = excipientOverrides?.[
+                `excipient_mg:${pick.id}`
+              ];
+              if (
+                mgOverrideRaw !== undefined &&
+                mgOverrideRaw !== null &&
+                Number.isFinite(mgOverrideRaw) &&
+                mgOverrideRaw >= 0
+              ) {
+                rows.push({
+                  slug: `${band.slug}:${pick.id}`,
+                  label: pick.label,
+                  mg: mgOverrideRaw,
+                  isRemainder: false,
+                  useAs: pick.useAs || band.useAs,
+                  concentrationMgPerGPowder: null,
+                  concentrationMgPerMlWater:
+                    waterMl > 0 ? mgOverrideRaw / waterMl : null,
+                });
+                continue;
+              }
+              // Per-formulation rate override beats the catalogue
+              // rate: the scientist tweaks one pick's mg/ml here
+              // and the math reflects it without touching the raw
+              // material that other formulations share.
               const overrideRaw = excipientOverrides?.[
                 `powder_rate:${pick.id}`
               ];
