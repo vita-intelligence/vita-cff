@@ -12,6 +12,11 @@ from apps.formulations.api.photo_file_views import (
     FormulationPhotoDetailView,
     FormulationPhotosView,
 )
+from apps.formulations.api.certificate_views import (
+    FormulationCertificateCatalogView,
+    FormulationCertificateDetailView,
+    FormulationCertificatesView,
+)
 from apps.formulations.api.views import (
     FormulationApplyStageTemplateView,
     FormulationApprovedVersionView,
@@ -166,6 +171,25 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/files/<uuid:file_id>/",
         FormulationFileDetailView.as_view(),
         name="formulation-file-detail",
+    ),
+    # Per-formulation certificate attachments — mirrors the PSP
+    # item-detail Certificates section. Catalog endpoint proxies
+    # PSP's certificate registry so the FE picker doesn't hit PSP
+    # directly.
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/certificates/",
+        FormulationCertificatesView.as_view(),
+        name="formulation-certificates",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/certificates/catalog/",
+        FormulationCertificateCatalogView.as_view(),
+        name="formulation-certificate-catalog",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/certificates/<uuid:cert_id>/",
+        FormulationCertificateDetailView.as_view(),
+        name="formulation-certificate-detail",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/rd-pipeline/",

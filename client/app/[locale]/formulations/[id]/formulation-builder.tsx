@@ -50,12 +50,14 @@ import {
   computeTotals,
   explainLine,
   getNrvTargetMg,
-  useDeleteFormulationFile,
+  useAttachFormulationCertificate,
   useDeleteFormulationPhoto,
-  useFormulationFiles,
+  useDetachFormulationCertificate,
+  useFormulationCertificateCatalog,
+  useFormulationCertificates,
   useFormulationPhotos,
+  useUpdateFormulationCertificate,
   useUpdateFormulationPhoto,
-  useUploadFormulationFile,
   useUploadFormulationPhoto,
   useFormulationVersions,
   useReplaceLines,
@@ -70,6 +72,7 @@ import {
   type ComplianceResult,
   type ComputeLineInput,
   type DosageForm,
+  type FormulationCertificateDto,
   type FormulationDto,
   type GummyBaseItemDto,
   type FormulationTotals,
@@ -1009,18 +1012,13 @@ function FormulationPhotosSetupSection({
 }
 
 
-const FILE_KIND_OPTIONS: readonly { value: string; label: string }[] = [
-  { value: "spec_sheet", label: "Spec sheet" },
-  { value: "food_contact_declaration", label: "Food-contact declaration" },
-  { value: "migration_test", label: "Migration test" },
-  { value: "safety_data_sheet", label: "Safety data sheet" },
-  { value: "allergen_declaration", label: "Allergen declaration" },
-  { value: "nutritional_analysis", label: "Nutritional analysis" },
-  { value: "other", label: "Other" },
-];
-
-
-function FormulationFilesSetupSection({
+/**
+ * Certificates section — mirrors the PSP item-detail Certificates card.
+ * Picker sources from the PSP cert registry via a proxy endpoint;
+ * attach persists locally + pushes to PSP; the row survives if PSP
+ * is briefly unreachable (idempotency via ``psp_attachment_uuid``).
+ */
+function FormulationCertificatesSetupSection({
   orgId,
   formulationId,
   canWrite,
@@ -1029,128 +1027,382 @@ function FormulationFilesSetupSection({
   formulationId: string;
   canWrite: boolean;
 }) {
-  const filesQuery = useFormulationFiles(orgId, formulationId);
-  const uploadFile = useUploadFormulationFile(orgId, formulationId);
-  const deleteFile = useDeleteFormulationFile(orgId, formulationId);
-  const files = filesQuery.data?.items ?? [];
-  const [pendingKind, setPendingKind] = useState<string>("spec_sheet");
-  const inputRef = useRef<HTMLInputElement>(null);
+  const attachedQuery = useFormulationCertificates(orgId, formulationId);
+  const catalogQuery = useFormulationCertificateCatalog(
+    orgId,
+    formulationId,
+  );
+  const attach = useAttachFormulationCertificate(orgId, formulationId);
+  const patch = useUpdateFormulationCertificate(orgId, formulationId);
+  const detach = useDetachFormulationCertificate(orgId, formulationId);
 
-  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      uploadFile.mutate({ file, kind: pendingKind });
+  const attached = attachedQuery.data?.items ?? [];
+  const catalog = catalogQuery.data?.items ?? [];
+
+  const [pickerCertUuid, setPickerCertUuid] = useState<string>("");
+  const [pickerNumber, setPickerNumber] = useState<string>("");
+  const [pickerValidFrom, setPickerValidFrom] = useState<string>("");
+  const [pickerValidUntil, setPickerValidUntil] = useState<string>("");
+
+  const attachedUuidSet = useMemo(
+    () => new Set(attached.map((a) => a.psp_certificate_uuid)),
+    [attached],
+  );
+  // Only show catalog entries the operator hasn't attached yet.
+  const availableCatalog = useMemo(
+    () => catalog.filter((c) => !attachedUuidSet.has(c.uuid)),
+    [catalog, attachedUuidSet],
+  );
+
+  const selectedCert = useMemo(
+    () => catalog.find((c) => c.uuid === pickerCertUuid) ?? null,
+    [catalog, pickerCertUuid],
+  );
+
+  // Auto-fill valid_until from valid_from + default_validity_months on
+  // the picked cert. Empty valid_from clears the derived expiry so
+  // typing dates from scratch stays predictable.
+  const derivedValidUntil = useMemo(() => {
+    if (!pickerValidFrom || !selectedCert?.default_validity_months) return "";
+    const from = new Date(pickerValidFrom);
+    if (Number.isNaN(from.valueOf())) return "";
+    from.setMonth(from.getMonth() + selectedCert.default_validity_months);
+    return from.toISOString().slice(0, 10);
+  }, [pickerValidFrom, selectedCert]);
+
+  useEffect(() => {
+    // Only auto-fill when the operator hasn't manually set a value.
+    if (!pickerValidUntil && derivedValidUntil) {
+      setPickerValidUntil(derivedValidUntil);
     }
-    if (inputRef.current) inputRef.current.value = "";
+    // Deliberately leave a manually-typed valid_until alone.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [derivedValidUntil]);
+
+  const resetPicker = () => {
+    setPickerCertUuid("");
+    setPickerNumber("");
+    setPickerValidFrom("");
+    setPickerValidUntil("");
   };
 
-  const humanBytes = (n: number) => {
-    if (n < 1024) return `${n} B`;
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  const canAttach =
+    canWrite && !!pickerCertUuid && !!selectedCert && !attach.isPending;
+
+  const onAttach = () => {
+    if (!canAttach || !selectedCert) return;
+    attach.mutate(
+      {
+        psp_certificate_uuid: selectedCert.uuid,
+        psp_certificate_name: selectedCert.name,
+        psp_certificate_type: selectedCert.certificate_type ?? "",
+        psp_issuing_body: selectedCert.issuing_body ?? "",
+        certificate_number: pickerNumber.trim(),
+        valid_from: pickerValidFrom || null,
+        valid_until: pickerValidUntil || null,
+      },
+      { onSuccess: resetPicker },
+    );
   };
 
   return (
     <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-3">
         <div>
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            Compliance files
+            Certificates
           </p>
           <p className="mt-1 text-sm text-ink-600">
-            Ship to PSP&apos;s finished-product item as
-            <span className="font-medium"> item_files</span> on push.
-            PDF / images / Word / Excel / plain text, max 20 MB per file.
+            Pick from PSP&apos;s certificate registry and attach to
+            this formulation. Rows push to the finished-product item
+            on next save + appear on the PSP item page as if an
+            operator added them.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+      </div>
+
+      {/* Picker row */}
+      <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl bg-ink-50/50 p-3 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]">
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+            Certificate
+          </label>
           <select
-            value={pendingKind}
-            onChange={(e) => setPendingKind(e.target.value)}
-            disabled={!canWrite || uploadFile.isPending}
-            className="rounded-xl bg-ink-0 px-3 py-2 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+            value={pickerCertUuid}
+            onChange={(e) => setPickerCertUuid(e.target.value)}
+            disabled={
+              !canWrite ||
+              catalogQuery.isLoading ||
+              availableCatalog.length === 0
+            }
+            className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
           >
-            {FILE_KIND_OPTIONS.map((k) => (
-              <option key={k.value} value={k.value}>
-                {k.label}
+            <option value="">
+              {catalogQuery.isLoading
+                ? "Loading catalog…"
+                : availableCatalog.length === 0
+                  ? "No certificates available"
+                  : "Pick a certificate…"}
+            </option>
+            {availableCatalog.map((c) => (
+              <option key={c.uuid} value={c.uuid}>
+                {c.name}
+                {c.issuing_body ? ` · ${c.issuing_body}` : ""}
               </option>
             ))}
           </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+            Cert number
+          </label>
           <input
-            ref={inputRef}
-            type="file"
-            accept="application/pdf,image/jpeg,image/png,image/webp,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
-            onChange={onPick}
-            disabled={!canWrite || uploadFile.isPending}
-            className="hidden"
+            type="text"
+            value={pickerNumber}
+            onChange={(e) => setPickerNumber(e.target.value)}
+            disabled={!canWrite || !pickerCertUuid}
+            placeholder="Optional"
+            className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
           />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+            Valid from
+          </label>
+          <input
+            type="date"
+            value={pickerValidFrom}
+            onChange={(e) => setPickerValidFrom(e.target.value)}
+            disabled={!canWrite || !pickerCertUuid}
+            className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div className="flex flex-col gap-1">
+          <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+            Valid until
+          </label>
+          <input
+            type="date"
+            value={pickerValidUntil}
+            onChange={(e) => setPickerValidUntil(e.target.value)}
+            disabled={!canWrite || !pickerCertUuid}
+            className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+          />
+        </div>
+        <div className="flex items-end">
           <Button
             size="sm"
-            variant="outline"
-            onPress={() => inputRef.current?.click()}
-            isDisabled={!canWrite || uploadFile.isPending}
+            onPress={onAttach}
+            isDisabled={!canAttach}
           >
-            {uploadFile.isPending ? "Uploading…" : "Upload file"}
+            {attach.isPending ? "Attaching…" : "Attach"}
           </Button>
         </div>
       </div>
 
-      {filesQuery.isLoading ? (
+      {/* Attached list */}
+      {attachedQuery.isLoading ? (
         <p className="mt-4 text-xs text-ink-500">Loading…</p>
-      ) : files.length === 0 ? (
+      ) : attached.length === 0 ? (
         <p className="mt-4 text-xs text-ink-500">
-          No compliance files yet. Pick a kind above and upload.
+          No certificates attached yet.
         </p>
       ) : (
         <ul className="mt-4 divide-y divide-ink-200 rounded-xl ring-1 ring-ink-200">
-          {files.map((f) => {
-            const kindLabel =
-              FILE_KIND_OPTIONS.find((k) => k.value === f.kind)?.label ??
-              f.kind;
-            return (
-              <li
-                key={f.id}
-                className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={f.url ?? "#"}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="truncate font-medium text-ink-1000 hover:text-orange-600"
-                    >
-                      {f.filename}
-                    </a>
-                    <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-ink-600">
-                      {kindLabel}
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-ink-500">
-                    {humanBytes(f.byte_size)} ·{" "}
-                    {new Date(f.uploaded_at).toLocaleDateString()}
-                    {f.psp_uuid ? " · pushed to PSP" : " · not yet on PSP"}
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (window.confirm(`Delete "${f.filename}"?`)) {
-                      deleteFile.mutate(f.id);
-                    }
-                  }}
-                  disabled={!canWrite || deleteFile.isPending}
-                  className="rounded p-1.5 text-ink-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
-                  aria-label="Delete file"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </li>
-            );
-          })}
+          {attached.map((row) => (
+            <FormulationCertificateRow
+              key={row.id}
+              row={row}
+              canWrite={canWrite}
+              onPatch={(certId, body) => patch.mutate({ certId, patch: body })}
+              onDetach={(certId) => {
+                if (
+                  window.confirm(
+                    `Detach "${row.psp_certificate_name}" from this formulation?`,
+                  )
+                ) {
+                  detach.mutate(certId);
+                }
+              }}
+              patchPending={patch.isPending}
+              detachPending={detach.isPending}
+            />
+          ))}
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * One row in the attached-certs list. In-line edit for
+ * ``certificate_number`` + validity dates so a scientist can renew
+ * without detaching + reattaching. The PATCH endpoint handles the
+ * PSP-side replay (detach + reattach) so both sides stay in sync.
+ */
+function FormulationCertificateRow({
+  row,
+  canWrite,
+  onPatch,
+  onDetach,
+  patchPending,
+  detachPending,
+}: {
+  row: FormulationCertificateDto;
+  canWrite: boolean;
+  onPatch: (
+    certId: string,
+    patch: {
+      certificate_number?: string;
+      valid_from?: string | null;
+      valid_until?: string | null;
+    },
+  ) => void;
+  onDetach: (certId: string) => void;
+  patchPending: boolean;
+  detachPending: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [numberDraft, setNumberDraft] = useState(row.certificate_number);
+  const [fromDraft, setFromDraft] = useState(row.valid_from ?? "");
+  const [untilDraft, setUntilDraft] = useState(row.valid_until ?? "");
+
+  useEffect(() => {
+    if (editing) return;
+    setNumberDraft(row.certificate_number);
+    setFromDraft(row.valid_from ?? "");
+    setUntilDraft(row.valid_until ?? "");
+  }, [
+    editing,
+    row.certificate_number,
+    row.valid_from,
+    row.valid_until,
+  ]);
+
+  const save = () => {
+    onPatch(row.id, {
+      certificate_number: numberDraft.trim(),
+      valid_from: fromDraft || null,
+      valid_until: untilDraft || null,
+    });
+    setEditing(false);
+  };
+
+  const validityBadge = row.psp_attachment_uuid
+    ? "pushed to PSP"
+    : "not yet on PSP";
+
+  return (
+    <li className="px-3 py-3 text-sm">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-medium text-ink-1000">
+              {row.psp_certificate_name}
+            </span>
+            {row.psp_issuing_body ? (
+              <span className="text-[11px] text-ink-500">
+                · {row.psp_issuing_body}
+              </span>
+            ) : null}
+            <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] uppercase tracking-wide text-ink-600">
+              {validityBadge}
+            </span>
+          </div>
+          {!editing && (
+            <p className="mt-1 text-[11px] text-ink-500">
+              {row.certificate_number ? (
+                <>
+                  <span className="font-mono">{row.certificate_number}</span>
+                  {" · "}
+                </>
+              ) : null}
+              {row.valid_from ? `From ${row.valid_from}` : "No start"}
+              {row.valid_until ? ` · Until ${row.valid_until}` : ""}
+            </p>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          {editing ? (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={() => setEditing(false)}
+                isDisabled={patchPending}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onPress={save}
+                isDisabled={!canWrite || patchPending}
+              >
+                {patchPending ? "Saving…" : "Save"}
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                size="sm"
+                variant="outline"
+                onPress={() => setEditing(true)}
+                isDisabled={!canWrite}
+              >
+                Edit
+              </Button>
+              <button
+                type="button"
+                onClick={() => onDetach(row.id)}
+                disabled={!canWrite || detachPending}
+                className="rounded p-1.5 text-ink-500 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                aria-label="Detach certificate"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {editing && (
+        <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              Cert number
+            </label>
+            <input
+              type="text"
+              value={numberDraft}
+              onChange={(e) => setNumberDraft(e.target.value)}
+              className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              Valid from
+            </label>
+            <input
+              type="date"
+              value={fromDraft}
+              onChange={(e) => setFromDraft(e.target.value)}
+              className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              Valid until
+            </label>
+            <input
+              type="date"
+              value={untilDraft}
+              onChange={(e) => setUntilDraft(e.target.value)}
+              className="rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+            />
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 
@@ -4557,7 +4809,7 @@ export function FormulationBuilder({
         formulationId={formulation.id}
         canWrite={canWrite}
       />
-      <FormulationFilesSetupSection
+      <FormulationCertificatesSetupSection
         orgId={orgId}
         formulationId={formulation.id}
         canWrite={canWrite}

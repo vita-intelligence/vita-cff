@@ -562,6 +562,22 @@ class PspClient:
             return []
         return [row for row in rows if isinstance(row, dict)]
 
+    def list_certificates(self) -> list[dict[str, Any]]:
+        """PSP certificate registry — the picker source for NPD's
+        Setup Certificates panel. Same silent-degrade contract as
+        the other catalog lists. Rows carry ``uuid`` +
+        ``default_validity_months`` so the FE can prefill the
+        ``valid_until`` field from ``valid_from``.
+        """
+
+        payload = self._request("api/integration/certificates")
+        if not isinstance(payload, dict):
+            return []
+        rows = payload.get("items")
+        if not isinstance(rows, list):
+            return []
+        return [row for row in rows if isinstance(row, dict)]
+
     def list_workstation_groups(self) -> list[dict[str, Any]]:
         """Fetch PSP's workstation groups so the NPD stage builder
         can render the "run on" dropdown. Returns the raw rows PSP
@@ -809,6 +825,66 @@ class PspClient:
         try:
             self._request(
                 f"api/integration/items/{item}/files/{file}",
+                method="DELETE",
+            )
+            return True
+        except PspError:
+            return False
+
+    def attach_item_certificate(
+        self,
+        item_uuid: Any,
+        *,
+        certificate_uuid: Any,
+        certificate_number: str | None = None,
+        valid_from: str | None = None,
+        valid_until: str | None = None,
+    ) -> dict | None:
+        """Attach a certificate to an item on PSP. Returns the
+        created attachment row (with ``uuid`` = the attachment id)
+        or ``None`` on soft failure. Callers cache the returned
+        ``uuid`` on ``FormulationCertificate.psp_attachment_uuid``
+        so re-syncs skip pushed rows.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        cert_uuid_clean = str(certificate_uuid or "").strip()
+        if not cleaned or not cert_uuid_clean:
+            return None
+        body: dict[str, Any] = {"certificate_uuid": cert_uuid_clean}
+        if certificate_number:
+            body["certificate_number"] = certificate_number
+        if valid_from:
+            body["valid_from"] = valid_from
+        if valid_until:
+            body["valid_until"] = valid_until
+        response = self._request(
+            f"api/integration/items/{cleaned}/certificates",
+            method="POST",
+            body=body,
+        )
+        if not isinstance(response, dict):
+            return None
+        row = response.get("item_certificate")
+        if not isinstance(row, dict):
+            return None
+        return row
+
+    def detach_item_certificate(
+        self,
+        item_uuid: Any,
+        attachment_uuid: Any,
+    ) -> bool:
+        """Best-effort detach — silent-degrade so a lost cascade
+        doesn't block the local FormulationCertificate delete."""
+
+        item = str(item_uuid or "").strip()
+        att = str(attachment_uuid or "").strip()
+        if not (item and att):
+            return False
+        try:
+            self._request(
+                f"api/integration/items/{item}/certificates/{att}",
                 method="DELETE",
             )
             return True
@@ -2213,31 +2289,34 @@ def _push_finished_product_assets(
             photo.psp_uuid = str(response["uuid"])
             photo.save(update_fields=["psp_uuid"])
 
-    # Files
-    for file_row in formulation.files.filter(psp_uuid__isnull=True):
+    # Certificates — attach any un-mirrored rows. NPD is source of
+    # truth for the attach metadata (number + validity); PSP is
+    # source of truth for the certificate registry itself. Silent-
+    # degrade per row so a transient PSP failure doesn't block the
+    # whole cascade.
+    for cert_row in formulation.certificates.filter(psp_attachment_uuid__isnull=True):
+        valid_from = (
+            cert_row.valid_from.isoformat() if cert_row.valid_from else None
+        )
+        valid_until = (
+            cert_row.valid_until.isoformat() if cert_row.valid_until else None
+        )
         try:
-            with file_row.file.open("rb") as fh:
-                content = fh.read()
-        except (OSError, ValueError):
-            logger.warning(
-                "PSP push: failed reading FormulationFile %s bytes; skipping.",
-                file_row.id,
-            )
-            continue
-        try:
-            response = client.upload_item_file(
+            response = client.attach_item_certificate(
                 item_uuid,
-                content=content,
-                filename=file_row.filename,
-                content_type=file_row.mime or None,
-                kind=file_row.kind,
+                certificate_uuid=cert_row.psp_certificate_uuid,
+                certificate_number=cert_row.certificate_number or None,
+                valid_from=valid_from,
+                valid_until=valid_until,
             )
         except PspError as exc:
-            logger.info("PSP push: file upload soft-failed: %s", exc)
+            logger.info(
+                "PSP push: certificate attach soft-failed: %s", exc
+            )
             continue
         if response and response.get("uuid"):
-            file_row.psp_uuid = str(response["uuid"])
-            file_row.save(update_fields=["psp_uuid"])
+            cert_row.psp_attachment_uuid = str(response["uuid"])
+            cert_row.save(update_fields=["psp_attachment_uuid"])
 
 
 # ---------------------------------------------------------------------------

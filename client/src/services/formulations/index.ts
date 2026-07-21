@@ -1,13 +1,19 @@
 export { formulationsEndpoints } from "./endpoints";
 export type {
   ApplyStageTemplateResponseDto,
+  AttachFormulationCertificateRequestDto,
+  FormulationCertificateDto,
+  FormulationCertificatesListDto,
   FormulationFileDto,
   FormulationFilesListDto,
   FormulationPhotoDto,
   FormulationPhotosListDto,
+  PspCertificateCatalogDto,
+  PspCertificateCatalogEntryDto,
   StageTemplateDto,
   StageTemplateListResponseDto,
   StageTemplateStageDto,
+  UpdateFormulationCertificateRequestDto,
 } from "./api";
 export type { UpsertStageTemplateRequestDto } from "./api";
 export {
@@ -52,6 +58,11 @@ export {
   useProjectOverview,
   useReplaceLines,
   useRollbackFormulation,
+  useAttachFormulationCertificate,
+  useDetachFormulationCertificate,
+  useFormulationCertificateCatalog,
+  useFormulationCertificates,
+  useUpdateFormulationCertificate,
   useSaveVersion,
   useSaveWizardRouting,
   useSetApprovedVersion,

@@ -596,3 +596,113 @@ export async function deleteFormulationFile(
     formulationsEndpoints.fileDetail(orgId, formulationId, fileId),
   );
 }
+
+// ---------------------------------------------------------------------
+// Formulation certificates — mirrors the PSP item-detail Certificates
+// section. Catalog endpoint proxies PSP's cert registry so the FE
+// renders a picker without touching PSP directly.
+// ---------------------------------------------------------------------
+
+export interface FormulationCertificateDto {
+  readonly id: string;
+  readonly psp_certificate_uuid: string;
+  readonly psp_certificate_name: string;
+  readonly psp_certificate_type: string;
+  readonly psp_issuing_body: string;
+  readonly certificate_number: string;
+  readonly valid_from: string | null;
+  readonly valid_until: string | null;
+  readonly psp_attachment_uuid: string | null;
+  readonly attached_at: string;
+}
+
+export interface FormulationCertificatesListDto {
+  readonly items: readonly FormulationCertificateDto[];
+}
+
+export interface PspCertificateCatalogEntryDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly certificate_type?: string | null;
+  readonly issuing_body?: string | null;
+  readonly default_validity_months?: number | null;
+}
+
+export interface PspCertificateCatalogDto {
+  readonly items: readonly PspCertificateCatalogEntryDto[];
+}
+
+export interface AttachFormulationCertificateRequestDto {
+  readonly psp_certificate_uuid: string;
+  readonly psp_certificate_name: string;
+  readonly psp_certificate_type?: string;
+  readonly psp_issuing_body?: string;
+  readonly certificate_number?: string;
+  readonly valid_from?: string | null;
+  readonly valid_until?: string | null;
+}
+
+export interface UpdateFormulationCertificateRequestDto {
+  readonly certificate_number?: string;
+  readonly valid_from?: string | null;
+  readonly valid_until?: string | null;
+}
+
+export async function fetchFormulationCertificates(
+  orgId: string,
+  formulationId: string,
+): Promise<FormulationCertificatesListDto> {
+  const { data } = await apiClient.get<FormulationCertificatesListDto>(
+    formulationsEndpoints.certificates(orgId, formulationId),
+  );
+  return data;
+}
+
+export async function fetchFormulationCertificateCatalog(
+  orgId: string,
+  formulationId: string,
+): Promise<PspCertificateCatalogDto> {
+  const { data } = await apiClient.get<PspCertificateCatalogDto>(
+    formulationsEndpoints.certificateCatalog(orgId, formulationId),
+  );
+  return data;
+}
+
+export async function attachFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+  body: AttachFormulationCertificateRequestDto,
+): Promise<{ certificate: FormulationCertificateDto }> {
+  const { data } = await apiClient.post<{
+    certificate: FormulationCertificateDto;
+  }>(
+    formulationsEndpoints.certificates(orgId, formulationId),
+    body,
+  );
+  return data;
+}
+
+export async function updateFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+  certId: string,
+  patch: UpdateFormulationCertificateRequestDto,
+): Promise<{ certificate: FormulationCertificateDto }> {
+  const { data } = await apiClient.patch<{
+    certificate: FormulationCertificateDto;
+  }>(
+    formulationsEndpoints.certificateDetail(orgId, formulationId, certId),
+    patch,
+  );
+  return data;
+}
+
+export async function detachFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+  certId: string,
+): Promise<void> {
+  await apiClient.delete(
+    formulationsEndpoints.certificateDetail(orgId, formulationId, certId),
+  );
+}

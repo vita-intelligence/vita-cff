@@ -46,4 +46,14 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/files/`,
   fileDetail: (orgId: string, formulationId: string, fileId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/files/${fileId}/`,
+  certificates: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/certificates/`,
+  certificateCatalog: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/certificates/catalog/`,
+  certificateDetail: (
+    orgId: string,
+    formulationId: string,
+    certId: string,
+  ) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/certificates/${certId}/`,
 } as const;

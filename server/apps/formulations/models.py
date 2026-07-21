@@ -1594,6 +1594,100 @@ class FormulationFile(models.Model):
         return f"{self.formulation.name} · {self.kind} · {self.filename}"
 
 
+class FormulationCertificate(models.Model):
+    """Per-formulation certificate attachment. Mirrors the PSP
+    ``item_certificates`` shape so ``_push_psp_certificates`` can
+    replay every attach on the finished-product item after the BOM
+    push — a scientist ticks certs on the NPD Setup panel and they
+    show up in the item-detail Certificates section on PSP.
+
+    The certificate registry itself is managed inside PSP; NPD only
+    stores a reference to the cert's UUID plus per-attachment fields
+    (number, validity window). ``psp_attachment_uuid`` is set on
+    first successful push and gates re-syncs — a cascade skips rows
+    with a non-null value so restarts are idempotent.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.CASCADE,
+        related_name="certificates",
+    )
+
+    # Certificate registry pointer (canonical UUID from PSP).
+    psp_certificate_uuid = models.UUIDField(_("PSP certificate UUID"))
+    # Denormalized for display without a PSP round-trip. Refreshed on
+    # each attach save via a re-fetch of the catalog.
+    psp_certificate_name = models.CharField(
+        _("certificate name"),
+        max_length=200,
+    )
+    psp_certificate_type = models.CharField(
+        _("certificate type"),
+        max_length=64,
+        blank=True,
+        default="",
+    )
+    psp_issuing_body = models.CharField(
+        _("issuing body"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+
+    # Per-attachment fields (mirror the PSP ItemCertificate form).
+    certificate_number = models.CharField(
+        _("certificate number"),
+        max_length=200,
+        blank=True,
+        default="",
+    )
+    valid_from = models.DateField(_("valid from"), null=True, blank=True)
+    valid_until = models.DateField(_("valid until"), null=True, blank=True)
+
+    # Idempotency marker — set on first successful push, cleared when
+    # PSP DELETE succeeds (soft-cascade). Non-null = attachment lives
+    # on PSP with this UUID.
+    psp_attachment_uuid = models.UUIDField(
+        _("PSP attachment UUID"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "UUID PSP returned when this cert was first attached to "
+            "the finished-product item. Idempotency marker."
+        ),
+    )
+
+    attached_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    attached_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("formulation certificate")
+        verbose_name_plural = _("formulation certificates")
+        ordering = ("psp_certificate_name",)
+        constraints = [
+            # A given PSP cert can only be attached once per
+            # formulation — mirrors the PSP-side ``item_certificates``
+            # (item_id, certificate_id) uniqueness.
+            models.UniqueConstraint(
+                fields=("formulation", "psp_certificate_uuid"),
+                name="unique_formulation_certificate",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=("formulation",)),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.formulation.name} · {self.psp_certificate_name}"
+
+
 class FormulationStageTemplate(models.Model):
     """Per-organization reusable stage graph — scientists pick one on
     project create (or apply to an existing formulation) to seed the
