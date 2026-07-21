@@ -45,6 +45,7 @@ import {
   setApprovedVersion,
   syncFormulationToPsp,
   type SyncPspResponseDto,
+  type SyncPspStageBomsDto,
   updateFormulation,
   upsertFormulationStages,
   deleteFormulationFile,
@@ -433,6 +434,11 @@ export function useUpsertStages(
         formulationsQueryKeys.detail(orgId, formulationId),
         updated,
       );
+      // Save-stages triggers the auto-sync-BOM-to-PSP cascade in the
+      // service layer — each stage's PSP BOM may have new lines.
+      // Invalidate every ``[psp, orgId, items, ...]`` query so the
+      // stage cards refetch fresh BOMs on the next render.
+      queryClient.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
     },
   });
 }
@@ -461,10 +467,19 @@ export function useSaveVersion(
 export function useSyncFormulationToPsp(
   orgId: string,
   formulationId: string,
-): UseMutationResult<SyncPspResponseDto, ApiError, void> {
+): UseMutationResult<
+  SyncPspResponseDto,
+  ApiError,
+  { stageBoms?: SyncPspStageBomsDto } | void
+> {
   const queryClient = useQueryClient();
-  return useMutation<SyncPspResponseDto, ApiError, void>({
-    mutationFn: () => syncFormulationToPsp(orgId, formulationId),
+  return useMutation<
+    SyncPspResponseDto,
+    ApiError,
+    { stageBoms?: SyncPspStageBomsDto } | void
+  >({
+    mutationFn: (args) =>
+      syncFormulationToPsp(orgId, formulationId, args ?? {}),
     onSuccess: (result) => {
       if (!result.synced) return;
       // ``_ensure_finished_product`` may have just written back the
@@ -474,6 +489,9 @@ export function useSyncFormulationToPsp(
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.detail(orgId, formulationId),
       });
+      // Every stage's PSP BOM was just re-pushed — bust the cached
+      // per-stage BOM reads so the strip re-fetches from PSP.
+      queryClient.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
     },
   });
 }

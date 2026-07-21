@@ -34,6 +34,8 @@ export const pspEndpoints = {
   },
   itemDetail: (orgId: string, itemUuid: string) =>
     `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/`,
+  itemBom: (orgId: string, itemUuid: string) =>
+    `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/bom/`,
   itemMirror: (orgId: string, itemUuid: string) =>
     `/api/organizations/${orgId}/integrations/psp/items/${itemUuid}/mirror/`,
   workstationGroups: (orgId: string) =>

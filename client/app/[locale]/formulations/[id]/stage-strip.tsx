@@ -428,9 +428,11 @@ export interface StageStripBuilderLine {
 }
 
 
-/** One row of the compute-based BOM the parent hands to the
- *  terminal stage's card. Actives + all excipient bands, at their
- *  real per-serving mg. Empty when no actives are picked yet. */
+/** One row of the compute-based BOM the parent hands to each stage
+ *  card. Every stage renders the same 7-row full formulation BOM
+ *  (actives at extract-ratio-adjusted per-serving mg + every
+ *  excipient band split across picked SKUs) so the operator sees
+ *  the complete recipe on every stage — matches Fine-tune. */
 export interface StageStripBomLine {
   readonly key: string;
   readonly label: string;
@@ -453,14 +455,14 @@ export interface StageStripProps {
    *  own BOM contents underneath the stage row so the operator can
    *  see "what's in the Blend BOM" without leaving the strip. */
   readonly lines: readonly StageStripBuilderLine[];
-  /** Full compute-based BOM for the terminal stage — actives +
-   *  every excipient band the finished product carries, split
-   *  across picked SKUs. Undefined on formulations where compute
-   *  hasn't produced band-level output yet (liquid / other-solid
-   *  dosage forms today). The terminal stage renders this when
-   *  present, falling back to the simple ``lines`` filter
-   *  otherwise. */
-  readonly terminalBomLines?: readonly StageStripBomLine[];
+  /** Compute-based BOM per stage — for every stage id, the actives
+   *  assigned to it at extract-ratio-adjusted per-serving mg. The
+   *  terminal stage's entry also folds in null-stage lines AND the
+   *  excipient bands the finished product carries, so the terminal
+   *  card reads as the finished-product BOM (matches the Preview
+   *  tab). Missing entries fall back to the simple ``lines`` filter
+   *  so legacy / no-compute paths still render something. */
+  readonly bomLinesByStage?: ReadonlyMap<string, readonly StageStripBomLine[]>;
   /** Fired with the fresh formulation DTO after a successful
    *  ``Save stages`` round-trip. The builder wires this to its
    *  own ``setFormulation`` so the Stage BOMs preview + picker
@@ -493,6 +495,20 @@ export interface StageStripProps {
   /** True while a manual sync push is in flight — disables every
    *  Sync-now button so double-clicks can't fan out. */
   readonly syncPending?: boolean;
+  /** Fires whenever the local strip's dirty state flips (drafts
+   *  diverge from / re-align with the server DTO). Parent tracks
+   *  this so its own Save version / Save draft buttons can enable
+   *  on stage edits, not just line edits. */
+  readonly onDirtyChange?: (dirty: boolean) => void;
+  /** One-time callback the strip fires on mount to hand its save
+   *  action out to the parent. The parent stores the fn on a ref
+   *  and can call it before a Save version to persist pending
+   *  stage edits (returning the fresh formulation DTO from the
+   *  round-trip). Optional — nothing else in the strip depends on
+   *  it being wired. */
+  readonly onRegisterSave?: (
+    save: () => Promise<FormulationDto>,
+  ) => void;
 }
 
 
@@ -503,13 +519,15 @@ export function StageStrip({
   activeStageId,
   onActiveStageChange,
   lines,
-  terminalBomLines,
+  bomLinesByStage,
   onSaved,
   onOpenIngredientBuilder,
   pspBaseUrl,
   pspFinishedProductUuid,
   onSyncNow,
   syncPending,
+  onDirtyChange,
+  onRegisterSave,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
@@ -640,6 +658,41 @@ export function StageStrip({
       );
     });
   }, [drafts, formulation.stages]);
+
+  // Bubble the strip's local dirty state to the parent so its
+  // Save version / Save draft buttons can enable on stage edits,
+  // not just line / metadata edits.
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  // One-time save-handle registration. Parent stashes the fn on a
+  // ref and calls it before Save version to persist pending stage
+  // edits inline (chaining through the existing upsert mutation so
+  // the resulting formulation DTO flows into the parent's setter
+  // via the mutation's promise). Guarded on ``onRegisterSave`` so
+  // the register only fires when the parent actually wired it.
+  //
+  // The handle closes over the LIVE ``drafts`` + ``upsert`` refs —
+  // storing it on a ref inside the effect keeps the parent-side
+  // getter stable while ensuring the invoked closure always sees
+  // the latest state.
+  const saveHandleRef = useRef<(() => Promise<FormulationDto>) | null>(null);
+  saveHandleRef.current = async () => {
+    const result = await upsert.mutateAsync({
+      stages: drafts.map((d, i) => draftToInput(d, i)),
+    });
+    onSaved?.(result);
+    return result;
+  };
+  useEffect(() => {
+    if (!onRegisterSave) return;
+    onRegisterSave(async () => {
+      const fn = saveHandleRef.current;
+      if (!fn) throw new Error("stage save handle not registered");
+      return await fn();
+    });
+  }, [onRegisterSave]);
 
   // "Save + sync" should also be clickable when nothing changed
   // locally but a stage hasn't been pushed to PSP yet — otherwise
@@ -1001,17 +1054,16 @@ export function StageStrip({
             const isActive =
               stageId !== null && stageId === activeStageId;
             const isTerminal = i === drafts.length - 1;
-            // Non-terminal stage: show only the actives explicitly
-            // assigned to it.
-            //
-            // Terminal stage: prefer the parent-computed
-            // ``terminalBomLines`` (actives + every excipient band
-            // at compute-adjusted per-serving mg) so the list
-            // matches the Preview tab's BOM. When the parent hasn't
-            // supplied it (dosage forms compute doesn't fully
-            // handle, or a legacy no-compute path), fall back to
-            // the same "assigned + unassigned actives" split as
-            // before.
+            // Every stage renders the same compute-based BOM view
+            // (actives at extract-ratio-adjusted per-serving mg,
+            // plus — terminal only — excipient bands split across
+            // picked SKUs). Parent supplies one entry per stage id
+            // via ``bomLinesByStage``. When the map is missing an
+            // entry (legacy / compute-off dosage forms), fall back
+            // to the raw assigned lines so the card still shows
+            // something.
+            const stageComputedBom =
+              stageId && bomLinesByStage ? bomLinesByStage.get(stageId) : undefined;
             const stageOwnLines = stageId
               ? lines.filter((l) => l.stage_id === stageId)
               : [];
@@ -1020,9 +1072,7 @@ export function StageStrip({
               : [];
             const stageLines = [...stageOwnLines, ...nullStageLines];
             const showComputedBom =
-              isTerminal &&
-              terminalBomLines !== undefined &&
-              terminalBomLines.length > 0;
+              stageComputedBom !== undefined && stageComputedBom.length > 0;
             const isFinishedCard =
               draft.psp_item_type === "finished_product";
             return (
@@ -1292,9 +1342,16 @@ export function StageStrip({
                     <button
                       type="button"
                       onClick={() => removeStage(draft.clientKey)}
-                      disabled={upsert.isPending}
-                      className="rounded p-1 text-red-600 hover:bg-red-50 disabled:opacity-30"
-                      title="Remove stage"
+                      disabled={
+                        upsert.isPending ||
+                        draft.psp_item_type === "finished_product"
+                      }
+                      className="rounded p-1 text-red-600 hover:bg-red-50 disabled:opacity-30 disabled:cursor-not-allowed"
+                      title={
+                        draft.psp_item_type === "finished_product"
+                          ? "The finished-product stage is the project's PSP identity — reassign the finished flag to another stage before removing this one."
+                          : "Remove stage"
+                      }
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -1559,9 +1616,19 @@ export function StageStrip({
                   <div className="flex items-center justify-between gap-2">
                     <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
                       {showComputedBom ? (
-                        <>BOM · {terminalBomLines!.length} ingredients</>
+                        <>
+                          BOM · {stageComputedBom!.length}
+                          {stageComputedBom!.length === 1
+                            ? " ingredient"
+                            : " ingredients"}
+                        </>
                       ) : (
-                        <>Actives · {stageLines.length} assigned</>
+                        <>
+                          BOM · {stageLines.length}
+                          {stageLines.length === 1
+                            ? " ingredient"
+                            : " ingredients"}
+                        </>
                       )}
                     </p>
                     {canEdit && onOpenIngredientBuilder ? (
@@ -1603,7 +1670,7 @@ export function StageStrip({
                   </div>
                   {showComputedBom ? (
                     <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
-                      {terminalBomLines!.map((line) => (
+                      {stageComputedBom!.map((line) => (
                         <li
                           key={line.key}
                           className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
@@ -1624,9 +1691,9 @@ export function StageStrip({
                     </ul>
                   ) : stageLines.length === 0 ? (
                     <p className="mt-2 text-xs text-ink-500">
-                      {isTerminal
-                        ? "No actives assigned yet. Pick some on the Ingredients tab — every ingredient without an explicit stage lands here by default."
-                        : "No ingredients assigned yet. Click \"Add ingredients here\" to make this stage the picker's target, then pick from the ingredient list."}
+                      No ingredients yet. Click &quot;Build ingredients&quot;
+                      to open this stage&apos;s builder and pick raw
+                      materials for it.
                     </p>
                   ) : (
                     <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">

@@ -1354,6 +1354,19 @@ class FormulationVersion(models.Model):
         default=dict,
         blank=True,
     )
+    #: FE-computed per-stage BOM snapshot, keyed by stage uuid. Each
+    #: entry is a list of ``{item_id, mg, sort_order, label, code}``
+    #: rows representing what that stage's PSP item held at save
+    #: time — actives assigned to the stage, plus excipient bands
+    #: on the terminal stage, plus the synthesized "1× prior semi"
+    #: link. History rehydration replays this back into the strip so
+    #: the operator sees the exact BOM composition each version
+    #: shipped with, even if the stage graph mutates later.
+    snapshot_stage_boms: models.JSONField = models.JSONField(
+        _("snapshot stage BOMs"),
+        default=dict,
+        blank=True,
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,

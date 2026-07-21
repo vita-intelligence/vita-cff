@@ -383,6 +383,89 @@ class PspClient:
             return None
         return row
 
+    def delete_item(self, item_uuid: Any) -> dict:
+        """Safe-delete a PSP catalog item. PSP's ``DELETE /items/:uuid``
+        gates on ownership + reference count + history and returns:
+
+        * ``200 {"deleted": true, "uuid": "..."}`` — actually deleted.
+        * ``404 {"deleted": false, "reason": "not_found", ...}`` — the
+          uuid doesn't exist on PSP.
+        * ``409 {"deleted": false, "reason": "sku_not_npd_owned" |
+                "referenced_by_bom" | "has_history", ...}`` — refused
+          because the item isn't safe to remove.
+
+        Returns the parsed body on any of the above so the caller can
+        inspect ``deleted`` + ``reason`` without exception handling.
+        Auth / rate-limit / network errors still raise the usual
+        :class:`PspError` subclasses.
+        """
+
+        cleaned = str(item_uuid or "").strip()
+        if not cleaned:
+            return {"deleted": False, "reason": "invalid_uuid"}
+
+        base = self._config.base_url.rstrip("/")
+        url = f"{base}/api/integration/items/{cleaned}"
+        headers = {
+            "Accept": "application/json",
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+        }
+        req = Request(url, method="DELETE", headers=headers)
+        try:
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                raw = resp.read()
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise PspAuthFailed(
+                    f"PSP rejected the credentials (HTTP {exc.code})."
+                ) from exc
+            if exc.code == 429:
+                raise PspRateLimited(
+                    "PSP rate limit reached. Retry shortly."
+                ) from exc
+            if exc.code in (404, 409):
+                # PSP returns a structured refusal body on both — parse
+                # it out so the caller sees the reason code instead of
+                # a generic "PSP unreachable".
+                body_bytes = b""
+                try:
+                    body_bytes = exc.read() or b""
+                except Exception:  # pragma: no cover — defensive
+                    body_bytes = b""
+                try:
+                    parsed = json.loads(body_bytes.decode("utf-8"))
+                    if isinstance(parsed, dict):
+                        return parsed
+                except Exception:
+                    pass
+                fallback_reason = "not_found" if exc.code == 404 else "refused"
+                return {"deleted": False, "reason": fallback_reason}
+            body_snippet = ""
+            try:
+                body_snippet = (
+                    (exc.read() or b"").decode("utf-8", errors="replace")[:500]
+                )
+            except Exception:  # pragma: no cover — defensive
+                body_snippet = ""
+            raise PspUnreachable(
+                f"PSP returned HTTP {exc.code}."
+                + (f" Body: {body_snippet}" if body_snippet else "")
+            ) from exc
+        except URLError as exc:
+            raise PspUnreachable(
+                f"Couldn't reach PSP: {exc.reason}"
+            ) from exc
+        if not raw:
+            return {"deleted": True, "reason": "ok"}
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError:
+            return {"deleted": True, "reason": "ok"}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"deleted": True, "reason": "ok"}
+
     def put_bom(self, item_uuid: Any, payload: dict) -> dict | None:
         """Push a BOM snapshot onto a PSP finished-product item.
 
@@ -1348,12 +1431,106 @@ def get_psp_item(*, organization: Any, uuid: str) -> PspItem | None:
         return None
 
 
+def delete_psp_item(*, organization: Any, uuid: str) -> dict:
+    """Safe-delete a PSP item on behalf of NPD. Silent-degrade —
+    returns a status dict rather than raising so callers (stage-
+    delete hooks) never block on PSP being offline.
+
+    Return shape mirrors :meth:`PspClient.delete_item`:
+
+        {"deleted": bool, "reason": "<code>", "uuid": "<uuid>"}
+
+    Additional local skip reasons:
+
+    * ``psp_not_live`` — org has no live PSP integration.
+    * ``config_decryption_failed`` — token can't be decrypted.
+    * ``client_init_failed`` — config is invalid on our side.
+    * ``client_error`` — PSP round-trip failed (auth / network / rate).
+    """
+
+    cleaned = str(uuid or "").strip()
+    if not cleaned:
+        return {"deleted": False, "reason": "invalid_uuid", "uuid": cleaned}
+    if not is_psp_live(organization):
+        return {"deleted": False, "reason": "psp_not_live", "uuid": cleaned}
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return {
+            "deleted": False,
+            "reason": "config_decryption_failed",
+            "uuid": cleaned,
+        }
+    try:
+        client = _client_factory(config)
+    except PspInvalidConfig:
+        logger.exception(
+            "PSP delete_item: invalid config for org %s", organization.pk
+        )
+        return {
+            "deleted": False,
+            "reason": "client_init_failed",
+            "uuid": cleaned,
+        }
+    try:
+        result = client.delete_item(cleaned)
+    except PspError:
+        logger.exception(
+            "PSP delete_item failed for org %s item %s",
+            organization.pk,
+            cleaned,
+        )
+        return {"deleted": False, "reason": "client_error", "uuid": cleaned}
+    if isinstance(result, dict):
+        result.setdefault("uuid", cleaned)
+        return result
+    return {"deleted": False, "reason": "unexpected_response", "uuid": cleaned}
+
+
+def get_psp_item_bom(*, organization: Any, uuid: str) -> dict | None:
+    """Fetch the active primary BOM for a PSP item. Silent-degrade —
+    returns ``None`` when PSP is off, mis-configured, the item has
+    no BOM, or the round-trip fails. Used by the stage strip so
+    each stage card can mirror the item's real recipe on PSP
+    rather than a locally-synthesized list."""
+
+    cleaned = str(uuid or "").strip()
+    if not cleaned:
+        return None
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return None
+    try:
+        client = _client_factory(config)
+        return client.get_item_bom(cleaned)
+    except PspError:
+        logger.exception(
+            "PSP get_item_bom failed for org %s item %s",
+            organization.pk,
+            cleaned,
+        )
+        return None
+
+
 # ---------------------------------------------------------------------------
 # BOM push — NPD formulation → PSP finished-product BOM
 # ---------------------------------------------------------------------------
 
 
-def push_bom_to_psp(*, formulation: Any) -> dict | None:
+def push_bom_to_psp(
+    *,
+    formulation: Any,
+    stage_bom_overrides: dict[str, list[dict[str, Any]]] | None = None,
+) -> dict | None:
     """Push a formulation's stage graph to PSP as a cascade of BOMs
     + Routings. Called after every ``save_version``.
 
@@ -1388,9 +1565,17 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
       product item, matching the pre-stages behaviour. Ensures
       legacy formulations keep syncing without a manual migration.
 
-    Excipient / band picks stay deferred (same MVP scope as before —
-    the band-level mg splits need the compute service to reproduce
-    server-side).
+    ``stage_bom_overrides`` — the FE ships the compute-derived
+    full BOM (actives + every excipient band, mg per SKU) on
+    sync/save. When present for a stage's uuid, we use those lines
+    verbatim instead of deriving from ``formulation.lines`` — that
+    way each stage's PSP BOM mirrors exactly what NPD shows on the
+    stage card (including anti-caking / MCC / DCP bands that only
+    exist in FE compute). Shape:
+    ``{"<stage_uuid>": [{"item_uuid": ..., "mg": <float>,
+                         "sort_order": <int>}, ...]}``.
+    Stages not listed in the override fall back to the derived
+    per-stage line projection.
     """
 
     organization = formulation.organization
@@ -1434,7 +1619,10 @@ def push_bom_to_psp(*, formulation: Any) -> dict | None:
         if not stages:
             return _push_flat_bom(client=client, formulation=formulation)
         return _push_staged_cascade(
-            client=client, formulation=formulation, stages=stages
+            client=client,
+            formulation=formulation,
+            stages=stages,
+            stage_bom_overrides=stage_bom_overrides,
         )
     except PspError:
         logger.exception(
@@ -1483,6 +1671,60 @@ def _bom_lines_from(items: list[Any], *, start_index: int = 0) -> list[dict[str,
     return out
 
 
+def _override_to_bom_lines(
+    override: list[dict[str, Any]],
+    *,
+    item_psp_uuid_by_local_id: dict[str, str],
+) -> list[dict[str, Any]]:
+    """Project the FE-computed stage snapshot into the PSP BOM line
+    shape. Each incoming row is ``{"item_id", "mg", "sort_order"}``
+    — a local ``catalogues.Item.id`` (already mirrored so its
+    ``psp_source_uuid`` is populated) plus the compute-adjusted mg.
+    We resolve the local id to the PSP uuid via the caller-supplied
+    map; rows without a resolvable PSP uuid (unmirrored placeholders
+    from empty picker bands) or with non-positive ``mg`` are dropped
+    so the payload only carries lines PSP can resolve."""
+
+    out: list[dict[str, Any]] = []
+    for row in override:
+        if not isinstance(row, dict):
+            continue
+        # Prefer the local-item lookup (Item.psp_source_uuid) so
+        # NPD-side identity wins. Fall back to the raw
+        # ``psp_item_uuid`` for auto-picked rows that don't have a
+        # local mirror yet (e.g. a capsule shell the operator never
+        # ticked explicitly).
+        local_item_id = row.get("item_id")
+        psp_uuid: str | None = None
+        if local_item_id:
+            psp_uuid = item_psp_uuid_by_local_id.get(str(local_item_id))
+        if not psp_uuid:
+            raw_uuid = row.get("psp_item_uuid")
+            if raw_uuid:
+                psp_uuid = str(raw_uuid).strip() or None
+        if not psp_uuid:
+            continue
+        raw_mg = row.get("mg", row.get("qty"))
+        try:
+            mg = float(raw_mg) if raw_mg is not None else 0.0
+        except (TypeError, ValueError):
+            continue
+        if mg <= 0:
+            continue
+        try:
+            sort_order = int(row.get("sort_order", len(out)))
+        except (TypeError, ValueError):
+            sort_order = len(out)
+        out.append(
+            {
+                "part_uuid": str(psp_uuid),
+                "qty": str(mg),
+                "sort_order": sort_order,
+            }
+        )
+    return out
+
+
 def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
     """Legacy path: one flat BOM against the finished-product item.
     Kept as the fallback for formulations that don't yet have a
@@ -1515,6 +1757,7 @@ def _push_staged_cascade(
     client: PspClient,
     formulation: Any,
     stages: list[Any],
+    stage_bom_overrides: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict | None:
     """Walk stages in ``sort_order`` and push one BOM + one Routing
     per stage. Each stage's ``psp_item_type`` decides whether it
@@ -1539,6 +1782,27 @@ def _push_staged_cascade(
     )
     previous_semi_uuid: str | None = None
     last_response: dict | None = None
+
+    # Build the local-item-id → PSP-uuid lookup once, spanning every
+    # id referenced across all overrides. One query beats N Item.get
+    # calls in the per-stage loop.
+    override_item_lookup: dict[str, str] = {}
+    if stage_bom_overrides:
+        wanted_ids: set[str] = set()
+        for rows in stage_bom_overrides.values():
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                raw = row.get("item_id")
+                if raw:
+                    wanted_ids.add(str(raw))
+        if wanted_ids:
+            from apps.catalogues.models import Item
+
+            for item in Item.objects.filter(
+                id__in=wanted_ids, psp_source_uuid__isnull=False
+            ).only("id", "psp_source_uuid"):
+                override_item_lookup[str(item.id)] = str(item.psp_source_uuid)
 
     for stage in stages:
         is_finished = stage.id == finished_stage.id
@@ -1571,13 +1835,28 @@ def _push_staged_cascade(
                 )
                 return last_response
 
-        # BOM lines = raw-material picks assigned to this stage
-        # (+ any legacy null-stage lines when this is the finished
-        # stage — they flow into the finished product by default).
-        assigned = _lines_for_stage(formulation, stage_id=stage.id)
-        if is_finished:
-            assigned = assigned + _lines_for_stage(formulation, stage_id=None)
-        bom_lines = _bom_lines_from(assigned)
+        # BOM lines — prefer the FE-computed override for this stage
+        # (which carries the full recipe: assigned actives + every
+        # excipient band at compute-adjusted mg per SKU), else fall
+        # back to the ORM-line derivation for backwards compatibility.
+        # The override is what makes NPD's stage card display and
+        # PSP's per-stage BOM show the same list — otherwise the
+        # FE synthesizes excipients that never reach PSP.
+        override = None
+        if stage_bom_overrides is not None:
+            override = stage_bom_overrides.get(str(stage.id))
+        if override is not None:
+            bom_lines = _override_to_bom_lines(
+                override,
+                item_psp_uuid_by_local_id=override_item_lookup,
+            )
+        else:
+            assigned = _lines_for_stage(formulation, stage_id=stage.id)
+            if is_finished:
+                assigned = assigned + _lines_for_stage(
+                    formulation, stage_id=None
+                )
+            bom_lines = _bom_lines_from(assigned)
 
         # Every stage after the first consumes the prior stage's
         # semi-finished output at qty = 1 (one serving worth of

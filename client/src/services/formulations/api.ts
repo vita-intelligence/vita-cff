@@ -195,13 +195,37 @@ export interface SyncPspResponseDto {
   reason?: string;
 }
 
+/** Per-stage snapshot of the compute-derived BOM the FE displays.
+ *  Sent to sync-psp so PSP's per-stage BOMs mirror what NPD shows —
+ *  otherwise the FE synthesizes excipient rows that never reach PSP
+ *  and the two surfaces drift. Keyed by stage uuid. ``item_id`` is
+ *  the local ``catalogues.Item.id``; the server resolves it to the
+ *  PSP source uuid via the item mirror. */
+export interface SyncPspStageBomLineDto {
+  /** Local ``catalogues.Item.id``. Server resolves to
+   *  ``psp_source_uuid`` via the item mirror. ``null`` when the row
+   *  is auto-picked from PSP (no mirror row yet) — in that case
+   *  ``psp_item_uuid`` carries the direct PSP identity. */
+  readonly item_id: string | null;
+  /** Raw PSP item UUID for auto-picked rows (e.g. capsule shell
+   *  when nothing was ticked explicitly). Server prefers
+   *  ``item_id`` when present; falls back to this uuid otherwise. */
+  readonly psp_item_uuid?: string | null;
+  readonly mg: number;
+  readonly sort_order: number;
+}
+export type SyncPspStageBomsDto = Readonly<
+  Record<string, readonly SyncPspStageBomLineDto[]>
+>;
+
 export async function syncFormulationToPsp(
   orgId: string,
   formulationId: string,
+  args: { stageBoms?: SyncPspStageBomsDto } = {},
 ): Promise<SyncPspResponseDto> {
   const { data } = await apiClient.post<SyncPspResponseDto>(
     formulationsEndpoints.syncPsp(orgId, formulationId),
-    {},
+    args.stageBoms ? { stage_boms: args.stageBoms } : {},
   );
   return data;
 }

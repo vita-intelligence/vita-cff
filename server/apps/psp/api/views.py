@@ -43,6 +43,7 @@ from apps.psp.services import (
     clear_psp_config,
     create_psp_finished_product,
     get_psp_item,
+    get_psp_item_bom,
     list_psp_allergens,
     list_psp_items,
     list_psp_product_families,
@@ -253,6 +254,29 @@ class PspItemDetailView(APIView):
             {"matched": True, "item": _serialize_item(item)},
             status=status.HTTP_200_OK,
         )
+
+
+class PspItemBomView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/items/<uuid>/bom/``.
+
+    Live-read of a PSP item's active primary BOM. The stage strip
+    calls this per-stage so each card renders the recipe of record
+    from PSP — no local synthesis, no "copied from the semi"
+    guesswork. Silent-degrade: ``{"bom": null}`` on missing / off /
+    error, so the FE renders "not on PSP yet" identically for every
+    reason it might be empty.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(
+        self, request: Request, org_id: str, item_uuid: str
+    ) -> Response:
+        bom = get_psp_item_bom(
+            organization=self.organization, uuid=item_uuid
+        )
+        return Response({"bom": bom}, status=status.HTTP_200_OK)
 
 
 class PspItemMirrorView(APIView):

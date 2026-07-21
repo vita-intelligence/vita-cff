@@ -20,6 +20,7 @@ import {
   clearPspConfig,
   createPspFinishedProduct,
   fetchPspConfig,
+  fetchPspItemBom,
   fetchPspItemDetail,
   fetchPspItems,
   fetchPspAllergens,
@@ -34,6 +35,7 @@ import {
   type CreatePspFinishedProductRequestDto,
   type CreatePspFinishedProductResponseDto,
   type PspAllergensListResponseDto,
+  type PspItemBomResponseDto,
   type PspProductFamiliesListResponseDto,
   type PspStorageTagsListResponseDto,
   type PspUnitsOfMeasurementListResponseDto,
@@ -71,6 +73,8 @@ export const pspQueryKeys = {
     ] as const,
   itemDetail: (orgId: string, uuid: string) =>
     ["psp", orgId, "items", uuid] as const,
+  itemBom: (orgId: string, uuid: string) =>
+    ["psp", orgId, "items", uuid, "bom"] as const,
   workstationGroups: (orgId: string) =>
     ["psp", orgId, "workstation-groups"] as const,
   workstationUsers: (orgId: string) =>
@@ -243,6 +247,26 @@ export function usePspProductFamilies(
     queryFn: () => fetchPspProductFamilies(orgId),
     enabled: Boolean(orgId) && enabled,
     staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** Per-stage live BOM read. The stage strip fires one of these per
+ *  stage that has a PSP item uuid — silent-degrade so a missing /
+ *  unpushed item shows the "not on PSP yet" empty state. Cached for
+ *  60s so quick tab-switches don't refetch on every mount. */
+export function usePspItemBom(
+  orgId: string,
+  itemUuid: string | null | undefined,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspItemBomResponseDto, ApiError> {
+  const { enabled = true } = args;
+  const cleaned = (itemUuid ?? "").trim();
+  return useQuery<PspItemBomResponseDto, ApiError>({
+    queryKey: pspQueryKeys.itemBom(orgId, cleaned),
+    queryFn: () => fetchPspItemBom(orgId, cleaned),
+    enabled: Boolean(orgId) && Boolean(cleaned) && enabled,
+    staleTime: 60 * 1000,
   });
 }
 
