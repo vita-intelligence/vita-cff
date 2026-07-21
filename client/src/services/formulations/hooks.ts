@@ -57,10 +57,20 @@ import {
   updateFormulationPhoto,
   uploadFormulationFile,
   uploadFormulationPhoto,
+  attachFormulationCertificate,
+  detachFormulationCertificate,
+  fetchFormulationCertificateCatalog,
+  fetchFormulationCertificates,
+  updateFormulationCertificate,
+  type AttachFormulationCertificateRequestDto,
+  type FormulationCertificateDto,
+  type FormulationCertificatesListDto,
   type FormulationFileDto,
   type FormulationFilesListDto,
   type FormulationPhotoDto,
   type FormulationPhotosListDto,
+  type PspCertificateCatalogDto,
+  type UpdateFormulationCertificateRequestDto,
 } from "./api";
 import type {
   AssignLeadScientistRequestDto,
@@ -127,6 +137,20 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "photos", formulationId] as const,
   files: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "files", formulationId] as const,
+  certificates: (orgId: string, formulationId: string) =>
+    [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "certificates",
+      formulationId,
+    ] as const,
+  certificateCatalog: (orgId: string, formulationId: string) =>
+    [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "certificate-catalog",
+      formulationId,
+    ] as const,
   stageTemplates: (orgId: string) =>
     [...formulationsQueryKeys.all, orgId, "stage-templates"] as const,
 } as const;
@@ -751,6 +775,92 @@ export function useDeleteFormulationFile(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.files(orgId, formulationId),
+      });
+    },
+  });
+}
+
+// ---- Certificates ---------------------------------------------------
+
+export function useFormulationCertificates(
+  orgId: string,
+  formulationId: string,
+): UseQueryResult<FormulationCertificatesListDto, ApiError> {
+  return useQuery<FormulationCertificatesListDto, ApiError>({
+    queryKey: formulationsQueryKeys.certificates(orgId, formulationId),
+    queryFn: () => fetchFormulationCertificates(orgId, formulationId),
+    enabled: Boolean(orgId && formulationId),
+  });
+}
+
+export function useFormulationCertificateCatalog(
+  orgId: string,
+  formulationId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspCertificateCatalogDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspCertificateCatalogDto, ApiError>({
+    queryKey: formulationsQueryKeys.certificateCatalog(orgId, formulationId),
+    queryFn: () =>
+      fetchFormulationCertificateCatalog(orgId, formulationId),
+    enabled: Boolean(orgId && formulationId) && enabled,
+    // The registry changes rarely — cache 10 min so opening the picker
+    // doesn't re-hit PSP on every render.
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+export function useAttachFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { certificate: FormulationCertificateDto },
+  ApiError,
+  AttachFormulationCertificateRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body) =>
+      attachFormulationCertificate(orgId, formulationId, body),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.certificates(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useUpdateFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { certificate: FormulationCertificateDto },
+  ApiError,
+  { certId: string; patch: UpdateFormulationCertificateRequestDto }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ certId, patch }) =>
+      updateFormulationCertificate(orgId, formulationId, certId, patch),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.certificates(orgId, formulationId),
+      });
+    },
+  });
+}
+
+export function useDetachFormulationCertificate(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<void, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (certId: string) =>
+      detachFormulationCertificate(orgId, formulationId, certId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.certificates(orgId, formulationId),
       });
     },
   });
