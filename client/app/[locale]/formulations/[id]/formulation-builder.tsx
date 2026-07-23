@@ -8400,68 +8400,38 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     per stock-unit + per pack, plus the servings-per-
                     stock-unit that anchors all per_unit ratios landing
                     on this stage. */}
-                <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-ink-50/60 p-3 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200 sm:grid-cols-4">
-                  <div>
-                    <p className="font-semibold uppercase tracking-wide text-ink-500">
-                      Servings anchor
-                    </p>
-                    <p className="mt-0.5 text-sm text-ink-1000">
-                      1 stock-unit = {stageServings} servings
-                    </p>
-                  </div>
-                  <div>
-                    <p className="font-semibold uppercase tracking-wide text-ink-500">
-                      Output per stock-unit
-                    </p>
-                    <p className="mt-0.5 text-sm text-ink-1000">
-                      {perStockUnitMg >= 1_000_000
-                        ? `${(perStockUnitMg / 1_000_000).toFixed(3)} kg`
-                        : perStockUnitMg >= 1000
-                          ? `${(perStockUnitMg / 1000).toFixed(2)} g`
-                          : `${perStockUnitMg.toFixed(1)} mg`}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="font-semibold uppercase tracking-wide text-ink-500">
-                      Total per pack
-                    </p>
-                    <p className="mt-0.5 text-sm text-ink-1000">
-                      {perPackMg >= 1_000_000
-                        ? `${(perPackMg / 1_000_000).toFixed(3)} kg`
-                        : perPackMg >= 1000
-                          ? `${(perPackMg / 1000).toFixed(2)} g`
-                          : `${perPackMg.toFixed(1)} mg`}
-                    </p>
-                  </div>
-                  {/* Total scaled to the "Finished units to make" preview.
-                      Answers "how much of THIS stage's output do I need
-                      to produce N packs" so the scientist can size the
-                      batch against a target run. */}
-                  {(() => {
-                    const batchMg = perPackMg * finishedUnits;
-                    const batchLabel =
-                      batchMg >= 1_000_000
-                        ? `${(batchMg / 1_000_000).toFixed(3)} kg`
-                        : batchMg >= 1000
-                          ? `${(batchMg / 1000).toFixed(2)} g`
-                          : `${batchMg.toFixed(1)} mg`;
-                    return (
-                      <div>
-                        <p className="font-semibold uppercase tracking-wide text-ink-500">
-                          Total for {finishedUnits} unit
-                          {finishedUnits === 1 ? "" : "s"}
-                        </p>
-                        <p className="mt-0.5 text-sm text-ink-1000">
-                          {batchLabel}
-                        </p>
-                        <p className="mt-0.5 text-[10px] text-ink-500">
-                          {finishedUnits * stageServings} stock-unit
-                          {finishedUnits * stageServings === 1 ? "" : "s"}
-                        </p>
-                      </div>
-                    );
-                  })()}
-                </div>
+                {/* Single-line output summary — collapses the previous
+                    four-column "servings anchor / per stock-unit / per
+                    pack / for N units" grid. Matches the scale the
+                    ingredient rows below already show, so it's the
+                    same math on the same units — no more "wait, which
+                    column am I reading?" at handoff. */}
+                {(() => {
+                  const batchMg = perPackMg * finishedUnits;
+                  const batchLabel =
+                    batchMg >= 1_000_000
+                      ? `${(batchMg / 1_000_000).toFixed(3)} kg`
+                      : batchMg >= 1000
+                        ? `${(batchMg / 1000).toFixed(2)} g`
+                        : `${batchMg.toFixed(1)} mg`;
+                  const stockUnitCount = finishedUnits * stageServings;
+                  return (
+                    <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-xl bg-ink-50/60 px-3 py-2 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200">
+                      <span className="font-semibold uppercase tracking-wide text-ink-500">
+                        This stage produces
+                      </span>
+                      <span className="text-base font-semibold text-ink-1000">
+                        {batchLabel}
+                      </span>
+                      <span className="text-ink-500">
+                        ({stockUnitCount} stock-unit
+                        {stockUnitCount === 1 ? "" : "s"} · for{" "}
+                        {finishedUnits} finished unit
+                        {finishedUnits === 1 ? "" : "s"})
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 {/* Every quantity below is normalised to ONE unit of
                     what this stage produces — not per batch, not per
