@@ -4187,7 +4187,22 @@ export function FormulationBuilder({
       // — no post-save correlation dance for ``new-…`` client-only
       // keys. handleSaveRouting is then band-only.
       const overrideStageIdFor = (line: BuilderLine): string | null => {
-        if (line.source_kind === "band_pick") return line.stage_id;
+        // Band picks — check the routing draft under the band key
+        // (``band:<band_key>:<item_id>``). Without this, an unsaved
+        // routing assignment on a band pick never rides ``replace_lines``
+        // and has to rely on the second ``handleSaveRouting`` round
+        // trip, which is fragile (routingDirty=false skips it, band
+        // total mg=0 drops the bomIndex entry, etc.). Baking the
+        // intent into the lines payload is the belt-and-braces fix.
+        if (line.source_kind === "band_pick") {
+          if (line.band_key && line.item_id) {
+            const routingIntent = routingByKey.get(
+              `band:${line.band_key}:${line.item_id}`,
+            );
+            if (routingIntent !== undefined) return routingIntent;
+          }
+          return line.stage_id;
+        }
         // ``routingByKey`` is sparse (user edits only) — fall through
         // to ``line.stage_id`` when the operator hasn't touched this
         // row. Same net effect as the old dense map + baseline seed.
