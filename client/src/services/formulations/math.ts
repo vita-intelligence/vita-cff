@@ -234,6 +234,11 @@ export interface ItemAttributesForMath {
   //: null = blank classification → warning. Optional so math-only
   //: callers that don't care can hand in a narrow object.
   readonly use_as?: string | null;
+  //: PSP's item_type (``raw_material`` / ``packaging`` /
+  //: ``semi_finished`` / ``finished_product``). Only present on
+  //: PSP-mirrored items. Powers the readiness check that requires
+  //: at least one packaging line before the Builder can complete.
+  readonly psp_item_type?: string | null;
   //: Label-copy + compliance fields. Optional so math-only callers
   //: can hand in a narrow object; the builder always passes the
   //: full set.

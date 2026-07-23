@@ -662,16 +662,18 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         stage_id in stage_ids_with_lines for stage_id in stage_ids
     )
     # Packaging check — a finished product can't ship without at least
-    # one packaging component. Read ``use_as`` off either the local
-    # Item's attributes or the PSP snapshot for PSP-sourced lines.
-    # Match any classifier that starts with ``packag`` so both
-    # ``packaging`` and the historical ``packaging_material`` label
-    # both count.
+    # one packaging component. PSP classifies items on the ``type``
+    # field (raw_material / packaging / semi_finished /
+    # finished_product); the mirror stores it as ``psp_item_type`` on
+    # ``Item.attributes``. That's the item-level PSP classification,
+    # NOT ``use_as`` (which sub-classifies raw materials — active,
+    # sweetener, colour, etc. — and would false-positive on any
+    # ingredient that happens to have a use_as starting with "packag").
     has_packaging = False
     for line in formulation.lines.select_related("item"):
         attrs = line.effective_item_attributes or {}
-        use_as = str(attrs.get("use_as") or "").strip().lower()
-        if use_as.startswith("packag"):
+        psp_type = str(attrs.get("psp_item_type") or "").strip().lower()
+        if psp_type == "packaging":
             has_packaging = True
             break
     builder_complete = (
