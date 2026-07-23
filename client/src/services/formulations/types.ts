@@ -817,6 +817,13 @@ export interface FormulationVersionDto {
    *  ``Save version`` milestones — those are the ones the History
    *  Versions sub-tab shows by default. */
   readonly is_auto: boolean;
+  /** Did this snapshot pass the "builder complete" readiness gate at
+   *  ``Save version`` time? The create-spec-sheet picker filters to
+   *  ``!is_auto && is_complete`` so a director can't sign a sheet
+   *  against a mid-edit snapshot. Auto-drafts stay false; existing
+   *  named versions were backfilled to true on migration since the
+   *  FE gate already required builder_complete before allowing Save. */
+  readonly is_complete: boolean;
   readonly created_at: string;
 }
 
