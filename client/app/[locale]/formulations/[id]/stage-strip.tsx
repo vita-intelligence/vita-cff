@@ -1688,12 +1688,14 @@ export function StageStrip({
                 </p>
               </div>
 
-              {/* Output-batch bridge to PSP. Auto-derived from Setup
-                  + stage UoM so scientists don't type the wrong
-                  number — capsule / tablet / powder / gummy / liquid
-                  all resolve without any manual math. Value is
-                  editable for edge cases (dilution intermediates,
-                  non-standard batch splits). */}
+              {/* Output-batch bridge to PSP — read-only display of
+                  the auto-derived value. Scientists asked us to hide
+                  the input so it can't be typed to a wrong number by
+                  accident. The number is computed from Setup (fill
+                  weight / water volume / servings-per-pack) + the
+                  stage's stock UoM; the field on the draft is still
+                  populated by the auto-populate effect above so the
+                  save payload keeps shipping the same value to PSP. */}
               {(() => {
                 const stockUom = uomOptions.find(
                   (u) => u.uuid === draft.psp_item_stock_uom_uuid,
@@ -1711,16 +1713,12 @@ export function StageStrip({
                   suggested !== null
                     ? formatSuggested(suggested)
                     : null;
-                const currentTrim = (
-                  draft.servings_per_output_unit || ""
-                ).trim();
-                const differsFromSuggested =
-                  suggested !== null &&
-                  currentTrim !== "" &&
-                  Number.parseFloat(currentTrim) !== suggested;
+                const displayValue =
+                  suggestedText ??
+                  ((draft.servings_per_output_unit || "").trim() || "—");
                 return (
                   <div className="mt-3 rounded-xl bg-orange-50/60 p-3 ring-1 ring-inset ring-orange-100">
-                    <label className="block text-xs font-medium text-ink-700">
+                    <p className="text-xs font-medium text-ink-700">
                       1 stock-unit of{" "}
                       <strong>
                         {draft.psp_item_name ||
@@ -1728,100 +1726,40 @@ export function StageStrip({
                             ? "the finished product"
                             : "this stage's semi output")}
                       </strong>{" "}
-                      = how many finished servings?
-                    </label>
-                    <div className="mt-1 flex items-center gap-2">
-                      <input
-                        value={draft.servings_per_output_unit}
-                        onChange={(e) =>
-                          updateDraft(draft.clientKey, {
-                            servings_per_output_unit: e.target.value,
-                          })
-                        }
-                        inputMode="decimal"
-                        placeholder={suggestedText ?? "1"}
-                        disabled={!canEdit || upsert.isPending}
-                        className={`${inputClass} max-w-[140px]`}
-                      />
-                      <span className="text-xs text-ink-500">
-                        servings per output unit
-                      </span>
-                      {suggestedText !== null && differsFromSuggested ? (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateDraft(draft.clientKey, {
-                              servings_per_output_unit: suggestedText,
-                            })
-                          }
-                          disabled={!canEdit || upsert.isPending}
-                          className="rounded-md px-2 py-1 text-[11px] font-medium text-orange-800 ring-1 ring-inset ring-orange-300 hover:bg-orange-100 disabled:opacity-50"
-                          title={`Reset to auto (${suggestedText})`}
-                        >
-                          ↺ Auto
-                        </button>
-                      ) : null}
-                    </div>
+                      ={" "}
+                      <span className="font-mono text-ink-1000">
+                        {displayValue}
+                      </span>{" "}
+                      servings
+                    </p>
                     {suggestedText !== null ? (
                       <p className="mt-1 text-[11px] text-ink-600">
-                        {differsFromSuggested ? (
-                          <>
-                            <span className="font-medium text-orange-800">
-                              Manual override.
-                            </span>{" "}
-                            Auto value from Setup:{" "}
-                            <span className="font-mono">
-                              {suggestedText}
-                            </span>{" "}
-                            (
-                            {draft.psp_item_type === "finished_product"
-                              ? `${suggestedText} servings per pack`
-                              : `${
-                                  stockUom?.symbol ?? "stock unit"
-                                } ÷ ${
-                                  formulation.dosage_form === "liquid"
-                                    ? formulation.water_volume_ml ||
-                                      "0"
-                                    : formulation.target_fill_weight_mg ||
-                                      "0"
-                                }`}
-                            ).
-                          </>
-                        ) : (
-                          <>
-                            Auto-computed from Setup (
-                            {draft.psp_item_type ===
-                            "finished_product"
-                              ? `${
-                                  formulation.servings_per_pack ?? "?"
-                                } servings per pack`
-                              : `${
-                                  stockUom?.symbol ?? "stock unit"
-                                } vs ${
-                                  formulation.dosage_form === "liquid"
-                                    ? `${
-                                        formulation.water_volume_ml ||
-                                        "?"
-                                      } ml/serving`
-                                    : `${
-                                        formulation.target_fill_weight_mg ||
-                                        "?"
-                                      } mg/serving`
-                                }`}
-                            ). Override for dilution / batch-split
-                            edge cases.
-                          </>
-                        )}
+                        Auto-computed from Setup (
+                        {draft.psp_item_type === "finished_product"
+                          ? `${
+                              formulation.servings_per_pack ?? "?"
+                            } servings per pack`
+                          : `${
+                              stockUom?.symbol ?? "stock unit"
+                            } vs ${
+                              formulation.dosage_form === "liquid"
+                                ? `${
+                                    formulation.water_volume_ml || "?"
+                                  } ml/serving`
+                                : `${
+                                    formulation.target_fill_weight_mg ||
+                                    "?"
+                                  } mg/serving`
+                            }`}
+                        ).
                       </p>
                     ) : (
                       <p className="mt-1 text-[11px] text-ink-600">
-                        Pick a stock UOM {" "}
+                        Pick a stock UOM{" "}
                         {formulation.dosage_form === "liquid"
                           ? "and set water volume on Setup"
                           : "and set fill weight on Setup"}{" "}
-                        so we can auto-compute. Or type the value
-                        manually — servings per 1 stock-unit of this
-                        stage&apos;s output.
+                        so we can auto-compute this.
                       </p>
                     )}
                   </div>

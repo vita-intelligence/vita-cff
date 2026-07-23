@@ -127,7 +127,7 @@ test("Builder → Formulation shows the seeded per-scoop fill weight (bug: field
   await expect(fillWeight).toHaveValue("10");
 });
 
-test("Stages tab shows the servings-per-output-unit auto-computed value", async ({
+test("Stages tab shows the auto-computed servings-per-output-unit summary", async ({
   page,
 }) => {
   await page.goto(`/en/formulations/${formulationId}/builder`);
@@ -135,14 +135,14 @@ test("Stages tab shows the servings-per-output-unit auto-computed value", async 
     .locator('nav[aria-label="Formulation builder tabs"]')
     .getByRole("button", { name: "Stages" })
     .click();
+  // The stage's output line reads:
+  //   "1 stock-unit of {name} = N servings"
+  // followed by a hint "Auto-computed from Setup (60 servings per pack)".
   await expect(
-    page.getByText(/how many finished servings\?/i).first(),
+    page.getByText(/1 stock-unit of/i).first(),
   ).toBeVisible({ timeout: 15_000 });
-  // Auto-computed hint mentions the source basis. On a fresh powder
-  // formulation the default template creates a finished stage → the
-  // hint should reference servings_per_pack (60).
   await expect(
-    page.getByText(/60 servings per pack|servings per output unit/i).first(),
+    page.getByText(/Auto-computed from Setup|60 servings per pack/i).first(),
   ).toBeVisible();
 });
 
