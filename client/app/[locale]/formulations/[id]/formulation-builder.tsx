@@ -3650,18 +3650,49 @@ export function FormulationBuilder({
     );
     const hasStages = formulation.stages.length > 0;
     const hasLines = lines.length > 0;
+    // Stage-type flow check — sequential stages auto-consume the
+    // prior stage's semi output, so every non-last stage MUST be
+    // ``semi_finished`` and the last stage MUST be
+    // ``finished_product``. Otherwise a stage's output has nowhere
+    // to flow (blended powder no downstream consumer, or a finished
+    // product in the middle with stages after it doing nothing).
+    const orderedStages = [...formulation.stages].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    const stagesWithBadType: {
+      id: string;
+      name: string;
+      expected: "semi_finished" | "finished_product";
+      actual: "semi_finished" | "finished_product";
+    }[] = [];
+    orderedStages.forEach((stage, idx) => {
+      const isLast = idx === orderedStages.length - 1;
+      const expected: "semi_finished" | "finished_product" = isLast
+        ? "finished_product"
+        : "semi_finished";
+      if (stage.psp_item_type !== expected) {
+        stagesWithBadType.push({
+          id: stage.id,
+          name: stage.name || `Stage ${stage.sort_order + 1}`,
+          expected,
+          actual: stage.psp_item_type,
+        });
+      }
+    });
     const isComplete =
       hasStages &&
       hasLines &&
       emptyStages.length === 0 &&
       orphanLineCount === 0 &&
-      hasPackaging;
+      hasPackaging &&
+      stagesWithBadType.length === 0;
     return {
       hasStages,
       hasLines,
       hasPackaging,
       emptyStages,
       orphanLineCount,
+      stagesWithBadType,
       isComplete,
     };
   }, [lines, formulation.stages]);
@@ -4674,6 +4705,31 @@ export function FormulationBuilder({
                     </button>
                   </li>
                 ) : null}
+                {readinessSignals.stagesWithBadType.map((s) => (
+                  <li key={s.id} className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      Stage <span className="font-semibold">{s.name}</span>{" "}
+                      is <span className="font-semibold">{s.actual === "finished_product" ? "finished product" : "semi-finished"}</span>{" "}
+                      but should be{" "}
+                      <span className="font-semibold">
+                        {s.expected === "finished_product"
+                          ? "finished product"
+                          : "semi-finished"}
+                      </span>{" "}
+                      — {s.expected === "finished_product"
+                        ? "the last stage is what ships to the customer."
+                        : "its semi output has to feed a downstream stage."}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("stages")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Fix stage type
+                    </button>
+                  </li>
+                ))}
                 {readinessSignals.emptyStages.map((s) => (
                   <li key={s.id} className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
