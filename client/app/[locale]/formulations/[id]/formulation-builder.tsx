@@ -4120,6 +4120,13 @@ export function FormulationBuilder({
           // lines, so without this manual picks get demoted to
           // active on every save.
           source_kind: line.source_kind,
+          // Same story for ``band_key``: without threading it back
+          // through the recreate, band picks come out with band_key
+          // = NULL, the FE baseline key becomes ``band::<item>``
+          // instead of ``band:flavouring:<item>``, and the Routing
+          // dropdown snaps to "Unassigned" on the next render.
+          band_key:
+            line.source_kind === "band_pick" ? line.band_key : null,
           // Stage-scoped consumption ratio. ``none`` is the actives
           // default and rides through untouched; other modes carry
           // the operator-typed value. Empty string → null so BE

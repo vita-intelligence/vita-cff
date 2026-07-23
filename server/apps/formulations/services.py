@@ -3870,6 +3870,19 @@ def replace_lines(
             else FormulationLine.STAGE_RATIO_MODE_NONE
         )
         ratio_value = _to_decimal(data.get("stage_ratio_value"))
+        # ``band_key`` only makes sense on band picks. Silently drop
+        # it for other source_kind values so a fat-fingered payload
+        # can't pollute an active line with an excipient band tag.
+        raw_band_key = data.get("band_key")
+        valid_band_keys = {
+            choice for choice, _ in FormulationLine.BAND_KEY_CHOICES
+        }
+        band_key = (
+            raw_band_key
+            if source_kind == FormulationLine.SOURCE_KIND_BAND_PICK
+            and raw_band_key in valid_band_keys
+            else None
+        )
         created.append(
             FormulationLine.objects.create(
                 formulation=formulation,
@@ -3884,6 +3897,7 @@ def replace_lines(
                 notes=data.get("notes", ""),
                 stage_id=stage_id,
                 source_kind=source_kind,
+                band_key=band_key,
                 stage_ratio_mode=ratio_mode,
                 stage_ratio_value=ratio_value,
             )
