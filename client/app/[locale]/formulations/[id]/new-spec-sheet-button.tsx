@@ -140,16 +140,18 @@ export function NewSpecSheetButton({
   // click Save version with a clean checklist first.
   if (eligibleVersions.length === 0) {
     return (
-      <Button
-        type="button"
-        variant="outline"
-        size="md"
-        className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
-        isDisabled
-      >
-        <FileText className="h-4 w-4" />
-        {tSpecs("new_sheet")}
-      </Button>
+      <span title="Click Save version with a clean readiness checklist to enable this.">
+        <Button
+          type="button"
+          variant="outline"
+          size="md"
+          className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200"
+          isDisabled
+        >
+          <FileText className="h-4 w-4" />
+          {tSpecs("new_sheet")}
+        </Button>
+      </span>
     );
   }
 
