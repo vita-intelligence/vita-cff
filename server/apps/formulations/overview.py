@@ -731,6 +731,51 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
                 stage_semis_ok = False
                 break
 
+    # Setup spec-sheet minimums — human-answer fields that PSP treats
+    # as optional but that a real spec sheet legally / procedurally
+    # can't ship without. Force them here so Spec sheets stays locked
+    # until the scientist has actually filled them.
+    def _has_str(name: str) -> bool:
+        raw = getattr(formulation, name, None)
+        return bool(raw and str(raw).strip())
+
+    def _has_num(name: str) -> bool:
+        raw = getattr(formulation, name, None)
+        return raw is not None and str(raw).strip() != ""
+
+    def _has_list(name: str) -> bool:
+        raw = getattr(formulation, name, None)
+        return bool(raw)
+
+    has_regulatory = _has_str("regulatory_category")
+    has_serving = _has_num("serving_size") and _has_num(
+        "serving_size_uom_uuid"
+    )
+    has_servings_per_pack = _has_num("servings_per_pack")
+    has_net_qty = _has_num("net_quantity") and _has_num(
+        "net_quantity_uom_uuid"
+    )
+    # Either directions or suggested dosage is enough — many products
+    # only carry one of the two on the label.
+    has_directions = _has_str("directions_of_use") or _has_str(
+        "suggested_dosage"
+    )
+    has_warnings = _has_str("warnings_text")
+    has_shelf_life = _has_num("shelf_life_months")
+    has_storage = _has_str("storage_conditions")
+    has_markets = _has_list("target_markets")
+    setup_spec_ok = (
+        has_regulatory
+        and has_serving
+        and has_servings_per_pack
+        and has_net_qty
+        and has_directions
+        and has_warnings
+        and has_shelf_life
+        and has_storage
+        and has_markets
+    )
+
     builder_complete = (
         has_stages
         and has_lines
@@ -739,6 +784,7 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         and has_packaging
         and stage_types_ok
         and stage_semis_ok
+        and setup_spec_ok
     )
 
     # RTG projects skip the customer-signature gates — they can move

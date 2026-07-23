@@ -941,6 +941,68 @@ class FormulationWriteSerializer(serializers.Serializer):
     disintegration_spec = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default=""
     )
+    # ------------------------------------------------------------------
+    # Finished-product spec — Setup tab source of truth. Every field
+    # here rides the same PATCH endpoint the other metadata fields do;
+    # the FE reads them back from the returned formulation DTO. Without
+    # these declarations DRF silently strips them from
+    # ``validated_data`` on ``is_valid()``, ``update_formulation``
+    # never sees them, they never get written to the DB, and Setup
+    # values "disappear" on the next save round-trip. That was the
+    # bug behind "I filled everything and Save version wiped it".
+    # ------------------------------------------------------------------
+    regulatory_category = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
+    warnings_text = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
+    shelf_life_months = serializers.IntegerField(
+        required=False, allow_null=True, min_value=0
+    )
+    storage_conditions = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
+    target_markets = serializers.ListField(
+        required=False, allow_empty=True, child=serializers.CharField()
+    )
+    net_quantity = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=3,
+        required=False,
+        allow_null=True,
+    )
+    net_quantity_uom_uuid = serializers.UUIDField(
+        required=False, allow_null=True
+    )
+    serving_size_uom_uuid = serializers.UUIDField(
+        required=False, allow_null=True
+    )
+    # Phase 4a — warehouse identity + allergen declaration.
+    storage_tags = serializers.ListField(
+        required=False, allow_empty=True, child=serializers.CharField()
+    )
+    min_stock_qty = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        required=False,
+        allow_null=True,
+    )
+    target_stock_qty = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=3,
+        required=False,
+        allow_null=True,
+    )
+    allergen_uuids = serializers.ListField(
+        required=False, allow_empty=True, child=serializers.UUIDField()
+    )
+    may_contain_allergen_keys = serializers.ListField(
+        required=False, allow_empty=True, child=serializers.CharField()
+    )
+    may_contain_justification = serializers.CharField(
+        required=False, allow_blank=True, allow_null=True
+    )
     project_status = serializers.ChoiceField(
         choices=ProjectStatus.choices, required=False
     )

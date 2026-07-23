@@ -3814,6 +3814,81 @@ export function FormulationBuilder({
         });
       }
     });
+    // Setup spec-sheet minimums. Human-answer fields PSP treats as
+    // optional but that a real spec sheet legally / procedurally can't
+    // ship without. Mirrored server-side in ``_compute_stage_gates``
+    // so the FE checklist stays in sync with the BE builder_complete
+    // gate. Each entry is a { key, label } pair so the checklist can
+    // render a specific "Missing regulatory category" row rather than
+    // one generic "Setup incomplete" line.
+    const missingSetup: { key: string; label: string }[] = [];
+    const hasStr = (v: unknown) =>
+      typeof v === "string" && v.trim().length > 0;
+    const hasNum = (v: unknown) =>
+      v !== null &&
+      v !== undefined &&
+      !(typeof v === "string" && v.trim() === "");
+    if (!hasStr(metadata.regulatory_category)) {
+      missingSetup.push({
+        key: "regulatory_category",
+        label: "Regulatory category",
+      });
+    }
+    if (!hasNum(metadata.serving_size) || !hasStr(metadata.serving_size_uom_uuid)) {
+      missingSetup.push({
+        key: "serving_size",
+        label: "Serving size + UoM",
+      });
+    }
+    if (!hasNum(metadata.servings_per_pack)) {
+      missingSetup.push({
+        key: "servings_per_pack",
+        label: "Servings per pack",
+      });
+    }
+    if (!hasStr(metadata.net_quantity) || !hasStr(metadata.net_quantity_uom_uuid)) {
+      missingSetup.push({
+        key: "net_quantity",
+        label: "Net quantity + UoM",
+      });
+    }
+    if (
+      !hasStr(metadata.directions_of_use) &&
+      !hasStr(metadata.suggested_dosage)
+    ) {
+      missingSetup.push({
+        key: "directions",
+        label: "Directions of use or suggested dosage",
+      });
+    }
+    if (!hasStr(metadata.warnings_text)) {
+      missingSetup.push({
+        key: "warnings",
+        label: "Warnings text",
+      });
+    }
+    if (!hasNum(metadata.shelf_life_months)) {
+      missingSetup.push({
+        key: "shelf_life",
+        label: "Shelf life (months)",
+      });
+    }
+    if (!hasStr(metadata.storage_conditions)) {
+      missingSetup.push({
+        key: "storage",
+        label: "Storage conditions",
+      });
+    }
+    if (
+      !Array.isArray(metadata.target_markets) ||
+      metadata.target_markets.length === 0
+    ) {
+      missingSetup.push({
+        key: "target_markets",
+        label: "Target markets",
+      });
+    }
+
     const isComplete =
       hasStages &&
       hasLines &&
@@ -3821,7 +3896,8 @@ export function FormulationBuilder({
       orphanLineCount === 0 &&
       hasPackaging &&
       stagesWithBadType.length === 0 &&
-      stagesWithOrphanSemi.length === 0;
+      stagesWithOrphanSemi.length === 0 &&
+      missingSetup.length === 0;
     return {
       hasStages,
       hasLines,
@@ -3830,9 +3906,10 @@ export function FormulationBuilder({
       orphanLineCount,
       stagesWithBadType,
       stagesWithOrphanSemi,
+      missingSetup,
       isComplete,
     };
-  }, [lines, formulation.stages, effectiveRouting]);
+  }, [lines, formulation.stages, effectiveRouting, metadata]);
 
 
   // Pick-in-flight tracking so the picker overlay + row-disable
@@ -4854,6 +4931,27 @@ export function FormulationBuilder({
                       className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
                     >
                       Add packaging
+                    </button>
+                  </li>
+                ) : null}
+                {readinessSignals.missingSetup.length > 0 ? (
+                  <li className="flex flex-wrap items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      Setup missing spec fields:{" "}
+                      <span className="font-semibold">
+                        {readinessSignals.missingSetup
+                          .map((f) => f.label)
+                          .join(", ")}
+                      </span>
+                      .
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("setup")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Open Setup
                     </button>
                   </li>
                 ) : null}
