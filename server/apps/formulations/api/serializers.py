@@ -1119,6 +1119,7 @@ class FormulationVersionReadSerializer(serializers.ModelSerializer):
             "snapshot_totals",
             "snapshot_stage_boms",
             "is_auto",
+            "is_complete",
             "created_at",
         )
         read_only_fields = fields

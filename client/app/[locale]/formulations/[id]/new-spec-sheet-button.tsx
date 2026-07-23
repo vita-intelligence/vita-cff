@@ -3,7 +3,7 @@
 import { Button, Modal } from "@heroui/react";
 import { FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { CustomerPicker } from "@/components/customers/customer-picker";
 import { useRouter } from "@/i18n/navigation";
@@ -53,8 +53,22 @@ export function NewSpecSheetButton({
     organization?.dynamics_customers_managed,
   );
 
+  // Only named ``Save version`` commits that passed the builder-
+  // readiness gate at save time show up in the dropdown. Auto-drafts
+  // (fired on every Save draft) are internal restore points — they
+  // shouldn't be quotable. Mid-edit named saves (is_complete=false)
+  // are hidden too, so a director can't sign a sheet against a
+  // broken snapshot. Freshly-migrated existing rows carry
+  // ``is_complete=true`` for is_auto=false via the 0062 backfill.
+  const eligibleVersions = useMemo(
+    () => versions.filter((v) => !v.is_auto && v.is_complete),
+    [versions],
+  );
+
   const [isOpen, setIsOpen] = useState(false);
-  const [versionId, setVersionId] = useState<string>(versions[0]?.id ?? "");
+  const [versionId, setVersionId] = useState<string>(
+    eligibleVersions[0]?.id ?? "",
+  );
   const [code, setCode] = useState(projectCode ?? "");
   //: When a customer is picked from the address book, ``customer``
   //: holds the full record and its ``name`` / ``email`` / ``company``
@@ -74,15 +88,15 @@ export function NewSpecSheetButton({
   // stays disabled until the user re-picks a version. Sync whenever
   // the selected id is not in the current list (empty or stale).
   useEffect(() => {
-    if (versions.length === 0) return;
-    const stillValid = versions.some((v) => v.id === versionId);
+    if (eligibleVersions.length === 0) return;
+    const stillValid = eligibleVersions.some((v) => v.id === versionId);
     if (!stillValid) {
-      setVersionId(versions[0]!.id);
+      setVersionId(eligibleVersions[0]!.id);
     }
-  }, [versions, versionId]);
+  }, [eligibleVersions, versionId]);
 
   const reset = () => {
-    setVersionId(versions[0]?.id ?? "");
+    setVersionId(eligibleVersions[0]?.id ?? "");
     setCode(projectCode ?? "");
     setCustomer(null);
     setCoverNotes("");
@@ -120,7 +134,11 @@ export function NewSpecSheetButton({
 
   const isBusy = createMutation.isPending;
 
-  if (versions.length === 0) {
+  // Disable the trigger when there's no eligible version to lock the
+  // sheet against. Covers both "no versions at all" and "all versions
+  // are auto-drafts or mid-edit named saves" — the scientist has to
+  // click Save version with a clean checklist first.
+  if (eligibleVersions.length === 0) {
     return (
       <Button
         type="button"
@@ -179,7 +197,7 @@ export function NewSpecSheetButton({
                     onChange={(e) => setVersionId(e.target.value)}
                     className={`cursor-pointer ${INPUT_CLASS}`}
                   >
-                    {versions.map((v) => (
+                    {eligibleVersions.map((v) => (
                       <option key={v.id} value={v.id}>
                         v{v.version_number}
                         {v.label ? ` — ${v.label}` : ""}

@@ -5202,6 +5202,17 @@ def save_version(
                 row for row in rows if isinstance(row, dict)
             ]
 
+    # Capture whether the formulation passed the "builder complete"
+    # readiness gate at save time so the create-spec-sheet dropdown
+    # can hide snapshots that were saved mid-edit. Auto-drafts skip
+    # the compute — they're internal restore points, not commits.
+    is_complete = False
+    if not is_auto:
+        from apps.formulations.overview import _compute_stage_gates
+
+        gates = _compute_stage_gates(formulation)
+        is_complete = bool(gates.builder_complete)
+
     version = FormulationVersion.objects.create(
         formulation=formulation,
         version_number=highest + 1,
@@ -5211,6 +5222,7 @@ def save_version(
         snapshot_totals=serialized_totals,
         snapshot_stage_boms=normalised_stage_boms,
         is_auto=is_auto,
+        is_complete=is_complete,
         created_by=actor,
     )
     record_audit(

@@ -1555,6 +1555,21 @@ class FormulationVersion(models.Model):
         default=False,
         db_index=True,
     )
+    #: Did this snapshot pass the "builder complete" readiness gate
+    #: at ``save_version`` time? Captured on save so the create-spec-
+    #: sheet dropdown can filter out versions that were snapshotted
+    #: mid-edit (broken routing, empty stage, missing packaging, etc.)
+    #: — a director shouldn't be able to sign a sheet against a
+    #: version that never passed the checklist. Auto-drafts stay
+    #: False since they're internal restore points, not scientist
+    #: commits. Existing rows are backfilled to True for is_auto=False
+    #: (pragmatic: the FE gate already required builder_complete
+    #: before the operator could hit "Save version").
+    is_complete = models.BooleanField(
+        _("passed builder-readiness gate at save"),
+        default=False,
+        db_index=True,
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
