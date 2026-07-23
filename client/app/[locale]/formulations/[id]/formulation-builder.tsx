@@ -1847,8 +1847,10 @@ export function FormulationBuilder({
   const [routingByKey, setRoutingByKey] = useState<Map<string, string | null>>(
     () => new Map(),
   );
-  // Baseline from server so we can compute dirty + skip un-changed
-  // rows on save. Recomputed when ``lines`` reload.
+  // Baseline (server-saved) routing derived from ``lines``. Recomputed
+  // every render — every consumer that needs "what's the current
+  // stage for this row" reads from ``effectiveRouting`` below, which
+  // overlays the sparse user-edit map on top of this baseline.
   const routingBaseline = useMemo(() => {
     const map = new Map<string, string | null>();
     for (const line of lines) {
@@ -1860,35 +1862,36 @@ export function FormulationBuilder({
     }
     return map;
   }, [lines]);
-  // Reconcile the draft with the fresh baseline whenever the server
-  // returns new line data OR the local ``lines`` array grows/shrinks
-  // (add-ingredient, remove-ingredient). Preserves any unsaved edits
-  // the operator already made — pulling in baseline only for keys
-  // the draft doesn't know about (newly picked lines) and dropping
-  // keys that vanished from the baseline (removed lines). Without
-  // this merge, adding one new ingredient after routing five others
-  // would blow away all five stage assignments.
+
+  // ``routingByKey`` is a SPARSE map — only rows the operator has
+  // explicitly re-assigned. Untouched rows aren't in it; consumers
+  // fall through to ``routingBaseline`` via ``effectiveRouting``.
   //
-  // Explicit "discard" flows (rollback, revert-all-unsaved) reset
-  // the draft to an empty map before mutating ``lines`` so this
-  // effect ends up seeding the fresh baseline in full.
-  useEffect(() => {
-    setRoutingByKey((prev) => {
-      const next = new Map<string, string | null>();
-      for (const [key, baselineVal] of routingBaseline.entries()) {
-        next.set(
-          key,
-          prev.has(key) ? (prev.get(key) ?? null) : baselineVal,
-        );
-      }
-      return next;
-    });
-  }, [routingBaseline]);
+  // Why sparse: the earlier dense design (one entry per line)
+  // required a merge-on-``lines``-change effect to keep new picks
+  // in sync. That effect kept clobbering unsaved edits in ways I
+  // couldn't fully trace — every add / edit / pick had to preserve
+  // every other row's draft. Sparse sidesteps the whole problem:
+  // the map only holds intentional edits, so no line-list mutation
+  // can wipe them. Rollback / revert flows still reset explicitly.
+  const effectiveRouting = useMemo(() => {
+    const map = new Map(routingBaseline);
+    for (const [key, val] of routingByKey.entries()) {
+      map.set(key, val);
+    }
+    return map;
+  }, [routingBaseline, routingByKey]);
 
   const routingDirty = useMemo(() => {
-    if (routingByKey.size !== routingBaseline.size) return true;
+    if (routingByKey.size === 0) return false;
     for (const [key, val] of routingByKey.entries()) {
-      if (routingBaseline.get(key) !== val) return true;
+      // A draft entry only counts as dirty if it actually differs
+      // from the saved baseline — if the operator picked a stage
+      // then flipped back to the pre-save value we're clean.
+      const baselineVal = routingBaseline.has(key)
+        ? routingBaseline.get(key) ?? null
+        : null;
+      if (baselineVal !== val) return true;
     }
     return false;
   }, [routingByKey, routingBaseline]);
@@ -3956,6 +3959,9 @@ export function FormulationBuilder({
       // keys. handleSaveRouting is then band-only.
       const overrideStageIdFor = (line: BuilderLine): string | null => {
         if (line.source_kind === "band_pick") return line.stage_id;
+        // ``routingByKey`` is sparse (user edits only) — fall through
+        // to ``line.stage_id`` when the operator hasn't touched this
+        // row. Same net effect as the old dense map + baseline seed.
         const routingIntent = routingByKey.get(`active:${line.key}`);
         return routingIntent !== undefined ? routingIntent : line.stage_id;
       };
@@ -6290,6 +6296,7 @@ export function FormulationBuilder({
           lines={lines}
           bomLinesByStage={bomLinesByStage}
           routingByKey={routingByKey}
+          effectiveRouting={effectiveRouting}
           setRoutingByKey={setRoutingByKey}
           isSaving={wizardRoutingMutation.isPending}
           canWrite={canWrite}
@@ -7055,6 +7062,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
   lines,
   bomLinesByStage,
   routingByKey,
+  effectiveRouting,
   setRoutingByKey,
   isSaving,
   canWrite,
@@ -7072,6 +7080,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
   lines: readonly BuilderLine[];
   bomLinesByStage: ReadonlyMap<string, readonly BomLine[]>;
   routingByKey: Map<string, string | null>;
+  /** Baseline (saved) routing overlaid with the sparse user-edit
+   *  map. Read this for "what stage should this row show right now";
+   *  ``routingByKey`` alone would miss untouched rows. */
+  effectiveRouting: Map<string, string | null>;
   setRoutingByKey: React.Dispatch<
     React.SetStateAction<Map<string, string | null>>
   >;
@@ -7189,7 +7201,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
     for (const stage of stages) map.set(stage.id, []);
     const unassigned: typeof inventory = [];
     for (const row of inventory) {
-      const stageId = routingByKey.get(row.routingKey) ?? null;
+      // ``effectiveRouting`` = baseline (saved) overlaid with the
+      // sparse user-edit map. Reading it here means an untouched row
+      // still shows the stage it's saved under, and an unsaved edit
+      // wins over that baseline.
+      const stageId = effectiveRouting.get(row.routingKey) ?? null;
       if (stageId && map.has(stageId)) {
         map.get(stageId)!.push(row);
       } else {
@@ -7197,7 +7213,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
       }
     }
     return { map, unassigned };
-  }, [inventory, routingByKey, stages]);
+  }, [inventory, effectiveRouting, stages]);
 
   const setStageForRow = useCallback(
     (routingKey: string, stageId: string | null) => {
@@ -7634,7 +7650,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
                   </li>
                 ) : (
                   inventory.map((row) => {
-                    const assigned = routingByKey.get(row.routingKey) ?? null;
+                    // Dropdown value reads through ``effectiveRouting``
+                    // so untouched rows land on the baseline stage and
+                    // unsaved edits win over it.
+                    const assigned =
+                      effectiveRouting.get(row.routingKey) ?? null;
                     const lineKey = lineKeyByRoutingKey.get(row.routingKey);
                     const canRemove = Boolean(lineKey) && canWrite;
                     const isChecked = invSelection.has(row.routingKey);
