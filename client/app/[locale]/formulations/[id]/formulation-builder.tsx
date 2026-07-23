@@ -7548,9 +7548,17 @@ const RoutingTabBody = memo(function RoutingTabBody({
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState("");
   const [pickerType, setPickerType] = useState<PickerType>("all");
-  const [pickerSelection, setPickerSelection] = useState<Set<string>>(
-    () => new Set(),
-  );
+  // ``pickerSelection`` holds the FULL DTO for each selected item —
+  // not just its uuid. That's the fix for "I selected X, changed the
+  // search, selected Y, hit Add, only Y was added": the old design
+  // stored uuids in a Set and rebuilt the picks list from the current
+  // ``pspItems`` results at Add time, so anything not visible in the
+  // current search (i.e. everything picked from an earlier query)
+  // silently dropped. Keeping the DTO in state means the picks list
+  // survives every filter / search change until the operator confirms.
+  const [pickerSelection, setPickerSelection] = useState<
+    Map<string, PspItemDto>
+  >(() => new Map());
   // Confirm modal state — populated when the operator clicks
   // "Add N selected". Carries the picked PSP items + a live qty
   // draft per item so the scientist can tweak values before commit.
@@ -7564,14 +7572,14 @@ const RoutingTabBody = memo(function RoutingTabBody({
 
   const closePicker = () => {
     setPickerOpen(false);
-    setPickerSelection(new Set());
+    setPickerSelection(new Map());
     setPickerSearch("");
   };
-  const togglePickerSelection = (uuid: string) => {
+  const togglePickerSelection = (item: PspItemDto) => {
     setPickerSelection((prev) => {
-      const next = new Set(prev);
-      if (next.has(uuid)) next.delete(uuid);
-      else next.add(uuid);
+      const next = new Map(prev);
+      if (next.has(item.uuid)) next.delete(item.uuid);
+      else next.set(item.uuid, item);
       return next;
     });
   };
@@ -7641,7 +7649,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
   }, [lines]);
 
   const openQtyModal = () => {
-    const picks = pspItems.filter((it) => pickerSelection.has(it.uuid));
+    // Read the picks directly from ``pickerSelection`` (Map values)
+    // so items selected across multiple searches all make it into
+    // the qty modal — not only the ones visible in the current
+    // ``pspItems`` slice.
+    const picks = Array.from(pickerSelection.values());
     if (picks.length === 0) return;
     const qtyDraft: Record<string, string> = {};
     for (const p of picks) qtyDraft[p.uuid] = "1";
@@ -8445,8 +8457,12 @@ function RoutingInventoryPicker({
   otherResults: readonly PspItemDto[];
   stageOutputUuids: ReadonlySet<string>;
   alreadyPickedPspUuids: ReadonlySet<string>;
-  selection: ReadonlySet<string>;
-  onToggle: (uuid: string) => void;
+  /** Full DTO for each currently-selected item, keyed by uuid. Held
+   *  as a Map (not a Set) so picks made in one search survive when
+   *  the operator changes the query — the parent doesn't lose the
+   *  DTO the moment it drops out of the current results slice. */
+  selection: ReadonlyMap<string, PspItemDto>;
+  onToggle: (item: PspItemDto) => void;
   isLoading: boolean;
   onCancel: () => void;
   onNext: () => void;
@@ -8483,7 +8499,7 @@ function RoutingInventoryPicker({
           type="checkbox"
           checked={isSelected}
           disabled={!canWrite || isAlready}
-          onChange={() => onToggle(item.uuid)}
+          onChange={() => onToggle(item)}
           className="h-4 w-4 shrink-0 accent-orange-500"
           aria-label={`Select ${item.name}`}
         />
