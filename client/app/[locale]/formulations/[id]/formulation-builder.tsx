@@ -6059,40 +6059,6 @@ export function FormulationBuilder({
       {/* each stage's real BOM from the ORM.                          */}
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "routing" ? "flex flex-col gap-6" : "hidden"}>
-        {/* Per-finished-pack breakdown + batch projection. Operators
-            on the Routing tab are deciding "for a run of N units, how
-            much of each material walks to which stage?" — the card
-            shows exactly that: enter the number of finished packs
-            you plan to make and the mg / g / kg totals show up per
-            row. Reads the terminal stage's BOM (same source as the
-            PSP push cascade + fine-tune panel) so numbers can't
-            diverge from what NPD ships. */}
-        {(() => {
-          const terminal =
-            formulation.stages[formulation.stages.length - 1] ??
-            formulation.stages[0] ??
-            null;
-          const rows: readonly BomLine[] = terminal
-            ? bomLinesByStage.get(terminal.id) ?? []
-            : [];
-          const fillWeightMg = Number.parseFloat(
-            metadata.target_fill_weight_mg || "0",
-          );
-          return (
-            <FinishedUnitBreakdownCard
-              rows={rows}
-              servingsPerPack={metadata.servings_per_pack || 1}
-              fillWeightMg={
-                Number.isFinite(fillWeightMg) && fillWeightMg > 0
-                  ? fillWeightMg
-                  : null
-              }
-              dosageForm={metadata.dosage_form}
-              pspBaseUrl={organization?.psp_base_url ?? null}
-              numberFormatter={numberFormatter}
-            />
-          );
-        })()}
         <RoutingTabBody
           orgId={orgId}
           formulation={formulation}
@@ -6107,6 +6073,7 @@ export function FormulationBuilder({
           onAddManualPicks={handleAddManualPicks}
           onRemoveLine={handleRemoveLine}
           pickBusy={mirrorPsp.isPending}
+          servingsPerPack={metadata.servings_per_pack || 1}
         />
       </div>
 
@@ -6829,6 +6796,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
   onAddManualPicks,
   onRemoveLine,
   pickBusy,
+  servingsPerPack,
 }: {
   orgId: string;
   formulation: FormulationDto;
@@ -6850,7 +6818,20 @@ const RoutingTabBody = memo(function RoutingTabBody({
   ) => Promise<void>;
   onRemoveLine: (lineKey: string) => void;
   pickBusy: boolean;
+  /** How many servings each finished pack ships with (from Setup).
+   *  Drives the per-row "for N finished units, you need X g / Y kg"
+   *  projection on the stage cards. */
+  servingsPerPack: number;
 }) {
+  // Number of finished units the operator plans to make in this run.
+  // Multiplied against every ingredient's per-unit mg to project the
+  // total mass rendered on each stage card's row.
+  const [finishedUnitsInput, setFinishedUnitsInput] = useState("1");
+  const finishedUnits = Math.max(
+    1,
+    Number.parseInt(finishedUnitsInput || "1", 10) || 1,
+  );
+  const perUnitToBatch = servingsPerPack * finishedUnits;
   const stages = formulation.stages;
 
   // Build a de-duplicated inventory of every ingredient the
@@ -7208,6 +7189,36 @@ const RoutingTabBody = memo(function RoutingTabBody({
               <strong>Save version</strong> above.
             </p>
           </div>
+          {/* Finished-units input — drives the per-row projections
+              (mg / unit + g total + kg total) rendered inside every
+              stage card below. Purely a visualisation input; nothing
+              is persisted. */}
+          <div className="shrink-0 rounded-xl bg-ink-50 px-3 py-2 ring-1 ring-inset ring-ink-200">
+            <label className="block text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+              Finished units to make
+            </label>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={finishedUnitsInput}
+                onChange={(e) => setFinishedUnitsInput(e.target.value)}
+                onBlur={() => {
+                  const parsed = Number.parseInt(finishedUnitsInput || "1", 10);
+                  setFinishedUnitsInput(
+                    Number.isFinite(parsed) && parsed >= 1
+                      ? String(parsed)
+                      : "1",
+                  );
+                }}
+                className="w-28 rounded-md bg-ink-0 px-2 py-1 text-right text-sm ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+              />
+              <span className="text-[11px] text-ink-500">
+                × {numberFormatter.format(servingsPerPack)} servings
+              </span>
+            </div>
+          </div>
         </div>
         {errorMessage ? (
           <p className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-sm font-medium text-danger ring-1 ring-inset ring-danger/20">
@@ -7479,22 +7490,44 @@ const RoutingTabBody = memo(function RoutingTabBody({
                       &quot;{stage.name || "this stage"}&quot;.
                     </li>
                   ) : (
-                    rows.map((row) => (
-                      <li
-                        key={row.routingKey}
-                        className="flex items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2 text-xs"
-                      >
-                        <span className="flex items-center gap-2">
-                          {bandChip(row.band)}
-                          <span className="font-medium text-ink-1000">
-                            {row.label}
+                    rows.map((row) => {
+                      const totalMg = row.mg * perUnitToBatch;
+                      const totalG = totalMg / 1000;
+                      const totalKg = totalG / 1000;
+                      return (
+                        <li
+                          key={row.routingKey}
+                          className="flex items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2 text-xs"
+                        >
+                          <span className="flex items-center gap-2">
+                            {bandChip(row.band)}
+                            <span className="font-medium text-ink-1000">
+                              {row.label}
+                            </span>
                           </span>
-                        </span>
-                        <span className="tabular-nums text-ink-700">
-                          {numberFormatter.format(row.mg)} mg
-                        </span>
-                      </li>
-                    ))
+                          <span className="flex shrink-0 items-baseline gap-3 text-right tabular-nums">
+                            <span className="text-ink-500">
+                              {numberFormatter.format(
+                                Number(row.mg.toFixed(2)),
+                              )}{" "}
+                              mg / unit
+                            </span>
+                            <span className="text-ink-1000">
+                              {numberFormatter.format(
+                                Number(totalG.toFixed(3)),
+                              )}{" "}
+                              g
+                            </span>
+                            <span className="text-ink-700">
+                              {numberFormatter.format(
+                                Number(totalKg.toFixed(4)),
+                              )}{" "}
+                              kg
+                            </span>
+                          </span>
+                        </li>
+                      );
+                    })
                   )}
                 </ul>
               </div>
@@ -8981,189 +9014,6 @@ function IngredientNameCell({
   );
 }
 
-/**
- * "Per finished pack" example-calculations card on the Stages tab.
- *
- * The rest of the builder speaks in per-serving mg because that's the
- * granularity scientists formulate at. Procurement + production
- * scientists want to see what one finished pack costs in raw
- * materials, and to project a batch of N packs to a kg-scale total.
- * This card does the multiplication so nobody has to grab a
- * calculator.
- *
- *   Per 1 pack (N servings × fill weight) = per-serving × N
- *   Per B packs (batch scale)             = per-pack × B
- *
- * Reads from the SAME BOM the fine-tune panel + PSP push both use —
- * the terminal stage's row list from ``bomLinesByStage`` — so numbers
- * always match. Rows sort by mg descending so the largest carriers
- * land at the top of the printout.
- */
-function FinishedUnitBreakdownCard({
-  rows,
-  servingsPerPack,
-  fillWeightMg,
-  dosageForm,
-  pspBaseUrl,
-  numberFormatter,
-}: {
-  rows: readonly BomLine[];
-  servingsPerPack: number;
-  fillWeightMg: number | null;
-  dosageForm: DosageForm;
-  pspBaseUrl: string | null;
-  numberFormatter: Intl.NumberFormat;
-}) {
-  const [batchSizeInput, setBatchSizeInput] = useState("1");
-  const batchSize = Math.max(
-    1,
-    Number.parseInt(batchSizeInput || "1", 10) || 1,
-  );
-
-  const enrichedRows = rows
-    .filter((r) => r.mg > 0 && r.itemId)
-    // Drop the synthesised "prior semi" link — it's a routing signal,
-    // not a raw material to procure per pack.
-    .filter((r) => !r.key.startsWith("semi:"))
-    .map((r) => {
-      const mgPerPack = r.mg * servingsPerPack;
-      return {
-        key: r.key,
-        label: r.label,
-        code: r.code,
-        pspItemUuid: r.pspItemUuid ?? null,
-        mgPerPack,
-        gPerBatch: (mgPerPack * batchSize) / 1000,
-      };
-    })
-    .sort((a, b) => b.mgPerPack - a.mgPerPack);
-
-  const totalMgPerPack = enrichedRows.reduce(
-    (sum, r) => sum + r.mgPerPack,
-    0,
-  );
-  const totalGPerBatch = (totalMgPerPack * batchSize) / 1000;
-
-  const singleUnitLabel =
-    dosageForm === "gummy"
-      ? "gummy"
-      : dosageForm === "capsule"
-        ? "capsule"
-        : dosageForm === "tablet"
-          ? "tablet"
-          : dosageForm === "powder"
-            ? "scoop"
-            : "unit";
-  const fillLine =
-    fillWeightMg && fillWeightMg > 0
-      ? `${servingsPerPack} servings × ${numberFormatter.format(fillWeightMg)} mg per ${singleUnitLabel}`
-      : `${servingsPerPack} servings`;
-
-  return (
-    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            Materials needed
-          </p>
-          <p className="mt-1 text-xs leading-snug text-ink-500">
-            Type how many finished units you plan to make and every
-            ingredient's total shows up in mg, g, and kg. Numbers
-            come straight from the compute; the same BOM ships to
-            PSP on Save version.
-          </p>
-          <p className="mt-2 text-sm text-ink-700">
-            1 finished unit = {fillLine}
-          </p>
-        </div>
-        <div className="shrink-0">
-          <label className="mr-2 text-[10px] font-medium uppercase tracking-wide text-ink-500">
-            Finished units
-          </label>
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={batchSizeInput}
-            onChange={(e) => setBatchSizeInput(e.target.value)}
-            onBlur={() => {
-              const parsed = Number.parseInt(batchSizeInput || "1", 10);
-              setBatchSizeInput(
-                Number.isFinite(parsed) && parsed >= 1
-                  ? String(parsed)
-                  : "1",
-              );
-            }}
-            className="w-28 rounded-md bg-ink-0 px-2 py-1 text-right text-sm ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
-          />
-        </div>
-      </div>
-
-      {enrichedRows.length === 0 ? (
-        <p className="mt-4 rounded-md bg-ink-50 px-3 py-2 text-xs text-ink-500">
-          No procurable rows yet — pick actives + excipients on the
-          Formulation tab and the breakdown appears here.
-        </p>
-      ) : (
-        <div className="mt-4 overflow-hidden rounded-lg border border-ink-200">
-          <div className="flex items-center gap-4 border-b border-ink-200 bg-ink-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-            <span className="min-w-0 flex-1">Ingredient</span>
-            <span className="w-32 text-right">mg / unit</span>
-            <span className="w-32 text-right">
-              g total ({numberFormatter.format(batchSize)} units)
-            </span>
-            <span className="w-32 text-right">
-              kg total ({numberFormatter.format(batchSize)} units)
-            </span>
-          </div>
-          <div className="divide-y divide-ink-100">
-            {enrichedRows.map((r) => (
-              <div
-                key={r.key}
-                className="flex items-center gap-4 px-4 py-2 text-sm"
-              >
-                <span className="min-w-0 flex-1">
-                  <IngredientNameCell
-                    name={r.label}
-                    code={r.code}
-                    pspSourceUuid={r.pspItemUuid}
-                    pspBaseUrl={pspBaseUrl}
-                  />
-                </span>
-                <span className="w-32 shrink-0 text-right tabular-nums text-ink-700">
-                  {numberFormatter.format(Number(r.mgPerPack.toFixed(2)))}
-                </span>
-                <span className="w-32 shrink-0 text-right tabular-nums text-ink-700">
-                  {numberFormatter.format(Number(r.gPerBatch.toFixed(3)))}
-                </span>
-                <span className="w-32 shrink-0 text-right tabular-nums text-ink-700">
-                  {numberFormatter.format(
-                    Number((r.gPerBatch / 1000).toFixed(4)),
-                  )}
-                </span>
-              </div>
-            ))}
-            <div className="flex items-center gap-4 bg-ink-50 px-4 py-2 text-sm font-semibold">
-              <span className="min-w-0 flex-1">Total</span>
-              <span className="w-32 shrink-0 text-right tabular-nums text-ink-1000">
-                {numberFormatter.format(Number(totalMgPerPack.toFixed(2)))} mg
-              </span>
-              <span className="w-32 shrink-0 text-right tabular-nums text-ink-1000">
-                {numberFormatter.format(Number(totalGPerBatch.toFixed(3)))} g
-              </span>
-              <span className="w-32 shrink-0 text-right tabular-nums text-ink-1000">
-                {numberFormatter.format(
-                  Number((totalGPerBatch / 1000).toFixed(4)),
-                )}{" "}
-                kg
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   totalWeightMg,
