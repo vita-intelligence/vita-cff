@@ -676,12 +676,29 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         if psp_type == "packaging":
             has_packaging = True
             break
+
+    # Stage-type flow check — sequential stages auto-consume the prior
+    # stage's semi output, so every non-last stage MUST be
+    # ``semi_finished`` and the last stage MUST be ``finished_product``.
+    # Any other combination leaves a stage's output stranded (blended
+    # powder no downstream consumer, or a finished-product stage in
+    # the middle with orphan stages after it).
+    ordered_stages = list(formulation.stages.order_by("sort_order"))
+    stage_types_ok = True
+    for idx, stage in enumerate(ordered_stages):
+        is_last = idx == len(ordered_stages) - 1
+        expected = "finished_product" if is_last else "semi_finished"
+        if stage.psp_item_type != expected:
+            stage_types_ok = False
+            break
+
     builder_complete = (
         has_stages
         and has_lines
         and all_lines_assigned
         and all_stages_have_lines
         and has_packaging
+        and stage_types_ok
     )
 
     # RTG projects skip the customer-signature gates — they can move
