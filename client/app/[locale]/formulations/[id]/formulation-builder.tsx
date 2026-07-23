@@ -3617,11 +3617,24 @@ export function FormulationBuilder({
   const readinessSignals = useMemo(() => {
     const stagesWithLines = new Set<string>();
     let orphanLineCount = 0;
+    let hasPackaging = false;
     for (const line of lines) {
       if (line.stage_id) {
         stagesWithLines.add(line.stage_id);
       } else {
         orphanLineCount += 1;
+      }
+      // Packaging check — a finished product can't ship without at
+      // least one packaging component (bottle, jar, sachet, blister,
+      // pouch, carton, label, etc.). Item attributes carry the
+      // ``use_as`` classifier PSP populates on mirror. Match any
+      // classifier that starts with "packag" so both ``packaging``
+      // and the historical ``packaging_material`` label both count.
+      const useAs = (line.item_attributes?.use_as ?? "")
+        .toString()
+        .toLowerCase();
+      if (useAs.startsWith("packag")) {
+        hasPackaging = true;
       }
     }
     const emptyStages = formulation.stages.filter(
@@ -3633,10 +3646,12 @@ export function FormulationBuilder({
       hasStages &&
       hasLines &&
       emptyStages.length === 0 &&
-      orphanLineCount === 0;
+      orphanLineCount === 0 &&
+      hasPackaging;
     return {
       hasStages,
       hasLines,
+      hasPackaging,
       emptyStages,
       orphanLineCount,
       isComplete,
@@ -4632,6 +4647,22 @@ export function FormulationBuilder({
                       className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
                     >
                       Route them
+                    </button>
+                  </li>
+                ) : null}
+                {readinessSignals.hasLines && !readinessSignals.hasPackaging ? (
+                  <li className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      No packaging picked yet — a finished product can&apos;t
+                      ship without a bottle / jar / sachet / pouch.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("routing")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Add packaging
                     </button>
                   </li>
                 ) : null}
