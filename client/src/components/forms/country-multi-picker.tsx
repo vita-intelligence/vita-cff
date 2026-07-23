@@ -181,8 +181,13 @@ export function CountryMultiPicker({
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-72 overflow-hidden rounded-xl bg-ink-0 shadow-lg ring-1 ring-ink-200">
-          <div className="flex items-center gap-2 border-b border-ink-100 px-3 py-2">
+        // ``flex-col`` + ``min-h-0`` on the scrollable child is the
+        // standard "make me scroll inside a bounded parent" pattern.
+        // Previously the panel had ``overflow-hidden`` clipping a
+        // fixed-height <ul> — the inner overflow-y-auto never fired
+        // because the outer clip already hid the extra rows.
+        <div className="absolute left-0 right-0 top-full z-30 mt-1 flex max-h-72 flex-col rounded-xl bg-ink-0 shadow-lg ring-1 ring-ink-200">
+          <div className="flex shrink-0 items-center gap-2 border-b border-ink-100 px-3 py-2">
             <Search className="h-4 w-4 shrink-0 text-ink-500" />
             <input
               ref={searchRef}
@@ -207,7 +212,7 @@ export function CountryMultiPicker({
           <ul
             role="listbox"
             aria-multiselectable="true"
-            className="max-h-60 overflow-y-auto py-1"
+            className="min-h-0 flex-1 overflow-y-auto overscroll-contain py-1"
           >
             {filteredCountries.length === 0 ? (
               <li className="px-3 py-3 text-center text-xs text-ink-500">
