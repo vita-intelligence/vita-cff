@@ -629,28 +629,62 @@ POWDER_WATER_DOSE_ATTRIBUTE_DESCRIPTION = (
 POWDER_REFERENCE_FILL_WEIGHT_MG = 5000.0
 
 
-#: Pre-filled text defaults seeded at :func:`create_formulation`
-#: time so the scientist lands on a sensible draft of the four
-#: free-text product cells (Directions of use / Suggested dosage /
-#: Appearance / Disintegration spec) rather than four blank inputs.
+#: EU 1169/2011 Art. 9(1)(j) mandatory warning text for food
+#: supplements — same paragraph on every product, so we seed it once
+#: rather than asking scientists to retype it 200 times.
+FOOD_SUPPLEMENT_WARNINGS_TEXT = (
+    "Food supplements should not be used as a substitute for a "
+    "varied and balanced diet and a healthy lifestyle. Do not "
+    "exceed the recommended daily dose. Keep out of reach of "
+    "young children."
+)
+
+#: EU 1169/2011 Art. 25 storage-conditions boilerplate.
+DEFAULT_STORAGE_CONDITIONS = (
+    "Store below 25 °C in a dry place, away from direct sunlight."
+)
+
+#: Vita's home market is GB — until an org-level default exists in
+#: settings, we stamp GB on every new project.
+DEFAULT_TARGET_MARKETS: tuple[str, ...] = ("GB",)
+
+
+#: Pre-filled defaults seeded at :func:`create_formulation` time so
+#: the scientist lands on a sensible draft of the compliance +
+#: labelling cells rather than an empty form. Every field here is
+#: something Vita fills the same way on every project of that
+#: dosage form — asking the scientist to retype boilerplate wastes
+#: their time and invites transcription drift.
 #:
 #: Defaults only apply when the caller submits a blank value AND the
 #: dosage form has an entry below — non-blank input always wins, so
 #: the AI-builder + import flows that already know what to put in
 #: each cell are not overridden. Liquid / other-solid forms stay
 #: blank because their conventions vary too widely to seed safely.
-FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
+#:
+#: Keys mirror :class:`~apps.formulations.models.Formulation` fields
+#: 1:1 so the seeding step is a straight ``model_field = default``
+#: assignment.
+FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str | int]] = {
     "capsule": {
         "directions_of_use": "Take 1 capsule with food, daily.",
         "suggested_dosage": "1 capsule per day",
         "appearance": "Off-white powder filled in HPMC capsule",
         "disintegration_spec": "Disintegrate within 30 minutes",
+        "regulatory_category": "food_supplement",
+        "warnings_text": FOOD_SUPPLEMENT_WARNINGS_TEXT,
+        "storage_conditions": DEFAULT_STORAGE_CONDITIONS,
+        "shelf_life_months": 36,
     },
     "tablet": {
         "directions_of_use": "Take 1 tablet with water, daily.",
         "suggested_dosage": "1 tablet per day",
         "appearance": "Off-white round tablet",
         "disintegration_spec": "Disintegrate within 30 minutes",
+        "regulatory_category": "food_supplement",
+        "warnings_text": FOOD_SUPPLEMENT_WARNINGS_TEXT,
+        "storage_conditions": DEFAULT_STORAGE_CONDITIONS,
+        "shelf_life_months": 36,
     },
     "gummy": {
         "directions_of_use": (
@@ -662,6 +696,10 @@ FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
         # blank by convention; scientists fill it only when the QC
         # protocol calls for one (rare on consumer chewables).
         "disintegration_spec": "",
+        "regulatory_category": "food_supplement",
+        "warnings_text": FOOD_SUPPLEMENT_WARNINGS_TEXT,
+        "storage_conditions": DEFAULT_STORAGE_CONDITIONS,
+        "shelf_life_months": 24,
     },
     "powder": {
         "directions_of_use": (
@@ -673,6 +711,10 @@ FORMULATION_TEXT_DEFAULTS: dict[str, dict[str, str]] = {
         # Powders dissolve in water rather than disintegrate, so
         # the cell stays blank.
         "disintegration_spec": "",
+        "regulatory_category": "food_supplement",
+        "warnings_text": FOOD_SUPPLEMENT_WARNINGS_TEXT,
+        "storage_conditions": DEFAULT_STORAGE_CONDITIONS,
+        "shelf_life_months": 24,
     },
 }
 

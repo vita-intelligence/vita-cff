@@ -17,6 +17,7 @@ line table to reconstruct an older state.
 from __future__ import annotations
 
 import uuid
+from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
@@ -876,9 +877,17 @@ class FormulationLine(models.Model):
     #: hand-entered label_claim_mg untouched.
     SOURCE_KIND_ACTIVE = "active"
     SOURCE_KIND_BAND_PICK = "band_pick"
+    #: Routing-tab manual pick — scientist added a raw material /
+    #: semi-finished / packaging item directly from the Routing
+    #: inventory picker (not via the Formulation-tab active picker,
+    #: not via an M2M excipient band). The wizard shows an × on
+    #: these rows so they can be removed inline; other kinds can
+    #: only be removed from Formulation / M2M pickers.
+    SOURCE_KIND_MANUAL = "manual"
     SOURCE_KIND_CHOICES = (
         (SOURCE_KIND_ACTIVE, _("Operator-picked active ingredient")),
         (SOURCE_KIND_BAND_PICK, _("Compute-derived excipient / band pick")),
+        (SOURCE_KIND_MANUAL, _("Routing-tab manual pick")),
     )
     source_kind = models.CharField(
         _("source kind"),
@@ -1352,6 +1361,33 @@ class FormulationStage(models.Model):
     )
     notes = models.TextField(_("notes"), blank=True, default="")
 
+    #: How many finished-good SERVINGS equal 1 stock-unit of this
+    #: stage's PSP output item. Bridges NPD's per-serving mg values
+    #: to PSP's "qty per 1 unit of parent" BOM convention.
+    #:
+    #: Worked example (500 mg capsule, 60 caps per bottle):
+    #:   * Blending semi (Blend stocked in kg, 1 kg = 2000 servings):
+    #:     ``servings_per_output_unit = 2000``
+    #:   * Encapsulation finished (1 bottle = 60 servings):
+    #:     ``servings_per_output_unit = 60``
+    #:
+    #: Push cascade converts:
+    #:   ``psp_bom_line.qty = mg_per_serving
+    #:                       × servings_per_output_unit
+    #:                       × unit_factor(child_stock_uom)``
+    #: where ``unit_factor`` maps mg → the child item's stock UoM
+    #: (kg = 1e-6, g = 1e-3, mg = 1, count-based = 1).
+    #:
+    #: Default 1.0 preserves legacy behavior (numbers happen to work
+    #: when every semi is stocked in "unit" and 1 unit = 1 serving).
+    #: Scientists override per stage on the Stages tab.
+    servings_per_output_unit = models.DecimalField(
+        _("servings per output unit"),
+        max_digits=12,
+        decimal_places=4,
+        default=Decimal("1.0000"),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1429,6 +1465,18 @@ class FormulationVersion(models.Model):
         _("snapshot stage BOMs"),
         default=dict,
         blank=True,
+    )
+
+    #: True when this version was auto-cut on a ``Save draft`` (silent
+    #: snapshot for full-history revert). False = scientist-triggered
+    #: ``Save version`` — the milestones that show up in the Versions
+    #: sub-tab by default. Auto-versions live in the same table so
+    #: rollback + snapshot-BOM push cascades reuse the same code path;
+    #: the History tab just filters them out for the milestone view.
+    is_auto = models.BooleanField(
+        _("auto-cut on save draft"),
+        default=False,
+        db_index=True,
     )
 
     created_by = models.ForeignKey(

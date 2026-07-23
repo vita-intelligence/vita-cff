@@ -111,6 +111,13 @@ class PspItem:
     #: compat with early caller code — but every other attribute
     #: flows through this dict on the mirror path.
     attributes: dict
+    #: EU 1169 Annex II allergens declared on the raw material — a
+    #: list of ``{"uuid", "key"}`` dicts projected from the wire's
+    #: top-level ``allergens`` list. NPD's Setup tab unions these
+    #: across every picked ingredient to auto-derive the finished-
+    #: product allergen declaration. Missing / empty list = no
+    #: declared allergens on the item.
+    allergens: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1098,6 +1105,17 @@ def _project_item(row: dict[str, Any]) -> PspItem:
             if isinstance(row.get("attributes"), dict)
             else {}
         ),
+        # Allergens — top-level list on the wire, each row a
+        # ``{uuid, key, label, source, sort_order}`` map. We keep
+        # only ``uuid`` + ``key`` locally — that's what NPD's
+        # derivation service needs to union across ingredients.
+        # Non-list / missing degrades to an empty tuple so pre-
+        # allergen PSP builds keep parsing.
+        allergens=tuple(
+            {"uuid": str(a.get("uuid") or ""), "key": str(a.get("key") or "")}
+            for a in (row.get("allergens") or [])
+            if isinstance(a, dict) and a.get("uuid") and a.get("key")
+        ),
     )
 
 
@@ -1723,19 +1741,83 @@ def _lines_for_stage(formulation: Any, stage_id: Any) -> list[Any]:
     return list(query.order_by("display_order"))
 
 
-def _bom_lines_from(items: list[Any], *, start_index: int = 0) -> list[dict[str, Any]]:
+# PSP stores BOM qty in the child item's own stock UoM (kg for raw
+# materials, unit for counted items, …). NPD stores every non-manual
+# line as ``mg per serving``. This map converts mg → the child's
+# stock UoM at push time. Count-based UoMs (unit / pcs / count …)
+# are absent from the map — those items should only land as manual
+# picks where ``label_claim_mg`` is already a literal count that
+# rides through untouched.
+_UOM_MG_FACTOR: dict[str, Decimal] = {
+    "kg": Decimal("0.000001"),
+    "g": Decimal("0.001"),
+    "mg": Decimal("1"),
+    "l": Decimal("0.000001"),
+    "ml": Decimal("0.001"),
+}
+
+
+def _unit_factor_for(item: Any) -> Decimal:
+    """Look up the mg → item-native-unit conversion factor. Reads the
+    Item's ``unit`` field (mirrored from PSP on pick). Unknown /
+    count-based UoMs return 1 (no conversion) which is the right
+    behaviour for count items — the compute pipeline shouldn't be
+    feeding those anyway, and if it does the number rides through
+    unchanged so no data is silently zeroed."""
+
+    unit = str(getattr(item, "unit", "") or "").strip().lower()
+    return _UOM_MG_FACTOR.get(unit, Decimal("1"))
+
+
+def _bom_lines_from(
+    items: list[Any],
+    *,
+    start_index: int = 0,
+    servings_per_output_unit: Decimal | None = None,
+) -> list[dict[str, Any]]:
     """Project a list of ``FormulationLine`` rows into the PSP BOM
     line shape. Skips rows whose local Item has no ``psp_source_uuid``
     (legacy pre-mirror items) or whose cached serving weight is
-    non-positive (a compute glitch we don't want to propagate)."""
+    non-positive (a compute glitch we don't want to propagate).
 
+    ``servings_per_output_unit`` is the target stage's
+    ``FormulationStage.servings_per_output_unit`` (how many finished
+    servings equal 1 stock unit of the stage's PSP output item). It
+    scales mg-based lines to PSP's per-1-parent-unit BOM convention.
+    Defaults to 1.0 so callers that don't know the stage context
+    preserve the legacy behavior.
+
+    Manual picks (``source_kind == "manual"``) bypass the mg → UoM
+    conversion — their ``label_claim_mg`` is the user-typed qty in
+    the item's native unit (per finished output), so it rides through
+    verbatim.
+    """
+
+    servings = servings_per_output_unit or Decimal("1")
     out: list[dict[str, Any]] = []
     for offset, line in enumerate(items):
         item = line.item
         if item is None or not getattr(item, "psp_source_uuid", None):
             continue
-        qty = line.mg_per_serving_cached
-        if qty is None or qty <= 0:
+        raw_qty = line.mg_per_serving_cached
+        if raw_qty is None or raw_qty <= 0:
+            continue
+        source_kind = getattr(line, "source_kind", "active")
+        if source_kind == "manual":
+            # User typed the qty in the item's native unit already;
+            # send it through as-is.
+            qty = Decimal(str(raw_qty))
+        else:
+            # Actives + band picks: mg per serving → per-1-parent-unit
+            # in the child item's native UoM. Formula:
+            #   qty = mg_per_serving × servings_per_output_unit
+            #                        × unit_factor(child)
+            qty = (
+                Decimal(str(raw_qty))
+                * servings
+                * _unit_factor_for(item)
+            )
+        if qty <= 0:
             continue
         out.append(
             {
@@ -1750,30 +1832,36 @@ def _bom_lines_from(items: list[Any], *, start_index: int = 0) -> list[dict[str,
 def _override_to_bom_lines(
     override: list[dict[str, Any]],
     *,
-    item_psp_uuid_by_local_id: dict[str, str],
+    item_lookup_by_local_id: dict[str, dict[str, str]],
+    servings_per_output_unit: Decimal | None = None,
 ) -> list[dict[str, Any]]:
     """Project the FE-computed stage snapshot into the PSP BOM line
     shape. Each incoming row is ``{"item_id", "mg", "sort_order"}``
     — a local ``catalogues.Item.id`` (already mirrored so its
-    ``psp_source_uuid`` is populated) plus the compute-adjusted mg.
-    We resolve the local id to the PSP uuid via the caller-supplied
-    map; rows without a resolvable PSP uuid (unmirrored placeholders
-    from empty picker bands) or with non-positive ``mg`` are dropped
-    so the payload only carries lines PSP can resolve."""
+    ``psp_source_uuid`` is populated) plus the compute-adjusted mg
+    per serving.
 
+    ``item_lookup_by_local_id`` maps each local id to
+    ``{"psp_uuid": str, "unit": str}`` so we can both resolve the
+    child PSP uuid AND convert mg → the child's native stock UoM.
+    ``servings_per_output_unit`` scales per-serving mg into the
+    per-1-parent-unit that PSP's BOM math expects (defaults to 1.0).
+
+    Rows without a resolvable PSP uuid (unmirrored placeholders from
+    empty picker bands) or with non-positive mg are dropped so the
+    payload only carries lines PSP can resolve.
+    """
+
+    servings = servings_per_output_unit or Decimal("1")
     out: list[dict[str, Any]] = []
     for row in override:
         if not isinstance(row, dict):
             continue
-        # Prefer the local-item lookup (Item.psp_source_uuid) so
-        # NPD-side identity wins. Fall back to the raw
-        # ``psp_item_uuid`` for auto-picked rows that don't have a
-        # local mirror yet (e.g. a capsule shell the operator never
-        # ticked explicitly).
         local_item_id = row.get("item_id")
-        psp_uuid: str | None = None
+        info: dict[str, str] | None = None
         if local_item_id:
-            psp_uuid = item_psp_uuid_by_local_id.get(str(local_item_id))
+            info = item_lookup_by_local_id.get(str(local_item_id))
+        psp_uuid: str | None = info["psp_uuid"] if info else None
         if not psp_uuid:
             raw_uuid = row.get("psp_item_uuid")
             if raw_uuid:
@@ -1782,10 +1870,15 @@ def _override_to_bom_lines(
             continue
         raw_mg = row.get("mg", row.get("qty"))
         try:
-            mg = float(raw_mg) if raw_mg is not None else 0.0
-        except (TypeError, ValueError):
+            mg = Decimal(str(raw_mg)) if raw_mg is not None else Decimal("0")
+        except (InvalidOperation, TypeError, ValueError):
             continue
         if mg <= 0:
+            continue
+        unit = (info["unit"] if info else "").strip().lower()
+        unit_factor = _UOM_MG_FACTOR.get(unit, Decimal("1"))
+        qty = mg * servings * unit_factor
+        if qty <= 0:
             continue
         try:
             sort_order = int(row.get("sort_order", len(out)))
@@ -1794,7 +1887,7 @@ def _override_to_bom_lines(
         out.append(
             {
                 "part_uuid": str(psp_uuid),
-                "qty": str(mg),
+                "qty": str(qty),
                 "sort_order": sort_order,
             }
         )
@@ -1807,11 +1900,27 @@ def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
     stage graph (dosage forms with no default template, or rows
     created before phase 2 landed)."""
 
-    lines = _bom_lines_from(_lines_for_stage(formulation, stage_id=None))
+    # Legacy flat BOM = "the finished product is the parent". 1 unit
+    # of the finished product = 1 pack, so servings per unit = the
+    # formulation's servings_per_pack (falls back to 1 for older rows).
+    fallback_servings = Decimal("1")
+    raw_spp = getattr(formulation, "servings_per_pack", None)
+    if raw_spp:
+        try:
+            candidate = Decimal(str(raw_spp))
+            if candidate > 0:
+                fallback_servings = candidate
+        except (InvalidOperation, TypeError, ValueError):
+            pass
+    lines = _bom_lines_from(
+        _lines_for_stage(formulation, stage_id=None),
+        servings_per_output_unit=fallback_servings,
+    )
     all_lines = _bom_lines_from(
         list(
             formulation.lines.select_related("item").order_by("display_order")
-        )
+        ),
+        servings_per_output_unit=fallback_servings,
     )
     # A formulation with NULL-stage lines + no stages carries the
     # same set both ways; keeping ``all_lines`` as the source of
@@ -1826,6 +1935,23 @@ def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
         "lines": payload_lines,
     }
     return client.put_bom(formulation.psp_finished_product_uuid, payload)
+
+
+def _stage_servings(stage: Any) -> Decimal:
+    """Coerce a stage's ``servings_per_output_unit`` to a positive
+    Decimal. Zero / negative / missing values fall back to 1 so a
+    misconfigured stage doesn't divide-by-zero the prior-semi qty
+    formula downstream (worst case ships wrong quantities that the
+    operator can fix on the Stages tab)."""
+
+    raw = getattr(stage, "servings_per_output_unit", None)
+    if raw is None:
+        return Decimal("1")
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("1")
+    return value if value > 0 else Decimal("1")
 
 
 def _push_staged_cascade(
@@ -1857,12 +1983,14 @@ def _push_staged_cascade(
         stages[-1],
     )
     previous_semi_uuid: str | None = None
+    previous_servings: Decimal = Decimal("1")
     last_response: dict | None = None
 
-    # Build the local-item-id → PSP-uuid lookup once, spanning every
-    # id referenced across all overrides. One query beats N Item.get
-    # calls in the per-stage loop.
-    override_item_lookup: dict[str, str] = {}
+    # Build the local-item-id → {psp_uuid, unit} lookup once, spanning
+    # every id referenced across all overrides. One query beats N
+    # Item.get calls in the per-stage loop. The ``unit`` string feeds
+    # ``_override_to_bom_lines``'s mg → native-UoM conversion.
+    override_item_lookup: dict[str, dict[str, str]] = {}
     if stage_bom_overrides:
         wanted_ids: set[str] = set()
         for rows in stage_bom_overrides.values():
@@ -1877,8 +2005,11 @@ def _push_staged_cascade(
 
             for item in Item.objects.filter(
                 id__in=wanted_ids, psp_source_uuid__isnull=False
-            ).only("id", "psp_source_uuid"):
-                override_item_lookup[str(item.id)] = str(item.psp_source_uuid)
+            ).only("id", "psp_source_uuid", "unit"):
+                override_item_lookup[str(item.id)] = {
+                    "psp_uuid": str(item.psp_source_uuid),
+                    "unit": str(item.unit or ""),
+                }
 
     for stage in stages:
         is_finished = stage.id == finished_stage.id
@@ -1918,13 +2049,15 @@ def _push_staged_cascade(
         # The override is what makes NPD's stage card display and
         # PSP's per-stage BOM show the same list — otherwise the
         # FE synthesizes excipients that never reach PSP.
+        stage_servings = _stage_servings(stage)
         override = None
         if stage_bom_overrides is not None:
             override = stage_bom_overrides.get(str(stage.id))
         if override is not None:
             bom_lines = _override_to_bom_lines(
                 override,
-                item_psp_uuid_by_local_id=override_item_lookup,
+                item_lookup_by_local_id=override_item_lookup,
+                servings_per_output_unit=stage_servings,
             )
         else:
             assigned = _lines_for_stage(formulation, stage_id=stage.id)
@@ -1932,17 +2065,25 @@ def _push_staged_cascade(
                 assigned = assigned + _lines_for_stage(
                     formulation, stage_id=None
                 )
-            bom_lines = _bom_lines_from(assigned)
+            bom_lines = _bom_lines_from(
+                assigned, servings_per_output_unit=stage_servings
+            )
 
-        # Every stage after the first consumes the prior stage's
-        # semi-finished output at qty = 1 (one serving worth of
-        # blend feeds forward). Prepend so the FE + audit rows see
-        # the semi-finished dependency at the top of the BOM.
+        # Prior-stage semi input: how many stock-units of the prior
+        # semi does 1 stock-unit of THIS stage's output consume?
+        #     qty = stage.servings_per_output_unit
+        #         ÷ prior_stage.servings_per_output_unit
+        # e.g. Bottle (60 servings/unit) consuming Blend (2000
+        # servings/kg): 60 ÷ 2000 = 0.03 kg per bottle.
         if previous_semi_uuid is not None:
+            if previous_servings > 0:
+                prior_qty = stage_servings / previous_servings
+            else:
+                prior_qty = Decimal("1")
             bom_lines = [
                 {
                     "part_uuid": previous_semi_uuid,
-                    "qty": "1",
+                    "qty": str(prior_qty),
                     "sort_order": -1,
                 }
             ] + bom_lines
@@ -2015,7 +2156,11 @@ def _push_staged_cascade(
                 ],
             )
 
-        previous_semi_uuid = output_uuid if not is_finished else None
+        if is_finished:
+            previous_semi_uuid = None
+        else:
+            previous_semi_uuid = output_uuid
+            previous_servings = stage_servings
 
     return last_response
 
@@ -2584,6 +2729,14 @@ def _flatten_psp_attributes(psp_item: PspItem) -> dict:
         attrs["description"] = psp_item.description
     if psp_item.barcode:
         attrs["barcode"] = psp_item.barcode
+    # Allergen decls from the PSP raw material flow onto the local
+    # mirror as parallel key + uuid lists. NPD's Setup tab reads
+    # these off every ingredient in the formulation and unions them
+    # into the derived allergen declaration. Empty lists still get
+    # written so the "no allergens on this ingredient" signal is
+    # explicit — a missing key would be ambiguous.
+    attrs["allergen_keys"] = [a["key"] for a in (psp_item.allergens or ())]
+    attrs["allergen_uuids"] = [a["uuid"] for a in (psp_item.allergens or ())]
     return attrs
 
 

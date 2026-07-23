@@ -164,6 +164,11 @@ export interface FormulationLineDto {
   readonly item: string;
   readonly item_name: string;
   readonly item_internal_code: string;
+  /** PSP UUID this line's item mirrors, resolved off either the
+   *  local ``Item.psp_source_uuid`` (local-sourced) or the
+   *  ``psp_item_uuid`` on the line itself (PSP-sourced). Drives the
+   *  "Open on PSP" deep-link from every downstream display. */
+  readonly item_psp_source_uuid: string | null;
   readonly item_attributes: LineItemAttributes;
   readonly display_order: number;
   readonly label_claim_mg: string;
@@ -185,7 +190,7 @@ export interface FormulationLineDto {
    *  ingredient. ``band_pick`` — materialised excipient / carrier /
    *  shell / etc from a compute-derived band. Wizard step 3 groups
    *  and labels rows by this. */
-  readonly source_kind?: "active" | "band_pick";
+  readonly source_kind?: "active" | "band_pick" | "manual";
   /** When source_kind === 'band_pick': which excipient band the row
    *  belongs to (anti_caking | mcc | dcp | capsule_shell | ...).
    *  Null on actives. */
@@ -346,6 +351,11 @@ export interface FormulationStageDto {
    *  storage, target markets). All keys optional; missing = leave
    *  PSP's existing value alone. */
   readonly psp_finished_product_spec: Readonly<Record<string, unknown>>;
+  /** How many finished-good servings equal 1 stock-unit of this
+   *  stage's PSP output. Scales NPD's per-serving mg values to
+   *  PSP's per-1-parent-unit BOM convention on push. Default 1 keeps
+   *  the (accidentally-working) legacy behavior. */
+  readonly servings_per_output_unit: string;
   readonly notes: string;
 }
 
@@ -384,6 +394,9 @@ export interface UpsertStageInput {
   readonly psp_item_stock_uom_uuid?: string | null;
   readonly psp_item_product_family_uuid?: string | null;
   readonly psp_finished_product_spec?: Readonly<Record<string, unknown>>;
+  /** How many finished-good servings equal 1 stock-unit of this
+   *  stage's PSP output. Optional; server defaults to 1 when omitted. */
+  readonly servings_per_output_unit?: string | null;
   readonly notes?: string;
 }
 
@@ -494,6 +507,13 @@ export interface FormulationDto {
   readonly min_stock_qty: string | null;
   readonly target_stock_qty: string | null;
   readonly allergen_uuids: readonly string[];
+  /** Union of allergen keys declared on the formulation's picked
+   *  ingredients — Setup's allergen matrix pre-checks these so the
+   *  scientist doesn't manually re-copy what raw materials already
+   *  declare. Read-only; overrides live on ``allergen_uuids``. */
+  readonly derived_allergen_keys: readonly string[];
+  /** Parallel UUID list to :attr:`derived_allergen_keys`. */
+  readonly derived_allergen_uuids: readonly string[];
   readonly may_contain_allergen_keys: readonly string[];
   readonly may_contain_justification: string;
   readonly project_status: ProjectStatus;
@@ -776,6 +796,11 @@ export interface FormulationVersionDto {
   readonly snapshot_stage_boms: Readonly<
     Record<string, readonly Readonly<Record<string, unknown>>[]>
   >;
+  /** True for snapshots the FE auto-cuts on ``Save draft`` (silent
+   *  history for full-project revert). False for scientist-triggered
+   *  ``Save version`` milestones — those are the ones the History
+   *  Versions sub-tab shows by default. */
+  readonly is_auto: boolean;
   readonly created_at: string;
 }
 
@@ -804,6 +829,10 @@ export interface SaveVersionRequestDto {
   readonly stage_boms?: Readonly<
     Record<string, readonly SaveVersionStageBomRowDto[]>
   >;
+  /** Fire from Save draft's background auto-snapshot flow so the
+   *  server skips the PSP push cascade and marks the row as auto.
+   *  Named ``Save version`` clicks omit this (default false). */
+  readonly is_auto?: boolean;
 }
 
 export interface RollbackRequestDto {

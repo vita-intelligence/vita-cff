@@ -2384,23 +2384,38 @@ def create_formulation(
     if project_type not in valid_project_types:
         project_type = ProjectType.CUSTOM.value
 
-    # Seed the four free-text product cells with per-dosage-form
+    # Seed the free-text + compliance cells with per-dosage-form
     # defaults when the caller submitted blanks — gives scientists
-    # a sensible draft to copy + tweak rather than four empty
-    # textareas. Non-blank input always wins so the AI-builder /
-    # import flows that already know what to write are not
-    # overridden.
-    from apps.formulations.constants import FORMULATION_TEXT_DEFAULTS
+    # a sensible draft rather than empty inputs. Non-blank input
+    # always wins so the AI-builder / import flows that already
+    # know what to write are not overridden.
+    from apps.formulations.constants import (
+        DEFAULT_TARGET_MARKETS,
+        FORMULATION_TEXT_DEFAULTS,
+    )
 
     text_defaults = FORMULATION_TEXT_DEFAULTS.get(dosage_form, {})
-    if not (directions_of_use or "").strip():
-        directions_of_use = text_defaults.get("directions_of_use", "")
-    if not (suggested_dosage or "").strip():
-        suggested_dosage = text_defaults.get("suggested_dosage", "")
-    if not (appearance or "").strip():
-        appearance = text_defaults.get("appearance", "")
-    if not (disintegration_spec or "").strip():
-        disintegration_spec = text_defaults.get("disintegration_spec", "")
+
+    def _str_default(key: str, current: str) -> str:
+        if (current or "").strip():
+            return current
+        raw = text_defaults.get(key, "")
+        return raw if isinstance(raw, str) else ""
+
+    directions_of_use = _str_default("directions_of_use", directions_of_use)
+    suggested_dosage = _str_default("suggested_dosage", suggested_dosage)
+    appearance = _str_default("appearance", appearance)
+    disintegration_spec = _str_default("disintegration_spec", disintegration_spec)
+
+    # Compliance / labelling defaults — every product of a given
+    # dosage form gets the same regulatory category, warnings block,
+    # storage conditions and shelf life until the scientist
+    # overrides. Retyping the same EU 1169 boilerplate on every
+    # project is where transcription errors creep in.
+    regulatory_default = text_defaults.get("regulatory_category", "")
+    warnings_default = text_defaults.get("warnings_text", "")
+    storage_default = text_defaults.get("storage_conditions", "")
+    shelf_life_default = text_defaults.get("shelf_life_months")
 
     formulation = Formulation.objects.create(
         organization=organization,
@@ -2421,6 +2436,21 @@ def create_formulation(
         water_volume_ml=water_volume_ml,
         project_type=project_type,
         psp_finished_product_uuid=psp_finished_product_uuid or None,
+        regulatory_category=(
+            regulatory_default if isinstance(regulatory_default, str) else ""
+        ),
+        warnings_text=(
+            warnings_default if isinstance(warnings_default, str) else ""
+        ),
+        storage_conditions=(
+            storage_default if isinstance(storage_default, str) else ""
+        ),
+        shelf_life_months=(
+            shelf_life_default
+            if isinstance(shelf_life_default, int)
+            else None
+        ),
+        target_markets=list(DEFAULT_TARGET_MARKETS),
         created_by=actor,
         updated_by=actor,
     )
@@ -2472,6 +2502,21 @@ def seed_default_stages(*, formulation: Formulation) -> list[FormulationStage]:
         created.append(stage)
 
     return created
+
+
+def _parse_positive_decimal(value: Any, *, default: Decimal) -> Decimal:
+    """Coerce a payload value to a positive ``Decimal``. Empty / null /
+    invalid / non-positive input falls back to ``default`` so a stray
+    ``""`` from the FE doesn't wipe a stage's ``servings_per_output_unit``
+    to zero (which would divide-by-zero later in the push cascade)."""
+
+    if value is None or value == "":
+        return default
+    try:
+        parsed = Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return default
+    return parsed if parsed > 0 else default
 
 
 @transaction.atomic
@@ -2578,6 +2623,15 @@ def set_formulation_stages(
                 raw.get("psp_finished_product_spec")
                 if isinstance(raw.get("psp_finished_product_spec"), dict)
                 else {}
+            ),
+            # How many finished-good servings equal 1 stock-unit of
+            # this stage's PSP output. Bridges NPD's per-serving mg
+            # values to PSP's per-1-parent-unit BOM convention on the
+            # push cascade. Missing / 0 payload falls back to 1.0 so
+            # legacy behavior is preserved.
+            "servings_per_output_unit": _parse_positive_decimal(
+                raw.get("servings_per_output_unit"),
+                default=Decimal("1.0000"),
             ),
             "notes": raw.get("notes") or "",
         }
@@ -3787,6 +3841,21 @@ def replace_lines(
             if raw_stage_id and str(raw_stage_id) in known_stage_ids
             else None
         )
+        # ``source_kind`` from the payload wins over the model
+        # default so Routing-tab manual picks keep their ``manual``
+        # marker across replace_lines wipes. Empty / unknown values
+        # fall through to the default ``active``.
+        raw_source_kind = data.get("source_kind")
+        source_kind = (
+            raw_source_kind
+            if raw_source_kind
+            in {
+                FormulationLine.SOURCE_KIND_ACTIVE,
+                FormulationLine.SOURCE_KIND_MANUAL,
+                FormulationLine.SOURCE_KIND_BAND_PICK,
+            }
+            else FormulationLine.SOURCE_KIND_ACTIVE
+        )
         created.append(
             FormulationLine.objects.create(
                 formulation=formulation,
@@ -3800,6 +3869,7 @@ def replace_lines(
                 mg_per_serving_cached=mg,
                 notes=data.get("notes", ""),
                 stage_id=stage_id,
+                source_kind=source_kind,
             )
         )
 
@@ -4109,6 +4179,54 @@ def compute_allergens(
         sources=tuple(sorted(sources)),
         allergen_count=allergen_count,
     )
+
+
+def derive_ingredient_allergens(
+    *,
+    formulation: Formulation,
+) -> dict[str, list[str]]:
+    """Return the union of EU 1169 allergens declared on this
+    formulation's picked ingredients — the auto-fill source for the
+    finished-product allergen declaration on the Setup tab.
+
+    Reads ``Item.attributes.allergen_keys`` +
+    ``Item.attributes.allergen_uuids`` off every :class:`FormulationLine`
+    and unions them into a single sorted-unique pair. Both lists are
+    populated on the PSP-mirror path
+    (:func:`apps.psp.services._flatten_psp_attributes`); locally-
+    authored items without allergen metadata contribute nothing.
+
+    The return shape is a plain dict so the serializer can splat it
+    into the API payload without a wrapper class:
+
+    .. code-block:: python
+
+        {
+            "keys": ["gluten", "milk"],
+            "uuids": ["...", "..."],
+        }
+
+    Scientists then see the derived set pre-checked on the allergen
+    matrix + can flag additional allergens (override) or unflag
+    something the auto-derivation over-approximated. The manual
+    override lives on :attr:`Formulation.allergen_uuids`; this
+    function just computes the *suggestion*.
+    """
+
+    keys: set[str] = set()
+    uuids: set[str] = set()
+    for line in formulation.lines.select_related("item").all():
+        attrs = getattr(line.item, "attributes", {}) or {}
+        for k in attrs.get("allergen_keys", []) or []:
+            if isinstance(k, str) and k:
+                keys.add(k)
+        for u in attrs.get("allergen_uuids", []) or []:
+            if isinstance(u, str) and u:
+                uuids.add(u)
+    return {
+        "keys": sorted(keys),
+        "uuids": sorted(uuids),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -4968,6 +5086,7 @@ def save_version(
     actor: Any,
     label: str = "",
     stage_boms: dict[str, list[dict[str, Any]]] | None = None,
+    is_auto: bool = False,
 ) -> FormulationVersion:
     """Freeze the formulation's current state into a new version.
 
@@ -5049,6 +5168,7 @@ def save_version(
         snapshot_lines=_snapshot_lines(formulation),
         snapshot_totals=serialized_totals,
         snapshot_stage_boms=normalised_stage_boms,
+        is_auto=is_auto,
         created_by=actor,
     )
     record_audit(
@@ -5062,6 +5182,14 @@ def save_version(
             "label": version.label,
         },
     )
+    # Auto-versions are silent snapshots for the History tab's
+    # Activity revert flow — they fire on every ``Save draft`` so
+    # scientists can rewind to any point. Skipping the PSP push here
+    # keeps PSP quiet on those (otherwise every keystroke-batch would
+    # spam the integration). Named ``Save version`` clicks still push.
+    if is_auto:
+        return version
+
     # Push the fresh BOM snapshot to PSP if the formulation is
     # linked to a finished product. Silent-degrade — the push
     # service already swallows every PspError and logs it, so a

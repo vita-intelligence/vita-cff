@@ -1355,6 +1355,7 @@ class FormulationVersionListView(APIView):
             actor=request.user,
             label=serializer.validated_data.get("label", ""),
             stage_boms=serializer.validated_data.get("stage_boms") or None,
+            is_auto=serializer.validated_data.get("is_auto", False),
         )
         return Response(
             FormulationVersionReadSerializer(version).data,

@@ -5,6 +5,7 @@ import {
   ExternalLink,
   FileText,
   FlaskConical,
+  History,
   LayoutDashboard,
   PoundSterling,
   ShieldCheck,
@@ -26,7 +27,8 @@ export type ProjectTabKey =
   | "spec-sheets"
   | "proposals"
   | "trial-batches"
-  | "qc";
+  | "qc"
+  | "history";
 
 
 /**
@@ -98,6 +100,12 @@ export function ProjectShell({
       href: `/formulations/${overview.id}/qc`,
       icon: <ShieldCheck className="h-4 w-4" />,
       count: overview.qc.total,
+    },
+    {
+      key: "history",
+      label: tTabs("history"),
+      href: `/formulations/${overview.id}/history`,
+      icon: <History className="h-4 w-4" />,
     },
   ];
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, ChevronLeft, Copy, CopyPlus, ExternalLink, Loader2, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { StageBomsPreview } from "./stage-boms-preview";
@@ -138,6 +138,10 @@ interface BuilderLine {
   readonly item_id: string;
   readonly item_name: string;
   readonly item_internal_code: string;
+  /** PSP UUID this line's item mirrors — drives the "Open on PSP"
+   *  deep-link on every downstream display. ``null`` for local-only
+   *  lines never mirrored to PSP. */
+  readonly item_psp_source_uuid: string | null;
   readonly item_attributes: ItemAttributesForMath;
   label_claim_mg: string;
   /** Per-line override of the catalogue's purity. Empty string means
@@ -154,7 +158,7 @@ interface BuilderLine {
   stage_id: string | null;
   /** Wizard routing provenance — mirrors the server field so
    *  Step 3 (Routing tab) can group / label rows correctly. */
-  source_kind: "active" | "band_pick";
+  source_kind: "active" | "band_pick" | "manual";
   band_key: string | null;
 }
 
@@ -457,6 +461,7 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     item_id: line.item,
     item_name: line.item_name,
     item_internal_code: line.item_internal_code,
+    item_psp_source_uuid: line.item_psp_source_uuid ?? null,
     item_attributes: attributesFromLine(line.item_attributes),
     label_claim_mg: line.label_claim_mg,
     purity_override: line.purity_override ?? "",
@@ -686,34 +691,60 @@ function WarehouseAndAllergensSetupSection({
   metadata,
   onChange,
   canWrite,
+  derivedAllergenKeys,
 }: {
   orgId: string;
   metadata: MetadataDraft;
   onChange: (patch: Partial<MetadataDraft>) => void;
   canWrite: boolean;
+  /** PSP allergen keys carried on any of the picked ingredients.
+   *  Setup pre-checks these on the matrix so the scientist doesn't
+   *  retype what raw materials already declare. Empty array = no
+   *  ingredient-derived allergens. */
+  derivedAllergenKeys: readonly string[];
 }) {
   const storageTagsQuery = usePspStorageTags(orgId);
   const storageTagOptions = storageTagsQuery.data?.items ?? [];
   const allergensQuery = usePspAllergens(orgId);
   const allergenOptions = allergensQuery.data?.items ?? [];
 
-  const toggleAllergen = (uuid: string) => {
-    const set = new Set(metadata.allergen_uuids);
-    if (set.has(uuid)) {
-      set.delete(uuid);
-    } else {
-      set.add(uuid);
-    }
-    onChange({ allergen_uuids: Array.from(set) });
+  const derivedKeySet = new Set(derivedAllergenKeys);
+  const allergenState = (
+    a: { uuid: string; key: string },
+  ): "none" | "declared" | "may_contain" => {
+    if (metadata.allergen_uuids.includes(a.uuid)) return "declared";
+    if (metadata.may_contain_allergen_keys.includes(a.key)) return "may_contain";
+    return "none";
   };
-  const toggleMayContain = (key: string) => {
-    const set = new Set(metadata.may_contain_allergen_keys);
-    if (set.has(key)) {
-      set.delete(key);
-    } else {
-      set.add(key);
+  // Cycle: none → declared → may_contain → none. Derived allergens
+  // start "declared" implicitly until the user overrides — the manual
+  // state list still holds the authoritative record so save-time
+  // wiring is unchanged.
+  const cycleAllergen = (a: { uuid: string; key: string }) => {
+    const state = allergenState(a);
+    const declaredSet = new Set(metadata.allergen_uuids);
+    const mayContainSet = new Set(metadata.may_contain_allergen_keys);
+    declaredSet.delete(a.uuid);
+    mayContainSet.delete(a.key);
+    if (state === "none") {
+      declaredSet.add(a.uuid);
+    } else if (state === "declared") {
+      mayContainSet.add(a.key);
     }
-    onChange({ may_contain_allergen_keys: Array.from(set) });
+    onChange({
+      allergen_uuids: Array.from(declaredSet),
+      may_contain_allergen_keys: Array.from(mayContainSet),
+    });
+  };
+  const acceptDerived = () => {
+    // Merge derived → declared without touching may-contain. Lets a
+    // scientist accept the auto-suggestion in one click after the
+    // ingredient roster stabilises.
+    const declaredSet = new Set(metadata.allergen_uuids);
+    for (const a of allergenOptions) {
+      if (derivedKeySet.has(a.key)) declaredSet.add(a.uuid);
+    }
+    onChange({ allergen_uuids: Array.from(declaredSet) });
   };
   const toggleStorageTag = (name: string) => {
     const set = new Set(metadata.storage_tags);
@@ -799,61 +830,104 @@ function WarehouseAndAllergensSetupSection({
           )}
         </div>
 
+        {/* Allergen matrix — one row per EU-14 allergen with a 3-state
+            chip (— / declared / may-contain). Replaces the earlier
+            two blocks of 14 checkboxes each. Derived allergens
+            (inherited from picked ingredient metadata) show an
+            "in ingredients" tag so the scientist can accept the
+            auto-suggestion in one click. */}
         <div className="md:col-span-2">
-          <label className="text-xs font-medium text-ink-600">
-            Declared allergens (EU FIC Annex II)
-          </label>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <label className="text-xs font-medium text-ink-600">
+                Allergens (EU FIC Annex II)
+              </label>
+              <p className="mt-0.5 text-[11px] leading-snug text-ink-500">
+                Click a chip to cycle:{" "}
+                <span className="font-medium">—</span> →{" "}
+                <span className="font-medium text-orange-700">
+                  declared
+                </span>{" "}
+                →{" "}
+                <span className="font-medium text-amber-700">
+                  may contain
+                </span>
+                . Declared allergens land on the PSP item&apos;s
+                allergen M:N; may-contain lands on the spec sub-table.
+              </p>
+            </div>
+            {derivedKeySet.size > 0 &&
+            canWrite &&
+            allergenOptions.some(
+              (a) =>
+                derivedKeySet.has(a.key) &&
+                !metadata.allergen_uuids.includes(a.uuid),
+            ) ? (
+              <button
+                type="button"
+                onClick={acceptDerived}
+                className="shrink-0 rounded-lg bg-orange-50 px-2.5 py-1.5 text-xs font-medium text-orange-700 ring-1 ring-inset ring-orange-200 hover:bg-orange-100"
+              >
+                Accept ingredient-derived
+              </button>
+            ) : null}
+          </div>
           {allergenOptions.length === 0 ? (
-            <p className="mt-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
+            <p className="mt-2 rounded-lg bg-ink-50 px-3 py-2 text-[11px] leading-snug text-ink-500">
               PSP&apos;s allergen catalog is empty — seed it via
               migration.
             </p>
           ) : (
-            <div className="mt-1 grid grid-cols-2 gap-1.5 md:grid-cols-3">
+            <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {allergenOptions.map((a) => {
-                const active = metadata.allergen_uuids.includes(a.uuid);
+                const state = allergenState(a);
+                const isDerived = derivedKeySet.has(a.key);
+                const chipClass =
+                  state === "declared"
+                    ? "bg-orange-500 text-white ring-orange-500 hover:bg-orange-600"
+                    : state === "may_contain"
+                      ? "bg-amber-100 text-amber-800 ring-amber-300 hover:bg-amber-200"
+                      : "bg-ink-50 text-ink-600 ring-ink-200 hover:bg-ink-100";
+                const stateLabel =
+                  state === "declared"
+                    ? "declared"
+                    : state === "may_contain"
+                      ? "may contain"
+                      : "—";
                 return (
-                  <label
+                  <button
                     key={a.uuid}
-                    className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-ink-50"
+                    type="button"
+                    onClick={() => cycleAllergen(a)}
+                    disabled={!canWrite}
+                    className={`flex items-center justify-between gap-2 rounded-lg px-2.5 py-1.5 text-xs ring-1 ring-inset transition disabled:cursor-not-allowed disabled:opacity-60 ${chipClass}`}
+                    aria-pressed={state !== "none"}
+                    title={
+                      isDerived
+                        ? `${a.label} — declared on picked ingredient(s)`
+                        : a.label
+                    }
                   >
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      onChange={() => toggleAllergen(a.uuid)}
-                      disabled={!canWrite}
-                    />
-                    <span>{a.label}</span>
-                  </label>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <div className="md:col-span-2">
-          <label className="text-xs font-medium text-ink-600">
-            May contain (cross-contamination risk)
-          </label>
-          {allergenOptions.length === 0 ? null : (
-            <div className="mt-1 grid grid-cols-2 gap-1.5 md:grid-cols-3">
-              {allergenOptions.map((a) => {
-                const active = metadata.may_contain_allergen_keys.includes(
-                  a.key,
-                );
-                return (
-                  <label
-                    key={a.uuid}
-                    className="flex items-center gap-2 rounded-md px-2 py-1 text-sm hover:bg-ink-50"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={active}
-                      onChange={() => toggleMayContain(a.key)}
-                      disabled={!canWrite}
-                    />
-                    <span>{a.label}</span>
-                  </label>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate font-medium">
+                        {a.label}
+                      </span>
+                      {isDerived ? (
+                        <span
+                          className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${
+                            state === "declared"
+                              ? "bg-white/25 text-white"
+                              : "bg-orange-100 text-orange-700"
+                          }`}
+                        >
+                          in&nbsp;ingredients
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="shrink-0 text-[10px] uppercase tracking-wide opacity-80">
+                      {stateLabel}
+                    </span>
+                  </button>
                 );
               })}
             </div>
@@ -1671,6 +1745,77 @@ export function FormulationBuilder({
   const [colourLive, setColourLive] = useState<
     Record<string, PowderBandLiveEntry>
   >(() => hydrateBand(initialFormulation.colour_items));
+
+  //: Shared "recent picks" cache updated by every picker's
+  //: ``onPickedItemsChange``. Keyed by ``Item.id``, carries the
+  //: minimum a downstream row needs to render — a human name, the
+  //: catalogue SKU, and the PSP source UUID for the "Open on PSP"
+  //: deep-link. Bands that lack a dedicated live cache (gelling /
+  //: glazing / premix_sweetener / gummy_base / dcp) read from here
+  //: so a freshly-clicked pick shows its real name in the same
+  //: render instead of leaking its UUID into the fine-tune panel.
+  type PendingPickEntry = {
+    readonly name: string;
+    readonly code: string;
+    readonly pspSourceUuid: string | null;
+  };
+  const [pendingPicksCache, setPendingPicksCache] = useState<
+    Record<string, PendingPickEntry>
+  >(() => {
+    const seed: Record<string, PendingPickEntry> = {};
+    const collect = (
+      rows: ReadonlyArray<{
+        readonly id: string;
+        readonly name: string;
+        readonly internal_code: string;
+        readonly psp_source_uuid: string | null;
+      }>,
+    ) => {
+      for (const r of rows) {
+        seed[r.id] = {
+          name: r.name,
+          code: r.internal_code,
+          pspSourceUuid: r.psp_source_uuid ?? null,
+        };
+      }
+    };
+    collect(initialFormulation.gummy_base_items ?? []);
+    collect(initialFormulation.glazing_items ?? []);
+    collect(initialFormulation.gelling_items ?? []);
+    collect(initialFormulation.premix_sweetener_items ?? []);
+    collect(initialFormulation.dcp_carrier_items ?? []);
+    return seed;
+  });
+  const mergePendingPicks = useCallback(
+    (
+      items: ReadonlyArray<{
+        readonly id: string;
+        readonly name: string;
+        readonly internal_code: string;
+        readonly psp_source_uuid: string | null;
+        readonly attributes?: Readonly<Record<string, unknown>>;
+      }>,
+    ) => {
+      setPendingPicksCache((prev) => {
+        const next = { ...prev };
+        for (const it of items) {
+          next[it.id] = {
+            name: it.name,
+            code: it.internal_code,
+            // Prefer the picker's explicit ``psp_source_uuid`` (drawn
+            // from the pspToLocal reverse map, so freshly-mirrored PSP
+            // picks light up their "Open on PSP" link on first click);
+            // fall through to any prior cache entry so a stale echo
+            // load doesn't clobber a known uuid.
+            pspSourceUuid:
+              it.psp_source_uuid ?? prev[it.id]?.pspSourceUuid ?? null,
+          };
+        }
+        return next;
+      });
+    },
+    [],
+  );
   //: Raw text from the picker input — updates on every keystroke.
   const [searchInput, setSearchInput] = useState("");
   //: Debounced query that drives the picker cache key. Lags by 200ms.
@@ -1729,22 +1874,19 @@ export function FormulationBuilder({
   >(new Map());
 
   const handleSaveRouting = useCallback(async () => {
-    // Split the flat draft into the two payload shapes the endpoint
-    // expects: line_assignments for existing active lines,
-    // band_assignments for every band pick (new + updated). Band
-    // picks always ride the payload since the endpoint wholesale-
-    // replaces them; actives only ride when their stage changed
-    // (small optimisation to keep the audit trail focused).
-    const line_assignments: Record<string, string | null> = {};
+    // Actives are saved by ``handleSaveLines`` — this endpoint only
+    // ships band picks (flavouring / sweetener / colour / etc.),
+    // which don't exist as ``FormulationLine`` rows until the wizard
+    // routing service materializes them. Empty payload = nothing to
+    // sync, skip the round-trip.
     const band_assignments: {
       item_id: string;
       band_key: string;
       mg: number;
       stage_id: string | null;
     }[] = [];
-    // Build a quick lookup: for every row in the current full BOM,
-    // resolve its mg + item_id + band_key (via bomLinesByStage) so
-    // band picks can ship their compute-derived mg to the server.
+    // Compute-derived mg + band + item_id per band pick, resolved
+    // from the live full-BOM map.
     const bomIndex = new Map<
       string,
       { itemId: string; bandKey: string; mg: number }
@@ -1752,9 +1894,6 @@ export function FormulationBuilder({
     bomLinesByStageRef.current.forEach((rows) => {
       for (const row of rows) {
         if (!row.itemId) continue;
-        // Row keys look like ``active:<line.key>``,
-        // ``anticaking:<item_id>``, ``dcp:<item_id>``, ``mcc:<item_id>``,
-        // ``capsule-shell:<item_id>``. Extract the band-key prefix.
         const [prefix] = row.key.split(":");
         if (!prefix || prefix === "active") continue;
         const bandKey =
@@ -1774,46 +1913,31 @@ export function FormulationBuilder({
         });
       }
     });
-    // Active line rows come straight from ``lines``; band rows come
-    // from the bomIndex above.
     for (const [key, stageId] of routingByKey.entries()) {
-      if (key.startsWith("active:")) {
-        // Only ship lines whose stage_id changed vs baseline —
-        // reduces payload noise for a mostly-unchanged save.
-        if (routingBaseline.get(key) === stageId) continue;
-        const lineId = key.slice("active:".length);
-        // ``line.key`` in this file is the FormulationLine id for
-        // server-round-tripped lines (via ``linesFrom``); newly
-        // added client-only lines get a ``new-...`` prefix. Filter
-        // those out — they don't have a server id yet, and saving
-        // routing before Save draft would fail on the server.
-        if (lineId.startsWith("new-")) continue;
-        line_assignments[lineId] = stageId;
-      } else if (key.startsWith("band:")) {
-        const entry = bomIndex.get(key);
-        if (!entry) continue;
-        band_assignments.push({
-          item_id: entry.itemId,
-          band_key: entry.bandKey,
-          mg: entry.mg,
-          stage_id: stageId,
-        });
-      }
+      if (!key.startsWith("band:")) continue;
+      const entry = bomIndex.get(key);
+      if (!entry) continue;
+      band_assignments.push({
+        item_id: entry.itemId,
+        band_key: entry.bandKey,
+        mg: entry.mg,
+        stage_id: stageId,
+      });
     }
+    if (band_assignments.length === 0) return;
     try {
-      await wizardRoutingMutation.mutateAsync({
-        line_assignments,
+      const updated = await wizardRoutingMutation.mutateAsync({
+        line_assignments: {},
         band_assignments,
       });
+      // Refresh local state so ``routingBaseline`` recomputes and
+      // the "unsaved" dot on the Routing tab actually clears.
+      setFormulation(updated);
+      setLines(linesFrom(updated));
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
-  }, [
-    routingByKey,
-    routingBaseline,
-    wizardRoutingMutation,
-    tErrors,
-  ]);
+  }, [routingByKey, wizardRoutingMutation, tErrors]);
   const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
@@ -1927,13 +2051,44 @@ export function FormulationBuilder({
     // panel can render one row per pick ("Sweeteners (Xylitol) …
     // 975 mg", "Sweeteners (Maltitol) … 975 mg"). Skips non-gummy
     // forms; empty picks render a generic "Gummy Base" row.
+    // Iterate the LIVE picked ids from ``metadata`` and resolve each
+    // through the server echo → ``pendingPicksCache`` (fed by every
+    // gummy picker's ``onPickedItemsChange``). Prior implementation
+    // read only from the server echo, which meant a fresh pick
+    // wouldn't reach compute until after a save — the fine-tune panel
+    // then rendered a band-aggregate placeholder row (no ``itemId``,
+    // read-only) instead of one editable row per SKU.
+    const gummyBaseEchoById = new Map(
+      formulation.gummy_base_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+        },
+      ]),
+    );
+    const resolveGummyPick = (
+      id: string,
+      echo: { label: string; useAs: string } | undefined,
+    ): { id: string; label: string; useAs: string } | null => {
+      const cached = pendingPicksCache[id];
+      if (!echo && !cached) return null;
+      return {
+        id,
+        label: echo?.label || cached?.name || "",
+        useAs: echo?.useAs || "",
+      };
+    };
     const gummyBaseForMath =
       metadata.dosage_form === "gummy"
-        ? formulation.gummy_base_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.gummy_base_item_ids
+            .map((id) => resolveGummyPick(id, gummyBaseEchoById.get(id)))
+            .filter(
+              (
+                entry,
+              ): entry is { id: string; label: string; useAs: string } =>
+                entry !== null,
+            )
         : [];
     // Flavouring + Colour picks — split bands at separate percentages
     // (0.4% / 2% of target gummy weight). The math splits each block
@@ -1970,10 +2125,16 @@ export function FormulationBuilder({
             .map((id) => {
               const live = flavouringLive[id];
               const echo = flavouringEchoById.get(id);
-              if (!live && !echo) return null;
+              // Gummy flavouring picks don't populate the powder
+              // ``flavouringLive`` cache; fall through to the shared
+              // ``pendingPicksCache`` so a freshly-clicked gummy
+              // flavouring row lands in compute without waiting on
+              // a save round-trip.
+              const cached = pendingPicksCache[id];
+              if (!live && !echo && !cached) return null;
               return {
                 id,
-                label: live?.label || echo?.label || "",
+                label: live?.label || echo?.label || cached?.name || "",
                 useAs: live?.useAs || echo?.useAs || "",
                 powderRateMgPerG:
                   live?.powderRateMgPerG ??
@@ -2007,10 +2168,13 @@ export function FormulationBuilder({
             .map((id) => {
               const live = colourLive[id];
               const echo = colourEchoById.get(id);
-              if (!live && !echo) return null;
+              // Gummy colour picks fall through to the shared
+              // ``pendingPicksCache`` (see ``flavouring`` comment).
+              const cached = pendingPicksCache[id];
+              if (!live && !echo && !cached) return null;
               return {
                 id,
-                label: live?.label || echo?.label || "",
+                label: live?.label || echo?.label || cached?.name || "",
                 useAs: live?.useAs || echo?.useAs || "",
                 powderRateMgPerG:
                   live?.powderRateMgPerG ??
@@ -2027,32 +2191,68 @@ export function FormulationBuilder({
               } => entry !== null,
             )
         : [];
+    const glazingEchoById = new Map(
+      formulation.glazing_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+        },
+      ]),
+    );
     const glazingForMath =
       metadata.dosage_form === "gummy"
-        ? formulation.glazing_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.glazing_item_ids
+            .map((id) => resolveGummyPick(id, glazingEchoById.get(id)))
+            .filter(
+              (
+                entry,
+              ): entry is { id: string; label: string; useAs: string } =>
+                entry !== null,
+            )
         : [];
     // Gelling + premix sweetener — coupled bands. Both feed
     // ``computeFillTarget``; gellingForMath being empty means the
     // gummy is non-gelling and the math suppresses both bands.
+    const gellingEchoById = new Map(
+      formulation.gelling_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+        },
+      ]),
+    );
     const gellingForMath =
       metadata.dosage_form === "gummy"
-        ? formulation.gelling_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.gelling_item_ids
+            .map((id) => resolveGummyPick(id, gellingEchoById.get(id)))
+            .filter(
+              (
+                entry,
+              ): entry is { id: string; label: string; useAs: string } =>
+                entry !== null,
+            )
         : [];
+    const premixSweetenerEchoById = new Map(
+      formulation.premix_sweetener_items.map((pick) => [
+        pick.id,
+        {
+          label: pick.ingredient_list_name || pick.name,
+          useAs: pick.use_as || "",
+        },
+      ]),
+    );
     const premixSweetenerForMath =
       metadata.dosage_form === "gummy"
-        ? formulation.premix_sweetener_items.map((pick) => ({
-            id: pick.id,
-            label: pick.ingredient_list_name || pick.name,
-            useAs: pick.use_as || "",
-          }))
+        ? metadata.premix_sweetener_item_ids
+            .map((id) => resolveGummyPick(id, premixSweetenerEchoById.get(id)))
+            .filter(
+              (
+                entry,
+              ): entry is { id: string; label: string; useAs: string } =>
+                entry !== null,
+            )
         : [];
     // Drive acidity math off the LIVE ids (``metadata.acidity_item_ids``)
     // rather than the saved server echo so the totals panel updates
@@ -2269,6 +2469,17 @@ export function FormulationBuilder({
     metadata.powder_carrier_item_ids,
     metadata.acidity_item_ids,
     metadata.sweetener_item_ids,
+    // Live picked-id arrays for every gummy band the new resolver
+    // iterates. Prior to this deps addition the memo didn't rerun on
+    // a fresh tick, so compute stayed stale and the fine-tune panel
+    // rendered band-aggregate placeholder rows even after the fix
+    // that swapped the *ForMath iteration onto LIVE ids.
+    metadata.flavouring_item_ids,
+    metadata.colour_item_ids,
+    metadata.gummy_base_item_ids,
+    metadata.glazing_item_ids,
+    metadata.gelling_item_ids,
+    metadata.premix_sweetener_item_ids,
     mccCarrierNames,
     antiCakingNames,
     powderCarrierNames,
@@ -2276,6 +2487,11 @@ export function FormulationBuilder({
     flavouringLive,
     sweetenerLive,
     colourLive,
+    // Shared "just picked" cache — populated by every gummy picker's
+    // ``onPickedItemsChange``. Included so an unsaved pick on
+    // gelling / glazing / premix / gummy_base / dcp / flavouring /
+    // colour rehydrates the totals in the same render.
+    pendingPicksCache,
     formulation.gummy_base_items,
     formulation.powder_carrier_items,
     formulation.sweetener_items,
@@ -2367,6 +2583,57 @@ export function FormulationBuilder({
             };
           })()
         : null;
+    // Merged {itemId → code + pspSourceUuid} lookup drawn from every
+    // server echo + the shared ``pendingPicksCache``. Passed into
+    // ``deriveStageBomLines`` so gummy per-item + gummy_base rows can
+    // stamp their ``code`` chip + "Open on PSP" link the same way
+    // active lines already do — otherwise they'd render as name-only
+    // read-only text with no way to cross-reference the SKU on PSP.
+    const codeAndUuidSources: readonly (readonly {
+      readonly id: string;
+      readonly internal_code?: string;
+      readonly psp_source_uuid?: string | null;
+    }[])[] = [
+      formulation.flavouring_items ?? [],
+      formulation.sweetener_items ?? [],
+      formulation.colour_items ?? [],
+      formulation.acidity_items ?? [],
+      formulation.gelling_items ?? [],
+      formulation.glazing_items ?? [],
+      formulation.premix_sweetener_items ?? [],
+      formulation.powder_carrier_items ?? [],
+      formulation.gummy_base_items ?? [],
+      formulation.mcc_carrier_items ?? [],
+      formulation.dcp_carrier_items ?? [],
+      formulation.anti_caking_items ?? [],
+      formulation.capsule_shell_items ?? [],
+    ];
+    const codeAndUuidById = new Map<
+      string,
+      { code: string; pspSourceUuid: string | null }
+    >();
+    for (const source of codeAndUuidSources) {
+      for (const pick of source) {
+        if (!pick.id) continue;
+        codeAndUuidById.set(pick.id, {
+          code: pick.internal_code ?? "",
+          pspSourceUuid: pick.psp_source_uuid ?? null,
+        });
+      }
+    }
+    for (const [id, entry] of Object.entries(pendingPicksCache)) {
+      // ``pendingPicksCache`` covers freshly-clicked picks the server
+      // echo doesn't know about yet — merge only when the echo entry
+      // is missing so a saved echo (with its authoritative code) wins.
+      if (!codeAndUuidById.has(id)) {
+        codeAndUuidById.set(id, {
+          code: entry.code,
+          pspSourceUuid: entry.pspSourceUuid,
+        });
+      }
+    }
+    const itemLookup = (id: string) =>
+      codeAndUuidById.get(id) ?? null;
     const fullBomRaw = deriveStageBomLines({
       totals: liveTotals,
       lines,
@@ -2376,6 +2643,7 @@ export function FormulationBuilder({
       capsuleShellItems: capsuleShellRows,
       autoCapsuleShell,
       excipientOverrides: metadata.excipient_overrides,
+      itemLookup,
     });
     // Rewrite each row's label to the raw PSP item name when we
     // can resolve it — compute's default label falls back to
@@ -2443,6 +2711,9 @@ export function FormulationBuilder({
       readonly name?: string;
       readonly internal_code?: string;
       readonly ingredient_list_name?: string;
+      /** Populated on PSP-mirrored echo rows; drives the "Open on
+       *  PSP" deep link on every downstream display. */
+      readonly psp_source_uuid?: string | null;
     };
     const buildEchoMap = (rows: readonly EchoLike[]) =>
       new Map(rows.map((r) => [r.id, r]));
@@ -2465,7 +2736,7 @@ export function FormulationBuilder({
     const resolveName = (
       band: BandKind,
       itemId: string,
-    ): { name: string; code: string } => {
+    ): { name: string; code: string; pspSourceUuid: string | null } => {
       // Live caches — prefer the raw PSP name (``it.name``) over
       // the declaration label (``ingredient_list_name``). The BOM /
       // Fine-tune / Routing displays show the SKU the operator
@@ -2480,8 +2751,10 @@ export function FormulationBuilder({
         anti_caking: antiCakingNames[itemId],
         powder_carrier: powderCarrierNames[itemId],
         capsule_shell: capsuleShellNames[itemId],
-        // No live cache exposed for these bands yet — resolution
-        // falls straight through to the server echo.
+        // No dedicated live cache for these bands yet — they read
+        // through the shared ``pendingPicksCache`` seeded by every
+        // picker's ``onPickedItemsChange`` so a freshly-clicked pick
+        // resolves to its name in the same render.
         gelling: undefined,
         glazing: undefined,
         premix_sweetener: undefined,
@@ -2490,12 +2763,23 @@ export function FormulationBuilder({
       };
       const liveName = liveMap[band];
       const echo = echoMaps[band].get(itemId);
+      const cached = pendingPicksCache[itemId];
       const code =
         band === "capsule_shell"
-          ? capsuleShellCodes[itemId] ?? echo?.internal_code ?? ""
-          : echo?.internal_code ?? "";
-      const name = liveName || echo?.name || itemId;
-      return { name, code };
+          ? capsuleShellCodes[itemId] ??
+            echo?.internal_code ??
+            cached?.code ??
+            ""
+          : echo?.internal_code ?? cached?.code ?? "";
+      // Fallback order: live picker cache → server echo → shared
+      // pending-picks cache (updated by any picker's
+      // ``onPickedItemsChange``) → an explicit "unsaved pick" label
+      // so raw UUIDs never leak into the UI.
+      const name =
+        liveName || echo?.name || cached?.name || "(unsaved pick — save draft to name it)";
+      const pspSourceUuid =
+        echo?.psp_source_uuid ?? cached?.pspSourceUuid ?? null;
+      return { name, code, pspSourceUuid };
     };
     const bandsToEnsure: readonly {
       readonly bandKey: BandKind;
@@ -2521,13 +2805,17 @@ export function FormulationBuilder({
     for (const band of bandsToEnsure) {
       for (const itemId of band.ids) {
         if (!itemId || seenItemIds.has(itemId)) continue;
-        const { name, code } = resolveName(band.bandKey, itemId);
+        const { name, code, pspSourceUuid } = resolveName(
+          band.bandKey,
+          itemId,
+        );
         ensuredRows.push({
           key: `${band.bandKey}:${itemId}`,
           label: name,
           code,
           mg: 0,
           itemId,
+          pspItemUuid: pspSourceUuid,
         });
         seenItemIds.add(itemId);
       }
@@ -2599,6 +2887,10 @@ export function FormulationBuilder({
     antiCakingNames,
     powderCarrierNames,
     pspCapsuleShellCatalog,
+    // Shared "just picked" cache used by ``itemLookup`` (feeds code +
+    // PSP UUID to gummy per-item + gummy_base BomLine rows) and by
+    // ``resolveName`` for the ensured-visibility ensured-rows pass.
+    pendingPicksCache,
   ]);
 
   // Late-bind bomLinesByStage into the ref that ``handleSaveRouting``
@@ -3121,35 +3413,11 @@ export function FormulationBuilder({
   // when we're not drilled in). Clicking "Build ingredients" on a
   // stage sets both — the drill target AND the picker default —
   // so subsequent picks land where the scientist is looking.
-  const [stageDrilldownId, setStageDrilldownId] = useState<string | null>(
-    null,
-  );
-  const openStageDrilldown = useCallback(
-    (stageId: string) => {
-      // Wizard restructure: the builder is now its own top-level
-      // Formulation tab (no per-stage drill-down). Preserve the
-      // callback contract so the stage strip's "Build ingredients"
-      // button still works — clicking it now routes the operator
-      // to the shared formulation builder + pins the sticky picker
-      // target to the stage they clicked from (helpful when they
-      // want to add a new active that they'll route to this stage
-      // later on the Routing tab).
-      setActiveStageId(stageId);
-      setActiveTab("formulation");
-    },
-    [setActiveTab],
-  );
-  const closeStageDrilldown = useCallback(() => setStageDrilldownId(null), []);
-  // Resolve the currently drilled stage's name for the back-arrow
-  // header — falls back to a generic label if the stage was renamed
-  // out from under us between openStageDrilldown and a re-render.
-  const drilledStage = useMemo(
-    () =>
-      stageDrilldownId
-        ? formulation.stages.find((s) => s.id === stageDrilldownId) ?? null
-        : null,
-    [stageDrilldownId, formulation.stages],
-  );
+  // Stage drill-down was removed in the wizard restructure. The
+  // "Build ingredients" per-stage button on the Stages tab is gone
+  // (line-to-stage routing lives on the Routing tab now), and the
+  // Formulation tab hosts the builder in one place. Nothing needs
+  // per-stage drill state here.
   // Keep active stage in sync when stages get created / deleted on
   // a save. If the previously-active stage disappeared, snap to the
   // first available one so subsequent picks always have a target.
@@ -3186,7 +3454,7 @@ export function FormulationBuilder({
   }, []);
 
   const appendIngredientLine = useCallback(
-    (item: ItemDto, stageId: string | null) => {
+    (item: ItemDto) => {
       setLines((prev) => {
         if (prev.some((line) => line.item_id === item.id)) {
           return prev;
@@ -3199,13 +3467,18 @@ export function FormulationBuilder({
             item_id: item.id,
             item_name: item.name,
             item_internal_code: item.internal_code,
+            item_psp_source_uuid: item.psp_source_uuid ?? null,
             item_attributes: attributesFromItem(item),
             label_claim_mg: "0",
             purity_override: "",
             overage_override: "",
             extract_ratio_override: "",
             display_order: prev.length,
-            stage_id: stageId,
+            // Every new pick lands unassigned. Stage routing lives
+            // on the Routing tab — the scientist decides which stage
+            // an ingredient belongs to as an explicit step, so nothing
+            // is auto-bucketed into a stage on the picker.
+            stage_id: null,
             source_kind: "active",
             band_key: null,
           },
@@ -3215,18 +3488,91 @@ export function FormulationBuilder({
     [],
   );
 
+  // Batch pick from the Routing tab's inventory picker. Mirrors
+  // each PSP item to a local ``catalogues.Item`` in sequence (avoids
+  // racing on the local FK creation), then appends one active
+  // ``FormulationLine`` per pick with the operator-supplied qty as
+  // ``label_claim_mg``. Everything lands ``stage_id: null`` (routing
+  // still handled explicitly on the Routing tab); dedup by item_id
+  // so a re-pick of an already-added line is a no-op.
+  const handleAddManualPicks = useCallback(
+    async (
+      picks: readonly {
+        readonly pspUuid: string;
+        readonly qtyString: string;
+      }[],
+    ) => {
+      setErrorMessage(null);
+      for (const pick of picks) {
+        try {
+          const dto = await mirrorPsp.mutateAsync(pick.pspUuid);
+          setLines((prev) => {
+            if (prev.some((line) => line.item_id === dto.id)) return prev;
+            const parsed = Number.parseFloat(pick.qtyString || "1");
+            const claim = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+            return [
+              ...prev,
+              {
+                key: `new-${clientUuid()}`,
+                item_id: dto.id,
+                item_name: dto.name,
+                item_internal_code: dto.internal_code,
+                item_psp_source_uuid:
+                  (dto as { psp_source_uuid?: string | null })
+                    .psp_source_uuid ?? pick.pspUuid,
+                item_attributes: attributesFromItem({
+                  id: dto.id,
+                  name: dto.name,
+                  internal_code: dto.internal_code,
+                  unit: dto.unit,
+                  base_price: dto.base_price,
+                  is_archived: dto.is_archived,
+                  attributes: dto.attributes,
+                  created_at: "",
+                  updated_at: "",
+                }),
+                // Store the user's qty verbatim. On PSP push it
+                // rides as the BOM line's ``qty`` in the item's
+                // native unit (bottle / kg / unit). The scientist
+                // can refine on the Formulation tab later.
+                label_claim_mg: String(claim),
+                purity_override: "",
+                overage_override: "",
+                extract_ratio_override: "",
+                display_order: prev.length,
+                stage_id: null,
+                // ``manual`` distinguishes Routing-tab picks from the
+                // Formulation-tab active picker so the Routing inventory
+                // shows a remove-× on these rows only (a scientist can
+                // undo a manual pick right where they made it; actives
+                // + band picks remain managed on Formulation).
+                source_kind: "manual",
+                band_key: null,
+              },
+            ];
+          });
+        } catch (err) {
+          setErrorMessage(extractApiErrorMessage(err, tErrors));
+          break;
+        }
+      }
+    },
+    [mirrorPsp, tErrors],
+  );
+
+  // Remove a line by key — used by the × on Routing inventory rows.
+  const handleRemoveLine = useCallback((lineKey: string) => {
+    setLines((prev) => prev.filter((line) => line.key !== lineKey));
+  }, []);
+
   const addIngredient = useCallback(
     (item: ItemDto) => {
       // Hard-block re-entry while any pick (PSP mirror OR local
       // append) is being processed. Belt-and-braces with the
-      // disabled state on every picker button — a fast operator
-      // can still fire multiple clicks in the ~milliseconds
-      // between mutation start and the re-render that flips
-      // ``disabled`` on the DOM. Without this guard, back-to-back
-      // picks can race the ``activeStageId`` snapshot + the
-      // ``already``-added dedup, landing an ingredient in the
-      // wrong stage bucket (or with the wrong ``use_as``
-      // classification if the operator meant a different band).
+      // disabled state on every picker button — a fast operator can
+      // still fire multiple clicks in the ~milliseconds between
+      // mutation start and the re-render that flips ``disabled``
+      // on the DOM.
       if (mirrorPsp.isPending || pickingRef.current) return;
       // Flip the visible-loader flag synchronously so the overlay
       // shows on the very next paint — even for local picks where
@@ -3246,26 +3592,19 @@ export function FormulationBuilder({
         // mirror round-trip. On success or failure it gets
         // replaced with a fresh message below.
         setErrorMessage(null);
-        // Snapshot the stage target at click-time so a race between
-        // the mirror round-trip and the operator switching stages
-        // can't land the line in the wrong bucket.
-        const targetStageId = activeStageId;
         mirrorPsp.mutate(pspUuid, {
           onSuccess: (dto) => {
-            appendIngredientLine(
-              {
-                id: dto.id,
-                name: dto.name,
-                internal_code: dto.internal_code,
-                unit: dto.unit,
-                base_price: dto.base_price,
-                is_archived: dto.is_archived,
-                attributes: dto.attributes,
-                created_at: "",
-                updated_at: "",
-              },
-              targetStageId,
-            );
+            appendIngredientLine({
+              id: dto.id,
+              name: dto.name,
+              internal_code: dto.internal_code,
+              unit: dto.unit,
+              base_price: dto.base_price,
+              is_archived: dto.is_archived,
+              attributes: dto.attributes,
+              created_at: "",
+              updated_at: "",
+            });
             releasePickLock();
           },
           onError: (err) => {
@@ -3280,10 +3619,10 @@ export function FormulationBuilder({
         });
         return;
       }
-      appendIngredientLine(item, activeStageId);
+      appendIngredientLine(item);
       releasePickLock();
     },
-    [appendIngredientLine, mirrorPsp, activeStageId, tErrors, releasePickLock],
+    [appendIngredientLine, mirrorPsp, tErrors, releasePickLock],
   );
 
   const updateLineClaim = useCallback((key: string, value: string) => {
@@ -3497,6 +3836,16 @@ export function FormulationBuilder({
       // travel as-is; the DRF DecimalField parses them.
       const overrideOrNull = (raw: string): string | null =>
         raw && raw.trim() !== "" ? raw : null;
+      // Bake Routing-tab intent into the line payload for actives.
+      // Save chain runs handleSaveLines before handleSaveRouting, so
+      // new picks land with the right ``stage_id`` in one round-trip
+      // — no post-save correlation dance for ``new-…`` client-only
+      // keys. handleSaveRouting is then band-only.
+      const overrideStageIdFor = (line: BuilderLine): string | null => {
+        if (line.source_kind === "band_pick") return line.stage_id;
+        const routingIntent = routingByKey.get(`active:${line.key}`);
+        return routingIntent !== undefined ? routingIntent : line.stage_id;
+      };
       const updated = await replaceLinesMutation.mutateAsync({
         lines: lines.map((line, index) => ({
           item_id: line.item_id,
@@ -3505,7 +3854,13 @@ export function FormulationBuilder({
           overage_override: overrideOrNull(line.overage_override),
           extract_ratio_override: overrideOrNull(line.extract_ratio_override),
           display_order: index,
-          stage_id: line.stage_id,
+          stage_id: overrideStageIdFor(line),
+          // Preserve ``source_kind`` across the round-trip so
+          // Routing-tab manual picks keep their × affordance after
+          // save. Server's ``replace_lines`` wipes + recreates all
+          // lines, so without this manual picks get demoted to
+          // active on every save.
+          source_kind: line.source_kind,
         })),
       });
       setFormulation(updated);
@@ -3513,12 +3868,16 @@ export function FormulationBuilder({
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
-  }, [lines, replaceLinesMutation, tErrors]);
+  }, [lines, routingByKey, replaceLinesMutation, tErrors]);
 
   const handleSaveVersion = useCallback(async () => {
     setErrorMessage(null);
     try {
       await handleSaveMetadata();
+      // Lines fires unconditionally when routing is dirty too —
+      // Routing-tab intent for actives is baked into the lines
+      // payload (see ``handleSaveLines`` override), so the version
+      // snapshot picks up the freshly-routed lines in one round-trip.
       await handleSaveLines();
       // Persist any pending stage edits before cutting the version
       // so the snapshot reflects them + so the auto-push cascade
@@ -3529,6 +3888,11 @@ export function FormulationBuilder({
       // version payload is built below.
       if (stagesDirty && stagesSaveHandleRef.current) {
         await stagesSaveHandleRef.current();
+      }
+      // Materialize band picks (flavouring / sweetener / …) as
+      // routed FormulationLine rows. No-op when nothing changed.
+      if (routingDirty) {
+        await handleSaveRouting();
       }
       // Ship the FE-computed per-stage BOM as part of the save so
       // (1) version history preserves exactly what each stage's PSP
@@ -3572,9 +3936,11 @@ export function FormulationBuilder({
   }, [
     handleSaveMetadata,
     handleSaveLines,
+    handleSaveRouting,
     saveVersionMutation,
     bomLinesByStage,
     stagesDirty,
+    routingDirty,
     tErrors,
   ]);
 
@@ -3630,6 +3996,60 @@ export function FormulationBuilder({
     [formulation, metadata],
   );
 
+  // Metadata fields owned by the Formulation tab — every M2M picker
+  // (flavouring, sweetener, colour, acidity, gelling, glazing, MCC,
+  // DCP, anti-caking, powder carrier, capsule shell, gummy base,
+  // premix sweetener) plus the per-SKU excipient overrides. Split
+  // out so the "unsaved" dot lights up on the tab the operator is
+  // actually editing, not on Setup where the tab-strip's default
+  // ``metadataDirty`` mapping used to route every picker change.
+  const FORMULATION_TAB_METADATA_KEYS = useMemo(
+    () =>
+      [
+        "flavouring_item_ids",
+        "sweetener_item_ids",
+        "colour_item_ids",
+        "acidity_item_ids",
+        "gelling_item_ids",
+        "glazing_item_ids",
+        "premix_sweetener_item_ids",
+        "mcc_carrier_item_ids",
+        "dcp_carrier_item_ids",
+        "anti_caking_item_ids",
+        "powder_carrier_item_ids",
+        "capsule_shell_item_ids",
+        "gummy_base_item_ids",
+        "excipient_overrides",
+      ] as const,
+    [],
+  );
+  const formulationMetadataDirty = useMemo(() => {
+    const saved = metadataFrom(formulation);
+    return FORMULATION_TAB_METADATA_KEYS.some(
+      (k) => JSON.stringify(saved[k]) !== JSON.stringify(metadata[k]),
+    );
+  }, [formulation, metadata, FORMULATION_TAB_METADATA_KEYS]);
+  // Setup dot fires only when the user touched a Setup-owned field.
+  // Iterate every metadata key, skipping the ones the Formulation tab
+  // owns — so editing a picker doesn't also light Setup.
+  const setupMetadataDirty = useMemo(() => {
+    if (!metadataDirty) return false;
+    const saved = metadataFrom(formulation);
+    const pickerSet = new Set<string>(FORMULATION_TAB_METADATA_KEYS);
+    for (const key of Object.keys(metadata) as (keyof MetadataDraft)[]) {
+      if (pickerSet.has(key as string)) continue;
+      if (JSON.stringify(saved[key]) !== JSON.stringify(metadata[key])) {
+        return true;
+      }
+    }
+    return false;
+  }, [
+    metadataDirty,
+    formulation,
+    metadata,
+    FORMULATION_TAB_METADATA_KEYS,
+  ]);
+
   const linesDirty = useMemo(() => {
     const stripKey = (line: BuilderLine) => ({
       item_id: line.item_id,
@@ -3640,6 +4060,61 @@ export function FormulationBuilder({
     const current = lines.map(stripKey);
     return JSON.stringify(original) !== JSON.stringify(current);
   }, [formulation, lines]);
+
+  // Split ``linesDirty`` by the picker that spawned each row so the
+  // "unsaved" dot lights on the tab the operator is actually editing.
+  // Any change to ``manual`` picks routes to Routing; anything else
+  // (actives, band picks) routes to Formulation. Both feed the top-
+  // of-page Save chain the same way — this is a UX affordance only.
+  const savedLinesByItemAndKind = useMemo(() => {
+    const map = new Map<
+      string,
+      { label_claim_mg: string; stage_id: string | null }
+    >();
+    for (const line of linesFrom(formulation)) {
+      const k = `${line.source_kind ?? "active"}:${line.item_id}`;
+      map.set(k, {
+        label_claim_mg: line.label_claim_mg,
+        stage_id: line.stage_id,
+      });
+    }
+    return map;
+  }, [formulation]);
+  const routingLinesDirty = useMemo(() => {
+    // A manual pick is dirty iff (a) it's new (no saved twin) OR
+    // (b) its claim / stage changed vs saved. Matches the same
+    // shape ``linesDirty`` compares so the two flags flip together
+    // on a real save round-trip.
+    const currentManuals = lines.filter((l) => l.source_kind === "manual");
+    const savedManualCount = Array.from(savedLinesByItemAndKind.keys()).filter(
+      (k) => k.startsWith("manual:"),
+    ).length;
+    if (currentManuals.length !== savedManualCount) return true;
+    for (const line of currentManuals) {
+      const saved = savedLinesByItemAndKind.get(`manual:${line.item_id}`);
+      if (!saved) return true;
+      if (saved.label_claim_mg !== line.label_claim_mg) return true;
+    }
+    return false;
+  }, [lines, savedLinesByItemAndKind]);
+  // Formulation-tab dot sees line-changes only when a NON-manual line
+  // moved (added / removed active, mg edit on an active). Isolates
+  // manual picks from lighting the wrong tab.
+  const formulationLinesDirty = useMemo(() => {
+    if (!linesDirty) return false;
+    const nonManualNow = lines.filter((l) => l.source_kind !== "manual");
+    const savedNonManuals = Array.from(savedLinesByItemAndKind.entries())
+      .filter(([k]) => !k.startsWith("manual:"))
+      .map(([, v]) => v);
+    if (nonManualNow.length !== savedNonManuals.length) return true;
+    for (const line of nonManualNow) {
+      const kind = line.source_kind ?? "active";
+      const saved = savedLinesByItemAndKind.get(`${kind}:${line.item_id}`);
+      if (!saved) return true;
+      if (saved.label_claim_mg !== line.label_claim_mg) return true;
+    }
+    return false;
+  }, [linesDirty, lines, savedLinesByItemAndKind]);
 
   // Snapshot of the last-saved ``label_claim_mg`` per line, keyed by
   // the builder line ``key`` (stable per item_id). Feeds the per-row
@@ -3687,7 +4162,7 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       {canWrite ? (
         <section className="flex flex-wrap items-center justify-end gap-3">
-          {metadataDirty || linesDirty || stagesDirty ? (
+          {metadataDirty || linesDirty || stagesDirty || routingDirty ? (
             <span className="mr-auto text-xs font-medium uppercase tracking-wide text-ink-500">
               {tFormulations("builder.unsaved_changes")}
             </span>
@@ -3736,12 +4211,40 @@ export function FormulationBuilder({
                 variant="outline"
                 size="md"
                 className="gap-1.5 rounded-lg bg-ink-0 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                isDisabled={isBusy || (!metadataDirty && !linesDirty && !stagesDirty)}
+                isDisabled={
+                  isBusy ||
+                  (!metadataDirty && !linesDirty && !stagesDirty && !routingDirty)
+                }
                 onClick={async () => {
+                  const hadChanges =
+                    metadataDirty ||
+                    linesDirty ||
+                    stagesDirty ||
+                    routingDirty;
                   if (metadataDirty) await handleSaveMetadata();
-                  if (linesDirty) await handleSaveLines();
+                  // Actives ride handleSaveLines with their Routing-
+                  // tab intent baked in — so run lines when either
+                  // ``linesDirty`` OR ``routingDirty`` is set.
+                  if (linesDirty || routingDirty) await handleSaveLines();
                   if (stagesDirty && stagesSaveHandleRef.current) {
                     await stagesSaveHandleRef.current();
+                  }
+                  // Band picks (flavouring / sweetener / …) have no
+                  // FormulationLine until this endpoint materializes
+                  // them, so it fires even when only routing is dirty.
+                  if (routingDirty) await handleSaveRouting();
+                  // Fire-and-forget auto-snapshot so the History tab's
+                  // Activity revert has a target for this draft save.
+                  // ``is_auto: true`` skips the PSP push cascade on
+                  // the server so we don't spam PSP on every keystroke.
+                  // Silent-degrade — a failed snapshot doesn't fail
+                  // the draft save; the current formulation is
+                  // authoritative and the next draft will retry.
+                  if (hadChanges) {
+                    saveVersionMutation.mutate({
+                      label: "",
+                      is_auto: true,
+                    });
                   }
                 }}
               >
@@ -3756,10 +4259,10 @@ export function FormulationBuilder({
                 // Gate on the same dirty flags as Save draft — a
                 // Version snapshots the current state, so firing
                 // it with nothing dirty just clones the previous
-                // version verbatim. Prevents accidental v2 / v3 /
-                // v4 stacks that all say "no changes".
+                // version verbatim.
                 isDisabled={
-                  isBusy || (!metadataDirty && !linesDirty && !stagesDirty)
+                  isBusy ||
+                  (!metadataDirty && !linesDirty && !stagesDirty && !routingDirty)
                 }
                 onClick={handleSaveVersion}
               >
@@ -3789,58 +4292,25 @@ export function FormulationBuilder({
       {/* which sections carry unsaved edits so a scientist can see    */}
       {/* what a Save Version would actually persist.                  */}
       {/* ------------------------------------------------------------ */}
-      {stageDrilldownId !== null ? (
-        // Drilled-in mode: the sub-tab strip is swapped for a
-        // breadcrumb so the operator always has a way back to the
-        // stage list, and the visual weight shifts from "navigate"
-        // to "you are here". Sticks to the top of the viewport so
-        // scrolling through the picker / lines / totals / fine-tune
-        // / compliance never scrolls the back arrow out of reach.
-        <nav
-          aria-label="Formulation builder — stage drill-down"
-          className="sticky top-0 z-30 -mx-4 flex items-center gap-2 border-b border-ink-200 bg-ink-0/95 px-4 py-2 backdrop-blur"
-        >
-          <button
-            type="button"
-            onClick={closeStageDrilldown}
-            className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-ink-700 hover:bg-ink-50 hover:text-ink-1000"
-          >
-            <ChevronLeft className="h-4 w-4" />
-            Stages
-          </button>
-          <span className="text-ink-300">/</span>
-          <span className="min-w-0 truncate text-sm font-medium text-ink-1000">
-            Building {drilledStage?.name ?? "stage"}
-          </span>
-          {linesDirty ? (
-            <span
-              className="ml-2 h-2 w-2 rounded-full bg-orange-500"
-              aria-label="unsaved changes"
-            />
-          ) : null}
-        </nav>
-      ) : (
-        // Default mode: pill-style segmented control so the sub-tabs
-        // read as clearly secondary to the project shell's icon-based
-        // underline tabs above (Overview / Builder / Spec sheets /
-        // Proposals / Trial batches / QC). Two identical underline
-        // strips stacked was the ugliness we were fixing.
-        <nav
-          aria-label="Formulation builder tabs"
-          className="sticky top-0 z-30 -mx-4 flex justify-start bg-ink-0/95 px-4 py-2 backdrop-blur"
-        >
-          <div className="inline-flex items-center gap-1 rounded-full bg-ink-100 p-1">
+      {/* Pill-style segmented control — reads as clearly secondary
+          to the project shell's icon-based underline tabs above
+          (Overview / Builder / Spec sheets / …). */}
+      <nav
+        aria-label="Formulation builder tabs"
+        className="sticky top-0 z-30 -mx-4 flex justify-start bg-ink-0/95 px-4 py-2 backdrop-blur"
+      >
+        <div className="inline-flex items-center gap-1 rounded-full bg-ink-100 p-1">
             {(
               [
                 {
                   id: "setup" as const,
                   label: "Setup",
-                  dirty: metadataDirty,
+                  dirty: setupMetadataDirty,
                 },
                 {
                   id: "formulation" as const,
                   label: "Formulation",
-                  dirty: linesDirty,
+                  dirty: formulationLinesDirty || formulationMetadataDirty,
                 },
                 {
                   id: "stages" as const,
@@ -3850,7 +4320,7 @@ export function FormulationBuilder({
                 {
                   id: "routing" as const,
                   label: "Routing",
-                  dirty: routingDirty,
+                  dirty: routingDirty || routingLinesDirty,
                 },
                 {
                   id: "preview" as const,
@@ -3878,9 +4348,8 @@ export function FormulationBuilder({
                 ) : null}
               </button>
             ))}
-          </div>
-        </nav>
-      )}
+        </div>
+      </nav>
 
       {/* ------------------------------------------------------------ */}
       {/* Metadata form  (tab: SETUP)                                  */}
@@ -4178,6 +4647,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, dcp_carrier_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {/* Anti-caking picker — capsule + tablet. Optional. Empty
@@ -4509,6 +4979,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, gummy_base_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -4580,6 +5051,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, flavouring_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -4603,6 +5075,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, colour_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -4622,6 +5095,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, glazing_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {metadata.dosage_form === "gummy" ? (
@@ -4641,6 +5115,7 @@ export function FormulationBuilder({
               onChange={(ids) =>
                 setMetadata({ ...metadata, gelling_item_ids: ids })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
           {metadata.dosage_form === "gummy" &&
@@ -4668,6 +5143,7 @@ export function FormulationBuilder({
                   premix_sweetener_item_ids: ids,
                 })
               }
+              onPickedItemsChange={mergePendingPicks}
             />
           ) : null}
         </div>
@@ -4800,20 +5276,25 @@ export function FormulationBuilder({
         metadata={metadata}
         onChange={(patch) => setMetadata({ ...metadata, ...patch })}
         canWrite={canWrite}
+        derivedAllergenKeys={formulation.derived_allergen_keys ?? []}
       />
 
-      {/* Photos + files — persist on NPD immediately, mirror onto
-          the finished-product PSP item best-effort on push. */}
-      <FormulationPhotosSetupSection
-        orgId={orgId}
-        formulationId={formulation.id}
-        canWrite={canWrite}
-      />
-      <FormulationCertificatesSetupSection
-        orgId={orgId}
-        formulationId={formulation.id}
-        canWrite={canWrite}
-      />
+      {/* Photos + certificates render side-by-side on wide screens
+          — both are compact PSP-mirror widgets so they don't need
+          full-width real estate, and pairing them cuts the Setup
+          tab's vertical scroll. Stack on mobile. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+        <FormulationPhotosSetupSection
+          orgId={orgId}
+          formulationId={formulation.id}
+          canWrite={canWrite}
+        />
+        <FormulationCertificatesSetupSection
+          orgId={orgId}
+          formulationId={formulation.id}
+          canWrite={canWrite}
+        />
+      </div>
 
       </div>
 
@@ -4822,13 +5303,10 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <div
         className={
-          activeTab === "stages" && stageDrilldownId === null
-            ? "flex flex-col gap-10"
-            : "hidden"
+          activeTab === "stages" ? "flex flex-col gap-10" : "hidden"
         }
       >
       <StageStrip
-        onOpenIngredientBuilder={openStageDrilldown}
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
         onSyncNow={async () => {
@@ -4867,13 +5345,6 @@ export function FormulationBuilder({
         activeStageId={activeStageId}
         onActiveStageChange={setActiveStageId}
         lines={lines}
-        // Live per-stage BOMs from PSP. Each entry is the active
-        // primary BOM for that stage's PSP item (semi-finished for
-        // non-terminal stages, finished-product for the terminal).
-        // Stages without a PSP link yet map to an empty list, which
-        // the strip renders as "not on PSP yet". No local synthesis,
-        // no cross-stage bleed — the card is a mirror of PSP.
-        bomLinesByStage={bomLinesByStage}
         onSaved={(updated) => {
           // Server has fresh stage state — mirror it into the
           // builder's local ``formulation`` so the Stage BOMs
@@ -4980,14 +5451,11 @@ export function FormulationBuilder({
               // Replaces an O(N × M) ``lines.some(...)`` scan run
               // per picker row on every render.
               (() => {
-                // Drill-down: dedup scoped to THIS stage so the same
-                // active can be picked into a different stage (each
-                // stage is its own BOM). Falls back to the whole
-                // ``lines`` array when not drilled in.
-                const scopedLines =
-                  stageDrilldownId !== null
-                    ? lines.filter((l) => l.stage_id === stageDrilldownId)
-                    : lines;
+                // Formulation tab hosts the whole recipe in one
+                // place — dedup runs across every picked line so a
+                // single active can't be added twice. Stage-scoped
+                // dedup went away with the per-stage drill-down.
+                const scopedLines = lines;
                 const pickedIds = new Set<string>();
                 const pickedCodes = new Set<string>();
                 for (const l of scopedLines) {
@@ -5118,15 +5586,10 @@ export function FormulationBuilder({
           ) : null}
           {(() => {
             // Drill-down = scoped to a single stage. Filter the
-            // ingredient table + empty-state to that stage's lines
-            // only, so "Build ingredients on Stage 1" shows Stage 1's
-            // picks — not the whole formulation's line list. Legacy
-            // no-drill callers (activeTab==="ingredients", historical)
-            // fall through to the full ``lines`` array unchanged.
-            const visibleLines =
-              stageDrilldownId !== null
-                ? lines.filter((l) => l.stage_id === stageDrilldownId)
-                : lines;
+            // Formulation tab always shows the full recipe — every
+            // pick regardless of stage assignment (routing lives on
+            // the Routing tab, not here).
+            const visibleLines = lines;
             return visibleLines.length === 0 ? (
             <p className="mt-6 text-sm text-ink-600">
               {tFormulations("builder.picker_none_added")}
@@ -5410,12 +5873,17 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <ExcipientFineTunePanel
         totalWeightMg={liveTotals.totalWeightMg}
+        pspBaseUrl={organization?.psp_base_url ?? null}
+        productName={formulation.name}
+        productCode={formulation.code}
         activeLines={lines
           .map((line) => {
             const nominalMg = Number.parseFloat(line.label_claim_mg || "0");
             return {
               key: line.key,
               name: line.item_name,
+              code: line.item_internal_code || "",
+              pspSourceUuid: line.item_psp_source_uuid ?? null,
               nominalMg: Number.isFinite(nominalMg) ? nominalMg : 0,
               savedMg: savedActiveMgByLineKey.get(line.key) ?? null,
             };
@@ -5499,10 +5967,18 @@ export function FormulationBuilder({
           const rows: {
             key: string;
             label: string;
+            code?: string;
             mg: number;
             hint?: string;
             itemId?: string;
+            pspSourceUuid?: string | null;
             notDosed?: boolean;
+            /** Band placeholder — compute emitted an mg total but no
+             *  SKU is picked for this band yet, so the row can't
+             *  actually procure anything. Surfaced as an amber "PICK
+             *  A SKU" call-to-action so the scientist knows the
+             *  formula isn't finished. */
+            needsPick?: boolean;
           }[] = [];
           for (const row of source) {
             const [prefix] = row.key.split(":");
@@ -5526,12 +6002,27 @@ export function FormulationBuilder({
             // Skip the synthesised "prior semi" link — not a real
             // ingredient, doesn't belong here.
             if (prefix === "semi") continue;
+            // Band-placeholder detection: any row with an mg total
+            // but no ``itemId`` is a placeholder the scientist needs
+            // to attach to a real SKU (glazing / gelling / colour /
+            // flavouring / gummy-base / water). Without an itemId
+            // procurement has nothing to source, so it can't ship
+            // as-is even though the mass is dosed. Flag it so the
+            // fine-tune UI renders an amber "PICK A SKU" pill and
+            // adds it to the top-of-panel incomplete-bands banner.
+            // Rows that already resolved to a pick (``itemId``
+            // non-null) — including the water row when a water-
+            // named gummy_base SKU was picked — skip the warning.
+            const isBandPlaceholder = !row.itemId && row.mg > 0;
             rows.push({
               key: row.key,
               label: row.label,
+              code: row.code || undefined,
               mg: row.mg,
               itemId: row.itemId ?? undefined,
+              pspSourceUuid: row.pspItemUuid ?? null,
               notDosed: row.mg <= 0 && !!row.itemId,
+              needsPick: isBandPlaceholder,
             });
           }
           return rows;
@@ -5569,17 +6060,19 @@ export function FormulationBuilder({
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "routing" ? "flex flex-col gap-6" : "hidden"}>
         <RoutingTabBody
+          orgId={orgId}
           formulation={formulation}
           lines={lines}
           bomLinesByStage={bomLinesByStage}
           routingByKey={routingByKey}
           setRoutingByKey={setRoutingByKey}
-          onSave={handleSaveRouting}
           isSaving={wizardRoutingMutation.isPending}
-          routingDirty={routingDirty}
           canWrite={canWrite}
           numberFormatter={numberFormatter}
           errorMessage={wizardRoutingMutation.error?.message ?? null}
+          onAddManualPicks={handleAddManualPicks}
+          onRemoveLine={handleRemoveLine}
+          pickBusy={mirrorPsp.isPending}
         />
       </div>
 
@@ -6034,6 +6527,17 @@ function deriveStageBomLines(inputs: {
     readonly shellWeightMg: number;
   } | null;
   excipientOverrides: Readonly<Record<string, number>>;
+  /** Resolve an item id → its catalogue code + PSP mirror UUID for
+   *  rows the compute emits without carrying the fields inline (gummy
+   *  per-item + gummy_base branches, which get plain ``{id, label}``
+   *  picks). The builder side wires this from a merged view of every
+   *  server echo + ``pendingPicksCache`` so freshly-clicked picks
+   *  resolve immediately. Returns ``null`` when the id is unknown —
+   *  the row still renders, just without the ``MAxxxxx`` chip or the
+   *  "Open on PSP" link. */
+  itemLookup?: (
+    itemId: string,
+  ) => { code: string; pspSourceUuid: string | null } | null;
 }): BomLine[] {
   const {
     totals,
@@ -6044,8 +6548,14 @@ function deriveStageBomLines(inputs: {
     capsuleShellItems,
     autoCapsuleShell,
     excipientOverrides,
+    itemLookup,
   } = inputs;
   const out: BomLine[] = [];
+  const lookup = (id: string | null | undefined) =>
+    (id && itemLookup ? itemLookup(id) : null) ?? {
+      code: "",
+      pspSourceUuid: null,
+    };
 
   // Capsule shells — one row per picked shell SKU with the shell's
   // own ``shell_weight_mg`` attribute as its per-serving mg. Every
@@ -6094,14 +6604,26 @@ function deriveStageBomLines(inputs: {
   // because the operator's mental model is "the formulation has one
   // recipe; every manufacturing stage lists it in full."
   for (const line of lines) {
-    const mg = totals.lineValues.get(line.key);
-    if (!mg || mg <= 0) continue;
+    const computed = totals.lineValues.get(line.key);
+    // Manual picks (Routing-tab inventory picker) don't ride the
+    // compute pipeline — no purity / overage / extract-ratio to
+    // adjust — so ``totals.lineValues`` returns undefined or 0.
+    // Fall back to the raw ``label_claim_mg`` the scientist typed
+    // in the qty modal so the row stays visible in inventory + on
+    // every stage card even before the first save.
+    let mg = computed ?? 0;
+    if (mg <= 0 && line.source_kind === "manual") {
+      const raw = Number.parseFloat(line.label_claim_mg || "0");
+      if (Number.isFinite(raw) && raw > 0) mg = raw;
+    }
+    if (mg <= 0) continue;
     out.push({
       key: `active:${line.key}`,
       label: line.item_name,
       code: line.item_internal_code || "",
       mg,
       itemId: line.item_id || null,
+      pspItemUuid: line.item_psp_source_uuid ?? null,
     });
   }
 
@@ -6168,12 +6690,14 @@ function deriveStageBomLines(inputs: {
     for (const row of excipients.rows ?? []) {
       if (!row || row.mg <= 0) continue;
       const [bandSlug, itemId] = row.slug.split(":");
+      const meta = lookup(itemId);
       out.push({
         key: `${bandSlug}:${itemId ?? row.slug}`,
         label: row.label,
-        code: "",
+        code: meta.code,
         mg: row.mg,
         itemId: itemId || null,
+        pspItemUuid: meta.pspSourceUuid,
       });
     }
 
@@ -6184,26 +6708,56 @@ function deriveStageBomLines(inputs: {
     // just need the per-item mg for BOM parity.
     for (const row of excipients.gummyBaseRows ?? []) {
       if (!row || row.mg <= 0) continue;
+      const meta = lookup(row.itemId);
       out.push({
         key: `gummy-base:${row.itemId}`,
         label: row.label,
-        code: "",
+        code: meta.code,
         mg: row.mg,
         itemId: row.itemId,
+        pspItemUuid: meta.pspSourceUuid,
+      });
+    }
+    // Gummy base placeholder — the base is the structural bulking
+    // matrix (sweeteners + bulking agents that let the gel set). If
+    // the compute wants to allocate mass here but no non-water pick
+    // is selected, no per-SKU row gets emitted above — the fine-
+    // tune panel would then quietly skip the biggest structural
+    // component of the gummy. Emit an explicit placeholder so the
+    // "PICK A SKU" warning fires; the row shows the mg the compute
+    // reserved and disappears the moment the scientist ticks a
+    // sweetener or bulking agent.
+    if (
+      (excipients.gummyBaseMg ?? 0) > 0 &&
+      (!excipients.gummyBaseRows || excipients.gummyBaseRows.length === 0)
+    ) {
+      out.push({
+        key: "gummy-base",
+        label: "Gummy Base",
+        code: "",
+        mg: excipients.gummyBaseMg ?? 0,
+        itemId: null,
       });
     }
 
-    // Deionised water for gummies — a fixed 5.5% of the target
-    // gummy mass, not tied to any picked SKU. Emit as a synthetic
-    // row (no itemId → not pushed to PSP) so the operator at
-    // least sees it in the recipe.
+    // Water for gummies — a fixed 5.5% of the target gummy mass. If
+    // one of the picked gummy_base SKUs is water/aqua, the compute
+    // attached its ``waterItemId`` so procurement sees the exact SKU
+    // + PSP link (and the same pick is dropped from the gummy_base
+    // split so its mass isn't double-counted). Otherwise the row
+    // renders as a generic synthetic entry with no itemId — the
+    // scientist can go pick a water SKU to link it.
     if (excipients.waterMg && excipients.waterMg > 0) {
+      const meta = lookup(excipients.waterItemId);
       out.push({
-        key: "gummy-water",
-        label: "Deionised Water (gummy base)",
-        code: "",
+        key: excipients.waterItemId
+          ? `gummy-water:${excipients.waterItemId}`
+          : "gummy-water",
+        label: excipients.waterLabel,
+        code: meta.code,
         mg: excipients.waterMg,
-        itemId: null,
+        itemId: excipients.waterItemId,
+        pspItemUuid: meta.pspSourceUuid,
       });
     }
   }
@@ -6228,18 +6782,21 @@ function deriveStageBomLines(inputs: {
  * product" for backwards compat.
  */
 const RoutingTabBody = memo(function RoutingTabBody({
+  orgId,
   formulation,
   lines,
   bomLinesByStage,
   routingByKey,
   setRoutingByKey,
-  onSave,
   isSaving,
-  routingDirty,
   canWrite,
   numberFormatter,
   errorMessage,
+  onAddManualPicks,
+  onRemoveLine,
+  pickBusy,
 }: {
+  orgId: string;
   formulation: FormulationDto;
   lines: readonly BuilderLine[];
   bomLinesByStage: ReadonlyMap<string, readonly BomLine[]>;
@@ -6247,18 +6804,20 @@ const RoutingTabBody = memo(function RoutingTabBody({
   setRoutingByKey: React.Dispatch<
     React.SetStateAction<Map<string, string | null>>
   >;
-  onSave: () => Promise<void>;
   isSaving: boolean;
-  routingDirty: boolean;
   canWrite: boolean;
   numberFormatter: Intl.NumberFormat;
   errorMessage: string | null;
+  onAddManualPicks: (
+    picks: readonly {
+      readonly pspUuid: string;
+      readonly qtyString: string;
+    }[],
+  ) => Promise<void>;
+  onRemoveLine: (lineKey: string) => void;
+  pickBusy: boolean;
 }) {
   const stages = formulation.stages;
-  const terminalStageId =
-    stages.find((s) => s.psp_item_type === "finished_product")?.id ??
-    stages[stages.length - 1]?.id ??
-    null;
 
   // Build a de-duplicated inventory of every ingredient the
   // formulation carries. Walks the full-BOM map once (any stage's
@@ -6362,20 +6921,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
     [setRoutingByKey],
   );
 
-  const autoRouteRemaining = useCallback(() => {
-    // Default any unassigned rows to the terminal stage — matches
-    // the push-cascade fallback and legacy behaviour.
-    if (!terminalStageId) return;
-    setRoutingByKey((prev) => {
-      const next = new Map(prev);
-      for (const row of inventory) {
-        if (!next.get(row.routingKey)) {
-          next.set(row.routingKey, terminalStageId);
-        }
-      }
-      return next;
-    });
-  }, [inventory, terminalStageId, setRoutingByKey]);
+  // "Auto-route unassigned → terminal" was removed: routing is now
+  // an explicit act the scientist performs. Silent auto-parking on
+  // the terminal stage hides intent + defeats the "everything
+  // unassigned by default" contract.
 
   const bandChip = (band: string) =>
     band === "active" ? null : (
@@ -6383,6 +6932,215 @@ const RoutingTabBody = memo(function RoutingTabBody({
         {band.replace(/_/g, " ")}
       </span>
     );
+
+  // ── Ingredient picker (swaps in over the inventory column) ────────
+  type PickerType = "all" | "raw_material" | "semi_finished" | "packaging";
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+  const [pickerType, setPickerType] = useState<PickerType>("all");
+  const [pickerSelection, setPickerSelection] = useState<Set<string>>(
+    () => new Set(),
+  );
+  // Confirm modal state — populated when the operator clicks
+  // "Add N selected". Carries the picked PSP items + a live qty
+  // draft per item so the scientist can tweak values before commit.
+  const [qtyModal, setQtyModal] = useState<
+    | {
+        readonly picks: readonly PspItemDto[];
+        readonly qtyDraft: Record<string, string>;
+      }
+    | null
+  >(null);
+
+  const closePicker = () => {
+    setPickerOpen(false);
+    setPickerSelection(new Set());
+    setPickerSearch("");
+  };
+  const togglePickerSelection = (uuid: string) => {
+    setPickerSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(uuid)) next.delete(uuid);
+      else next.add(uuid);
+      return next;
+    });
+  };
+
+  // Item-type map for the picker's chip filter. ``raw_material`` is
+  // PSP's stock key for consumables the operator draws off shelves
+  // (actives + excipients); ``packaging`` is a distinct type on PSP;
+  // ``semi_finished`` covers intermediates + the terminal finished
+  // product would be filtered out downstream (a scientist picking a
+  // finished product into a formulation is almost always a mistake).
+  const pspItemsQuery = usePspItems(orgId, {
+    enabled: pickerOpen,
+    search: pickerSearch.trim(),
+    itemTypes:
+      pickerType === "all"
+        ? ["raw_material", "semi_finished", "packaging"]
+        : [pickerType],
+  });
+  const pspItems = pspItemsQuery.data?.items ?? [];
+
+  // Stage outputs — semi-finished items produced by earlier stages of
+  // THIS formulation, so the scientist can grab the Blending output
+  // when routing Encapsulation in one click. Excludes the terminal
+  // (a stage doesn't consume its own output) and unpushed stages
+  // (which don't have a PSP uuid yet).
+  const stageOutputs = useMemo(() => {
+    return stages
+      .slice(0, -1)
+      .map((stage) => ({
+        stage,
+        uuid: stage.psp_semi_finished_uuid ?? null,
+      }))
+      .filter(
+        (x): x is { stage: (typeof stages)[number]; uuid: string } =>
+          Boolean(x.uuid),
+      );
+  }, [stages]);
+  const stageOutputUuids = useMemo(
+    () => new Set(stageOutputs.map((o) => o.uuid)),
+    [stageOutputs],
+  );
+
+  // Split PSP results into pinned stage-outputs + everything else.
+  const pinnedResults = pspItems.filter((it) =>
+    stageOutputUuids.has(it.uuid),
+  );
+  const otherResults = pspItems.filter(
+    (it) => !stageOutputUuids.has(it.uuid),
+  );
+
+  // Already-in-inventory dedup so the picker greys out items that
+  // the formulation already carries (via lines OR band picks).
+  const alreadyPickedPspUuids = useMemo(() => {
+    const set = new Set<string>();
+    for (const line of lines) {
+      const attrs = line.item_attributes as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      const uuid =
+        attrs && typeof attrs["psp_source_uuid"] === "string"
+          ? (attrs["psp_source_uuid"] as string)
+          : "";
+      if (uuid) set.add(uuid);
+    }
+    return set;
+  }, [lines]);
+
+  const openQtyModal = () => {
+    const picks = pspItems.filter((it) => pickerSelection.has(it.uuid));
+    if (picks.length === 0) return;
+    const qtyDraft: Record<string, string> = {};
+    for (const p of picks) qtyDraft[p.uuid] = "1";
+    setQtyModal({ picks, qtyDraft });
+  };
+  const confirmQtyModal = async () => {
+    if (!qtyModal) return;
+    const payload = qtyModal.picks.map((p) => ({
+      pspUuid: p.uuid,
+      qtyString: qtyModal.qtyDraft[p.uuid] ?? "1",
+    }));
+    setQtyModal(null);
+    closePicker();
+    await onAddManualPicks(payload);
+  };
+
+  // Look up a native unit label for a PSP item. Prefers a
+  // ``unit`` attribute the mirror surfaces; falls back to a plain
+  // ``"unit"`` label so the qty modal always renders something.
+  const pspUnitLabel = (item: PspItemDto): string => {
+    const attrs = item.attributes as Record<string, unknown>;
+    const raw = attrs?.["unit"];
+    if (typeof raw === "string" && raw.trim() !== "") return raw;
+    return "unit";
+  };
+
+  const typeChipLabel = (itemType: string): string =>
+    itemType === "raw_material"
+      ? "Raw"
+      : itemType === "semi_finished"
+        ? "Semi"
+        : itemType === "packaging"
+          ? "Packaging"
+          : itemType === "finished_product"
+            ? "Finished"
+            : itemType;
+
+  // Only Routing-tab manual picks are removable inline. Actives
+  // stay managed on Formulation; band picks stay managed on the
+  // M2M pickers upstream. Both paths already have their own
+  // remove affordances, so exposing × on those here would just
+  // create parallel truth.
+  const lineKeyByRoutingKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const line of lines) {
+      if (line.source_kind !== "manual") continue;
+      map.set(`active:${line.key}`, line.key);
+    }
+    return map;
+  }, [lines]);
+
+  // ── Bulk selection on the inventory list ────────────────────────
+  // Scientists can tick many rows at once and assign them to a stage
+  // in a single click. The per-row stage dropdown still works for
+  // one-offs; the bulk bar only appears when at least one row is
+  // ticked. Selection is transient — cleared on assign, on clear-all,
+  // and whenever the inventory shape changes underneath (line
+  // removal, save round-trip).
+  const [invSelection, setInvSelection] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [bulkStageId, setBulkStageId] = useState<string>("");
+  const toggleInvSelection = useCallback((routingKey: string) => {
+    setInvSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(routingKey)) next.delete(routingKey);
+      else next.add(routingKey);
+      return next;
+    });
+  }, []);
+  const clearInvSelection = useCallback(
+    () => setInvSelection(new Set()),
+    [],
+  );
+  // Prune stale keys whenever inventory changes so a delete /
+  // save-round-trip doesn't leave orphan checked keys pointing at
+  // rows that no longer exist.
+  useEffect(() => {
+    setInvSelection((prev) => {
+      if (prev.size === 0) return prev;
+      const validKeys = new Set(inventory.map((r) => r.routingKey));
+      let changed = false;
+      const next = new Set<string>();
+      for (const k of prev) {
+        if (validKeys.has(k)) next.add(k);
+        else changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [inventory]);
+  const allSelected =
+    inventory.length > 0 && invSelection.size === inventory.length;
+  const toggleSelectAll = useCallback(() => {
+    setInvSelection((prev) =>
+      prev.size === inventory.length
+        ? new Set()
+        : new Set(inventory.map((r) => r.routingKey)),
+    );
+  }, [inventory]);
+  const applyBulkAssign = useCallback(() => {
+    if (invSelection.size === 0) return;
+    const target = bulkStageId || null;
+    setRoutingByKey((prev) => {
+      const next = new Map(prev);
+      for (const key of invSelection) next.set(key, target);
+      return next;
+    });
+    clearInvSelection();
+  }, [invSelection, bulkStageId, setRoutingByKey, clearInvSelection]);
 
   if (stages.length === 0) {
     return (
@@ -6411,30 +7169,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
               Left: everything the formulation carries. Right: each
               stage&apos;s Consumes list + the SKU it produces. Every
               stage&apos;s output feeds the next stage automatically
-              — you only route the raw ingredients here.
+              — you only route the raw ingredients here. Changes ride
+              along with <strong>Save draft</strong> /{" "}
+              <strong>Save version</strong> above.
             </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {rowsByStage.unassigned.length > 0 ? (
-              <button
-                type="button"
-                onClick={autoRouteRemaining}
-                disabled={!canWrite || isSaving}
-                className="rounded-lg bg-ink-100 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-200 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                Auto-route unassigned → terminal
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                void onSave();
-              }}
-              disabled={!canWrite || !routingDirty || isSaving}
-              className="rounded-lg bg-orange-500 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isSaving ? "Saving…" : "Save routing"}
-            </button>
           </div>
         </div>
         {errorMessage ? (
@@ -6447,67 +7185,199 @@ const RoutingTabBody = memo(function RoutingTabBody({
       <section className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)]">
         {/* ────────── Inventory column ────────── */}
         <div className="rounded-2xl bg-ink-0 p-5 shadow-sm ring-1 ring-ink-200">
-          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            Ingredient inventory · {inventory.length}
-          </p>
-          <p className="mt-1 text-xs text-ink-500">
-            Every SKU the formulation ships. Change the stage on any
-            row to move it.
-          </p>
-          <ul className="mt-3 flex flex-col gap-1">
-            {inventory.length === 0 ? (
-              <li className="rounded-lg bg-ink-50 px-3 py-4 text-center text-xs text-ink-500">
-                Add ingredients + carriers on the Setup tab first.
-              </li>
-            ) : (
-              inventory.map((row) => {
-                const assigned = routingByKey.get(row.routingKey) ?? null;
-                return (
-                  <li
-                    key={row.routingKey}
-                    className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${
-                      assigned
-                        ? "border-ink-200 bg-ink-0"
-                        : "border-orange-300 bg-orange-50/50"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          {bandChip(row.band)}
-                          <span className="truncate font-medium text-ink-1000">
-                            {row.label}
-                          </span>
-                        </div>
-                        <span className="mt-0.5 block text-[11px] text-ink-500">
-                          {row.code || "—"} ·{" "}
-                          {numberFormatter.format(row.mg)} mg
-                        </span>
-                      </div>
-                      <select
-                        value={assigned ?? ""}
-                        onChange={(e) =>
-                          setStageForRow(
-                            row.routingKey,
-                            e.target.value || null,
-                          )
+          {pickerOpen ? (
+            <RoutingInventoryPicker
+              search={pickerSearch}
+              onSearchChange={setPickerSearch}
+              pickerType={pickerType}
+              onPickerTypeChange={setPickerType}
+              pinnedResults={pinnedResults}
+              otherResults={otherResults}
+              stageOutputUuids={stageOutputUuids}
+              alreadyPickedPspUuids={alreadyPickedPspUuids}
+              selection={pickerSelection}
+              onToggle={togglePickerSelection}
+              isLoading={pspItemsQuery.isFetching}
+              onCancel={closePicker}
+              onNext={openQtyModal}
+              typeChipLabel={typeChipLabel}
+              canWrite={canWrite}
+              pickBusy={pickBusy}
+            />
+          ) : (
+            <>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+                    Ingredient inventory · {inventory.length}
+                  </p>
+                  <p className="mt-1 text-xs text-ink-500">
+                    Every SKU the formulation ships. Change the stage
+                    on any row to move it.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPickerOpen(true)}
+                  disabled={!canWrite || isSaving || pickBusy}
+                  className="inline-flex items-center gap-1 rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span aria-hidden>+</span>
+                  Add ingredient
+                </button>
+              </div>
+              {/* Bulk action bar — only mounts when a row is ticked
+                  so it doesn't nag the operator on the common
+                  single-row assignment path. */}
+              {invSelection.size > 0 ? (
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-orange-50 p-2 ring-1 ring-inset ring-orange-200">
+                  <span className="text-xs font-semibold text-orange-800">
+                    {invSelection.size} selected
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={bulkStageId}
+                      onChange={(e) => setBulkStageId(e.target.value)}
+                      disabled={!canWrite || isSaving}
+                      className="rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
+                    >
+                      <option value="">Assign to…</option>
+                      <option value="__unassigned__">Unassign</option>
+                      {stages.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          Stage {s.sort_order + 1} · {s.name}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (bulkStageId === "__unassigned__") {
+                          setRoutingByKey((prev) => {
+                            const next = new Map(prev);
+                            for (const key of invSelection)
+                              next.set(key, null);
+                            return next;
+                          });
+                          clearInvSelection();
+                          return;
                         }
-                        disabled={!canWrite || isSaving}
-                        className="min-w-[140px] rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
-                      >
-                        <option value="">Unassigned</option>
-                        {stages.map((s) => (
-                          <option key={s.id} value={s.id}>
-                            Stage {s.sort_order + 1} · {s.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        applyBulkAssign();
+                      }}
+                      disabled={
+                        !canWrite || isSaving || bulkStageId === ""
+                      }
+                      className="rounded-md bg-orange-500 px-3 py-1 text-xs font-semibold text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      Apply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearInvSelection}
+                      className="rounded-md px-2 py-1 text-xs text-orange-800 hover:bg-orange-100"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {inventory.length > 0 ? (
+                <label className="mt-3 flex cursor-pointer items-center gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-ink-500 hover:text-ink-1000">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleSelectAll}
+                    disabled={!canWrite || isSaving}
+                    className="h-3.5 w-3.5 accent-orange-500"
+                    aria-label="Select all"
+                  />
+                  Select all
+                </label>
+              ) : null}
+              <ul className="mt-2 flex flex-col gap-1">
+                {inventory.length === 0 ? (
+                  <li className="rounded-lg bg-ink-50 px-3 py-4 text-center text-xs text-ink-500">
+                    No ingredients yet. Click <strong>+ Add ingredient</strong>{" "}
+                    to pick from PSP.
                   </li>
-                );
-              })
-            )}
-          </ul>
+                ) : (
+                  inventory.map((row) => {
+                    const assigned = routingByKey.get(row.routingKey) ?? null;
+                    const lineKey = lineKeyByRoutingKey.get(row.routingKey);
+                    const canRemove = Boolean(lineKey) && canWrite;
+                    const isChecked = invSelection.has(row.routingKey);
+                    return (
+                      <li
+                        key={row.routingKey}
+                        className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${
+                          isChecked
+                            ? "border-orange-400 bg-orange-50/70"
+                            : assigned
+                              ? "border-ink-200 bg-ink-0"
+                              : "border-orange-300 bg-orange-50/50"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <input
+                            type="checkbox"
+                            checked={isChecked}
+                            onChange={() =>
+                              toggleInvSelection(row.routingKey)
+                            }
+                            disabled={!canWrite || isSaving}
+                            className="h-4 w-4 shrink-0 accent-orange-500"
+                            aria-label={`Select ${row.label}`}
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              {bandChip(row.band)}
+                              <span className="truncate font-medium text-ink-1000">
+                                {row.label}
+                              </span>
+                            </div>
+                            <span className="mt-0.5 block text-[11px] text-ink-500">
+                              {row.code || "—"} ·{" "}
+                              {numberFormatter.format(row.mg)} mg
+                            </span>
+                          </div>
+                          <select
+                            value={assigned ?? ""}
+                            onChange={(e) =>
+                              setStageForRow(
+                                row.routingKey,
+                                e.target.value || null,
+                              )
+                            }
+                            disabled={!canWrite || isSaving}
+                            className="min-w-[140px] rounded-md bg-ink-0 px-2 py-1 text-xs text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:bg-ink-50"
+                          >
+                            <option value="">Unassigned</option>
+                            {stages.map((s) => (
+                              <option key={s.id} value={s.id}>
+                                Stage {s.sort_order + 1} · {s.name}
+                              </option>
+                            ))}
+                          </select>
+                          {canRemove ? (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveLine(lineKey!)}
+                              disabled={isSaving}
+                              className="rounded-md p-1 text-ink-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`Remove ${row.label}`}
+                              title="Remove from formulation"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          ) : null}
+                        </div>
+                      </li>
+                    );
+                  })
+                )}
+              </ul>
+            </>
+          )}
         </div>
 
         {/* ────────── Stage cards column ────────── */}
@@ -6519,14 +7389,13 @@ const RoutingTabBody = memo(function RoutingTabBody({
                 won&apos;t ship on any stage&apos;s BOM
               </p>
               <p className="mt-1 text-xs text-orange-700">
-                Assign these to a stage or click &quot;Auto-route unassigned →
-                terminal&quot; to park them on the finished product.
+                Assign each one to a stage below. Every ingredient
+                needs a home before the finished product can ship.
               </p>
             </div>
           ) : null}
-          {stages.map((stage, i) => {
+          {stages.map((stage) => {
             const rows = rowsByStage.map.get(stage.id) ?? [];
-            const prior = i > 0 ? stages[i - 1] : undefined;
             const isFinished = stage.psp_item_type === "finished_product";
             return (
               <div
@@ -6556,61 +7425,330 @@ const RoutingTabBody = memo(function RoutingTabBody({
                   </span>
                 </div>
 
-                <div className="mt-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                    Consumes
-                  </p>
-                  <ul className="mt-2 flex flex-col gap-1 text-sm">
-                    {prior ? (
-                      <li className="flex items-center justify-between gap-2 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-700 ring-1 ring-inset ring-ink-200">
+                {/* Every quantity below is normalised to ONE unit of
+                    what this stage produces — not per batch, not per
+                    500 caps. Prevents the "wait, is this per bottle
+                    or per pack?" confusion at handoff. */}
+                <p className="mt-2 inline-flex items-center gap-1 rounded-full bg-ink-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-600 ring-1 ring-inset ring-ink-200">
+                  Per 1 ×{" "}
+                  <span className="text-ink-1000">
+                    {stage.psp_item_name ||
+                      (isFinished ? "finished product" : "semi output")}
+                  </span>
+                </p>
+
+                <ul className="mt-3 flex flex-col gap-1 text-sm">
+                  {rows.length === 0 ? (
+                    <li className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-500">
+                      No ingredients routed here yet — pick a row on
+                      the left and set its stage to{" "}
+                      &quot;{stage.name || "this stage"}&quot;.
+                    </li>
+                  ) : (
+                    rows.map((row) => (
+                      <li
+                        key={row.routingKey}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2 text-xs"
+                      >
                         <span className="flex items-center gap-2">
-                          <span className="rounded-full bg-ink-200 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-700">
-                            Semi
-                          </span>
-                          <span>
-                            1× {prior.psp_item_name || prior.name} (from
-                            Stage {prior.sort_order + 1})
+                          {bandChip(row.band)}
+                          <span className="font-medium text-ink-1000">
+                            {row.label}
                           </span>
                         </span>
-                        <span className="text-[10px] uppercase tracking-wide text-ink-400">
-                          Auto
+                        <span className="tabular-nums text-ink-700">
+                          {numberFormatter.format(row.mg)} mg
                         </span>
                       </li>
-                    ) : null}
-                    {rows.length === 0 ? (
-                      <li className="rounded-lg border border-dashed border-ink-200 px-3 py-4 text-center text-xs text-ink-500">
-                        No ingredients routed here yet — pick a row on
-                        the left and set its stage to{" "}
-                        &quot;{stage.name || "this stage"}&quot;.
-                      </li>
-                    ) : (
-                      rows.map((row) => (
-                        <li
-                          key={row.routingKey}
-                          className="flex items-center justify-between gap-2 rounded-lg border border-ink-100 px-3 py-2 text-xs"
-                        >
-                          <span className="flex items-center gap-2">
-                            {bandChip(row.band)}
-                            <span className="font-medium text-ink-1000">
-                              {row.label}
-                            </span>
-                          </span>
-                          <span className="tabular-nums text-ink-700">
-                            {numberFormatter.format(row.mg)} mg
-                          </span>
-                        </li>
-                      ))
-                    )}
-                  </ul>
-                </div>
+                    ))
+                  )}
+                </ul>
               </div>
             );
           })}
         </div>
       </section>
+
+      {qtyModal ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => setQtyModal(null)}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl bg-ink-0 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+              Confirm quantities
+            </p>
+            <h3 className="mt-1 text-base font-semibold text-ink-1000">
+              How much of each to add?
+            </h3>
+            <p className="mt-1 text-xs text-ink-500">
+              Enter the qty in each item&apos;s native unit. Everything
+              is per 1 unit of what the stage produces. You can refine
+              on the Formulation tab.
+            </p>
+            <ul className="mt-4 divide-y divide-ink-100 rounded-xl ring-1 ring-ink-200">
+              {qtyModal.picks.map((pick) => (
+                <li
+                  key={pick.uuid}
+                  className="flex items-center justify-between gap-3 px-3 py-2 text-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium text-ink-1000">
+                      {pick.name}
+                    </p>
+                    <p className="text-[11px] text-ink-500">
+                      {pick.code || "—"} · {typeChipLabel(pick.item_type)}
+                    </p>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={qtyModal.qtyDraft[pick.uuid] ?? "1"}
+                      onChange={(e) =>
+                        setQtyModal((prev) =>
+                          prev
+                            ? {
+                                ...prev,
+                                qtyDraft: {
+                                  ...prev.qtyDraft,
+                                  [pick.uuid]: e.target.value,
+                                },
+                              }
+                            : prev,
+                        )
+                      }
+                      className="w-20 rounded-md bg-ink-0 px-2 py-1 text-right text-xs tabular-nums text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                    <span className="text-[11px] text-ink-500">
+                      {pspUnitLabel(pick)}
+                    </span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setQtyModal(null)}
+                disabled={pickBusy}
+                className="rounded-lg px-3 py-1.5 text-sm text-ink-700 hover:bg-ink-100 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={confirmQtyModal}
+                disabled={pickBusy || !canWrite}
+                className="rounded-lg bg-orange-500 px-4 py-1.5 text-sm font-semibold text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {pickBusy
+                  ? "Adding…"
+                  : `Add ${qtyModal.picks.length} to inventory`}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 });
+
+/**
+ * PSP catalog picker embedded in the Routing tab's inventory column.
+ * Search + item-type filter chips + a pinned "Stage outputs" band at
+ * the top for the semi-finished items produced by earlier stages of
+ * this formulation. Multi-select via checkboxes; the parent then
+ * opens a qty-confirm modal on ``onNext``.
+ */
+function RoutingInventoryPicker({
+  search,
+  onSearchChange,
+  pickerType,
+  onPickerTypeChange,
+  pinnedResults,
+  otherResults,
+  stageOutputUuids,
+  alreadyPickedPspUuids,
+  selection,
+  onToggle,
+  isLoading,
+  onCancel,
+  onNext,
+  typeChipLabel,
+  canWrite,
+  pickBusy,
+}: {
+  search: string;
+  onSearchChange: (v: string) => void;
+  pickerType: "all" | "raw_material" | "semi_finished" | "packaging";
+  onPickerTypeChange: (
+    t: "all" | "raw_material" | "semi_finished" | "packaging",
+  ) => void;
+  pinnedResults: readonly PspItemDto[];
+  otherResults: readonly PspItemDto[];
+  stageOutputUuids: ReadonlySet<string>;
+  alreadyPickedPspUuids: ReadonlySet<string>;
+  selection: ReadonlySet<string>;
+  onToggle: (uuid: string) => void;
+  isLoading: boolean;
+  onCancel: () => void;
+  onNext: () => void;
+  typeChipLabel: (itemType: string) => string;
+  canWrite: boolean;
+  pickBusy: boolean;
+}) {
+  const chips: {
+    key: "all" | "raw_material" | "semi_finished" | "packaging";
+    label: string;
+  }[] = [
+    { key: "all", label: "All" },
+    { key: "raw_material", label: "Raw" },
+    { key: "semi_finished", label: "Semi" },
+    { key: "packaging", label: "Packaging" },
+  ];
+
+  const renderRow = (item: PspItemDto) => {
+    const isSelected = selection.has(item.uuid);
+    const isAlready = alreadyPickedPspUuids.has(item.uuid);
+    const isStageOutput = stageOutputUuids.has(item.uuid);
+    return (
+      <li
+        key={item.uuid}
+        className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
+          isSelected
+            ? "border-orange-400 bg-orange-50/50"
+            : isStageOutput
+              ? "border-orange-200 bg-orange-50/20"
+              : "border-ink-200 bg-ink-0"
+        } ${isAlready ? "opacity-40" : ""}`}
+      >
+        <input
+          type="checkbox"
+          checked={isSelected}
+          disabled={!canWrite || isAlready}
+          onChange={() => onToggle(item.uuid)}
+          className="h-4 w-4 shrink-0 accent-orange-500"
+          aria-label={`Select ${item.name}`}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-ink-600">
+              {typeChipLabel(item.item_type)}
+            </span>
+            <span className="truncate font-medium text-ink-1000">
+              {item.name}
+            </span>
+            {isAlready ? (
+              <span className="text-[10px] uppercase text-ink-500">
+                already added
+              </span>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-[11px] text-ink-500">
+            {item.code || item.external_sku || "—"}
+          </p>
+        </div>
+      </li>
+    );
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+            Pick from PSP
+          </p>
+          <p className="mt-1 text-xs text-ink-500">
+            Raw materials, semi-finished, and packaging. Multi-select
+            then set quantities.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-md p-1.5 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+          aria-label="Back to inventory"
+          title="Back to inventory"
+        >
+          ×
+        </button>
+      </div>
+      <input
+        type="text"
+        placeholder="Search by name or code…"
+        value={search}
+        onChange={(e) => onSearchChange(e.target.value)}
+        className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+      />
+      <div className="flex flex-wrap gap-1">
+        {chips.map((c) => (
+          <button
+            key={c.key}
+            type="button"
+            onClick={() => onPickerTypeChange(c.key)}
+            className={
+              pickerType === c.key
+                ? "rounded-full bg-orange-500 px-3 py-1 text-xs font-medium text-white"
+                : "rounded-full bg-ink-100 px-3 py-1 text-xs font-medium text-ink-700 hover:bg-ink-200"
+            }
+          >
+            {c.label}
+          </button>
+        ))}
+      </div>
+      <div className="max-h-[520px] overflow-y-auto">
+        {pinnedResults.length > 0 ? (
+          <div className="mb-3">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-orange-700">
+              Stage outputs
+            </p>
+            <ul className="flex flex-col gap-1">
+              {pinnedResults.map(renderRow)}
+            </ul>
+          </div>
+        ) : null}
+        {isLoading && otherResults.length === 0 ? (
+          <p className="text-center text-xs text-ink-500">Loading…</p>
+        ) : otherResults.length === 0 && pinnedResults.length === 0 ? (
+          <p className="rounded-lg bg-ink-50 px-3 py-6 text-center text-xs text-ink-500">
+            {search
+              ? "No matches."
+              : "Start typing to search PSP items."}
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {otherResults.map(renderRow)}
+          </ul>
+        )}
+      </div>
+      <div className="flex items-center justify-between border-t border-ink-100 pt-3">
+        <button
+          type="button"
+          onClick={onCancel}
+          className="rounded-lg px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-100"
+        >
+          ← Back
+        </button>
+        <button
+          type="button"
+          onClick={onNext}
+          disabled={selection.size === 0 || pickBusy || !canWrite}
+          className="rounded-lg bg-orange-500 px-4 py-1.5 text-xs font-semibold text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {selection.size === 0
+            ? "Select items to add"
+            : `Add ${selection.size} selected →`}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 
 const BomCard = memo(function BomCard({
@@ -7728,6 +8866,13 @@ type FineTuneBand = {
 type FineTuneActiveRow = {
   key: string;
   name: string;
+  /** Local catalogue SKU / PSP system code (``MAxxxxxx``). Rendered
+   *  as a muted chip next to the name so the operator can spot the
+   *  ingredient by procurement code as well as its label copy. */
+  code: string;
+  /** PSP UUID for the mirrored SKU driving the "Open on PSP" deep
+   *  link on the ingredient name. ``null`` for local-only lines. */
+  pspSourceUuid: string | null;
   nominalMg: number;
   /** Last-saved ``label_claim_mg`` for this line. When the current
    *  ``nominalMg`` differs, the row shows a per-row ↺ that writes
@@ -7735,6 +8880,72 @@ type FineTuneActiveRow = {
    *  the line is brand-new (has no server-side baseline yet). */
   savedMg: number | null;
 };
+
+/**
+ * Ingredient-name cell shared by every fine-tune row. Renders the SKU
+ * name as an "Open on PSP" link when a ``pspSourceUuid`` + base URL
+ * are both available, and surfaces the catalogue ``code`` (``MA00295``)
+ * as a muted chip next to it so operators can spot the row by
+ * procurement code as well as by label copy.
+ *
+ * The whole cell is deliberately in a single wrapper so hover +
+ * click-through behave predictably: hovering the name shows the link
+ * affordance without expanding the row, and mid-word click on the
+ * code chip drops the operator on the PSP item page too.
+ */
+function IngredientNameCell({
+  name,
+  code,
+  pspSourceUuid,
+  pspBaseUrl,
+  extra,
+}: {
+  name: string;
+  code?: string;
+  pspSourceUuid?: string | null;
+  pspBaseUrl?: string | null;
+  /** Optional trailing chip content — e.g. the fine-tune extra row's
+   *  "NOT DOSED / MISSING PSP RATE" warning. Rendered below the name
+   *  row so it flows regardless of link vs plain text state. */
+  extra?: React.ReactNode;
+}) {
+  const canLink = Boolean(pspBaseUrl && pspSourceUuid);
+  const href = canLink
+    ? `${pspBaseUrl}/production/items/${pspSourceUuid}`
+    : null;
+  const nameCls =
+    "min-w-0 break-words text-ink-800 hover:text-brand-700 hover:underline underline-offset-2";
+  return (
+    <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <span className="flex flex-wrap items-baseline gap-1.5">
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={nameCls}
+            title={`Open ${name} on PSP`}
+          >
+            {name}
+          </a>
+        ) : (
+          <span className="min-w-0 break-words text-ink-800" title={name}>
+            {name}
+          </span>
+        )}
+        {code ? (
+          <span
+            className="shrink-0 rounded bg-ink-100 px-1.5 py-0.5 font-mono text-[10px] font-medium tracking-tight text-ink-600"
+            title={`Catalogue code: ${code}`}
+          >
+            {code}
+          </span>
+        ) : null}
+      </span>
+      {extra ? <div>{extra}</div> : null}
+    </div>
+  );
+}
 
 const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   totalWeightMg,
@@ -7747,6 +8958,9 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   dirty,
   onRevertAllUnsaved,
   extraRows,
+  pspBaseUrl,
+  productName,
+  productCode,
   numberFormatter,
   tFormulations,
 }: {
@@ -7776,14 +8990,32 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
   extraRows?: readonly {
     readonly key: string;
     readonly label: string;
+    /** Local catalogue SKU / PSP system code (``MAxxxxxx``). Rendered
+     *  as a muted chip next to the name. Empty string = row has no
+     *  catalogue code (compute-only placeholder). */
+    readonly code?: string;
     readonly mg: number;
     readonly hint?: string;
     readonly itemId?: string;
+    /** PSP UUID for the mirrored SKU. When set, the name becomes a
+     *  link to ``${pspBaseUrl}/production/items/${uuid}``. */
+    readonly pspSourceUuid?: string | null;
     /** Compute couldn't dose this pick (missing rate attribute on
      *  the PSP item) — surface an inline warning pill so the
      *  scientist notices the SKU needs attention. */
     readonly notDosed?: boolean;
+    /** Band placeholder — compute dosed the band but no SKU is
+     *  picked. Row renders an amber "PICK A SKU" call-to-action so
+     *  a half-finished formula doesn't read as "done". */
+    readonly needsPick?: boolean;
   }[];
+  /** PSP integration base URL — drives the "Open on PSP" deep link
+   *  on rows carrying a ``pspSourceUuid``. ``null`` when the org
+   *  has no live integration; rows render as plain text. */
+  pspBaseUrl: string | null;
+  /** Product identity — printed at the top of the print sheet. */
+  productName: string;
+  productCode: string;
   numberFormatter: Intl.NumberFormat;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
@@ -7833,18 +9065,91 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
     onChange(next);
   };
 
+  const printedOn = new Date().toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+  const handlePrint = () => {
+    document.body.classList.add("fine-tune-print-active");
+    const cleanup = () => {
+      document.body.classList.remove("fine-tune-print-active");
+      window.removeEventListener("afterprint", cleanup);
+    };
+    window.addEventListener("afterprint", cleanup);
+    window.print();
+  };
+
   return (
-    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+    <section
+      data-print-target="true"
+      className="fine-tune-panel rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200"
+    >
+      <style
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{
+          __html: `
+.fine-tune-print-only { display: none; }
+@media print {
+  @page { size: A4 landscape; margin: 12mm 14mm; }
+  body.fine-tune-print-active > * { visibility: hidden !important; }
+  body.fine-tune-print-active [data-print-target="true"].fine-tune-panel,
+  body.fine-tune-print-active [data-print-target="true"].fine-tune-panel * {
+    visibility: visible !important;
+  }
+  body.fine-tune-print-active [data-print-target="true"].fine-tune-panel {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif !important;
+    color: #111 !important;
+  }
+  body.fine-tune-print-active .fine-tune-hide-on-print { display: none !important; }
+  body.fine-tune-print-active .fine-tune-print-only { display: block !important; }
+  body.fine-tune-print-active input,
+  body.fine-tune-print-active [data-print-target="true"] button {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+    color: #111 !important;
+  }
+  body.fine-tune-print-active .fine-tune-actual-slot {
+    border-bottom: 1px solid #555;
+    height: 1.2em;
+    min-width: 4em;
+    display: block;
+  }
+}
+          `,
+        }}
+      />
+
+      {/* Print-only header — product name + code + printed date. */}
+      <div className="fine-tune-print-only mb-3 border-b border-ink-300 pb-2">
+        <div className="text-base font-semibold text-ink-1000">
+          {productName || "Untitled product"}
+        </div>
+        <div className="text-xs text-ink-700">
+          {productCode ? <>Code: {productCode} · </> : null}
+          Printed: {printedOn}
+        </div>
+      </div>
+
       <div className="flex items-baseline justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
             {tFormulations("builder.fine_tune.title")}
           </p>
-          <p className="mt-1 text-xs leading-snug text-ink-500">
+          <p className="mt-1 text-xs leading-snug text-ink-500 fine-tune-hide-on-print">
             {tFormulations("builder.fine_tune.hint")}
           </p>
         </div>
-        <div className="flex shrink-0 items-center gap-3">
+        <div className="fine-tune-hide-on-print flex shrink-0 items-center gap-3">
           {hasAnyOverride && editable ? (
             <button
               type="button"
@@ -7864,6 +9169,14 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
               ↺ {tFormulations("builder.fine_tune.revert_unsaved")}
             </button>
           ) : null}
+          <button
+            type="button"
+            onClick={handlePrint}
+            className="inline-flex items-center gap-1.5 rounded-md bg-ink-50 px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100"
+            title="Print the fine-tune formula in landscape"
+          >
+            <Printer className="h-3.5 w-3.5" /> Print
+          </button>
         </div>
       </div>
 
@@ -7874,6 +9187,31 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
           })}
         </div>
       ) : null}
+
+      {/* Incomplete-band banner — sum of ``extraRows`` where compute
+          emitted a placeholder (no picked SKU). Surfaced at the top
+          of the panel so a scientist who skims down without reading
+          per-row pills still notices the recipe isn't finished. */}
+      {(() => {
+        const missing = (extraRows ?? []).filter((r) => r.needsPick);
+        if (missing.length === 0) return null;
+        const names = missing.map((r) => r.label).join(", ");
+        return (
+          <div className="mt-3 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs leading-snug text-amber-900">
+            <span className="font-semibold">
+              {missing.length === 1
+                ? "1 band still needs a SKU"
+                : `${missing.length} bands still need a SKU`}
+            </span>
+            <span className="ml-1">
+              — {names}. Pick a raw material on the Formulation tab, or
+              tag one with the matching{" "}
+              <span className="font-mono">use_as</span> on PSP so it
+              shows up in the picker.
+            </span>
+          </div>
+        );
+      })()}
 
       {/* Flex layout with fixed-width numeric columns. Grid columns
           with ``minmax(0,1fr)`` in an arbitrary value fight the
@@ -7890,7 +9228,13 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
           <span className="w-28 text-right">
             {tFormulations("builder.fine_tune.col_pct")}
           </span>
-          <span className="w-6 shrink-0" aria-hidden />
+          <span className="fine-tune-print-only w-28 text-right">
+            Actual (mg)
+          </span>
+          <span className="fine-tune-print-only w-28 text-right">
+            Signed
+          </span>
+          <span className="w-6 shrink-0 fine-tune-hide-on-print" aria-hidden />
         </div>
         {/* Flat rows — no grouping. Sorted mg ascending to match the
             BOM's ordering so the scan pattern between the two surfaces
@@ -7940,6 +9284,7 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
                   totalWeightMg={totalWeightMg}
                   onMgChange={onActiveMgChange}
                   editable={canEdit && !!onActiveMgChange}
+                  pspBaseUrl={pspBaseUrl}
                   tFormulations={tFormulations}
                 />
               ) : (
@@ -7972,12 +9317,35 @@ const ExcipientFineTunePanel = memo(function ExcipientFineTunePanel({
                     overrides={overrides}
                     onChange={onChange}
                     editable={editable}
+                    pspBaseUrl={pspBaseUrl}
                     numberFormatter={numberFormatter}
                     percentOf={percentOf}
                     tFormulations={tFormulations}
                   />
                 ))
             : null}
+        </div>
+      </div>
+
+      {/* Print-only signature footer — technician / supervisor / date. */}
+      <div className="fine-tune-print-only mt-6 grid grid-cols-3 gap-6 text-[10pt] text-ink-1000">
+        <div>
+          <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+            Technician (name + signature)
+          </div>
+          <div className="mt-6 border-b border-ink-700">&nbsp;</div>
+        </div>
+        <div>
+          <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+            Supervisor (name + signature)
+          </div>
+          <div className="mt-6 border-b border-ink-700">&nbsp;</div>
+        </div>
+        <div>
+          <div className="text-[9pt] uppercase tracking-wide text-ink-500">
+            Date
+          </div>
+          <div className="mt-6 border-b border-ink-700">&nbsp;</div>
         </div>
       </div>
     </section>
@@ -7997,12 +9365,14 @@ function FineTuneActiveLineRow({
   totalWeightMg,
   onMgChange,
   editable,
+  pspBaseUrl,
   tFormulations,
 }: {
   row: FineTuneActiveRow;
   totalWeightMg: number | null;
   onMgChange: ((lineKey: string, mg: string) => void) | null;
   editable: boolean;
+  pspBaseUrl?: string | null;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
 }) {
   const canConvertPct = totalWeightMg !== null && totalWeightMg > 0;
@@ -8061,12 +9431,12 @@ function FineTuneActiveLineRow({
         isDirtyRow ? "bg-amber-50/40" : ""
       }`}
     >
-      <span
-        className="min-w-0 flex-1 break-words text-ink-800"
-        title={row.name}
-      >
-        {row.name}
-      </span>
+      <IngredientNameCell
+        name={row.name}
+        code={row.code}
+        pspSourceUuid={row.pspSourceUuid}
+        pspBaseUrl={pspBaseUrl}
+      />
       {editable ? (
         <>
           <span className="flex w-28 shrink-0 items-center gap-1">
@@ -8154,9 +9524,15 @@ function FineTuneActiveLineRow({
               ? `${((row.nominalMg / totalWeightMg!) * 100).toFixed(2)}%`
               : "—"}
           </span>
-          <span className="w-6 shrink-0" aria-hidden />
+          <span className="w-6 shrink-0 fine-tune-hide-on-print" aria-hidden />
         </>
       )}
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
     </div>
   );
 }
@@ -8340,9 +9716,15 @@ function FineTuneRow({
               ? `${((share.mg / totalWeightMg!) * 100).toFixed(2)}%`
               : "—"}
           </span>
-          <span className="w-6 shrink-0" aria-hidden />
+          <span className="w-6 shrink-0 fine-tune-hide-on-print" aria-hidden />
         </>
       )}
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
     </div>
   );
 }
@@ -8361,6 +9743,7 @@ function FineTuneExtraRow({
   overrides,
   onChange,
   editable,
+  pspBaseUrl,
   numberFormatter,
   percentOf,
   tFormulations,
@@ -8368,15 +9751,19 @@ function FineTuneExtraRow({
   row: {
     readonly key: string;
     readonly label: string;
+    readonly code?: string;
     readonly mg: number;
     readonly hint?: string;
     readonly itemId?: string;
+    readonly pspSourceUuid?: string | null;
     readonly notDosed?: boolean;
+    readonly needsPick?: boolean;
   };
   totalWeightMg: number | null;
   overrides: Readonly<Record<string, number>>;
   onChange: ((next: Record<string, number>) => void) | null;
   editable: boolean;
+  pspBaseUrl?: string | null;
   numberFormatter: Intl.NumberFormat;
   percentOf: (part: number, whole: number) => string;
   tFormulations: ReturnType<typeof useTranslations<"formulations">>;
@@ -8456,24 +9843,35 @@ function FineTuneExtraRow({
       className={`flex items-center gap-4 border-t border-ink-100 px-4 py-2 text-sm ${
         overridden
           ? "bg-brand-50/20"
-          : row.notDosed
-            ? "bg-amber-50/30"
-            : ""
+          : row.needsPick
+            ? "bg-amber-50/40"
+            : row.notDosed
+              ? "bg-amber-50/30"
+              : ""
       }`}
     >
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <span className="break-words font-medium text-ink-1000" title={row.label}>
-          {row.label}
-        </span>
-        {row.notDosed && !overridden ? (
-          <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
-            <span aria-hidden>⚠</span>
-            {tFormulations("builder.fine_tune.not_dosed")}
-          </span>
-        ) : row.hint ? (
-          <span className="text-[11px] text-ink-500">{row.hint}</span>
-        ) : null}
-      </div>
+      <IngredientNameCell
+        name={row.label}
+        code={row.code}
+        pspSourceUuid={row.pspSourceUuid}
+        pspBaseUrl={pspBaseUrl}
+        extra={
+          row.needsPick ? (
+            <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+              <span aria-hidden>⚠</span>
+              Pick a {row.label.toLowerCase()} SKU on the Formulation
+              tab
+            </span>
+          ) : row.notDosed && !overridden ? (
+            <span className="inline-flex w-fit items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+              <span aria-hidden>⚠</span>
+              {tFormulations("builder.fine_tune.not_dosed")}
+            </span>
+          ) : row.hint ? (
+            <span className="text-[11px] text-ink-500">{row.hint}</span>
+          ) : null
+        }
+      />
       {canEditRow ? (
         <>
           <span className="flex w-28 shrink-0 items-center gap-1">
@@ -8553,9 +9951,15 @@ function FineTuneExtraRow({
               ? `${percentOf(row.mg, totalWeightMg)}%`
               : "—"}
           </span>
-          <span className="w-6 shrink-0" aria-hidden />
+          <span className="w-6 shrink-0 fine-tune-hide-on-print" aria-hidden />
         </>
       )}
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
+      <span className="fine-tune-print-only w-28">
+        <span className="fine-tune-actual-slot" />
+      </span>
     </div>
   );
 }
@@ -9292,6 +10696,12 @@ function CatalogueMultiPicker({
        *  Consumers that display procurement codes fall back to
        *  ``""`` — the BOM shows a ``—`` in the CODE column. */
       readonly internal_code: string;
+      /** PSP UUID this local id mirrors, when known — either from the
+       *  preselected ``GummyBaseItemDto.psp_source_uuid`` (saved
+       *  picks) or from the ``pspToLocal`` reverse lookup on a
+       *  freshly-clicked PSP row. ``null`` on legacy local-only
+       *  picks that were never mirrored. */
+      readonly psp_source_uuid: string | null;
       readonly attributes?: Readonly<Record<string, unknown>>;
     }>,
   ) => void;
@@ -9465,17 +10875,37 @@ function CatalogueMultiPicker({
         },
       ]),
     );
+    // Reverse lookup: local-id → PSP UUID. Preselected picks carry
+    // their PSP identity on ``psp_source_uuid``; freshly-clicked PSP
+    // rows populate ``pspToLocal[psp-uuid] = { id: local-id, ... }``
+    // on mirror success — invert it so the emit callback can hand
+    // the parent the PSP uuid without a second round-trip.
+    const localIdToPspUuid = new Map<string, string>();
+    for (const p of preselected) {
+      const uuid = (p as { psp_source_uuid?: string | null }).psp_source_uuid;
+      if (uuid && p.id) localIdToPspUuid.set(p.id, uuid);
+    }
+    for (const [pspUuid, cached] of Object.entries(pspToLocal)) {
+      if (cached?.id) localIdToPspUuid.set(cached.id, pspUuid);
+    }
     const picked = value
       .map((id) => {
         const hit = lookup.get(id);
+        const pspUuid = localIdToPspUuid.get(id) ?? null;
         return hit
           ? {
               id,
               name: hit.name,
               internal_code: hit.internal_code,
+              psp_source_uuid: pspUuid,
               attributes: hit.attributes,
             }
-          : { id, name: "", internal_code: "" };
+          : {
+              id,
+              name: "",
+              internal_code: "",
+              psp_source_uuid: pspUuid,
+            };
       })
       .filter((entry) => entry.name !== "");
     cb(picked);
