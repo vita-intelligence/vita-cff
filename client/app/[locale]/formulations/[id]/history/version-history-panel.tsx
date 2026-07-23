@@ -21,7 +21,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { Activity, History as HistoryIcon, RotateCcw, ShieldCheck, User } from "lucide-react";
+import { Activity, History as HistoryIcon, Loader2, RotateCcw, ShieldCheck, User } from "lucide-react";
 import { useLocale, useTranslations } from "next-intl";
 
 import {
@@ -102,6 +102,17 @@ export function VersionHistoryPanel({
   };
 
   const isBusy = rollback.isPending || setApproved.isPending;
+  // Which version number a mutation is currently targeting (or null).
+  // TanStack Query exposes the last-passed variables while a mutation
+  // is in-flight, so we can point a per-row spinner at exactly the
+  // button the operator clicked instead of greying every action out
+  // with no other feedback.
+  const rollingBackVersion = rollback.isPending
+    ? rollback.variables?.version_number ?? null
+    : null;
+  const togglingApprovedVersion = setApproved.isPending
+    ? setApproved.variables ?? null
+    : null;
 
   const activity = overviewQuery.data?.activity ?? [];
 
@@ -232,6 +243,10 @@ export function VersionHistoryPanel({
                 isApproved={approvedNumber === v.version_number}
                 canEdit={canEdit}
                 isBusy={isBusy}
+                isRollingBack={rollingBackVersion === v.version_number}
+                isTogglingApproved={
+                  togglingApprovedVersion === v.version_number
+                }
                 dateFormatter={dateFormatter}
                 onRollback={() => handleRollback(v.version_number)}
                 onToggleApproved={() =>
@@ -249,6 +264,7 @@ export function VersionHistoryPanel({
           revertTargets={activityRevertTargets}
           canEdit={canEdit}
           isBusy={isBusy}
+          rollingBackVersion={rollingBackVersion}
           onRollback={handleRollback}
         />
       )}
@@ -292,6 +308,7 @@ function ActivityFeed({
   revertTargets,
   canEdit,
   isBusy,
+  rollingBackVersion,
   onRollback,
 }: {
   entries: readonly ProjectActivityEntryDto[];
@@ -300,6 +317,7 @@ function ActivityFeed({
   revertTargets: Map<string, FormulationVersionDto>;
   canEdit: boolean;
   isBusy: boolean;
+  rollingBackVersion: number | null;
   onRollback: (versionNumber: number) => void;
 }) {
   if (isLoading) {
@@ -354,17 +372,29 @@ function ActivityFeed({
                 {dateFormatter.format(new Date(entry.created_at))}
               </span>
               {canEdit && revertTarget ? (
-                <button
-                  type="button"
-                  onClick={() => onRollback(revertTarget.version_number)}
-                  disabled={isBusy}
-                  className="inline-flex items-center gap-1 rounded-lg bg-ink-100 px-2.5 py-1 text-[11px] font-medium text-ink-700 hover:bg-ink-200 disabled:opacity-50"
-                  title={`Revert project state to v${revertTarget.version_number}${revertTarget.is_auto ? " (autosave)" : ""} — the snapshot closest to this event`}
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  Revert to v{revertTarget.version_number}
-                  {revertTarget.is_auto ? " (auto)" : ""}
-                </button>
+                (() => {
+                  const isThisReverting =
+                    rollingBackVersion === revertTarget.version_number;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => onRollback(revertTarget.version_number)}
+                      disabled={isBusy}
+                      className="inline-flex items-center gap-1 rounded-lg bg-ink-100 px-2.5 py-1 text-[11px] font-medium text-ink-700 hover:bg-ink-200 disabled:opacity-50"
+                      title={`Revert project state to v${revertTarget.version_number}${revertTarget.is_auto ? " (autosave)" : ""} — the snapshot closest to this event`}
+                      aria-busy={isThisReverting}
+                    >
+                      {isThisReverting ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <RotateCcw className="h-3 w-3" />
+                      )}
+                      {isThisReverting
+                        ? `Reverting to v${revertTarget.version_number}…`
+                        : `Revert to v${revertTarget.version_number}${revertTarget.is_auto ? " (auto)" : ""}`}
+                    </button>
+                  );
+                })()
               ) : canEdit ? (
                 <span
                   className="text-[10px] italic text-ink-400"
@@ -406,6 +436,8 @@ function VersionRow({
   isApproved,
   canEdit,
   isBusy,
+  isRollingBack,
+  isTogglingApproved,
   dateFormatter,
   onRollback,
   onToggleApproved,
@@ -414,6 +446,8 @@ function VersionRow({
   isApproved: boolean;
   canEdit: boolean;
   isBusy: boolean;
+  isRollingBack: boolean;
+  isTogglingApproved: boolean;
   dateFormatter: Intl.DateTimeFormat;
   onRollback: () => void;
   onToggleApproved: () => void;
@@ -490,9 +524,20 @@ function VersionRow({
                   ? "Remove approval mark"
                   : "Mark this version as approved for regulatory sign-off"
               }
+              aria-busy={isTogglingApproved}
             >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              {isApproved ? "Unapprove" : "Mark approved"}
+              {isTogglingApproved ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <ShieldCheck className="h-3.5 w-3.5" />
+              )}
+              {isTogglingApproved
+                ? isApproved
+                  ? "Unapproving…"
+                  : "Marking…"
+                : isApproved
+                  ? "Unapprove"
+                  : "Mark approved"}
             </button>
             <button
               type="button"
@@ -500,9 +545,14 @@ function VersionRow({
               disabled={isBusy}
               className="inline-flex items-center gap-1 rounded-lg bg-ink-100 px-3 py-1.5 text-xs font-medium text-ink-700 hover:bg-ink-200 disabled:opacity-50"
               title="Restore this version as the current draft"
+              aria-busy={isRollingBack}
             >
-              <RotateCcw className="h-3.5 w-3.5" />
-              Rollback
+              {isRollingBack ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              {isRollingBack ? "Rolling back…" : "Rollback"}
             </button>
           </div>
         ) : null}
