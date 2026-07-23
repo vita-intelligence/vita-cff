@@ -807,13 +807,18 @@ export function StageStrip({
   }
 
   function addStage() {
-    const nextOrder = drafts.length;
-    setDrafts((prev) => [
-      ...prev,
-      {
+    // Insert BEFORE the terminal stage so the finished-product
+    // placeholder stays anchored at the bottom of the strip. Terminal
+    // is always the last entry (the seeder guarantees it; the whole
+    // production graph flows *into* it). Sort_order gets rewritten
+    // at save time by ``draftToInput(d, i)`` from the array index,
+    // so the ``sort_order: 0`` here is just a placeholder that never
+    // reaches the server.
+    setDrafts((prev) => {
+      const newStage: StageDraft = {
         clientKey: `new-${Date.now()}-${Math.random()}`,
-        sort_order: nextOrder,
-        name: `Stage ${nextOrder + 1}`,
+        sort_order: 0,
+        name: `Stage ${prev.length + 1}`,
         stage_key: "custom",
         workstation_group_uuid: null,
         workstation_group_name: "",
@@ -840,8 +845,12 @@ export function StageStrip({
         // scientist picks a stock UoM. Beats seeding "1" that would
         // then need to be manually cleared.
         servings_per_output_unit: "",
-      },
-    ]);
+      };
+      // No existing stages → just append.
+      if (prev.length === 0) return [newStage];
+      // Insert before the last (terminal) stage.
+      return [...prev.slice(0, -1), newStage, prev[prev.length - 1]!];
+    });
   }
 
   function removeStage(clientKey: string) {
