@@ -55,12 +55,17 @@ export function ProjectShell({
   const tTabs = useTranslations("project_tabs");
   const tNav = useTranslations("navigation");
 
+  // Wizard-style tab gating — later tabs stay disabled + tooltipped
+  // until the earlier gates pass. Rules come server-side on
+  // ``overview.stage_gates`` (see StageGates in overview.py).
+  const gates = overview.stage_gates;
   const tabs: {
     key: ProjectTabKey;
     label: string;
     href: string;
     icon: ReactNode;
     count?: number;
+    lockedReason?: string;
   }[] = [
     {
       key: "overview",
@@ -80,12 +85,22 @@ export function ProjectShell({
       href: `/formulations/${overview.id}/spec-sheets`,
       icon: <FileText className="h-4 w-4" />,
       count: overview.spec_sheets.total,
+      lockedReason: gates.spec_sheets
+        ? undefined
+        : gates.builder_complete
+          ? "Save an explicit version of the Builder first (auto-snapshots don't count)."
+          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
     },
     {
       key: "proposals",
       label: tTabs("proposals"),
       href: `/formulations/${overview.id}/proposals`,
       icon: <PoundSterling className="h-4 w-4" />,
+      lockedReason: gates.proposals
+        ? undefined
+        : gates.builder_complete
+          ? "Get a spec sheet approved (scientist + director sign-off) before drafting a proposal."
+          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
     },
     {
       key: "trial-batches",
@@ -93,6 +108,11 @@ export function ProjectShell({
       href: `/formulations/${overview.id}/trial-batches`,
       icon: <FlaskConical className="h-4 w-4" />,
       count: overview.trial_batches.total,
+      lockedReason: gates.trial_batches
+        ? undefined
+        : gates.builder_complete
+          ? "Send a proposal to the customer and get it signed before running trial batches."
+          : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
     },
     {
       key: "qc",
@@ -100,6 +120,9 @@ export function ProjectShell({
       href: `/formulations/${overview.id}/qc`,
       icon: <ShieldCheck className="h-4 w-4" />,
       count: overview.qc.total,
+      lockedReason: gates.qc
+        ? undefined
+        : "Run at least one trial batch to unlock QC.",
     },
     {
       key: "history",
@@ -194,6 +217,7 @@ function TabBar({
     href: string;
     icon: ReactNode;
     count?: number;
+    lockedReason?: string;
   }[];
   activeTab: ProjectTabKey;
 }) {
@@ -215,6 +239,39 @@ function TabBar({
             tab.key === activeTab ||
             pathname === tab.href ||
             (tab.key !== "overview" && pathname.startsWith(`${tab.href}/`));
+          const locked = Boolean(tab.lockedReason);
+          const countBadge =
+            typeof tab.count === "number" ? (
+              <span
+                className={
+                  locked
+                    ? "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-semibold text-ink-300"
+                    : active
+                      ? "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-1000 px-1.5 text-[10px] font-semibold text-ink-0"
+                      : "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-semibold text-ink-500"
+                }
+              >
+                {tab.count}
+              </span>
+            ) : null;
+          if (locked) {
+            // Render locked tabs as an inert <span> — no navigation,
+            // no Link prefetch, no keyboard focus. Tooltip via ``title``
+            // tells the user which gate is still closed.
+            return (
+              <li key={tab.key} className="shrink-0">
+                <span
+                  aria-disabled="true"
+                  title={tab.lockedReason}
+                  className="inline-flex cursor-not-allowed items-center gap-2 border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-ink-300"
+                >
+                  {tab.icon}
+                  {tab.label}
+                  {countBadge}
+                </span>
+              </li>
+            );
+          }
           return (
             <li key={tab.key} className="shrink-0">
               <Link
@@ -228,17 +285,7 @@ function TabBar({
               >
                 {tab.icon}
                 {tab.label}
-                {typeof tab.count === "number" ? (
-                  <span
-                    className={
-                      active
-                        ? "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-1000 px-1.5 text-[10px] font-semibold text-ink-0"
-                        : "inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[10px] font-semibold text-ink-500"
-                    }
-                  >
-                    {tab.count}
-                  </span>
-                ) : null}
+                {countBadge}
               </Link>
             </li>
           );

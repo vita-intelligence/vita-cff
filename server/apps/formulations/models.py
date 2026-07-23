@@ -998,6 +998,68 @@ class FormulationLine(models.Model):
     )
     notes = models.TextField(_("notes"), blank=True, default="")
 
+    # ------------------------------------------------------------------
+    # Stage-scoped consumption ratio.
+    #
+    # For inputs that don't fit the actives-model ``label_claim_mg``
+    # (per-serving) semantic — coating oils, glazes, packaging, capsule
+    # shells, syrups, moisture adds — the scientist declares HOW MUCH
+    # is consumed per unit of THIS LINE'S STAGE output. The compute
+    # cascade walks the stage graph and resolves each stage's total
+    # output mass/count, then multiplies by the ratio to land at
+    # per-1-finished-unit BOM quantities without the scientist having
+    # to do the algebra.
+    #
+    # Anchoring on the *stage* rather than the finished product means
+    # a coating-oil line on the "coat" stage doesn't drift when yields
+    # change or when a mid-stage semi feeds a downstream cascade — the
+    # ratio is a property of the local stage, not of the whole recipe.
+    #
+    # Modes:
+    #   * ``none``               — line uses label_claim_mg (actives).
+    #                              Default for source_kind='active'.
+    #   * ``per_unit``           — quantity per 1 output *count* of the
+    #                              stage (bottles, labels, capsule
+    #                              shells, "1 per finished unit").
+    #   * ``percent_of_mass``    — % of the stage's total output mass
+    #                              (coatings, glazes, syrups: "3%").
+    #
+    # ``stage_ratio_value``:
+    #   * per_unit → quantity in the item's PSP UOM per 1 stage output
+    #     unit. Typically 1.0 for bottles/labels; a decimal for
+    #     fractional secondary packs (0.0833 = 1 per 12).
+    #   * percent_of_mass → the percentage (5.0 = 5%, not 0.05).
+    #
+    # Immutability: once the linked spec sheet crosses ``approved``,
+    # both fields freeze (enforced at the service layer, matching
+    # traceability rules in CLAUDE.md).
+    # ------------------------------------------------------------------
+    STAGE_RATIO_MODE_NONE = "none"
+    STAGE_RATIO_MODE_PER_UNIT = "per_unit"
+    STAGE_RATIO_MODE_PERCENT_OF_MASS = "percent_of_mass"
+    STAGE_RATIO_MODE_CHOICES = (
+        (STAGE_RATIO_MODE_NONE, _("No ratio (actives use label claim)")),
+        (STAGE_RATIO_MODE_PER_UNIT, _("Per 1 output unit of stage")),
+        (STAGE_RATIO_MODE_PERCENT_OF_MASS, _("% of stage output mass")),
+    )
+    stage_ratio_mode = models.CharField(
+        _("stage ratio mode"),
+        max_length=24,
+        default=STAGE_RATIO_MODE_NONE,
+        choices=STAGE_RATIO_MODE_CHOICES,
+    )
+    stage_ratio_value = models.DecimalField(
+        _("stage ratio value"),
+        max_digits=14,
+        decimal_places=6,
+        null=True,
+        blank=True,
+        help_text=_(
+            "per_unit: qty in the item's UOM per 1 stage output unit. "
+            "percent_of_mass: percentage (5 = 5%, not 0.05)."
+        ),
+    )
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 

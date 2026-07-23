@@ -195,6 +195,11 @@ export interface FormulationLineDto {
    *  belongs to (anti_caking | mcc | dcp | capsule_shell | ...).
    *  Null on actives. */
   readonly band_key?: string | null;
+  /** Stage-scoped consumption ratio for inputs that don't fit the
+   *  actives ``label_claim_mg`` semantic. See ``FormulationLine.
+   *  stage_ratio_mode`` on the backend for the resolver contract. */
+  readonly stage_ratio_mode?: "none" | "per_unit" | "percent_of_mass";
+  readonly stage_ratio_value?: string | null;
 }
 
 export interface SalesPersonDto {
@@ -694,6 +699,9 @@ export interface FormulationLineInput {
    *  reset to ``null`` server-side so a stale cache never hard-fails
    *  the save. */
   readonly stage_id?: string | null;
+  readonly source_kind?: "active" | "band_pick" | "manual";
+  readonly stage_ratio_mode?: "none" | "per_unit" | "percent_of_mass";
+  readonly stage_ratio_value?: string | number | null;
 }
 
 export interface ReplaceLinesRequestDto {
@@ -899,6 +907,23 @@ export interface ProjectActivityEntryDto {
   readonly created_at: string;
 }
 
+/** Wizard-style tab gates. Each boolean tells the FE whether a
+ *  workspace tab is unlocked. A locked tab still renders in the
+ *  strip but is grayed out + disabled + carries a tooltip
+ *  explaining what's still needed. See ``StageGates`` in
+ *  ``apps/formulations/overview.py`` for the per-tab rule. */
+export interface StageGatesDto {
+  /** True when every stage has ≥1 ingredient line AND every
+   *  ingredient line is assigned to a stage. Reported separately
+   *  so the FE can compose a specific tooltip on the Spec-sheets
+   *  tab and light up a checklist inside Builder. */
+  readonly builder_complete: boolean;
+  readonly spec_sheets: boolean;
+  readonly proposals: boolean;
+  readonly trial_batches: boolean;
+  readonly qc: boolean;
+}
+
 export interface ProjectOverviewDto {
   readonly id: string;
   readonly code: string;
@@ -922,6 +947,7 @@ export interface ProjectOverviewDto {
   readonly compliance: ComplianceSnapshotDto;
   readonly totals: OverviewTotalsDto;
   readonly activity: readonly ProjectActivityEntryDto[];
+  readonly stage_gates: StageGatesDto;
   /** PSP finished-product UUID this project is linked to. Powers
    *  the "Open on PSP" chip in the workspace header + shortcuts to
    *  the item's BOM on PSP. ``null`` when the formulation isn't

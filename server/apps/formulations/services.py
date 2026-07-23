@@ -3854,6 +3854,22 @@ def replace_lines(
             }
             else FormulationLine.SOURCE_KIND_ACTIVE
         )
+        # Stage-scoped ratio. ``none`` (or missing) keeps the legacy
+        # actives semantic where the row is driven by ``label_claim_mg``;
+        # any other mode swaps that model for a per-stage ratio the FE
+        # resolves into per-1-finished-unit qty on save + push.
+        raw_ratio_mode = data.get("stage_ratio_mode")
+        ratio_mode = (
+            raw_ratio_mode
+            if raw_ratio_mode
+            in {
+                FormulationLine.STAGE_RATIO_MODE_NONE,
+                FormulationLine.STAGE_RATIO_MODE_PER_UNIT,
+                FormulationLine.STAGE_RATIO_MODE_PERCENT_OF_MASS,
+            }
+            else FormulationLine.STAGE_RATIO_MODE_NONE
+        )
+        ratio_value = _to_decimal(data.get("stage_ratio_value"))
         created.append(
             FormulationLine.objects.create(
                 formulation=formulation,
@@ -3868,6 +3884,8 @@ def replace_lines(
                 notes=data.get("notes", ""),
                 stage_id=stage_id,
                 source_kind=source_kind,
+                stage_ratio_mode=ratio_mode,
+                stage_ratio_value=ratio_value,
             )
         )
 
@@ -3935,6 +3953,12 @@ def _lines_snapshot(formulation: Formulation) -> list[dict[str, Any]]:
                 else None
             ),
             "notes": line.notes,
+            "stage_ratio_mode": line.stage_ratio_mode,
+            "stage_ratio_value": (
+                str(line.stage_ratio_value)
+                if line.stage_ratio_value is not None
+                else None
+            ),
         }
         for line in formulation.lines.select_related("item").all()
     ]
@@ -4886,6 +4910,12 @@ def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
                     else None
                 ),
                 "notes": line.notes,
+                "stage_ratio_mode": line.stage_ratio_mode,
+                "stage_ratio_value": (
+                    str(line.stage_ratio_value)
+                    if line.stage_ratio_value is not None
+                    else None
+                ),
             }
         )
     return lines
@@ -5406,6 +5436,12 @@ def rollback_to_version(
                 "serving_size_override": entry.get("serving_size_override"),
                 "display_order": entry.get("display_order", 0),
                 "notes": entry.get("notes", ""),
+                # Stage-scoped ratio survives rollback. Snapshots
+                # written before the ratio feature don't carry these
+                # keys — treat missing as "no ratio" so old versions
+                # restore cleanly with the actives semantic intact.
+                "stage_ratio_mode": entry.get("stage_ratio_mode"),
+                "stage_ratio_value": entry.get("stage_ratio_value"),
             }
         )
     replace_lines(formulation=formulation, actor=actor, lines=lines_payload)
