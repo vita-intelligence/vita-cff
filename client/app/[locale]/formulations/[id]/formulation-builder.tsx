@@ -7746,31 +7746,31 @@ const RoutingTabBody = memo(function RoutingTabBody({
     [stageOutputs],
   );
 
-  // Split PSP results into pinned stage-outputs + everything else.
-  const pinnedResults = pspItems.filter((it) =>
-    stageOutputUuids.has(it.uuid),
-  );
-  const otherResults = pspItems.filter(
-    (it) => !stageOutputUuids.has(it.uuid),
-  );
-
-  // Already-in-inventory dedup so the picker greys out items that
-  // the formulation already carries (via lines OR band picks).
+  // Already-in-inventory dedup. Read the PSP uuid off the
+  // BuilderLine's top-level ``item_psp_source_uuid`` (the
+  // ``item_attributes`` bag doesn't carry it — this used to look in
+  // the wrong place and quietly return an empty set, so "already
+  // picked" filtering never engaged).
   const alreadyPickedPspUuids = useMemo(() => {
     const set = new Set<string>();
     for (const line of lines) {
-      const attrs = line.item_attributes as
-        | Record<string, unknown>
-        | null
-        | undefined;
-      const uuid =
-        attrs && typeof attrs["psp_source_uuid"] === "string"
-          ? (attrs["psp_source_uuid"] as string)
-          : "";
-      if (uuid) set.add(uuid);
+      if (line.item_psp_source_uuid) set.add(line.item_psp_source_uuid);
     }
     return set;
   }, [lines]);
+
+  // Split PSP results into pinned stage-outputs + everything else,
+  // dropping anything the formulation already carries. Previously
+  // already-picked items rendered greyed-out — user request: cut
+  // them entirely so the picker only shows things you can still add.
+  const pinnedResults = pspItems.filter(
+    (it) =>
+      stageOutputUuids.has(it.uuid) && !alreadyPickedPspUuids.has(it.uuid),
+  );
+  const otherResults = pspItems.filter(
+    (it) =>
+      !stageOutputUuids.has(it.uuid) && !alreadyPickedPspUuids.has(it.uuid),
+  );
 
   const openQtyModal = () => {
     // Read the picks directly from ``pickerSelection`` (Map values)
