@@ -3079,6 +3079,93 @@ export function FormulationBuilder({
     bomLinesByStageRef.current = bomLinesByStage;
   }, [bomLinesByStage]);
 
+  // Per-stage BOM data feeding the Preview tab. Filters the compute-
+  // built full-BOM (identical on every stage after the Phase 2
+  // revert) by the row's effective routing — a row lands in a stage's
+  // ``ownRows`` iff routing draft + baseline resolve to that stage.
+  // Unassigned rows fold into the terminal bucket, matching the push
+  // cascade's null-stage handling.
+  const previewStagesData = useMemo(() => {
+    const ordered = [...formulation.stages].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    if (ordered.length === 0) return [];
+    const terminalId = ordered[ordered.length - 1]!.id;
+    // Every stage's fullBom is identical after the Phase 2 revert, so
+    // we grab the first one and use it as the master row list to
+    // partition.
+    const anyStageRows = bomLinesByStage.get(ordered[0]!.id) ?? [];
+    const resolveRowStage = (row: BomLine): string | null => {
+      const [prefix] = row.key.split(":");
+      if (!prefix) return null;
+      // Synthesised "prior semi" placeholder — skip; the preview
+      // renders its own prior-semi row from ``priorStage``.
+      if (prefix === "semi") return null;
+      // Match the routing-key vocabulary the setStageForRow +
+      // routingByKey consumers use (see the Routing inventory
+      // derivation for the source of truth).
+      const band =
+        prefix === "active"
+          ? "active"
+          : prefix === "anticaking"
+            ? "anti_caking"
+            : prefix === "mcc"
+              ? "mcc"
+              : prefix === "dcp"
+                ? "dcp"
+                : prefix === "capsule-shell"
+                  ? "capsule_shell"
+                  : prefix;
+      const routingKey =
+        band === "active"
+          ? `active:${row.key.slice("active:".length)}`
+          : `band:${band}:${row.itemId ?? ""}`;
+      return effectiveRouting.get(routingKey) ?? null;
+    };
+    return ordered.map((stage, idx) => {
+      const isTerminal = idx === ordered.length - 1;
+      const prior = idx > 0 ? ordered[idx - 1] ?? null : null;
+      const ownRows = anyStageRows.flatMap((row) => {
+        if (row.key.startsWith("semi:")) return [];
+        const rowStage = resolveRowStage(row);
+        // Terminal absorbs any row with no explicit routing (matches
+        // the server-side push cascade).
+        if (rowStage === stage.id) {
+          return [
+            {
+              key: row.key,
+              label: row.label,
+              code: row.code,
+              mg: row.mg,
+              itemId: row.itemId,
+              pspSourceUuid: row.pspItemUuid ?? null,
+            },
+          ];
+        }
+        if (isTerminal && !rowStage && terminalId === stage.id) {
+          return [
+            {
+              key: row.key,
+              label: row.label,
+              code: row.code,
+              mg: row.mg,
+              itemId: row.itemId,
+              pspSourceUuid: row.pspItemUuid ?? null,
+            },
+          ];
+        }
+        return [];
+      });
+      return {
+        stage,
+        index: idx,
+        isTerminal,
+        ownRows,
+        priorStage: prior,
+      };
+    });
+  }, [formulation.stages, bomLinesByStage, effectiveRouting]);
+
   //: F2a — compliance + ingredient declaration re-compute on every
   //: render from the same lines array. Both are pure and cheap.
   const compliance: ComplianceResult = useMemo(
@@ -6646,42 +6733,11 @@ export function FormulationBuilder({
       <StageBomsPreview
         formulationCode={formulation.code}
         formulationName={formulation.name}
-        stages={formulation.stages}
-        lines={lines}
-        // Inject the compute-based per-1kg breakdown into the
-        // terminal stage's card. This is what BomCard has
-        // always rendered — actives + all excipient bands + SKU
-        // codes at their real weights (extract-ratio + purity
-        // resolved). The Stage BOMs preview owns the routing
-        // layout + non-terminal per-line breakdowns; the terminal
-        // BOM is the finished product's authoritative recipe and
-        // lives inside its card.
-        terminalBom={
-          <BomCard
-            totals={liveTotals}
-            lines={lines}
-            gummyBaseItems={formulation.gummy_base_items}
-            flavouringItems={formulation.flavouring_items}
-            colourItems={formulation.colour_items}
-            glazingItems={formulation.glazing_items}
-            gellingItems={formulation.gelling_items}
-            premixSweetenerItems={formulation.premix_sweetener_items}
-            acidityItems={formulation.acidity_items}
-            mccCarrierItemIds={metadata.mcc_carrier_item_ids}
-            dcpCarrierItemIds={metadata.dcp_carrier_item_ids}
-            antiCakingItemIds={metadata.anti_caking_item_ids}
-            mccCarrierNames={mccCarrierNames}
-            antiCakingNames={antiCakingNames}
-            mccCarrierCodes={mccCarrierCodes}
-            antiCakingCodes={antiCakingCodes}
-            mccCarrierItems={formulation.mcc_carrier_items}
-            dcpCarrierItems={formulation.dcp_carrier_items}
-            antiCakingItems={formulation.anti_caking_items}
-            excipientOverrides={metadata.excipient_overrides}
-            formulationCode={formulation.code}
-            formulationName={formulation.name}
-            tFormulations={tFormulations}
-          />
+        stages={previewStagesData}
+        servingsPerPack={metadata.servings_per_pack || 1}
+        pspBaseUrl={organization?.psp_base_url ?? null}
+        finishedProductPspUuid={
+          formulation.psp_finished_product_uuid ?? null
         }
       />
 
