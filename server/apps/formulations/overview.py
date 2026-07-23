@@ -692,6 +692,45 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
             stage_types_ok = False
             break
 
+    # Semi-consumption check — for every non-terminal stage that has
+    # a mirrored PSP semi item, verify some line on a downstream
+    # stage points at that PSP uuid. Otherwise the stage produces a
+    # semi (Alex Gummies Liquid Mix, etc.) that nothing downstream
+    # uses — cooking output has to be routed into pouch filling or
+    # it's stranded. Skip stages with ``psp_semi_finished_uuid`` NULL
+    # (never pushed) — check refires after the first save version.
+    stage_by_id: dict[str, Any] = {str(s.id): s for s in ordered_stages}
+    stage_semis_ok = True
+    if len(ordered_stages) > 1:
+        # Preload each line's item.psp_source_uuid + stage_id so we
+        # only make one round-trip. select_related covers the FK.
+        lines_by_stage: dict[str, list[str]] = {}
+        for line in formulation.lines.select_related("item"):
+            stage_id = str(line.stage_id) if line.stage_id else ""
+            if not stage_id:
+                continue
+            psp_uuid = str(
+                getattr(line.item, "psp_source_uuid", None) or ""
+            )
+            if not psp_uuid:
+                continue
+            lines_by_stage.setdefault(stage_id, []).append(psp_uuid)
+        for idx, stage in enumerate(ordered_stages):
+            is_last = idx == len(ordered_stages) - 1
+            if is_last:
+                continue
+            semi_uuid = str(stage.psp_semi_finished_uuid or "")
+            if not semi_uuid:
+                continue
+            consumed = False
+            for downstream in ordered_stages[idx + 1 :]:
+                if semi_uuid in lines_by_stage.get(str(downstream.id), []):
+                    consumed = True
+                    break
+            if not consumed:
+                stage_semis_ok = False
+                break
+
     builder_complete = (
         has_stages
         and has_lines
@@ -699,6 +738,7 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         and all_stages_have_lines
         and has_packaging
         and stage_types_ok
+        and stage_semis_ok
     )
 
     # RTG projects skip the customer-signature gates — they can move
