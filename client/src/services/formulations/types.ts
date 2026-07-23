@@ -703,6 +703,12 @@ export interface FormulationLineInput {
    *  reset to ``null`` server-side so a stale cache never hard-fails
    *  the save. */
   readonly stage_id?: string | null;
+  /** Explicit "clear this line's stage_id" signal. Without it, a
+   *  payload row with ``stage_id: null`` is treated as "the FE may
+   *  be stale, keep whatever the DB has" — the BE's preservation
+   *  guard restores the prior stage. Set to true only when the
+   *  operator drafted an explicit unassign via the Routing tab. */
+  readonly unassign_stage?: boolean;
   readonly source_kind?: "active" | "band_pick" | "manual";
   /** Excipient-band tag on ``band_pick`` lines. Round-trips through
    *  ``replace_lines`` so the FE stage look-up key stays stable

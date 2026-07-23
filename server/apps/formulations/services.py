@@ -3789,23 +3789,44 @@ def replace_lines(
     # ids fall back to null so a stale FE cache doesn't hard-fail the
     # whole save; the line surfaces in the "no stage" bucket for the
     # operator to reassign.
-    stage_ids = {
-        str(line["stage_id"]) for line in lines if line.get("stage_id")
-    }
-    known_stage_ids = (
-        set(
-            str(sid)
-            for sid in formulation.stages.filter(id__in=stage_ids).values_list(
-                "id", flat=True
-            )
-        )
-        if stage_ids
-        else set()
+    # ``known_stage_ids`` doubles as the whitelist for the payload's
+    # explicit stage_ids AND the preservation guard's fallback. Load
+    # EVERY stage the formulation has so a payload full of null
+    # stage_ids doesn't collapse the whitelist to the empty set (the
+    # bug that made the first version of this guard silently no-op —
+    # ``preserved in known_stage_ids`` was always false when the
+    # payload had no explicit stage refs).
+    known_stage_ids = set(
+        str(sid)
+        for sid in formulation.stages.values_list("id", flat=True)
     )
 
     # Snapshot the line set pre-replacement so the audit diff can
     # show exactly which ingredients came and went.
     before_lines = _lines_snapshot(formulation)
+
+    # Capture existing ``stage_id`` per (item_id, source_kind, band_key)
+    # BEFORE the wipe. Preservation guard: when the payload sends
+    # ``stage_id: null`` for a line that used to have a saved stage
+    # AND the payload doesn't explicitly signal ``unassign_stage:
+    # True``, we honour the saved stage rather than accepting the
+    # accidental null. Root cause we're defending against: the FE's
+    # ``handleSaveLines`` currently reads ``line.stage_id`` from local
+    # state and passes it through to the payload; if that local
+    # state is stale (rollback → refetch race, prop drift, cached
+    # bundle) it sends null and the wholesale-replace here wipes the
+    # DB assignment. This guard means only an EXPLICIT unassign can
+    # clear a stage_id via replace_lines.
+    prior_stage_by_key: dict[tuple[str, str, str | None], str] = {}
+    for existing in FormulationLine.objects.filter(formulation=formulation):
+        if existing.stage_id:
+            prior_stage_by_key[
+                (
+                    str(existing.item_id),
+                    existing.source_kind or "active",
+                    existing.band_key,
+                )
+            ] = str(existing.stage_id)
 
     FormulationLine.objects.filter(formulation=formulation).delete()
 
@@ -3833,12 +3854,6 @@ def replace_lines(
             overage_override=overage_o,
             extract_ratio_override=extract_o,
         )
-        raw_stage_id = data.get("stage_id")
-        stage_id = (
-            str(raw_stage_id)
-            if raw_stage_id and str(raw_stage_id) in known_stage_ids
-            else None
-        )
         # ``source_kind`` from the payload wins over the model
         # default so Routing-tab manual picks keep their ``manual``
         # marker across replace_lines wipes. Empty / unknown values
@@ -3854,6 +3869,36 @@ def replace_lines(
             }
             else FormulationLine.SOURCE_KIND_ACTIVE
         )
+        # Resolve ``band_key`` early so the stage-preservation guard
+        # below can key on it (the (item, source_kind, band_key)
+        # triple uniquely identifies a line).
+        raw_band_key_early = data.get("band_key")
+        _valid_band_keys_early = {
+            choice for choice, _ in FormulationLine.BAND_KEY_CHOICES
+        }
+        band_key_early = (
+            raw_band_key_early
+            if source_kind == FormulationLine.SOURCE_KIND_BAND_PICK
+            and raw_band_key_early in _valid_band_keys_early
+            else None
+        )
+        raw_stage_id = data.get("stage_id")
+        stage_id = (
+            str(raw_stage_id)
+            if raw_stage_id and str(raw_stage_id) in known_stage_ids
+            else None
+        )
+        # Preservation guard — if the payload wants to clear a stage
+        # (``stage_id: null``) but the caller didn't explicitly signal
+        # ``unassign_stage: True``, and this line USED to have a
+        # saved stage, restore it. See the ``prior_stage_by_key``
+        # comment above for the rationale.
+        if stage_id is None and not data.get("unassign_stage"):
+            preserved = prior_stage_by_key.get(
+                (str(data["item_id"]), source_kind, band_key_early)
+            )
+            if preserved and preserved in known_stage_ids:
+                stage_id = preserved
         # Stage-scoped ratio. ``none`` (or missing) keeps the legacy
         # actives semantic where the row is driven by ``label_claim_mg``;
         # any other mode swaps that model for a per-stage ratio the FE
@@ -3870,19 +3915,9 @@ def replace_lines(
             else FormulationLine.STAGE_RATIO_MODE_NONE
         )
         ratio_value = _to_decimal(data.get("stage_ratio_value"))
-        # ``band_key`` only makes sense on band picks. Silently drop
-        # it for other source_kind values so a fat-fingered payload
-        # can't pollute an active line with an excipient band tag.
-        raw_band_key = data.get("band_key")
-        valid_band_keys = {
-            choice for choice, _ in FormulationLine.BAND_KEY_CHOICES
-        }
-        band_key = (
-            raw_band_key
-            if source_kind == FormulationLine.SOURCE_KIND_BAND_PICK
-            and raw_band_key in valid_band_keys
-            else None
-        )
+        # ``band_key`` was resolved above (early) so the stage
+        # preservation guard could key on it. Re-use here.
+        band_key = band_key_early
         created.append(
             FormulationLine.objects.create(
                 formulation=formulation,
