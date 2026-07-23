@@ -212,6 +212,12 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             # for a save round-trip) so blank-use_as items surface in
             # the viability panel as you add them.
             "use_as": attributes.get("use_as"),
+            # PSP's item-level type (``raw_material`` / ``packaging`` /
+            # ``semi_finished`` / ``finished_product``). Only populated
+            # on PSP-mirrored items. The Builder readiness check reads
+            # this to require at least one packaging line before Spec
+            # sheets unlocks.
+            "psp_item_type": attributes.get("psp_item_type"),
             "vegan": attributes.get("vegan"),
             "organic": attributes.get("organic"),
             "halal": attributes.get("halal"),

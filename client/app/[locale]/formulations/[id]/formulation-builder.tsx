@@ -418,6 +418,7 @@ function attributesFromLine(
     // whether the underlying raw material actually carries a
     // classification.
     use_as: (extra.use_as as string | null | undefined) ?? null,
+    psp_item_type: (extra.psp_item_type as string | null | undefined) ?? null,
     ingredient_list_name:
       (extra.ingredient_list_name as string | null | undefined) ?? null,
     nutrition_information_name:
@@ -458,6 +459,11 @@ function attributesFromItem(item: ItemDto): ItemAttributesForMath {
     // regardless of whether the raw material's ``attributes.use_as``
     // was set in the catalogue.
     use_as: pickStr("use_as"),
+    // ``psp_item_type`` mirrors PSP's item classification (``raw_material``
+    // / ``packaging`` / ``semi_finished`` / ``finished_product``). Only
+    // populated on PSP-mirrored items. Used by the readiness check to
+    // require at least one packaging line before the Builder completes.
+    psp_item_type: pickStr("psp_item_type"),
     ingredient_list_name: pickStr("ingredient_list_name"),
     nutrition_information_name: pickStr("nutrition_information_name"),
     vegan: pickStr("vegan"),
@@ -3626,14 +3632,16 @@ export function FormulationBuilder({
       }
       // Packaging check — a finished product can't ship without at
       // least one packaging component (bottle, jar, sachet, blister,
-      // pouch, carton, label, etc.). Item attributes carry the
-      // ``use_as`` classifier PSP populates on mirror. Match any
-      // classifier that starts with "packag" so both ``packaging``
-      // and the historical ``packaging_material`` label both count.
-      const useAs = (line.item_attributes?.use_as ?? "")
+      // pouch, carton, label, etc.). PSP classifies items on the
+      // ``type`` field (raw_material / packaging / semi_finished /
+      // finished_product) which mirror stores as ``psp_item_type`` on
+      // the line's item attributes. That's the item-level PSP
+      // classification — distinct from ``use_as``, which sub-classifies
+      // raw materials (active / sweetener / etc.).
+      const pspType = (line.item_attributes?.psp_item_type ?? "")
         .toString()
         .toLowerCase();
-      if (useAs.startsWith("packag")) {
+      if (pspType === "packaging") {
         hasPackaging = true;
       }
     }
