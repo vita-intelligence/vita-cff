@@ -7088,6 +7088,17 @@ function deriveStageBomLines(inputs: {
   //   4. Actives + band picks — ``totals.lineValues`` (existing
   //      compute cascade).
   for (const line of lines) {
+    // Skip lines the wizard already materialised as band picks —
+    // ``sync_wizard_band_lines`` writes them into ``lines`` with
+    // ``source_kind='band_pick'`` so PSP push has a durable row per
+    // M2M pick. The excipient-band emitter below also produces a row
+    // for the same item from the ``flavouring_items`` / ``colour_items``
+    // / etc. lists. Emitting both here would duplicate every band
+    // pick in the Routing inventory (one plain, one with the band
+    // chip) — that's the bug where "some ingredients became
+    // unassigned after Save version" showed up: the plain twin never
+    // had a routing draft entry so it landed in the Unassigned bucket.
+    if (line.source_kind === "band_pick") continue;
     const computed = totals.lineValues.get(line.key);
     let mg = computed ?? 0;
     if (line.source_kind === "manual") {
