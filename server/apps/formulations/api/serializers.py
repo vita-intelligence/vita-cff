@@ -1003,6 +1003,17 @@ class FormulationLineWriteSerializer(serializers.Serializer):
         required=False,
         allow_null=True,
     )
+    # Preserves the excipient-band discriminator across ``replace_lines``
+    # round-trips. Without this the server-side recreate wipes
+    # ``band_key`` to NULL on every save, the FE baseline key changes
+    # shape from ``band:flavouring:<item>`` to ``band::<item>``, and the
+    # stage dropdown snaps back to "Unassigned" because the display
+    # look-up key no longer matches.
+    band_key = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        allow_null=True,
+    )
     # Stage-scoped consumption ratio for lines that don't fit the
     # actives ``label_claim_mg`` semantic (coatings, packaging, glazes,
     # capsule shells, syrups). See FormulationLine.stage_ratio_mode

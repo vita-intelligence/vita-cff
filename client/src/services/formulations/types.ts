@@ -703,6 +703,10 @@ export interface FormulationLineInput {
    *  the save. */
   readonly stage_id?: string | null;
   readonly source_kind?: "active" | "band_pick" | "manual";
+  /** Excipient-band tag on ``band_pick`` lines. Round-trips through
+   *  ``replace_lines`` so the FE stage look-up key stays stable
+   *  (``band:flavouring:<item>``) across save cycles. */
+  readonly band_key?: string | null;
   readonly stage_ratio_mode?: "none" | "per_unit" | "percent_of_mass";
   readonly stage_ratio_value?: string | number | null;
 }
