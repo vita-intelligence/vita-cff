@@ -6009,16 +6009,26 @@ def save_wizard_routing(
             existing = existing_by_key.get(key)
             if existing is not None:
                 existing.mg_per_serving_cached = mg
-                existing.stage = stage
                 existing.display_order = active_max_order + offset
-                existing.save(
-                    update_fields=[
-                        "mg_per_serving_cached",
-                        "stage",
-                        "display_order",
-                        "updated_at",
-                    ]
-                )
+                update_fields = [
+                    "mg_per_serving_cached",
+                    "display_order",
+                    "updated_at",
+                ]
+                # Only overwrite ``stage`` when the payload carries a
+                # concrete assignment (or the row explicitly signals
+                # ``unassign: true``). A missing / null ``stage_id``
+                # is treated as "no routing intent for this band" —
+                # keep whatever the DB already had, don't null it out.
+                # Prevents the "clicked Save, everything jumped to
+                # Unassigned" regression when the FE re-affirms the
+                # full band set for compute purposes without meaning
+                # to touch routing.
+                explicit_unassign = bool(row.get("unassign"))
+                if stage is not None or explicit_unassign:
+                    existing.stage = stage
+                    update_fields.append("stage")
+                existing.save(update_fields=update_fields)
             else:
                 FormulationLine.objects.create(
                     formulation=formulation,
@@ -6039,13 +6049,16 @@ def save_wizard_routing(
                     display_order=active_max_order + offset,
                 )
 
-        # Orphans: existing band-pick rows the payload no longer
-        # references — the operator un-ticked them in the sidebar
-        # picker. Delete so the routing view stays in sync with the
-        # M2M selections upstream.
-        for key, line in existing_by_key.items():
-            if key not in seen_keys:
-                line.delete()
+        # PATCH-only semantics — do NOT delete band-pick rows whose
+        # (item_id, band_key) is missing from the payload. The prior
+        # wholesale-replace behaviour caused the "Save version wipes
+        # every band assignment" regression: the FE sends only the
+        # bands the operator touched this session; every other band
+        # would otherwise be deleted and re-materialised with
+        # stage=null on next compute pass. Un-ticking a band picker
+        # M2M pick is handled separately (the picker sync service
+        # removes the corresponding FormulationLine when the M2M
+        # entry disappears).
 
     formulation.refresh_from_db()
     record_audit(

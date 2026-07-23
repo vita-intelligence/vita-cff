@@ -241,6 +241,12 @@ export interface WizardRoutingBandAssignmentDto {
   readonly band_key: string;
   readonly mg: number;
   readonly stage_id: string | null;
+  /** Explicit "unassign this band" signal. Without it, a payload row
+   *  with ``stage_id: null`` is treated as "no routing intent for
+   *  this band — keep whatever the DB already has". Prevents the
+   *  save chain from wiping baseline stage assignments the FE
+   *  re-affirmed for compute reasons. */
+  readonly unassign?: boolean;
 }
 export interface WizardRoutingRequestDto {
   readonly line_assignments?: Readonly<Record<string, string | null>>;

@@ -1160,9 +1160,14 @@ class WizardRoutingSerializer(serializers.Serializer):
     the ``stage`` FK on each existing active :class:`FormulationLine`.
 
     ``band_assignments`` — list of
-    ``{item_id, band_key, mg, stage_id}``. Wholesale-replaces the
-    formulation's ``band_pick`` lines (upsert on (item, band_key),
-    delete orphans).
+    ``{item_id, band_key, mg, stage_id, unassign?}``. PATCH-only:
+    upserts on (item, band_key). A missing / null ``stage_id`` is
+    treated as "no routing intent" and leaves any existing stage
+    alone; pass ``unassign: true`` alongside a null ``stage_id`` to
+    actually clear the assignment. Rows the payload doesn't
+    reference stay untouched — the picker sync service handles
+    removing FormulationLine rows for M2M picks the operator
+    un-ticked.
     """
 
     line_assignments = serializers.DictField(

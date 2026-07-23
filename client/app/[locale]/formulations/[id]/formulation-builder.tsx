@@ -1956,6 +1956,10 @@ export function FormulationBuilder({
       band_key: string;
       mg: number;
       stage_id: string | null;
+      /** Explicit unassign signal so the BE knows to null out an
+       *  existing stage_id (rather than treating null as "leave
+       *  alone"). See ``WizardRoutingBandAssignmentDto``. */
+      unassign?: boolean;
     }[] = [];
     // Compute-derived mg + band + item_id per band pick, resolved
     // from the live full-BOM map.
@@ -1976,33 +1980,28 @@ export function FormulationBuilder({
         });
       }
     });
-    // Short-circuit when the operator hasn't touched ANY band-pick
-    // routing this session — no draft edits means the DB is already
-    // authoritative and firing the endpoint would be a no-op.
-    let hasBandDraft = false;
-    for (const key of routingByKey.keys()) {
-      if (key.startsWith("band:")) {
-        hasBandDraft = true;
-        break;
-      }
-    }
-    if (!hasBandDraft) return;
-    // Ship the FULL current band-pick set (not just the drafts).
-    // ``sync_wizard_band_lines`` treats the payload as a wholesale-
-    // replace: any existing band line whose (item_id, band_key) key
-    // is missing from ``band_assignments`` gets DELETED. So sending
-    // only the operator's session drafts would erase every band
-    // pick they routed in a prior session, which resurface as
-    // "Unassigned" on next page load. Iterate the compute-derived
-    // ``bomIndex`` instead so every current pick is re-asserted
-    // with its effective (baseline + draft) stage assignment.
-    for (const [key, entry] of bomIndex.entries()) {
-      const stageId = effectiveRouting.get(key) ?? null;
+    // Send ONLY the operator's session drafts, and always with a
+    // concrete ``stage_id`` (null included). ``sync_wizard_band_lines``
+    // is now PATCH-only: bands the payload doesn't reference stay
+    // untouched, so re-asserting the full band set (my earlier
+    // "belt-and-braces" fix) is no longer needed — and the previous
+    // approach kept wiping saved assignments to null whenever
+    // ``effectiveRouting.get`` returned undefined for a new
+    // compute-only band. The pattern going forward: routingByKey
+    // = user intent, everything else stays as the DB knows it.
+    for (const [key, draftStageId] of routingByKey.entries()) {
+      if (!key.startsWith("band:")) continue;
+      const entry = bomIndex.get(key);
+      if (!entry) continue;
       band_assignments.push({
         item_id: entry.itemId,
         band_key: entry.bandKey,
         mg: entry.mg,
-        stage_id: stageId,
+        stage_id: draftStageId,
+        // Explicit "the user unassigned this band" signal — required
+        // so the BE knows the difference between "no intent, keep
+        // existing" and "unassign now".
+        unassign: draftStageId === null,
       });
     }
     if (band_assignments.length === 0) return;
