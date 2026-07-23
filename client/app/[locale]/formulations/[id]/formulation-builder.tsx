@@ -8109,7 +8109,16 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     return (
                       <li
                         key={row.routingKey}
-                        className={`flex flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${
+                        // Clicking anywhere on the row toggles the
+                        // checkbox — but the stage-select, remove
+                        // button, and ratio inputs stop propagation
+                        // below so those clicks still do their own
+                        // thing without also flipping the selection.
+                        onClick={() => {
+                          if (!canWrite || isSaving) return;
+                          toggleInvSelection(row.routingKey);
+                        }}
+                        className={`flex cursor-pointer flex-col gap-1 rounded-lg border px-3 py-2 text-sm ${
                           isChecked
                             ? "border-orange-400 bg-orange-50/70"
                             : assigned
@@ -8121,9 +8130,15 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           <input
                             type="checkbox"
                             checked={isChecked}
-                            onChange={() =>
-                              toggleInvSelection(row.routingKey)
-                            }
+                            // The <li> onClick already fires when the
+                            // checkbox is clicked (bubbles up); handle
+                            // that via readOnly + stopPropagation so
+                            // React doesn't double-toggle. onChange
+                            // stays no-op to keep React happy about
+                            // "controlled" inputs.
+                            readOnly
+                            onClick={(e) => e.stopPropagation()}
+                            onChange={() => undefined}
                             disabled={!canWrite || isSaving}
                             className="h-4 w-4 shrink-0 accent-orange-500"
                             aria-label={`Select ${row.label}`}
@@ -8142,6 +8157,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           </div>
                           <select
                             value={assigned ?? ""}
+                            onClick={(e) => e.stopPropagation()}
                             onChange={(e) =>
                               setStageForRow(
                                 row.routingKey,
@@ -8161,7 +8177,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           {canRemove ? (
                             <button
                               type="button"
-                              onClick={() => onRemoveLine(lineKey!)}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onRemoveLine(lineKey!);
+                              }}
                               disabled={isSaving}
                               className="rounded-md p-1 text-ink-400 hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40"
                               aria-label={`Remove ${row.label}`}
@@ -8172,7 +8191,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           ) : null}
                         </div>
                         {manualLine && lineKey ? (
-                          <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md bg-ink-50/70 px-2 py-1.5 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-100">
+                          <div
+                            onClick={(e) => e.stopPropagation()}
+                            className="mt-1 flex flex-wrap items-center gap-2 rounded-md bg-ink-50/70 px-2 py-1.5 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-100"
+                          >
                             <span className="font-medium uppercase tracking-wide text-ink-500">
                               How much
                             </span>
@@ -8611,19 +8633,31 @@ function RoutingInventoryPicker({
     return (
       <li
         key={item.uuid}
+        onClick={() => {
+          if (!canWrite || isAlready) return;
+          onToggle(item);
+        }}
         className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm ${
           isSelected
             ? "border-orange-400 bg-orange-50/50"
             : isStageOutput
               ? "border-orange-200 bg-orange-50/20"
               : "border-ink-200 bg-ink-0"
+        } ${
+          !canWrite || isAlready ? "" : "cursor-pointer"
         } ${isAlready ? "opacity-40" : ""}`}
       >
         <input
           type="checkbox"
           checked={isSelected}
           disabled={!canWrite || isAlready}
-          onChange={() => onToggle(item)}
+          // The <li> onClick handles the toggle — the checkbox stays
+          // as a visual indicator. readOnly + stopPropagation prevents
+          // a double-toggle when the operator clicks directly on the
+          // box; onChange stays a no-op to keep React happy.
+          readOnly
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => undefined}
           className="h-4 w-4 shrink-0 accent-orange-500"
           aria-label={`Select ${item.name}`}
         />
