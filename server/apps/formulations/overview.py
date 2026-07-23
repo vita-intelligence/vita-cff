@@ -661,11 +661,25 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
     all_stages_have_lines = has_stages and all(
         stage_id in stage_ids_with_lines for stage_id in stage_ids
     )
+    # Packaging check — a finished product can't ship without at least
+    # one packaging component. Read ``use_as`` off either the local
+    # Item's attributes or the PSP snapshot for PSP-sourced lines.
+    # Match any classifier that starts with ``packag`` so both
+    # ``packaging`` and the historical ``packaging_material`` label
+    # both count.
+    has_packaging = False
+    for line in formulation.lines.select_related("item"):
+        attrs = line.effective_item_attributes or {}
+        use_as = str(attrs.get("use_as") or "").strip().lower()
+        if use_as.startswith("packag"):
+            has_packaging = True
+            break
     builder_complete = (
         has_stages
         and has_lines
         and all_lines_assigned
         and all_stages_have_lines
+        and has_packaging
     )
 
     # RTG projects skip the customer-signature gates — they can move
