@@ -2466,22 +2466,22 @@ def create_formulation(
 
 
 def seed_default_stages(*, formulation: Formulation) -> list[FormulationStage]:
-    """Populate a fresh formulation with the default stage graph for
-    its dosage form.
+    """Seed a fresh formulation with just the terminal (finished)
+    stage from the dosage form's default template.
 
-    Picks the template from :data:`DEFAULT_STAGE_TEMPLATES` — capsules
-    seed with *Blend → Encapsulate → Bottle → Label*, powders with
-    *Blend → Fill → Label*, gummies with *Cook → Deposit → Cure →
-    Coat → Package*, tablets with *Blend → Compress → Coat → Bottle
-    → Label*. Liquid / other-solid dosage forms fall through to an
-    empty template — the scientist adds stages by hand on the
-    builder.
+    Prior behaviour was to spawn the whole graph (e.g. capsules got
+    *Blend → Encapsulate → Bottle → Label* on day one). Scientists
+    asked for a cleaner slate — they'd rather see one placeholder
+    for the finished stage (which the UI can't let them delete
+    anyway) and add intermediate stages by hand as the process
+    matures. Liquid / other-solid forms still fall through to an
+    empty list because the template map has no entry for them.
 
-    No-op when the formulation already has stages (never overwrite a
-    user's edits). Workstation groups aren't matched here — that
-    happens either on the FE picker's first render or during the
-    push cascade in the PSP client. Returns the newly-created stage
-    list.
+    No-op when the formulation already has stages so a rerun of the
+    seeder never overwrites edits. Workstation groups aren't matched
+    here — that happens either on the FE picker's first render or
+    during the push cascade in the PSP client. Returns the newly-
+    created stage list.
     """
 
     if formulation.stages.exists():
@@ -2491,17 +2491,15 @@ def seed_default_stages(*, formulation: Formulation) -> list[FormulationStage]:
     if not template:
         return []
 
-    created: list[FormulationStage] = []
-    for sort_order, (stage_key, name, _workstation_hint) in enumerate(template):
-        stage = FormulationStage.objects.create(
-            formulation=formulation,
-            sort_order=sort_order,
-            name=name,
-            stage_key=stage_key,
-        )
-        created.append(stage)
-
-    return created
+    # Only the terminal stage — last entry in the template.
+    stage_key, name, _workstation_hint = template[-1]
+    stage = FormulationStage.objects.create(
+        formulation=formulation,
+        sort_order=0,
+        name=name,
+        stage_key=stage_key,
+    )
+    return [stage]
 
 
 def _parse_positive_decimal(value: Any, *, default: Decimal) -> Decimal:

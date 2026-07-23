@@ -22,9 +22,13 @@ pytestmark = pytest.mark.django_db
 
 
 class TestDefaultStageSeeding:
-    def test_capsule_seeds_the_full_graph(self) -> None:
-        """Capsules land with the canonical four-stage template:
-        Blend → Encapsulate → Bottle → Label."""
+    def test_capsule_seeds_terminal_only(self) -> None:
+        """Fresh capsule projects land with just the terminal stage
+        (``label``). Scientists asked for a cleaner slate — they'd
+        rather build intermediate stages by hand as the process
+        matures than see a pre-populated Blend → Encapsulate → Bottle
+        → Label graph on day one. The terminal placeholder stays so
+        the finished-product cascade always has a target."""
 
         org = OrganizationFactory()
         formulation = create_formulation(
@@ -36,18 +40,13 @@ class TestDefaultStageSeeding:
         )
 
         stages = list(formulation.stages.order_by("sort_order"))
-        assert [s.stage_key for s in stages] == [
-            "blend",
-            "encapsulate",
-            "bottle",
-            "label",
-        ]
-        # sort_order is 0-indexed and dense.
-        assert [s.sort_order for s in stages] == [0, 1, 2, 3]
+        assert [s.stage_key for s in stages] == ["label"]
+        # sort_order is 0 for the sole stage.
+        assert [s.sort_order for s in stages] == [0]
         # Workstations start unset — operator picks in the builder.
         assert all(s.workstation_group_uuid is None for s in stages)
 
-    def test_powder_seeds_a_three_stage_graph(self) -> None:
+    def test_powder_seeds_terminal_only(self) -> None:
         org = OrganizationFactory()
         formulation = create_formulation(
             organization=org,
@@ -59,7 +58,21 @@ class TestDefaultStageSeeding:
         keys = list(
             formulation.stages.order_by("sort_order").values_list("stage_key", flat=True)
         )
-        assert keys == ["blend", "fill", "label"]
+        assert keys == ["label"]
+
+    def test_gummy_seeds_terminal_only(self) -> None:
+        org = OrganizationFactory()
+        formulation = create_formulation(
+            organization=org,
+            actor=org.created_by,
+            name="G1",
+            code="GUM-01",
+            dosage_form="gummy",
+        )
+        keys = list(
+            formulation.stages.order_by("sort_order").values_list("stage_key", flat=True)
+        )
+        assert keys == ["package"]
 
     def test_liquid_seeds_nothing(self) -> None:
         """Liquid + other-solid dosage forms have no default template
@@ -85,14 +98,14 @@ class TestDefaultStageSeeding:
         first = seed_default_stages(formulation=formulation)
         first_ids = {s.id for s in first}
 
-        # Operator renames a stage; a re-seed must not overwrite.
-        blend = formulation.stages.get(stage_key="blend")
-        blend.name = "Custom Blend"
-        blend.save()
+        # Operator renames the terminal stage; a re-seed must not overwrite.
+        terminal = formulation.stages.get(stage_key="label")
+        terminal.name = "Custom Label"
+        terminal.save()
 
         second = seed_default_stages(formulation=formulation)
         assert {s.id for s in second} == first_ids
-        assert formulation.stages.get(stage_key="blend").name == "Custom Blend"
+        assert formulation.stages.get(stage_key="label").name == "Custom Label"
 
 
 class TestSetFormulationStages:
@@ -109,14 +122,28 @@ class TestSetFormulationStages:
             code="X-1",
             dosage_form="capsule",
         )
-        original = list(formulation.stages.order_by("sort_order"))
-        assert len(original) == 4  # capsule template
+        # Fresh capsules seed only the terminal stage now; build the
+        # multi-stage graph the test replaces via ``set_formulation_stages``
+        # so the "wholesale replace" semantics are what get exercised
+        # rather than the seeding shape.
+        starting = set_formulation_stages(
+            formulation=formulation,
+            actor=org.created_by,
+            stages=[
+                {"sort_order": 0, "name": "Powder blend", "stage_key": "blend"},
+                {"sort_order": 1, "name": "Encapsulate", "stage_key": "encapsulate"},
+                {"sort_order": 2, "name": "Bottle", "stage_key": "bottle"},
+                {"sort_order": 3, "name": "Label", "stage_key": "label"},
+            ],
+        )
+        assert len(starting) == 4
 
-        # Keep blend + label with edits; drop encapsulate + bottle;
-        # add a fresh Coat stage between blend and label.
+        original = list(formulation.stages.order_by("sort_order"))
         blend_id = str(original[0].id)
         label_id = str(original[3].id)
 
+        # Keep blend + label with edits; drop encapsulate + bottle;
+        # add a fresh Coat stage between blend and label.
         result = set_formulation_stages(
             formulation=formulation,
             actor=org.created_by,
@@ -161,7 +188,19 @@ class TestSetFormulationStages:
 
         formulation = FormulationFactory(dosage_form="capsule")
         seed_default_stages(formulation=formulation)
-        blend = formulation.stages.get(stage_key="blend")
+        # Seeder only creates the terminal stage now; bump it out of
+        # sort_order 0 so we can insert the blend stage in front of
+        # it. The ``(formulation, sort_order)`` unique constraint
+        # means the terminal has to move first.
+        terminal = formulation.stages.get(stage_key="label")
+        terminal.sort_order = 1
+        terminal.save()
+        blend = FormulationStage.objects.create(
+            formulation=formulation,
+            sort_order=0,
+            name="Powder blend",
+            stage_key="blend",
+        )
 
         # Attach a bare line to the blend stage. The factory needs
         # an item — we stub the minimum via direct create with
