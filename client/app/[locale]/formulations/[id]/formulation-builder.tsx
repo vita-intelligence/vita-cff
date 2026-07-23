@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { AlertCircle, Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { StageBomsPreview } from "./stage-boms-preview";
@@ -160,6 +160,16 @@ interface BuilderLine {
    *  Step 3 (Routing tab) can group / label rows correctly. */
   source_kind: "active" | "band_pick" | "manual";
   band_key: string | null;
+  /** Stage-scoped consumption ratio. See ``FormulationLine.
+   *  stage_ratio_mode`` on the backend for the resolver contract.
+   *  Only meaningful when ``source_kind !== 'active'`` — actives
+   *  are always driven by ``label_claim_mg``. */
+  stage_ratio_mode: "none" | "per_unit" | "percent_of_mass";
+  /** Empty string == "no ratio configured yet"; any non-empty
+   *  numeric string is the value. Kept as a string to preserve
+   *  the operator's typed decimals through re-renders (same
+   *  pattern as label_claim_mg + purity_override). */
+  stage_ratio_value: string;
 }
 
 interface MetadataDraft {
@@ -471,6 +481,8 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     stage_id: line.stage_id ?? null,
     source_kind: line.source_kind ?? "active",
     band_key: line.band_key ?? null,
+    stage_ratio_mode: line.stage_ratio_mode ?? "none",
+    stage_ratio_value: line.stage_ratio_value ?? "",
   }));
 }
 
@@ -1848,13 +1860,29 @@ export function FormulationBuilder({
     }
     return map;
   }, [lines]);
-  // Re-seed the draft from the fresh baseline whenever the server
-  // returns new line data (initial mount, after a save round-trip,
-  // after a version rollback). Keeps the draft in sync without
-  // clobbering an unsaved edit — if the user hasn't touched
-  // anything, draft === baseline anyway.
+  // Reconcile the draft with the fresh baseline whenever the server
+  // returns new line data OR the local ``lines`` array grows/shrinks
+  // (add-ingredient, remove-ingredient). Preserves any unsaved edits
+  // the operator already made — pulling in baseline only for keys
+  // the draft doesn't know about (newly picked lines) and dropping
+  // keys that vanished from the baseline (removed lines). Without
+  // this merge, adding one new ingredient after routing five others
+  // would blow away all five stage assignments.
+  //
+  // Explicit "discard" flows (rollback, revert-all-unsaved) reset
+  // the draft to an empty map before mutating ``lines`` so this
+  // effect ends up seeding the fresh baseline in full.
   useEffect(() => {
-    setRoutingByKey(new Map(routingBaseline));
+    setRoutingByKey((prev) => {
+      const next = new Map<string, string | null>();
+      for (const [key, baselineVal] of routingBaseline.entries()) {
+        next.set(
+          key,
+          prev.has(key) ? (prev.get(key) ?? null) : baselineVal,
+        );
+      }
+      return next;
+    });
   }, [routingBaseline]);
 
   const routingDirty = useMemo(() => {
@@ -2644,6 +2672,10 @@ export function FormulationBuilder({
       autoCapsuleShell,
       excipientOverrides: metadata.excipient_overrides,
       itemLookup,
+      // Servings per finished pack — used to convert per-stage-output-
+      // unit ratios into per-serving mg for the PSP push cascade.
+      // Falls back to 1 when unset so single-serving formats behave.
+      servingsPerPack: metadata.servings_per_pack || 1,
     });
     // Rewrite each row's label to the raw PSP item name when we
     // can resolve it — compute's default label falls back to
@@ -3432,6 +3464,45 @@ export function FormulationBuilder({
   }, [activeStageId, formulation.stages]);
 
 
+  // ---------------------------------------------------------------------
+  // Builder-readiness signals — drives the "what's still missing" card
+  // that renders above the tab strip. Mirrors the server-side
+  // ``StageGates.builder_complete`` rule so the FE surfaces the exact
+  // reasons a scientist can't yet move onto Spec sheets: empty stages,
+  // orphan lines (no stage assigned), missing scaffold (no stages, no
+  // lines). Computed from the live local state so the card clears the
+  // moment the scientist fixes a row — no server round-trip needed.
+  // ---------------------------------------------------------------------
+  const readinessSignals = useMemo(() => {
+    const stagesWithLines = new Set<string>();
+    let orphanLineCount = 0;
+    for (const line of lines) {
+      if (line.stage_id) {
+        stagesWithLines.add(line.stage_id);
+      } else {
+        orphanLineCount += 1;
+      }
+    }
+    const emptyStages = formulation.stages.filter(
+      (s) => !stagesWithLines.has(s.id),
+    );
+    const hasStages = formulation.stages.length > 0;
+    const hasLines = lines.length > 0;
+    const isComplete =
+      hasStages &&
+      hasLines &&
+      emptyStages.length === 0 &&
+      orphanLineCount === 0;
+    return {
+      hasStages,
+      hasLines,
+      emptyStages,
+      orphanLineCount,
+      isComplete,
+    };
+  }, [lines, formulation.stages]);
+
+
   // Pick-in-flight tracking so the picker overlay + row-disable
   // fire on EVERY click, not just PSP-mirror round-trips. Local
   // catalogue picks skip the HTTP mutation and would otherwise
@@ -3481,6 +3552,8 @@ export function FormulationBuilder({
             stage_id: null,
             source_kind: "active",
             band_key: null,
+            stage_ratio_mode: "none",
+            stage_ratio_value: "",
           },
         ];
       });
@@ -3548,6 +3621,14 @@ export function FormulationBuilder({
                 // + band picks remain managed on Formulation).
                 source_kind: "manual",
                 band_key: null,
+                // Manual picks default to ``per_unit`` mode — packaging
+                // items (bottles, labels, caps) are counted, which is
+                // what per_unit expresses. Coating oils / glazes are
+                // still per_unit-capable via a fractional qty; the
+                // scientist can flip to ``percent_of_mass`` when the
+                // input scales with mass instead of count.
+                stage_ratio_mode: "per_unit",
+                stage_ratio_value: pick.qtyString || "",
               },
             ];
           });
@@ -3564,6 +3645,38 @@ export function FormulationBuilder({
   const handleRemoveLine = useCallback((lineKey: string) => {
     setLines((prev) => prev.filter((line) => line.key !== lineKey));
   }, []);
+
+  // Stage-scoped ratio setters — used by the inline inputs on manual
+  // Routing rows. Only ``manual`` lines (packaging, coating oils,
+  // etc.) get the input; actives keep their label_claim_mg semantic
+  // and band picks are compute-derived.
+  const setRatioModeForLine = useCallback(
+    (
+      lineKey: string,
+      mode: "none" | "per_unit" | "percent_of_mass",
+    ) => {
+      setLines((prev) =>
+        prev.map((line) =>
+          line.key === lineKey
+            ? { ...line, stage_ratio_mode: mode }
+            : line,
+        ),
+      );
+    },
+    [],
+  );
+  const setRatioValueForLine = useCallback(
+    (lineKey: string, value: string) => {
+      setLines((prev) =>
+        prev.map((line) =>
+          line.key === lineKey
+            ? { ...line, stage_ratio_value: value }
+            : line,
+        ),
+      );
+    },
+    [],
+  );
 
   const addIngredient = useCallback(
     (item: ItemDto) => {
@@ -3861,6 +3974,12 @@ export function FormulationBuilder({
           // lines, so without this manual picks get demoted to
           // active on every save.
           source_kind: line.source_kind,
+          // Stage-scoped consumption ratio. ``none`` is the actives
+          // default and rides through untouched; other modes carry
+          // the operator-typed value. Empty string → null so BE
+          // clears the field.
+          stage_ratio_mode: line.stage_ratio_mode,
+          stage_ratio_value: overrideOrNull(line.stage_ratio_value),
         })),
       });
       setFormulation(updated);
@@ -3963,6 +4082,11 @@ export function FormulationBuilder({
         setFormulation(updated);
         setMetadata(metadataFrom(updated));
         setLines(linesFrom(updated));
+        // Rollback is an explicit "throw away drafts" action — reset
+        // routing drafts so the merge effect re-seeds them entirely
+        // from the rolled-back baseline (instead of preserving the
+        // pre-rollback assignments).
+        setRoutingByKey(new Map());
         router.refresh();
       } catch (err) {
         setErrorMessage(extractApiErrorMessage(err, tErrors));
@@ -4140,6 +4264,9 @@ export function FormulationBuilder({
   const handleRevertAllUnsaved = useCallback(() => {
     setMetadata(metadataFrom(formulation));
     setLines(linesFrom(formulation));
+    // Discard routing drafts too — merge logic in the routing effect
+    // will re-seed from the fresh baseline once ``lines`` swaps in.
+    setRoutingByKey(new Map());
   }, [formulation]);
 
   const isBusy =
@@ -4280,6 +4407,104 @@ export function FormulationBuilder({
         >
           {errorMessage}
         </p>
+      ) : null}
+
+      {/* ------------------------------------------------------------ */}
+      {/* Readiness checklist — mirrors ``StageGates.builder_complete`` */}
+      {/* server-side. Auto-hides once the recipe scaffold is whole so  */}
+      {/* the strip stays quiet on healthy formulations.                */}
+      {/* ------------------------------------------------------------ */}
+      {!readinessSignals.isComplete ? (
+        <section
+          aria-labelledby="builder-readiness-heading"
+          className="rounded-2xl bg-amber-50 p-4 ring-1 ring-inset ring-amber-200"
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle
+              className="mt-0.5 h-5 w-5 shrink-0 text-amber-700"
+              aria-hidden
+            />
+            <div className="flex-1 min-w-0">
+              <h3
+                id="builder-readiness-heading"
+                className="text-sm font-semibold text-amber-900"
+              >
+                Finish the Builder to unlock Spec sheets
+              </h3>
+              <p className="mt-1 text-xs text-amber-800">
+                Every stage needs at least one ingredient and every
+                ingredient needs a stage assignment before you can move
+                on.
+              </p>
+              <ul className="mt-3 flex flex-col gap-1.5 text-sm text-amber-900">
+                {!readinessSignals.hasStages ? (
+                  <li className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>No stages yet.</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("stages")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Add a stage
+                    </button>
+                  </li>
+                ) : null}
+                {!readinessSignals.hasLines ? (
+                  <li className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>No ingredients picked yet.</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("formulation")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Add ingredients
+                    </button>
+                  </li>
+                ) : null}
+                {readinessSignals.orphanLineCount > 0 ? (
+                  <li className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      {readinessSignals.orphanLineCount}{" "}
+                      {readinessSignals.orphanLineCount === 1
+                        ? "ingredient isn't"
+                        : "ingredients aren't"}{" "}
+                      assigned to a stage.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("routing")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Route them
+                    </button>
+                  </li>
+                ) : null}
+                {readinessSignals.emptyStages.map((s) => (
+                  <li key={s.id} className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      Stage <span className="font-semibold">{s.name}</span>{" "}
+                      has no ingredients.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setActiveStageId(s.id);
+                        setActiveTab("routing");
+                      }}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Assign ingredients
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </section>
       ) : null}
 
       {/* ------------------------------------------------------------ */}
@@ -6072,6 +6297,8 @@ export function FormulationBuilder({
           errorMessage={wizardRoutingMutation.error?.message ?? null}
           onAddManualPicks={handleAddManualPicks}
           onRemoveLine={handleRemoveLine}
+          onSetRatioMode={setRatioModeForLine}
+          onSetRatioValue={setRatioValueForLine}
           pickBusy={mirrorPsp.isPending}
           servingsPerPack={metadata.servings_per_pack || 1}
         />
@@ -6539,6 +6766,12 @@ function deriveStageBomLines(inputs: {
   itemLookup?: (
     itemId: string,
   ) => { code: string; pspSourceUuid: string | null } | null;
+  /** Servings per finished pack. Used to convert the ``per_unit``
+   *  ratio (declared per stage output unit, which equals 1 finished
+   *  pack for the terminal stage) into per-serving mg — the format
+   *  PSP's BOM math expects. Falls back to 1 for single-serving
+   *  formats so the conversion is a no-op. */
+  servingsPerPack?: number;
 }): BomLine[] {
   const {
     totals,
@@ -6550,7 +6783,9 @@ function deriveStageBomLines(inputs: {
     autoCapsuleShell,
     excipientOverrides,
     itemLookup,
+    servingsPerPack,
   } = inputs;
+  const servingsPerParent = Math.max(1, servingsPerPack ?? 1);
   const out: BomLine[] = [];
   const lookup = (id: string | null | undefined) =>
     (id && itemLookup ? itemLookup(id) : null) ?? {
@@ -6604,18 +6839,50 @@ function deriveStageBomLines(inputs: {
   // The stage strip renders this whole list on every stage's card
   // because the operator's mental model is "the formulation has one
   // recipe; every manufacturing stage lists it in full."
+  //
+  // Resolver precedence for manual picks:
+  //   1. ``stage_ratio_mode === "per_unit"`` — mg = ratio value.
+  //      The BE's manual-pick branch sends manual lines' qty verbatim
+  //      to PSP, so setting mg = ratio lands "1 bottle per stage
+  //      output unit" as ``qty=1`` on the PSP BOM.
+  //   2. ``stage_ratio_mode === "percent_of_mass"`` — mg = (ratio/100)
+  //      × totals.totalWeightMg. Anchor to the FINISHED-unit mass for
+  //      terminal-stage assignments; non-terminal stages get an
+  //      approximation (yield loss + intermediate-stage output masses
+  //      aren't modeled yet). Accurate enough for coating oils on the
+  //      terminal stage which is where they usually land.
+  //   3. Fallback — ``label_claim_mg`` from the manual pick's qty
+  //      modal (legacy pre-ratio manual picks).
+  //   4. Actives + band picks — ``totals.lineValues`` (existing
+  //      compute cascade).
+  const finishedMassMg = totals.totalWeightMg ?? 0;
   for (const line of lines) {
     const computed = totals.lineValues.get(line.key);
-    // Manual picks (Routing-tab inventory picker) don't ride the
-    // compute pipeline — no purity / overage / extract-ratio to
-    // adjust — so ``totals.lineValues`` returns undefined or 0.
-    // Fall back to the raw ``label_claim_mg`` the scientist typed
-    // in the qty modal so the row stays visible in inventory + on
-    // every stage card even before the first save.
     let mg = computed ?? 0;
-    if (mg <= 0 && line.source_kind === "manual") {
-      const raw = Number.parseFloat(line.label_claim_mg || "0");
-      if (Number.isFinite(raw) && raw > 0) mg = raw;
+    if (line.source_kind === "manual") {
+      const ratioValue = Number.parseFloat(line.stage_ratio_value || "");
+      if (
+        line.stage_ratio_mode === "per_unit" &&
+        Number.isFinite(ratioValue) &&
+        ratioValue > 0
+      ) {
+        // per_unit ratio is declared per stage output unit — for the
+        // terminal stage that's 1 finished pack. PSP's BOM math wants
+        // per-serving mg (mg × servings × unit_factor = qty per
+        // parent). Divide by servings so 1 bottle per pack lands as
+        // qty=1 on PSP for count-UoM packaging items.
+        mg = ratioValue / servingsPerParent;
+      } else if (
+        line.stage_ratio_mode === "percent_of_mass" &&
+        Number.isFinite(ratioValue) &&
+        ratioValue > 0 &&
+        finishedMassMg > 0
+      ) {
+        mg = (ratioValue / 100) * finishedMassMg;
+      } else if (mg <= 0) {
+        const raw = Number.parseFloat(line.label_claim_mg || "0");
+        if (Number.isFinite(raw) && raw > 0) mg = raw;
+      }
     }
     if (mg <= 0) continue;
     out.push({
@@ -6795,6 +7062,8 @@ const RoutingTabBody = memo(function RoutingTabBody({
   errorMessage,
   onAddManualPicks,
   onRemoveLine,
+  onSetRatioMode,
+  onSetRatioValue,
   pickBusy,
   servingsPerPack,
 }: {
@@ -6817,6 +7086,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
     }[],
   ) => Promise<void>;
   onRemoveLine: (lineKey: string) => void;
+  onSetRatioMode: (
+    lineKey: string,
+    mode: "none" | "per_unit" | "percent_of_mass",
+  ) => void;
+  onSetRatioValue: (lineKey: string, value: string) => void;
   pickBusy: boolean;
   /** How many servings each finished pack ships with (from Setup).
    *  Drives the per-row "for N finished units, you need X g / Y kg"
@@ -7098,6 +7372,19 @@ const RoutingTabBody = memo(function RoutingTabBody({
     return map;
   }, [lines]);
 
+  // Look up the actual BuilderLine behind a routing row's key — used
+  // by the inline ratio input to read + write ``stage_ratio_mode`` /
+  // ``stage_ratio_value`` on manual picks (packaging, coating oils,
+  // glazes). Only manual picks get the ratio input; actives keep
+  // their label_claim_mg semantic and band picks are compute-derived.
+  const manualLineByKey = useMemo(() => {
+    const map = new Map<string, BuilderLine>();
+    for (const line of lines) {
+      if (line.source_kind === "manual") map.set(line.key, line);
+    }
+    return map;
+  }, [lines]);
+
   // ── Bulk selection on the inventory list ────────────────────────
   // Scientists can tick many rows at once and assign them to a stage
   // in a single click. The per-row stage dropdown still works for
@@ -7351,6 +7638,13 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     const lineKey = lineKeyByRoutingKey.get(row.routingKey);
                     const canRemove = Boolean(lineKey) && canWrite;
                     const isChecked = invSelection.has(row.routingKey);
+                    // Ratio input only applies to manual picks — an
+                    // active's mg semantic lives on ``label_claim_mg``
+                    // and band picks are compute-derived. ``manualLine``
+                    // is the BuilderLine backing this row when applicable.
+                    const manualLine = lineKey
+                      ? manualLineByKey.get(lineKey)
+                      : undefined;
                     return (
                       <li
                         key={row.routingKey}
@@ -7416,6 +7710,66 @@ const RoutingTabBody = memo(function RoutingTabBody({
                             </button>
                           ) : null}
                         </div>
+                        {manualLine && lineKey ? (
+                          <div className="mt-1 flex flex-wrap items-center gap-2 rounded-md bg-ink-50/70 px-2 py-1.5 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-100">
+                            <span className="font-medium uppercase tracking-wide text-ink-500">
+                              How much
+                            </span>
+                            <select
+                              value={manualLine.stage_ratio_mode}
+                              onChange={(e) =>
+                                onSetRatioMode(
+                                  lineKey,
+                                  e.target.value as
+                                    | "none"
+                                    | "per_unit"
+                                    | "percent_of_mass",
+                                )
+                              }
+                              disabled={!canWrite || isSaving}
+                              className="rounded bg-ink-0 px-1.5 py-0.5 text-[11px] ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
+                              aria-label={`Ratio mode for ${row.label}`}
+                            >
+                              <option value="none">— pick mode —</option>
+                              <option value="per_unit">
+                                per stage output unit
+                              </option>
+                              <option value="percent_of_mass">
+                                % of stage output mass
+                              </option>
+                            </select>
+                            {manualLine.stage_ratio_mode !== "none" ? (
+                              <>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={manualLine.stage_ratio_value}
+                                  onChange={(e) =>
+                                    onSetRatioValue(lineKey, e.target.value)
+                                  }
+                                  disabled={!canWrite || isSaving}
+                                  placeholder={
+                                    manualLine.stage_ratio_mode === "per_unit"
+                                      ? "e.g. 1"
+                                      : "e.g. 3"
+                                  }
+                                  className="w-20 rounded bg-ink-0 px-1.5 py-0.5 text-[11px] ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
+                                  aria-label={`Ratio value for ${row.label}`}
+                                />
+                                <span className="text-[10px] text-ink-500">
+                                  {manualLine.stage_ratio_mode === "per_unit"
+                                    ? "per 1 stage output unit"
+                                    : "% of stage output mass"}
+                                </span>
+                              </>
+                            ) : (
+                              <span className="text-[10px] italic text-ink-400">
+                                pick a mode to declare consumption
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
                       </li>
                     );
                   })

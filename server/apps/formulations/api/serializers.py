@@ -138,6 +138,8 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "extract_ratio_override",
             "mg_per_serving_cached",
             "notes",
+            "stage_ratio_mode",
+            "stage_ratio_value",
         )
         read_only_fields = fields
 
@@ -980,6 +982,22 @@ class FormulationLineWriteSerializer(serializers.Serializer):
         choices=["active", "band_pick", "manual"],
         required=False,
         allow_null=True,
+    )
+    # Stage-scoped consumption ratio for lines that don't fit the
+    # actives ``label_claim_mg`` semantic (coatings, packaging, glazes,
+    # capsule shells, syrups). See FormulationLine.stage_ratio_mode
+    # docstring for the resolver semantics + immutability rules.
+    stage_ratio_mode = serializers.ChoiceField(
+        choices=["none", "per_unit", "percent_of_mass"],
+        required=False,
+        allow_null=True,
+    )
+    stage_ratio_value = serializers.DecimalField(
+        max_digits=14,
+        decimal_places=6,
+        required=False,
+        allow_null=True,
+        min_value=Decimal("0"),
     )
 
 

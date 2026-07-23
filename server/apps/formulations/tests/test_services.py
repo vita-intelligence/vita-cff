@@ -737,6 +737,50 @@ class TestReplaceLines:
                 ],
             )
 
+    def test_persists_stage_ratio_fields(self) -> None:
+        """Manual picks (packaging, coating oils, etc.) carry a
+        stage-scoped consumption ratio instead of the actives'
+        ``label_claim_mg`` semantic. ``replace_lines`` must round-trip
+        both fields so the Routing tab's inline ratio input isn't lost
+        on save + reload."""
+
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        item = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": "1.0"},
+        )
+
+        lines = replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {
+                    "item_id": str(item.id),
+                    "label_claim_mg": "0",
+                    "source_kind": "manual",
+                    "stage_ratio_mode": "per_unit",
+                    "stage_ratio_value": "1.5",
+                }
+            ],
+        )
+        assert lines[0].stage_ratio_mode == "per_unit"
+        assert lines[0].stage_ratio_value == Decimal("1.500000")
+        # Unknown / missing modes fall back to ``none`` — safe for the
+        # legacy actives semantic that pre-dates the ratio feature.
+        lines_none = replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {
+                    "item_id": str(item.id),
+                    "label_claim_mg": "10",
+                }
+            ],
+        )
+        assert lines_none[0].stage_ratio_mode == "none"
+        assert lines_none[0].stage_ratio_value is None
+
     def test_rejects_packaging_item(self) -> None:
         from apps.catalogues.tests.factories import packaging_catalogue
 
@@ -850,6 +894,65 @@ class TestRollback:
         assert len(versions) == 3
         assert versions[0].version_number == 3
         assert "rollback" in versions[0].label.lower()
+
+    def test_rollback_restores_stage_ratio_fields(self) -> None:
+        """A manual pick with a per-stage ratio must survive the
+        version snapshot + rollback round-trip. Regression cover for
+        the ratio feature — pre-feature snapshots stored no ratio, so
+        the restore path must tolerate absent keys AND persist present
+        ones."""
+
+        org = OrganizationFactory()
+        formulation = FormulationFactory(organization=org)
+        item = ItemFactory(
+            catalogue=raw_materials_catalogue(org),
+            attributes={"purity": "1.0"},
+        )
+
+        # Version 1: manual pick with per_unit ratio.
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {
+                    "item_id": str(item.id),
+                    "label_claim_mg": "0",
+                    "source_kind": "manual",
+                    "stage_ratio_mode": "per_unit",
+                    "stage_ratio_value": "1",
+                }
+            ],
+        )
+        save_version(formulation=formulation, actor=org.created_by)
+
+        # Edit: swap to percent_of_mass at a different value.
+        replace_lines(
+            formulation=formulation,
+            actor=org.created_by,
+            lines=[
+                {
+                    "item_id": str(item.id),
+                    "label_claim_mg": "0",
+                    "source_kind": "manual",
+                    "stage_ratio_mode": "percent_of_mass",
+                    "stage_ratio_value": "3",
+                }
+            ],
+        )
+        save_version(formulation=formulation, actor=org.created_by)
+
+        # Roll back to v1 — ratio fields snap back to per_unit / 1.
+        rollback_to_version(
+            formulation=formulation,
+            actor=org.created_by,
+            version_number=1,
+        )
+        current = list(
+            FormulationLine.objects.filter(formulation=formulation)
+        )
+        assert len(current) == 1
+        assert current[0].stage_ratio_mode == "per_unit"
+        assert current[0].stage_ratio_value == Decimal("1.000000")
 
     def test_rollback_to_unknown_version_raises(self) -> None:
         org = OrganizationFactory()

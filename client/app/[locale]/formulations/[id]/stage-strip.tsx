@@ -204,13 +204,21 @@ function PspCodeChip({
  * screen as what PSP would receive on an "auto" push.
  */
 function derivedPspIdentity(
-  formulation: { id: string; code: string },
+  formulation: { id: string; code: string; name: string },
   draft: Pick<StageDraft, "name" | "sort_order" | "psp_item_type">,
 ): { name: string; sku: string; description: string } {
   const stageLabel = draft.name?.trim() || `Stage ${draft.sort_order + 1}`;
   const isFinished = draft.psp_item_type === "finished_product";
   return {
-    name: `${formulation.code} — ${stageLabel}`,
+    // Finished-stage PSP name mirrors the Setup product name — the
+    // finished stage IS the finished product, so its PSP identity
+    // has to match what Setup declares. Editing lives on Setup; the
+    // stage strip's name input is disabled for the finished stage
+    // so the two surfaces can't drift.
+    name: isFinished
+      ? (formulation.name?.trim() ||
+        `${formulation.code} — ${stageLabel}`)
+      : `${formulation.code} — ${stageLabel}`,
     sku: isFinished
       ? `NPD-FINISHED-${formulation.id}`
       : `NPD-STAGE-${formulation.id}-${draft.sort_order}`,
@@ -257,12 +265,28 @@ function toDraft(stage: FormulationStageDto): StageDraft {
 }
 
 
-function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
+function draftToInput(
+  draft: StageDraft,
+  index: number,
+  productName: string,
+): UpsertStageInput {
   const emptyToNull = (v: string) => (v.trim() === "" ? null : v.trim());
+  // The finished stage's stage name AND PSP item name are locked to
+  // the Setup product name — one product identity, two surfaces.
+  // Editing lives on Setup; this override closes the loop server-side
+  // so a divergent legacy value gets rewritten on the next save.
+  const isFinished = draft.psp_item_type === "finished_product";
+  const finishedName = productName.trim();
+  const resolvedName = isFinished && finishedName
+    ? finishedName
+    : draft.name.trim() || `Stage ${index + 1}`;
+  const resolvedPspName = isFinished && finishedName
+    ? finishedName
+    : draft.psp_item_name.trim();
   return {
     id: draft.id,
     sort_order: index,
-    name: draft.name.trim() || `Stage ${index + 1}`,
+    name: resolvedName,
     stage_key: draft.stage_key,
     workstation_group_uuid: draft.workstation_group_uuid,
     workstation_group_name: draft.workstation_group_name,
@@ -277,7 +301,7 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
     other_variable_cost_basis: emptyToNull(draft.other_variable_cost_basis),
     worker_psp_uuids: draft.worker_psp_uuids,
     psp_item_type: draft.psp_item_type,
-    psp_item_name: draft.psp_item_name.trim(),
+    psp_item_name: resolvedPspName,
     psp_item_external_sku: draft.psp_item_external_sku.trim(),
     psp_item_description: draft.psp_item_description.trim(),
     psp_item_attributes: draft.psp_item_attributes,
@@ -771,7 +795,7 @@ export function StageStrip({
   const saveHandleRef = useRef<(() => Promise<FormulationDto>) | null>(null);
   saveHandleRef.current = async () => {
     const result = await upsert.mutateAsync({
-      stages: drafts.map((d, i) => draftToInput(d, i)),
+      stages: drafts.map((d, i) => draftToInput(d, i, formulation.name)),
     });
     onSaved?.(result);
     return result;
@@ -811,7 +835,7 @@ export function StageStrip({
     // placeholder stays anchored at the bottom of the strip. Terminal
     // is always the last entry (the seeder guarantees it; the whole
     // production graph flows *into* it). Sort_order gets rewritten
-    // at save time by ``draftToInput(d, i)`` from the array index,
+    // at save time by ``draftToInput(d, i, formulation.name)`` from the array index,
     // so the ``sort_order: 0`` here is just a placeholder that never
     // reaches the server.
     setDrafts((prev) => {
@@ -874,7 +898,7 @@ export function StageStrip({
 
   function save() {
     upsert.mutate({
-      stages: drafts.map((d, i) => draftToInput(d, i)),
+      stages: drafts.map((d, i) => draftToInput(d, i, formulation.name)),
     });
   }
 
@@ -1288,16 +1312,35 @@ export function StageStrip({
                     <label className="text-xs font-medium text-ink-600">
                       Stage {i + 1}
                     </label>
-                    <input
-                      value={draft.name}
-                      onChange={(e) =>
-                        updateDraft(draft.clientKey, {
-                          name: e.target.value,
-                        })
-                      }
-                      disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1`}
-                    />
+                    {draft.psp_item_type === "finished_product" ? (
+                      // Finished stage IS the finished product — its
+                      // name mirrors the Setup product name and can't
+                      // be edited here (single source of truth on
+                      // Setup). ``draftToInput`` also force-syncs on
+                      // save so a legacy diverged value gets rewritten.
+                      <>
+                        <input
+                          value={formulation.name}
+                          disabled
+                          className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
+                          title="Managed on Setup — edit the product name there"
+                        />
+                        <p className="mt-1 text-[11px] text-ink-500">
+                          Locked to the Setup product name.
+                        </p>
+                      </>
+                    ) : (
+                      <input
+                        value={draft.name}
+                        onChange={(e) =>
+                          updateDraft(draft.clientKey, {
+                            name: e.target.value,
+                          })
+                        }
+                        disabled={!canEdit || upsert.isPending}
+                        className={`${inputClass} mt-1`}
+                      />
+                    )}
                   </div>
 
                   <div>
@@ -1508,7 +1551,16 @@ export function StageStrip({
                       <AutoOrCustomBadge overridden={skuOverridden} />
                     </div>
                     <input
-                      value={skuShown}
+                      // Show the raw draft as the controlled value so
+                      // clearing the field leaves it empty for typing.
+                      // The derived fallback is surfaced via placeholder
+                      // instead — without this the field snaps back to
+                      // ``derived.sku`` the instant the operator empties
+                      // it (``nextValue || derived`` short-circuits) and
+                      // the next keystroke lands into a pre-populated
+                      // input rather than a blank one.
+                      value={draft.psp_item_external_sku}
+                      placeholder={derived.sku}
                       onChange={(e) =>
                         applyOverride(
                           "psp_item_external_sku",
@@ -1517,7 +1569,7 @@ export function StageStrip({
                         )
                       }
                       disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1 ${skuOverridden ? "" : "text-ink-500"}`}
+                      className={`${inputClass} mt-1`}
                     />
                   </div>
                 </div>
@@ -1528,23 +1580,48 @@ export function StageStrip({
                     </label>
                     <AutoOrCustomBadge overridden={nameOverridden} />
                   </div>
-                  <input
-                    value={nameShown}
-                    onChange={(e) =>
-                      applyOverride(
-                        "psp_item_name",
-                        e.target.value,
-                        derived.name,
-                      )
-                    }
-                    disabled={!canEdit || upsert.isPending}
-                    className={`${inputClass} mt-1 ${nameOverridden ? "" : "text-ink-500"}`}
-                    maxLength={200}
-                  />
-                  <p className="mt-1 text-[11px] text-ink-500">
-                    Edit to override the label shown on PSP. Clearing (or
-                    typing the auto value back) restores the derived name.
-                  </p>
+                  {draft.psp_item_type === "finished_product" ? (
+                    // Finished stage's PSP identity is the finished
+                    // product's identity — its PSP name mirrors the
+                    // Setup product name. Editing lives on Setup;
+                    // ``draftToInput`` force-syncs on save.
+                    <>
+                      <input
+                        value={formulation.name}
+                        disabled
+                        className={`${inputClass} mt-1 cursor-not-allowed bg-ink-50`}
+                        title="Managed on Setup — edit the product name there"
+                      />
+                      <p className="mt-1 text-[11px] text-ink-500">
+                        Locked to the Setup product name.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <input
+                        // Raw draft as controlled value + derived name
+                        // as placeholder — same reasoning as the SKU
+                        // input above.
+                        value={draft.psp_item_name}
+                        placeholder={derived.name}
+                        onChange={(e) =>
+                          applyOverride(
+                            "psp_item_name",
+                            e.target.value,
+                            derived.name,
+                          )
+                        }
+                        disabled={!canEdit || upsert.isPending}
+                        className={`${inputClass} mt-1`}
+                        maxLength={200}
+                      />
+                      <p className="mt-1 text-[11px] text-ink-500">
+                        Edit to override the label shown on PSP. Clearing
+                        (or typing the auto value back) restores the
+                        derived name.
+                      </p>
+                    </>
+                  )}
                 </div>
                 <div className="mt-2 grid grid-cols-1 gap-3 md:grid-cols-2">
                   <div>
@@ -1604,7 +1681,11 @@ export function StageStrip({
                       <AutoOrCustomBadge overridden={descriptionOverridden} />
                     </div>
                     <textarea
-                      value={descriptionShown}
+                      // Raw draft as controlled value + derived
+                      // description as placeholder — same reasoning as
+                      // the SKU + name inputs above.
+                      value={draft.psp_item_description}
+                      placeholder={derived.description}
                       onChange={(e) =>
                         applyOverride(
                           "psp_item_description",
@@ -1614,7 +1695,7 @@ export function StageStrip({
                       }
                       rows={2}
                       disabled={!canEdit || upsert.isPending}
-                      className={`${inputClass} mt-1 ${descriptionOverridden ? "" : "text-ink-500"}`}
+                      className={`${inputClass} mt-1`}
                     />
                   </div>
                   <div>

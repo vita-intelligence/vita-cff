@@ -129,6 +129,42 @@ class LeadScientistSnapshot:
 
 
 @dataclass
+class StageGates:
+    """Which project workspace tabs are unlocked.
+
+    The workspace behaves like a wizard — later tabs stay disabled
+    until earlier gates pass. Computed server-side so the FE doesn't
+    have to re-derive the flow from raw counts. Values are pure
+    booleans; a locked tab still renders in the strip (per the
+    "grayed out + tooltip" spec) but its button is disabled.
+
+    * ``builder_complete`` — every stage has at least one ingredient
+      line assigned AND every ingredient line is assigned to a stage.
+      Reported separately so the FE can compose a "which specific
+      thing is missing" tooltip on the Spec-sheets tab, and light up
+      a checklist inside Builder itself.
+    * ``spec_sheets`` — Builder must be complete AND at least one
+      explicit ``FormulationVersion`` must exist (``is_auto=False``).
+      Save-draft auto-snapshots don't count so scientists have to
+      intentionally cut a version before drafting a spec.
+    * ``proposals`` — Custom projects need a spec sheet stamped
+      ``approved`` (scientist + director sign-off both done);
+      RTG projects skip the approval step and unlock as soon as
+      Builder has a version.
+    * ``trial_batches`` — Custom projects need a customer-signed
+      proposal (``customer_signed_at IS NOT NULL``). RTG projects
+      can run trial batches freely once Builder has a version.
+    * ``qc`` — unlocked once at least one trial batch exists.
+    """
+
+    builder_complete: bool = False
+    spec_sheets: bool = False
+    proposals: bool = False
+    trial_batches: bool = False
+    qc: bool = False
+
+
+@dataclass
 class ProjectOverview:
     id: str
     code: str
@@ -152,6 +188,8 @@ class ProjectOverview:
     compliance: ComplianceSnapshot
     totals: TotalsSnapshot
     activity: list[ActivityEntry]
+    #: Wizard-style gating map for the project workspace tabs.
+    stage_gates: StageGates = field(default_factory=StageGates)
     #: PSP finished-product UUID this project is linked to. Powers
     #: the "Open on PSP" chip in the workspace header + the shortcut
     #: to the item's BOM page on PSP. ``None`` for custom-only
@@ -567,6 +605,94 @@ def _short_id(raw: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _compute_stage_gates(formulation: Formulation) -> StageGates:
+    """Wizard-style gate map for the project workspace tabs.
+
+    See :class:`StageGates` docstring for the per-tab rule.
+    """
+
+    # Scoped imports so the overview module can be imported before
+    # the specifications / proposals / trial_batches apps register
+    # their models.
+    from apps.formulations.models import FormulationVersion
+    from apps.proposals.models import Proposal
+    from apps.specifications.models import SpecificationSheet
+    from apps.trial_batches.models import TrialBatch
+
+    has_explicit_version = FormulationVersion.objects.filter(
+        formulation=formulation, is_auto=False
+    ).exists()
+
+    has_approved_spec = SpecificationSheet.objects.filter(
+        formulation_version__formulation=formulation,
+        status__in=("approved", "sent", "accepted"),
+    ).exists()
+
+    has_customer_signed_proposal = Proposal.objects.filter(
+        formulation_version__formulation=formulation,
+        customer_signed_at__isnull=False,
+    ).exists()
+
+    has_trial_batch = TrialBatch.objects.filter(
+        formulation_version__formulation=formulation
+    ).exists()
+
+    # Builder-complete: at least one stage exists, at least one line
+    # exists, every line is assigned to a stage, and every stage has
+    # at least one line assigned. Enforced here so a scientist can't
+    # jump to Spec sheets while the recipe is still half-scaffolded
+    # (which happened on MA01421 — one stage was empty and Spec
+    # sheets was reachable because an explicit version existed from
+    # an earlier iteration).
+    stage_ids = list(
+        formulation.stages.values_list("id", flat=True),
+    )
+    line_stage_ids = list(
+        formulation.lines.values_list("stage_id", flat=True),
+    )
+    has_stages = bool(stage_ids)
+    has_lines = bool(line_stage_ids)
+    all_lines_assigned = has_lines and all(
+        stage_id is not None for stage_id in line_stage_ids
+    )
+    stage_ids_with_lines = {
+        stage_id for stage_id in line_stage_ids if stage_id is not None
+    }
+    all_stages_have_lines = has_stages and all(
+        stage_id in stage_ids_with_lines for stage_id in stage_ids
+    )
+    builder_complete = (
+        has_stages
+        and has_lines
+        and all_lines_assigned
+        and all_stages_have_lines
+    )
+
+    # RTG projects skip the customer-signature gates — they can move
+    # into proposals + trial batches as soon as Builder has an
+    # explicit version. Custom projects follow the full approval
+    # + customer-sign chain.
+    is_rtg = formulation.project_type == "ready_to_go"
+
+    # Spec sheets require BOTH: builder must be complete AND an
+    # explicit version must exist. The version rule is a scientist's
+    # intent signal ("I'm ready"); builder-complete is the structural
+    # check that the intent is actually meaningful.
+    spec_sheets_unlocked = builder_complete and has_explicit_version
+
+    return StageGates(
+        builder_complete=builder_complete,
+        spec_sheets=spec_sheets_unlocked,
+        proposals=spec_sheets_unlocked
+        if is_rtg
+        else has_approved_spec,
+        trial_batches=spec_sheets_unlocked
+        if is_rtg
+        else has_customer_signed_proposal,
+        qc=has_trial_batch,
+    )
+
+
 def compute_project_overview(formulation: Formulation) -> ProjectOverview:
     """Build the :class:`ProjectOverview` for one formulation.
 
@@ -603,6 +729,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         compliance=_compliance_snapshot(latest),
         totals=_totals_snapshot(latest),
         activity=_activity_feed(formulation),
+        stage_gates=_compute_stage_gates(formulation),
         psp_finished_product_uuid=(
             str(formulation.psp_finished_product_uuid)
             if formulation.psp_finished_product_uuid
