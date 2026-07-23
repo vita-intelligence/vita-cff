@@ -5306,39 +5306,6 @@ export function FormulationBuilder({
           activeTab === "stages" ? "flex flex-col gap-10" : "hidden"
         }
       >
-      {/* Per-1-finished-pack breakdown + batch projection. Reads the
-          terminal stage's BOM (the finished-product recipe) and
-          multiplies through by ``servings_per_pack`` so procurement +
-          production see what they'd actually buy per pack + per
-          batch. Uses the same BOM the PSP push cascade ships so the
-          numbers never diverge. */}
-      {(() => {
-        const terminal =
-          formulation.stages[formulation.stages.length - 1] ??
-          formulation.stages[0] ??
-          null;
-        const rows: readonly BomLine[] = terminal
-          ? bomLinesByStage.get(terminal.id) ?? []
-          : [];
-        const fillWeightMg = Number.parseFloat(
-          metadata.target_fill_weight_mg || "0",
-        );
-        return (
-          <FinishedUnitBreakdownCard
-            rows={rows}
-            servingsPerPack={metadata.servings_per_pack || 1}
-            fillWeightMg={
-              Number.isFinite(fillWeightMg) && fillWeightMg > 0
-                ? fillWeightMg
-                : null
-            }
-            dosageForm={metadata.dosage_form}
-            pspBaseUrl={organization?.psp_base_url ?? null}
-            numberFormatter={numberFormatter}
-          />
-        );
-      })()}
-
       <StageStrip
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
@@ -6092,6 +6059,40 @@ export function FormulationBuilder({
       {/* each stage's real BOM from the ORM.                          */}
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "routing" ? "flex flex-col gap-6" : "hidden"}>
+        {/* Per-finished-pack breakdown + batch projection. Operators
+            on the Routing tab are deciding "for a run of N units, how
+            much of each material walks to which stage?" — the card
+            shows exactly that: enter the number of finished packs
+            you plan to make and the mg / g / kg totals show up per
+            row. Reads the terminal stage's BOM (same source as the
+            PSP push cascade + fine-tune panel) so numbers can't
+            diverge from what NPD ships. */}
+        {(() => {
+          const terminal =
+            formulation.stages[formulation.stages.length - 1] ??
+            formulation.stages[0] ??
+            null;
+          const rows: readonly BomLine[] = terminal
+            ? bomLinesByStage.get(terminal.id) ?? []
+            : [];
+          const fillWeightMg = Number.parseFloat(
+            metadata.target_fill_weight_mg || "0",
+          );
+          return (
+            <FinishedUnitBreakdownCard
+              rows={rows}
+              servingsPerPack={metadata.servings_per_pack || 1}
+              fillWeightMg={
+                Number.isFinite(fillWeightMg) && fillWeightMg > 0
+                  ? fillWeightMg
+                  : null
+              }
+              dosageForm={metadata.dosage_form}
+              pspBaseUrl={organization?.psp_base_url ?? null}
+              numberFormatter={numberFormatter}
+            />
+          );
+        })()}
         <RoutingTabBody
           orgId={orgId}
           formulation={formulation}
@@ -9063,18 +9064,21 @@ function FinishedUnitBreakdownCard({
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-            Per finished pack
+            Materials needed
           </p>
           <p className="mt-1 text-xs leading-snug text-ink-500">
-            Example calculation for one finished pack + a batch
-            projection. Numbers come straight from the compute; the
-            Stages / Routing tabs work in these units.
+            Type how many finished units you plan to make and every
+            ingredient's total shows up in mg, g, and kg. Numbers
+            come straight from the compute; the same BOM ships to
+            PSP on Save version.
           </p>
-          <p className="mt-2 text-sm text-ink-700">{fillLine}</p>
+          <p className="mt-2 text-sm text-ink-700">
+            1 finished unit = {fillLine}
+          </p>
         </div>
         <div className="shrink-0">
           <label className="mr-2 text-[10px] font-medium uppercase tracking-wide text-ink-500">
-            Batch size
+            Finished units
           </label>
           <input
             type="number"
@@ -9090,9 +9094,8 @@ function FinishedUnitBreakdownCard({
                   : "1",
               );
             }}
-            className="w-24 rounded-md bg-ink-0 px-2 py-1 text-right text-sm ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
+            className="w-28 rounded-md bg-ink-0 px-2 py-1 text-right text-sm ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
           />
-          <span className="ml-1 text-xs text-ink-500">packs</span>
         </div>
       </div>
 
@@ -9105,12 +9108,12 @@ function FinishedUnitBreakdownCard({
         <div className="mt-4 overflow-hidden rounded-lg border border-ink-200">
           <div className="flex items-center gap-4 border-b border-ink-200 bg-ink-50 px-4 py-2 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
             <span className="min-w-0 flex-1">Ingredient</span>
-            <span className="w-32 text-right">mg / pack</span>
+            <span className="w-32 text-right">mg / unit</span>
             <span className="w-32 text-right">
-              g / batch ({numberFormatter.format(batchSize)} packs)
+              g total ({numberFormatter.format(batchSize)} units)
             </span>
             <span className="w-32 text-right">
-              kg / batch ({numberFormatter.format(batchSize)} packs)
+              kg total ({numberFormatter.format(batchSize)} units)
             </span>
           </div>
           <div className="divide-y divide-ink-100">
