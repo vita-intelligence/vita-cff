@@ -7798,9 +7798,14 @@ const RoutingTabBody = memo(function RoutingTabBody({
   // Multiplied against every ingredient's per-unit mg to project the
   // total mass rendered on each stage card's row.
   const [finishedUnitsInput, setFinishedUnitsInput] = useState("1");
+  // Float, not int. The stage-output back-solve writes a fractional
+  // value into this input when the operator types a target output —
+  // e.g. Blending 2 kg against a 1.040 kg/unit ratio lands on 1.923
+  // finished units so the on-screen number stays exactly 2 instead
+  // of snapping to the nearest integer and re-displaying as 2.080.
   const finishedUnits = Math.max(
-    1,
-    Number.parseInt(finishedUnitsInput || "1", 10) || 1,
+    0.001,
+    Number.parseFloat(finishedUnitsInput || "1") || 1,
   );
   const perUnitToBatch = servingsPerPack * finishedUnits;
   const stages = formulation.stages;
@@ -8245,16 +8250,23 @@ const RoutingTabBody = memo(function RoutingTabBody({
             <div className="mt-1 flex items-center gap-2">
               <input
                 type="number"
-                min={1}
-                step={1}
+                min={0.001}
+                step="any"
                 value={finishedUnitsInput}
                 onChange={(e) => setFinishedUnitsInput(e.target.value)}
                 onBlur={() => {
-                  const parsed = Number.parseInt(finishedUnitsInput || "1", 10);
+                  // Accept float so the "This stage produces" back-
+                  // solve can write a fractional value here without
+                  // being snapped back to an integer on blur.
+                  const parsed = Number.parseFloat(finishedUnitsInput || "1");
+                  if (!Number.isFinite(parsed) || parsed <= 0) {
+                    setFinishedUnitsInput("1");
+                    return;
+                  }
                   setFinishedUnitsInput(
-                    Number.isFinite(parsed) && parsed >= 1
-                      ? String(parsed)
-                      : "1",
+                    Number.isInteger(parsed)
+                      ? String(Math.round(parsed))
+                      : String(Number(parsed.toFixed(4))),
                   );
                 }}
                 className="w-28 rounded-md bg-ink-0 px-2 py-1 text-right text-sm ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400"
@@ -8727,11 +8739,26 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     const parsed = Number.parseFloat(raw);
                     if (!Number.isFinite(parsed) || parsed <= 0) return;
                     if (qtyPerFinished <= 0) return;
+                    // Keep the back-solve as a float so the operator's
+                    // typed value survives the round-trip exactly. The
+                    // previous ``Math.round`` snapped ``finishedUnits``
+                    // to the nearest integer, so typing "2" against a
+                    // 1.040-per-unit ratio landed at 2 finished units
+                    // and re-rendered as 2.080. Preview-only anyway —
+                    // finishedUnits doesn't need to be a whole number
+                    // just so the on-screen output matches what the
+                    // scientist actually asked for.
                     const nextFinished = Math.max(
-                      1,
-                      Math.round(parsed / qtyPerFinished),
+                      0.001,
+                      parsed / qtyPerFinished,
                     );
-                    setFinishedUnitsInput(String(nextFinished));
+                    // Trim trailing zeros so the corresponding
+                    // ``Finished units to make`` input at the top of
+                    // the tab reads cleanly (12 not "12.000").
+                    const trimmed = Number.isInteger(nextFinished)
+                      ? String(Math.round(nextFinished))
+                      : String(Number(nextFinished.toFixed(4)));
+                    setFinishedUnitsInput(trimmed);
                   };
                   return (
                     <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-xl bg-ink-50/60 px-3 py-2 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200">
@@ -8754,9 +8781,9 @@ const RoutingTabBody = memo(function RoutingTabBody({
                         </span>
                       </label>
                       <span className="text-ink-500">
-                        ({stockUnitCount} stock-unit
+                        ({Number.isInteger(stockUnitCount) ? stockUnitCount : stockUnitCount.toFixed(3)} stock-unit
                         {stockUnitCount === 1 ? "" : "s"} · for{" "}
-                        {finishedUnits} finished unit
+                        {Number.isInteger(finishedUnits) ? finishedUnits : finishedUnits.toFixed(3)} finished unit
                         {finishedUnits === 1 ? "" : "s"})
                       </span>
                       <span className="basis-full text-[10px] italic text-ink-500">
