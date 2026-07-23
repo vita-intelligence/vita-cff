@@ -483,6 +483,23 @@ export function useSaveVersion(
     mutationFn: (payload) =>
       saveFormulationVersion(orgId, formulationId, payload),
     onSuccess: () => {
+      // Save version is the tail of a multi-step chain (metadata →
+      // lines → routing → version). Any of those earlier steps can
+      // silently drift local metadata / lines away from what the
+      // server persisted (Decimal round-tripping "10" ↔ "10.000",
+      // server-side derived fields, list re-ordering on the M2M
+      // ``.set(...)``, etc.). Invalidate the detail + overview
+      // queries so the parent refetches the authoritative shape;
+      // the builder's ``formulation`` prop then swaps in and every
+      // dirty comparison re-runs against fresh data. Without this,
+      // the "unsaved" dot on whichever tab the operator is on
+      // sometimes stayed lit after Save version.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, formulationId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulationId),
+      });
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.versions(orgId, formulationId),
       });

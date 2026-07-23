@@ -1974,9 +1974,13 @@ export function FormulationBuilder({
         band_assignments,
       });
       // Refresh local state so ``routingBaseline`` recomputes and
-      // the "unsaved" dot on the Routing tab actually clears.
+      // the "unsaved" dot on the Routing tab actually clears. Also
+      // re-sync metadata (BE derives ``derived_allergen_keys`` off
+      // the band picks materialised by this endpoint, so leaving
+      // local metadata stale would keep Setup dirty for no reason).
       setFormulation(updated);
       setLines(linesFrom(updated));
+      setMetadata(metadataFrom(updated));
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
@@ -4420,6 +4424,11 @@ export function FormulationBuilder({
       });
       setFormulation(updated);
       setLines(linesFrom(updated));
+      // Re-sync metadata off the server response too — derived fields
+      // (allergen unions, storage tags, etc.) get recomputed on the
+      // BE when lines change, so keeping local metadata stale leaves
+      // the "unsaved" dot lit even though nothing is actually dirty.
+      setMetadata(metadataFrom(updated));
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
@@ -6092,8 +6101,12 @@ export function FormulationBuilder({
           // preview + picker chip + line render + metadata pane
           // all see the same data the strip does. Without this
           // the parent stays stale and the four surfaces drift.
+          // Re-sync metadata too so any auto-derived Setup fields
+          // (allergen unions, target markets normalisation, etc.)
+          // don't leave the "unsaved" dot lit after a stages save.
           setFormulation(updated);
           setLines(linesFrom(updated));
+          setMetadata(metadataFrom(updated));
         }}
         onDirtyChange={setStagesDirty}
         onRegisterSave={(fn) => {
