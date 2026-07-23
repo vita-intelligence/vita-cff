@@ -2109,6 +2109,19 @@ def _push_staged_cascade(
             response = client.put_bom(output_uuid, payload)
             if response is not None:
                 last_response = response
+                # Cache the BOM uuid PSP returned so the Preview tab's
+                # stage-title link can navigate straight to
+                # ``/production/boms/<uuid>``. PSP's response shape is
+                # ``{"bom": {"uuid": ..., "version_no": N}}``.
+                returned_bom = response.get("bom") if isinstance(response, dict) else None
+                bom_uuid = (
+                    returned_bom.get("uuid")
+                    if isinstance(returned_bom, dict)
+                    else None
+                )
+                if bom_uuid and str(bom_uuid) != str(stage.psp_bom_uuid or ""):
+                    stage.psp_bom_uuid = bom_uuid
+                    stage.save(update_fields=["psp_bom_uuid"])
 
         # Routing = one step for this stage's workstation. Skip
         # when the stage has no workstation picked yet — pushing
