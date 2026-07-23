@@ -90,6 +90,11 @@ interface StageDraft {
   // finished stages don't render the section (spec is a shipping
   // product concern per EU 1169). Empty object = no override.
   psp_finished_product_spec: Record<string, unknown>;
+  // How many finished-good servings equal 1 stock-unit of this
+  // stage's PSP output. Kept as a string on the draft so keystrokes
+  // don't fight ``Decimal`` parsing; server-side ``_parse_positive_decimal``
+  // does the coercion.
+  servings_per_output_unit: string;
 }
 
 
@@ -247,6 +252,7 @@ function toDraft(stage: FormulationStageDto): StageDraft {
     psp_finished_product_spec: {
       ...(stage.psp_finished_product_spec ?? {}),
     },
+    servings_per_output_unit: stage.servings_per_output_unit ?? "1",
   };
 }
 
@@ -279,7 +285,78 @@ function draftToInput(draft: StageDraft, index: number): UpsertStageInput {
     psp_item_stock_uom_uuid: draft.psp_item_stock_uom_uuid,
     psp_item_product_family_uuid: draft.psp_item_product_family_uuid,
     psp_finished_product_spec: draft.psp_finished_product_spec,
+    servings_per_output_unit: emptyToNull(draft.servings_per_output_unit),
   };
+}
+
+
+/** Suggested ``servings_per_output_unit`` for a stage. Reads Setup
+ *  values + the stage's picked stock UoM symbol and returns the
+ *  number of finished-good servings equal to 1 stock-unit of the
+ *  stage's PSP output. Works across every dosage form:
+ *  capsule / tablet / powder / gummy use ``target_fill_weight_mg`` as
+ *  the per-serving mass; liquid falls back to ``water_volume_ml`` as
+ *  a per-serving volume. The finished stage always defaults to
+ *  ``servings_per_pack`` — one bottle / one pack contains that many
+ *  servings by definition.
+ *
+ *  Returns ``null`` when the answer can't be derived (unknown UoM,
+ *  missing Setup fields). Callers fall back to the raw draft value
+ *  or 1 in that case. */
+function suggestServingsPerOutputUnit(args: {
+  psp_item_type: "semi_finished" | "finished_product";
+  stock_uom_symbol: string;
+  dosage_form: string;
+  target_fill_weight_mg: string;
+  water_volume_ml: string;
+  servings_per_pack: number | null | undefined;
+}): number | null {
+  const isTerminal = args.psp_item_type === "finished_product";
+  if (isTerminal) {
+    // 1 finished stock-unit (bottle / tub / pack) = servings_per_pack.
+    const spp = args.servings_per_pack ?? 0;
+    return spp > 0 ? spp : 1;
+  }
+  // Semi stage: depends on stock UoM. Mass / volume units convert
+  // to servings via the per-serving mass (or volume). Count-based
+  // units (unit, pcs, count, each, ea) mean "1 stock unit = 1 serving".
+  const symbol = (args.stock_uom_symbol || "").toLowerCase().trim();
+  const massBased: Record<string, number> = {
+    kg: 1_000_000,
+    g: 1_000,
+    mg: 1,
+  };
+  const volumeBased: Record<string, number> = {
+    l: 1_000_000, // 1 L = 1 kg water = 1e6 mg
+    ml: 1_000, // 1 mL = 1 g water = 1000 mg
+  };
+  const massFactor = massBased[symbol];
+  const volFactor = volumeBased[symbol];
+  // Count-based → 1 unit = 1 serving.
+  if (!massFactor && !volFactor) return 1;
+  // Per-serving basis: liquid dosage forms use water volume;
+  // everything else (capsule / tablet / powder / gummy / cream / …)
+  // uses the fill weight the compute already relies on.
+  const fillMg = Number.parseFloat(args.target_fill_weight_mg || "0");
+  const waterMl = Number.parseFloat(args.water_volume_ml || "0");
+  const servingMg =
+    args.dosage_form === "liquid" && waterMl > 0
+      ? waterMl * 1000
+      : fillMg;
+  if (servingMg <= 0) return null;
+  const factor = massFactor ?? volFactor ?? 1;
+  const suggested = factor / servingMg;
+  // Round to 4 decimals so the FE displays clean numbers. Anything
+  // finer than 4dp doesn't move the compute meaningfully.
+  return Math.round(suggested * 10_000) / 10_000;
+}
+
+
+/** Format a number for display in the "Auto: X" hint. Trims trailing
+ *  zeroes so ``100.0000`` → ``100`` but ``0.5`` stays ``0.5``. */
+function formatSuggested(n: number): string {
+  const s = n.toFixed(4);
+  return s.replace(/\.?0+$/, "") || "0";
 }
 
 
@@ -428,19 +505,6 @@ export interface StageStripBuilderLine {
 }
 
 
-/** One row of the compute-based BOM the parent hands to each stage
- *  card. Every stage renders the same 7-row full formulation BOM
- *  (actives at extract-ratio-adjusted per-serving mg + every
- *  excipient band split across picked SKUs) so the operator sees
- *  the complete recipe on every stage — matches Fine-tune. */
-export interface StageStripBomLine {
-  readonly key: string;
-  readonly label: string;
-  readonly code: string;
-  readonly mg: number;
-}
-
-
 export interface StageStripProps {
   readonly orgId: string;
   readonly formulation: FormulationDto;
@@ -450,19 +514,11 @@ export interface StageStripProps {
    *  land. Also drives the per-card "Add ingredient" button copy. */
   readonly activeStageId: string | null;
   readonly onActiveStageChange: (stageId: string | null) => void;
-  /** Live line drafts from the builder, keyed to
-   *  :attr:`StageStripBuilderLine.key`. Used to render each stage's
-   *  own BOM contents underneath the stage row so the operator can
-   *  see "what's in the Blend BOM" without leaving the strip. */
+  /** Live line drafts from the builder. Consumed by the "Replace
+   *  finished-stage BOM with PSP's?" confirm dialog to show how many
+   *  lines the pull will overwrite. Not rendered per-stage anymore —
+   *  ingredient-to-stage routing lives on the Routing tab. */
   readonly lines: readonly StageStripBuilderLine[];
-  /** Compute-based BOM per stage — for every stage id, the actives
-   *  assigned to it at extract-ratio-adjusted per-serving mg. The
-   *  terminal stage's entry also folds in null-stage lines AND the
-   *  excipient bands the finished product carries, so the terminal
-   *  card reads as the finished-product BOM (matches the Preview
-   *  tab). Missing entries fall back to the simple ``lines`` filter
-   *  so legacy / no-compute paths still render something. */
-  readonly bomLinesByStage?: ReadonlyMap<string, readonly StageStripBomLine[]>;
   /** Fired with the fresh formulation DTO after a successful
    *  ``Save stages`` round-trip. The builder wires this to its
    *  own ``setFormulation`` so the Stage BOMs preview + picker
@@ -470,12 +526,6 @@ export interface StageStripProps {
    *  without this callback the parent stays on stale data and the
    *  three surfaces drift. */
   readonly onSaved?: (formulation: FormulationDto) => void;
-  /** Fired with a stage id when the operator clicks the per-stage
-   *  "Build ingredients" affordance. Drives the parent's stage
-   *  drill-down state so the whole tab body swaps to the ingredient
-   *  builder scoped to that stage. Optional so legacy consumers of
-   *  StageStrip (if any) keep working without it. */
-  readonly onOpenIngredientBuilder?: (stageId: string) => void;
   /** PSP base URL from the org config — feeds the per-stage
    *  "Open on PSP ↗" deep-link that lands on the semi-finished (or
    *  finished, for the terminal) item's detail page. ``null`` /
@@ -519,9 +569,7 @@ export function StageStrip({
   activeStageId,
   onActiveStageChange,
   lines,
-  bomLinesByStage,
   onSaved,
-  onOpenIngredientBuilder,
   pspBaseUrl,
   pspFinishedProductUuid,
   onSyncNow,
@@ -654,10 +702,53 @@ export function StageStrip({
         (s.psp_item_product_family_uuid ?? null) !==
           d.psp_item_product_family_uuid ||
         JSON.stringify(s.psp_finished_product_spec ?? {}) !==
-          JSON.stringify(d.psp_finished_product_spec)
+          JSON.stringify(d.psp_finished_product_spec) ||
+        (s.servings_per_output_unit ?? "1") !==
+          d.servings_per_output_unit
       );
     });
   }, [drafts, formulation.stages]);
+
+  // Auto-populate empty ``servings_per_output_unit`` fields from
+  // Setup + the picked stock UoM. Only fires on rows the scientist
+  // hasn't touched (draft field literally empty) so a manual
+  // override never gets clobbered. Runs whenever Setup values or
+  // the UoM catalog changes so a mid-session Setup edit (e.g. fill
+  // weight from 500 mg → 750 mg) reflows the suggestion.
+  useEffect(() => {
+    if (uomOptions.length === 0) return;
+    setDrafts((prev) => {
+      let changed = false;
+      const next = prev.map((d) => {
+        if ((d.servings_per_output_unit || "").trim() !== "") return d;
+        const stockUom = uomOptions.find(
+          (u) => u.uuid === d.psp_item_stock_uom_uuid,
+        );
+        const suggested = suggestServingsPerOutputUnit({
+          psp_item_type: d.psp_item_type,
+          stock_uom_symbol: stockUom?.symbol ?? "",
+          dosage_form: formulation.dosage_form,
+          target_fill_weight_mg:
+            formulation.target_fill_weight_mg ?? "",
+          water_volume_ml: formulation.water_volume_ml ?? "",
+          servings_per_pack: formulation.servings_per_pack,
+        });
+        if (suggested === null) return d;
+        changed = true;
+        return {
+          ...d,
+          servings_per_output_unit: formatSuggested(suggested),
+        };
+      });
+      return changed ? next : prev;
+    });
+  }, [
+    uomOptions,
+    formulation.dosage_form,
+    formulation.target_fill_weight_mg,
+    formulation.water_volume_ml,
+    formulation.servings_per_pack,
+  ]);
 
   // Bubble the strip's local dirty state to the parent so its
   // Save version / Save draft buttons can enable on stage edits,
@@ -745,6 +836,10 @@ export function StageStrip({
         psp_item_stock_uom_uuid: null,
         psp_item_product_family_uuid: null,
         psp_finished_product_spec: {},
+        // Empty triggers the auto-populate effect above once the
+        // scientist picks a stock UoM. Beats seeding "1" that would
+        // then need to be manually cleared.
+        servings_per_output_unit: "",
       },
     ]);
   }
@@ -1053,26 +1148,6 @@ export function StageStrip({
             const stageId = draft.id ?? null;
             const isActive =
               stageId !== null && stageId === activeStageId;
-            const isTerminal = i === drafts.length - 1;
-            // Every stage renders the same compute-based BOM view
-            // (actives at extract-ratio-adjusted per-serving mg,
-            // plus — terminal only — excipient bands split across
-            // picked SKUs). Parent supplies one entry per stage id
-            // via ``bomLinesByStage``. When the map is missing an
-            // entry (legacy / compute-off dosage forms), fall back
-            // to the raw assigned lines so the card still shows
-            // something.
-            const stageComputedBom =
-              stageId && bomLinesByStage ? bomLinesByStage.get(stageId) : undefined;
-            const stageOwnLines = stageId
-              ? lines.filter((l) => l.stage_id === stageId)
-              : [];
-            const nullStageLines = isTerminal
-              ? lines.filter((l) => l.stage_id === null)
-              : [];
-            const stageLines = [...stageOwnLines, ...nullStageLines];
-            const showComputedBom =
-              stageComputedBom !== undefined && stageComputedBom.length > 0;
             const isFinishedCard =
               draft.psp_item_type === "finished_product";
             return (
@@ -1604,132 +1679,146 @@ export function StageStrip({
                 </p>
               </div>
 
-              {/* Per-stage BOM contents. Renders the ingredient
-                  lines already assigned to this stage + a button
-                  that sets it as the sticky "adding to" target so
-                  the next pick from the picker lands here. On the
-                  terminal stage a hint reminds the operator that
-                  unassigned (null-stage) lines fold into this BOM
-                  on the push cascade. */}
-              {stageId !== null ? (
-                <div className="mt-3 rounded-lg bg-ink-0 p-3 ring-1 ring-inset ring-ink-200">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
-                      {showComputedBom ? (
-                        <>
-                          BOM · {stageComputedBom!.length}
-                          {stageComputedBom!.length === 1
-                            ? " ingredient"
-                            : " ingredients"}
-                        </>
-                      ) : (
-                        <>
-                          BOM · {stageLines.length}
-                          {stageLines.length === 1
-                            ? " ingredient"
-                            : " ingredients"}
-                        </>
-                      )}
-                    </p>
-                    {canEdit && onOpenIngredientBuilder ? (
-                      // Primary affordance: opens the ingredient
-                      // builder scoped to this stage. Replaces the
-                      // old "Add ingredients here" (which only bumped
-                      // the picker target) — clicking here now takes
-                      // the operator into a dedicated view so the
-                      // "ingredients belong to this stage" mental
-                      // model reads at a glance.
-                      <button
-                        type="button"
-                        onClick={() => onOpenIngredientBuilder(stageId)}
-                        disabled={upsert.isPending}
-                        className="inline-flex items-center gap-1 rounded-md bg-orange-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-orange-600"
-                      >
-                        Build ingredients →
-                      </button>
-                    ) : canEdit ? (
-                      // Fallback path (parent didn't wire the
-                      // drill-down callback) — preserves the pre-
-                      // refactor behaviour so the picker target chip
-                      // still works standalone.
-                      <button
-                        type="button"
-                        onClick={() => onActiveStageChange(stageId)}
-                        disabled={upsert.isPending}
-                        className={
-                          isActive
-                            ? "rounded-md bg-orange-100 px-2 py-1 text-xs font-medium text-orange-800 ring-1 ring-inset ring-orange-300"
-                            : "rounded-md bg-ink-50 px-2 py-1 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-orange-50 hover:text-orange-700"
+              {/* Output-batch bridge to PSP. Auto-derived from Setup
+                  + stage UoM so scientists don't type the wrong
+                  number — capsule / tablet / powder / gummy / liquid
+                  all resolve without any manual math. Value is
+                  editable for edge cases (dilution intermediates,
+                  non-standard batch splits). */}
+              {(() => {
+                const stockUom = uomOptions.find(
+                  (u) => u.uuid === draft.psp_item_stock_uom_uuid,
+                );
+                const suggested = suggestServingsPerOutputUnit({
+                  psp_item_type: draft.psp_item_type,
+                  stock_uom_symbol: stockUom?.symbol ?? "",
+                  dosage_form: formulation.dosage_form,
+                  target_fill_weight_mg:
+                    formulation.target_fill_weight_mg ?? "",
+                  water_volume_ml: formulation.water_volume_ml ?? "",
+                  servings_per_pack: formulation.servings_per_pack,
+                });
+                const suggestedText =
+                  suggested !== null
+                    ? formatSuggested(suggested)
+                    : null;
+                const currentTrim = (
+                  draft.servings_per_output_unit || ""
+                ).trim();
+                const differsFromSuggested =
+                  suggested !== null &&
+                  currentTrim !== "" &&
+                  Number.parseFloat(currentTrim) !== suggested;
+                return (
+                  <div className="mt-3 rounded-xl bg-orange-50/60 p-3 ring-1 ring-inset ring-orange-100">
+                    <label className="block text-xs font-medium text-ink-700">
+                      1 stock-unit of{" "}
+                      <strong>
+                        {draft.psp_item_name ||
+                          (draft.psp_item_type === "finished_product"
+                            ? "the finished product"
+                            : "this stage's semi output")}
+                      </strong>{" "}
+                      = how many finished servings?
+                    </label>
+                    <div className="mt-1 flex items-center gap-2">
+                      <input
+                        value={draft.servings_per_output_unit}
+                        onChange={(e) =>
+                          updateDraft(draft.clientKey, {
+                            servings_per_output_unit: e.target.value,
+                          })
                         }
-                      >
-                        {isActive
-                          ? "Active target"
-                          : "Add ingredients here"}
-                      </button>
-                    ) : null}
+                        inputMode="decimal"
+                        placeholder={suggestedText ?? "1"}
+                        disabled={!canEdit || upsert.isPending}
+                        className={`${inputClass} max-w-[140px]`}
+                      />
+                      <span className="text-xs text-ink-500">
+                        servings per output unit
+                      </span>
+                      {suggestedText !== null && differsFromSuggested ? (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateDraft(draft.clientKey, {
+                              servings_per_output_unit: suggestedText,
+                            })
+                          }
+                          disabled={!canEdit || upsert.isPending}
+                          className="rounded-md px-2 py-1 text-[11px] font-medium text-orange-800 ring-1 ring-inset ring-orange-300 hover:bg-orange-100 disabled:opacity-50"
+                          title={`Reset to auto (${suggestedText})`}
+                        >
+                          ↺ Auto
+                        </button>
+                      ) : null}
+                    </div>
+                    {suggestedText !== null ? (
+                      <p className="mt-1 text-[11px] text-ink-600">
+                        {differsFromSuggested ? (
+                          <>
+                            <span className="font-medium text-orange-800">
+                              Manual override.
+                            </span>{" "}
+                            Auto value from Setup:{" "}
+                            <span className="font-mono">
+                              {suggestedText}
+                            </span>{" "}
+                            (
+                            {draft.psp_item_type === "finished_product"
+                              ? `${suggestedText} servings per pack`
+                              : `${
+                                  stockUom?.symbol ?? "stock unit"
+                                } ÷ ${
+                                  formulation.dosage_form === "liquid"
+                                    ? formulation.water_volume_ml ||
+                                      "0"
+                                    : formulation.target_fill_weight_mg ||
+                                      "0"
+                                }`}
+                            ).
+                          </>
+                        ) : (
+                          <>
+                            Auto-computed from Setup (
+                            {draft.psp_item_type ===
+                            "finished_product"
+                              ? `${
+                                  formulation.servings_per_pack ?? "?"
+                                } servings per pack`
+                              : `${
+                                  stockUom?.symbol ?? "stock unit"
+                                } vs ${
+                                  formulation.dosage_form === "liquid"
+                                    ? `${
+                                        formulation.water_volume_ml ||
+                                        "?"
+                                      } ml/serving`
+                                    : `${
+                                        formulation.target_fill_weight_mg ||
+                                        "?"
+                                      } mg/serving`
+                                }`}
+                            ). Override for dilution / batch-split
+                            edge cases.
+                          </>
+                        )}
+                      </p>
+                    ) : (
+                      <p className="mt-1 text-[11px] text-ink-600">
+                        Pick a stock UOM {" "}
+                        {formulation.dosage_form === "liquid"
+                          ? "and set water volume on Setup"
+                          : "and set fill weight on Setup"}{" "}
+                        so we can auto-compute. Or type the value
+                        manually — servings per 1 stock-unit of this
+                        stage&apos;s output.
+                      </p>
+                    )}
                   </div>
-                  {showComputedBom ? (
-                    <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
-                      {stageComputedBom!.map((line) => (
-                        <li
-                          key={line.key}
-                          className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
-                        >
-                          <span>
-                            {line.label}
-                            {line.code ? (
-                              <span className="ml-2 text-xs text-ink-500">
-                                {line.code}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="text-xs tabular-nums text-ink-700">
-                            {line.mg.toFixed(4)} mg
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : stageLines.length === 0 ? (
-                    <p className="mt-2 text-xs text-ink-500">
-                      No ingredients yet. Click &quot;Build ingredients&quot;
-                      to open this stage&apos;s builder and pick raw
-                      materials for it.
-                    </p>
-                  ) : (
-                    <ul className="mt-2 flex flex-col gap-1 text-sm text-ink-1000">
-                      {stageLines.map((line) => {
-                        const isUnassigned = line.stage_id === null;
-                        return (
-                        <li
-                          key={line.key}
-                          className="flex items-center justify-between gap-2 border-b border-dashed border-ink-100 py-1 last:border-b-0"
-                        >
-                          <span>
-                            {line.item_name}
-                            {line.item_internal_code ? (
-                              <span className="ml-2 text-xs text-ink-500">
-                                {line.item_internal_code}
-                              </span>
-                            ) : null}
-                            {isUnassigned ? (
-                              <span
-                                className="ml-2 text-[11px] italic text-ink-500"
-                                title="This ingredient has no explicit stage assignment. It will save into this terminal stage's BOM on the next save."
-                              >
-                                (unassigned — folds in on save)
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="text-xs tabular-nums text-ink-700">
-                            {line.label_claim_mg || "0"} mg
-                          </span>
-                        </li>
-                        );
-                      })}
-                    </ul>
-                  )}
-                </div>
-              ) : null}
+                );
+              })()}
+
             </li>
             );
           })}

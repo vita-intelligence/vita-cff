@@ -316,6 +316,16 @@ export interface ExcipientBreakdown {
   readonly gummyBaseMg: number | null;
   /** Gummy-only: 5.5% of the target gummy weight (fixed). */
   readonly waterMg: number | null;
+  /** Local ``Item.id`` for the SKU sourcing the water fraction, when
+   *  one of the gummy-base picks is a water/aqua row. ``null`` when
+   *  no water-named pick is present — the water row then renders as
+   *  a generic synthetic entry without a code chip / PSP link. */
+  readonly waterItemId: string | null;
+  /** Display label for the water row, pulled from the sourcing pick
+   *  when present so procurement sees the exact SKU. Falls back to
+   *  "Deionised Water (gummy base)" when no water-named pick is
+   *  selected. */
+  readonly waterLabel: string;
   /** Per-item breakdown of the blended gummy base. Empty when no
    *  items picked; total is split equally across picks. */
   readonly gummyBaseRows: readonly GummyBaseRow[];
@@ -1353,6 +1363,8 @@ function computeCapsule(
       dcpMg: null,
       gummyBaseMg: null,
       waterMg: null,
+      waterItemId: null,
+      waterLabel: "Deionised Water (gummy base)",
       gummyBaseRows: [],
       rows: [],
     },
@@ -1401,6 +1413,8 @@ function computeTablet(
     dcpMg: dcp,
     gummyBaseMg: null,
     waterMg: null,
+    waterItemId: null,
+    waterLabel: "Deionised Water (gummy base)",
     gummyBaseRows: [],
     rows: [],
   };
@@ -1957,16 +1971,36 @@ function computeFillTarget(
   // base *would* be under the current line-up.
   let waterMg: number | null = null;
   let gummyBaseMg: number | null = null;
+  let waterItemId: string | null = null;
+  let waterLabel = "Deionised Water (gummy base)";
   const gummyBaseRows: GummyBaseRow[] = [];
   if (isGummy && targetFillWeightMg && targetFillWeightMg > 0) {
     const waterPct = resolveBandPct("water", excipientOverrides);
     waterMg = targetFillWeightMg * waterPct;
+    // Detect a water-named pick among the gummy_base selections. If
+    // one is present, the scientist meant it to satisfy the water
+    // fraction — attach its identity to the water row AND drop it
+    // from the gummy_base split so its mass isn't double-counted.
+    // Match is name-based (contains "water" or "aqua", case-
+    // insensitive) rather than a dedicated ``use_as = "Water"``
+    // because the catalogue vocab doesn't have one.
+    const waterPickIndex = gummyBaseItems.findIndex((p) =>
+      /(water|aqua)/i.test(p.label ?? ""),
+    );
+    let effectivePicks = gummyBaseItems;
+    const waterPick =
+      waterPickIndex >= 0 ? gummyBaseItems[waterPickIndex] : undefined;
+    if (waterPick) {
+      waterItemId = waterPick.id;
+      waterLabel = waterPick.label;
+      effectivePicks = gummyBaseItems.filter((_, i) => i !== waterPickIndex);
+    }
     const remainder = targetFillWeightMg - waterMg - totalActive - flavourTotal;
     gummyBaseMg = Math.max(remainder, 0);
-    const count = gummyBaseItems.length;
+    const count = effectivePicks.length;
     if (count > 0 && gummyBaseMg > 0) {
       const perItem = gummyBaseMg / count;
-      for (const pick of gummyBaseItems) {
+      for (const pick of effectivePicks) {
         gummyBaseRows.push({
           itemId: pick.id,
           label: pick.label,
@@ -1984,6 +2018,8 @@ function computeFillTarget(
     dcpMg: null,
     gummyBaseMg,
     waterMg,
+    waterItemId,
+    waterLabel,
     gummyBaseRows,
     rows: flavourRows,
   };

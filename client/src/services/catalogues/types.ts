@@ -64,6 +64,10 @@ export interface ItemDto {
   readonly name: string;
   readonly internal_code: string;
   readonly unit: string;
+  /** PSP UUID this item mirrors. Populated on rows the PSP mirror
+   *  service (:func:`apps.psp.services.mirror_psp_item`) creates on
+   *  a picker click. ``null`` on manually-authored / legacy rows. */
+  readonly psp_source_uuid?: string | null;
   /** Decimal serialized as string by DRF. Use ``parseFloat`` for display. */
   readonly base_price: string | null;
   readonly is_archived: boolean;

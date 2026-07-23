@@ -58,6 +58,7 @@ class FormulationStageReadSerializer(serializers.ModelSerializer):
             "psp_item_stock_uom_uuid",
             "psp_item_product_family_uuid",
             "psp_finished_product_spec",
+            "servings_per_output_unit",
             "notes",
         )
         read_only_fields = fields
@@ -93,6 +94,14 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
     #: wire shape. FE consumers don't need to branch on source.
     item_name = serializers.SerializerMethodField()
     item_internal_code = serializers.SerializerMethodField()
+    #: The PSP UUID this line's item mirrors, resolved off either the
+    #: local ``Item.psp_source_uuid`` (local-sourced lines) or the
+    #: ``psp_item_uuid`` snapshot on the line itself (PSP-sourced).
+    #: Drives the "Open on PSP" deep-link from every downstream
+    #: display (fine-tune / stage BOM / routing) without the caller
+    #: having to branch on ``item_source``. ``null`` when neither
+    #: side has a PSP identity (fully local + never mirrored).
+    item_psp_source_uuid = serializers.SerializerMethodField()
     item_attributes = serializers.SerializerMethodField()
     #: Source discriminator surfaced so the FE picker can decide
     #: whether to render a local Item edit link or a PSP deep-link.
@@ -114,6 +123,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "item",
             "item_name",
             "item_internal_code",
+            "item_psp_source_uuid",
             "item_attributes",
             "item_source",
             "psp_item_uuid",
@@ -139,6 +149,16 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
 
     def get_item_internal_code(self, obj: FormulationLine) -> str:
         return obj.effective_item_internal_code
+
+    def get_item_psp_source_uuid(self, obj: FormulationLine) -> str | None:
+        # PSP-sourced lines carry the identity on the line itself; the
+        # local Item.psp_source_uuid field is null in that path.
+        psp_uuid = getattr(obj, "psp_item_uuid", None)
+        if psp_uuid:
+            return str(psp_uuid)
+        item = getattr(obj, "item", None)
+        source = getattr(item, "psp_source_uuid", None) if item else None
+        return str(source) if source else None
 
     def get_item_attributes(self, obj: FormulationLine) -> dict[str, object]:
         """Return the attributes the formulation math + label copy need.
@@ -219,6 +239,11 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     anti_caking_items = serializers.SerializerMethodField()
     powder_carrier_item_ids = serializers.SerializerMethodField()
     powder_carrier_items = serializers.SerializerMethodField()
+    #: Auto-derived from ingredient allergen tags — Setup tab pre-
+    #: checks these on the allergen matrix; scientist overrides via
+    #: ``allergen_uuids`` above.
+    derived_allergen_keys = serializers.SerializerMethodField()
+    derived_allergen_uuids = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -281,6 +306,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "min_stock_qty",
             "target_stock_qty",
             "allergen_uuids",
+            "derived_allergen_keys",
+            "derived_allergen_uuids",
             "may_contain_allergen_keys",
             "may_contain_justification",
             "project_status",
@@ -445,6 +472,24 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         round-trip."""
 
         return self._echo_picks(obj.glazing_items)
+
+    def get_derived_allergen_keys(self, obj: Formulation) -> list[str]:
+        """Union of ingredient-declared allergen keys — Setup tab uses
+        this to pre-check the allergen matrix. Scientist overrides via
+        the ``allergen_uuids`` field on the model."""
+
+        from apps.formulations.services import derive_ingredient_allergens
+
+        return derive_ingredient_allergens(formulation=obj)["keys"]
+
+    def get_derived_allergen_uuids(self, obj: Formulation) -> list[str]:
+        """Parallel list to :meth:`get_derived_allergen_keys` — the
+        UUIDs are what the PSP push cascade forwards to the finished-
+        product item's allergen M:N."""
+
+        from apps.formulations.services import derive_ingredient_allergens
+
+        return derive_ingredient_allergens(formulation=obj)["uuids"]
 
     def _echo_picks(self, manager) -> list[dict]:
         """Common shape for the M2M echo blocks (gummy base, flavouring,
@@ -925,6 +970,17 @@ class FormulationLineWriteSerializer(serializers.Serializer):
     # a stage on a different formulation are validated at save time
     # by :func:`replace_lines`.
     stage_id = serializers.UUIDField(required=False, allow_null=True)
+    # ``source_kind`` distinguishes the picker that spawned the row —
+    # ``active`` (Formulation-tab active picker), ``band_pick``
+    # (compute-derived excipient), or ``manual`` (Routing-tab
+    # inventory picker). Preserved across replace_lines round-trips
+    # so the Routing tab's ×-remove affordance only shows on rows a
+    # scientist added directly there.
+    source_kind = serializers.ChoiceField(
+        choices=["active", "band_pick", "manual"],
+        required=False,
+        allow_null=True,
+    )
 
 
 class ReplaceLinesSerializer(serializers.Serializer):
@@ -944,6 +1000,7 @@ class FormulationVersionReadSerializer(serializers.ModelSerializer):
             "snapshot_lines",
             "snapshot_totals",
             "snapshot_stage_boms",
+            "is_auto",
             "created_at",
         )
         read_only_fields = fields
@@ -966,6 +1023,11 @@ class SaveVersionSerializer(serializers.Serializer):
         required=False,
         default=dict,
     )
+    #: Set true when the FE fires this call from Save draft's
+    #: background auto-snapshot flow. The Versions sub-tab hides
+    #: auto entries by default; the Activity sub-tab uses them to
+    #: give every audit row a revert target.
+    is_auto = serializers.BooleanField(required=False, default=False)
 
 
 class RollbackVersionSerializer(serializers.Serializer):
