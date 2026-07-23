@@ -3621,12 +3621,26 @@ export function FormulationBuilder({
   // moment the scientist fixes a row — no server round-trip needed.
   // ---------------------------------------------------------------------
   const readinessSignals = useMemo(() => {
+    // Resolve each line's ACTIVE stage — line.stage_id is the last-
+    // saved value, but the operator's unsaved routing drafts live on
+    // ``effectiveRouting`` (baseline + sparse edits). Read through
+    // there so the checklist updates the moment the operator picks a
+    // stage on the Routing dropdown, before Save version.
+    const stageForLine = (line: BuilderLine): string | null => {
+      const key =
+        line.source_kind === "band_pick"
+          ? `band:${line.band_key ?? ""}:${line.item_id}`
+          : `active:${line.key}`;
+      const routed = effectiveRouting.get(key);
+      return routed !== undefined ? routed : line.stage_id;
+    };
     const stagesWithLines = new Set<string>();
     let orphanLineCount = 0;
     let hasPackaging = false;
     for (const line of lines) {
-      if (line.stage_id) {
-        stagesWithLines.add(line.stage_id);
+      const effectiveStageId = stageForLine(line);
+      if (effectiveStageId) {
+        stagesWithLines.add(effectiveStageId);
       } else {
         orphanLineCount += 1;
       }
@@ -3698,9 +3712,10 @@ export function FormulationBuilder({
       if (!semiUuid) return;
       const consumed = lines.some((line) => {
         if (line.item_psp_source_uuid !== semiUuid) return false;
-        if (!line.stage_id) return false;
+        const effectiveStageId = stageForLine(line);
+        if (!effectiveStageId) return false;
         const consumingStage = orderedStages.find(
-          (s) => s.id === line.stage_id,
+          (s) => s.id === effectiveStageId,
         );
         if (!consumingStage) return false;
         return consumingStage.sort_order > stage.sort_order;
@@ -3730,7 +3745,7 @@ export function FormulationBuilder({
       stagesWithOrphanSemi,
       isComplete,
     };
-  }, [lines, formulation.stages]);
+  }, [lines, formulation.stages, effectiveRouting]);
 
 
   // Pick-in-flight tracking so the picker overlay + row-disable
