@@ -3,6 +3,8 @@
 import { Button } from "@heroui/react";
 import { AlertCircle, Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
+import { CountryMultiPicker } from "@/components/forms/country-multi-picker";
+
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { StageBomsPreview } from "./stage-boms-preview";
 import { StageStrip } from "./stage-strip";
@@ -526,7 +528,6 @@ function FinishedProductSpecSetupSection({
 }) {
   const uomQuery = usePspUnitsOfMeasurement(orgId);
   const uomOptions = uomQuery.data?.items ?? [];
-  const targetMarketsCsv = metadata.target_markets.join(", ");
 
   return (
     <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
@@ -680,21 +681,20 @@ function FinishedProductSpecSetupSection({
         </div>
         <div className="md:col-span-2">
           <label className="text-xs font-medium text-ink-600">
-            Target markets (ISO 3166-1 alpha-2, comma-separated)
+            Target markets
           </label>
-          <input
-            value={targetMarketsCsv}
-            onChange={(e) => {
-              const parts = e.target.value
-                .split(",")
-                .map((s) => s.trim().toUpperCase())
-                .filter((s) => s.length === 2);
-              onChange({ target_markets: parts });
-            }}
+          <CountryMultiPicker
+            value={metadata.target_markets}
+            onChange={(next) => onChange({ target_markets: next })}
             disabled={!canWrite}
-            placeholder="e.g. GB, IE, DE"
-            className="mt-1 w-full rounded-xl bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:opacity-50"
+            placeholder="Add markets…"
+            ariaLabel="Target markets"
           />
+          <p className="mt-1 text-[11px] text-ink-500">
+            Search by country name or ISO 3166-1 alpha-2 code. Selected
+            markets ride the finished-product spec push and drive
+            downstream compliance decisions.
+          </p>
         </div>
       </div>
     </section>
