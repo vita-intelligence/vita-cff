@@ -8130,15 +8130,18 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           <input
                             type="checkbox"
                             checked={isChecked}
-                            // The <li> onClick already fires when the
-                            // checkbox is clicked (bubbles up); handle
-                            // that via readOnly + stopPropagation so
-                            // React doesn't double-toggle. onChange
-                            // stays no-op to keep React happy about
-                            // "controlled" inputs.
-                            readOnly
+                            // The row's own onClick already toggles
+                            // selection. Stop propagation on the
+                            // checkbox click so it doesn't double-fire
+                            // via the row handler, but keep the box
+                            // itself interactive: onChange handles the
+                            // toggle when the operator clicks directly
+                            // on the checkbox.
                             onClick={(e) => e.stopPropagation()}
-                            onChange={() => undefined}
+                            onChange={() => {
+                              if (!canWrite || isSaving) return;
+                              toggleInvSelection(row.routingKey);
+                            }}
                             disabled={!canWrite || isSaving}
                             className="h-4 w-4 shrink-0 accent-orange-500"
                             aria-label={`Select ${row.label}`}
@@ -8651,13 +8654,16 @@ function RoutingInventoryPicker({
           type="checkbox"
           checked={isSelected}
           disabled={!canWrite || isAlready}
-          // The <li> onClick handles the toggle — the checkbox stays
-          // as a visual indicator. readOnly + stopPropagation prevents
-          // a double-toggle when the operator clicks directly on the
-          // box; onChange stays a no-op to keep React happy.
-          readOnly
+          // The row's onClick already toggles selection. Stop
+          // propagation on the checkbox click so the row handler
+          // doesn't double-fire, and keep the checkbox interactive:
+          // onChange handles the toggle when the operator clicks
+          // directly on the box.
           onClick={(e) => e.stopPropagation()}
-          onChange={() => undefined}
+          onChange={() => {
+            if (!canWrite || isAlready) return;
+            onToggle(item);
+          }}
           className="h-4 w-4 shrink-0 accent-orange-500"
           aria-label={`Select ${item.name}`}
         />
