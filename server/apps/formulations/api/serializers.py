@@ -103,6 +103,13 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
     #: side has a PSP identity (fully local + never mirrored).
     item_psp_source_uuid = serializers.SerializerMethodField()
     item_attributes = serializers.SerializerMethodField()
+    #: Item's stock UoM string (``"kg"``, ``"g"``, ``"l"``, ``"ml"``,
+    #: ``"unit"``, ``"ea"``, …). Feeds the FE ratio compute so a
+    #: stage-scoped ``per_unit`` ratio at a mass-UoM item resolves to
+    #: the right per-serving mg. Empty when the item is a PSP
+    #: snapshot that didn't capture unit — the FE falls back to a
+    #: unit_factor of 1 (count semantic).
+    item_unit = serializers.SerializerMethodField()
     #: Source discriminator surfaced so the FE picker can decide
     #: whether to render a local Item edit link or a PSP deep-link.
     #: Every existing row is ``"local"`` after migration 0036.
@@ -140,6 +147,7 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
             "notes",
             "stage_ratio_mode",
             "stage_ratio_value",
+            "item_unit",
         )
         read_only_fields = fields
 
@@ -151,6 +159,18 @@ class FormulationLineReadSerializer(serializers.ModelSerializer):
 
     def get_item_internal_code(self, obj: FormulationLine) -> str:
         return obj.effective_item_internal_code
+
+    def get_item_unit(self, obj: FormulationLine) -> str:
+        # Local-sourced: read off the catalogue Item's ``unit`` column.
+        # PSP-sourced: pull from the snapshot's ``unit`` key when the
+        # picker captured it (older snapshots may not). Empty string
+        # is the safe fallback — the FE ratio compute treats missing
+        # as "count semantic" (unit_factor = 1).
+        if obj.item_source == "psp":
+            snap = obj.psp_item_snapshot or {}
+            return str(snap.get("unit") or "").strip().lower()
+        item = getattr(obj, "item", None)
+        return str(getattr(item, "unit", "") or "").strip().lower()
 
     def get_item_psp_source_uuid(self, obj: FormulationLine) -> str | None:
         # PSP-sourced lines carry the identity on the line itself; the
