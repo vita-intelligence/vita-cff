@@ -90,6 +90,17 @@ function pspItemHref(
 }
 
 
+/** URL for PSP's BOM detail page. NULL until the first successful
+ *  BOM push snapshots the returned uuid onto the stage. */
+function pspBomHref(
+  baseUrl: string | null,
+  bomUuid: string | null | undefined,
+): string | null {
+  if (!baseUrl || !bomUuid) return null;
+  return `${baseUrl}/production/boms/${bomUuid}`;
+}
+
+
 function formatQty(mg: number): string {
   if (mg >= 1_000_000) return `${(mg / 1_000_000).toFixed(3)} kg`;
   if (mg >= 1000) return `${(mg / 1000).toFixed(2)} g`;
@@ -116,6 +127,37 @@ function OpenOnPspChip({
     >
       <ExternalLink className="h-3 w-3" />
       {label}
+    </a>
+  );
+}
+
+
+/** Wraps text in an anchor when ``href`` is set — otherwise renders
+ *  plain text. Keeps the row's label + the stage heading clickable
+ *  whenever a mirrored PSP item exists, without noisily rendering
+ *  empty links for rows that haven't been mirrored yet. */
+function MaybePspLink({
+  href,
+  children,
+  className,
+  title,
+}: {
+  href: string | null;
+  children: ReactNode;
+  className?: string;
+  title?: string;
+}) {
+  if (!href) return <>{children}</>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      onClick={(e) => e.stopPropagation()}
+      className={`underline decoration-orange-400/60 decoration-2 underline-offset-2 hover:text-orange-800 hover:decoration-orange-600 ${className ?? ""}`}
+      title={title ?? "Opens on PSP in a new tab"}
+    >
+      {children}
     </a>
   );
 }
@@ -246,7 +288,13 @@ export function StageBomsPreview({
           const stagePspUuid = stageBom.isTerminal
             ? finishedProductPspUuid
             : stage.psp_semi_finished_uuid;
-          const stagePspHref = pspItemHref(pspBaseUrl, stagePspUuid);
+          // Stage title → PSP's BOM detail page (the manufacturing
+          // recipe). Item name → PSP's item page. Different UUIDs —
+          // ``psp_bom_uuid`` is the BOM row PSP returned on the last
+          // push; ``stagePspUuid`` is the semi-finished / finished-
+          // product item this stage outputs.
+          const stageBomHref = pspBomHref(pspBaseUrl, stage.psp_bom_uuid);
+          const stageItemHref = pspItemHref(pspBaseUrl, stagePspUuid);
           // Sum of own rows scaled to the current preview. Excludes
           // the synthesised prior-semi row (it's qty=1, dimensionless
           // on the BOM math side — treated the same way PSP does).
@@ -276,14 +324,34 @@ export function StageBomsPreview({
                   </p>
                   <div className="mt-0.5 flex flex-wrap items-center gap-2">
                     <h4 className="text-base font-semibold text-ink-1000">
-                      {stage.name}
+                      <MaybePspLink
+                        href={stageBomHref}
+                        title="Opens this stage's BOM on PSP"
+                      >
+                        {stage.name}
+                      </MaybePspLink>
                     </h4>
-                    <OpenOnPspChip href={stagePspHref} />
+                    <OpenOnPspChip href={stageBomHref} label="Open BOM" />
                   </div>
                   <p className="mt-1 text-xs text-ink-700">
                     <span className="font-medium">Produces:</span>{" "}
-                    {stage.psp_item_name ||
-                      (stageBom.isTerminal ? "Finished product" : "Semi output")}
+                    <MaybePspLink
+                      href={stageItemHref}
+                      title={
+                        stageBom.isTerminal
+                          ? "Opens the finished-product item on PSP"
+                          : "Opens this stage's semi-finished item on PSP"
+                      }
+                    >
+                      {stage.psp_item_name ||
+                        (stageBom.isTerminal ? "Finished product" : "Semi output")}
+                    </MaybePspLink>
+                    {stageItemHref ? (
+                      <>
+                        {" "}
+                        <OpenOnPspChip href={stageItemHref} label="Open item" />
+                      </>
+                    ) : null}
                     {" · "}
                     <span className="font-medium">Runs on:</span>{" "}
                     {workstation}
@@ -336,11 +404,17 @@ export function StageBomsPreview({
                       <tr className="bg-orange-50/40">
                         <td className="py-2 pr-2">
                           <div className="flex flex-wrap items-center gap-2 text-ink-900">
-                            <span>
+                            <MaybePspLink
+                              href={pspItemHref(
+                                pspBaseUrl,
+                                stageBom.priorStage.psp_semi_finished_uuid,
+                              )}
+                              title="Opens the prior stage's semi-finished item on PSP"
+                            >
                               {stageBom.priorStage.psp_item_name ||
                                 stageBom.priorStage.name ||
                                 `Stage ${stageBom.priorStage.sort_order + 1}`}
-                            </span>
+                            </MaybePspLink>
                             <span className="text-[11px] italic text-orange-700">
                               (auto — prior stage semi)
                             </span>
@@ -376,17 +450,18 @@ export function StageBomsPreview({
                       stageBom.ownRows.map((row) => {
                         const perUnit = row.mg;
                         const perBatch = row.mg * batchScale;
+                        const rowHref = pspItemHref(
+                          pspBaseUrl,
+                          row.pspSourceUuid,
+                        );
                         return (
                           <tr key={row.key}>
                             <td className="py-2 pr-2">
                               <div className="flex flex-wrap items-center gap-2 text-ink-900">
-                                <span>{row.label}</span>
-                                <OpenOnPspChip
-                                  href={pspItemHref(
-                                    pspBaseUrl,
-                                    row.pspSourceUuid,
-                                  )}
-                                />
+                                <MaybePspLink href={rowHref}>
+                                  {row.label}
+                                </MaybePspLink>
+                                <OpenOnPspChip href={rowHref} />
                               </div>
                             </td>
                             <td className="py-2 pr-2 text-xs text-ink-500">
@@ -419,11 +494,13 @@ export function StageBomsPreview({
                     </tfoot>
                   ) : null}
                 </table>
-                {!stagePspHref ? (
+                {!stageBomHref ? (
                   <p className="mt-2 text-[11px] text-ink-500">
-                    {stageBom.isTerminal
-                      ? "Terminal stage — first push creates the linked finished-product item."
-                      : `First push will create the PSP semi-finished item (external_sku = NPD-STAGE-…-${stage.sort_order}).`}
+                    {!stageItemHref
+                      ? stageBom.isTerminal
+                        ? "Terminal stage — first push creates the linked finished-product item + BOM."
+                        : `First push will create the PSP semi-finished item + BOM (external_sku = NPD-STAGE-…-${stage.sort_order}).`
+                      : "Item is linked on PSP; the BOM link appears after the next Save version pushes fresh rows."}
                   </p>
                 ) : null}
               </div>

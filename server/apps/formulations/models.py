@@ -913,6 +913,7 @@ class FormulationLine(models.Model):
     BAND_KEY_ACIDITY = "acidity"
     BAND_KEY_POWDER_CARRIER = "powder_carrier"
     BAND_KEY_GUMMY_BASE = "gummy_base"
+    BAND_KEY_GUMMY_WATER = "gummy_water"
     BAND_KEY_PREMIX_SWEETENER = "premix_sweetener"
     BAND_KEY_CHOICES = (
         (BAND_KEY_ANTI_CAKING, _("Anti-caking")),
@@ -927,6 +928,7 @@ class FormulationLine(models.Model):
         (BAND_KEY_ACIDITY, _("Acidity regulator")),
         (BAND_KEY_POWDER_CARRIER, _("Powder carrier")),
         (BAND_KEY_GUMMY_BASE, _("Gummy base")),
+        (BAND_KEY_GUMMY_WATER, _("Gummy water")),
         (BAND_KEY_PREMIX_SWEETENER, _("Premix sweetener")),
     )
     band_key = models.CharField(
@@ -1301,6 +1303,19 @@ class FormulationStage(models.Model):
     #: :attr:`Formulation.psp_finished_product_uuid`.
     psp_semi_finished_uuid = models.UUIDField(
         _("PSP semi-finished item UUID"),
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    #: PSP BOM UUID this stage's push landed on. Captured from PSP's
+    #: ``put_bom`` response so the Preview tab's stage-title link can
+    #: navigate to the actual BOM page (``/production/boms/<uuid>``)
+    #: instead of a filtered search URL (PSP's BOM list doesn't
+    #: respect ``?item_id=`` at the moment, so search-style deep
+    #: links opened the full list). NULL until the first successful
+    #: BOM push for this stage.
+    psp_bom_uuid = models.UUIDField(
+        _("PSP BOM UUID"),
         null=True,
         blank=True,
         db_index=True,

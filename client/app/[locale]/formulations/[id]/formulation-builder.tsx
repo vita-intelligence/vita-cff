@@ -88,6 +88,35 @@ import {
 const RAW_MATERIALS_SLUG = "raw_materials";
 
 /**
+ * Map a BOM row's key prefix to the canonical band_key the BE
+ * accepts (see ``FormulationLine.BAND_KEY_CHOICES``). The compute
+ * layer emits some rows with hyphens (``gummy-base``, ``gummy-water``,
+ * ``capsule-shell``, ``anticaking``) but the BE / model choices are
+ * all lowercase-underscore. Any un-normalised value gets silently
+ * skipped by ``sync_wizard_band_lines`` — that was the source of
+ * "Erythritol and Deionised Water quietly become unassigned on save"
+ * regressions. Centralise the mapping so every routing consumer
+ * (dropdown key, save payload, preview lookup) agrees.
+ */
+function normaliseBandKey(prefix: string): string {
+  switch (prefix) {
+    case "anticaking":
+      return "anti_caking";
+    case "capsule-shell":
+      return "capsule_shell";
+    case "gummy-base":
+      return "gummy_base";
+    case "gummy-water":
+      return "gummy_water";
+    case "mcc":
+    case "dcp":
+      return prefix;
+    default:
+      return prefix;
+  }
+}
+
+/**
  * Auto-picks the smallest PSP shell whose ``max_weight_mg`` fits
  * ``totalActiveMg`` with ~21% headroom. Mirrors the compute-layer
  * ``autoPickFromPspCatalog`` (kept in sync manually — the helper
@@ -1939,16 +1968,7 @@ export function FormulationBuilder({
         if (!row.itemId) continue;
         const [prefix] = row.key.split(":");
         if (!prefix || prefix === "active") continue;
-        const bandKey =
-          prefix === "anticaking"
-            ? "anti_caking"
-            : prefix === "mcc"
-              ? "mcc"
-              : prefix === "dcp"
-                ? "dcp"
-                : prefix === "capsule-shell"
-                  ? "capsule_shell"
-                  : prefix;
+        const bandKey = normaliseBandKey(prefix);
         bomIndex.set(`band:${bandKey}:${row.itemId}`, {
           itemId: row.itemId,
           bandKey,
@@ -1956,10 +1976,28 @@ export function FormulationBuilder({
         });
       }
     });
-    for (const [key, stageId] of routingByKey.entries()) {
-      if (!key.startsWith("band:")) continue;
-      const entry = bomIndex.get(key);
-      if (!entry) continue;
+    // Short-circuit when the operator hasn't touched ANY band-pick
+    // routing this session — no draft edits means the DB is already
+    // authoritative and firing the endpoint would be a no-op.
+    let hasBandDraft = false;
+    for (const key of routingByKey.keys()) {
+      if (key.startsWith("band:")) {
+        hasBandDraft = true;
+        break;
+      }
+    }
+    if (!hasBandDraft) return;
+    // Ship the FULL current band-pick set (not just the drafts).
+    // ``sync_wizard_band_lines`` treats the payload as a wholesale-
+    // replace: any existing band line whose (item_id, band_key) key
+    // is missing from ``band_assignments`` gets DELETED. So sending
+    // only the operator's session drafts would erase every band
+    // pick they routed in a prior session, which resurface as
+    // "Unassigned" on next page load. Iterate the compute-derived
+    // ``bomIndex`` instead so every current pick is re-asserted
+    // with its effective (baseline + draft) stage assignment.
+    for (const [key, entry] of bomIndex.entries()) {
+      const stageId = effectiveRouting.get(key) ?? null;
       band_assignments.push({
         item_id: entry.itemId,
         band_key: entry.bandKey,
@@ -1984,7 +2022,7 @@ export function FormulationBuilder({
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
-  }, [routingByKey, wizardRoutingMutation, tErrors]);
+  }, [routingByKey, effectiveRouting, wizardRoutingMutation, tErrors]);
   const rollbackMutation = useRollbackFormulation(orgId, formulation.id);
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
@@ -3099,6 +3137,23 @@ export function FormulationBuilder({
     // we grab the first one and use it as the master row list to
     // partition.
     const anyStageRows = bomLinesByStage.get(ordered[0]!.id) ?? [];
+    // Any row whose PSP uuid matches one of the stages' OWN outputs
+    // (semi-finished or finished-product) is a self-reference — it
+    // shouldn't appear as an ingredient row on ANY stage. The prior-
+    // semi link is rendered separately from ``priorStage``. Without
+    // this filter, if the operator ever picked the semi-finished
+    // item as a raw ingredient (or the compute cascade emits it),
+    // it doubles up as "Alex Gummies PB (auto — prior stage semi)"
+    // AND "Alex Gummies PB" on the next stage's BOM.
+    const stageOutputUuids = new Set<string>();
+    for (const s of ordered) {
+      if (s.psp_semi_finished_uuid) {
+        stageOutputUuids.add(s.psp_semi_finished_uuid);
+      }
+    }
+    if (formulation.psp_finished_product_uuid) {
+      stageOutputUuids.add(formulation.psp_finished_product_uuid);
+    }
     const resolveRowStage = (row: BomLine): string | null => {
       const [prefix] = row.key.split(":");
       if (!prefix) return null;
@@ -3108,18 +3163,7 @@ export function FormulationBuilder({
       // Match the routing-key vocabulary the setStageForRow +
       // routingByKey consumers use (see the Routing inventory
       // derivation for the source of truth).
-      const band =
-        prefix === "active"
-          ? "active"
-          : prefix === "anticaking"
-            ? "anti_caking"
-            : prefix === "mcc"
-              ? "mcc"
-              : prefix === "dcp"
-                ? "dcp"
-                : prefix === "capsule-shell"
-                  ? "capsule_shell"
-                  : prefix;
+      const band = prefix === "active" ? "active" : normaliseBandKey(prefix);
       const routingKey =
         band === "active"
           ? `active:${row.key.slice("active:".length)}`
@@ -3131,6 +3175,11 @@ export function FormulationBuilder({
       const prior = idx > 0 ? ordered[idx - 1] ?? null : null;
       const ownRows = anyStageRows.flatMap((row) => {
         if (row.key.startsWith("semi:")) return [];
+        // Drop self-references — a stage's own output (or another
+        // stage's output) never appears as an ingredient row.
+        if (row.pspItemUuid && stageOutputUuids.has(row.pspItemUuid)) {
+          return [];
+        }
         const rowStage = resolveRowStage(row);
         // Terminal absorbs any row with no explicit routing (matches
         // the server-side push cascade).
@@ -3168,7 +3217,12 @@ export function FormulationBuilder({
         priorStage: prior,
       };
     });
-  }, [formulation.stages, bomLinesByStage, effectiveRouting]);
+  }, [
+    formulation.stages,
+    formulation.psp_finished_product_uuid,
+    bomLinesByStage,
+    effectiveRouting,
+  ]);
 
   //: F2a — compliance + ingredient declaration re-compute on every
   //: render from the same lines array. Both are pure and cheap.
@@ -4462,9 +4516,14 @@ export function FormulationBuilder({
       // (1) version history preserves exactly what each stage's PSP
       // BOM held at this save, and (2) the auto-push inside
       // save_version uses the snapshot as the PSP override — PSP
-      // ends up with the same rows the operator sees. Compute-only
-      // placeholder rows without a picked SKU (empty excipient
-      // bands, the synthesized "prior semi" row) are dropped.
+      // ends up with the same rows the operator sees.
+      //
+      // Read from ``previewStagesData.ownRows`` (routing-partitioned)
+      // rather than the flat ``bomLinesByStage`` (which returns the
+      // SAME full BOM for every stage). Without this split, PSP's
+      // Blend BOM would carry Cook + Fill rows, self-references, and
+      // the next stage's semi — see the ``bomLinesByStage``
+      // "identical on every stage" note above.
       const stageBoms: Record<
         string,
         {
@@ -4476,17 +4535,18 @@ export function FormulationBuilder({
           code: string;
         }[]
       > = {};
-      bomLinesByStage.forEach((rows, stageId) => {
-        stageBoms[stageId] = rows
+      previewStagesData.forEach((stageBom) => {
+        stageBoms[stageBom.stage.id] = stageBom.ownRows
           // Keep rows that resolve to either a local item id (the
           // usual mirror path) OR a raw PSP uuid (auto-picked
           // capsule shell before any explicit tick). Drop rows with
-          // neither — those are compute-only placeholders (empty
-          // excipient bands, the synthesized prior-semi link).
-          .filter((row) => Boolean(row.itemId) || Boolean(row.pspItemUuid))
+          // neither — those are compute-only placeholders.
+          .filter(
+            (row) => Boolean(row.itemId) || Boolean(row.pspSourceUuid),
+          )
           .map((row, idx) => ({
             item_id: row.itemId,
-            psp_item_uuid: row.pspItemUuid ?? null,
+            psp_item_uuid: row.pspSourceUuid ?? null,
             mg: row.mg,
             sort_order: idx,
             label: row.label,
@@ -4494,6 +4554,15 @@ export function FormulationBuilder({
           }));
       });
       await saveVersionMutation.mutateAsync({ label: "", stage_boms: stageBoms });
+      // Clear the sparse routing draft map now that the whole chain
+      // succeeded — the fresh ``routingBaseline`` (recomputed from
+      // ``lines`` set by the save handlers) is now authoritative.
+      // Without this reset, any draft key that no longer matches a
+      // baseline entry (e.g., a new pick got a fresh line id, or a
+      // band pick whose (item_id, band_key) is now server-persisted)
+      // would keep ``routingDirty`` lit forever, showing the dot on
+      // the Routing tab even though the DB is up-to-date.
+      setRoutingByKey(new Map());
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
     }
@@ -4502,7 +4571,7 @@ export function FormulationBuilder({
     handleSaveLines,
     handleSaveRouting,
     saveVersionMutation,
-    bomLinesByStage,
+    previewStagesData,
     stagesDirty,
     routingDirty,
     tErrors,
@@ -4818,6 +4887,10 @@ export function FormulationBuilder({
                       is_auto: true,
                     });
                   }
+                  // Reset routing drafts once the chain succeeded so
+                  // stale keys can't keep the Routing tab dot lit —
+                  // see the equivalent reset in ``handleSaveVersion``.
+                  setRoutingByKey(new Map());
                 }}
               >
                 <Save className="h-4 w-4" />
@@ -6060,11 +6133,12 @@ export function FormulationBuilder({
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
         onSyncNow={async () => {
-          // Ship the FE-computed full BOM per stage so PSP's per-
-          // stage BOM matches what NPD displays (actives + every
-          // excipient band at compute-adjusted mg). Rows without a
-          // resolvable local item id (compute-only placeholders) are
-          // dropped server-side.
+          // Ship the routing-partitioned per-stage BOM so PSP's per-
+          // stage BOM matches what NPD displays (each stage carries
+          // its own ingredients only — no cross-stage bleed, no self
+          // reference, no next-stage semi in the current stage's
+          // rows). Rows without a resolvable local item id / PSP
+          // uuid (compute-only placeholders) are dropped.
           const stageBoms: Record<
             string,
             {
@@ -6074,14 +6148,14 @@ export function FormulationBuilder({
               sort_order: number;
             }[]
           > = {};
-          bomLinesByStage.forEach((rows, stageId) => {
-            stageBoms[stageId] = rows
+          previewStagesData.forEach((stageBom) => {
+            stageBoms[stageBom.stage.id] = stageBom.ownRows
               .filter(
-                (row) => Boolean(row.itemId) || Boolean(row.pspItemUuid),
+                (row) => Boolean(row.itemId) || Boolean(row.pspSourceUuid),
               )
               .map((row, idx) => ({
                 item_id: row.itemId,
-                psp_item_uuid: row.pspItemUuid ?? null,
+                psp_item_uuid: row.pspSourceUuid ?? null,
                 mg: row.mg,
                 sort_order: idx,
               }));
@@ -7825,15 +7899,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
         const band =
           prefix === "active"
             ? "active"
-            : prefix === "anticaking"
-              ? "anti_caking"
-              : prefix === "mcc"
-                ? "mcc"
-                : prefix === "dcp"
-                  ? "dcp"
-                  : prefix === "capsule-shell"
-                    ? "capsule_shell"
-                    : prefix ?? "";
+            : normaliseBandKey(prefix ?? "");
         const routingKey =
           band === "active"
             ? `active:${row.key.slice("active:".length)}`

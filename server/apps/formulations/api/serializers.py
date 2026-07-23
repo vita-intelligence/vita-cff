@@ -49,6 +49,7 @@ class FormulationStageReadSerializer(serializers.ModelSerializer):
             "other_variable_cost_basis",
             "worker_psp_uuids",
             "psp_semi_finished_uuid",
+            "psp_bom_uuid",
             "psp_item_type",
             "psp_item_name",
             "psp_item_external_sku",
@@ -968,7 +969,7 @@ class FormulationWriteSerializer(serializers.Serializer):
     )
     net_quantity = serializers.DecimalField(
         max_digits=12,
-        decimal_places=3,
+        decimal_places=4,
         required=False,
         allow_null=True,
     )

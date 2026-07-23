@@ -326,6 +326,7 @@ export interface FormulationStageDto {
   /** PSP-side semi-finished item UUID this stage outputs. Null
    *  until the first successful push cascades through the stage. */
   readonly psp_semi_finished_uuid: string | null;
+  readonly psp_bom_uuid: string | null;
   /** Scientist-supplied PSP identity (phase 1). Type decides whether
    *  the stage manifests on PSP as semi-finished or the finished
    *  product; sku + description mirror the fields on PSP's own

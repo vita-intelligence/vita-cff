@@ -117,14 +117,22 @@ export function CountryMultiPicker({
 
   return (
     <div ref={rootRef} className="relative">
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
         onClick={() => !disabled && setOpen((v) => !v)}
-        disabled={disabled}
+        onKeyDown={(e) => {
+          if (disabled) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
         aria-label={ariaLabel}
         aria-expanded={open}
         aria-haspopup="listbox"
-        className="mt-1 flex min-h-[42px] w-full flex-wrap items-center gap-1 rounded-xl bg-ink-0 px-3 py-2 text-left text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed disabled:opacity-50"
+        aria-disabled={disabled}
+        className={`mt-1 flex min-h-[42px] w-full flex-wrap items-center gap-1 rounded-xl bg-ink-0 px-3 py-2 text-left text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 ${disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer"}`}
       >
         {selected.size === 0 ? (
           <span className="text-ink-500">{placeholder}</span>
@@ -178,7 +186,7 @@ export function CountryMultiPicker({
           ) : null}
           <ChevronsUpDown className="h-4 w-4" aria-hidden />
         </span>
-      </button>
+      </div>
 
       {open ? (
         // ``flex-col`` + ``min-h-0`` on the scrollable child is the
