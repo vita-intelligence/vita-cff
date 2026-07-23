@@ -7977,6 +7977,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
                 × {numberFormatter.format(servingsPerPack)} servings
               </span>
             </div>
+            <p className="mt-1 max-w-[240px] text-[10px] leading-tight text-ink-500">
+              Preview only — scales the per-stage output totals below.
+              Nothing is saved and no batch is scheduled.
+            </p>
           </div>
         </div>
         {errorMessage ? (
@@ -8396,7 +8400,7 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     per stock-unit + per pack, plus the servings-per-
                     stock-unit that anchors all per_unit ratios landing
                     on this stage. */}
-                <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl bg-ink-50/60 p-3 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200 sm:grid-cols-3">
+                <div className="mt-3 grid grid-cols-2 gap-2 rounded-xl bg-ink-50/60 p-3 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200 sm:grid-cols-4">
                   <div>
                     <p className="font-semibold uppercase tracking-wide text-ink-500">
                       Servings anchor
@@ -8429,6 +8433,34 @@ const RoutingTabBody = memo(function RoutingTabBody({
                           : `${perPackMg.toFixed(1)} mg`}
                     </p>
                   </div>
+                  {/* Total scaled to the "Finished units to make" preview.
+                      Answers "how much of THIS stage's output do I need
+                      to produce N packs" so the scientist can size the
+                      batch against a target run. */}
+                  {(() => {
+                    const batchMg = perPackMg * finishedUnits;
+                    const batchLabel =
+                      batchMg >= 1_000_000
+                        ? `${(batchMg / 1_000_000).toFixed(3)} kg`
+                        : batchMg >= 1000
+                          ? `${(batchMg / 1000).toFixed(2)} g`
+                          : `${batchMg.toFixed(1)} mg`;
+                    return (
+                      <div>
+                        <p className="font-semibold uppercase tracking-wide text-ink-500">
+                          Total for {finishedUnits} unit
+                          {finishedUnits === 1 ? "" : "s"}
+                        </p>
+                        <p className="mt-0.5 text-sm text-ink-1000">
+                          {batchLabel}
+                        </p>
+                        <p className="mt-0.5 text-[10px] text-ink-500">
+                          {finishedUnits * stageServings} stock-unit
+                          {finishedUnits * stageServings === 1 ? "" : "s"}
+                        </p>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Every quantity below is normalised to ONE unit of
