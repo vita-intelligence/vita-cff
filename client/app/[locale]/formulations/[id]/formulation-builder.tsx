@@ -4422,58 +4422,58 @@ export function FormulationBuilder({
       // new picks land with the right ``stage_id`` in one round-trip
       // — no post-save correlation dance for ``new-…`` client-only
       // keys. handleSaveRouting is then band-only.
-      const overrideStageIdFor = (line: BuilderLine): string | null => {
-        // Band picks — check the routing draft under the band key
-        // (``band:<band_key>:<item_id>``). Without this, an unsaved
-        // routing assignment on a band pick never rides ``replace_lines``
-        // and has to rely on the second ``handleSaveRouting`` round
-        // trip, which is fragile (routingDirty=false skips it, band
-        // total mg=0 drops the bomIndex entry, etc.). Baking the
-        // intent into the lines payload is the belt-and-braces fix.
+      // Returns { stage_id, isExplicit } where isExplicit means the
+      // operator drafted this value THIS session (via the Routing
+      // dropdown). Passed to the BE as ``unassign_stage: true`` when
+      // the draft is null so the preservation guard on the BE knows
+      // to actually clear the assignment. Non-explicit nulls (line
+      // state has null because DB had null) stay null in the payload
+      // but the BE guard restores the prior stage — belt-and-braces.
+      const overrideStageIdFor = (
+        line: BuilderLine,
+      ): { stageId: string | null; isExplicit: boolean } => {
         if (line.source_kind === "band_pick") {
           if (line.band_key && line.item_id) {
             const routingIntent = routingByKey.get(
               `band:${line.band_key}:${line.item_id}`,
             );
-            if (routingIntent !== undefined) return routingIntent;
+            if (routingIntent !== undefined) {
+              return { stageId: routingIntent, isExplicit: true };
+            }
           }
-          return line.stage_id;
+          return { stageId: line.stage_id, isExplicit: false };
         }
-        // ``routingByKey`` is sparse (user edits only) — fall through
-        // to ``line.stage_id`` when the operator hasn't touched this
-        // row. Same net effect as the old dense map + baseline seed.
         const routingIntent = routingByKey.get(`active:${line.key}`);
-        return routingIntent !== undefined ? routingIntent : line.stage_id;
+        if (routingIntent !== undefined) {
+          return { stageId: routingIntent, isExplicit: true };
+        }
+        return { stageId: line.stage_id, isExplicit: false };
       };
       const updated = await replaceLinesMutation.mutateAsync({
-        lines: lines.map((line, index) => ({
-          item_id: line.item_id,
-          label_claim_mg: line.label_claim_mg || "0",
-          purity_override: overrideOrNull(line.purity_override),
-          overage_override: overrideOrNull(line.overage_override),
-          extract_ratio_override: overrideOrNull(line.extract_ratio_override),
-          display_order: index,
-          stage_id: overrideStageIdFor(line),
-          // Preserve ``source_kind`` across the round-trip so
-          // Routing-tab manual picks keep their × affordance after
-          // save. Server's ``replace_lines`` wipes + recreates all
-          // lines, so without this manual picks get demoted to
-          // active on every save.
-          source_kind: line.source_kind,
-          // Same story for ``band_key``: without threading it back
-          // through the recreate, band picks come out with band_key
-          // = NULL, the FE baseline key becomes ``band::<item>``
-          // instead of ``band:flavouring:<item>``, and the Routing
-          // dropdown snaps to "Unassigned" on the next render.
-          band_key:
-            line.source_kind === "band_pick" ? line.band_key : null,
-          // Stage-scoped consumption ratio. ``none`` is the actives
-          // default and rides through untouched; other modes carry
-          // the operator-typed value. Empty string → null so BE
-          // clears the field.
-          stage_ratio_mode: line.stage_ratio_mode,
-          stage_ratio_value: overrideOrNull(line.stage_ratio_value),
-        })),
+        lines: lines.map((line, index) => {
+          const stageIntent = overrideStageIdFor(line);
+          return {
+            item_id: line.item_id,
+            label_claim_mg: line.label_claim_mg || "0",
+            purity_override: overrideOrNull(line.purity_override),
+            overage_override: overrideOrNull(line.overage_override),
+            extract_ratio_override: overrideOrNull(line.extract_ratio_override),
+            display_order: index,
+            stage_id: stageIntent.stageId,
+            // Explicit-unassign signal so the BE's stage-preservation
+            // guard knows the difference between "operator drafted
+            // null" (unassign for real) and "FE state happened to be
+            // null" (probably stale — keep the DB stage). Prevents
+            // the "Save version wiped every assignment" regression.
+            unassign_stage:
+              stageIntent.isExplicit && stageIntent.stageId === null,
+            source_kind: line.source_kind,
+            band_key:
+              line.source_kind === "band_pick" ? line.band_key : null,
+            stage_ratio_mode: line.stage_ratio_mode,
+            stage_ratio_value: overrideOrNull(line.stage_ratio_value),
+          };
+        }),
       });
       setFormulation(updated);
       setLines(linesFrom(updated));
