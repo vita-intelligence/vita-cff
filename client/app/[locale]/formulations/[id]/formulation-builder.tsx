@@ -170,6 +170,11 @@ interface BuilderLine {
    *  the operator's typed decimals through re-renders (same
    *  pattern as label_claim_mg + purity_override). */
   stage_ratio_value: string;
+  /** Item's stock UoM ("kg"/"g"/"l"/"ml"/"unit"/"ea"/"mg"/""). Empty
+   *  means count semantic (unit_factor = 1). Used by the stage-aware
+   *  ratio math so a ``per_unit`` ratio on a kg-item at cook stage
+   *  resolves to the right per-serving mg. */
+  item_unit: string;
 }
 
 interface MetadataDraft {
@@ -483,6 +488,7 @@ function linesFrom(formulation: FormulationDto): BuilderLine[] {
     band_key: line.band_key ?? null,
     stage_ratio_mode: line.stage_ratio_mode ?? "none",
     stage_ratio_value: line.stage_ratio_value ?? "",
+    item_unit: (line.item_unit ?? "").toLowerCase(),
   }));
 }
 
@@ -2534,6 +2540,135 @@ export function FormulationBuilder({
     formulation.acidity_items,
   ]);
 
+  // Per-stage anchor data for the stage-scoped ratio math. Reads
+  // ``FormulationStage.servings_per_output_unit`` off each stage —
+  // that's "how many finished servings equal 1 stock-unit of this
+  // stage's output". Feeds ``deriveStageBomLines`` so a ``per_unit``
+  // ratio at cook stage divides by cook's servings, not the finished
+  // pack's.
+  const stageInfoById = useMemo(() => {
+    const map = new Map<
+      string,
+      { servings_per_output_unit: number; sort_order: number }
+    >();
+    for (const stage of formulation.stages) {
+      const raw = Number.parseFloat(stage.servings_per_output_unit ?? "1");
+      map.set(stage.id, {
+        servings_per_output_unit:
+          Number.isFinite(raw) && raw > 0 ? raw : 1,
+        sort_order: stage.sort_order,
+      });
+    }
+    return map;
+  }, [formulation.stages]);
+
+  // Terminal (largest sort_order) stage id — the anchor for lines
+  // without an explicit assignment. Matches how the PSP push cascade
+  // folds null-stage lines into the terminal BOM.
+  const terminalStageId = useMemo(() => {
+    let best: { id: string; sort: number } | null = null;
+    for (const stage of formulation.stages) {
+      if (!best || stage.sort_order > best.sort) {
+        best = { id: stage.id, sort: stage.sort_order };
+      }
+    }
+    return best?.id ?? null;
+  }, [formulation.stages]);
+
+  // Line → assigned stage_id resolver. Reads the merged draft (user
+  // edits overlaid on the server baseline) so the ratio math tracks
+  // unsaved routing changes live. Falls back to the terminal stage
+  // for null / unknown assignments.
+  const stageIdForLine = useCallback(
+    (line: BuilderLine): string | null => {
+      const key =
+        line.source_kind === "band_pick"
+          ? `band:${line.band_key ?? ""}:${line.item_id}`
+          : `active:${line.key}`;
+      const routed = effectiveRouting.get(key);
+      if (routed) return routed;
+      return terminalStageId;
+    },
+    [effectiveRouting, terminalStageId],
+  );
+
+  // Mirror of BE's ``_UOM_MG_FACTOR`` for the client-side ratio math.
+  // mg × unit_factor = qty in the item's native UoM. Count / unknown
+  // UoMs default to 1 so the ratio math treats the value as a count.
+  const unitFactorForUom = useCallback((uom: string | undefined): number => {
+    switch ((uom ?? "").toLowerCase()) {
+      case "kg":
+        return 0.000001;
+      case "g":
+        return 0.001;
+      case "mg":
+        return 1;
+      case "l":
+        return 0.000001;
+      case "ml":
+        return 0.001;
+      default:
+        return 1;
+    }
+  }, []);
+
+  // Per-stage cumulative per-serving base mass (mg). Non-percent-of-
+  // mass line contributions summed by assigned stage, walked in
+  // sort_order so each stage's value = its own contribution plus
+  // everything upstream (matches multi-stage BOM flow: each stage
+  // consumes the prior stage's semi + its own new inputs).
+  //
+  // Feeds ``deriveStageBomLines`` for the percent_of_mass ratio math
+  // (mg = pct/100 × base_mass) and the per-stage output card the
+  // Routing tab renders below each stage. Percent lines are excluded
+  // to prevent a circular reference (a 3% coating shouldn't scale
+  // itself).
+  const baseMassByStage = useMemo(() => {
+    const map = new Map<string, number>();
+    const sorted = [...formulation.stages].sort(
+      (a, b) => a.sort_order - b.sort_order,
+    );
+    if (sorted.length === 0) return map;
+    const massByStage = new Map<string, number>();
+    for (const line of lines) {
+      if (line.stage_ratio_mode === "percent_of_mass") continue;
+      let mg = liveTotals.lineValues.get(line.key) ?? 0;
+      if (line.source_kind === "manual") {
+        const ratio = Number.parseFloat(line.stage_ratio_value || "");
+        if (
+          line.stage_ratio_mode === "per_unit" &&
+          Number.isFinite(ratio) &&
+          ratio > 0
+        ) {
+          const sid = stageIdForLine(line);
+          const info = sid ? stageInfoById.get(sid) : undefined;
+          const stageServings = info?.servings_per_output_unit ?? 1;
+          const unitFactor = unitFactorForUom(line.item_unit);
+          mg = ratio / (stageServings * unitFactor);
+        } else if (mg <= 0) {
+          const raw = Number.parseFloat(line.label_claim_mg || "0");
+          if (Number.isFinite(raw) && raw > 0) mg = raw;
+        }
+      }
+      if (mg <= 0) continue;
+      const sid = stageIdForLine(line) ?? sorted[sorted.length - 1]!.id;
+      massByStage.set(sid, (massByStage.get(sid) ?? 0) + mg);
+    }
+    let cumulative = 0;
+    for (const stage of sorted) {
+      cumulative += massByStage.get(stage.id) ?? 0;
+      map.set(stage.id, cumulative);
+    }
+    return map;
+  }, [
+    formulation.stages,
+    lines,
+    liveTotals,
+    stageIdForLine,
+    stageInfoById,
+    unitFactorForUom,
+  ]);
+
   // Per-stage BOM — every stage's card renders the FULL formulation
   // BOM (all actives across the main builder + every excipient band
   // split across picked SKUs). Same rows the Fine-tune panel edits.
@@ -2675,10 +2810,13 @@ export function FormulationBuilder({
       autoCapsuleShell,
       excipientOverrides: metadata.excipient_overrides,
       itemLookup,
-      // Servings per finished pack — used to convert per-stage-output-
-      // unit ratios into per-serving mg for the PSP push cascade.
-      // Falls back to 1 when unset so single-serving formats behave.
+      // Servings per finished pack — used as a fallback anchor when
+      // a line has no assigned stage (legacy null-stage lines fold
+      // into the terminal on PSP push).
       servingsPerPack: metadata.servings_per_pack || 1,
+      stageInfoById,
+      stageIdForLine,
+      baseMassByStage,
     });
     // Rewrite each row's label to the raw PSP item name when we
     // can resolve it — compute's default label falls back to
@@ -3557,6 +3695,7 @@ export function FormulationBuilder({
             band_key: null,
             stage_ratio_mode: "none",
             stage_ratio_value: "",
+            item_unit: (item.unit ?? "").toLowerCase(),
           },
         ];
       });
@@ -3632,6 +3771,7 @@ export function FormulationBuilder({
                 // input scales with mass instead of count.
                 stage_ratio_mode: "per_unit",
                 stage_ratio_value: pick.qtyString || "",
+                item_unit: (dto.unit ?? "").toLowerCase(),
               },
             ];
           });
@@ -6306,6 +6446,8 @@ export function FormulationBuilder({
           onRemoveLine={handleRemoveLine}
           onSetRatioMode={setRatioModeForLine}
           onSetRatioValue={setRatioValueForLine}
+          stageInfoById={stageInfoById}
+          baseMassByStage={baseMassByStage}
           pickBusy={mirrorPsp.isPending}
           servingsPerPack={metadata.servings_per_pack || 1}
         />
@@ -6773,12 +6915,31 @@ function deriveStageBomLines(inputs: {
   itemLookup?: (
     itemId: string,
   ) => { code: string; pspSourceUuid: string | null } | null;
-  /** Servings per finished pack. Used to convert the ``per_unit``
-   *  ratio (declared per stage output unit, which equals 1 finished
-   *  pack for the terminal stage) into per-serving mg — the format
-   *  PSP's BOM math expects. Falls back to 1 for single-serving
-   *  formats so the conversion is a no-op. */
+  /** Servings per finished pack. Legacy fallback anchor for ratio
+   *  math when we can't resolve a line's assigned stage (e.g. a
+   *  legacy line with ``stage_id === null`` and no routing draft).
+   *  Terminal-stage anchor uses this too since terminal servings-
+   *  per-output-unit typically equals servings_per_pack. */
   servingsPerPack?: number;
+  /** Per-stage anchor data — servings_per_output_unit + sort_order
+   *  keyed by stage id. Drives the stage-scoped ratio math so a
+   *  ``per_unit`` ratio at cook stage divides by cook's servings
+   *  (not the finished pack's). */
+  stageInfoById?: Map<
+    string,
+    { servings_per_output_unit: number; sort_order: number }
+  >;
+  /** Resolves each line to the stage it's assigned to (from the
+   *  routing draft merged with the saved baseline). Returns ``null``
+   *  when a line is unassigned — those lines fall through to the
+   *  finished-stage anchor. */
+  stageIdForLine?: (line: BuilderLine) => string | null;
+  /** Per-stage per-serving base mass (mg) from the accumulator — the
+   *  sum of all non-percent-of-mass line contributions at every
+   *  stage up to and including this one. Powers percent_of_mass
+   *  ratio math (mg = pct/100 × base_mass). Terminal stage's base
+   *  mass ≈ totals.totalWeightMg. */
+  baseMassByStage?: Map<string, number>;
 }): BomLine[] {
   const {
     totals,
@@ -6791,8 +6952,72 @@ function deriveStageBomLines(inputs: {
     excipientOverrides,
     itemLookup,
     servingsPerPack,
+    stageInfoById,
+    stageIdForLine,
+    baseMassByStage,
   } = inputs;
   const servingsPerParent = Math.max(1, servingsPerPack ?? 1);
+  // Resolve the servings-per-output-unit for the anchor stage of a
+  // given line. Priority: line's assigned stage → largest sort_order
+  // stage (terminal) → fallback ``servingsPerPack``. Never returns
+  // < 1 so the ratio math can't divide by zero.
+  const resolveStageServings = (line: BuilderLine): number => {
+    if (stageIdForLine && stageInfoById) {
+      const sid = stageIdForLine(line);
+      if (sid) {
+        const info = stageInfoById.get(sid);
+        if (info && info.servings_per_output_unit > 0) {
+          return info.servings_per_output_unit;
+        }
+      }
+      // Unassigned → fall through to the largest-sort_order stage
+      // (typically the finished-product stage). Matches how the PSP
+      // push cascade folds null-stage lines into the terminal BOM.
+      let fallback: number | null = null;
+      let bestSort = -1;
+      for (const info of stageInfoById.values()) {
+        if (info.sort_order > bestSort) {
+          bestSort = info.sort_order;
+          fallback = info.servings_per_output_unit;
+        }
+      }
+      if (fallback && fallback > 0) return fallback;
+    }
+    return servingsPerParent;
+  };
+  // Per-serving base mass (mg) for percent_of_mass ratio math. Same
+  // stage-picking rules as ``resolveStageServings``. Terminal stage
+  // falls back to totals.totalWeightMg when no per-stage map is
+  // supplied (legacy call sites).
+  const resolveStageBaseMass = (line: BuilderLine): number => {
+    if (stageIdForLine && baseMassByStage) {
+      const sid = stageIdForLine(line);
+      if (sid) {
+        const mass = baseMassByStage.get(sid);
+        if (mass && mass > 0) return mass;
+      }
+    }
+    return totals.totalWeightMg ?? 0;
+  };
+  // BE-side ``_UOM_MG_FACTOR`` mirror — mg × unit_factor = qty in
+  // the item's native UoM. Count / unknown UoMs default to 1 so the
+  // ratio math treats the value as a literal count.
+  const unitFactorForLine = (line: BuilderLine): number => {
+    switch ((line.item_unit ?? "").toLowerCase()) {
+      case "kg":
+        return 0.000001;
+      case "g":
+        return 0.001;
+      case "mg":
+        return 1;
+      case "l":
+        return 0.000001;
+      case "ml":
+        return 0.001;
+      default:
+        return 1;
+    }
+  };
   const out: BomLine[] = [];
   const lookup = (id: string | null | undefined) =>
     (id && itemLookup ? itemLookup(id) : null) ?? {
@@ -6862,7 +7087,6 @@ function deriveStageBomLines(inputs: {
   //      modal (legacy pre-ratio manual picks).
   //   4. Actives + band picks — ``totals.lineValues`` (existing
   //      compute cascade).
-  const finishedMassMg = totals.totalWeightMg ?? 0;
   for (const line of lines) {
     const computed = totals.lineValues.get(line.key);
     let mg = computed ?? 0;
@@ -6873,19 +7097,32 @@ function deriveStageBomLines(inputs: {
         Number.isFinite(ratioValue) &&
         ratioValue > 0
       ) {
-        // per_unit ratio is declared per stage output unit — for the
-        // terminal stage that's 1 finished pack. PSP's BOM math wants
-        // per-serving mg (mg × servings × unit_factor = qty per
-        // parent). Divide by servings so 1 bottle per pack lands as
-        // qty=1 on PSP for count-UoM packaging items.
-        mg = ratioValue / servingsPerParent;
+        // per_unit — declared as "N (in item's UoM) per 1 stock-unit
+        // of the assigned stage's output". BE math: qty = mg × stage.
+        // servings × unit_factor. Solve for mg:
+        //   mg = ratio / (stage.servings × unit_factor)
+        // For a bottle (unit_factor=1) at terminal stage (60 servings):
+        //   mg = 1 / (60 × 1) = 0.017 → PSP receives qty = 1 per pack.
+        // For 300 g of coconut oil per 1 L of cook (kg UoM, 30
+        // servings-per-L):
+        //   mg = 0.3 / (30 × 1e-6) = 10000 → PSP cook BOM gets 0.3 kg
+        //   per L of cook output.
+        const stageServings = resolveStageServings(line);
+        const unitFactor = unitFactorForLine(line);
+        mg = ratioValue / (stageServings * unitFactor);
       } else if (
         line.stage_ratio_mode === "percent_of_mass" &&
         Number.isFinite(ratioValue) &&
-        ratioValue > 0 &&
-        finishedMassMg > 0
+        ratioValue > 0
       ) {
-        mg = (ratioValue / 100) * finishedMassMg;
+        // percent_of_mass — declared as "N% of the assigned stage's
+        // output mass". base_mass is the per-serving mass at that
+        // stage (sum of non-ratio-line contributions up to and
+        // including this stage). Contribution mg = pct/100 × base.
+        const baseMass = resolveStageBaseMass(line);
+        if (baseMass > 0) {
+          mg = (ratioValue / 100) * baseMass;
+        }
       } else if (mg <= 0) {
         const raw = Number.parseFloat(line.label_claim_mg || "0");
         if (Number.isFinite(raw) && raw > 0) mg = raw;
@@ -7072,6 +7309,8 @@ const RoutingTabBody = memo(function RoutingTabBody({
   onRemoveLine,
   onSetRatioMode,
   onSetRatioValue,
+  stageInfoById,
+  baseMassByStage,
   pickBusy,
   servingsPerPack,
 }: {
@@ -7103,6 +7342,15 @@ const RoutingTabBody = memo(function RoutingTabBody({
     mode: "none" | "per_unit" | "percent_of_mass",
   ) => void;
   onSetRatioValue: (lineKey: string, value: string) => void;
+  /** Per-stage anchor + output data — powers the "Stage output"
+   *  summary card above each stage's ingredient list and the
+   *  "→ 300 g per 1 L cook output" resolver hint under every
+   *  manual-pick ratio input. */
+  stageInfoById: Map<
+    string,
+    { servings_per_output_unit: number; sort_order: number }
+  >;
+  baseMassByStage: Map<string, number>;
   pickBusy: boolean;
   /** How many servings each finished pack ships with (from Setup).
    *  Drives the per-row "for N finished units, you need X g / Y kg"
@@ -7759,30 +8007,91 @@ const RoutingTabBody = memo(function RoutingTabBody({
                               </option>
                             </select>
                             {manualLine.stage_ratio_mode !== "none" ? (
-                              <>
-                                <input
-                                  type="number"
-                                  step="any"
-                                  min="0"
-                                  value={manualLine.stage_ratio_value}
-                                  onChange={(e) =>
-                                    onSetRatioValue(lineKey, e.target.value)
-                                  }
-                                  disabled={!canWrite || isSaving}
-                                  placeholder={
-                                    manualLine.stage_ratio_mode === "per_unit"
-                                      ? "e.g. 1"
-                                      : "e.g. 3"
-                                  }
-                                  className="w-20 rounded bg-ink-0 px-1.5 py-0.5 text-[11px] ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
-                                  aria-label={`Ratio value for ${row.label}`}
-                                />
-                                <span className="text-[10px] text-ink-500">
-                                  {manualLine.stage_ratio_mode === "per_unit"
-                                    ? "per 1 stage output unit"
-                                    : "% of stage output mass"}
-                                </span>
-                              </>
+                              (() => {
+                                // Resolve the assigned stage's context
+                                // for the helper hint.
+                                const anchorStage = assigned
+                                  ? stages.find((s) => s.id === assigned)
+                                  : undefined;
+                                const anchorInfo = anchorStage
+                                  ? stageInfoById.get(anchorStage.id)
+                                  : undefined;
+                                const anchorLabel =
+                                  anchorStage?.name ||
+                                  anchorStage?.psp_item_name ||
+                                  "the finished stage";
+                                const uomLabel =
+                                  manualLine.item_unit || "unit";
+                                const ratioNum = Number.parseFloat(
+                                  manualLine.stage_ratio_value || "",
+                                );
+                                const hasValue =
+                                  Number.isFinite(ratioNum) && ratioNum > 0;
+                                return (
+                                  <>
+                                    <input
+                                      type="number"
+                                      step="any"
+                                      min="0"
+                                      value={manualLine.stage_ratio_value}
+                                      onChange={(e) =>
+                                        onSetRatioValue(
+                                          lineKey,
+                                          e.target.value,
+                                        )
+                                      }
+                                      disabled={!canWrite || isSaving}
+                                      placeholder={
+                                        manualLine.stage_ratio_mode ===
+                                        "per_unit"
+                                          ? "e.g. 1"
+                                          : "e.g. 3"
+                                      }
+                                      className="w-20 rounded bg-ink-0 px-1.5 py-0.5 text-[11px] ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
+                                      aria-label={`Ratio value for ${row.label}`}
+                                    />
+                                    <span className="text-[10px] text-ink-500">
+                                      {manualLine.stage_ratio_mode ===
+                                      "per_unit"
+                                        ? `${uomLabel} per 1 stock-unit of "${anchorLabel}"`
+                                        : `% of "${anchorLabel}" output mass`}
+                                    </span>
+                                    {hasValue ? (
+                                      <span className="w-full text-[10px] font-medium text-emerald-700">
+                                        →{" "}
+                                        {manualLine.stage_ratio_mode ===
+                                        "per_unit"
+                                          ? `${ratioNum} ${uomLabel} per 1 stock-unit of ${anchorLabel}${
+                                              anchorInfo &&
+                                              anchorInfo.servings_per_output_unit >
+                                                1
+                                                ? ` (= ${(
+                                                    ratioNum /
+                                                    anchorInfo.servings_per_output_unit
+                                                  ).toFixed(4)} ${uomLabel} / serving)`
+                                                : ""
+                                            }`
+                                          : (() => {
+                                              const baseMg =
+                                                anchorStage &&
+                                                baseMassByStage.get(
+                                                  anchorStage.id,
+                                                )
+                                                  ? baseMassByStage.get(
+                                                      anchorStage.id,
+                                                    )!
+                                                  : 0;
+                                              const perServingMg =
+                                                (ratioNum / 100) * baseMg;
+                                              const perServingG =
+                                                perServingMg / 1000;
+                                              return `${ratioNum}% of ${anchorLabel} → ${perServingG.toFixed(3)} g / serving`;
+                                            })()}
+                                      </span>
+                                    ) : null}
+                                  </>
+                                );
+                              })()
                             ) : (
                               <span className="text-[10px] italic text-ink-400">
                                 pick a mode to declare consumption
@@ -7816,6 +8125,11 @@ const RoutingTabBody = memo(function RoutingTabBody({
           {stages.map((stage) => {
             const rows = rowsByStage.map.get(stage.id) ?? [];
             const isFinished = stage.psp_item_type === "finished_product";
+            const stageInfo = stageInfoById.get(stage.id);
+            const stageServings = stageInfo?.servings_per_output_unit ?? 1;
+            const perServingMg = baseMassByStage.get(stage.id) ?? 0;
+            const perStockUnitMg = perServingMg * stageServings;
+            const perPackMg = perServingMg * servingsPerPack;
             return (
               <div
                 key={stage.id}
@@ -7842,6 +8156,46 @@ const RoutingTabBody = memo(function RoutingTabBody({
                         (isFinished ? "Finished product" : "Semi output")}
                     </span>
                   </span>
+                </div>
+
+                {/* Stage output summary — the missing piece scientists
+                    kept asking about. Shows what THIS stage produces
+                    per stock-unit + per pack, plus the servings-per-
+                    stock-unit that anchors all per_unit ratios landing
+                    on this stage. */}
+                <div className="mt-3 grid grid-cols-1 gap-2 rounded-xl bg-ink-50/60 p-3 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200 sm:grid-cols-3">
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-ink-500">
+                      Servings anchor
+                    </p>
+                    <p className="mt-0.5 text-sm text-ink-1000">
+                      1 stock-unit = {stageServings} servings
+                    </p>
+                  </div>
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-ink-500">
+                      Output per stock-unit
+                    </p>
+                    <p className="mt-0.5 text-sm text-ink-1000">
+                      {perStockUnitMg >= 1_000_000
+                        ? `${(perStockUnitMg / 1_000_000).toFixed(3)} kg`
+                        : perStockUnitMg >= 1000
+                          ? `${(perStockUnitMg / 1000).toFixed(2)} g`
+                          : `${perStockUnitMg.toFixed(1)} mg`}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="font-semibold uppercase tracking-wide text-ink-500">
+                      Total per pack
+                    </p>
+                    <p className="mt-0.5 text-sm text-ink-1000">
+                      {perPackMg >= 1_000_000
+                        ? `${(perPackMg / 1_000_000).toFixed(3)} kg`
+                        : perPackMg >= 1000
+                          ? `${(perPackMg / 1000).toFixed(2)} g`
+                          : `${perPackMg.toFixed(1)} mg`}
+                    </p>
+                  </div>
                 </div>
 
                 {/* Every quantity below is normalised to ONE unit of

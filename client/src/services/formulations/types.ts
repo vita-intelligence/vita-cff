@@ -200,6 +200,9 @@ export interface FormulationLineDto {
    *  stage_ratio_mode`` on the backend for the resolver contract. */
   readonly stage_ratio_mode?: "none" | "per_unit" | "percent_of_mass";
   readonly stage_ratio_value?: string | null;
+  /** Item's stock UoM (kg / g / l / ml / unit / ea / mg / ""). Drives
+   *  the FE ratio math's unit_factor lookup. Empty = count semantic. */
+  readonly item_unit?: string;
 }
 
 export interface SalesPersonDto {
