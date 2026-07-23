@@ -9109,6 +9109,9 @@ function FinishedUnitBreakdownCard({
             <span className="w-32 text-right">
               g / batch ({numberFormatter.format(batchSize)} packs)
             </span>
+            <span className="w-32 text-right">
+              kg / batch ({numberFormatter.format(batchSize)} packs)
+            </span>
           </div>
           <div className="divide-y divide-ink-100">
             {enrichedRows.map((r) => (
@@ -9130,6 +9133,11 @@ function FinishedUnitBreakdownCard({
                 <span className="w-32 shrink-0 text-right tabular-nums text-ink-700">
                   {numberFormatter.format(Number(r.gPerBatch.toFixed(3)))}
                 </span>
+                <span className="w-32 shrink-0 text-right tabular-nums text-ink-700">
+                  {numberFormatter.format(
+                    Number((r.gPerBatch / 1000).toFixed(4)),
+                  )}
+                </span>
               </div>
             ))}
             <div className="flex items-center gap-4 bg-ink-50 px-4 py-2 text-sm font-semibold">
@@ -9139,6 +9147,12 @@ function FinishedUnitBreakdownCard({
               </span>
               <span className="w-32 shrink-0 text-right tabular-nums text-ink-1000">
                 {numberFormatter.format(Number(totalGPerBatch.toFixed(3)))} g
+              </span>
+              <span className="w-32 shrink-0 text-right tabular-nums text-ink-1000">
+                {numberFormatter.format(
+                  Number((totalGPerBatch / 1000).toFixed(4)),
+                )}{" "}
+                kg
               </span>
             </div>
           </div>
