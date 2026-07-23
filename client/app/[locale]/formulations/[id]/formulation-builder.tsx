@@ -7563,6 +7563,59 @@ const RoutingTabBody = memo(function RoutingTabBody({
   );
   const perUnitToBatch = servingsPerPack * finishedUnits;
   const stages = formulation.stages;
+  // PSP UoM lookup — resolves stage.psp_item_stock_uom_uuid → its
+  // symbol (kg / g / L / mL / ea / …) so the stage output banner
+  // renders in the actual UoM the scientist picked on the stage
+  // strip. Falls back to the auto-scale g / kg formatter when the
+  // stage has no UoM assigned yet.
+  const uomQuery = usePspUnitsOfMeasurement(orgId);
+  const uomByUuid = useMemo(() => {
+    const map = new Map<string, { name: string; symbol: string }>();
+    for (const u of uomQuery.data?.items ?? []) {
+      map.set(u.uuid, { name: u.name, symbol: u.symbol || u.name });
+    }
+    return map;
+  }, [uomQuery.data]);
+  // mg → the stage's stock UoM. Only the mass / volume UoMs get a
+  // real conversion; count-based UoMs (ea / unit / pcs / …) mean the
+  // stock unit IS the count so mg has no meaning — those fall through
+  // to the auto-scale g / kg formatter.
+  const MG_PER_UOM: Record<string, number> = {
+    kg: 1_000_000,
+    g: 1_000,
+    mg: 1,
+    l: 1_000_000,
+    ml: 1_000,
+  };
+  const formatOutput = (
+    mg: number,
+    uomUuid: string | null | undefined,
+    stockUnitCount: number,
+  ): string => {
+    const uom = uomUuid ? uomByUuid.get(uomUuid) : undefined;
+    const sym = (uom?.symbol ?? "").trim().toLowerCase();
+    const factor = MG_PER_UOM[sym];
+    // Mass / volume UoM — render in the operator's chosen unit.
+    if (factor) {
+      const qty = mg / factor;
+      const prec = qty >= 100 ? 1 : qty >= 10 ? 2 : 3;
+      return `${qty.toFixed(prec)} ${uom!.symbol}`;
+    }
+    // Count-based UoM (ea / unit / pcs / capsule / …) — the stock
+    // unit is the count itself. Use the stock-unit count directly
+    // with the symbol; scientists reading "60 ea" understand it as
+    // "60 finished pieces".
+    if (uom && stockUnitCount > 0) {
+      return `${stockUnitCount} ${uom.symbol}`;
+    }
+    // No UoM picked yet → auto-scale mg / g / kg so the number is
+    // still readable.
+    return mg >= 1_000_000
+      ? `${(mg / 1_000_000).toFixed(3)} kg`
+      : mg >= 1000
+        ? `${(mg / 1000).toFixed(2)} g`
+        : `${mg.toFixed(1)} mg`;
+  };
 
   // Build a de-duplicated inventory of every ingredient the
   // formulation carries. Walks the full-BOM map once (any stage's
@@ -8400,34 +8453,82 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     per stock-unit + per pack, plus the servings-per-
                     stock-unit that anchors all per_unit ratios landing
                     on this stage. */}
-                {/* Single-line output summary — collapses the previous
-                    four-column "servings anchor / per stock-unit / per
-                    pack / for N units" grid. Matches the scale the
-                    ingredient rows below already show, so it's the
-                    same math on the same units — no more "wait, which
-                    column am I reading?" at handoff. */}
+                {/* Editable output — the operator can type a target
+                    output for this stage and everything else rescales.
+                    Under the hood we just back-solve the global
+                    finished-units number so proportions stay locked
+                    across ingredients and other stages. Preview only,
+                    like the finished-units input above. */}
                 {(() => {
-                  const batchMg = perPackMg * finishedUnits;
-                  const batchLabel =
-                    batchMg >= 1_000_000
-                      ? `${(batchMg / 1_000_000).toFixed(3)} kg`
-                      : batchMg >= 1000
-                        ? `${(batchMg / 1000).toFixed(2)} g`
-                        : `${batchMg.toFixed(1)} mg`;
                   const stockUnitCount = finishedUnits * stageServings;
+                  const uom = stage.psp_item_stock_uom_uuid
+                    ? uomByUuid.get(stage.psp_item_stock_uom_uuid)
+                    : undefined;
+                  const sym = (uom?.symbol ?? "").trim().toLowerCase();
+                  const factor = MG_PER_UOM[sym];
+                  const isCountUom = !!uom && !factor;
+                  // Current qty in the stage's own UoM.
+                  const currentQty = isCountUom
+                    ? stockUnitCount
+                    : factor
+                      ? (perPackMg * finishedUnits) / factor
+                      : perPackMg * finishedUnits;
+                  // Per-1-finished-unit qty — used to rescale
+                  // finishedUnits when the operator types a new
+                  // target output. Guarded so a zero doesn't blow up
+                  // the division.
+                  const qtyPerFinished = isCountUom
+                    ? stageServings
+                    : factor
+                      ? perPackMg / factor
+                      : perPackMg;
+                  const symbolLabel = uom?.symbol || "output";
+                  const displayValue = isCountUom
+                    ? String(Math.round(currentQty))
+                    : (() => {
+                        const prec =
+                          currentQty >= 100 ? 1 : currentQty >= 10 ? 2 : 3;
+                        return currentQty.toFixed(prec);
+                      })();
+                  const onOutputChange = (raw: string) => {
+                    const parsed = Number.parseFloat(raw);
+                    if (!Number.isFinite(parsed) || parsed <= 0) return;
+                    if (qtyPerFinished <= 0) return;
+                    const nextFinished = Math.max(
+                      1,
+                      Math.round(parsed / qtyPerFinished),
+                    );
+                    setFinishedUnitsInput(String(nextFinished));
+                  };
                   return (
                     <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-xl bg-ink-50/60 px-3 py-2 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200">
                       <span className="font-semibold uppercase tracking-wide text-ink-500">
                         This stage produces
                       </span>
-                      <span className="text-base font-semibold text-ink-1000">
-                        {batchLabel}
-                      </span>
+                      <label className="flex items-baseline gap-1 text-base font-semibold text-ink-1000">
+                        <input
+                          type="number"
+                          min={0}
+                          step="any"
+                          value={displayValue}
+                          onChange={(e) => onOutputChange(e.target.value)}
+                          disabled={!canWrite}
+                          className="w-24 rounded-md bg-ink-0 px-2 py-0.5 text-right text-base font-semibold text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
+                          aria-label={`Target output for ${stage.name}`}
+                        />
+                        <span className="text-sm font-normal text-ink-600">
+                          {symbolLabel}
+                        </span>
+                      </label>
                       <span className="text-ink-500">
                         ({stockUnitCount} stock-unit
                         {stockUnitCount === 1 ? "" : "s"} · for{" "}
                         {finishedUnits} finished unit
                         {finishedUnits === 1 ? "" : "s"})
+                      </span>
+                      <span className="basis-full text-[10px] italic text-ink-500">
+                        Type a new number to rescale — proportions
+                        stay locked across every stage.
                       </span>
                     </div>
                   );
