@@ -163,12 +163,44 @@ function MaybePspLink({
 }
 
 
+/**
+ * CSS-escape a value for safe interpolation into a selector. Stage
+ * ids are UUIDs today but this stays robust if that ever changes.
+ */
+function cssEscape(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+  // Minimal fallback — escape everything that isn't a safe id char.
+  return value.replace(/[^a-zA-Z0-9_-]/g, (c) => `\\${c}`);
+}
+
+
 function printOnly(stageId: string) {
   if (typeof document === "undefined") return;
-  const cls = `bom-preview-print-only-${stageId}`;
-  document.body.classList.add("bom-preview-print-active", cls);
+  document.body.classList.add("bom-preview-print-active");
+  // Inject a stage-scoped @media print block so only the ``<li>``
+  // whose ``data-stage-id`` matches the clicked stage stays visible.
+  // The static rule in the component chrome makes EVERY
+  // ``[data-print-target="true"]`` visible + absolutely positioned at
+  // 0,0 — which stacks every stage on top of every other. That's the
+  // "overlapping stages" bug the operator hit. This dynamic rule
+  // takes precedence (it's appended after the static one) and hides
+  // every non-matching stage.
+  const style = document.createElement("style");
+  const escaped = cssEscape(stageId);
+  style.setAttribute("data-bom-preview-print", stageId);
+  style.textContent = `
+@media print {
+  body.bom-preview-print-active .bom-preview-card [data-print-target="true"]:not([data-stage-id="${escaped}"]) {
+    display: none !important;
+  }
+}
+  `;
+  document.head.appendChild(style);
   const cleanup = () => {
-    document.body.classList.remove("bom-preview-print-active", cls);
+    document.body.classList.remove("bom-preview-print-active");
+    style.remove();
     window.removeEventListener("afterprint", cleanup);
   };
   window.addEventListener("afterprint", cleanup);
