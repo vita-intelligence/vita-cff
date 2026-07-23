@@ -2350,6 +2350,36 @@ def _ensure_finished_product(
             "may_contain_justification",
             formulation.may_contain_justification,
         )
+    # Auto-push aggregated compliance flags. Each flag's status = AND
+    # across every ingredient's own ``vegan`` / ``organic`` / ``halal``
+    # / ``kosher`` attribute — one non-compliant SKU taints the whole
+    # product, an unanswered ingredient returns None and skips the
+    # push. Same rule ``compute_compliance`` applies to the FE chip
+    # so what NPD shows == what PSP receives.
+    try:
+        from apps.formulations.services import compute_compliance
+
+        line_items = [
+            line.item
+            for line in formulation.lines.select_related("item").all()
+            if line.item is not None
+        ]
+        if line_items:
+            compliance = compute_compliance(items=line_items)
+            for flag in compliance.flags:
+                if flag.status is None:
+                    continue
+                _put(
+                    flag.key,
+                    "Yes" if flag.status else "No",
+                )
+    except Exception:  # noqa: BLE001
+        # Compliance derivation is a best-effort convenience — a
+        # traceback here should never break the PSP push cascade,
+        # which already treats every spec field as optional.
+        logger.exception(
+            "PSP finished-product spec: compliance derivation failed"
+        )
     # Stage-level overrides last so a per-stage tweak still wins if
     # someone hand-edited the JSONField for a specific finished stage.
     if stage is not None and stage.psp_finished_product_spec:
