@@ -1550,6 +1550,19 @@ class FormulationVersion(models.Model):
     #: sub-tab by default. Auto-versions live in the same table so
     #: rollback + snapshot-BOM push cascades reuse the same code path;
     #: the History tab just filters them out for the milestone view.
+    #: Frozen FormulationStage graph. Ordered list of stage dicts —
+    #: identity + workstation + times + costs + PSP identity + workers
+    #: + servings_per_output_unit + cached psp uuids. Restored on
+    #: rollback so recovering v27 brings back the exact stage graph
+    #: that shipped when the operator hit Save version. Empty list on
+    #: legacy versions saved before this field landed (0064 migration
+    #: adds the column without a backfill — historical versions can't
+    #: reproduce their stages, but at least new versions can).
+    snapshot_stages: models.JSONField = models.JSONField(
+        _("stage graph snapshot"),
+        default=list,
+        blank=True,
+    )
     is_auto = models.BooleanField(
         _("auto-cut on save draft"),
         default=False,
