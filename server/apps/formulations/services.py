@@ -4807,7 +4807,23 @@ def compute_formulation_totals(
 
 
 def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
+    """Freeze every recoverable field on the Formulation row into a
+    JSON-friendly dict. Everything here must round-trip through
+    ``rollback_to_version`` so a scientist recovers the exact state
+    they committed. Missing fields silently drop from history — the
+    long-standing rollback complaint ("target markets disappeared
+    after I restored v27") was every Setup / M2M / stage field being
+    off this list. Add new mutable fields here on the same PR that
+    adds them to the model."""
+
+    def _decimal_str(value: Any) -> str | None:
+        return str(value) if value is not None else None
+
+    def _m2m_ids(manager: Any) -> list[str]:
+        return [str(pk) for pk in manager.values_list("id", flat=True)]
+
     return {
+        # ---- Core identity + dosage-form scaffold ----
         "name": formulation.name,
         "code": formulation.code,
         "description": formulation.description,
@@ -4820,22 +4836,64 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
         "suggested_dosage": formulation.suggested_dosage,
         "appearance": formulation.appearance,
         "disintegration_spec": formulation.disintegration_spec,
-        "target_fill_weight_mg": (
-            str(formulation.target_fill_weight_mg)
-            if formulation.target_fill_weight_mg is not None
-            else None
+        "target_fill_weight_mg": _decimal_str(
+            formulation.target_fill_weight_mg
         ),
         "powder_type": formulation.powder_type,
-        "water_volume_ml": (
-            str(formulation.water_volume_ml)
-            if formulation.water_volume_ml is not None
-            else None
-        ),
+        "water_volume_ml": _decimal_str(formulation.water_volume_ml),
         # Per-band gummy excipient overrides — frozen onto the
         # snapshot so a downstream spec-sheet render reproduces the
         # exact percentages the scientist had set at save time, even
         # if they later tweak the formulation again.
         "excipient_overrides": dict(formulation.excipient_overrides or {}),
+        # ---- Setup / finished-product spec ----
+        "regulatory_category": formulation.regulatory_category,
+        "warnings_text": formulation.warnings_text,
+        "shelf_life_months": formulation.shelf_life_months,
+        "storage_conditions": formulation.storage_conditions,
+        "target_markets": list(formulation.target_markets or []),
+        "net_quantity": _decimal_str(formulation.net_quantity),
+        "net_quantity_uom_uuid": (
+            str(formulation.net_quantity_uom_uuid)
+            if formulation.net_quantity_uom_uuid is not None
+            else None
+        ),
+        "serving_size_uom_uuid": (
+            str(formulation.serving_size_uom_uuid)
+            if formulation.serving_size_uom_uuid is not None
+            else None
+        ),
+        "storage_tags": list(formulation.storage_tags or []),
+        "min_stock_qty": _decimal_str(formulation.min_stock_qty),
+        "target_stock_qty": _decimal_str(formulation.target_stock_qty),
+        "allergen_uuids": [
+            str(u) for u in (formulation.allergen_uuids or [])
+        ],
+        "may_contain_allergen_keys": list(
+            formulation.may_contain_allergen_keys or []
+        ),
+        "may_contain_justification": formulation.may_contain_justification,
+        # ---- M2M picker selections (id lists) ----
+        # Each picker row lives as an M2M against catalogues.Item.
+        # Snapshotting the id list means rollback can rebuild the
+        # exact same picks via ``.set()``. Items may have been
+        # deleted from the catalogue since the snapshot; restore
+        # silently drops ids that no longer resolve.
+        "gummy_base_item_ids": _m2m_ids(formulation.gummy_base_items),
+        "acidity_item_ids": _m2m_ids(formulation.acidity_items),
+        "flavouring_item_ids": _m2m_ids(formulation.flavouring_items),
+        "colour_item_ids": _m2m_ids(formulation.colour_items),
+        "sweetener_item_ids": _m2m_ids(formulation.sweetener_items),
+        "glazing_item_ids": _m2m_ids(formulation.glazing_items),
+        "gelling_item_ids": _m2m_ids(formulation.gelling_items),
+        "premix_sweetener_item_ids": _m2m_ids(
+            formulation.premix_sweetener_items
+        ),
+        "capsule_shell_item_ids": _m2m_ids(formulation.capsule_shell_items),
+        "mcc_carrier_item_ids": _m2m_ids(formulation.mcc_carrier_items),
+        "dcp_carrier_item_ids": _m2m_ids(formulation.dcp_carrier_items),
+        "anti_caking_item_ids": _m2m_ids(formulation.anti_caking_items),
+        "powder_carrier_item_ids": _m2m_ids(formulation.powder_carrier_items),
     }
 
 
@@ -4881,7 +4939,101 @@ _SNAPSHOT_ATTRIBUTE_KEYS: tuple[str, ...] = (
 )
 
 
+def _snapshot_stages(formulation: Formulation) -> list[dict[str, Any]]:
+    """Freeze the production-stage graph into a JSON-friendly list.
+
+    Every FormulationStage field that ``set_formulation_stages`` reads
+    on write is captured, plus the cached PSP round-trip uuids
+    (``psp_semi_finished_uuid``, ``psp_bom_uuid``) so rollback keeps
+    the linkage to PSP without needing a fresh push cascade.
+
+    Order matches ``sort_order``; the index is the stable key used by
+    line-level ``stage_index`` references so downstream restore can
+    remap ``line.stage_id`` after stages are re-created with fresh
+    ids.
+    """
+
+    def _decimal_str(value: Any) -> str | None:
+        return str(value) if value is not None else None
+
+    def _uuid_str(value: Any) -> str | None:
+        return str(value) if value is not None else None
+
+    stages = list(formulation.stages.all().order_by("sort_order"))
+    out: list[dict[str, Any]] = []
+    for stage in stages:
+        out.append(
+            {
+                "sort_order": stage.sort_order,
+                "name": stage.name,
+                "stage_key": stage.stage_key,
+                "workstation_group_uuid": _uuid_str(
+                    stage.workstation_group_uuid
+                ),
+                "workstation_group_name": stage.workstation_group_name,
+                "operation_description": stage.operation_description,
+                "setup_time_min": _decimal_str(stage.setup_time_min),
+                "cycle_time_min": _decimal_str(stage.cycle_time_min),
+                "fixed_cost": _decimal_str(stage.fixed_cost),
+                "variable_cost": _decimal_str(stage.variable_cost),
+                "capacity": _decimal_str(stage.capacity),
+                "other_fixed_cost": _decimal_str(stage.other_fixed_cost),
+                "other_variable_cost": _decimal_str(
+                    stage.other_variable_cost
+                ),
+                "other_variable_cost_basis": _decimal_str(
+                    stage.other_variable_cost_basis
+                ),
+                "worker_psp_uuids": [
+                    str(u) for u in (stage.worker_psp_uuids or [])
+                ],
+                # PSP identity — all mirror push inputs. Restored so
+                # a rollback + fresh push writes the SAME external_sku
+                # / description / attributes back to PSP.
+                "psp_item_type": stage.psp_item_type,
+                "psp_item_name": stage.psp_item_name,
+                "psp_item_external_sku": stage.psp_item_external_sku,
+                "psp_item_description": stage.psp_item_description,
+                "psp_item_attributes": dict(stage.psp_item_attributes or {}),
+                "psp_item_barcode": stage.psp_item_barcode,
+                "psp_item_stock_uom_uuid": _uuid_str(
+                    stage.psp_item_stock_uom_uuid
+                ),
+                "psp_item_product_family_uuid": _uuid_str(
+                    stage.psp_item_product_family_uuid
+                ),
+                "psp_finished_product_spec": dict(
+                    stage.psp_finished_product_spec or {}
+                ),
+                "servings_per_output_unit": _decimal_str(
+                    stage.servings_per_output_unit
+                ),
+                "notes": stage.notes,
+                # PSP round-trip uuids — cached identifiers pointing at
+                # PSP's item / BOM rows the last push landed on. Kept
+                # in the snapshot so a rollback stays linked to the
+                # same PSP records; without them the next push would
+                # create duplicate PSP items.
+                "psp_semi_finished_uuid": _uuid_str(
+                    stage.psp_semi_finished_uuid
+                ),
+                "psp_bom_uuid": _uuid_str(stage.psp_bom_uuid),
+            }
+        )
+    return out
+
+
 def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
+    # Precompute stage-id → sort_order map so each line snapshot can
+    # carry a stable ``stage_index`` reference. On rollback, stages
+    # are wiped + re-created with fresh uuids; the index remaps the
+    # line's stage assignment to the newly-created stage row. Without
+    # this every rolled-back line lands with ``stage=NULL`` and the
+    # operator has to re-route by hand on the Routing tab.
+    stage_index_by_id: dict[str, int] = {
+        str(stage.id): int(stage.sort_order)
+        for stage in formulation.stages.all()
+    }
     lines: list[dict[str, Any]] = []
     for line in formulation.lines.select_related("item").all():
         # Polymorphic read: local-sourced lines pull from the FK'd
@@ -4893,6 +5045,12 @@ def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
         snapshot_attributes = {
             key: attributes.get(key) for key in _SNAPSHOT_ATTRIBUTE_KEYS
         }
+        stage_id_str = str(line.stage_id) if line.stage_id else None
+        stage_index = (
+            stage_index_by_id.get(stage_id_str)
+            if stage_id_str
+            else None
+        )
         lines.append(
             {
                 "item_id": line.effective_item_reference,
@@ -4930,6 +5088,18 @@ def _snapshot_lines(formulation: Formulation) -> list[dict[str, Any]]:
                     if line.stage_ratio_value is not None
                     else None
                 ),
+                # Line's source_kind + band_key so band-pick rows
+                # survive rollback (rollback re-materialises band
+                # picks directly from the snapshot; the wizard-
+                # routing endpoint doesn't rebuild them the same
+                # way if we only restore actives).
+                "source_kind": line.source_kind,
+                "band_key": line.band_key,
+                # Which stage was this line routed to at save time?
+                # Index into ``snapshot_stages`` (stable across the
+                # delete + recreate rebuild during rollback). ``None``
+                # means unrouted / no stage graph.
+                "stage_index": stage_index,
             }
         )
     return lines
@@ -5219,6 +5389,7 @@ def save_version(
         label=label,
         snapshot_metadata=_snapshot_metadata(formulation),
         snapshot_lines=_snapshot_lines(formulation),
+        snapshot_stages=_snapshot_stages(formulation),
         snapshot_totals=serialized_totals,
         snapshot_stage_boms=normalised_stage_boms,
         is_auto=is_auto,
@@ -5412,6 +5583,102 @@ def set_approved_version(
     return formulation
 
 
+#: Scalar Formulation fields that ``rollback_to_version`` restores
+#: verbatim from ``snapshot_metadata``. Missing keys in the snapshot
+#: silently skip so pre-migration versions restore cleanly with
+#: whatever they DID capture and leave the rest untouched. Add new
+#: mutable model fields to _snapshot_metadata AND this list on the
+#: same PR that adds them to the model.
+_ROLLBACK_SCALAR_FIELDS: tuple[str, ...] = (
+    # Identity + dosage-form scaffold (originals)
+    "name",
+    "code",
+    "description",
+    "dosage_form",
+    "capsule_size",
+    "tablet_size",
+    "serving_size",
+    "servings_per_pack",
+    "directions_of_use",
+    "suggested_dosage",
+    "appearance",
+    "disintegration_spec",
+    "powder_type",
+    "water_volume_ml",
+    "target_fill_weight_mg",
+    # Setup / finished-product spec (14 additions)
+    "regulatory_category",
+    "warnings_text",
+    "shelf_life_months",
+    "storage_conditions",
+    "target_markets",
+    "net_quantity",
+    "net_quantity_uom_uuid",
+    "serving_size_uom_uuid",
+    "storage_tags",
+    "min_stock_qty",
+    "target_stock_qty",
+    "allergen_uuids",
+    "may_contain_allergen_keys",
+    "may_contain_justification",
+)
+
+
+#: Mapping ``snapshot_metadata`` key → M2M manager attribute on
+#: Formulation. Restored via ``.set(items)`` after resolving the
+#: id list to Item instances scoped to the formulation's org.
+_ROLLBACK_M2M_FIELDS: tuple[tuple[str, str], ...] = (
+    ("gummy_base_item_ids", "gummy_base_items"),
+    ("acidity_item_ids", "acidity_items"),
+    ("flavouring_item_ids", "flavouring_items"),
+    ("colour_item_ids", "colour_items"),
+    ("sweetener_item_ids", "sweetener_items"),
+    ("glazing_item_ids", "glazing_items"),
+    ("gelling_item_ids", "gelling_items"),
+    ("premix_sweetener_item_ids", "premix_sweetener_items"),
+    ("capsule_shell_item_ids", "capsule_shell_items"),
+    ("mcc_carrier_item_ids", "mcc_carrier_items"),
+    ("dcp_carrier_item_ids", "dcp_carrier_items"),
+    ("anti_caking_item_ids", "anti_caking_items"),
+    ("powder_carrier_item_ids", "powder_carrier_items"),
+)
+
+
+#: Stage fields ``rollback_to_version`` restores when rebuilding the
+#: production stage graph from ``snapshot_stages``. Missing keys on
+#: a pre-migration snapshot silently fall to the model default.
+_ROLLBACK_STAGE_FIELDS: tuple[str, ...] = (
+    "sort_order",
+    "name",
+    "stage_key",
+    "workstation_group_uuid",
+    "workstation_group_name",
+    "operation_description",
+    "setup_time_min",
+    "cycle_time_min",
+    "fixed_cost",
+    "variable_cost",
+    "capacity",
+    "other_fixed_cost",
+    "other_variable_cost",
+    "other_variable_cost_basis",
+    "worker_psp_uuids",
+    "psp_item_type",
+    "psp_item_name",
+    "psp_item_external_sku",
+    "psp_item_description",
+    "psp_item_attributes",
+    "psp_item_barcode",
+    "psp_item_stock_uom_uuid",
+    "psp_item_product_family_uuid",
+    "psp_finished_product_spec",
+    "servings_per_output_unit",
+    "notes",
+    "psp_semi_finished_uuid",
+    "psp_bom_uuid",
+)
+
+
 @transaction.atomic
 def rollback_to_version(
     *,
@@ -5421,9 +5688,21 @@ def rollback_to_version(
 ) -> Formulation:
     """Restore the formulation's mutable state from a past snapshot.
 
-    The snapshot is copied back onto the working rows, then a *new*
-    version is appended so the rollback is itself audited — history
-    is always append-only.
+    Everything ``save_version`` captured comes back:
+      * every scalar field on Formulation (Setup + finished-product
+        spec + identity + dosage-form scaffold);
+      * ``excipient_overrides`` map;
+      * every M2M picker set (flavouring / sweetener / colour /
+        gummy_base / capsule_shell / …) reset to the frozen id list;
+      * the entire ``FormulationStage`` graph (wholesale-replaced from
+        ``snapshot_stages``); and
+      * every FormulationLine — actives, band_picks, manual picks —
+        rebuilt with stage assignments remapped through the
+        ``stage_index`` captured on each line snapshot.
+
+    Then a new "rollback to vN" version is appended so history stays
+    append-only, and the fresh state is pushed through the PSP
+    cascade the same way any Save version does.
     """
 
     version = get_version(
@@ -5431,30 +5710,104 @@ def rollback_to_version(
     )
 
     metadata = version.snapshot_metadata or {}
-    for key in (
-        "name",
-        "code",
-        "description",
-        "dosage_form",
-        "capsule_size",
-        "tablet_size",
-        "serving_size",
-        "servings_per_pack",
-        "directions_of_use",
-        "suggested_dosage",
-        "appearance",
-        "disintegration_spec",
-        "powder_type",
-        "water_volume_ml",
-    ):
+
+    # ---- 1. Scalar fields ------------------------------------------
+    for key in _ROLLBACK_SCALAR_FIELDS:
         if key in metadata:
             setattr(formulation, key, metadata[key])
+    # excipient_overrides used to be captured but never restored —
+    # rolling back a gummy build silently kept the CURRENT overrides
+    # instead of the frozen ones. Restore whenever the snapshot
+    # carries them (missing keys on legacy rows keep current state).
+    if "excipient_overrides" in metadata:
+        formulation.excipient_overrides = dict(
+            metadata["excipient_overrides"] or {}
+        )
     formulation.updated_by = actor
     formulation.save()
 
+    # ---- 2. M2M picker sets ----------------------------------------
+    # Resolve every referenced id in a single query so we don't
+    # multiply DB round-trips per picker. Ids that no longer resolve
+    # (item deleted since snapshot) silently drop.
+    referenced_item_ids: set[str] = set()
+    for meta_key, _mgr in _ROLLBACK_M2M_FIELDS:
+        for item_id in metadata.get(meta_key, []) or []:
+            if item_id:
+                referenced_item_ids.add(str(item_id))
+    items_by_id: dict[str, Item] = {}
+    if referenced_item_ids:
+        items_by_id = {
+            str(i.id): i
+            for i in Item.objects.filter(
+                catalogue__organization=formulation.organization,
+                id__in=list(referenced_item_ids),
+            )
+        }
+    for meta_key, manager_attr in _ROLLBACK_M2M_FIELDS:
+        raw_ids = metadata.get(meta_key)
+        if raw_ids is None:
+            # Snapshot pre-dates this M2M being captured — leave the
+            # current picker set alone rather than wiping it.
+            continue
+        resolved = [
+            items_by_id[str(x)]
+            for x in raw_ids
+            if str(x) in items_by_id
+        ]
+        getattr(formulation, manager_attr).set(resolved)
+
+    # ---- 3. Rebuild the stage graph --------------------------------
+    # Delete every existing stage first — Line.stage FK is on_delete
+    # SET_NULL so this only clears line assignments (which we'll
+    # restore in step 4). Recreate stages from the snapshot; the
+    # sort_order becomes the stable key for line remapping.
+    snapshot_stages = list(version.snapshot_stages or [])
+    stage_id_by_index: dict[int, str] = {}
+    if snapshot_stages:
+        # Wholesale wipe. Snapshot pre-dating snapshot_stages leaves
+        # the current graph alone (falls into the ``else`` below).
+        formulation.stages.all().delete()
+        for stage_data in snapshot_stages:
+            payload = {
+                key: stage_data.get(key)
+                for key in _ROLLBACK_STAGE_FIELDS
+                if key in stage_data
+            }
+            # Normalise sort_order (must be int); default 0 so a
+            # missing key falls into a deterministic slot.
+            payload["sort_order"] = int(payload.get("sort_order") or 0)
+            # ``psp_item_type`` must be a valid choice; default to
+            # ``semi_finished`` (the historical implicit default for
+            # non-terminal stages) if the snapshot omitted it.
+            if not payload.get("psp_item_type"):
+                payload["psp_item_type"] = "semi_finished"
+            # JSON attribute bags default to {} so a snapshot with a
+            # ``null`` (rare) doesn't 500 on the not-null constraint.
+            for jsonbag in (
+                "psp_item_attributes",
+                "psp_finished_product_spec",
+            ):
+                if payload.get(jsonbag) is None:
+                    payload[jsonbag] = {}
+            # Worker uuids default to [] for the same reason.
+            if payload.get("worker_psp_uuids") is None:
+                payload["worker_psp_uuids"] = []
+            new_stage = FormulationStage.objects.create(
+                formulation=formulation, **payload
+            )
+            stage_id_by_index[int(payload["sort_order"])] = str(new_stage.id)
+
+    # ---- 4. Restore lines (actives + band_picks + manuals) ---------
     snapshot_lines = version.snapshot_lines or []
     lines_payload: list[dict[str, Any]] = []
     for entry in snapshot_lines:
+        stage_index = entry.get("stage_index")
+        remapped_stage_id = (
+            stage_id_by_index.get(int(stage_index))
+            if stage_index is not None
+            else None
+        )
         lines_payload.append(
             {
                 "item_id": entry["item_id"],
@@ -5462,15 +5815,27 @@ def rollback_to_version(
                 "serving_size_override": entry.get("serving_size_override"),
                 "display_order": entry.get("display_order", 0),
                 "notes": entry.get("notes", ""),
-                # Stage-scoped ratio survives rollback. Snapshots
-                # written before the ratio feature don't carry these
-                # keys — treat missing as "no ratio" so old versions
-                # restore cleanly with the actives semantic intact.
                 "stage_ratio_mode": entry.get("stage_ratio_mode"),
                 "stage_ratio_value": entry.get("stage_ratio_value"),
+                # Pass through so replace_lines rebuilds band_pick +
+                # manual rows with their identity intact — otherwise
+                # every band pick becomes a plain active on rollback
+                # and the Routing tab loses its band chips.
+                "source_kind": entry.get("source_kind"),
+                "band_key": entry.get("band_key"),
+                # Remapped stage_id points at the freshly-created
+                # stage row (fresh uuid, same sort_order + fields).
+                "stage_id": remapped_stage_id,
             }
         )
     replace_lines(formulation=formulation, actor=actor, lines=lines_payload)
+
+    # Reload from DB so scalar assignments (Decimal / int / JSON) come
+    # back as their proper Python types rather than the raw JSON
+    # strings ``_snapshot_metadata`` stored them as. Without this the
+    # next ``compute_totals`` fires ``str > int`` on things like
+    # ``target_fill_weight_mg`` and 500s the rollback.
+    formulation.refresh_from_db()
 
     save_version(
         formulation=formulation,
