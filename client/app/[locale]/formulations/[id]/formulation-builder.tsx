@@ -3679,13 +3679,47 @@ export function FormulationBuilder({
         });
       }
     });
+    // Semi-consumption check — for every non-terminal stage that has
+    // a mirrored PSP semi item, verify that some line on a DOWNSTREAM
+    // stage points at that same PSP uuid. Otherwise the stage
+    // produces a semi (Alex Gummies Liquid Mix, etc.) that nothing
+    // downstream consumes: cooking output has to be routed into
+    // pouch filling (or whichever stage is next) or it's stranded.
+    //
+    // Skip stages whose ``psp_semi_finished_uuid`` is null — those
+    // haven't been pushed to PSP yet, so we can't identify their
+    // output. The check re-fires after the first Save version once
+    // the push cascade populates the uuid.
+    const stagesWithOrphanSemi: { id: string; name: string }[] = [];
+    orderedStages.forEach((stage, idx) => {
+      const isLast = idx === orderedStages.length - 1;
+      if (isLast) return;
+      const semiUuid = stage.psp_semi_finished_uuid;
+      if (!semiUuid) return;
+      const consumed = lines.some((line) => {
+        if (line.item_psp_source_uuid !== semiUuid) return false;
+        if (!line.stage_id) return false;
+        const consumingStage = orderedStages.find(
+          (s) => s.id === line.stage_id,
+        );
+        if (!consumingStage) return false;
+        return consumingStage.sort_order > stage.sort_order;
+      });
+      if (!consumed) {
+        stagesWithOrphanSemi.push({
+          id: stage.id,
+          name: stage.name || `Stage ${stage.sort_order + 1}`,
+        });
+      }
+    });
     const isComplete =
       hasStages &&
       hasLines &&
       emptyStages.length === 0 &&
       orphanLineCount === 0 &&
       hasPackaging &&
-      stagesWithBadType.length === 0;
+      stagesWithBadType.length === 0 &&
+      stagesWithOrphanSemi.length === 0;
     return {
       hasStages,
       hasLines,
@@ -3693,6 +3727,7 @@ export function FormulationBuilder({
       emptyStages,
       orphanLineCount,
       stagesWithBadType,
+      stagesWithOrphanSemi,
       isComplete,
     };
   }, [lines, formulation.stages]);
@@ -4705,6 +4740,24 @@ export function FormulationBuilder({
                     </button>
                   </li>
                 ) : null}
+                {readinessSignals.stagesWithOrphanSemi.map((s) => (
+                  <li key={`orphan-semi-${s.id}`} className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
+                    <span>
+                      Stage <span className="font-semibold">{s.name}</span>{" "}
+                      produces a semi-finished output that no downstream
+                      stage consumes. Pick it as an ingredient on the
+                      next stage.
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("routing")}
+                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
+                    >
+                      Route the semi
+                    </button>
+                  </li>
+                ))}
                 {readinessSignals.stagesWithBadType.map((s) => (
                   <li key={s.id} className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
