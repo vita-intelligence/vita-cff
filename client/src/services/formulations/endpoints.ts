@@ -18,6 +18,8 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
   linkCff: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/link-cff/`,
+  linkCustomer: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/link-customer/`,
   cffCandidates: (
     orgId: string,
     formulationId: string,
@@ -32,6 +34,8 @@ export const formulationsEndpoints = {
   },
   itemPrices: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/item-prices/`,
+  routingCosts: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/routing-costs/`,
   salesPerson: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
   leadScientist: (orgId: string, formulationId: string) =>

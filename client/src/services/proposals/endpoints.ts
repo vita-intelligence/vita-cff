@@ -4,6 +4,11 @@
 
 export const proposalsEndpoints = {
   list: (orgId: string) => `/api/organizations/${orgId}/proposals/`,
+  //: Bulk-create — POST N spec sheets in one call. Backend enforces
+  //: same-customer + all-approved so a hand-rolled request can't
+  //: bypass the /signed picker's guard.
+  bundle: (orgId: string) =>
+    `/api/organizations/${orgId}/proposals/bundle/`,
   forFormulation: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/proposals/?formulation_id=${formulationId}`,
   detail: (orgId: string, proposalId: string) =>

@@ -580,6 +580,19 @@ class Formulation(models.Model):
         null=True,
         blank=True,
     )
+    # Customer this project is being built for. Nullable — R&D
+    # projects often start without a client attached; sales links one
+    # via the /projects/<id>/link-customer/ endpoint once the client
+    # is known. One-customer-per-project (same shape as the CFF link).
+    # Set-null on customer delete so an archived client doesn't cascade-
+    # nuke historical work.
+    customer = models.ForeignKey(
+        "customers.Customer",
+        on_delete=models.SET_NULL,
+        related_name="formulations",
+        null=True,
+        blank=True,
+    )
     approved_version_number = models.PositiveIntegerField(
         _("approved version number"),
         null=True,

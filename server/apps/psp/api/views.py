@@ -150,6 +150,140 @@ class PspIntegrationView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
+class PspAccessTokenListCreateView(APIView):
+    """``GET`` / ``POST``
+    ``/api/organizations/<org>/integrations/psp-access-tokens/``.
+
+    List + mint tokens PSP presents when calling NPD's reverse
+    integration endpoints. Owner-only.
+
+    * ``GET`` returns metadata only — the raw token never leaves the
+      boundary after mint. Payload carries name, prefix, timestamps,
+      creator / revoker attribution, and whether the row is active.
+    * ``POST`` with ``{"name": "..."}`` mints a fresh token. The raw
+      string appears in the response ``token`` field EXACTLY ONCE;
+      the client must render it in a copy-once modal and drop it.
+      Retrying the same name returns ``409 psp_access_token_name_conflict``.
+    """
+
+    permission_classes = (_OwnerOnly,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.psp.token_services import list_psp_access_tokens
+
+        rows = list_psp_access_tokens(organization=self.organization)
+        return Response(
+            {"items": [_serialize_psp_access_token(r) for r in rows]},
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request: Request, org_id: str) -> Response:
+        from apps.psp.token_services import (
+            PspAccessTokenNameConflict,
+            mint_psp_access_token,
+        )
+
+        name = ""
+        if isinstance(request.data, dict):
+            name = str(request.data.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"detail": ["name_required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = mint_psp_access_token(
+                organization=self.organization,
+                actor=request.user,
+                name=name,
+            )
+        except PspAccessTokenNameConflict as exc:
+            return Response(
+                {"detail": [exc.code]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except ValueError as exc:
+            return Response(
+                {"detail": [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response(
+            {
+                "token": result.raw_token,
+                "record": _serialize_psp_access_token(result.token),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PspAccessTokenRevokeView(APIView):
+    """``POST``
+    ``/api/organizations/<org>/integrations/psp-access-tokens/<id>/revoke/``.
+
+    Owner-only. Soft-revoke — the row stays in the table so historical
+    references keep resolving, but every subsequent verify silently
+    fails. Optional ``{"reason": "..."}`` captured in the audit trail.
+    """
+
+    permission_classes = (_OwnerOnly,)
+    required_capability = FormulationsCapability.VIEW
+
+    def post(
+        self, request: Request, org_id: str, token_id: str
+    ) -> Response:
+        from apps.psp.models import PspAccessToken
+        from apps.psp.token_services import revoke_psp_access_token
+
+        reason = ""
+        if isinstance(request.data, dict):
+            reason = str(request.data.get("reason") or "").strip()
+
+        try:
+            row = revoke_psp_access_token(
+                organization=self.organization,
+                actor=request.user,
+                token_id=token_id,
+                reason=reason,
+            )
+        except PspAccessToken.DoesNotExist:
+            return Response(
+                {"detail": ["psp_access_token_not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(
+            {"record": _serialize_psp_access_token(row)},
+            status=status.HTTP_200_OK,
+        )
+
+
+def _serialize_psp_access_token(row) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "prefix": row.token_prefix,
+        "is_active": row.revoked_at is None,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "created_by_name": (
+            row.created_by.get_full_name()
+            if row.created_by and hasattr(row.created_by, "get_full_name")
+            else None
+        ),
+        "last_used_at": (
+            row.last_used_at.isoformat() if row.last_used_at else None
+        ),
+        "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+        "revoked_by_name": (
+            row.revoked_by.get_full_name()
+            if row.revoked_by and hasattr(row.revoked_by, "get_full_name")
+            else None
+        ),
+        "revoke_reason": row.revoke_reason or None,
+    }
+
+
 class PspTestConnectionView(APIView):
     """``POST`` ``/api/organizations/<org>/integrations/psp/test/``.
 

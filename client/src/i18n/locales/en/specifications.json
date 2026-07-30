@@ -100,6 +100,9 @@
     "status_label": "Status",
     "no_price_set": "No price set",
     "no_price_set_hint": "Add a unit cost + margin (or a direct unit price) on Edit details so sales auto-fills it on the proposal.",
+    "warning_title": "Commercial details incomplete",
+    "warning_missing_cost": "Unit cost missing — regenerate the spec or set it manually on Edit details.",
+    "warning_missing_margin": "Margin % missing — set it on Edit details or on the director-approve dialog.",
     "price_chip": {
       "label": "Customer pays",
       "cost_only": "{cost} cost (no margin set)",

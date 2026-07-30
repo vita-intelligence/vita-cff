@@ -361,6 +361,33 @@ class ProposalCreateSerializer(serializers.Serializer):
     valid_until = serializers.DateField(required=False, allow_null=True)
 
 
+class ProposalBundleEntrySerializer(serializers.Serializer):
+    """One row of the ``/proposals/bundle/`` request array."""
+
+    sheet_id = serializers.UUIDField()
+    quantity = serializers.IntegerField(min_value=1, required=False, default=1)
+
+
+class ProposalBundleCreateSerializer(serializers.Serializer):
+    """Payload for creating one proposal from N approved specs.
+
+    The /signed page's bulk-select flow posts this — every entry is a
+    ``{sheet_id, quantity}`` picked by the sales operator. Same-customer
+    invariant is enforced by the service layer so a hand-rolled request
+    can't bypass the FE picker's guard.
+    """
+
+    sheets = ProposalBundleEntrySerializer(many=True, allow_empty=False)
+    deposit_percent = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        allow_null=True,
+        min_value=0,
+        max_value=100,
+    )
+
+
 class ProposalUpdateSerializer(serializers.Serializer):
     specification_sheet_id = serializers.UUIDField(
         required=False, allow_null=True

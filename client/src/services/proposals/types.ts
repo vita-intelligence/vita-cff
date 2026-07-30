@@ -190,6 +190,19 @@ export interface CreateProposalRequestDto {
   readonly valid_until?: string | null;
 }
 
+export interface ProposalBundleEntryDto {
+  readonly sheet_id: string;
+  readonly quantity?: number;
+}
+
+//: Payload for POST /proposals/bundle/. FE picker enforces
+//: same-customer + all-approved before the button is even
+//: enabled — the BE re-verifies both to protect direct-API use.
+export interface CreateProposalBundleRequestDto {
+  readonly sheets: readonly ProposalBundleEntryDto[];
+  readonly deposit_percent?: string | null;
+}
+
 export type UpdateProposalRequestDto = Partial<
   Omit<CreateProposalRequestDto, "formulation_version_id">
 > & {

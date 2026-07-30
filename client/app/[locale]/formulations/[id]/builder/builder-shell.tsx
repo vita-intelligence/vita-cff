@@ -18,6 +18,7 @@ import type { FormulationDto } from "@/services/formulations";
 import {
   CostCalculator,
   type CostCalculatorLine,
+  type CostCalculatorStage,
 } from "../cost-calculator";
 
 
@@ -51,6 +52,30 @@ export function BuilderShell({
 }) {
   const [liveLines, setLiveLines] = useState<readonly CostCalculatorLine[]>(
     [],
+  );
+
+  //: Per-stage inputs for the CostCalculator's routing side. Derived
+  //: from the persisted formulation (updates when the operator saves
+  //: stages) so cycle-time / workstation-group / variable-cost edits
+  //: land in the pill on next paint after Save. Fully-live per-keystroke
+  //: sync would need the same ``onLinesChange`` mechanism for stages;
+  //: leaving that for a later phase — cycle time doesn't usually change
+  //: within a single builder session.
+  const routingStages = useMemo<CostCalculatorStage[]>(
+    () =>
+      formulation.stages.map((stage) => ({
+        id: stage.id,
+        name: stage.name,
+        workstation_group_uuid: stage.workstation_group_uuid,
+        workstation_group_name: stage.workstation_group_name ?? "",
+        setup_time_min: stage.setup_time_min,
+        cycle_time_min: stage.cycle_time_min,
+        fixed_cost: stage.fixed_cost,
+        variable_cost: stage.variable_cost,
+        other_fixed_cost: stage.other_fixed_cost,
+        other_variable_cost: stage.other_variable_cost,
+      })),
+    [formulation.stages],
   );
 
   //: PSP uuids that *this* project produces itself — the finished
@@ -112,6 +137,7 @@ export function BuilderShell({
         orgId={orgId}
         formulationId={formulation.id}
         lines={liveLines}
+        stages={routingStages}
         servingsPerPack={formulation.servings_per_pack ?? 1}
         ownProjectPspUuids={ownProjectPspUuids}
       />

@@ -27,6 +27,9 @@ export interface FetchSpecificationsPageArgs {
   /** Optional lifecycle filter, e.g. ``"in_review"`` for the
    *  director's approval inbox. */
   readonly status?: string;
+  /** Case-insensitive substring — matched server-side across code,
+   *  customer identity, and formulation name. */
+  readonly search?: string;
 }
 
 export async function fetchSpecificationsPage(
@@ -44,6 +47,7 @@ export async function fetchSpecificationsPage(
   if (args.pageSize) params.page_size = String(args.pageSize);
   if (args.formulationId) params.formulation_id = args.formulationId;
   if (args.status) params.status = args.status;
+  if (args.search) params.search = args.search;
   const { data } = await apiClient.get<PaginatedSpecificationsDto>(
     specificationsEndpoints.list(orgId),
     { params },

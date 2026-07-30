@@ -295,6 +295,7 @@ from apps.proposals.api.pagination import ProposalCursorPagination
 from apps.proposals.api.permissions import HasProposalsPermission
 from config.pdf_cache import cached_render
 from apps.proposals.api.serializers import (
+    ProposalBundleCreateSerializer,
     ProposalCreateSerializer,
     ProposalLineReadSerializer,
     ProposalLineWriteSerializer,
@@ -305,6 +306,9 @@ from apps.proposals.api.serializers import (
     ProposalUpdateSerializer,
 )
 from apps.proposals.services import (
+    BundleEmpty,
+    BundleMixedCustomers,
+    BundleRequiresLinkedCustomer,
     CustomerNotInOrg,
     FormulationVersionNotApproved,
     FormulationVersionNotInOrg,
@@ -329,6 +333,7 @@ from apps.proposals.services import (
     complete_required_fields,
     compute_material_cost_per_pack,
     create_proposal,
+    create_proposal_bundle,
     delete_proposal,
     delete_proposal_line,
     finalize_proposal_kiosk,
@@ -530,6 +535,70 @@ class ProposalListCreateView(APIView):
         except ProposalCodeConflict:
             return Response(
                 {"code": ["proposal_code_conflict"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return Response(
+            ProposalReadSerializer(proposal).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProposalBundleCreateView(APIView):
+    """``POST /api/organizations/<org>/proposals/bundle/``.
+
+    Rolls N approved spec sheets into a single :class:`Proposal`
+    with one line per sheet. Driven by the /signed page's bulk
+    selection — the FE picker enforces same-customer interactively,
+    the service layer catches direct-API bypass.
+
+    Response is a full ``ProposalReadSerializer`` payload so the
+    caller can jump straight into the proposal detail page.
+    """
+
+    permission_classes = (HasProposalsPermission,)
+    required_capability = ProposalsCapability.EDIT
+
+    def post(self, request: Request, org_id: str) -> Response:
+        serializer = ProposalBundleCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        try:
+            proposal = create_proposal_bundle(
+                organization=self.organization,
+                actor=request.user,
+                sheet_specs=[
+                    {"sheet_id": row["sheet_id"], "quantity": row.get("quantity", 1)}
+                    for row in data["sheets"]
+                ],
+                deposit_percent=data.get("deposit_percent"),
+            )
+        except BundleEmpty:
+            return Response(
+                {"sheets": ["bundle_empty"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except BundleMixedCustomers:
+            # 409 — the request is well-formed but violates the
+            # same-customer invariant. FE guards against this but a
+            # hand-rolled client can hit it, so we distinguish it
+            # from schema failures.
+            return Response(
+                {"sheets": ["bundle_mixed_customers"]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except BundleRequiresLinkedCustomer:
+            return Response(
+                {"sheets": ["bundle_requires_linked_customer"]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except SpecificationSheetNotInOrg:
+            return Response(
+                {"sheets": ["specification_sheet_not_in_org"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecificationSheetNotApproved:
+            return Response(
+                {"sheets": ["specification_sheet_not_approved"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(

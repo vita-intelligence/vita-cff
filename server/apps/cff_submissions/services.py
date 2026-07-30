@@ -653,6 +653,31 @@ def detach_from_project(
         submission=submission, project=project
     ).delete()
     submission.save(update_fields=("last_synced_at",))
+
+    # Tell PSP the CFF is no longer attached to this project so its
+    # project page mirrors what the scientist sees on NPD. Fires on
+    # commit; silent-degrade at the PSP service boundary.
+    fid = project.pk
+
+    def _fire_cff_detached_sync() -> None:
+        from apps.formulations.models import Formulation as _F
+        from apps.psp.services import sync_customer_order_to_psp
+
+        try:
+            fresh = _F.objects.select_related(
+                "customer", "lead_scientist", "sales_person", "organization"
+            ).get(pk=fid)
+            sync_customer_order_to_psp(formulation=fresh, cff_cleared=True)
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "cff-detached: sync_customer_order_to_psp bubbled "
+                "for formulation %s",
+                fid,
+            )
+
+    transaction.on_commit(_fire_cff_detached_sync)
     return submission
 
 
@@ -764,6 +789,39 @@ def assign_to_project(
                     # membership lookup and the assign call. Treat
                     # as "no match" — the attach still succeeded.
                     pass
+
+    # Mirror the fresh link over to PSP so the project page there
+    # gains the "who asked for this?" context. Fires on commit so
+    # a rollback (rare here) doesn't tell PSP about a link the
+    # database threw away. Silent-degrade at the PSP boundary.
+    fid = project.pk
+    sid = submission.pk
+
+    def _fire_cff_attached_sync() -> None:
+        from apps.cff_submissions.models import CFFSubmission
+        from apps.formulations.models import Formulation as _F
+        from apps.psp.services import sync_customer_order_to_psp
+
+        try:
+            fresh_project = _F.objects.select_related(
+                "customer", "lead_scientist", "sales_person", "organization"
+            ).get(pk=fid)
+            fresh_cff = CFFSubmission.objects.get(pk=sid)
+            sync_customer_order_to_psp(
+                formulation=fresh_project,
+                linked_cff=fresh_cff,
+            )
+        except Exception:
+            import logging
+
+            logging.getLogger(__name__).exception(
+                "cff-attached: sync_customer_order_to_psp bubbled "
+                "for formulation %s cff %s",
+                fid,
+                sid,
+            )
+
+    transaction.on_commit(_fire_cff_attached_sync)
 
     return submission
 

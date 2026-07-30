@@ -3,23 +3,17 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { Button, Modal } from "@heroui/react";
-import { Paperclip } from "lucide-react";
+import { AlertTriangle, Building2, Paperclip } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
 
-import { CustomerFormModal } from "../customers/customers-list";
-import { CustomerPicker } from "@/components/customers/customer-picker";
 import { MrpeasyPriceHint } from "@/components/mrpeasy/mrpeasy-price-hint";
 import { PspPriceHint } from "@/components/psp/psp-price-hint";
-import { useOrganization } from "@/services/organizations";
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
-import { type CustomerDto } from "@/services/customers";
 import {
-  PROPOSAL_TEMPLATE_TYPES,
   proposalsQueryKeys,
   useCreateProposal,
-  type ProposalTemplateType,
 } from "@/services/proposals";
 import { specificationsQueryKeys } from "@/services/specifications";
 import { type SpecificationSheetDto } from "@/services/specifications";
@@ -61,16 +55,13 @@ export function SpecCreateProposalModal({
   const tSigned = useTranslations("signed");
   const router = useRouter();
   const queryClient = useQueryClient();
-  // Dynamics-managed orgs hide the inline "Create new customer"
-  // affordance; reads from the cached org list, no extra fetch.
-  const organization = useOrganization(orgId);
-  const dynamicsManaged = Boolean(
-    organization?.dynamics_customers_managed,
-  );
 
-  const [template, setTemplate] = useState<ProposalTemplateType>("custom");
-  const [customer, setCustomer] = useState<CustomerDto | null>(null);
-  const [customerCreating, setCustomerCreating] = useState(false);
+  // Template is always ``custom`` from this surface — Ready-to-Go
+  // proposals are auto-generated elsewhere in the app, so the
+  // /signed "Create proposal" CTA never needs the picker. Customer
+  // comes from ``sheet.linked_customer`` (the FK set on the project
+  // workspace), so we don't ask for it either.
+  const linkedCustomer = sheet.linked_customer;
   const [quantity, setQuantity] = useState<string>("1");
   const [unitCost, setUnitCost] = useState<string>("");
   const [margin, setMargin] = useState<string>("30");
@@ -155,8 +146,6 @@ export function SpecCreateProposalModal({
   const specCurrency = (sheet.currency || "GBP").toUpperCase();
 
   const reset = () => {
-    setTemplate("custom");
-    setCustomer(null);
     setQuantity("1");
     setUnitCost("");
     setMargin("30");
@@ -173,25 +162,33 @@ export function SpecCreateProposalModal({
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
-    //: Validate the deposit % only when the chosen template prints
-    //: the clause — Ready-to-Go skips deposit so a typo there
-    //: shouldn't block submission. Out-of-range surfaces an inline
-    //: error before we burn a network round-trip.
+
+    // Sanity gate — the BE also refuses (spec_requires_customer)
+    // but we short-circuit here so the operator sees an actionable
+    // inline message instead of the raw 409.
+    if (!linkedCustomer) {
+      setError(
+        "This project doesn't have a linked customer yet. Attach one on the project workspace, then come back to create the proposal.",
+      );
+      return;
+    }
+
+    //: Out-of-range deposit surfaces an inline error before we burn
+    //: a network round-trip. Always custom template on this surface,
+    //: so the deposit clause always applies.
     let depositPayload: string | null = null;
-    if (template === "custom") {
-      const depositTrim = deposit.trim();
-      if (depositTrim) {
-        const depositNum = Number.parseFloat(depositTrim);
-        if (
-          !Number.isFinite(depositNum) ||
-          depositNum < 0 ||
-          depositNum > 100
-        ) {
-          setError(tProposals("create.deposit_percent_invalid"));
-          return;
-        }
-        depositPayload = depositTrim;
+    const depositTrim = deposit.trim();
+    if (depositTrim) {
+      const depositNum = Number.parseFloat(depositTrim);
+      if (
+        !Number.isFinite(depositNum) ||
+        depositNum < 0 ||
+        depositNum > 100
+      ) {
+        setError(tProposals("create.deposit_percent_invalid"));
+        return;
       }
+      depositPayload = depositTrim;
     }
     try {
       // When the override panel isn't open we forward NO pricing
@@ -201,11 +198,16 @@ export function SpecCreateProposalModal({
       const basePayload = {
         formulation_version_id: sheet.formulation_version,
         specification_sheet_id: sheet.id,
-        template_type: template,
-        customer_id: customer?.id ?? null,
-        customer_name: customer?.name ?? "",
-        customer_email: customer?.email ?? "",
-        customer_company: customer?.company ?? "",
+        template_type: "custom" as const,
+        // Customer comes from the project's ``linked_customer`` FK —
+        // sales attached it on the project workspace, so we don't ask
+        // again here. Sending the full contact bundle keeps the
+        // proposal template rendering identity fields (contact name,
+        // company, email) without a downstream lookup.
+        customer_id: linkedCustomer.id,
+        customer_name: linkedCustomer.name,
+        customer_email: linkedCustomer.email,
+        customer_company: linkedCustomer.company,
         quantity: Math.max(1, Number.parseInt(quantity, 10) || 1),
         ...(depositPayload !== null
           ? { deposit_percent: depositPayload }
@@ -282,50 +284,54 @@ export function SpecCreateProposalModal({
                   </div>
                 </div>
 
-                <fieldset className="flex flex-col gap-1.5">
-                  <legend className="text-xs font-medium text-ink-700">
-                    {tProposals("create.template_type")}
-                  </legend>
-                  <div className="flex gap-2">
-                    {PROPOSAL_TEMPLATE_TYPES.map((key) => (
-                      <label
-                        key={key}
-                        className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium ring-1 ring-inset transition-colors ${
-                          template === key
-                            ? "bg-orange-500 text-ink-0 ring-orange-500"
-                            : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="template_type"
-                          value={key}
-                          checked={template === key}
-                          onChange={() => setTemplate(key)}
-                          className="sr-only"
-                        />
-                        {tProposals(
-                          `template_type.${key}` as "template_type.custom",
-                        )}
-                      </label>
-                    ))}
+                {/* Linked customer summary — the ``Formulation.customer``
+                    FK is the single source of truth here, so we don't
+                    ask again. A missing customer is a hard error surfaced
+                    inline (the BE guard also refuses with
+                    ``spec_requires_customer``). */}
+                {linkedCustomer ? (
+                  <div className="flex items-start gap-2 rounded-xl bg-sky-50 px-3 py-2 text-xs text-sky-950 ring-1 ring-inset ring-sky-200">
+                    <Building2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-sky-700" />
+                    <div className="flex min-w-0 flex-col">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-sky-800">
+                        Customer
+                      </span>
+                      <span className="font-semibold tracking-tight text-ink-1000">
+                        {linkedCustomer.company ||
+                          linkedCustomer.name ||
+                          "—"}
+                      </span>
+                      {linkedCustomer.email ? (
+                        <span className="text-ink-500">
+                          {linkedCustomer.email}
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                </fieldset>
+                ) : (
+                  <div
+                    role="alert"
+                    className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-950 ring-1 ring-inset ring-amber-200"
+                  >
+                    <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
+                    <div className="flex min-w-0 flex-col">
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                        No customer linked
+                      </span>
+                      <span className="text-ink-1000">
+                        Attach a customer on the project workspace first
+                        — proposals must be tied to a client.
+                      </span>
+                    </div>
+                  </div>
+                )}
 
-                <CustomerPicker
-                  orgId={orgId}
-                  value={customer}
-                  onChange={setCustomer}
-                  onCreateNew={() => setCustomerCreating(true)}
-                  dynamicsManaged={dynamicsManaged}
-                />
-
-                {/* Quantity is the only typed input by default; cost /
-                 *  margin sit behind an Adjust pricing toggle. Same
-                 *  shape as the org-wide new-proposal modal so the
-                 *  two surfaces feel identical. */}
-                <div className="flex flex-wrap items-end gap-3">
-                  <label className="flex w-32 flex-col gap-1.5">
+                {/* Quantity + Deposit — same-height columns.
+                 *  Labels top-aligned, inputs share one row, deposit's
+                 *  hint sits directly under its own input without
+                 *  pushing quantity's label off the baseline. */}
+                <div className="grid grid-cols-2 items-start gap-3">
+                  <label className="flex flex-col gap-1.5">
                     <span className="text-xs font-medium text-ink-700">
                       {tProposals("create.quantity")}
                     </span>
@@ -339,29 +345,24 @@ export function SpecCreateProposalModal({
                     />
                   </label>
 
-                  {/* Deposit % only renders on Custom-template quotes —
-                   *  Ready-to-Go has no deposit clause in the rendered
-                   *  document, so showing it would mislead the operator. */}
-                  {template === "custom" ? (
-                    <label className="flex w-32 flex-col gap-1.5">
-                      <span className="text-xs font-medium text-ink-700">
-                        {tProposals("create.deposit_percent")}
-                      </span>
-                      <input
-                        type="number"
-                        min={0}
-                        max={100}
-                        step="0.1"
-                        value={deposit}
-                        onChange={(e) => setDeposit(e.target.value)}
-                        placeholder="50"
-                        className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-                      />
-                      <span className="text-[10px] text-ink-500">
-                        {tProposals("create.deposit_percent_hint")}
-                      </span>
-                    </label>
-                  ) : null}
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium text-ink-700">
+                      {tProposals("create.deposit_percent")}
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.1"
+                      value={deposit}
+                      onChange={(e) => setDeposit(e.target.value)}
+                      placeholder="50"
+                      className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
+                    />
+                    <span className="text-[10px] leading-snug text-ink-500">
+                      {tProposals("create.deposit_percent_hint")}
+                    </span>
+                  </label>
                 </div>
 
                 {specHasPricing && !pricingOverride ? (
@@ -524,8 +525,8 @@ export function SpecCreateProposalModal({
                   type="submit"
                   variant="primary"
                   size="md"
-                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600"
-                  isDisabled={createMutation.isPending}
+                  className="h-10 rounded-lg bg-orange-500 px-4 text-sm font-medium text-ink-0 hover:bg-orange-600 disabled:opacity-50"
+                  isDisabled={createMutation.isPending || !linkedCustomer}
                 >
                   {tProposals("create.submit")}
                 </Button>
@@ -534,18 +535,6 @@ export function SpecCreateProposalModal({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
-
-      <CustomerFormModal
-        orgId={orgId}
-        mode="create"
-        isOpen={customerCreating}
-        initial={null}
-        onClose={() => setCustomerCreating(false)}
-        onCreated={(c) => {
-          setCustomer(c);
-          setCustomerCreating(false);
-        }}
-      />
     </Modal>
   );
 }

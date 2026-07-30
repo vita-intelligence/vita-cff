@@ -82,6 +82,18 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     #: link out instead of just disabling silently. Empty for sheets
     #: that are already in_review (a sheet doesn't block itself).
     review_slot_blocker = serializers.SerializerMethodField()
+    #: Compact projection of the *formulation's* linked customer (via
+    #: ``Formulation.customer``), populated the moment sales attaches
+    #: a client on the project workspace. ``None`` when no customer is
+    #: linked — different from spec's own ``client_name`` / ``client_company``
+    #: (which live on the sheet and get typed by the scientist during
+    #: draft) and from ``customer_name`` / ``customer_company`` (which
+    #: are the kiosk-signer identity captured at accept time). All three
+    #: coexist because they answer different questions; the /signed
+    #: page prefers this one as the freshest / most authoritative
+    #: display since the project link is the single source of truth
+    #: sales / R&D both edit against.
+    linked_customer = serializers.SerializerMethodField()
 
     def get_packaging_details(self, obj) -> dict:
         return {
@@ -116,6 +128,19 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
                 if proposal.customer_signed_at is not None
                 else None
             ),
+        }
+
+    def get_linked_customer(self, obj) -> dict | None:
+        customer = getattr(
+            obj.formulation_version.formulation, "customer", None
+        )
+        if customer is None:
+            return None
+        return {
+            "id": str(customer.id),
+            "name": (customer.name or "").strip(),
+            "company": (customer.company or "").strip(),
+            "email": (customer.email or "").strip(),
         }
 
     def get_review_slot_blocker(self, obj) -> dict | None:
@@ -204,6 +229,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_project_type",
             "formulation_version_number",
             "linked_proposal",
+            "linked_customer",
             "review_slot_blocker",
             "created_at",
             "updated_at",

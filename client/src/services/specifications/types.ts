@@ -114,6 +114,19 @@ export interface SpecificationSheetDto {
     readonly id: string;
     readonly code: string;
   } | null;
+  /** Customer linked to the *formulation* via ``Formulation.customer``
+   *  (set by sales on the project workspace). Preferred display source
+   *  for the /signed page + workspace sheet lists — the spec's own
+   *  ``client_name`` / ``client_company`` are scientist-typed at draft
+   *  time and are only populated when a scientist explicitly filled
+   *  them in; the linked customer is the single source of truth for
+   *  who this project is for. ``null`` when no customer is attached. */
+  readonly linked_customer: {
+    readonly id: string;
+    readonly name: string;
+    readonly company: string;
+    readonly email: string;
+  } | null;
   /** Set on render payloads when a :class:`Proposal` is attached to
    *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
   readonly has_proposal?: boolean;

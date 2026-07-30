@@ -19,6 +19,7 @@ import { type ApiError } from "@/lib/api";
 import {
   clearPspConfig,
   createPspFinishedProduct,
+  fetchPspAccessTokens,
   fetchPspConfig,
   fetchPspItemBom,
   fetchPspItemDetail,
@@ -29,7 +30,9 @@ import {
   fetchPspUnitsOfMeasurement,
   fetchPspWorkstationGroups,
   fetchPspWorkstationUsers,
+  mintPspAccessToken,
   mirrorPspItem,
+  revokePspAccessToken,
   savePspConfig,
   testPspConnection,
   type CreatePspFinishedProductRequestDto,
@@ -41,6 +44,9 @@ import {
   type PspUnitsOfMeasurementListResponseDto,
 } from "./api";
 import type {
+  PspAccessTokenDto,
+  PspAccessTokenListDto,
+  PspAccessTokenMintResponseDto,
   PspConfigDto,
   PspItemListResponseDto,
   PspItemLookupResultDto,
@@ -341,6 +347,71 @@ export function useCreatePspFinishedProduct(
     mutationFn: (payload) => createPspFinishedProduct(orgId, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
+    },
+  });
+}
+
+
+//: Query key for the PSP-facing access-token list — same
+//: ``["psp", orgId, ...]`` root as the other PSP hooks so a global
+//: PSP invalidate reaches everything.
+export function pspAccessTokensQueryKey(orgId: string) {
+  return ["psp", orgId, "access-tokens"] as const;
+}
+
+
+export function usePspAccessTokens(
+  orgId: string,
+  options: { enabled?: boolean } = {},
+): UseQueryResult<PspAccessTokenListDto, ApiError> {
+  return useQuery<PspAccessTokenListDto, ApiError>({
+    queryKey: pspAccessTokensQueryKey(orgId),
+    queryFn: () => fetchPspAccessTokens(orgId),
+    enabled: options.enabled ?? true,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+
+export function useMintPspAccessToken(
+  orgId: string,
+): UseMutationResult<
+  PspAccessTokenMintResponseDto,
+  ApiError,
+  { name: string }
+> {
+  const qc = useQueryClient();
+  return useMutation<
+    PspAccessTokenMintResponseDto,
+    ApiError,
+    { name: string }
+  >({
+    mutationFn: (input) => mintPspAccessToken(orgId, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: pspAccessTokensQueryKey(orgId) });
+    },
+  });
+}
+
+
+export function useRevokePspAccessToken(
+  orgId: string,
+): UseMutationResult<
+  { record: PspAccessTokenDto },
+  ApiError,
+  { tokenId: string; reason?: string }
+> {
+  const qc = useQueryClient();
+  return useMutation<
+    { record: PspAccessTokenDto },
+    ApiError,
+    { tokenId: string; reason?: string }
+  >({
+    mutationFn: ({ tokenId, reason }) =>
+      revokePspAccessToken(orgId, tokenId, { reason }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: pspAccessTokensQueryKey(orgId) });
     },
   });
 }

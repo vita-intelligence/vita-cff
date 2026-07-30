@@ -52,4 +52,8 @@ export const pspEndpoints = {
     `/api/organizations/${orgId}/integrations/psp/storage-tags/`,
   createFinishedProduct: (orgId: string) =>
     `/api/organizations/${orgId}/integrations/psp/finished-products/`,
+  accessTokens: (orgId: string) =>
+    `/api/organizations/${orgId}/integrations/psp-access-tokens/`,
+  accessTokenRevoke: (orgId: string, tokenId: string) =>
+    `/api/organizations/${orgId}/integrations/psp-access-tokens/${tokenId}/revoke/`,
 } as const;

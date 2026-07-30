@@ -22,6 +22,7 @@ import {
   addProposalLine,
   completeProposalRequiredFields,
   createProposal,
+  createProposalBundle,
   deleteProposal,
   deleteProposalLine,
   fetchCostPreview,
@@ -40,6 +41,7 @@ import {
 } from "./api";
 import type {
   CostPreviewDto,
+  CreateProposalBundleRequestDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
   PaginatedProposalsDto,
@@ -354,6 +356,37 @@ export function useCreateProposal(
   const queryClient = useQueryClient();
   return useMutation<ProposalDto, ApiError, CreateProposalRequestDto>({
     mutationFn: (payload) => createProposal(orgId, payload),
+    onSuccess: (created) => {
+      queryClient.invalidateQueries({
+        queryKey: [rootQueryKey, "proposals", orgId],
+      });
+      queryClient.setQueryData(
+        proposalsQueryKeys.detail(orgId, created.id),
+        created,
+      );
+    },
+  });
+}
+
+
+//: Bulk-create — N spec sheets → one :class:`Proposal`. Cache
+//: invalidation mirrors :func:`useCreateProposal` so the /signed
+//: archive + the org-wide list update immediately after the
+//: modal closes and the caller navigates to the new detail page.
+export function useCreateProposalBundle(
+  orgId: string,
+): UseMutationResult<
+  ProposalDto,
+  ApiError,
+  CreateProposalBundleRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    ProposalDto,
+    ApiError,
+    CreateProposalBundleRequestDto
+  >({
+    mutationFn: (payload) => createProposalBundle(orgId, payload),
     onSuccess: (created) => {
       queryClient.invalidateQueries({
         queryKey: [rootQueryKey, "proposals", orgId],

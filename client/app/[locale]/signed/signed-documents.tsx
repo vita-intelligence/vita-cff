@@ -9,16 +9,18 @@ import {
   Inbox,
   Paperclip,
   Plus,
+  Search,
   Send,
   Stamp,
+  X,
 } from "lucide-react";
 import { useFormatter, useNow, useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link } from "@/i18n/navigation";
 import {
-  useProposalsPage,
+  useInfiniteProposals,
   type ProposalListItemDto,
 } from "@/services/proposals";
 import {
@@ -26,12 +28,133 @@ import {
   type SpecificationSheetDto,
 } from "@/services/specifications";
 
+import { BulkCreateProposalModal } from "./bulk-create-proposal-modal";
 import { SpecCreateProposalModal } from "./spec-create-proposal-modal";
 
 
 type TopTab = "proposals" | "specifications";
-type SubTab = "pipeline" | "signed";
 type CardMode = "approved" | "sent" | "signed";
+
+
+const TOP_TAB_STORAGE_KEY = "signed:top_tab";
+
+
+/**
+ * Tab state that survives page reloads via ``localStorage``.
+ *
+ * SSR renders with ``fallback`` (no ``window`` on the server); after
+ * mount we lazily hydrate from storage. If the stored value doesn't
+ * match ``allowed`` — the caller may have lost the capability that
+ * unlocked it, or the value was written by an older build — we drop
+ * it and keep the current state as-is.
+ */
+function useStickyTabState<T extends string>(
+  storageKey: string,
+  fallback: T,
+  allowed: readonly T[],
+): [T, (next: T) => void] {
+  const [value, setValue] = useState<T>(fallback);
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(storageKey);
+      if (raw && (allowed as readonly string[]).includes(raw)) {
+        setValue(raw as T);
+      }
+    } catch {
+      //: Private-mode / no-storage browsers throw here. Falling back
+      //: to the caller's default is the correct behaviour — there's
+      //: no persistence to honour anyway.
+    }
+    //: We intentionally re-hydrate only on mount; ``allowed`` is a
+    //: literal tuple in the caller and doesn't change per-render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey]);
+  const update = useCallback(
+    (next: T) => {
+      setValue(next);
+      try {
+        window.localStorage.setItem(storageKey, next);
+      } catch {
+        //: Same rationale as the read side — degrade quietly.
+      }
+    },
+    [storageKey],
+  );
+  return [value, update];
+}
+
+
+/**
+ * Debounce a value so it stops updating for a bit after each write.
+ * Search inputs use it to hold back the network call until typing
+ * pauses — otherwise every keystroke would fire six paginated
+ * requests.
+ */
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState<T>(value);
+  useEffect(() => {
+    const handle = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(handle);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+
+/**
+ * Sentinel-driven "load more" for an infinite query. Attach the
+ * returned ``ref`` to a DOM node at the bottom of the list — when it
+ * scrolls into view the observer calls ``fetchNextPage`` (unless
+ * we're already fetching one, or there are no more pages).
+ */
+function useInfiniteScrollSentinel({
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
+}: {
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || !hasNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        //: Root margin gives us ~one screen of headroom — the page
+        //: keeps scrolling smoothly instead of jerking when the last
+        //: row appears at the fold.
+        if (entries[0]?.isIntersecting && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: "400px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage]);
+  return ref;
+}
+
+
+/**
+ * Bulk selection wiring shared between :func:`SpecsSection` and
+ * :func:`SpecCard`. Selection is confined to the approved-pipeline
+ * surface — a single sheet's ``linked_customer.id`` seeds the bag;
+ * every subsequent toggle must match. The bag lives on the parent so
+ * clicking "Create proposal" on the sticky bar can hand the full
+ * selection off to :func:`BulkCreateProposalModal` in one shot.
+ */
+interface BulkSelection {
+  readonly selectedIds: ReadonlySet<string>;
+  readonly customerId: string | null;
+  //: Non-empty selection blocks toggling a sheet from a different
+  //: customer. UI uses this to render a "locked" checkbox with a
+  //: tooltip instead of silently dropping the click.
+  readonly isSelectable: (sheet: SpecificationSheetDto) => boolean;
+  readonly toggle: (sheet: SpecificationSheetDto) => void;
+  readonly clear: () => void;
+}
 
 
 /**
@@ -65,59 +188,86 @@ export function SignedDocuments({
   canViewSpecs: boolean;
 }) {
   const t = useTranslations("signed");
-  const [topTab, setTopTab] = useState<TopTab>(
+  const [topTab, setTopTab] = useStickyTabState<TopTab>(
+    TOP_TAB_STORAGE_KEY,
     canViewProposals ? "proposals" : "specifications",
+    ["proposals", "specifications"],
   );
-  const [subTab, setSubTab] = useState<SubTab>("pipeline");
+  //: Free-text search bar. ``search`` tracks the keystrokes;
+  //: ``debouncedSearch`` is what actually reaches the network — held
+  //: back 250 ms so the operator can type "Cherya" without firing 6×6
+  //: requests. Not persisted — search is a moment-in-time intent.
+  const [search, setSearch] = useState<string>("");
+  const debouncedSearch = useDebouncedValue(search.trim(), 250);
+  //: A user who lost a capability shouldn't land on a tab they can't
+  //: see. Correct the persisted value once, in-flight, so the fallback
+  //: kicks in without a manual click.
+  useEffect(() => {
+    if (topTab === "proposals" && !canViewProposals && canViewSpecs) {
+      setTopTab("specifications");
+    } else if (topTab === "specifications" && !canViewSpecs && canViewProposals) {
+      setTopTab("proposals");
+    }
+  }, [topTab, canViewProposals, canViewSpecs, setTopTab]);
 
-  // Empty orgId disables the underlying hook (see the
-  // ``enabled: Boolean(orgId)`` guard) so we don't fire a fetch the
-  // caller would only get back as 403.
+  // Every column uses an infinite cursor query. Page size 50 is small
+  // enough that the initial paint is fast on a tenant with millions of
+  // rows (only 6 × 50 = 300 rows initially), and each column fetches
+  // more on scroll via an IntersectionObserver sentinel.
   //
-  // ``pageSize: 500`` matches the backend's ``max_page_size`` — the
-  // signed archive is a single-screen "grouped by lifecycle stage"
-  // overview (no "load more"). We ask for the largest first page
-  // the server will emit so every realistic archive depth fits in
-  // one round-trip per status bucket. If a tenant ever exceeds
-  // 500 in any one bucket, switch this caller to
-  // :func:`useInfiniteProposals` and paginate UI-side.
-  const approvedProposals = useProposalsPage(
+  // Search is forwarded to the backend as ``?search=…``; the query
+  // key includes it, so typing invalidates the cache automatically.
+  // Empty orgId disables the query (403 guard).
+  const PAGE_SIZE = 50;
+  const approvedProposals = useInfiniteProposals(
     canViewProposals ? orgId : "",
-    { status: "approved" },
-    500,
+    { status: "approved", search: debouncedSearch || undefined, pageSize: PAGE_SIZE },
   );
-  const sentProposals = useProposalsPage(
+  const sentProposals = useInfiniteProposals(
     canViewProposals ? orgId : "",
-    { status: "sent" },
-    500,
+    { status: "sent", search: debouncedSearch || undefined, pageSize: PAGE_SIZE },
   );
-  const signedProposals = useProposalsPage(
+  const signedProposals = useInfiniteProposals(
     canViewProposals ? orgId : "",
-    { status: "accepted" },
-    500,
+    { status: "accepted", search: debouncedSearch || undefined, pageSize: PAGE_SIZE },
   );
   const approvedSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "approved",
-    pageSize: 100,
+    search: debouncedSearch || undefined,
+    pageSize: PAGE_SIZE,
   });
   const sentSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "sent",
-    pageSize: 100,
+    search: debouncedSearch || undefined,
+    pageSize: PAGE_SIZE,
   });
   const signedSpecs = useInfiniteSpecifications(canViewSpecs ? orgId : "", {
     status: "accepted",
-    pageSize: 100,
+    search: debouncedSearch || undefined,
+    pageSize: PAGE_SIZE,
   });
 
-  const proposalsApproved = canViewProposals
-    ? approvedProposals.data?.results ?? []
-    : [];
-  const proposalsSent = canViewProposals
-    ? sentProposals.data?.results ?? []
-    : [];
-  const proposalsSigned = canViewProposals
-    ? signedProposals.data?.results ?? []
-    : [];
+  const proposalsApproved = useMemo(
+    () =>
+      canViewProposals
+        ? approvedProposals.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [approvedProposals.data, canViewProposals],
+  );
+  const proposalsSent = useMemo(
+    () =>
+      canViewProposals
+        ? sentProposals.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [sentProposals.data, canViewProposals],
+  );
+  const proposalsSigned = useMemo(
+    () =>
+      canViewProposals
+        ? signedProposals.data?.pages.flatMap((p) => p.results) ?? []
+        : [],
+    [signedProposals.data, canViewProposals],
+  );
   // ``Unlinked first`` ranking — specs without a ``linked_proposal``
   // are the action items (no quote has been raised against the sheet
   // yet, so the sales team needs to do something). We surface them
@@ -161,6 +311,67 @@ export function SignedDocuments({
     [signedSpecs.data, canViewSpecs],
   );
 
+  // Bulk selection state. Only ever populated from the
+  // Ready-to-send specs section; scoped inside :func:`SpecCard`.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
+    null,
+  );
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+
+  const clearBulk = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectedCustomerId(null);
+  }, []);
+
+  const isSelectable = useCallback(
+    (sheet: SpecificationSheetDto) => {
+      const customerId = sheet.linked_customer?.id ?? null;
+      if (!customerId) return false;
+      if (sheet.linked_proposal) return false;
+      if (selectedCustomerId && customerId !== selectedCustomerId) return false;
+      return true;
+    },
+    [selectedCustomerId],
+  );
+
+  const toggleBulk = useCallback((sheet: SpecificationSheetDto) => {
+    const customerId = sheet.linked_customer?.id ?? null;
+    if (!customerId) return;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sheet.id)) {
+        next.delete(sheet.id);
+        //: Last one out flips the customer lock — otherwise the picker
+        //: would silently stay bound to the just-dropped customer and
+        //: block the operator from switching to a different one.
+        if (next.size === 0) setSelectedCustomerId(null);
+        return next;
+      }
+      next.add(sheet.id);
+      setSelectedCustomerId((cur) => cur ?? customerId);
+      return next;
+    });
+  }, []);
+
+  const bulkSelection: BulkSelection = useMemo(
+    () => ({
+      selectedIds,
+      customerId: selectedCustomerId,
+      isSelectable,
+      toggle: toggleBulk,
+      clear: clearBulk,
+    }),
+    [selectedIds, selectedCustomerId, isSelectable, toggleBulk, clearBulk],
+  );
+
+  const selectedSheets = useMemo(
+    () => specsApproved.filter((s) => selectedIds.has(s.id)),
+    [specsApproved, selectedIds],
+  );
+
   // Top-tab counters: every document in any of the lifecycle states
   // tracked on this page. Lets the user see the full volume of
   // customer-facing work in one glance before picking which type.
@@ -169,24 +380,40 @@ export function SignedDocuments({
   const specsTotal =
     specsApproved.length + specsSent.length + specsSigned.length;
 
-  // Sub-tab counters. Per top tab so the badge reflects only the
-  // currently-selected document type.
-  const pipelineCount =
-    topTab === "proposals"
-      ? proposalsApproved.length + proposalsSent.length
-      : specsApproved.length + specsSent.length;
-  const signedCount =
-    topTab === "proposals" ? proposalsSigned.length : specsSigned.length;
-
   return (
     <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
-      <header className="flex flex-wrap items-start justify-between gap-3 border-b border-ink-100 pb-4">
-        <div>
+      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-ink-100 pb-4">
+        <div className="min-w-0">
           <h1 className="text-xl font-semibold tracking-tight text-ink-1000 md:text-2xl">
             {t("title")}
           </h1>
           <p className="mt-0.5 text-sm text-ink-500">{t("subtitle")}</p>
         </div>
+        {/* Search input lives in the header so it's reachable
+            regardless of the active top tab. Filter is client-side
+            over the already-loaded 500-row buckets, so results update
+            keystroke-by-keystroke without a network round-trip. */}
+        <label className="relative flex w-full max-w-xs items-center md:w-72">
+          <Search className="pointer-events-none absolute left-3 h-4 w-4 text-ink-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={t("search.placeholder")}
+            aria-label={t("search.placeholder")}
+            className="h-9 w-full rounded-lg bg-ink-0 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 placeholder:text-ink-400 focus:outline-none focus:ring-orange-500"
+          />
+          {search ? (
+            <button
+              type="button"
+              onClick={() => setSearch("")}
+              aria-label={t("search.clear")}
+              className="absolute right-2 inline-flex h-6 w-6 items-center justify-center rounded-full text-ink-400 hover:bg-ink-100 hover:text-ink-700"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </label>
       </header>
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -210,103 +437,172 @@ export function SignedDocuments({
         ) : null}
       </div>
 
-      <div className="mt-4 flex flex-wrap gap-2 border-t border-ink-100 pt-4">
-        <SubTabButton
-          active={subTab === "pipeline"}
-          onClick={() => setSubTab("pipeline")}
-          label={t("sub_tabs.pipeline")}
-          hint={t("sub_tabs.pipeline_hint")}
-          count={pipelineCount}
-        />
-        <SubTabButton
-          active={subTab === "signed"}
-          onClick={() => setSubTab("signed")}
-          label={t("sub_tabs.signed")}
-          hint={t("sub_tabs.signed_hint")}
-          count={signedCount}
-        />
-      </div>
-
+      {/* Three-column lifecycle board. Everything is visible at once
+          so operators aren't paying a click to swap between "pipeline"
+          and "signed" — the columns just show the same data split by
+          stage. Collapses to stacked sections on narrow screens. */}
       {topTab === "proposals" && canViewProposals ? (
-        subTab === "pipeline" ? (
-          <div className="mt-6 flex flex-col gap-8">
-            <ProposalsSection
-              heading={t("sections.ready_to_send")}
-              hint={t("sections.ready_to_send_hint")}
-              icon={<Stamp className="h-4 w-4" />}
-              emptyMessage={t("empty.ready_to_send_proposals")}
-              proposals={proposalsApproved}
-              loading={approvedProposals.isLoading}
-              errored={approvedProposals.isError}
-              mode="approved"
-            />
-            <ProposalsSection
-              heading={t("sections.awaiting")}
-              hint={t("sections.awaiting_hint")}
-              icon={<Send className="h-4 w-4" />}
-              emptyMessage={t("empty.awaiting_proposals")}
-              proposals={proposalsSent}
-              loading={sentProposals.isLoading}
-              errored={sentProposals.isError}
-              mode="sent"
-            />
-          </div>
-        ) : (
-          <div className="mt-6 flex flex-col gap-8">
-            <ProposalsSection
-              heading={t("sections.signed")}
-              icon={<CheckCircle2 className="h-4 w-4" />}
-              emptyMessage={t("empty.signed_proposals")}
-              proposals={proposalsSigned}
-              loading={signedProposals.isLoading}
-              errored={signedProposals.isError}
-              mode="signed"
-            />
-          </div>
-        )
+        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
+          <ProposalsSection
+            heading={t("sections.ready_to_send")}
+            hint={t("sections.ready_to_send_hint")}
+            icon={<Stamp className="h-4 w-4" />}
+            emptyMessage={t("empty.ready_to_send_proposals")}
+            proposals={proposalsApproved}
+            loading={approvedProposals.isLoading}
+            errored={approvedProposals.isError}
+            mode="approved"
+            hasNextPage={approvedProposals.hasNextPage ?? false}
+            isFetchingNextPage={approvedProposals.isFetchingNextPage}
+            fetchNextPage={approvedProposals.fetchNextPage}
+          />
+          <ProposalsSection
+            heading={t("sections.awaiting")}
+            hint={t("sections.awaiting_hint")}
+            icon={<Send className="h-4 w-4" />}
+            emptyMessage={t("empty.awaiting_proposals")}
+            proposals={proposalsSent}
+            loading={sentProposals.isLoading}
+            errored={sentProposals.isError}
+            mode="sent"
+            hasNextPage={sentProposals.hasNextPage ?? false}
+            isFetchingNextPage={sentProposals.isFetchingNextPage}
+            fetchNextPage={sentProposals.fetchNextPage}
+          />
+          <ProposalsSection
+            heading={t("sections.signed")}
+            icon={<CheckCircle2 className="h-4 w-4" />}
+            emptyMessage={t("empty.signed_proposals")}
+            proposals={proposalsSigned}
+            loading={signedProposals.isLoading}
+            errored={signedProposals.isError}
+            mode="signed"
+            hasNextPage={signedProposals.hasNextPage ?? false}
+            isFetchingNextPage={signedProposals.isFetchingNextPage}
+            fetchNextPage={signedProposals.fetchNextPage}
+          />
+        </div>
       ) : null}
       {topTab === "specifications" && canViewSpecs ? (
-        subTab === "pipeline" ? (
-          <div className="mt-6 flex flex-col gap-8">
-            <SpecsSection
-              orgId={orgId}
-              heading={t("sections.ready_to_send")}
-              hint={t("sections.ready_to_send_hint")}
-              icon={<Stamp className="h-4 w-4" />}
-              emptyMessage={t("empty.ready_to_send_specs")}
-              specs={specsApproved}
-              loading={approvedSpecs.isLoading}
-              errored={approvedSpecs.isError}
-              mode="approved"
-            />
-            <SpecsSection
-              orgId={orgId}
-              heading={t("sections.awaiting")}
-              hint={t("sections.awaiting_hint")}
-              icon={<Send className="h-4 w-4" />}
-              emptyMessage={t("empty.awaiting_specs")}
-              specs={specsSent}
-              loading={sentSpecs.isLoading}
-              errored={sentSpecs.isError}
-              mode="sent"
-            />
-          </div>
-        ) : (
-          <div className="mt-6 flex flex-col gap-8">
-            <SpecsSection
-              orgId={orgId}
-              heading={t("sections.signed")}
-              icon={<CheckCircle2 className="h-4 w-4" />}
-              emptyMessage={t("empty.signed_specs")}
-              specs={specsSigned}
-              loading={signedSpecs.isLoading}
-              errored={signedSpecs.isError}
-              mode="signed"
-            />
-          </div>
-        )
+        <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-3">
+          <SpecsSection
+            orgId={orgId}
+            heading={t("sections.ready_to_send")}
+            hint={t("sections.ready_to_send_hint")}
+            icon={<Stamp className="h-4 w-4" />}
+            emptyMessage={t("empty.ready_to_send_specs")}
+            specs={specsApproved}
+            loading={approvedSpecs.isLoading}
+            errored={approvedSpecs.isError}
+            mode="approved"
+            bulkSelection={bulkSelection}
+            hasNextPage={approvedSpecs.hasNextPage ?? false}
+            isFetchingNextPage={approvedSpecs.isFetchingNextPage}
+            fetchNextPage={approvedSpecs.fetchNextPage}
+          />
+          <SpecsSection
+            orgId={orgId}
+            heading={t("sections.awaiting")}
+            hint={t("sections.awaiting_hint")}
+            icon={<Send className="h-4 w-4" />}
+            emptyMessage={t("empty.awaiting_specs")}
+            specs={specsSent}
+            loading={sentSpecs.isLoading}
+            errored={sentSpecs.isError}
+            mode="sent"
+            hasNextPage={sentSpecs.hasNextPage ?? false}
+            isFetchingNextPage={sentSpecs.isFetchingNextPage}
+            fetchNextPage={sentSpecs.fetchNextPage}
+          />
+          <SpecsSection
+            orgId={orgId}
+            heading={t("sections.signed")}
+            icon={<CheckCircle2 className="h-4 w-4" />}
+            emptyMessage={t("empty.signed_specs")}
+            specs={specsSigned}
+            loading={signedSpecs.isLoading}
+            errored={signedSpecs.isError}
+            mode="signed"
+            hasNextPage={signedSpecs.hasNextPage ?? false}
+            isFetchingNextPage={signedSpecs.isFetchingNextPage}
+            fetchNextPage={signedSpecs.fetchNextPage}
+          />
+        </div>
       ) : null}
+
+      {selectedSheets.length > 0 && topTab === "specifications" ? (
+        <BulkSelectionBar
+          count={selectedSheets.length}
+          customerLabel={
+            selectedSheets[0]?.linked_customer?.company ||
+            selectedSheets[0]?.linked_customer?.name ||
+            null
+          }
+          onCreate={() => setBulkModalOpen(true)}
+          onClear={clearBulk}
+        />
+      ) : null}
+      <BulkCreateProposalModal
+        orgId={orgId}
+        sheets={selectedSheets}
+        isOpen={bulkModalOpen}
+        onClose={() => {
+          setBulkModalOpen(false);
+          //: Successful create → the mutation router.push()es away; the
+          //: modal owning cleanup covers cancel too, but we also drop
+          //: the bag so the sticky bar disappears when the operator
+          //: dismisses without confirming.
+          clearBulk();
+        }}
+      />
     </section>
+  );
+}
+
+
+function BulkSelectionBar({
+  count,
+  customerLabel,
+  onCreate,
+  onClear,
+}: {
+  count: number;
+  customerLabel: string | null;
+  onCreate: () => void;
+  onClear: () => void;
+}) {
+  const t = useTranslations("signed");
+  return (
+    <div className="pointer-events-none sticky bottom-4 z-40 mt-6 flex justify-center">
+      <div className="pointer-events-auto flex items-center gap-3 rounded-full bg-ink-1000 px-4 py-2 text-xs font-medium text-ink-0 shadow-lg ring-1 ring-inset ring-ink-1000">
+        <span>
+          {t(count === 1 ? "bulk.count_one" : "bulk.count_other", {
+            count,
+          })}
+          {customerLabel ? (
+            <span className="ml-1 text-ink-300">
+              {t("bulk.for_customer", { name: customerLabel })}
+            </span>
+          ) : null}
+        </span>
+        <button
+          type="button"
+          onClick={onClear}
+          className="inline-flex h-7 items-center gap-1 rounded-full bg-ink-800 px-3 text-[11px] font-medium text-ink-0 hover:bg-ink-700"
+        >
+          <X className="h-3 w-3" />
+          {t("bulk.clear")}
+        </button>
+        <button
+          type="button"
+          onClick={onCreate}
+          className="inline-flex h-7 items-center gap-1 rounded-full bg-orange-500 px-3 text-[11px] font-semibold text-ink-0 hover:bg-orange-600"
+        >
+          <Plus className="h-3 w-3" />
+          {t("bulk.create_proposal")}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -350,43 +646,6 @@ function TopTabButton({
 }
 
 
-function SubTabButton({
-  active,
-  onClick,
-  label,
-  hint,
-  count,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  hint: string;
-  count: number;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={hint}
-      className={`inline-flex h-8 items-center gap-2 rounded-full px-3 text-xs font-medium ring-1 ring-inset transition-colors ${
-        active
-          ? "bg-ink-1000 text-ink-0 ring-ink-1000"
-          : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-50"
-      }`}
-    >
-      <span>{label}</span>
-      <span
-        className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-0.5 text-[10px] font-semibold ${
-          active ? "bg-ink-0/20 text-ink-0" : "bg-ink-100 text-ink-700"
-        }`}
-      >
-        {count}
-      </span>
-    </button>
-  );
-}
-
-
 function ProposalsSection({
   heading,
   hint,
@@ -396,6 +655,9 @@ function ProposalsSection({
   loading,
   errored,
   mode,
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
 }: {
   heading: string;
   hint?: string;
@@ -405,8 +667,16 @@ function ProposalsSection({
   loading: boolean;
   errored: boolean;
   mode: CardMode;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
 }) {
   const t = useTranslations("signed");
+  const sentinelRef = useInfiniteScrollSentinel({
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  });
   return (
     <div>
       <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-ink-700">
@@ -414,6 +684,7 @@ function ProposalsSection({
         <span>{heading}</span>
         <span className="ml-1 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[11px] font-semibold text-ink-700">
           {proposals.length}
+          {hasNextPage ? "+" : ""}
         </span>
       </h2>
       {hint ? (
@@ -431,11 +702,22 @@ function ProposalsSection({
       ) : proposals.length === 0 ? (
         <EmptyState message={emptyMessage} />
       ) : (
-        <ul className="mt-3 flex flex-col gap-3">
-          {proposals.map((p) => (
-            <ProposalCard key={p.id} proposal={p} mode={mode} />
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 flex flex-col gap-3">
+            {proposals.map((p) => (
+              <ProposalCard key={p.id} proposal={p} mode={mode} />
+            ))}
+          </ul>
+          {/* Sentinel + subtle loading footer. The observer trips on
+              first intersection, so we render a tall-ish div even
+              when we're already at the end (``hasNextPage=false``)
+              so scrolling doesn't feel abrupt. */}
+          <div ref={sentinelRef} className="mt-3" aria-hidden>
+            {isFetchingNextPage ? (
+              <p className="text-center text-xs text-ink-400">{t("loading")}</p>
+            ) : null}
+          </div>
+        </>
       )}
     </div>
   );
@@ -452,6 +734,10 @@ function SpecsSection({
   loading,
   errored,
   mode,
+  bulkSelection,
+  hasNextPage,
+  isFetchingNextPage,
+  fetchNextPage,
 }: {
   orgId: string;
   heading: string;
@@ -462,8 +748,19 @@ function SpecsSection({
   loading: boolean;
   errored: boolean;
   mode: CardMode;
+  //: Only threaded through the approved-mode caller; other modes get
+  //: ``undefined`` so the checkbox column stays hidden.
+  bulkSelection?: BulkSelection;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => void;
 }) {
   const t = useTranslations("signed");
+  const sentinelRef = useInfiniteScrollSentinel({
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  });
   return (
     <div>
       <h2 className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wide text-ink-700">
@@ -471,6 +768,7 @@ function SpecsSection({
         <span>{heading}</span>
         <span className="ml-1 inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-ink-100 px-1.5 text-[11px] font-semibold text-ink-700">
           {specs.length}
+          {hasNextPage ? "+" : ""}
         </span>
       </h2>
       {hint ? (
@@ -488,11 +786,24 @@ function SpecsSection({
       ) : specs.length === 0 ? (
         <EmptyState message={emptyMessage} />
       ) : (
-        <ul className="mt-3 flex flex-col gap-3">
-          {specs.map((s) => (
-            <SpecCard key={s.id} orgId={orgId} sheet={s} mode={mode} />
-          ))}
-        </ul>
+        <>
+          <ul className="mt-3 flex flex-col gap-3">
+            {specs.map((s) => (
+              <SpecCard
+                key={s.id}
+                orgId={orgId}
+                sheet={s}
+                mode={mode}
+                bulkSelection={bulkSelection}
+              />
+            ))}
+          </ul>
+          <div ref={sentinelRef} className="mt-3" aria-hidden>
+            {isFetchingNextPage ? (
+              <p className="text-center text-xs text-ink-400">{t("loading")}</p>
+            ) : null}
+          </div>
+        </>
       )}
     </div>
   );
@@ -585,21 +896,56 @@ function SpecCard({
   orgId,
   sheet,
   mode,
+  bulkSelection,
 }: {
   orgId: string;
   sheet: SpecificationSheetDto;
   mode: CardMode;
+  bulkSelection?: BulkSelection;
 }) {
   const t = useTranslations("signed");
   const format = useFormatter();
   const now = useNow({ updateInterval: 60_000 });
   const [createOpen, setCreateOpen] = useState(false);
 
+  //: Checkbox is only shown on approved-mode cards where the sheet is
+  //: eligible for a new proposal (no proposal yet) — otherwise there's
+  //: nothing to bulk-do with the row.
+  const showCheckbox =
+    mode === "approved" &&
+    bulkSelection !== undefined &&
+    sheet.linked_proposal === null;
+  const isSelected = bulkSelection?.selectedIds.has(sheet.id) ?? false;
+  const hasLinkedCustomer = sheet.linked_customer !== null;
+  //: A card without a linked customer can never be selected — call it
+  //: out explicitly so the operator knows why the checkbox is disabled
+  //: (fix is "attach a customer on the project workspace", not "keep
+  //: clicking harder").
+  const checkboxDisabled =
+    !hasLinkedCustomer || (!isSelected && !(bulkSelection?.isSelectable(sheet) ?? false));
+  const checkboxTitle = !hasLinkedCustomer
+    ? t("card.bulk_select_no_customer")
+    : checkboxDisabled
+      ? t("card.bulk_select_locked")
+      : t("bulk.sr_toggle");
+
+  // Preference order:
+  //   1. Kiosk-signed customer identity (the freshest source once a
+  //      client actually signs the sheet — locks the display to whoever
+  //      committed).
+  //   2. Formulation's linked customer (set by sales on the project
+  //      workspace — the single source of truth pre-signature).
+  //   3. Scientist-typed ``client_*`` fields on the sheet itself
+  //      (only populated when someone explicitly filled them in at
+  //      draft time; often blank).
+  //   4. Fallback copy.
   const client =
-    sheet.client_company ||
-    sheet.client_name ||
     sheet.customer_company ||
     sheet.customer_name ||
+    sheet.linked_customer?.company ||
+    sheet.linked_customer?.name ||
+    sheet.client_company ||
+    sheet.client_name ||
     t("card.no_client");
 
   // Spec sheets don't carry a director-signature timestamp on the
@@ -629,23 +975,46 @@ function SpecCard({
   const showProposalChip = mode === "approved";
 
   return (
-    <li className="rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50">
+    <li
+      className={`rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset transition-colors ${
+        isSelected
+          ? "ring-orange-500/60 bg-orange-500/5"
+          : "ring-ink-200 hover:bg-ink-50"
+      }`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <span className="text-sm font-semibold tracking-tight text-ink-1000">
-            {sheet.code || t("card.no_formulation")} · {client}
-          </span>
-          <span className="text-xs text-ink-500">
-            {sheet.formulation_name || t("card.no_formulation")} ·{" "}
-            {t("card.version", { version: sheet.formulation_version_number })}
-          </span>
-          <span className="text-[11px] text-ink-400">{stampLabel}</span>
-          {showProposalChip ? (
-            <ProposalLinkageChip
-              sheet={sheet}
-              onCreate={() => setCreateOpen(true)}
-            />
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          {showCheckbox ? (
+            <label
+              className="mt-1 inline-flex cursor-pointer items-center"
+              title={checkboxTitle}
+            >
+              <input
+                type="checkbox"
+                className="h-4 w-4 cursor-pointer rounded border-ink-300 text-orange-500 focus:ring-orange-500 disabled:cursor-not-allowed disabled:opacity-40"
+                checked={isSelected}
+                disabled={checkboxDisabled}
+                onChange={() => bulkSelection?.toggle(sheet)}
+              />
+              <span className="sr-only">{t("bulk.sr_toggle")}</span>
+            </label>
           ) : null}
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="text-sm font-semibold tracking-tight text-ink-1000">
+              {sheet.code || t("card.no_formulation")} · {client}
+            </span>
+            <span className="text-xs text-ink-500">
+              {sheet.formulation_name || t("card.no_formulation")} ·{" "}
+              {t("card.version", { version: sheet.formulation_version_number })}
+            </span>
+            <span className="text-[11px] text-ink-400">{stampLabel}</span>
+            {showProposalChip ? (
+              <ProposalLinkageChip
+                sheet={sheet}
+                onCreate={() => setCreateOpen(true)}
+              />
+            ) : null}
+          </div>
         </div>
         <Link
           href={`/specifications/${sheet.id}`}

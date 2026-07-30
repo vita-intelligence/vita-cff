@@ -1,7 +1,7 @@
 "use client";
 
 import { Button } from "@heroui/react";
-import { AlertCircle, Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
+import { AlertCircle, Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, RefreshCw, Save, ShieldCheck, Sliders, Trash2 } from "lucide-react";
 
 import { CountryMultiPicker } from "@/components/forms/country-multi-picker";
 
@@ -2125,7 +2125,26 @@ export function FormulationBuilder({
   // types a label claim or swaps a capsule size.
   // ---------------------------------------------------------------------
   const liveTotals: FormulationTotals = useMemo(() => {
-    const computeInputs: ComputeLineInput[] = lines.map((line) => {
+    // Only actives — rows the operator added via the Formulation-tab
+    // raw-materials picker — contribute to the nutrition / NRV /
+    // total-active-mg math. The other source_kinds are already priced
+    // in elsewhere and would otherwise double-book their mass:
+    //   * ``band_pick`` — the wizard materialises every Setup M2M
+    //     pick as a FormulationLine with ``label_claim_mg`` set to
+    //     the compute-derived share (services.py:6094). That row
+    //     exists purely so PSP's BOM push has a durable line per
+    //     pick; the compute already reads the same picks off the
+    //     M2M lists (``flavouringItems``, ``colourItems``, gummy
+    //     base picks, etc.) to build ``flavourRows`` / ``gummyBaseRows``.
+    //     Letting band_pick rows through here counts their mass
+    //     twice — once as an "active" and once inside the excipient
+    //     bands — which is exactly the bug where a 10 mg Acai + a
+    //     handful of routine gummy picks reported 5,455 mg of actives.
+    //   * ``manual`` — packaging + process aids added on the Routing
+    //     tab. Never nutrient-bearing.
+    const computeInputs: ComputeLineInput[] = lines
+      .filter((line) => line.source_kind === "active")
+      .map((line) => {
       const parseOverride = (raw: string): number | null => {
         if (!raw) return null;
         const v = Number.parseFloat(raw);
@@ -2693,6 +2712,18 @@ export function FormulationBuilder({
     for (const line of lines) {
       if (line.stage_ratio_mode === "percent_of_mass") continue;
       let mg = liveTotals.lineValues.get(line.key) ?? 0;
+      if (line.source_kind === "band_pick" && mg <= 0) {
+        // Band picks (wizard M2M materialisations) aren't in the
+        // active-only ``computeInputs`` and therefore have no
+        // ``lineValues`` entry — but the BE stores their compute-
+        // derived mg on ``label_claim_mg`` at wizard-save time
+        // (services.py:6094). Use that as the stage-mass share so
+        // "This stage produces" doesn't collapse to 0 on gummy /
+        // powder recipes where the excipient bands do most of the
+        // per-unit mass.
+        const raw = Number.parseFloat(line.label_claim_mg || "0");
+        if (Number.isFinite(raw) && raw > 0) mg = raw;
+      }
       if (line.source_kind === "manual") {
         const ratio = Number.parseFloat(line.stage_ratio_value || "");
         if (
@@ -3238,10 +3269,17 @@ export function FormulationBuilder({
 
   //: F2a — compliance + ingredient declaration re-compute on every
   //: render from the same lines array. Both are pure and cheap.
+  // Compliance + allergens read only the ingredient set (actives + wizard
+  // band picks). Routing-added ``manual`` rows are packaging or process
+  // support — they don't participate in vegan / halal / allergen scoring,
+  // and letting a bottle or cardboard box flip a compliance flag would be
+  // a nasty false positive. The Routing tab manages them.
   const compliance: ComplianceResult = useMemo(
     () =>
       computeCompliance(
-        lines.map((line) => ({ attributes: line.item_attributes })),
+        lines
+          .filter((line) => line.source_kind !== "manual")
+          .map((line) => ({ attributes: line.item_attributes })),
       ),
     [lines],
   );
@@ -3249,7 +3287,9 @@ export function FormulationBuilder({
   const allergens: AllergensResult = useMemo(
     () =>
       computeAllergens(
-        lines.map((line) => ({ attributes: line.item_attributes })),
+        lines
+          .filter((line) => line.source_kind !== "manual")
+          .map((line) => ({ attributes: line.item_attributes })),
       ),
     [lines],
   );
@@ -4196,6 +4236,17 @@ export function FormulationBuilder({
               base_price: dto.base_price,
               is_archived: dto.is_archived,
               attributes: dto.attributes,
+              // Preserve the PSP identity onto the new line so the
+              // cost calculator can look up the item's price /
+              // vendor / uom. Without this the line lands with
+              // ``item_psp_source_uuid = null`` and every cost row
+              // shows "Not linked to PSP" — even though the item
+              // was literally just picked from the PSP catalog.
+              // Fall back to the picker's synthetic uuid when the
+              // mirror response omits it (older API shapes).
+              psp_source_uuid:
+                (dto as { psp_source_uuid?: string | null })
+                  .psp_source_uuid ?? pspUuid,
               created_at: "",
               updated_at: "",
             });
@@ -4842,6 +4893,48 @@ export function FormulationBuilder({
                   <ExternalLink className="h-4 w-4" />
                   Open on PSP
                 </a>
+              ) : null}
+              {/* Manual PSP sync — mirrors this formulation onto PSP as
+                  a draft customer order (the project card on the R&D
+                  column of PSP's /projects kanban) and pushes the
+                  current BOM cascade if any stage is already linked.
+                  Same idempotency + silent-degrade rules as Save
+                  version, but no version bump on NPD. Useful for R&D
+                  formulations that need a PSP project card before any
+                  finished-product item exists. Hidden when PSP isn't
+                  configured for the org. */}
+              {organization?.psp_base_url ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="md"
+                  className="gap-1.5 rounded-lg bg-ink-0 font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                  isDisabled={isBusy || syncPspMutation.isPending}
+                  onClick={async () => {
+                    setErrorMessage(null);
+                    try {
+                      const result = await syncPspMutation.mutateAsync();
+                      if (
+                        result &&
+                        !result.synced &&
+                        result.reason !== "psp_not_live"
+                      ) {
+                        setErrorMessage(
+                          result.detail ?? "PSP sync failed — check logs.",
+                        );
+                      }
+                    } catch (err) {
+                      setErrorMessage(extractApiErrorMessage(err, tErrors));
+                    }
+                  }}
+                >
+                  {syncPspMutation.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
+                  Sync to PSP
+                </Button>
               ) : null}
               <DuplicateFormulationModal
                 orgId={orgId}
@@ -6425,11 +6518,26 @@ export function FormulationBuilder({
             </p>
           ) : null}
           {(() => {
-            // Drill-down = scoped to a single stage. Filter the
-            // Formulation tab always shows the full recipe — every
-            // pick regardless of stage assignment (routing lives on
-            // the Routing tab, not here).
-            const visibleLines = lines;
+            // Formulation-tab ingredient table = rows the operator
+            // added HERE via the raw-materials picker on the left, i.e.
+            // ``source_kind === 'active'``. Every other origin has its
+            // own surface elsewhere:
+            //   * ``band_pick``  — materialised from a Setup M2M
+            //     dropdown (Flavourings, Sweeteners, Colours, Gelling,
+            //     Anti-caking, DCP, MCC, etc.). Rendered where that
+            //     dropdown lives; showing it here too would double up
+            //     the same item (e.g. Pectin picked as a glazing agent
+            //     showing again as an "active"). If the operator also
+            //     wants Pectin as a claimed active, they add it via
+            //     the raw-materials picker — that click creates a
+            //     separate ``source_kind === 'active'`` line which DOES
+            //     appear here.
+            //   * ``manual``     — added on the Routing tab (packaging,
+            //     process aids). Shown read-only in the "From Routing"
+            //     strip below.
+            const visibleLines = lines.filter(
+              (line) => line.source_kind === "active",
+            );
             return visibleLines.length === 0 ? (
             <p className="mt-6 text-sm text-ink-600">
               {tFormulations("builder.picker_none_added")}
@@ -6647,6 +6755,77 @@ export function FormulationBuilder({
             </div>
             );
           })()}
+
+          {/* Read-only companion strip: rows added via the Routing tab
+              (``source_kind === 'manual'``). Kept on this tab so the
+              scientist can see the full picked inventory at a glance
+              without switching tabs, but stripped of any edit affordance
+              — the Routing tab is where they live. Hidden entirely when
+              nothing routing-added exists. */}
+          {(() => {
+            const routingLines = lines.filter(
+              (line) => line.source_kind === "manual",
+            );
+            if (routingLines.length === 0) return null;
+            return (
+              <div className="mt-6 rounded-xl bg-ink-50 px-4 py-3 ring-1 ring-inset ring-ink-100">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                    From Routing
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("routing")}
+                    className="text-[11px] font-medium text-orange-700 hover:underline"
+                  >
+                    Manage on Routing →
+                  </button>
+                </div>
+                <p className="mt-1 text-[11px] text-ink-500">
+                  Packaging + process items don't feed the ingredient
+                  compute; edit them on the Routing tab.
+                </p>
+                <ul className="mt-2 flex flex-col gap-1">
+                  {routingLines.map((line) => (
+                    <li
+                      key={line.key}
+                      className="flex items-start justify-between gap-3 rounded-lg bg-ink-0 px-3 py-2 text-xs ring-1 ring-inset ring-ink-100"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate font-medium text-ink-1000">
+                          {line.item_name || "?"}
+                        </div>
+                        <div className="text-[10px] text-ink-500">
+                          {line.item_internal_code || "—"}
+                        </div>
+                      </div>
+                      {/* Compact ratio + stage hint so the scientist
+                          can eyeball the routing pick without opening
+                          the tab. Prefer ratio value when set (that's
+                          how packaging is quantified on the Routing
+                          tab); fall back to label_claim_mg only if the
+                          ratio hasn't been captured yet. */}
+                      <div className="text-right text-[10px] text-ink-500">
+                        {line.stage_ratio_value ? (
+                          <span className="tabular-nums">
+                            {line.stage_ratio_value}
+                            {line.stage_ratio_mode === "per_unit"
+                              ? " per unit"
+                              : line.stage_ratio_mode ===
+                                  "percent_of_mass"
+                                ? "% of mass"
+                                : ""}
+                          </span>
+                        ) : (
+                          <span>—</span>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })()}
         </div>
 
         {/* Totals + viability */}
@@ -6717,6 +6896,13 @@ export function FormulationBuilder({
         productName={formulation.name}
         productCode={formulation.code}
         activeLines={lines
+          // Same rule as the ingredient table above — the Fine-tune
+          // "actives" strip is for label-claimed actives the operator
+          // added via the raw-materials picker. Band picks live on the
+          // Fine-tune ``bands`` prop instead (they're dosed by the
+          // band split, not by direct label_claim_mg); routing rows
+          // don't belong here at all.
+          .filter((line) => line.source_kind === "active")
           .map((line) => {
             const nominalMg = Number.parseFloat(line.label_claim_mg || "0");
             return {

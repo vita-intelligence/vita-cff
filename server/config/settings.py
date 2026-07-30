@@ -681,3 +681,10 @@ DEFAULT_FROM_EMAIL = os.environ.get(
 # carries a clickable URL; override in production to the real host.
 APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://localhost:3000")
 
+# Shared bearer token that PSP presents to reach NPD-side integration
+# endpoints (currently the "R&D in development" project list on PSP's
+# ``/projects`` page). Kept out of the standard JWT chain because PSP
+# is a server-to-server caller, not a logged-in user. Empty in dev
+# means "PSP integration disabled" — the endpoint returns 401.
+PSP_INTEGRATION_TOKEN = os.environ.get("PSP_INTEGRATION_TOKEN", "")
+
