@@ -1,0 +1,35 @@
+{
+  "title": "Reminders",
+  "subtitle": "Things to double-check before this project moves further",
+  "no_sales": {
+    "title": "No sales person assigned",
+    "body": "Assign a commercial owner from the project header — proposals + spec sheets need someone to route back to sales."
+  },
+  "no_scientist": {
+    "title": "No lead scientist assigned",
+    "body": "Pick the R&D lead so the workspace credits their signature on the prepared-by line + routes QC follow-ups to them."
+  },
+  "no_cff": {
+    "title": "No CFF linked yet",
+    "body": "If this project came from a customer form (CFF) submission, link it here so the customer's brief travels alongside the project.",
+    "action": "Link CFF"
+  },
+  "linked": {
+    "title": "Linked CFF",
+    "unlink": "Unlink this CFF from the project"
+  },
+  "link_modal": {
+    "title": "Link a CFF submission",
+    "subtitle": "Pick the customer form this project came from. Only unassigned CFFs in your org are shown.",
+    "search_placeholder": "Search by email or name…",
+    "loading": "Loading…",
+    "loading_more": "Loading more…",
+    "end_of_list": "That's every CFF in the inbox.",
+    "linked_elsewhere_one": "Already on {code}",
+    "linked_elsewhere_many": "On {count} projects",
+    "empty": "No unassigned CFFs in the org yet.",
+    "empty_search": "No CFFs match your search.",
+    "link": "Link",
+    "close": "Close"
+  }
+}

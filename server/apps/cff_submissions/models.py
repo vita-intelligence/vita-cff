@@ -202,6 +202,26 @@ class CFFSubmission(models.Model):
         ),
     )
 
+    #: Denormalised customer display name — first_name + last_name
+    #: concatenated at import time. Powers the "Link CFF" picker's
+    #: search so the query stays index-only instead of walking every
+    #: ``raw_payload`` JSON on the tenant. Wix slugs are
+    #: ``first_name_*`` / ``last_name_*``; portal rows land the same
+    #: values from the wizard's identity step. Empty string when the
+    #: submission has neither, matching the same shape as
+    #: ``submitter_email`` (non-nullable, indexed).
+    submitter_name = models.CharField(
+        max_length=300,
+        blank=True,
+        default="",
+        db_index=True,
+        help_text=_(
+            "First + last name harvested from raw_payload at import "
+            "time. Feeds the CFF search picker; the payload is the "
+            "source of truth, this column is a cheap lookup."
+        ),
+    )
+
     #: Many-to-many link to the workspaces this CFF has been
     #: attached to. Materialised through :class:`CFFProjectAssignment`
     #: so each link carries its own audit (``assigned_by`` /
@@ -381,6 +401,14 @@ class CFFProjectAssignment(models.Model):
             models.UniqueConstraint(
                 fields=("submission", "project"),
                 name="cff_assignment_unique_per_pair",
+            ),
+            # One CFF per project — a project is the origin of a
+            # single customer brief. The M2M in the other direction
+            # is still legitimate (one CFF, multiple flavour-variant
+            # projects) but the project side is now single-owner.
+            models.UniqueConstraint(
+                fields=("project",),
+                name="cff_assignment_unique_per_project",
             ),
         ]
         indexes = [

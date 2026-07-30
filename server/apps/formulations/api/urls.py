@@ -20,11 +20,13 @@ from apps.formulations.api.certificate_views import (
 from apps.formulations.api.views import (
     FormulationApplyStageTemplateView,
     FormulationApprovedVersionView,
+    FormulationCFFCandidatesView,
     FormulationCloneView,
     FormulationComputeView,
     FormulationDetailView,
     FormulationLeadScientistView,
     FormulationLinesView,
+    FormulationLinkCFFView,
     FormulationListCreateView,
     FormulationOverviewView,
     FormulationPullPspBomView,
@@ -74,6 +76,16 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/overview/",
         FormulationOverviewView.as_view(),
         name="formulation-overview",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/link-cff/",
+        FormulationLinkCFFView.as_view(),
+        name="formulation-link-cff",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/cff-candidates/",
+        FormulationCFFCandidatesView.as_view(),
+        name="formulation-cff-candidates",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/versions/",

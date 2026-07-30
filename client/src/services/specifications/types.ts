@@ -94,6 +94,14 @@ export interface SpecificationSheetDto {
     readonly id: string;
     readonly code: string;
     readonly status: string;
+    //: ISO timestamp captured when the customer signed at the kiosk.
+    //: Non-null → sheet is a signed audit artefact; regenerate is
+    //: hard-blocked. Present on the sheet payload independent of
+    //: ``linked_proposal.status`` because a signed accept flips the
+    //: proposal to ``accepted`` but we treat the timestamp as the
+    //: authoritative signal so a partial rollback of status doesn't
+    //: silently re-enable regeneration.
+    readonly customer_signed_at: string | null;
   } | null;
   /** Sibling sheet currently sitting in ``in_review`` on the same
    *  formulation + document_kind. ``null`` when the kind's review
@@ -119,6 +127,14 @@ export interface SpecificationSheetDto {
   readonly customer_email?: string;
   readonly customer_company?: string;
   readonly customer_signed_at?: string | null;
+  //: Delivery evidence captured at the ``approved → sent`` transition.
+  //: Null / empty on any sheet that hasn't been sent yet. Rendered on
+  //: the audit surface + on the status chip's tooltip so operators
+  //: can eyeball "how did the customer get this?" without opening the
+  //: transition history.
+  readonly sent_at?: string | null;
+  readonly sent_delivery_method?: "" | "public_link" | "email" | "other";
+  readonly sent_recipient?: string;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -299,6 +315,13 @@ export interface TransitionStatusRequestDto {
   readonly final_price?: string | null;
   readonly quantity?: number;
   readonly currency?: string;
+  //: Delivery evidence — required on ``approved → sent`` transitions.
+  //: ``delivery_method`` gates the recipient copy on the FE (email
+  //: → email address, public_link → auto-fill of the sheet's
+  //: preview URL, other → free-text note). The BE rejects with
+  //: ``missing_delivery_capture`` when either field is empty on Send.
+  readonly delivery_method?: "public_link" | "email" | "other";
+  readonly delivery_recipient?: string;
 }
 
 

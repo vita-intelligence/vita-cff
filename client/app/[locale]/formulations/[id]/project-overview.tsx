@@ -22,6 +22,8 @@ import {
   type ProjectStatus,
 } from "@/services/formulations";
 
+import { ProjectWarningsCard } from "./project-warnings-card";
+
 
 /**
  * Project Overview block rendered at the top of the formulation
@@ -37,10 +39,12 @@ export function ProjectOverview({
   orgId,
   formulationId,
   initialData,
+  canEdit,
 }: {
   orgId: string;
   formulationId: string;
   initialData: ProjectOverviewDto;
+  canEdit: boolean;
 }) {
   const tProject = useTranslations("project_overview");
   const query = useProjectOverview(orgId, formulationId, { initialData });
@@ -48,6 +52,11 @@ export function ProjectOverview({
 
   return (
     <article className="flex flex-col gap-6">
+      <ProjectWarningsCard
+        orgId={orgId}
+        overview={overview}
+        canEdit={canEdit}
+      />
       <HeaderCard orgId={orgId} overview={overview} tProject={tProject} />
       <KpiRow overview={overview} tProject={tProject} />
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">

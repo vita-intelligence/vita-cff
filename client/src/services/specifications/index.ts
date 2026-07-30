@@ -7,12 +7,14 @@ export {
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
+  regenerateSpecification,
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
   setSpecificationPackaging,
   setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
+  type RegenerateSpecificationRequestDto,
 } from "./api";
 export {
   specificationsQueryKeys,
@@ -20,6 +22,7 @@ export {
   useDeleteSpecification,
   useInfiniteSpecifications,
   usePackagingOptions,
+  useRegenerateSpecification,
   useRenderedSpecification,
   useRevokeSpecificationPublicLink,
   useRotateSpecificationPublicLink,

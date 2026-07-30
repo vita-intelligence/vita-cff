@@ -8,6 +8,7 @@ import { formulationsEndpoints } from "./endpoints";
 import type {
   AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
+  CFFCandidatesResponseDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
@@ -297,6 +298,43 @@ export async function fetchProjectOverview(
 ): Promise<ProjectOverviewDto> {
   const { data } = await apiClient.get<ProjectOverviewDto>(
     formulationsEndpoints.overview(orgId, formulationId),
+  );
+  return data;
+}
+
+export async function fetchCFFCandidates(
+  orgId: string,
+  formulationId: string,
+  args: { search?: string; cursor?: string } = {},
+): Promise<CFFCandidatesResponseDto> {
+  const { data } = await apiClient.get<CFFCandidatesResponseDto>(
+    formulationsEndpoints.cffCandidates(orgId, formulationId, args),
+  );
+  return data;
+}
+
+export async function linkCFFToProject(
+  orgId: string,
+  formulationId: string,
+  cffSubmissionId: string,
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.post<ProjectOverviewDto>(
+    formulationsEndpoints.linkCff(orgId, formulationId),
+    { cff_submission_id: cffSubmissionId },
+  );
+  return data;
+}
+
+export async function unlinkCFFFromProject(
+  orgId: string,
+  formulationId: string,
+  cffSubmissionId: string,
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.delete<ProjectOverviewDto>(
+    formulationsEndpoints.linkCff(orgId, formulationId),
+    {
+      data: { cff_submission_id: cffSubmissionId },
+    },
   );
   return data;
 }

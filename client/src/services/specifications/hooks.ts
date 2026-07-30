@@ -23,12 +23,14 @@ import {
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
+  regenerateSpecification,
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
   setSpecificationPackaging,
   setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
+  type RegenerateSpecificationRequestDto,
 } from "./api";
 import type {
   CreateSpecificationRequestDto,
@@ -187,6 +189,41 @@ export function useUpdateSpecification(
       // manual refresh.
       queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.render(orgId, sheetId),
+      });
+    },
+  });
+}
+
+export function useRegenerateSpecification(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<
+  SpecificationSheetDto,
+  ApiError,
+  RegenerateSpecificationRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    SpecificationSheetDto,
+    ApiError,
+    RegenerateSpecificationRequestDto
+  >({
+    mutationFn: (payload) =>
+      regenerateSpecification(orgId, sheetId, payload),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        specificationsQueryKeys.detail(orgId, sheetId),
+        updated,
+      );
+      // Every derived section (actives, nutrition, allergens,
+      // ingredients declaration, weight) re-derives against the
+      // newly-pinned FormulationVersion, so the render cache has
+      // to go too.
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.render(orgId, sheetId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
       });
     },
   });

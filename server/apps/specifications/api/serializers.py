@@ -105,6 +105,17 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "id": str(proposal.id),
             "code": proposal.code,
             "status": proposal.status,
+            # ``customer_signed_at`` lets the FE regenerate modal
+            # distinguish "sent (customer has document, no signature
+            # yet)" from "accepted / signed (immutable artefact)"
+            # without a second round-trip. The regenerate BE gate
+            # treats a signed proposal as a hard block regardless of
+            # the ``status`` field so the FE mirrors that check.
+            "customer_signed_at": (
+                proposal.customer_signed_at.isoformat()
+                if proposal.customer_signed_at is not None
+                else None
+            ),
         }
 
     def get_review_slot_blocker(self, obj) -> dict | None:
@@ -175,6 +186,9 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "customer_company",
             "customer_signed_at",
             "customer_signature_image",
+            "sent_at",
+            "sent_delivery_method",
+            "sent_recipient",
             "packaging_lid",
             "packaging_container",
             "packaging_label",
@@ -384,6 +398,25 @@ class SpecificationStatusSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(required=False, min_value=1)
     currency = serializers.CharField(
         max_length=3, required=False, allow_blank=True
+    )
+    # Delivery capture — required only when ``status == "sent"``. The
+    # service does the per-transition validation so this stays
+    # optional at the serializer layer, letting one shape cover every
+    # transition button. The FE Send modal always populates both;
+    # transitions to other statuses ignore them.
+    delivery_method = serializers.ChoiceField(
+        choices=(
+            ("public_link", "Public preview link"),
+            ("email", "Email"),
+            ("other", "Other"),
+        ),
+        required=False,
+        allow_blank=True,
+    )
+    delivery_recipient = serializers.CharField(
+        max_length=200,
+        required=False,
+        allow_blank=True,
     )
 
 

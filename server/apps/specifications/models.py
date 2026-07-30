@@ -476,6 +476,57 @@ class SpecificationSheet(models.Model):
         ),
     )
 
+    # Delivery evidence captured at ``sent`` transition time. Answers
+    # the audit question "how did the customer receive this document?"
+    # so a signed sheet has provenance from build → send → sign.
+    # Populated exclusively by ``transition_status`` when moving into
+    # ``SENT`` — the fields are otherwise read-only from the app.
+    SENT_DELIVERY_PUBLIC_LINK = "public_link"
+    SENT_DELIVERY_EMAIL = "email"
+    SENT_DELIVERY_OTHER = "other"
+    SENT_DELIVERY_CHOICES = (
+        (SENT_DELIVERY_PUBLIC_LINK, _("Public preview link")),
+        (SENT_DELIVERY_EMAIL, _("Email")),
+        (SENT_DELIVERY_OTHER, _("Other")),
+    )
+    sent_at = models.DateTimeField(
+        _("sent at"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "Timestamp at which the sheet was moved to ``sent`` and "
+            "the delivery evidence was captured. Null on any sheet "
+            "that has never left ``approved``."
+        ),
+    )
+    sent_delivery_method = models.CharField(
+        _("sent delivery method"),
+        max_length=16,
+        blank=True,
+        default="",
+        choices=SENT_DELIVERY_CHOICES,
+        help_text=_(
+            "How the customer received the sheet: the auto-generated "
+            "public preview link, an email attachment, or a manual "
+            "channel (courier / in-person / etc.). Captured at the "
+            "``approved → sent`` transition; empty until then."
+        ),
+    )
+    sent_recipient = models.CharField(
+        _("sent recipient"),
+        max_length=200,
+        blank=True,
+        default="",
+        help_text=_(
+            "Recipient identifier for the sent delivery — an email "
+            "address for the ``email`` channel, a free-text note "
+            "(e.g. ``courier: Sarah at DHL``) for ``other``, or the "
+            "public preview URL for ``public_link``. Frozen at the "
+            "``approved → sent`` transition; empty on any sheet "
+            "still in earlier states."
+        ),
+    )
+
     class Meta:
         verbose_name = _("specification sheet")
         verbose_name_plural = _("specification sheets")

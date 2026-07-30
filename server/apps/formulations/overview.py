@@ -165,6 +165,24 @@ class StageGates:
 
 
 @dataclass
+class LinkedCFFSnapshot:
+    """Slim projection of a linked CFF for the workspace warnings +
+    reminder card.
+
+    Wide enough to render "CFF from Jane Doe (jane@acme.com)" in a
+    chip; narrow enough that the overview payload doesn't ship a
+    50-KB ``raw_payload`` per link. The picker fetch uses a wider
+    endpoint when the user opens the link modal.
+    """
+
+    id: str
+    submitter_name: str
+    submitter_email: str
+    submission_kind: str
+    provenance: str
+
+
+@dataclass
 class ProjectOverview:
     id: str
     code: str
@@ -195,6 +213,12 @@ class ProjectOverview:
     #: to the item's BOM page on PSP. ``None`` for custom-only
     #: formulations or orgs without PSP live.
     psp_finished_product_uuid: str | None = None
+    #: CFF submissions currently attached to this project. Empty
+    #: list is a legitimate state (project was created directly
+    #: without a CFF origin) — the workspace surfaces it as a soft
+    #: reminder, not a blocking warning. Ordered by attach date
+    #: descending so the most recent link renders first.
+    linked_cffs: list[LinkedCFFSnapshot] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -812,6 +836,61 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
     )
 
 
+def _linked_cffs_snapshot(
+    formulation: Formulation,
+) -> list[LinkedCFFSnapshot]:
+    """Materialise every CFF submission attached to this project.
+
+    Reads the payload's ``submissions`` map for the customer's
+    display name (Wix hides it behind opaque slugs like
+    ``first_name_a1b2`` / ``last_name_c3d4``); falls back to the
+    ``submitter_email`` column when the payload lookup misses so
+    portal rows that skip the Wix slug scheme still render a
+    usable chip.
+    """
+
+    # Walk the through model so we can order by ``assigned_at`` (the
+    # timestamp is on the join row, not on either side). Prefetch
+    # into the assignment's submission FK so the loop is O(1) reads
+    # even on projects with a stack of CFFs attached.
+    assignments = (
+        formulation.cff_assignments.select_related("submission")
+        .order_by("-assigned_at")
+    )
+    out: list[LinkedCFFSnapshot] = []
+    seen: set[str] = set()
+    for assignment in assignments:
+        cff = assignment.submission
+        cff_id = str(cff.id)
+        if cff_id in seen:
+            continue
+        seen.add(cff_id)
+        payload_submissions = (cff.raw_payload or {}).get("submissions") or {}
+        first_name = ""
+        last_name = ""
+        for key, value in payload_submissions.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+            slug = key.lower()
+            if slug.startswith("first_name") and not first_name:
+                first_name = value.strip()
+            elif slug.startswith("last_name") and not last_name:
+                last_name = value.strip()
+        submitter_name = " ".join(part for part in (first_name, last_name) if part)
+        if not submitter_name:
+            submitter_name = cff.submitter_email or ""
+        out.append(
+            LinkedCFFSnapshot(
+                id=cff_id,
+                submitter_name=submitter_name,
+                submitter_email=cff.submitter_email or "",
+                submission_kind=cff.submission_kind,
+                provenance=cff.provenance,
+            )
+        )
+    return out
+
+
 def compute_project_overview(formulation: Formulation) -> ProjectOverview:
     """Build the :class:`ProjectOverview` for one formulation.
 
@@ -854,4 +933,5 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
             if formulation.psp_finished_product_uuid
             else None
         ),
+        linked_cffs=_linked_cffs_snapshot(formulation),
     )

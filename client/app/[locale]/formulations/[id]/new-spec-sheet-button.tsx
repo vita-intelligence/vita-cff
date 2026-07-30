@@ -5,15 +5,13 @@ import { FileText } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 
-import { CustomerPicker } from "@/components/customers/customer-picker";
-import { useRouter } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
-import { useCreateSpecification } from "@/services/specifications";
-import type { CustomerDto } from "@/services/customers";
-import { useOrganization } from "@/services/organizations";
+import {
+  useCreateSpecification,
+  type SpecificationSheetDto,
+} from "@/services/specifications";
 import type { FormulationVersionDto } from "@/services/formulations";
-
-import { CustomerFormModal } from "../../customers/customers-list";
 
 
 const INPUT_CLASS =
@@ -25,14 +23,19 @@ const HINT_CLASS = "text-xs text-ink-500";
 /**
  * "Generate specification sheet" trigger shown on the formulation
  * detail page. Opens a modal that asks which saved version to lock
- * the sheet against plus the client context, then redirects to the
- * newly-created sheet's detail page so the scientist lands on the
- * rendered output they just produced.
+ * the sheet against, then redirects to the newly-created sheet's
+ * detail page so the scientist lands on the rendered output they
+ * just produced.
+ *
+ * Client attribution isn't collected here — a fresh sheet is a
+ * trial artefact by default. The FINAL sheet (auto-created after
+ * trial sign-off) is the one that ends up bound to a customer.
  */
 export function NewSpecSheetButton({
   orgId,
   projectCode,
   versions,
+  existingSheets = [],
 }: {
   orgId: string;
   //: The project's own ``code`` — auto-seeded into the spec's code
@@ -41,16 +44,30 @@ export function NewSpecSheetButton({
   //: initial value is borrowed.
   projectCode: string;
   versions: readonly FormulationVersionDto[];
+  //: Current sheets on the project. The BE enforces "one live draft
+  //: per formulation" — when a regeneratable draft already exists,
+  //: the button disables itself with a tooltip that points the
+  //: scientist at the existing sheet's Regenerate action. A sheet
+  //: locked by a signed proposal doesn't count against the quota
+  //: (it's an audit artefact, not a live draft), so a fresh draft
+  //: can co-exist alongside a signed one.
+  existingSheets?: readonly SpecificationSheetDto[];
 }) {
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
-  // Dynamics-managed orgs hide the inline "Create new customer"
-  // affordance — sales has to pick an already-imported row from
-  // the address book or pull a fresh one from Dataverse.
-  const organization = useOrganization(orgId);
-  const dynamicsManaged = Boolean(
-    organization?.dynamics_customers_managed,
+
+  const liveDraft = useMemo(
+    () =>
+      existingSheets.find((sheet) => {
+        if (sheet.document_kind !== "draft") return false;
+        const linked = sheet.linked_proposal;
+        if (linked === null) return true;
+        const signed =
+          linked.customer_signed_at !== null || linked.status === "accepted";
+        return !signed;
+      }),
+    [existingSheets],
   );
 
   // Only named ``Save version`` commits that passed the builder-
@@ -70,14 +87,6 @@ export function NewSpecSheetButton({
     eligibleVersions[0]?.id ?? "",
   );
   const [code, setCode] = useState(projectCode ?? "");
-  //: When a customer is picked from the address book, ``customer``
-  //: holds the full record and its ``name`` / ``email`` / ``company``
-  //: flow straight into the POST payload. When no picker match
-  //: exists (truly-new client), ``customerCreating`` opens the
-  //: customer create modal so they become addressable for future
-  //: proposals / sheets too.
-  const [customer, setCustomer] = useState<CustomerDto | null>(null);
-  const [customerCreating, setCustomerCreating] = useState(false);
   const [coverNotes, setCoverNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -98,7 +107,6 @@ export function NewSpecSheetButton({
   const reset = () => {
     setVersionId(eligibleVersions[0]?.id ?? "");
     setCode(projectCode ?? "");
-    setCustomer(null);
     setCoverNotes("");
     setError(null);
   };
@@ -116,13 +124,6 @@ export function NewSpecSheetButton({
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         code: code.trim(),
-        // Seeded from the picked customer; empty strings when no
-        // customer is selected yet (the scientist can still fill
-        // them in via Edit details after the sheet exists, matching
-        // how the proposal create flow treats a nameless draft).
-        client_name: customer?.name ?? "",
-        client_email: customer?.email ?? "",
-        client_company: customer?.company ?? "",
         cover_notes: coverNotes.trim(),
       });
       close();
@@ -152,6 +153,26 @@ export function NewSpecSheetButton({
           {tSpecs("new_sheet")}
         </Button>
       </span>
+    );
+  }
+
+  // One-live-draft-per-project gate. When the project already has a
+  // regeneratable draft, disable the trigger and point the operator
+  // at the existing sheet — regenerating there preserves the
+  // commercial fields the scientist has already typed.
+  if (liveDraft) {
+    const tooltip = tSpecs("new_sheet_live_draft_exists", {
+      code: liveDraft.code || `#${liveDraft.id.slice(0, 8)}`,
+    });
+    return (
+      <Link
+        href={`/specifications/${liveDraft.id}`}
+        title={tooltip}
+        className="inline-flex h-10 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-500 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+      >
+        <FileText className="h-4 w-4" />
+        {tSpecs("new_sheet_open_existing")}
+      </Link>
     );
   }
 
@@ -220,16 +241,6 @@ export function NewSpecSheetButton({
                   />
                 </label>
 
-                <CustomerPicker
-                  orgId={orgId}
-                  value={customer}
-                  onChange={setCustomer}
-                  onCreateNew={() => setCustomerCreating(true)}
-                  label={tSpecs("create.client")}
-                  hint={tSpecs("create.client_picker_hint")}
-                  dynamicsManaged={dynamicsManaged}
-                />
-
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>
                     {tSpecs("create.cover_notes")}
@@ -276,20 +287,6 @@ export function NewSpecSheetButton({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
-
-      {/* Mount inside the outer Modal so the create-customer dialog
-          stacks above the spec dialog instead of dismissing it. On
-          create we snap the new customer into the picker so the
-          scientist doesn't have to re-find it. Mirrors the proposal
-          create flow. */}
-      <CustomerFormModal
-        orgId={orgId}
-        mode="create"
-        isOpen={customerCreating}
-        onClose={() => setCustomerCreating(false)}
-        initial={null}
-        onCreated={(c) => setCustomer(c)}
-      />
     </Modal>
   );
 }

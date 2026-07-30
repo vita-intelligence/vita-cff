@@ -68,6 +68,7 @@ export function SpecSheetsList({
             orgId={orgId}
             projectCode={projectCode}
             versions={versions}
+            existingSheets={sheets}
           />
         ) : null}
       </div>

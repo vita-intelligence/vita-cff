@@ -79,6 +79,39 @@ SUBMITTER_EMAIL_SLUG_PREFIXES: tuple[str, ...] = (
 )
 
 
+def extract_submitter_name(raw_payload: Any) -> str:
+    """Pull "first_name last_name" out of a Wix / portal raw_payload.
+
+    Mirrors :func:`extract_submitter_email` — walks the
+    ``submissions`` dict for the first ``first_name_*`` and
+    ``last_name_*`` slugs, concatenates them, returns an empty
+    string when neither is present. The denormalised column that
+    consumes this powers the ``/cff-candidates`` picker's search
+    without touching ``raw_payload`` at query time.
+    """
+
+    submissions = (
+        raw_payload.get("submissions")
+        if isinstance(raw_payload, dict)
+        else None
+    )
+    if not isinstance(submissions, dict):
+        return ""
+    first_name = ""
+    last_name = ""
+    for slug, value in submissions.items():
+        if not isinstance(value, str) or not value.strip():
+            continue
+        lowered = slug.lower()
+        if not first_name and lowered.startswith("first_name"):
+            first_name = value.strip()
+        elif not last_name and lowered.startswith("last_name"):
+            last_name = value.strip()
+        if first_name and last_name:
+            break
+    return " ".join(part for part in (first_name, last_name) if part)
+
+
 def extract_submitter_email(raw_payload: Any) -> str:
     """Pull the customer's own email out of a Wix raw_payload.
 
@@ -127,6 +160,26 @@ def extract_submitter_email(raw_payload: Any) -> str:
 class CFFAssignmentError(RuntimeError):
     """Raised when an assignment would violate a workspace invariant
     (project belongs to a different org, etc.). API maps to 4xx."""
+
+
+class ProjectAlreadyHasCFF(RuntimeError):
+    """Raised when a caller tries to attach a CFF to a project that
+    already carries a *different* CFF.
+
+    The workspace convention is one CFF per project — a project is
+    the origin of a single customer brief. Attaching the same CFF
+    that's already linked is idempotent and doesn't raise; only a
+    *different* CFF triggers this.
+
+    The API surfaces this as a 409 with the currently-linked CFF's id
+    so the FE can offer "Unlink and replace" without a second lookup.
+    """
+
+    def __init__(self, *, existing_submission_id: Any):
+        super().__init__(
+            "Project already has a different CFF attached."
+        )
+        self.existing_submission_id = str(existing_submission_id)
 
 
 class CFFRejectionError(RuntimeError):
@@ -420,6 +473,7 @@ def _upsert_submission(
         # lowercase; we leave the original casing and rely on the
         # ``__iexact`` lookups the portal does.
         "submitter_email": extract_submitter_email(raw),
+        "submitter_name": extract_submitter_name(raw),
     }
 
     obj, was_created = CFFSubmission.objects.update_or_create(
@@ -573,6 +627,35 @@ def verify_wix_cff_connection(*, organization: Organization, actor: Any) -> int:
 
 
 @transaction.atomic
+def detach_from_project(
+    *,
+    submission: CFFSubmission,
+    project: Formulation,
+    actor: Any,
+) -> CFFSubmission:
+    """Remove the CFF ↔ project link (idempotent — no-op when the
+    link never existed).
+
+    Kept as an explicit service (rather than a raw M2M .remove()) so
+    the audit hook + ``last_synced_at`` bump run in the same place as
+    :func:`assign_to_project`. ``actor`` is currently only used for
+    the ``last_synced_at`` write ordering; if we later start
+    recording detach rows the same actor slot is already in the
+    signature.
+    """
+
+    if project.organization_id != submission.organization_id:
+        raise CFFAssignmentError(
+            "Project belongs to a different organisation than the CFF."
+        )
+
+    CFFProjectAssignment.objects.filter(
+        submission=submission, project=project
+    ).delete()
+    submission.save(update_fields=("last_synced_at",))
+    return submission
+
+
 def assign_to_project(
     *,
     submission: CFFSubmission,
@@ -610,6 +693,21 @@ def assign_to_project(
         raise CFFAssignmentError(
             "Project belongs to a different organisation than the CFF."
         )
+
+    # One-CFF-per-project invariant. Re-attaching the same CFF is
+    # idempotent (falls through to the ``get_or_create`` below); a
+    # *different* CFF triggers ``ProjectAlreadyHasCFF`` so the FE can
+    # render a "Unlink and replace" affordance without a preflight
+    # lookup. The DB carries a matching ``UniqueConstraint`` on
+    # ``project`` alone as defence in depth against a race.
+    existing = (
+        CFFProjectAssignment.objects.filter(project=project)
+        .exclude(submission=submission)
+        .values_list("submission_id", flat=True)
+        .first()
+    )
+    if existing is not None:
+        raise ProjectAlreadyHasCFF(existing_submission_id=existing)
 
     assignment, created = CFFProjectAssignment.objects.get_or_create(
         submission=submission,
@@ -1058,6 +1156,14 @@ def create_portal_submission(
             },
         },
         submitter_email=payload.email.strip().lower(),
+        submitter_name=" ".join(
+            part
+            for part in (
+                payload.first_name.strip(),
+                payload.last_name.strip(),
+            )
+            if part
+        ),
         submitted_by_client_account=client_account,
     )
     return submission
@@ -1732,6 +1838,7 @@ def create_portal_rtg_submission(
             },
         },
         submitter_email=(customer.email or "").strip().lower(),
+        submitter_name=(customer.name or "").strip(),
         submitted_by_client_account=client_account,
         drafted_proposal=proposal,
     )
@@ -1740,6 +1847,7 @@ def create_portal_rtg_submission(
 
 __all__ = [
     "CFFAssignmentError",
+    "ProjectAlreadyHasCFF",
     "CFFPortalError",
     "CFFRTGSubmissionError",
     "CFFRejectionError",
@@ -1754,9 +1862,11 @@ __all__ = [
     "WixCFFDecryptionFailed",
     "WixCFFNotConfigured",
     "assign_to_project",
+    "detach_from_project",
     "create_project_from_cff",
     "ensure_fresh_submissions",
     "extract_submitter_email",
+    "extract_submitter_name",
     "get_customer_cff",
     "get_field_labels",
     "import_cff_submissions_for_org",
