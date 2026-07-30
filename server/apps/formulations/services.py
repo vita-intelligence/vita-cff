@@ -4773,7 +4773,17 @@ def _format_grouped_declaration(
 def compute_formulation_totals(
     *, formulation: Formulation
 ) -> FormulationTotals:
-    """Compute totals for the formulation's current working state."""
+    """Compute totals for the formulation's current working state.
+
+    Only ``source_kind == 'active'`` lines flow into ``line_values``.
+    Band-picks (excipients materialised from M2M pickers) get their mg
+    from the compute's excipient-*_rows; routing-tab manual picks
+    (packaging, semi-finished stage outputs) don't belong in the mg
+    aggregation at all. Including them here would double-count into
+    the declaration paragraph and the excipient table, and would leak
+    packaging + semi-finished rows into the spec sheet's actives
+    table via the shared ``totals.line_values`` dict.
+    """
 
     tuples = [
         (
@@ -4785,7 +4795,9 @@ def compute_formulation_totals(
             line.overage_override,
             line.extract_ratio_override,
         )
-        for line in formulation.lines.select_related("item").all()
+        for line in formulation.lines.select_related("item").filter(
+            source_kind=FormulationLine.SOURCE_KIND_ACTIVE
+        )
     ]
     return compute_totals(
         lines=tuples,

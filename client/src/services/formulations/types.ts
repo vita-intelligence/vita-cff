@@ -974,4 +974,48 @@ export interface ProjectOverviewDto {
    *  the item's BOM on PSP. ``null`` when the formulation isn't
    *  linked. */
   readonly psp_finished_product_uuid: string | null;
+  //: CFF submissions currently attached to this project. Empty
+  //: array is a legitimate state — the workspace renders it as a
+  //: soft reminder ("maybe you forgot to link a CFF?") rather than
+  //: a blocking warning. Populated by the ``compute_project_overview``
+  //: reader; empty on any project created directly without the
+  //: CFF-driven flow.
+  readonly linked_cffs: readonly LinkedCFFDto[];
+}
+
+
+export interface LinkedCFFDto {
+  readonly id: string;
+  readonly submitter_name: string;
+  readonly submitter_email: string;
+  readonly submission_kind: string;
+  readonly provenance: string;
+}
+
+
+export interface CFFCandidateDto extends LinkedCFFDto {
+  readonly wix_created_date: string | null;
+  //: Every project this CFF is *already* attached to, minus the
+  //: project we're picking for. Empty array = never been linked;
+  //: non-empty = the CFF is shared with another workspace. The FE
+  //: renders a small "Already on {code}" chip so the operator
+  //: knows they're picking a shared brief, not an unassigned one.
+  readonly linked_projects: readonly LinkedProjectSummaryDto[];
+}
+
+
+export interface LinkedProjectSummaryDto {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+}
+
+
+export interface CFFCandidatesResponseDto {
+  readonly candidates: readonly CFFCandidateDto[];
+  //: Opaque cursor for the next page. ``null`` when the current
+  //: page was the last. Round-tripped verbatim on the next
+  //: ``?cursor=...`` call — the BE decodes it back into a
+  //: keyset filter so page N is O(page_size) regardless of N.
+  readonly next_cursor: string | null;
 }

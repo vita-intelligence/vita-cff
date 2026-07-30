@@ -37,6 +37,7 @@ export default async function ProjectOverviewPage({
               orgId={organization.id}
               formulationId={formulation.id}
               initialData={overview}
+              canEdit={canWrite}
             />
             {/* RTG catalog publish panel — self-gates on
                 ``project_type === 'ready_to_go'`` internally so the

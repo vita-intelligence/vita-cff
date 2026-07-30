@@ -16,6 +16,20 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/rollback/`,
   overview: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/overview/`,
+  linkCff: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/link-cff/`,
+  cffCandidates: (
+    orgId: string,
+    formulationId: string,
+    args: { search?: string; cursor?: string } = {},
+  ) => {
+    const base = `/api/organizations/${orgId}/formulations/${formulationId}/cff-candidates/`;
+    const params = new URLSearchParams();
+    if (args.search) params.set("search", args.search);
+    if (args.cursor) params.set("cursor", args.cursor);
+    const qs = params.toString();
+    return qs ? `${base}?${qs}` : base;
+  },
   salesPerson: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
   leadScientist: (orgId: string, formulationId: string) =>

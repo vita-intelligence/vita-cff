@@ -27,7 +27,10 @@ import {
   fetchFormulationVersions,
   fetchFormulations,
   fetchFormulationsPage,
+  fetchCFFCandidates,
   fetchProjectOverview,
+  linkCFFToProject,
+  unlinkCFFFromProject,
   applyStageTemplate,
   createStageTemplate,
   deleteStageTemplate,
@@ -75,6 +78,7 @@ import {
 import type {
   AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
+  CFFCandidatesResponseDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
@@ -305,6 +309,90 @@ export function useProjectOverview(
     // backend turned tab-switches inside a project workspace into
     // queued backend round-trips. Default ``staleTime`` (60s)
     // governs everything below the mutation-driven invalidation.
+  });
+}
+
+export function useCFFCandidates(
+  orgId: string,
+  formulationId: string,
+  search: string,
+  enabled: boolean,
+): UseInfiniteQueryResult<
+  InfiniteData<CFFCandidatesResponseDto, string | null>,
+  ApiError
+> {
+  return useInfiniteQuery<
+    CFFCandidatesResponseDto,
+    ApiError,
+    InfiniteData<CFFCandidatesResponseDto, string | null>,
+    readonly unknown[],
+    string | null
+  >({
+    queryKey: [
+      ...formulationsQueryKeys.overview(orgId, formulationId),
+      "cff-candidates",
+      search,
+    ] as const,
+    // First page has no cursor; subsequent pages hand the previous
+    // page's ``next_cursor`` back to the BE. The BE returns
+    // ``null`` on the last page and we let ``hasNextPage`` fall to
+    // ``false`` naturally.
+    initialPageParam: null,
+    queryFn: ({ pageParam }) =>
+      fetchCFFCandidates(orgId, formulationId, {
+        search: search || undefined,
+        cursor: pageParam ?? undefined,
+      }),
+    getNextPageParam: (lastPage) => lastPage.next_cursor,
+    enabled,
+    staleTime: 15_000,
+  });
+}
+
+export function useLinkCFFToProject(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<ProjectOverviewDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<ProjectOverviewDto, ApiError, string>({
+    mutationFn: (cffId) => linkCFFToProject(orgId, formulationId, cffId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.overview(orgId, formulationId),
+        updated,
+      );
+      // Candidate list must exclude the freshly-linked row on next
+      // open; blast the whole namespace since the search parameter is
+      // baked into the key.
+      queryClient.invalidateQueries({
+        queryKey: [
+          ...formulationsQueryKeys.overview(orgId, formulationId),
+          "cff-candidates",
+        ] as const,
+      });
+    },
+  });
+}
+
+export function useUnlinkCFFFromProject(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<ProjectOverviewDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<ProjectOverviewDto, ApiError, string>({
+    mutationFn: (cffId) => unlinkCFFFromProject(orgId, formulationId, cffId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.overview(orgId, formulationId),
+        updated,
+      );
+      queryClient.invalidateQueries({
+        queryKey: [
+          ...formulationsQueryKeys.overview(orgId, formulationId),
+          "cff-candidates",
+        ] as const,
+      });
+    },
   });
 }
 

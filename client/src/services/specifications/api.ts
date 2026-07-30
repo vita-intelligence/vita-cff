@@ -113,6 +113,26 @@ export async function transitionSpecificationStatus(
   return data;
 }
 
+export interface RegenerateSpecificationRequestDto {
+  readonly formulation_version_id: string;
+  //: Set true on the second call after a ``sent`` proposal
+  //: confirmation. Non-force calls against a sent-linked sheet reply
+  //: 409 so the FE can render the confirmation modal, then retry.
+  readonly force?: boolean;
+}
+
+export async function regenerateSpecification(
+  orgId: string,
+  sheetId: string,
+  payload: RegenerateSpecificationRequestDto,
+): Promise<SpecificationSheetDto> {
+  const { data } = await apiClient.post<SpecificationSheetDto>(
+    specificationsEndpoints.regenerate(orgId, sheetId),
+    payload,
+  );
+  return data;
+}
+
 export interface FetchPackagingOptionsArgs {
   readonly slot: PackagingSlot;
   readonly search?: string;

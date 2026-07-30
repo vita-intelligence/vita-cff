@@ -34,9 +34,14 @@ from apps.specifications.services import (
     InvalidSnapshotOverrides,
     InvalidSpecificationDocumentKind,
     InvalidStatusTransition,
+    LiveDraftAlreadyExists,
+    MissingDeliveryCapture,
+    MissingTransitionReason,
     PACKAGING_SLOT_TYPES,
     PackagingItemNotAllowed,
     PublicLinkNotEnabled,
+    SheetLockedBySignedProposal,
+    SheetRegenerationRequiresForce,
     SpecificationCodeConflict,
     SpecificationDeletionLocked,
     SpecificationNotMutable,
@@ -48,6 +53,7 @@ from apps.specifications.services import (
     get_by_public_token,
     get_sheet,
     list_sheets,
+    regenerate_sheet,
     render_context,
     render_pdf,
     revoke_public_token,
@@ -165,6 +171,22 @@ class SpecificationListCreateView(APIView):
             return Response(
                 {"document_kind": ["invalid_specification_document_kind"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except LiveDraftAlreadyExists as exc:
+            # 409 with the existing sheet id so the FE can jump the
+            # scientist straight to the "Regenerate" surface on that
+            # sheet instead of forcing them to hunt for it.
+            return Response(
+                {
+                    "code": "live_draft_already_exists",
+                    "existing_sheet_id": exc.existing_sheet_id,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except FinalSpecAlreadyExists:
+            return Response(
+                {"code": "final_spec_already_exists"},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             SpecificationSheetReadSerializer(sheet).data,
@@ -386,6 +408,8 @@ class SpecificationStatusView(APIView):
                 notes=data.get("notes", ""),
                 signature_image=data.get("signature_image") or None,
                 pricing=pricing_payload,
+                delivery_method=data.get("delivery_method") or "",
+                delivery_recipient=data.get("delivery_recipient") or "",
             )
         except InvalidStatusTransition:
             return Response(
@@ -402,8 +426,99 @@ class SpecificationStatusView(APIView):
                 {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except MissingTransitionReason:
+            return Response(
+                {"notes": ["missing_transition_reason"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except MissingDeliveryCapture:
+            return Response(
+                {"delivery_method": ["missing_delivery_capture"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return Response(
             SpecificationSheetReadSerializer(updated).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class SpecificationRegenerateView(APIView):
+    """``POST`` ``/.../specifications/<id>/regenerate/``.
+
+    Re-pins the sheet to a newer ``FormulationVersion`` so the derived
+    sections (actives, nutrition, allergens, ingredients declaration,
+    weight, packaging auto-seed) refresh against the new snapshot
+    without wiping scientist-typed fields.
+
+    Payload: ``{ "formulation_version_id": "...", "force": false }``.
+
+    ``force`` is required when the sheet's linked proposal is in the
+    ``sent`` state — the customer has seen the document, so mutating
+    it is a decision the operator has to confirm explicitly. The
+    endpoint replies 409 on the first (non-force) call so the FE can
+    render the confirmation modal, then accepts the retry.
+
+    Never allowed when the linked proposal is ``accepted`` (or the
+    sheet / proposal carries ``customer_signed_at``) — that sheet has
+    crossed into audit-artefact territory and must not be rewritten.
+    Callers create a fresh spec (an amendment) instead.
+    """
+
+    permission_classes = (HasSpecificationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> Response:
+        try:
+            sheet = get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        new_version_id = payload.get("formulation_version_id")
+        if not new_version_id:
+            return Response(
+                {"formulation_version_id": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        force = bool(payload.get("force"))
+
+        try:
+            regenerated = regenerate_sheet(
+                sheet=sheet,
+                actor=request.user,
+                new_formulation_version_id=new_version_id,
+                force=force,
+            )
+        except FormulationVersionNotInOrg:
+            return Response(
+                {
+                    "formulation_version_id": [
+                        "formulation_version_not_in_org"
+                    ]
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SheetLockedBySignedProposal:
+            return Response(
+                {"code": "sheet_locked_by_signed_proposal"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except SheetRegenerationRequiresForce:
+            return Response(
+                {"code": "sheet_regeneration_requires_force"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except SpecificationNotMutable:
+            return Response(
+                {"detail": ["specification_not_mutable"]},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(
+            SpecificationSheetReadSerializer(regenerated).data,
             status=status.HTTP_200_OK,
         )
 

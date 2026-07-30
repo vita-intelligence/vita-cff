@@ -96,9 +96,11 @@ DEFAULT_FOOD_CONTACT_STATUS = (
 )
 
 
-#: Copy rendered in place of packaging selections until F3b adds real
-#: linkage to the packaging catalogue.
-PACKAGING_PLACEHOLDER = "TBD"
+#: Copy rendered in place of an unpicked packaging slot on the sheet.
+#: An em dash reads as "not applicable / not yet picked" without
+#: carrying the "we owe the customer this info" tone that ``TBD``
+#: implied.
+PACKAGING_PLACEHOLDER = "—"
 
 
 #: Per-dosage-form defaults seeded at :func:`create_sheet` time so the

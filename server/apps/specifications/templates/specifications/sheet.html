@@ -208,10 +208,10 @@
       {% elif slug == "packaging_specification" %}
         <h2 class="section-title">Packaging Specification</h2>
         <table class="spec">
-          <tr><td class="label">Lid Description:</td><td class="value">{{ packaging.lid_description|default:"TBD" }}</td></tr>
-          <tr><td class="label">Bottle/Pouch/Tub:</td><td class="value">{{ packaging.bottle_pouch_tub|default:"TBD" }}</td></tr>
-          <tr><td class="label">Label Size:</td><td class="value">{{ packaging.label_size|default:"TBD" }}</td></tr>
-          <tr><td class="label">Antitemper:</td><td class="value">{{ packaging.antitemper|default:"TBD" }}</td></tr>
+          <tr><td class="label">Lid Description:</td><td class="value">{{ packaging.lid_description|default:"—" }}</td></tr>
+          <tr><td class="label">Bottle/Pouch/Tub:</td><td class="value">{{ packaging.bottle_pouch_tub|default:"—" }}</td></tr>
+          <tr><td class="label">Label Size:</td><td class="value">{{ packaging.label_size|default:"—" }}</td></tr>
+          <tr><td class="label">Antitemper:</td><td class="value">{{ packaging.antitemper|default:"—" }}</td></tr>
         </table>
 
       {% elif slug == "compliance" %}

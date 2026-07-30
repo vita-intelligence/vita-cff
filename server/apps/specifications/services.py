@@ -49,7 +49,12 @@ from apps.formulations.constants import (
     capsule_size_by_key,
     normalize_use_as_value,
 )
-from apps.formulations.models import FormulationVersion, ProjectStatus, ProjectType
+from apps.formulations.models import (
+    FormulationLine,
+    FormulationVersion,
+    ProjectStatus,
+    ProjectType,
+)
 from apps.formulations.services import (
     _maybe_advance_project_status,
     instantiate_active_label,
@@ -120,6 +125,31 @@ class SignatureRequired(Exception):
     code = "signature_required"
 
 
+class MissingTransitionReason(Exception):
+    """The transition needed a written reason but the payload omitted
+    one.
+
+    Applies to rejects and revert-to-draft moves — the CLAUDE.md
+    compliance rule says a status change without provenance is a
+    compliance bypass, so the service refuses the write and forces
+    the caller to surface a reason input.
+    """
+
+    code = "missing_transition_reason"
+
+
+class MissingDeliveryCapture(Exception):
+    """The ``approved → sent`` transition needs delivery evidence
+    (method + recipient) so we can answer "how did the customer
+    receive this document?" on any downstream audit.
+
+    Rejected as 409 with an actionable code so the FE renders the
+    Send modal with method + recipient fields.
+    """
+
+    code = "missing_delivery_capture"
+
+
 class InvalidStatusTransition(Exception):
     code = "invalid_status_transition"
 
@@ -160,6 +190,53 @@ class InvalidSnapshotOverrides(Exception):
     silently no-ops on render."""
 
     code = "invalid_snapshot_overrides"
+
+
+class LiveDraftAlreadyExists(Exception):
+    """A regeneratable draft spec already exists on this formulation.
+
+    Only one live draft is allowed per formulation — subsequent draft
+    creations must go through the ``regenerate_sheet`` action on the
+    existing sheet so scientist-typed commercial fields
+    (unit_cost / margin / cover notes / packaging picks) survive the
+    version bump instead of being lost to a delete + recreate cycle.
+
+    A draft is *not* counted as live when it is locked by a signed /
+    accepted proposal — that sheet has become an immutable audit
+    artefact, so a fresh draft can co-exist alongside it.
+    """
+
+    code = "live_draft_already_exists"
+
+    def __init__(self, *, existing_sheet_id: Any):
+        super().__init__("Live draft already exists")
+        self.existing_sheet_id = str(existing_sheet_id)
+
+
+class SheetLockedBySignedProposal(Exception):
+    """The sheet's linked proposal has been accepted / customer-signed.
+
+    Regeneration would rewrite a document the customer has already
+    signed, which is fraud from a compliance standpoint and breaks
+    the BRCGS / GFSI audit chain. Callers must create a new spec
+    sheet against the new version (an amendment) instead.
+    """
+
+    code = "sheet_locked_by_signed_proposal"
+
+
+class SheetRegenerationRequiresForce(Exception):
+    """The sheet's linked proposal is ``sent`` — customer has seen the
+    document but hasn't signed yet.
+
+    Regenerating in place changes what the customer will read against
+    what they were originally quoted, so we require the caller to
+    re-send the request with ``force=True`` after confirming the
+    intent with the operator. Non-force calls surface this as a 409
+    so the FE can render the confirmation modal.
+    """
+
+    code = "sheet_regeneration_requires_force"
 
 
 def resolve_linked_proposal(sheet: SpecificationSheet) -> Any | None:
@@ -414,6 +491,216 @@ def _existing_final_for_formulation(
     return qs.order_by("-created_at").first()
 
 
+# ---------------------------------------------------------------------------
+# Regeneration + one-draft invariant
+# ---------------------------------------------------------------------------
+
+
+def _proposal_lock_state(sheet: SpecificationSheet) -> str:
+    """Classify the sheet's regeneration eligibility from the linked
+    proposal side.
+
+    Returns one of:
+
+    * ``"unlinked"`` — no proposal attached; sheet is freely
+      regeneratable / deletable.
+    * ``"draft"`` — proposal exists but is still ``draft`` /
+      ``in_review`` / ``rejected``. Nothing customer-facing has
+      happened; free to regenerate.
+    * ``"sent"`` — proposal is ``sent`` (or ``approved``, which is
+      internally sign-off but pre-customer). Regenerate is allowed
+      but requires an explicit ``force`` from the caller since the
+      customer has (or is about to) receive the document.
+    * ``"signed"`` — proposal is ``accepted`` OR the sheet /
+      proposal carries a ``customer_signed_at`` timestamp. The sheet
+      has become an immutable audit artefact; no regeneration path.
+    """
+
+    from apps.proposals.models import ProposalStatus
+
+    if sheet.customer_signed_at is not None:
+        return "signed"
+
+    proposal = resolve_linked_proposal(sheet)
+    if proposal is None:
+        return "unlinked"
+
+    if (
+        proposal.status == ProposalStatus.ACCEPTED.value
+        or proposal.customer_signed_at is not None
+    ):
+        return "signed"
+
+    if proposal.status in (
+        ProposalStatus.APPROVED.value,
+        ProposalStatus.SENT.value,
+    ):
+        return "sent"
+
+    # DRAFT / IN_REVIEW / REJECTED — all pre-customer states.
+    return "draft"
+
+
+def _live_draft_for_formulation(
+    *,
+    formulation_id: Any,
+    exclude_pk: Any = None,
+) -> SpecificationSheet | None:
+    """Return the regeneratable DRAFT-kind sheet (if any) attached to
+    ``formulation_id``.
+
+    Walks every FormulationVersion on the project. A sheet counts as
+    "live" for the one-draft-at-a-time invariant iff:
+
+    * ``document_kind == DRAFT`` (FINALs are audit-locked separately),
+    * its proposal lock state is not ``"signed"`` (a signed sheet
+      has crossed into audit-artefact territory and no longer
+      competes with a new working draft).
+
+    ``exclude_pk`` lets the regenerate path skip the sheet currently
+    being mutated so it doesn't collide with itself.
+    """
+
+    qs = SpecificationSheet.objects.filter(
+        formulation_version__formulation_id=formulation_id,
+        document_kind=SpecificationDocumentKind.DRAFT,
+    )
+    if exclude_pk is not None:
+        qs = qs.exclude(pk=exclude_pk)
+    for candidate in qs.order_by("-created_at"):
+        if _proposal_lock_state(candidate) != "signed":
+            return candidate
+    return None
+
+
+@transaction.atomic
+def regenerate_sheet(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+    new_formulation_version_id: Any,
+    force: bool = False,
+) -> SpecificationSheet:
+    """Re-pin ``sheet`` to a newer FormulationVersion.
+
+    Everything version-locked (actives, nutrition, allergens,
+    ingredients declaration, weight — all derived from
+    ``formulation_version.snapshot_*``) is re-derived by the pin
+    swap. Everything the scientist typed (code, commercial numbers,
+    cover notes, packaging picks, shelf-life / storage / food
+    contact / weight-uniformity text, snapshot overrides, limits
+    overrides, section visibility / ordering) is preserved verbatim.
+
+    Proposal gating:
+
+    * ``unlinked`` / ``draft`` → allowed unconditionally.
+    * ``sent`` → requires ``force=True``. Callers surface the
+      resulting :class:`SheetRegenerationRequiresForce` as a
+      confirmation prompt.
+    * ``signed`` → hard block. Caller must create a fresh spec
+      sheet (an amendment) instead.
+
+    The new version must belong to the same organization AND the
+    same formulation — cross-formulation re-pinning would be a
+    silent identity swap on a document the customer trusts, so we
+    refuse.
+    """
+
+    _guard_editable(sheet)
+
+    lock_state = _proposal_lock_state(sheet)
+    if lock_state == "signed":
+        raise SheetLockedBySignedProposal()
+    if lock_state == "sent" and not force:
+        raise SheetRegenerationRequiresForce()
+
+    new_version = (
+        FormulationVersion.objects.select_related("formulation")
+        .filter(id=new_formulation_version_id)
+        .first()
+    )
+    if new_version is None:
+        raise FormulationVersionNotInOrg()
+    if new_version.formulation.organization_id != sheet.organization_id:
+        raise FormulationVersionNotInOrg()
+    # Same-formulation invariant: regeneration is a *version bump* on
+    # the same product. Cross-formulation would rewrite the identity
+    # of the document — that path is "create a new sheet", not
+    # "regenerate this one".
+    if new_version.formulation_id != sheet.formulation_version.formulation_id:
+        raise FormulationVersionNotInOrg()
+
+    before = snapshot(sheet)
+
+    sheet.formulation_version = new_version
+
+    # Re-run the packaging FK auto-seed for any slot that is still
+    # blank — a scientist who added packaging picks in the new
+    # version (e.g. finally chose a bottle after v3) should see them
+    # land on the sheet without a manual set_packaging round-trip.
+    # Existing picks are preserved (first-write-wins) so a manual
+    # override doesn't get overwritten by the routing-side picker.
+    slot_for_type = {
+        packaging_type: slot for slot, packaging_type in PACKAGING_SLOT_TYPES.items()
+    }
+    _packaging_keyword_slots: tuple[tuple[str, str], ...] = (
+        ("lid", "packaging_lid"),
+        ("cap", "packaging_lid"),
+        ("closure", "packaging_lid"),
+        ("bottle", "packaging_container"),
+        ("pouch", "packaging_container"),
+        ("tub", "packaging_container"),
+        ("jar", "packaging_container"),
+        ("container", "packaging_container"),
+        ("carton", "packaging_container"),
+        ("label", "packaging_label"),
+        ("sleeve", "packaging_label"),
+        ("wrap", "packaging_label"),
+        ("tamper", "packaging_antitemper"),
+        ("seal", "packaging_antitemper"),
+        ("shrink", "packaging_antitemper"),
+        ("band", "packaging_antitemper"),
+    )
+    packaging_lines = (
+        new_version.formulation.lines.select_related("item").filter(
+            source_kind=FormulationLine.SOURCE_KIND_MANUAL,
+            item__isnull=False,
+        )
+    )
+    resolved_by_slot: dict[str, Item] = {}
+    for line in packaging_lines:
+        item = line.item
+        attrs = item.attributes or {}
+        slot: str | None = None
+        packaging_type = attrs.get("packaging_type")
+        if packaging_type:
+            slot = slot_for_type.get(packaging_type)
+        if slot is None and attrs.get("psp_item_type") == "packaging":
+            lower_name = (item.name or "").lower()
+            for keyword, slot_candidate in _packaging_keyword_slots:
+                if keyword in lower_name:
+                    slot = slot_candidate
+                    break
+        if slot and slot not in resolved_by_slot:
+            resolved_by_slot[slot] = item
+    for slot, item in resolved_by_slot.items():
+        if getattr(sheet, slot) is None:
+            setattr(sheet, slot, item)
+
+    sheet.updated_by = actor
+    sheet.save()
+
+    record_audit(
+        organization=sheet.organization,
+        actor=actor,
+        action="spec_sheet.regenerate",
+        target=sheet,
+        before=before,
+        after=snapshot(sheet),
+    )
+    return sheet
+
+
 def delete_sheet(
     *,
     sheet: SpecificationSheet,
@@ -518,6 +805,21 @@ def create_sheet(
         ):
             raise FinalSpecAlreadyExists()
 
+    # One live DRAFT per project. When a regeneratable draft already
+    # exists, the scientist must go through the "Regenerate" action
+    # on that sheet instead — that path re-pins to the new version
+    # while preserving cost / margin / cover-notes / packaging picks
+    # they've already typed. Drafts locked by a signed proposal don't
+    # count against the quota (they've crossed into audit-artefact
+    # territory and can no longer be regenerated) so a fresh draft
+    # can still be created alongside a customer-signed one.
+    if document_kind == SpecificationDocumentKind.DRAFT:
+        existing_draft = _live_draft_for_formulation(
+            formulation_id=version.formulation_id
+        )
+        if existing_draft is not None:
+            raise LiveDraftAlreadyExists(existing_sheet_id=existing_draft.pk)
+
     # Seed shelf-life / storage / weight-uniformity from the per-
     # dosage-form defaults so the spec sheet lands populated rather
     # than three blank cells. Read the dosage form off the locked
@@ -529,6 +831,81 @@ def create_sheet(
     snapshot_metadata = version.snapshot_metadata or {}
     dosage_form = snapshot_metadata.get("dosage_form", "") or ""
     spec_defaults = SPECIFICATION_TEXT_DEFAULTS.get(dosage_form, {})
+
+    # Auto-seed the four packaging FK slots from the builder's picks.
+    # Packaging isn't an M2M on Formulation — the scientist drops
+    # closure / material / label / tamper_proof items into a
+    # packaging stage via the Routing picker
+    # (``FormulationLine(source_kind='manual')``). Read those live
+    # lines here and slot each item into the matching sheet FK by:
+    #
+    # 1. Direct match on ``item.attributes.packaging_type`` (local
+    #    packaging catalogue: authoritative vocabulary).
+    # 2. Fallback for PSP-mirrored items — those carry only
+    #    ``psp_item_type == 'packaging'`` (packaging bucket flag),
+    #    not the closure/material/label/tamper_proof sub-type, so we
+    #    infer the slot from item-name keywords. This mirrors what
+    #    a scientist would guess reading the picked SKU list.
+    #
+    # First pick per slot wins. Falls through silently on any
+    # missing pick so scientists who haven't finalised packaging
+    # can still generate a draft sheet.
+    slot_for_type = {
+        packaging_type: slot for slot, packaging_type in PACKAGING_SLOT_TYPES.items()
+    }
+    # Keyword → slot map for the PSP-mirrored fallback. Order
+    # matters: keywords are matched in list order and first hit
+    # wins, so an "HDPE Lid Tamper-Evident" item lands on
+    # ``packaging_lid`` (Lid keyword comes first) rather than
+    # ``packaging_antitemper`` (Tamper keyword). Overlap is rare
+    # but the closure interpretation is the useful one — a lid IS
+    # a closure that also happens to have tamper-evident features.
+    _packaging_keyword_slots: tuple[tuple[str, str], ...] = (
+        ("lid", "packaging_lid"),
+        ("cap", "packaging_lid"),
+        ("closure", "packaging_lid"),
+        ("bottle", "packaging_container"),
+        ("pouch", "packaging_container"),
+        ("tub", "packaging_container"),
+        ("jar", "packaging_container"),
+        ("container", "packaging_container"),
+        ("carton", "packaging_container"),
+        ("label", "packaging_label"),
+        ("sleeve", "packaging_label"),
+        ("wrap", "packaging_label"),
+        ("tamper", "packaging_antitemper"),
+        ("seal", "packaging_antitemper"),
+        ("shrink", "packaging_antitemper"),
+        ("band", "packaging_antitemper"),
+    )
+    packaging_lines = (
+        version.formulation.lines.select_related("item")
+        .filter(
+            source_kind=FormulationLine.SOURCE_KIND_MANUAL,
+            item__isnull=False,
+        )
+    )
+    packaging_by_slot: dict[str, Item] = {}
+    for line in packaging_lines:
+        item = line.item
+        attrs = item.attributes or {}
+        slot: str | None = None
+        # Prefer the explicit sub-type when present.
+        packaging_type = attrs.get("packaging_type")
+        if packaging_type:
+            slot = slot_for_type.get(packaging_type)
+        # PSP-mirrored fallback — only apply the keyword heuristic
+        # when the item is tagged as packaging on the PSP side so a
+        # semi-finished stage output with a coincidental keyword
+        # ("Lid Formula") can't hijack a slot.
+        if slot is None and attrs.get("psp_item_type") == "packaging":
+            lower_name = (item.name or "").lower()
+            for keyword, slot_candidate in _packaging_keyword_slots:
+                if keyword in lower_name:
+                    slot = slot_candidate
+                    break
+        if slot and slot not in packaging_by_slot:
+            packaging_by_slot[slot] = item
 
     sheet = SpecificationSheet.objects.create(
         organization=organization,
@@ -546,6 +923,10 @@ def create_sheet(
         weight_uniformity=spec_defaults.get("weight_uniformity", ""),
         status=SpecificationStatus.DRAFT,
         document_kind=document_kind,
+        packaging_lid=packaging_by_slot.get("packaging_lid"),
+        packaging_container=packaging_by_slot.get("packaging_container"),
+        packaging_label=packaging_by_slot.get("packaging_label"),
+        packaging_antitemper=packaging_by_slot.get("packaging_antitemper"),
         created_by=actor,
         updated_by=actor,
     )
@@ -1185,6 +1566,22 @@ _INTERNAL_SIGNATURE_SLOT: dict[tuple[str, str], str] = {
 }
 
 
+#: Transitions that require an operator-typed reason before landing.
+#: All "backwards" moves (reject, revert) — a director can't quietly
+#: bounce a sheet without a paper trail explaining why. Keys are
+#: ``(from_status, to_status)`` tuples so a specific revert like
+#: ``approved → draft`` is distinguishable from ``in_review → draft``
+#: even though the target status is the same.
+_REASON_REQUIRED_TRANSITIONS: frozenset[tuple[str, str]] = frozenset(
+    {
+        (SpecificationStatus.IN_REVIEW, SpecificationStatus.DRAFT),
+        (SpecificationStatus.APPROVED, SpecificationStatus.DRAFT),
+        (SpecificationStatus.SENT, SpecificationStatus.REJECTED),
+        (SpecificationStatus.REJECTED, SpecificationStatus.DRAFT),
+    }
+)
+
+
 @transaction.atomic
 def transition_status(
     *,
@@ -1194,6 +1591,8 @@ def transition_status(
     notes: str = "",
     signature_image: str | None = None,
     pricing: dict[str, Any] | None = None,
+    delivery_method: str = "",
+    delivery_recipient: str = "",
 ) -> SpecificationSheet:
     """Move the sheet one state forward and stamp an audit row.
 
@@ -1224,6 +1623,37 @@ def transition_status(
         # Block the internal path to ``accepted`` entirely — that
         # state is reserved for the kiosk sign-off flow.
         raise InvalidStatusTransition()
+
+    # Compliance-first: reject / revert transitions must carry an
+    # operator-typed reason. The CLAUDE.md rule says "workers trigger
+    # actions, not states", and every action must have provenance —
+    # for backwards moves, that provenance is a written justification
+    # ("customer requested reformulation with less caffeine",
+    # "compliance blocker on caffeine limit", etc.).
+    reason = (notes or "").strip()
+    if (
+        sheet.status,
+        next_status,
+    ) in _REASON_REQUIRED_TRANSITIONS and not reason:
+        raise MissingTransitionReason()
+
+    # Delivery evidence must be captured at the send transition so
+    # a signed sheet later carries provenance from build → send →
+    # customer signature. We validate both fields here rather than
+    # in the serializer so the same guard applies to any BE caller
+    # (view, bundled proposal-send, script) rather than just the
+    # HTTP surface.
+    delivery_method_cleaned = (delivery_method or "").strip()
+    delivery_recipient_cleaned = (delivery_recipient or "").strip()
+    if next_status == SpecificationStatus.SENT:
+        if delivery_method_cleaned not in {
+            SpecificationSheet.SENT_DELIVERY_PUBLIC_LINK,
+            SpecificationSheet.SENT_DELIVERY_EMAIL,
+            SpecificationSheet.SENT_DELIVERY_OTHER,
+        }:
+            raise MissingDeliveryCapture()
+        if not delivery_recipient_cleaned:
+            raise MissingDeliveryCapture()
 
     # Slot uniqueness on the ``in_review`` lane: the director has at
     # most one sheet of each ``document_kind`` queued for their
@@ -1280,6 +1710,19 @@ def transition_status(
     sheet.updated_by = actor
     update_fields = ["status", "updated_by", "updated_at"]
     now = timezone.now()
+
+    # Freeze delivery evidence onto the sheet at the send moment so
+    # any downstream renderer / audit query reads the same values
+    # the operator entered without joining against transition rows.
+    if next_status == SpecificationStatus.SENT:
+        sheet.sent_at = now
+        sheet.sent_delivery_method = delivery_method_cleaned
+        sheet.sent_recipient = delivery_recipient_cleaned
+        update_fields += [
+            "sent_at",
+            "sent_delivery_method",
+            "sent_recipient",
+        ]
 
     if slot == "prepared_by":
         sheet.prepared_by_user = actor
@@ -2865,6 +3308,18 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     actives = []
     for line in snapshot_lines:
         attrs = line.get("item_attributes") or {}
+        # Compliance filter — the actives table is for operator-picked
+        # actives only. Band-picks (excipients materialised from the
+        # M2M pickers) and routing-tab manual picks (packaging,
+        # semi-finished stage outputs) both persist as FormulationLine
+        # rows and get snapshotted, but they aren't actives. Skip
+        # them before the use_as check so a packaging item with a
+        # blank ``use_as`` (packaging catalogue items don't carry
+        # one) can't sneak through the "default to Active" fallback
+        # below.
+        source_kind = line.get("source_kind") or "active"
+        if source_kind != "active":
+            continue
         # Only true actives belong in the Active Ingredients table.
         # Lines tagged with a non-Active ``use_as`` (Bulking Agent,
         # Sweeteners, Acidity Regulator, etc.) flow into the EU 1169

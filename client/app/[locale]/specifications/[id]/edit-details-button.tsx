@@ -12,10 +12,6 @@ import {
   type SpecificationSheetDto,
   type UpdateSpecificationRequestDto,
 } from "@/services/specifications";
-import { CustomerPicker } from "@/components/customers/customer-picker";
-import { type CustomerDto } from "@/services/customers";
-import { useOrganization } from "@/services/organizations";
-import { CustomerFormModal } from "../../customers/customers-list";
 
 
 const INPUT_CLASS =
@@ -25,12 +21,13 @@ const HINT_CLASS = "text-xs text-ink-500";
 
 
 /**
- * Modal trigger that edits the free-text metadata rows on a spec
- * sheet — client info, shelf life, storage, food contact status,
- * unit quantity, weight uniformity, total-weight override, cover
- * notes. These map onto the same ``PATCH /specifications/<id>/``
- * endpoint the (now-slimmer) creation modal uses; the sheet renders
- * them on its customer-facing layout and PDF.
+ * Modal trigger that edits the free-text metadata rows on a draft
+ * spec sheet — code, commercial numbers, shelf life, storage, food
+ * contact status, weight uniformity, cover notes.
+ *
+ * Client attribution isn't editable here — draft sheets are trial
+ * artefacts. The customer is only bound to the FINAL sheet, which
+ * is auto-created after trial sign-off through a separate flow.
  */
 export function EditDetailsButton({
   orgId,
@@ -42,24 +39,9 @@ export function EditDetailsButton({
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
   const router = useRouter();
-  // Dynamics-managed orgs hide the inline "Create new customer"
-  // affordance. Reassigning to an existing imported customer
-  // still works as before.
-  const organization = useOrganization(orgId);
-  const dynamicsManaged = Boolean(
-    organization?.dynamics_customers_managed,
-  );
 
   const [isOpen, setIsOpen] = useState(false);
   const [form, setForm] = useState<UpdateSpecificationRequestDto>({});
-  //: Optional FK-style picker so sales can reassign the client by
-  //: swapping the address-book record instead of retyping the three
-  //: text fields. The spec model doesn't store ``customer_id`` — it
-  //: keeps name/email/company denormalised — so picking here just
-  //: snaps those three values into the form state. Empty = "no
-  //: address-book pick yet" (legacy sheets land in this state too).
-  const [customer, setCustomer] = useState<CustomerDto | null>(null);
-  const [customerCreating, setCustomerCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useUpdateSpecification(orgId, sheet.id);
@@ -69,16 +51,8 @@ export function EditDetailsButton({
   // the inputs retain focus across re-renders the parent triggers.
   useEffect(() => {
     if (!isOpen) return;
-    // ``total_weight_label`` and ``unit_quantity`` used to live on
-    // this form but the builder is authoritative for both (computed
-    // total weight + servings-per-pack). Editing them here only
-    // created a way to drift from the snapshot, so we dropped them.
-    // Existing stored values on old sheets stay in the DB untouched.
     setForm({
       code: sheet.code,
-      client_name: sheet.client_name,
-      client_email: sheet.client_email,
-      client_company: sheet.client_company,
       cover_notes: sheet.cover_notes,
       unit_cost: sheet.unit_cost,
       margin_percent: sheet.margin_percent,
@@ -92,9 +66,6 @@ export function EditDetailsButton({
   }, [
     isOpen,
     sheet.code,
-    sheet.client_name,
-    sheet.client_email,
-    sheet.client_company,
     sheet.cover_notes,
     sheet.unit_cost,
     sheet.margin_percent,
@@ -109,21 +80,6 @@ export function EditDetailsButton({
     key: K,
     value: UpdateSpecificationRequestDto[K],
   ) => setForm((prev) => ({ ...prev, [key]: value }));
-
-  // When the picker fires, snap the three denormalised fields onto
-  // the form so the rest of the modal reflects the new client. The
-  // scientist can still tweak any individual field afterwards — the
-  // picker is a convenience, not a hard binding.
-  const handleCustomerChange = (next: CustomerDto | null) => {
-    setCustomer(next);
-    if (next === null) return;
-    setForm((prev) => ({
-      ...prev,
-      client_name: next.name ?? "",
-      client_email: next.email ?? "",
-      client_company: next.company ?? "",
-    }));
-  };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -142,14 +98,7 @@ export function EditDetailsButton({
       isOpen={isOpen}
       onOpenChange={(open) => {
         setIsOpen(open);
-        if (!open) {
-          setError(null);
-          // Clear the picker so a re-open starts fresh — the spec
-          // doesn't store ``customer_id``, so there's no canonical
-          // "current customer" to re-seed from. Picking is purely a
-          // convenience overlay on top of the denormalised fields.
-          setCustomer(null);
-        }
+        if (!open) setError(null);
       }}
     >
       <Modal.Trigger>
@@ -179,54 +128,12 @@ export function EditDetailsButton({
                   {tSpecs("edit_details.subtitle")}
                 </p>
 
-                {/* Client context — identity the customer will see on
-                    their copy of the sheet. The picker reassigns by
-                    snapping the address-book record onto the three
-                    text inputs; the inputs stay editable so a
-                    scientist can override a single value (e.g. a
-                    different contact for this specific sheet)
-                    without mutating the address-book record. */}
-                <fieldset className="flex flex-col gap-4 rounded-xl border border-ink-100 p-4">
-                  <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
-                    {tSpecs("edit_details.group.client")}
-                  </legend>
-                  <CustomerPicker
-                    orgId={orgId}
-                    value={customer}
-                    onChange={handleCustomerChange}
-                    onCreateNew={() => setCustomerCreating(true)}
-                    label={tSpecs("create.client")}
-                    hint={tSpecs("create.client_picker_hint")}
-                    dynamicsManaged={dynamicsManaged}
-                  />
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <TextField
-                      label={tSpecs("create.code")}
-                      value={form.code ?? ""}
-                      onChange={(v) => set("code", v)}
-                      hint={tSpecs("edit_details.code_hint")}
-                    />
-                    <TextField
-                      label={tSpecs("create.client_company")}
-                      value={form.client_company ?? ""}
-                      onChange={(v) => set("client_company", v)}
-                      hint={tSpecs("edit_details.client_company_hint")}
-                    />
-                    <TextField
-                      label={tSpecs("create.client_name")}
-                      value={form.client_name ?? ""}
-                      onChange={(v) => set("client_name", v)}
-                      hint={tSpecs("edit_details.client_name_hint")}
-                    />
-                    <TextField
-                      label={tSpecs("create.client_email")}
-                      value={form.client_email ?? ""}
-                      onChange={(v) => set("client_email", v)}
-                      type="email"
-                      hint={tSpecs("edit_details.client_email_hint")}
-                    />
-                  </div>
-                </fieldset>
+                <TextField
+                  label={tSpecs("create.code")}
+                  value={form.code ?? ""}
+                  onChange={(v) => set("code", v)}
+                  hint={tSpecs("edit_details.code_hint")}
+                />
 
                 {/* Commercial numbers the customer sees on the sheet.
                     Cost + Margin only — the customer price is
@@ -408,20 +315,6 @@ export function EditDetailsButton({
           </Modal.Dialog>
         </Modal.Container>
       </Modal.Backdrop>
-
-      {/* Mount inside the outer Modal so the create-customer dialog
-          stacks above the edit dialog instead of dismissing it. On
-          create we snap the new customer into the picker so the
-          scientist doesn't have to re-find it — mirrors the spec
-          and proposal create flows. */}
-      <CustomerFormModal
-        orgId={orgId}
-        mode="create"
-        isOpen={customerCreating}
-        onClose={() => setCustomerCreating(false)}
-        initial={null}
-        onCreated={(c) => handleCustomerChange(c)}
-      />
     </Modal>
   );
 }

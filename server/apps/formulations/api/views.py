@@ -1524,6 +1524,325 @@ class FormulationOverviewView(APIView):
         return Response(asdict(overview), status=status.HTTP_200_OK)
 
 
+class FormulationLinkCFFView(APIView):
+    """``POST`` / ``DELETE`` ``/.../formulations/<id>/link-cff/``.
+
+    Attaches or detaches a CFF submission to this project. Both
+    directions gated on ``formulations.edit`` — the same capability
+    that lets a scientist reassign sales / lead — because it's a
+    workspace-metadata edit, not a formulation content mutation.
+
+    Payload: ``{ "cff_submission_id": "<uuid>" }`` on both verbs.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def _load(self, formulation_id: str, cff_id: str | None):
+        from apps.cff_submissions.models import CFFSubmission
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+        if not cff_id:
+            return formulation, None, Response(
+                {"cff_submission_id": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        submission = CFFSubmission.objects.filter(
+            organization=self.organization, id=cff_id
+        ).first()
+        if submission is None:
+            return formulation, None, Response(
+                {"cff_submission_id": ["cff_not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return formulation, submission, None
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.cff_submissions.services import (
+            CFFAssignmentError,
+            ProjectAlreadyHasCFF,
+            assign_to_project,
+        )
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        formulation, submission, err = self._load(
+            formulation_id, payload.get("cff_submission_id")
+        )
+        if err is not None:
+            return err
+        try:
+            assign_to_project(
+                submission=submission,
+                project=formulation,
+                actor=request.user,
+            )
+        except ProjectAlreadyHasCFF as exc:
+            # 409 with the existing submission id so the FE renders
+            # the "Unlink and replace" affordance without a second
+            # round-trip. One-CFF-per-project is a workspace rule,
+            # not a permission — hence 409 not 403.
+            return Response(
+                {
+                    "code": "project_already_has_cff",
+                    "existing_submission_id": exc.existing_submission_id,
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except CFFAssignmentError as exc:
+            return Response(
+                {"cff_submission_id": [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)
+
+    def delete(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.cff_submissions.services import (
+            CFFAssignmentError,
+            detach_from_project,
+        )
+
+        # DELETE bodies aren't universally supported by clients — the
+        # FE unlink action sends the id in the query string too so
+        # either shape works. Payload wins when both are present.
+        payload = request.data if isinstance(request.data, dict) else {}
+        cff_id = payload.get("cff_submission_id") or request.query_params.get(
+            "cff_submission_id"
+        )
+        formulation, submission, err = self._load(formulation_id, cff_id)
+        if err is not None:
+            return err
+        try:
+            detach_from_project(
+                submission=submission,
+                project=formulation,
+                actor=request.user,
+            )
+        except CFFAssignmentError as exc:
+            return Response(
+                {"cff_submission_id": [str(exc)]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)
+
+
+#: Cap per page for the cursor-paginated CFF picker. Kept small so
+#: a tenant with millions of rows still ships one page-worth of data
+#: per keystroke; the FE infinite-scrolls to reach subsequent pages
+#: rather than paying for a bigger initial payload.
+_CFF_CANDIDATES_PAGE_SIZE = 20
+
+
+def _encode_cff_cursor(effective_ts: Any, row_id: Any) -> str:
+    """Base64-encode a keyset cursor for the CFF candidates picker.
+
+    Format is opaque to the client — the FE just round-trips the
+    string back on ``next_cursor``. Encodes both parts of the
+    ``(effective_ts, id)`` keyset so the next page filter is a
+    strict-less-than compound comparison.
+    """
+
+    import base64
+    import json
+
+    return base64.urlsafe_b64encode(
+        json.dumps(
+            {
+                "t": effective_ts.isoformat() if effective_ts is not None else None,
+                "id": str(row_id),
+            }
+        ).encode("utf-8")
+    ).decode("ascii")
+
+
+def _decode_cff_cursor(raw: str) -> tuple[Any, Any] | None:
+    """Parse a base64 cursor back into ``(effective_ts, row_id)``.
+
+    Returns ``None`` when the string is missing or malformed — the
+    caller treats that as "no cursor" and starts from page 1 rather
+    than 400-ing. A tampered cursor is not a security event on this
+    endpoint since the underlying rows are already tenant-scoped.
+    """
+
+    if not raw:
+        return None
+    import base64
+    import json
+    from datetime import datetime
+
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")))
+        ts_raw = decoded.get("t")
+        row_id = decoded.get("id")
+        if not row_id:
+            return None
+        ts = datetime.fromisoformat(ts_raw) if ts_raw else None
+        return (ts, row_id)
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+class FormulationCFFCandidatesView(APIView):
+    """``GET`` ``/.../formulations/<id>/cff-candidates/?search=<q>&cursor=<c>``.
+
+    Cursor-paginated picker over the org's CFF inbox.
+
+    On modal open the FE fires this without ``search`` and without
+    ``cursor`` — the caller gets the newest 20 rows in the tenant.
+    Subsequent pages come from re-firing with the ``next_cursor`` the
+    previous response returned; the FE infinite-scrolls until
+    ``next_cursor`` is ``null``. Typing in the search box just adds
+    the ``search`` filter — the cursor still works.
+
+    Query cost properties:
+
+    * ``raw_payload`` is never loaded (``.only()`` skips the JSON blob).
+    * Filter columns (``submitter_email`` / ``submitter_name``) both
+      carry ``db_index=True`` so the search is an index-range scan.
+    * Sort key is ``COALESCE(wix_created_date, imported_at)`` so
+      portal + Wix rows interleave chronologically without either
+      branch needing to appear null-last.
+    * Keyset pagination via ``(effective_ts, id) < (cursor_ts,
+      cursor_id)`` — no OFFSET, so page N is O(page_size) regardless
+      of N even on wide tenants.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def get(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.cff_submissions.models import CFFSubmission
+        from apps.formulations.models import Formulation
+        from django.db.models import F, Prefetch, Q
+        from django.db.models.functions import Coalesce
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        search = (request.query_params.get("search") or "").strip()
+        cursor = _decode_cff_cursor(request.query_params.get("cursor") or "")
+
+        queryset = (
+            CFFSubmission.objects.filter(organization=self.organization)
+            .filter(rejected_at__isnull=True)
+            .exclude(projects=formulation)
+            .annotate(
+                effective_ts=Coalesce("wix_created_date", "imported_at")
+            )
+            .only(
+                "id",
+                "submitter_email",
+                "submitter_name",
+                "submission_kind",
+                "provenance",
+                "wix_created_date",
+                "imported_at",
+            )
+            # Prefetch the M2M so ``linked_projects`` on each row is a
+            # walk over an already-loaded collection, not N+1 queries.
+            # ``only`` narrows the Formulation payload to the three
+            # fields the picker chip actually renders — the recipe
+            # blob + audit trail don't need to travel with the picker
+            # response.
+            .prefetch_related(
+                Prefetch(
+                    "projects",
+                    queryset=Formulation.objects.only("id", "code", "name"),
+                )
+            )
+            .order_by(F("effective_ts").desc(nulls_last=True), "-id")
+        )
+
+        if search:
+            # Merged OR over the two denormalised name/email columns —
+            # both indexed. ``icontains`` walks the index prefix on
+            # each branch; the planner unions the two ranges without
+            # touching ``raw_payload``.
+            queryset = queryset.filter(
+                Q(submitter_email__icontains=search)
+                | Q(submitter_name__icontains=search)
+            )
+
+        if cursor is not None:
+            cursor_ts, cursor_id = cursor
+            if cursor_ts is not None:
+                queryset = queryset.filter(
+                    Q(effective_ts__lt=cursor_ts)
+                    | Q(effective_ts=cursor_ts, id__lt=cursor_id)
+                )
+            else:
+                queryset = queryset.filter(
+                    Q(effective_ts__isnull=True, id__lt=cursor_id)
+                )
+
+        # Fetch one extra row so we can compute ``next_cursor``
+        # without a follow-up COUNT — page-size + 1 is the standard
+        # keyset trick.
+        rows = list(queryset[: _CFF_CANDIDATES_PAGE_SIZE + 1])
+        has_more = len(rows) > _CFF_CANDIDATES_PAGE_SIZE
+        rows = rows[:_CFF_CANDIDATES_PAGE_SIZE]
+
+        next_cursor = None
+        if has_more and rows:
+            last = rows[-1]
+            effective_ts = getattr(last, "effective_ts", None) or last.imported_at
+            next_cursor = _encode_cff_cursor(effective_ts, last.id)
+
+        results = [
+            {
+                "id": str(cff.id),
+                "submitter_name": cff.submitter_name or (cff.submitter_email or ""),
+                "submitter_email": cff.submitter_email or "",
+                "submission_kind": cff.submission_kind,
+                "provenance": cff.provenance,
+                "wix_created_date": (
+                    cff.wix_created_date.isoformat()
+                    if cff.wix_created_date
+                    else None
+                ),
+                # Every remaining project on this CFF is guaranteed to
+                # be a *different* project than the one we're picking
+                # for — the ``exclude(projects=formulation)`` filter
+                # above already dropped the current one. Non-empty
+                # means the CFF is shared with another workspace, a
+                # legitimate but flag-worthy state (customer wanted
+                # two flavour variants of the same brief).
+                "linked_projects": [
+                    {
+                        "id": str(project.id),
+                        "code": project.code or "",
+                        "name": project.name or "",
+                    }
+                    for project in cff.projects.all()
+                ],
+            }
+            for cff in rows
+        ]
+        return Response(
+            {
+                "candidates": results,
+                "next_cursor": next_cursor,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class FormulationCloneView(APIView):
     """``POST`` ``/.../formulations/<id>/clone/``.
 

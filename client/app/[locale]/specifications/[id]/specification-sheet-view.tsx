@@ -38,13 +38,14 @@ import {
   useUpdateSpecification,
   type RenderedSheetContext,
   type RenderedTransition,
-  type SpecificationDocumentKind,
   type SpecificationSheetDto,
   type SpecificationStatus,
 } from "@/services/specifications";
 import { EditDetailsButton } from "./edit-details-button";
 import { EditOverridesButton } from "./edit-overrides-button";
-import { EditPackagingButton } from "./edit-packaging-button";
+import { ReasonModal } from "./reason-modal";
+import { RegenerateButton } from "./regenerate-button";
+import { SendModal } from "./send-modal";
 import { SharePublicLinkButton } from "./share-public-link-button";
 
 
@@ -236,6 +237,27 @@ export function SpecificationSheetView({
     `${sheet.status}:approved`,
   ]);
 
+  // Reject / revert transitions require a typed reason. Set of
+  // ``from:to`` keys mirrors the BE ``_REASON_REQUIRED_TRANSITIONS``
+  // so the FE gate and the BE guard stay in lock-step; if either
+  // side drifts the other picks up the slack (BE rejects with
+  // ``missing_transition_reason``, FE modal blocks submit).
+  const reasonTransitions = new Set<string>([
+    "in_review:draft",
+    "approved:draft",
+    "sent:rejected",
+    "rejected:draft",
+  ]);
+  const [reasonPending, setReasonPending] = useState<{
+    next: SpecificationStatus;
+    variant: "reject" | "revert";
+  } | null>(null);
+  const [reasonError, setReasonError] = useState<string | null>(null);
+
+  // Send transition captures delivery evidence (method + recipient).
+  const [sendPending, setSendPending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+
   const handleTransition = async (next: SpecificationStatus) => {
     setErrorMessage(null);
     const key = `${sheet.status}:${next}`;
@@ -244,11 +266,57 @@ export function SpecificationSheetView({
       setSignaturePending(next);
       return;
     }
+    if (reasonTransitions.has(key)) {
+      setReasonError(null);
+      setReasonPending({
+        next,
+        variant: next === "rejected" ? "reject" : "revert",
+      });
+      return;
+    }
+    if (key === "approved:sent") {
+      setSendError(null);
+      setSendPending(true);
+      return;
+    }
     try {
       await transitionMutation.mutateAsync({ status: next });
       router.refresh();
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
+    }
+  };
+
+  const handleReasonConfirm = async (reason: string) => {
+    if (!reasonPending) return;
+    setReasonError(null);
+    try {
+      await transitionMutation.mutateAsync({
+        status: reasonPending.next,
+        notes: reason,
+      });
+      setReasonPending(null);
+      router.refresh();
+    } catch (err) {
+      setReasonError(extractApiErrorMessage(err, tErrors));
+    }
+  };
+
+  const handleSendConfirm = async (payload: {
+    delivery_method: "public_link" | "email" | "other";
+    delivery_recipient: string;
+  }) => {
+    setSendError(null);
+    try {
+      await transitionMutation.mutateAsync({
+        status: "sent",
+        delivery_method: payload.delivery_method,
+        delivery_recipient: payload.delivery_recipient,
+      });
+      setSendPending(false);
+      router.refresh();
+    } catch (err) {
+      setSendError(extractApiErrorMessage(err, tErrors));
     }
   };
 
@@ -349,6 +417,30 @@ export function SpecificationSheetView({
         onConfirm={handleSignatureConfirm}
       />
 
+      <ReasonModal
+        variant={reasonPending?.variant ?? "revert"}
+        isOpen={reasonPending !== null}
+        onClose={() => {
+          setReasonPending(null);
+          setReasonError(null);
+        }}
+        onConfirm={handleReasonConfirm}
+        busy={transitionMutation.isPending}
+        error={reasonError}
+      />
+
+      <SendModal
+        isOpen={sendPending}
+        onClose={() => {
+          setSendPending(false);
+          setSendError(null);
+        }}
+        onConfirm={handleSendConfirm}
+        sheet={sheet}
+        busy={transitionMutation.isPending}
+        error={sendError}
+      />
+
       {/* ------------------------------------------------------------ */}
       {/* Back-link to the parent project — hidden when printing         */}
       {/* ------------------------------------------------------------ */}
@@ -369,12 +461,9 @@ export function SpecificationSheetView({
             {tSpecs("detail.status_label")}
           </span>
           <SpecStatusChip status={sheet.status} tSpecs={tSpecs} />
-          <DocumentKindToggle
-            orgId={orgId}
-            sheet={sheet}
-            canWrite={canWrite && isEditableStatus}
-            tSpecs={tSpecs}
-          />
+          {/* Draft/Final is auto-managed — no manual toggle. Draft
+              sheets watermark by default; the FINAL sheet is created
+              after trial sign-off and never carries the watermark. */}
           {/* Pricing surface in the status bar — three states:
            *
            *  * Both empty → yellow "No price set" pill so the team
@@ -558,15 +647,19 @@ export function SpecificationSheetView({
             <EditDetailsButton orgId={orgId} sheet={sheet} />
           ) : null}
           {canWrite && isEditableStatus ? (
+            <RegenerateButton orgId={orgId} sheet={sheet} />
+          ) : null}
+          {canWrite && isEditableStatus ? (
             <EditOverridesButton
               orgId={orgId}
               sheet={sheet}
               rendered={rendered}
             />
           ) : null}
-          {canWrite && isEditableStatus ? (
-            <EditPackagingButton orgId={orgId} sheet={sheet} />
-          ) : null}
+          {/* Packaging isn't editable on the sheet — the builder's
+              stage picks are the source of truth. Sheet creation
+              auto-seeds the four FK slots from the picked packaging
+              items in the routing stage. */}
           {canManageVisibility && isEditableStatus ? (
             <VisibilityMenu
               orgId={orgId}
@@ -1845,96 +1938,6 @@ function VisibilityMenu({
           ) : null}
         </div>
       ) : null}
-    </div>
-  );
-}
-
-
-// ---------------------------------------------------------------------------
-// Draft / Final toggle
-// ---------------------------------------------------------------------------
-
-
-/**
- * Two-pill segmented control that flips ``document_kind`` between
- * ``draft`` and ``final``. Final removes the diagonal DRAFT watermark
- * from the rendered PDF immediately on the next render; we invalidate
- * the spec-detail query in the underlying mutation so the toolbar
- * re-reads the new value without a manual refresh.
- *
- * Readers (no write cap) see a read-only pill of whichever kind is
- * currently set so they still know which output the sheet is printing.
- */
-function DocumentKindToggle({
-  orgId,
-  sheet,
-  canWrite,
-  tSpecs,
-}: {
-  orgId: string;
-  sheet: SpecificationSheetDto;
-  canWrite: boolean;
-  tSpecs: ReturnType<typeof useTranslations<"specifications">>;
-}) {
-  const update = useUpdateSpecification(orgId, sheet.id);
-
-  const kind: SpecificationDocumentKind = sheet.document_kind ?? "draft";
-
-  const label = (value: SpecificationDocumentKind) =>
-    tSpecs(`document_kind.${value}` as "document_kind.draft");
-
-  // Read-only pill — preserves the label so readers know whether the
-  // doc is set to watermark or not, without exposing a control.
-  if (!canWrite) {
-    const pillClasses =
-      kind === "final"
-        ? "bg-success/10 text-success ring-success/30"
-        : "bg-amber-50 text-amber-900 ring-amber-200";
-    return (
-      <span
-        className={`inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-medium uppercase tracking-wide ring-1 ring-inset ${pillClasses}`}
-        title={tSpecs("document_kind.hint")}
-      >
-        {label(kind)}
-      </span>
-    );
-  }
-
-  const options: readonly SpecificationDocumentKind[] = ["draft", "final"];
-
-  return (
-    <div
-      className="inline-flex items-center gap-0 overflow-hidden rounded-full bg-ink-100 p-0.5 ring-1 ring-inset ring-ink-200"
-      role="group"
-      aria-label={tSpecs("document_kind.legend")}
-      title={tSpecs("document_kind.hint")}
-    >
-      {options.map((value) => {
-        const isActive = value === kind;
-        const activeClasses =
-          value === "final"
-            ? "bg-success text-ink-0 shadow-sm"
-            : "bg-amber-500 text-ink-0 shadow-sm";
-        return (
-          <button
-            key={value}
-            type="button"
-            onClick={() => {
-              if (isActive || update.isPending) return;
-              update.mutate({ document_kind: value });
-            }}
-            disabled={update.isPending}
-            aria-pressed={isActive}
-            className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide transition-colors disabled:opacity-60 ${
-              isActive
-                ? activeClasses
-                : "text-ink-600 hover:text-ink-900"
-            }`}
-          >
-            {label(value)}
-          </button>
-        );
-      })}
     </div>
   );
 }
