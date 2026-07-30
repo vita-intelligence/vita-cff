@@ -65,6 +65,16 @@ urlpatterns = [
         include("apps.label_design.api.urls", namespace="label_design"),
     ),
     path("api/", include("apps.psp.api.urls", namespace="psp")),
+    # Reverse integration surface — PSP presents a shared bearer
+    # token here to read NPD state (e.g. the R&D in-development
+    # project list that PSP's kanban renders as its leftmost column).
+    path(
+        "api/psp-integration/",
+        include(
+            "apps.formulations.api.psp_integration_urls",
+            namespace="psp_integration",
+        ),
+    ),
 ]
 
 

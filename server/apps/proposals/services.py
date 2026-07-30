@@ -15,6 +15,7 @@ also emit audit rows and validate signatures.
 from __future__ import annotations
 
 import re
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -26,6 +27,8 @@ from django.db.models import Q, QuerySet
 from django.utils import timezone
 
 from apps.audit.services import record as record_audit, snapshot
+
+logger = logging.getLogger(__name__)
 from apps.formulations.models import (
     Formulation,
     FormulationVersion,
@@ -212,6 +215,39 @@ class SpecificationSheetNotApproved(Exception):
     """
 
     code = "specification_sheet_not_approved"
+
+
+class BundleEmpty(Exception):
+    """A bundle-proposal payload arrived without any spec sheets.
+
+    Handling this defensively rather than trusting the FE to always
+    guard the button — a stale client, or a direct API call from a
+    script, can otherwise skate right through the create surface and
+    land an empty proposal.
+    """
+
+    code = "bundle_empty"
+
+
+class BundleMixedCustomers(Exception):
+    """A bundle-proposal referenced sheets from >1 customer.
+
+    The FE's picker enforces the same-customer rule interactively;
+    this guard catches TOCTOU races (someone re-linked one of the
+    formulations mid-submit) and direct API callers. Callers can
+    fix the payload by dropping the offending sheets.
+    """
+
+    code = "bundle_mixed_customers"
+
+
+class BundleRequiresLinkedCustomer(Exception):
+    """Every sheet in a bundle proposal must sit on a formulation
+    that already carries a ``Formulation.customer`` FK — the same
+    gate spec creation and approval enforce.
+    """
+
+    code = "bundle_requires_linked_customer"
 
 
 class CustomerNotInOrg(Exception):
@@ -445,9 +481,16 @@ def list_proposals(
 
     queryset = Proposal.objects.filter(organization=organization)
     if formulation_id is not None:
+        # Traverse ``lines`` so a bundled proposal built from N specs
+        # shows up on ALL N projects' Proposals tabs, not just the
+        # one that happened to be the first line (that first line
+        # sets the Proposal's own ``formulation_version`` FK, but
+        # every other spec belongs to a different project). Distinct
+        # collapses the row-per-matching-line the join would emit.
         queryset = queryset.filter(
-            formulation_version__formulation_id=formulation_id
-        )
+            Q(formulation_version__formulation_id=formulation_id)
+            | Q(lines__formulation_version__formulation_id=formulation_id)
+        ).distinct()
     if status:
         queryset = queryset.filter(status=status)
     if statuses:
@@ -523,6 +566,71 @@ def get_proposal(
 
 
 @transaction.atomic
+def _schedule_proposal_psp_merge(proposal: Proposal) -> None:
+    """Fire the PSP merge sync on the outer transaction's commit.
+
+    Deferred to ``on_commit`` so:
+
+    * A rollback anywhere in the create path (audit failure,
+      backfill failure, …) DOESN'T leak a PSP-side merge for a
+      proposal that didn't actually save.
+    * The caller's atomic block only ever holds DB locks — network
+      I/O to PSP happens after ``COMMIT``, so a slow PSP can never
+      block the transaction.
+
+    Silent-degrade — any exception from the PSP client is caught and
+    logged; a failed sync must never break proposal creation for the
+    operator. PSP is idempotent by ``npd_proposal_uuid`` so retries
+    (from a future re-run or manual trigger) land cleanly.
+    """
+
+    def _fire() -> None:
+        from apps.psp.services import sync_proposal_to_psp
+
+        try:
+            sync_proposal_to_psp(proposal=proposal)
+        except Exception:  # noqa: BLE001 — deliberate belt-and-braces
+            logger.exception(
+                "PSP proposal merge sync failed for proposal %s",
+                proposal.pk,
+            )
+
+    transaction.on_commit(_fire)
+
+
+@transaction.atomic
+def _schedule_proposal_psp_unmerge(
+    *, organization: Organization, proposal_uuid: str
+) -> None:
+    """Reverse the PSP merge on the outer transaction's commit.
+
+    Mirrors :func:`_schedule_proposal_psp_merge` but for the delete
+    path. Captures ``organization`` + ``proposal_uuid`` at call time
+    because the Proposal row is gone by the time ``on_commit`` fires.
+
+    Silent-degrade — a failed unmerge must never break Proposal
+    deletion for the operator. PSP is idempotent on
+    ``proposal_uuid`` so a retry (from a future re-run) lands
+    cleanly, and a genuinely-missing primary responds ``no_op:
+    true`` rather than erroring.
+    """
+
+    def _fire() -> None:
+        from apps.psp.services import unsync_proposal_from_psp
+
+        try:
+            unsync_proposal_from_psp(
+                organization=organization, proposal_uuid=proposal_uuid
+            )
+        except Exception:  # noqa: BLE001 — deliberate belt-and-braces
+            logger.exception(
+                "PSP proposal unmerge sync failed for proposal %s",
+                proposal_uuid,
+            )
+
+    transaction.on_commit(_fire)
+
+
 def create_proposal(
     *,
     organization: Organization,
@@ -549,8 +657,14 @@ def create_proposal(
     material_cost_per_pack: Decimal | None = None,
     cover_notes: str = "",
     valid_until: Any = None,
+    defer_psp_sync: bool = False,
 ) -> Proposal:
     """Plan a new proposal against a saved formulation version.
+
+    Set ``defer_psp_sync=True`` when :func:`create_proposal_bundle` is
+    the outer caller — the bundle fires ONE merge sync after every
+    line has landed rather than firing per-``create_proposal`` +
+    once-per-``add_proposal_line``.
 
     * ``formulation_version_id`` must live in the caller's org.
     * ``specification_sheet_id`` (optional) must also be scoped.
@@ -780,6 +894,105 @@ def create_proposal(
     # address book stays authoritative once set.
     _backfill_customer_from_proposal(proposal=proposal, actor=actor)
 
+    if not defer_psp_sync:
+        _schedule_proposal_psp_merge(proposal)
+
+    return proposal
+
+
+@transaction.atomic
+def create_proposal_bundle(
+    *,
+    organization: Organization,
+    actor: Any,
+    sheet_specs: list[dict[str, Any]],
+    deposit_percent: Decimal | None = None,
+) -> Proposal:
+    """One proposal, N specification sheets — the /signed bulk flow.
+
+    ``sheet_specs`` is a list of ``{"sheet_id": uuid, "quantity": int}``
+    entries. The first sheet is the "primary" — used to seed the
+    proposal's currency, template type, customer identity, and
+    pricing defaults. Every subsequent sheet becomes its own
+    :class:`ProposalLine` via :func:`add_proposal_line`.
+
+    Hard invariants (enforced before ANY row is written so a
+    failure never leaves a half-created proposal):
+
+      * At least one sheet.
+      * Every sheet's formulation carries a linked
+        ``Formulation.customer`` FK.
+      * Every sheet's linked customer is the same.
+
+    On success returns the fully-built :class:`Proposal`. Callers
+    can inspect ``.lines.all()`` for the resulting line rows.
+    """
+
+    if not sheet_specs:
+        raise BundleEmpty()
+
+    # Resolve every sheet up-front so we can validate as a set before
+    # any writes. Order-preserving so ``sheet_specs[0]`` stays primary.
+    from apps.specifications.models import SpecificationSheet
+
+    resolved: list[tuple[SpecificationSheet, int]] = []
+    customer_ids: set[Any] = set()
+    for entry in sheet_specs:
+        sheet_id = entry.get("sheet_id") or entry.get("specification_sheet_id")
+        raw_qty = entry.get("quantity", 1)
+        try:
+            qty = max(1, int(raw_qty))
+        except (TypeError, ValueError):
+            qty = 1
+
+        sheet = _resolve_quotable_sheet(sheet_id, organization)
+        # ``_resolve_quotable_sheet`` guards approval + org scope; we
+        # still need the customer gate.
+        formulation = sheet.formulation_version.formulation
+        if formulation.customer_id is None:
+            raise BundleRequiresLinkedCustomer()
+        customer_ids.add(formulation.customer_id)
+        resolved.append((sheet, qty))
+
+    if len(customer_ids) > 1:
+        raise BundleMixedCustomers()
+
+    # Bootstrap the proposal against the first spec. All the seeding
+    # behaviour (customer contact fields, pricing, currency, template
+    # type) already lives in ``create_proposal`` — reusing it keeps
+    # the two surfaces behaviourally identical.
+    primary_sheet, primary_qty = resolved[0]
+    primary_customer_id = primary_sheet.formulation_version.formulation.customer_id
+
+    proposal = create_proposal(
+        organization=organization,
+        actor=actor,
+        formulation_version_id=primary_sheet.formulation_version_id,
+        specification_sheet_id=primary_sheet.id,
+        customer_id=primary_customer_id,
+        template_type="custom",
+        quantity=primary_qty,
+        deposit_percent=deposit_percent,
+        # Suppress the inner PSP sync — we fire ONE at the end of the
+        # bundle with every ProposalLine attached, so PSP sees the
+        # full merge set in one round-trip.
+        defer_psp_sync=True,
+    )
+
+    # Append every remaining sheet as its own line. ``add_proposal_line``
+    # snapshots the formulation code + name and seeds pricing from the
+    # spec, so lines land render-ready without extra bookkeeping here.
+    for sheet, qty in resolved[1:]:
+        add_proposal_line(
+            proposal=proposal,
+            actor=actor,
+            formulation_version_id=sheet.formulation_version_id,
+            specification_sheet_id=sheet.id,
+            quantity=qty,
+        )
+
+    _schedule_proposal_psp_merge(proposal)
+
     return proposal
 
 
@@ -905,6 +1118,12 @@ def delete_proposal(*, proposal: Proposal, actor: Any) -> None:
         target_type="proposal",
         target_id=target_id,
         before=before,
+    )
+    # Reverse the PSP-side merge so the N R&D drafts that got folded
+    # into one primary reappear as individual orders — chat history
+    # follows the comments back to their home CO.
+    _schedule_proposal_psp_unmerge(
+        organization=organization, proposal_uuid=target_id
     )
 
 
@@ -1532,6 +1751,14 @@ def transition_status(
     proposal.status = to_status
     proposal.updated_by = actor
     proposal.save()
+
+    # Advance the PSP-side wizard block. The merge sync plants
+    # ``npd_proposal_status`` on the primary CO; re-firing it here
+    # keeps PSP's wizard in step (draft → in_review → approved →
+    # sent → accepted flips the phase between "Awaiting proposal
+    # approval", "Ready to send", "Awaiting customer signature",
+    # then into Setup once accepted).
+    _schedule_proposal_psp_merge(proposal)
 
     # When the proposal is sent to the client, pull every attached
     # spec into ``SENT`` alongside it. The kiosk signs the whole

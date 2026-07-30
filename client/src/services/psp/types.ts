@@ -161,3 +161,35 @@ export interface PspItemMirrorResponseDto {
   readonly is_archived: boolean;
   readonly psp_source_uuid: string | null;
 }
+
+
+//: Metadata about one PSP-facing access token. ``prefix`` is the
+//: first few chars of the raw token (stored plaintext for display);
+//: the raw token itself is only ever returned by ``POST`` at mint
+//: time — see :interface:`PspAccessTokenMintResponseDto`.
+export interface PspAccessTokenDto {
+  readonly id: string;
+  readonly name: string;
+  readonly prefix: string;
+  readonly is_active: boolean;
+  readonly created_at: string | null;
+  readonly created_by_name: string | null;
+  readonly last_used_at: string | null;
+  readonly revoked_at: string | null;
+  readonly revoked_by_name: string | null;
+  readonly revoke_reason: string | null;
+}
+
+
+export interface PspAccessTokenListDto {
+  readonly items: readonly PspAccessTokenDto[];
+}
+
+
+//: One-shot response body from ``POST ..``. The ``token`` field is
+//: the RAW bearer string — it appears here exactly once and must be
+//: rendered to the operator immediately + dropped.
+export interface PspAccessTokenMintResponseDto {
+  readonly token: string;
+  readonly record: PspAccessTokenDto;
+}

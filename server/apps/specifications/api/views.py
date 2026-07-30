@@ -30,6 +30,7 @@ from apps.catalogues.models import Catalogue, Item, PACKAGING_SLUG
 from apps.specifications.models import SpecificationSheet
 from apps.specifications.services import (
     FinalSpecAlreadyExists,
+    SpecRequiresCustomer,
     FormulationVersionNotInOrg,
     InvalidSnapshotOverrides,
     InvalidSpecificationDocumentKind,
@@ -39,6 +40,7 @@ from apps.specifications.services import (
     MissingTransitionReason,
     PACKAGING_SLOT_TYPES,
     PackagingItemNotAllowed,
+    PublicLinkNotAllowedForDraft,
     PublicLinkNotEnabled,
     SheetLockedBySignedProposal,
     SheetRegenerationRequiresForce,
@@ -115,6 +117,7 @@ class SpecificationListCreateView(APIView):
 
         formulation_id = request.query_params.get("formulation_id") or None
         status_filter = request.query_params.get("status") or None
+        search = request.query_params.get("search") or None
         if status_filter and status_filter not in SpecificationStatus.values:
             return Response(
                 {"status": ["invalid_status"]},
@@ -124,6 +127,7 @@ class SpecificationListCreateView(APIView):
             organization=self.organization,
             formulation_id=formulation_id,
             status=status_filter,
+            search=search,
         )
         paginator = SpecificationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
@@ -186,6 +190,11 @@ class SpecificationListCreateView(APIView):
         except FinalSpecAlreadyExists:
             return Response(
                 {"code": "final_spec_already_exists"},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except SpecRequiresCustomer:
+            return Response(
+                {"code": "spec_requires_customer"},
                 status=status.HTTP_409_CONFLICT,
             )
         return Response(
@@ -435,6 +444,11 @@ class SpecificationStatusView(APIView):
             return Response(
                 {"delivery_method": ["missing_delivery_capture"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SpecRequiresCustomer:
+            return Response(
+                {"code": "spec_requires_customer"},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             SpecificationSheetReadSerializer(updated).data,
@@ -820,7 +834,13 @@ class SpecificationPublicLinkView(APIView):
         self, request: Request, org_id: str, sheet_id: str
     ) -> Response:
         sheet = self._load(sheet_id)
-        updated = rotate_public_token(sheet=sheet, actor=request.user)
+        try:
+            updated = rotate_public_token(sheet=sheet, actor=request.user)
+        except PublicLinkNotAllowedForDraft as exc:
+            return Response(
+                {"detail": str(exc) or exc.code, "code": exc.code},
+                status=status.HTTP_409_CONFLICT,
+            )
         return Response(
             SpecificationSheetReadSerializer(updated).data,
             status=status.HTTP_200_OK,

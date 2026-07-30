@@ -125,6 +125,30 @@ class SignatureRequired(Exception):
     code = "signature_required"
 
 
+class SpecRequiresCustomer(Exception):
+    """A spec sheet cannot exist (or advance) until the underlying
+    formulation has a linked customer.
+
+    Why gate here rather than let the sheet float customer-less:
+
+    * The sheet renders per-customer prices, cover notes, and
+      delivery terms — those fields belong to a real client, not a
+      placeholder. Building a spec without a customer means the
+      scientist is guessing at commercial terms, and the director
+      is signing off on those guesses.
+    * The proposal + label-design cascades downstream key off
+      ``formulation.customer``; a spec that outruns customer
+      assignment leaves those chains in an ambiguous state.
+
+    Both ``create_sheet`` (block creation) and ``transition_status``
+    approving toward ``APPROVED`` (block director sign-off) raise
+    this. Remediation is a one-click Link Customer on the project
+    workspace — the FE surfaces the same code via the warnings card.
+    """
+
+    code = "spec_requires_customer"
+
+
 class MissingTransitionReason(Exception):
     """The transition needed a written reason but the payload omitted
     one.
@@ -303,6 +327,16 @@ class PublicLinkNotEnabled(Exception):
     code = "public_link_not_enabled"
 
 
+class PublicLinkNotAllowedForDraft(Exception):
+    """Public share links are a customer-facing preview affordance —
+    only meaningful once the sheet has been promoted to FINAL. Draft-
+    kind sheets are the internal working document; issuing a share URL
+    on one would leak a mid-negotiation snapshot to whoever the link
+    reaches. FE hides the button; this guard blocks a direct API hit."""
+
+    code = "public_link_not_allowed_for_draft"
+
+
 class PackagingItemNotAllowed(Exception):
     """The caller tried to pin a packaging slot to an item that either
     does not live in the sheet's org packaging catalogue or has the
@@ -361,6 +395,11 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
 #: row even on the org-wide /signed list.
 _SHEET_RELATED: tuple[str, ...] = (
     "formulation_version__formulation",
+    # Preload the project's linked customer so
+    # ``SpecificationSheetReadSerializer.get_linked_customer`` stays
+    # O(1) per row — the /signed page and the workspace both list
+    # sheets with the customer chip visible.
+    "formulation_version__formulation__customer",
     "packaging_lid",
     "packaging_container",
     "packaging_label",
@@ -415,6 +454,7 @@ def list_sheets(
     organization: Organization,
     formulation_id: Any | None = None,
     status: str | None = None,
+    search: str | None = None,
 ) -> QuerySet[SpecificationSheet]:
     """List spec sheets newest-first, optionally scoped to a single
     formulation. The project workspace's Spec Sheets tab passes
@@ -424,9 +464,16 @@ def list_sheets(
     ``status`` (e.g. ``"in_review"``) filters by lifecycle stage so
     the director's approval inbox can pull "things waiting on me"
     in one query.
+
+    ``search`` is a case-insensitive substring match across every
+    surface an operator would recognise the row by — the sheet's
+    ``code``, the customer identity (kiosk-signed OR scientist-typed
+    OR the FK on the formulation), and the formulation's own name.
+    Kept as a single OR so a search index (postgres GIN, later) can
+    replace it without changing the callers.
     """
 
-    from django.db.models import Prefetch
+    from django.db.models import Prefetch, Q
 
     from apps.proposals.models import ProposalLine
 
@@ -437,6 +484,23 @@ def list_sheets(
         )
     if status:
         queryset = queryset.filter(status=status)
+    if search:
+        term = search.strip()
+        if term:
+            queryset = queryset.filter(
+                Q(code__icontains=term)
+                | Q(customer_name__icontains=term)
+                | Q(customer_company__icontains=term)
+                | Q(client_name__icontains=term)
+                | Q(client_company__icontains=term)
+                | Q(formulation_version__formulation__name__icontains=term)
+                | Q(
+                    formulation_version__formulation__customer__name__icontains=term
+                )
+                | Q(
+                    formulation_version__formulation__customer__company__icontains=term
+                )
+            )
     return _annotate_review_blocker(
         queryset.select_related(*_SHEET_RELATED).prefetch_related(
             # ``get_linked_proposal`` checks ``proposal_lines`` when the
@@ -769,6 +833,11 @@ def compute_unit_cost_for_version(
         total += line_cost
         priced_any = True
 
+    routing_cost = _compute_marginal_routing_cost_per_unit(formulation)
+    if routing_cost is not None:
+        total += routing_cost
+        priced_any = True
+
     if not priced_any:
         return None
 
@@ -776,6 +845,169 @@ def compute_unit_cost_for_version(
     # ``SpecificationSheet.unit_cost`` and the display fmt on the
     # approval modal.
     return total.quantize(Decimal("0.0001"))
+
+
+# Assumed finished-units per production batch used to amortise
+# per-batch routing costs (setup labour, ``fixed_cost``,
+# ``other_fixed_cost``) into a per-unit number for the spec sheet.
+# Kept in sync with the FE constant in ``cost-calculator.tsx``.
+# When the proposal quantity is close to this, quantity × unit_cost
+# closely reproduces the real batch cost; smaller / larger orders
+# accept the amortisation approximation.
+_ASSUMED_BATCH_SIZE = Decimal("5000")
+
+
+def _compute_marginal_routing_cost_per_unit(formulation) -> Decimal | None:
+    """Per-unit routing cost for the spec sheet's ``unit_cost``.
+
+    Six components, summed per stage across the formulation:
+
+    * ``cycle × (machine + labour)`` — the per-unit operator time.
+    * ``setup × (machine + labour) / ASSUMED_BATCH_SIZE`` — per-batch
+      setup labour, amortised into a per-unit number.
+    * ``variable_cost`` — per-unit variable override on the stage row.
+    * ``fixed_cost / ASSUMED_BATCH_SIZE`` — per-batch fixed override,
+      amortised.
+    * ``other_variable_cost`` — per-unit routing-header variable.
+    * ``other_fixed_cost / ASSUMED_BATCH_SIZE`` — per-batch routing-
+      header fixed, amortised.
+
+    Cycle time prefers PSP-derived history when the workstation group
+    has session data (avg_seconds_per_unit from vita-performance
+    kiosk writebacks, avg_labour_hourly_rate from HR wages); falls back
+    to the stage's own ``cycle_time_min`` × ``workstation_group.hourly_rate``.
+    Amortisation uses ``_ASSUMED_BATCH_SIZE`` so a proposal for that
+    quantity multiplies back to the real batch cost.
+
+    Returns ``None`` when PSP isn't configured or the formulation has
+    no stage with a workstation group attached.
+    """
+
+    from apps.psp.services import (
+        PspClient,
+        PspError,
+        get_psp_config,
+        is_psp_live,
+    )
+
+    organization = formulation.organization
+    if not is_psp_live(organization):
+        return None
+
+    stages = list(formulation.stages.all())
+    if not stages:
+        return None
+
+    wsg_uuids = [
+        str(s.workstation_group_uuid)
+        for s in stages
+        if s.workstation_group_uuid
+    ]
+    if not wsg_uuids:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+        client = PspClient(config)
+        cost_items = client.workstation_costs(list(set(wsg_uuids)))
+    except (PspError, Exception):  # noqa: BLE001 — surface as no-cost
+        return None
+
+    cost_by_uuid: dict[str, dict] = {
+        str(row.get("uuid")): row
+        for row in (cost_items or [])
+        if row and row.get("uuid")
+    }
+
+    total = Decimal("0")
+    any_stage_priced = False
+
+    for stage in stages:
+        wsg_uuid = (
+            str(stage.workstation_group_uuid)
+            if stage.workstation_group_uuid
+            else None
+        )
+        rate_row = cost_by_uuid.get(wsg_uuid) if wsg_uuid else None
+
+        # Machine + labour are separate costs that stack. Either can
+        # legitimately be 0 without invalidating the other — a WSG
+        # without a configured ``hourly_rate`` on PSP just doesn't
+        # contribute machine cost, and a stage without kiosk history
+        # simply doesn't contribute labour. We compute with what's
+        # actually captured; no synthetic fallback.
+        machine_hourly = _dec(rate_row.get("machine_hourly_rate")) if rate_row else Decimal("0")
+        labour_hourly = _dec(rate_row.get("avg_labour_hourly_rate")) if rate_row else Decimal("0")
+        hourly = machine_hourly + labour_hourly
+
+        # Cycle time — prefer measured throughput, fall back to the
+        # stage's declared cycle_time_min.
+        cycle_seconds: Decimal | None = None
+        if rate_row and rate_row.get("avg_seconds_per_unit") is not None:
+            cycle_seconds = _dec(rate_row.get("avg_seconds_per_unit"))
+        elif stage.cycle_time_min is not None:
+            cycle_seconds = Decimal(str(stage.cycle_time_min)) * Decimal("60")
+
+        cycle_cost = Decimal("0")
+        if cycle_seconds and cycle_seconds > 0 and hourly > 0:
+            cycle_cost = (cycle_seconds / Decimal("3600")) * hourly
+
+        # Per-unit variable overrides declared on the stage row.
+        variable = (
+            Decimal(str(stage.variable_cost)) if stage.variable_cost is not None else Decimal("0")
+        )
+        other_variable = (
+            Decimal(str(stage.other_variable_cost))
+            if stage.other_variable_cost is not None
+            else Decimal("0")
+        )
+
+        # Per-batch costs amortised over ``_ASSUMED_BATCH_SIZE``.
+        setup_cost_amortised = Decimal("0")
+        if stage.setup_time_min is not None and hourly > 0:
+            setup_minutes = Decimal(str(stage.setup_time_min))
+            if setup_minutes > 0:
+                setup_cost_amortised = (
+                    (setup_minutes / Decimal("60")) * hourly
+                ) / _ASSUMED_BATCH_SIZE
+
+        fixed_cost_amortised = (
+            Decimal(str(stage.fixed_cost)) / _ASSUMED_BATCH_SIZE
+            if stage.fixed_cost is not None
+            else Decimal("0")
+        )
+        other_fixed_cost_amortised = (
+            Decimal(str(stage.other_fixed_cost)) / _ASSUMED_BATCH_SIZE
+            if stage.other_fixed_cost is not None
+            else Decimal("0")
+        )
+
+        stage_cost = (
+            cycle_cost
+            + setup_cost_amortised
+            + variable
+            + fixed_cost_amortised
+            + other_variable
+            + other_fixed_cost_amortised
+        )
+        if stage_cost > 0:
+            total += stage_cost
+            any_stage_priced = True
+
+    return total if any_stage_priced else None
+
+
+def _dec(raw) -> Decimal:
+    """Best-effort ``Decimal`` coercion for the mixed str / int / None
+    payload shapes coming back from PSP. Returns ``Decimal(0)`` when
+    the value doesn't parse — the caller adds it, so 0 is the right
+    identity."""
+    if raw is None:
+        return Decimal("0")
+    try:
+        return Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("0")
 
 
 @transaction.atomic
@@ -892,16 +1124,16 @@ def regenerate_sheet(
         if getattr(sheet, slot) is None:
             setattr(sheet, slot, item)
 
-    # Re-price against the new version's snapshot lines so a
-    # regenerated draft carries the current builder cost rather than
-    # the price of whichever version was originally pinned. A director
-    # override survives — we only refresh when the sheet is unpriced
-    # or the previously computed value was auto-populated (i.e. the
-    # scientist hasn't manually locked in a number yet).
-    if sheet.unit_cost is None:
-        recomputed = compute_unit_cost_for_version(new_version)
-        if recomputed is not None:
-            sheet.unit_cost = recomputed
+    # Re-price against the new version's snapshot lines. Regenerate is
+    # explicitly a "re-pin to the current builder state" action, so the
+    # cost should reflect the current PSP prices + workstation rates,
+    # not whatever number was auto-populated when the sheet was first
+    # created. A director who typed a manual override before hitting
+    # regenerate can re-enter it on approval; keeping stale numbers is
+    # the worse failure mode (customer sees the wrong price).
+    recomputed = compute_unit_cost_for_version(new_version)
+    if recomputed is not None:
+        sheet.unit_cost = recomputed
 
     sheet.updated_by = actor
     sheet.save()
@@ -991,12 +1223,20 @@ def create_sheet(
     """
 
     version = (
-        FormulationVersion.objects.select_related("formulation")
+        FormulationVersion.objects.select_related(
+            "formulation", "formulation__customer"
+        )
         .filter(id=formulation_version_id)
         .first()
     )
     if version is None or version.formulation.organization_id != organization.id:
         raise FormulationVersionNotInOrg()
+
+    # A spec sheet is a per-customer artifact — cover notes, prices,
+    # delivery terms all belong to a real client. Refuse creation
+    # until the project workspace has one linked.
+    if version.formulation.customer_id is None:
+        raise SpecRequiresCustomer()
 
     if code:
         duplicate = SpecificationSheet.objects.filter(
@@ -1888,6 +2128,16 @@ def transition_status(
         if not delivery_recipient_cleaned:
             raise MissingDeliveryCapture()
 
+    # Director approval is gated on the project having a linked
+    # customer. Signing off a spec whose formulation still points at
+    # nothing (or the "NPD Placeholder" via PSP) locks in commercial
+    # terms against an unknown client — bad for audit and worse for
+    # the proposal team who needs to know who to invoice.
+    if next_status == SpecificationStatus.APPROVED:
+        formulation = sheet.formulation_version.formulation
+        if formulation.customer_id is None:
+            raise SpecRequiresCustomer()
+
     # Slot uniqueness on the ``in_review`` lane: the director has at
     # most one sheet of each ``document_kind`` queued for their
     # signature per project. Two drafts (or two finals) in_review on
@@ -2008,6 +2258,66 @@ def transition_status(
             version_number=sheet.formulation_version.version_number,
         )
 
+        # Mirror the sign-off to PSP's CustomerOrder so its wizard
+        # phase moves R&D → Awaiting proposal. Fires on
+        # ``transaction.on_commit`` so a rollback (rare here but
+        # possible) doesn't tell PSP the spec was signed when the
+        # local write got rolled back. Silent-degrade — the PSP
+        # service already swallows every PspError and logs it, so a
+        # slow / down PSP doesn't block the sign-off flow.
+        formulation = sheet.formulation_version.formulation
+        sheet_id = sheet.pk
+
+        def _fire_spec_approved_sync() -> None:
+            from apps.specifications.models import SpecificationSheet
+            from apps.psp.services import sync_customer_order_to_psp
+
+            try:
+                fresh_sheet = SpecificationSheet.objects.select_related(
+                    "prepared_by_user", "director_user"
+                ).get(pk=sheet_id)
+                sync_customer_order_to_psp(
+                    formulation=formulation,
+                    approved_spec_sheet=fresh_sheet,
+                )
+            except Exception:
+                logger.exception(
+                    "spec-approved: sync_customer_order_to_psp bubbled "
+                    "for formulation %s sheet %s",
+                    formulation.pk,
+                    sheet_id,
+                )
+
+        transaction.on_commit(_fire_spec_approved_sync)
+
+    # Revert-out-of-APPROVED (director → reject / revert-to-draft, or
+    # a later APPROVED → SENT that a subsequent revert bounces back)
+    # should tell PSP the spec is no longer quotable so the wizard
+    # bounces back from :awaiting_proposal to :r_and_d. Same silent-
+    # degrade contract as the approval-sync above.
+    if (
+        previous_status == SpecificationStatus.APPROVED
+        and next_status != SpecificationStatus.APPROVED
+    ):
+        formulation = sheet.formulation_version.formulation
+
+        def _fire_spec_reverted_sync() -> None:
+            from apps.psp.services import sync_customer_order_to_psp
+
+            try:
+                sync_customer_order_to_psp(
+                    formulation=formulation,
+                    spec_cleared=True,
+                )
+            except Exception:
+                logger.exception(
+                    "spec-reverted: sync_customer_order_to_psp bubbled "
+                    "for formulation %s",
+                    formulation.pk,
+                )
+
+        transaction.on_commit(_fire_spec_reverted_sync)
+
     # FINAL spec hitting ``sent`` is the moment the customer needs
     # to come back and authorise production. Fire the email on
     # ``transaction.on_commit`` so a rollback (rare here, but possible
@@ -2052,7 +2362,14 @@ def rotate_public_token(
     that was issued against the old token so any still-open
     public-comment browser immediately gets bounced on its next
     request.
+
+    Raises :class:`PublicLinkNotAllowedForDraft` when called on a
+    DRAFT-kind sheet — public share is a customer-facing preview
+    affordance, only valid on FINAL.
     """
+
+    if sheet.document_kind == SpecificationDocumentKind.DRAFT:
+        raise PublicLinkNotAllowedForDraft()
 
     previous_token = sheet.public_token
     sheet.public_token = uuid.uuid4()

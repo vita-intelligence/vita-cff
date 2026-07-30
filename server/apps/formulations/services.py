@@ -3743,6 +3743,107 @@ def assign_lead_scientist(
 
 
 # ---------------------------------------------------------------------------
+# Customer link
+# ---------------------------------------------------------------------------
+#
+# One-customer-per-project. Sales links a customer via the project page
+# (``POST /formulations/<id>/link-customer/``) at any point in the R&D
+# → proposal timeline; unlinking clears the FK without deleting the
+# customer row. Mirrored to PSP's CustomerOrder on ``transaction.on_commit``
+# so the placeholder customer flips to the real one on the kanban.
+
+
+@transaction.atomic
+def link_customer(
+    *, formulation: Formulation, customer: Any, actor: Any
+) -> Formulation:
+    """Attach a :class:`Customer` to this project.
+
+    * ``customer`` must belong to the same organization as the
+      formulation (checked at the view layer by scoping the queryset).
+    * Overwrites any existing link — one customer per project.
+    * Fires an on_commit sync to PSP so the CustomerOrder's identity
+      fields refresh from placeholder to the real customer name.
+    """
+
+    before = snapshot(formulation)
+    formulation.customer = customer
+    formulation.updated_by = actor
+    formulation.save(update_fields=["customer", "updated_by", "updated_at"])
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.link_customer",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+
+    fid = formulation.pk
+
+    def _fire_sync() -> None:
+        from apps.formulations.models import Formulation as _F
+        from apps.psp.services import sync_customer_order_to_psp
+
+        try:
+            fresh = _F.objects.select_related(
+                "customer", "lead_scientist", "sales_person", "organization"
+            ).get(pk=fid)
+            sync_customer_order_to_psp(formulation=fresh)
+        except Exception:
+            logger.exception(
+                "link_customer: sync_customer_order_to_psp bubbled "
+                "for formulation %s",
+                fid,
+            )
+
+    transaction.on_commit(_fire_sync)
+    return formulation
+
+
+@transaction.atomic
+def unlink_customer(*, formulation: Formulation, actor: Any) -> Formulation:
+    """Clear the project's customer link. No-op if already unset."""
+
+    if formulation.customer_id is None:
+        return formulation
+
+    before = snapshot(formulation)
+    formulation.customer = None
+    formulation.updated_by = actor
+    formulation.save(update_fields=["customer", "updated_by", "updated_at"])
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.unlink_customer",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+
+    fid = formulation.pk
+
+    def _fire_sync() -> None:
+        from apps.formulations.models import Formulation as _F
+        from apps.psp.services import sync_customer_order_to_psp
+
+        try:
+            fresh = _F.objects.select_related(
+                "customer", "lead_scientist", "sales_person", "organization"
+            ).get(pk=fid)
+            sync_customer_order_to_psp(formulation=fresh)
+        except Exception:
+            logger.exception(
+                "unlink_customer: sync_customer_order_to_psp bubbled "
+                "for formulation %s",
+                fid,
+            )
+
+    transaction.on_commit(_fire_sync)
+    return formulation
+
+
+# ---------------------------------------------------------------------------
 # Line CRUD
 # ---------------------------------------------------------------------------
 
@@ -5468,7 +5569,10 @@ def save_version(
     # PSP outage doesn't block the version save. Called outside
     # any transaction on purpose: the local save is authoritative;
     # PSP eventually catches up on the next successful push.
-    from apps.psp.services import push_bom_to_psp
+    from apps.psp.services import (
+        push_bom_to_psp,
+        sync_customer_order_to_psp,
+    )
 
     try:
         # Use the FE-computed per-stage snapshot as the PSP push
@@ -5486,6 +5590,20 @@ def save_version(
         # don't want the save flow to inherit the failure.
         logger.exception(
             "push_bom_to_psp bubbled an unexpected exception for "
+            "formulation %s",
+            formulation.pk,
+        )
+
+    # Mirror the formulation as a CustomerOrder on PSP. Every project
+    # on NPD = a customer order on PSP, keyed by the same UUID so the
+    # `/projects/<uuid>` URL resolves on both sides. First named save
+    # bootstraps a draft CO; subsequent named saves refresh identity
+    # fields only. Silent-degrade for the same reason as the BOM push.
+    try:
+        sync_customer_order_to_psp(formulation=formulation)
+    except Exception:
+        logger.exception(
+            "sync_customer_order_to_psp bubbled an unexpected exception for "
             "formulation %s",
             formulation.pk,
         )

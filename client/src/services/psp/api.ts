@@ -10,6 +10,9 @@ import { apiClient } from "@/lib/api";
 
 import { pspEndpoints } from "./endpoints";
 import type {
+  PspAccessTokenDto,
+  PspAccessTokenListDto,
+  PspAccessTokenMintResponseDto,
   PspConfigDto,
   PspItemListResponseDto,
   PspItemLookupResultDto,
@@ -306,6 +309,51 @@ export async function createPspFinishedProduct(
   const { data } = await apiClient.post<CreatePspFinishedProductResponseDto>(
     pspEndpoints.createFinishedProduct(orgId),
     payload,
+  );
+  return data;
+}
+
+
+/** Owner-only. List the PSP-facing access tokens minted for this
+ *  org (active + revoked, most-recent first). The raw token is
+ *  never returned here — mint returns it exactly once and the FE
+ *  must render + drop the reference. */
+export async function fetchPspAccessTokens(
+  orgId: string,
+): Promise<PspAccessTokenListDto> {
+  const { data } = await apiClient.get<PspAccessTokenListDto>(
+    pspEndpoints.accessTokens(orgId),
+  );
+  return data;
+}
+
+
+/** Owner-only. Mint a fresh token with the given human name.
+ *  Returns ``{ token, record }`` — ``token`` is the raw bearer
+ *  string, shown once in a copy-once modal on the caller. */
+export async function mintPspAccessToken(
+  orgId: string,
+  input: { name: string },
+): Promise<PspAccessTokenMintResponseDto> {
+  const { data } = await apiClient.post<PspAccessTokenMintResponseDto>(
+    pspEndpoints.accessTokens(orgId),
+    { name: input.name },
+  );
+  return data;
+}
+
+
+/** Owner-only. Soft-revoke a token by uuid. Optional ``reason``
+ *  captured in the audit trail. Returns the updated record so the
+ *  list can swap the row's chip in place. */
+export async function revokePspAccessToken(
+  orgId: string,
+  tokenId: string,
+  input: { reason?: string } = {},
+): Promise<{ record: PspAccessTokenDto }> {
+  const { data } = await apiClient.post<{ record: PspAccessTokenDto }>(
+    pspEndpoints.accessTokenRevoke(orgId, tokenId),
+    { reason: input.reason ?? "" },
   );
   return data;
 }

@@ -8,6 +8,7 @@ import {
   Loader2,
   Search,
   UserCircle,
+  UserRound,
   UserRoundCog,
   X,
 } from "lucide-react";
@@ -58,10 +59,15 @@ export function ProjectWarningsCard({
 
   const missingSales = overview.sales_person === null;
   const missingScientist = overview.lead_scientist === null;
+  const missingCustomer = overview.linked_customer === null;
   const hasCFF = overview.linked_cffs.length > 0;
 
   const anythingToShow =
-    missingSales || missingScientist || !hasCFF || overview.linked_cffs.length;
+    missingCustomer ||
+    missingSales ||
+    missingScientist ||
+    !hasCFF ||
+    overview.linked_cffs.length;
 
   const unlinkMutation = useUnlinkCFFFromProject(orgId, overview.id);
   const tErrors = useTranslations("errors");
@@ -89,6 +95,19 @@ export function ProjectWarningsCard({
       </div>
 
       <ul className="flex flex-col gap-2">
+        {/* No customer — the loudest hard warning. Blocks spec sheet
+            creation + director approval on the BE; surfacing it here
+            gives sales a one-click path to fix before they hit the
+            server-side gate. */}
+        {missingCustomer ? (
+          <WarningRow
+            tone="amber"
+            icon={<UserRound className="h-4 w-4" />}
+            title="No customer linked"
+            body="A spec sheet can't be created or director-signed until you attach a client. Use the Customer card below to link one now."
+          />
+        ) : null}
+
         {missingSales ? (
           <WarningRow
             tone="amber"

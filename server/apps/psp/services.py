@@ -425,6 +425,44 @@ class PspClient:
             return []
         return items
 
+    def workstation_costs(self, wsg_uuids: list[Any]) -> list[dict]:
+        """Bulk cost + throughput lookup for workstation groups —
+        powers vita-cff's real-time per-unit routing cost estimate.
+        Ships a POST with ``{workstation_group_uuids: [...]}`` and
+        returns the ``items`` list from PSP's response.
+
+        Each entry carries ``uuid`` + ``name`` + ``machine_hourly_rate``
+        (string decimal or ``None``) + ``avg_labour_hourly_rate``
+        (string decimal or ``None``) + ``avg_seconds_per_unit`` (string
+        decimal or ``None``) + ``session_count`` (int) +
+        ``currency_code``. ``None`` on either average means "no session
+        history" — caller falls back to the stage's own ``cycle_time_min``
+        + ``fixed_cost`` fields.
+
+        Empty input short-circuits with ``[]``. Missing / archived
+        uuids silently drop out of the response.
+        """
+
+        cleaned = [
+            str(u).strip()
+            for u in (wsg_uuids or [])
+            if u and str(u).strip()
+        ]
+        if not cleaned:
+            return []
+
+        response = self._request(
+            "api/integration/workstation-groups/costs",
+            method="POST",
+            body={"workstation_group_uuids": cleaned},
+        )
+        if not isinstance(response, dict):
+            return []
+        items = response.get("items")
+        if not isinstance(items, list):
+            return []
+        return items
+
     def delete_item(self, item_uuid: Any) -> dict:
         """Safe-delete a PSP catalog item. PSP's ``DELETE /items/:uuid``
         gates on ownership + reference count + history and returns:
@@ -531,6 +569,85 @@ class PspClient:
             f"api/integration/items/{cleaned}/bom",
             method="PUT",
             body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
+    def sync_customer_order(self, payload: dict) -> dict | None:
+        """Push a formulation-to-CustomerOrder sync payload to PSP.
+
+        Called after every ``save_version`` on NPD. Idempotent on the
+        PSP side keyed by ``npd_formulation_uuid`` — first hit creates
+        a fresh draft CustomerOrder with ``uuid = npd_formulation_uuid``
+        (so the URL matches on both apps); subsequent hits refresh the
+        mirrored identity fields without touching operator-owned
+        columns like status / customer_id.
+
+        Returns PSP's response body on success (carries
+        ``customer_order.uuid`` + ``status``) or ``None`` on soft
+        failure. Auth / network / rate-limit failures bubble as
+        :class:`PspError` — callers should catch and log-and-continue
+        so a slow PSP never blocks a scientist's save.
+        """
+
+        response = self._request(
+            "api/integration/customer-orders/sync",
+            method="POST",
+            body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
+    def merge_customer_orders_from_proposal(
+        self, payload: dict
+    ) -> dict | None:
+        """Consolidate N R&D COs on PSP into one when a proposal is
+        drafted.
+
+        Fires once per proposal creation (single-spec via
+        :func:`create_proposal` and multi-spec via
+        :func:`create_proposal_bundle` alike). PSP's ``ProposalMerge``
+        picks the first ``npd_formulation_uuid`` as primary, reassigns
+        comments + lines from the others, marks them
+        ``merged_into_id: primary.id``, and plants the proposal
+        identity so the wizard advances to ``:awaiting_signature``.
+
+        Idempotent by ``npd_proposal_uuid`` — a retry after a network
+        error refreshes the primary's lines rather than duplicating
+        rows.
+        """
+
+        response = self._request(
+            "api/integration/customer-orders/from-proposal",
+            method="POST",
+            body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
+    def unmerge_customer_orders_from_proposal(
+        self, proposal_uuid: str
+    ) -> dict | None:
+        """Reverse a proposal-driven CO merge on PSP.
+
+        Fires from :func:`delete_proposal`'s ``on_commit`` when the
+        underlying Proposal is deleted on NPD. PSP's
+        ``ProposalMerge.unmerge_from_proposal`` fans comments back to
+        their home CustomerOrder, clears ``merged_into_id`` on every
+        secondary, and wipes the primary's proposal identity + lines
+        so each spec's R&D draft reappears in the wizard as it was
+        before the merge.
+
+        Idempotent — a re-fire on an already-unmerged proposal_uuid
+        returns ``{"no_op": true}`` from PSP rather than erroring.
+        """
+
+        response = self._request(
+            f"api/integration/customer-orders/from-proposal/{proposal_uuid}",
+            method="DELETE",
         )
         if not isinstance(response, dict):
             return None
@@ -1648,6 +1765,650 @@ def get_psp_item_bom(*, organization: Any, uuid: str) -> dict | None:
             cleaned,
         )
         return None
+
+
+# ---------------------------------------------------------------------------
+# CustomerOrder sync — NPD formulation ↔ PSP customer order (project)
+# ---------------------------------------------------------------------------
+
+
+def _person_display_name(user: Any) -> str:
+    """Best-effort name for the "R&D lead / Sales" chips on PSP.
+
+    Prefers the account's ``full_name`` (first + last), falls back to
+    email so the operator sees *something* actionable even when the
+    profile is half-set. Returns an empty string when the user is
+    unset — PSP treats "" the same as missing.
+    """
+
+    if user is None:
+        return ""
+    full = getattr(user, "full_name", "") or ""
+    if full.strip():
+        return full.strip()
+    email = getattr(user, "email", "") or ""
+    return email.strip()
+
+
+def _formulation_app_url(organization: Any, formulation: Any) -> str:
+    """Deep link back into NPD's own formulation builder page.
+
+    Composed here (rather than on the PSP side) because the base URL
+    is an NPD-owned setting. Next.js resolves the locale on its own
+    (via middleware) so we skip the locale prefix. Returns an empty
+    string when the base URL is unset in Django settings — PSP then
+    hides the "Open on NPD" button and shows the config hint.
+    """
+
+    from django.conf import settings as django_settings
+
+    base = (getattr(django_settings, "APP_BASE_URL", "") or "").rstrip("/")
+    if not base or not formulation:
+        return ""
+    return f"{base}/formulations/{formulation.id}/builder/"
+
+
+def _customer_identity(customer: Any) -> dict:
+    """Display + shell-creation fields for the linked customer.
+
+    Returns a homogeneous dict whether or not a customer is attached.
+    PSP's ``NpdSync``:
+
+    * On empty ``customer_display_name`` — snaps the CO back to the
+      per-tenant "NPD Placeholder" customer (the R&D-mode default).
+    * On non-empty — find-or-create-shell in PSP's own Customers
+      table using ``customer_uuid`` as the identity key; swaps the
+      CO's ``customer_id`` FK to that shell so PSP-native surfaces
+      (proposals, invoices) can pick up the customer without the
+      operator re-entering anything.
+
+    We ship contact name explicitly so the auto-created PSP shell
+    has a meaningful ``contact_name`` right away (PSP normally
+    validates this on approval), sparing sales a re-entry.
+    """
+
+    if customer is None:
+        return {
+            "customer_uuid": "",
+            "customer_display_name": "",
+            "customer_contact_name": "",
+        }
+    # Prefer the company name (that's what appears on invoices and the
+    # kanban); fall back to the contact person when the client is a
+    # sole trader with no company set.
+    company = (getattr(customer, "company", "") or "").strip()
+    contact_name = (getattr(customer, "name", "") or "").strip()
+    display = company or contact_name
+    return {
+        "customer_uuid": str(getattr(customer, "id", "") or ""),
+        "customer_display_name": display,
+        "customer_contact_name": contact_name,
+    }
+
+
+def _spec_sheet_url(sheet: Any) -> str:
+    """Deep link to the spec sheet detail page on NPD."""
+
+    from django.conf import settings as django_settings
+
+    base = (getattr(django_settings, "APP_BASE_URL", "") or "").rstrip("/")
+    if not base or not sheet:
+        return ""
+    return f"{base}/specifications/{sheet.id}/"
+
+
+def _iso(dt: Any) -> str:
+    """Return ISO-8601 (UTC ``Z`` suffix) for a datetime, else empty."""
+
+    from datetime import datetime, timezone
+
+    if not isinstance(dt, datetime):
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _cff_url(cff: Any) -> str:
+    """Deep link to the CFF submission on NPD."""
+
+    from django.conf import settings as django_settings
+
+    base = (getattr(django_settings, "APP_BASE_URL", "") or "").rstrip("/")
+    if not base or not cff:
+        return ""
+    return f"{base}/cff/{cff.id}/"
+
+
+def _cff_payload(cff: Any) -> dict:
+    """CFF identity block for the sync payload — fired on
+    ``assign_to_project`` so PSP mirrors the same CFF-project link
+    the scientist sees on NPD.
+    """
+
+    submitter_name = (
+        getattr(cff, "submitter_name", "") or ""
+    ).strip()
+    if not submitter_name:
+        submitter_name = (
+            getattr(cff, "portal_submitter_name", "") or ""
+        ).strip()
+    submitter_email = (
+        getattr(cff, "submitter_email", "") or ""
+    ).strip()
+    return {
+        "cff_uuid": str(getattr(cff, "id", "") or ""),
+        "cff_url": _cff_url(cff),
+        "cff_submitter_name": submitter_name,
+        "cff_submitter_email": submitter_email,
+    }
+
+
+def _spec_sheet_payload(sheet: Any) -> dict:
+    """Spec identity + sign-off block for the PSP sync payload.
+
+    Only invoked from the ``in_review → approved`` transition, so
+    ``director_signed_at`` is guaranteed set — that timestamp is what
+    PSP uses to gate the phase move to :awaiting_proposal.
+    """
+
+    return {
+        "spec_sheet_uuid": str(sheet.id),
+        "spec_sheet_url": _spec_sheet_url(sheet),
+        "spec_prepared_by_name": _person_display_name(
+            getattr(sheet, "prepared_by_user", None)
+        ),
+        "spec_prepared_at": _iso(getattr(sheet, "prepared_by_signed_at", None)),
+        "spec_director_name": _person_display_name(
+            getattr(sheet, "director_user", None)
+        ),
+        "spec_approved_at": _iso(getattr(sheet, "director_signed_at", None)),
+    }
+
+
+def sync_customer_order_to_psp(
+    *,
+    formulation: Any,
+    approved_spec_sheet: Any | None = None,
+    spec_cleared: bool = False,
+    linked_cff: Any | None = None,
+    cff_cleared: bool = False,
+) -> dict | None:
+    """Push a formulation → CustomerOrder sync payload to PSP.
+
+    Called after every successful ``save_version`` AND when a spec
+    sheet transitions to ``approved`` (director signs). PSP treats
+    every NPD formulation as a customer order (its "project") —
+    first-sync inserts a fresh draft CO with ``uuid = formulation.id``
+    planted so the same URL identifies the project on both apps;
+    subsequent syncs refresh the identity fields only.
+
+    ``approved_spec_sheet`` — the freshly-approved
+    :class:`SpecificationSheet` when called from the spec transition
+    hook. Adds spec identity + sign-off timestamps to the payload so
+    PSP can flip the phase from ``:r_and_d`` to ``:awaiting_proposal``.
+    Absent on ordinary ``save_version`` syncs; PSP preserves any spec
+    fields it already has (nil-passes are treated as "no change").
+
+    Silent-degradation contract — no exception bubbles up:
+
+    * PSP integration off / decryption failed → ``None``, no log.
+    * PSP unreachable / rate-limited / auth failed → warn + ``None``.
+
+    Returns PSP's response body (``{customer_order: {uuid, status,
+    npd_formulation_uuid, inserted_at}}``) on success so callers can
+    log the outcome.
+    """
+
+    organization = getattr(formulation, "organization", None)
+    if organization is None:
+        return None
+    if not is_psp_live(organization):
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return None
+
+    payload = {
+        "npd_formulation_uuid": str(formulation.id),
+        "name": (getattr(formulation, "name", "") or "").strip(),
+        "code": (getattr(formulation, "code", "") or "").strip(),
+        # Denormalised R&D team so PSP can render "R&D lead: X ·
+        # Sales: Y" on its project page without a round-trip back to
+        # NPD. Roles are FK to auth_user; either can be nil (project
+        # unassigned). Trimmed to empty-string → treated as "no value"
+        # by PSP's sync path.
+        "lead_scientist_name": _person_display_name(
+            getattr(formulation, "lead_scientist", None)
+        ),
+        "sales_person_name": _person_display_name(
+            getattr(formulation, "sales_person", None)
+        ),
+        # Deep link back into NPD's own detail page. PSP can't build
+        # this itself (locale + base URL are NPD-owned settings), so
+        # we send it every sync. Falls back to nil when the org
+        # hasn't configured an `app_base_url`.
+        "app_url": _formulation_app_url(organization, formulation),
+        # Customer identity — nil when the project hasn't been linked
+        # yet. PSP uses this to swap the placeholder customer for the
+        # real name on its kanban / project page. The uuid lets PSP
+        # match against its own Customers table if a matching entry
+        # exists (future enhancement); today it's display-only.
+        **_customer_identity(getattr(formulation, "customer", None)),
+    }
+
+    if approved_spec_sheet is not None:
+        # Spec-approved sync: attach sheet identity + who-signed-when
+        # so PSP's project page can render the director sign-off card
+        # and gate the phase move to :awaiting_proposal.
+        payload.update(_spec_sheet_payload(approved_spec_sheet))
+    elif spec_cleared:
+        # Spec-reverted sync: an already-approved sheet has just been
+        # bumped back to draft / rejected. Tell PSP to wipe every
+        # spec_* field on the CO so its wizard phase drops from
+        # :awaiting_proposal back to :r_and_d.
+        payload["spec_state"] = "cleared"
+
+    if linked_cff is not None:
+        # CFF-linked sync: attach the submitter identity + a deep
+        # link so PSP's project page surfaces the same "who asked
+        # for this?" context the scientist sees on NPD.
+        payload.update(_cff_payload(linked_cff))
+    elif cff_cleared:
+        # CFF-unlink sync: wipe all cff_* fields on the CO.
+        payload["cff_state"] = "cleared"
+
+    try:
+        client = _client_factory(config)
+        return client.sync_customer_order(payload)
+    except PspError:
+        logger.exception(
+            "PSP sync_customer_order failed for org %s formulation %s",
+            organization.pk,
+            formulation.pk,
+        )
+        return None
+
+
+def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
+    """Push a proposal-created merge sync to PSP.
+
+    Called on ``on_commit`` after :func:`create_proposal` and
+    :func:`create_proposal_bundle` succeed. PSP-side
+    ``ProposalMerge.merge_from_proposal`` consolidates the N R&D draft
+    CustomerOrders that back this proposal's ProposalLines into ONE
+    primary CO, absorbs their comments, and creates one CO line per
+    ProposalLine.
+
+    Silent-degradation contract (mirrors :func:`sync_customer_order_to_psp`):
+
+    * PSP integration off / decryption failed → ``None``, no log.
+    * PSP unreachable / auth failed / merge errored → warn + ``None``.
+    * No formulation lines to merge → ``None`` (nothing to do).
+    """
+
+    organization = getattr(proposal, "organization", None)
+    if organization is None:
+        return None
+    if not is_psp_live(organization):
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return None
+
+    # Materialise the ProposalLine rows in the order the operator
+    # picked them. First line's formulation becomes the primary on PSP.
+    lines = list(
+        proposal.lines.select_related(
+            "formulation_version__formulation"
+        ).order_by("id")
+    )
+    if not lines:
+        return None
+
+    line_payload: list[dict[str, Any]] = []
+    for line in lines:
+        formulation = line.formulation_version.formulation
+        if formulation is None:
+            continue
+        line_payload.append(
+            {
+                "npd_formulation_uuid": str(formulation.id),
+                "psp_finished_product_uuid": (
+                    str(formulation.psp_finished_product_uuid)
+                    if getattr(formulation, "psp_finished_product_uuid", None)
+                    else None
+                ),
+                "quantity": int(line.quantity or 1),
+                "unit_price": (
+                    str(line.unit_price) if line.unit_price is not None else None
+                ),
+                "line_subtotal": (
+                    str(line.line_subtotal)
+                    if getattr(line, "line_subtotal", None) is not None
+                    else None
+                ),
+            }
+        )
+
+    if not line_payload:
+        return None
+
+    # Per-transition timestamps for the wizard-phase gate (latest-wins).
+    transitions = _proposal_transition_map(proposal)
+    # Full audit-preserving history — PSP renders every entry as a
+    # timeline event. Includes each formulation's own creation, spec
+    # sheet transitions, and every proposal status change (including
+    # revert-and-redo cycles).
+    timeline = _build_full_timeline(organization, proposal)
+
+    payload = {
+        "npd_proposal_uuid": str(proposal.id),
+        "npd_proposal_code": (getattr(proposal, "code", "") or "").strip(),
+        "npd_proposal_url": _proposal_app_url(organization, proposal),
+        # NPD-authoritative status. PSP mirrors it and derives the
+        # wizard block from here (Awaiting approval → Ready to send
+        # → Awaiting customer signature).
+        "npd_proposal_status": getattr(proposal, "status", "") or "",
+        # Latest-transition timestamps for the wizard phase gate.
+        "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
+        "npd_proposal_created_by_name": _person_display_name(
+            getattr(proposal, "created_by", None)
+        ),
+        **transitions,
+        "timeline": timeline,
+        "lines": line_payload,
+    }
+
+    try:
+        client = _client_factory(config)
+        return client.merge_customer_orders_from_proposal(payload)
+    except PspError:
+        logger.exception(
+            "PSP merge_customer_orders_from_proposal failed for org %s "
+            "proposal %s",
+            organization.pk,
+            proposal.pk,
+        )
+        return None
+
+
+def unsync_proposal_from_psp(
+    *, organization: Any, proposal_uuid: str
+) -> dict | None:
+    """Reverse a proposal-driven merge on PSP.
+
+    Called on ``on_commit`` after :func:`delete_proposal` succeeds.
+    PSP-side ``ProposalMerge.unmerge_from_proposal`` restores every
+    R&D draft CustomerOrder that was folded into the primary — fans
+    comments back to their home CO, clears ``merged_into_id`` on the
+    N-1 secondaries, and wipes the primary's proposal identity +
+    proposal-derived lines so the wizard snaps back to ``:r_and_d``.
+
+    Silent-degradation contract:
+
+    * PSP integration off / decryption failed → ``None``, no log.
+    * PSP unreachable / auth failed / unmerge errored → warn + ``None``.
+    * Empty ``proposal_uuid`` → ``None`` (nothing to undo).
+    """
+
+    if organization is None or not proposal_uuid:
+        return None
+    if not is_psp_live(organization):
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return None
+
+    try:
+        client = _client_factory(config)
+        return client.unmerge_customer_orders_from_proposal(proposal_uuid)
+    except PspError:
+        logger.exception(
+            "PSP unmerge_customer_orders_from_proposal failed for org %s "
+            "proposal %s",
+            organization.pk,
+            proposal_uuid,
+        )
+        return None
+
+
+def _proposal_app_url(organization: Any, proposal: Any) -> str | None:
+    """Deep link back into NPD's own proposal detail. Nil-safe when
+    the org hasn't configured an ``app_base_url``.
+    """
+
+    base = (getattr(organization, "app_base_url", "") or "").strip()
+    if not base:
+        return None
+    return f"{base.rstrip('/')}/proposals/{proposal.id}"
+
+
+def _iso_or_none(value: Any) -> str | None:
+    """ISO-8601 for a Django DateTime field. NPD sends UTC; PSP parses
+    with ``DateTime.from_iso8601`` — matched on both sides.
+    """
+
+    if value is None:
+        return None
+    isofmt = getattr(value, "isoformat", None)
+    if not callable(isofmt):
+        return None
+    return isofmt()
+
+
+#: Human-readable labels for proposal status codes. Anything the
+#: enum grows later falls back to a title-cased raw code so the
+#: timeline still renders something intelligible.
+_PROPOSAL_STATUS_LABELS: dict[str, str] = {
+    "draft": "Draft",
+    "in_review": "In review",
+    "approved": "Approved",
+    "sent": "Sent to customer",
+    "accepted": "Accepted by customer",
+    "rejected": "Rejected",
+}
+
+_SPEC_STATUS_LABELS: dict[str, str] = {
+    "draft": "Draft",
+    "in_review": "In review",
+    "approved": "Approved",
+    "sent": "Sent to customer",
+    "accepted": "Accepted",
+    "rejected": "Rejected",
+}
+
+
+def _human_proposal_status(code: str) -> str:
+    return _PROPOSAL_STATUS_LABELS.get(code, code.replace("_", " ").capitalize())
+
+
+def _human_spec_status(code: str) -> str:
+    return _SPEC_STATUS_LABELS.get(code, code.replace("_", " ").capitalize())
+
+
+def _build_full_timeline(organization: Any, proposal: Any) -> list[dict[str, Any]]:
+    """Every audit-worthy event for the proposal, sorted oldest-first.
+
+    Sources:
+
+    * Proposal creation (``proposal.created_at``).
+    * Every ``ProposalStatusTransition`` row (from_status → to_status).
+    * Every attached spec sheet's transitions — each sheet contributes
+      its own approval / send / accept history so a multi-spec proposal
+      keeps N distinct approval events instead of collapsing to one.
+    * Each formulation's creation timestamp so the timeline stretches
+      back to "R&D drafted" for every merged project.
+
+    Nil-safe throughout — a missing timestamp or actor drops a field
+    (never the whole entry).
+    """
+
+    from apps.proposals.models import ProposalStatusTransition
+    from apps.specifications.models import SpecificationTransition
+
+    events: list[dict[str, Any]] = []
+
+    proposal_url = _proposal_app_url(organization, proposal)
+
+    # 1. Every formulation that made it into the proposal contributes
+    #    its own "Formulation drafted" event. Multi-spec proposals
+    #    surface each merged project's origin.
+    seen_formulations: set[Any] = set()
+    for line in proposal.lines.select_related(
+        "formulation_version__formulation__created_by",
+    ).all():
+        formulation = getattr(line.formulation_version, "formulation", None)
+        if formulation is None or formulation.id in seen_formulations:
+            continue
+        seen_formulations.add(formulation.id)
+        events.append(
+            {
+                "at": _iso_or_none(getattr(formulation, "created_at", None)),
+                "label": f"Formulation drafted: {formulation.name or formulation.code}",
+                "actor": _person_display_name(
+                    getattr(formulation, "created_by", None)
+                ),
+                "href": _formulation_app_url(organization, formulation),
+                "kind": "formulation_created",
+            }
+        )
+
+    # 2. Every attached spec sheet's transition history. One row per
+    #    status change — an approve/revert/re-approve sequence shows
+    #    up as three distinct rows so the audit trail is intact.
+    sheet_ids = {
+        line.specification_sheet_id
+        for line in proposal.lines.all()
+        if line.specification_sheet_id is not None
+    }
+    if sheet_ids:
+        spec_transitions = (
+            SpecificationTransition.objects.filter(sheet_id__in=sheet_ids)
+            .select_related("actor", "sheet")
+            .order_by("created_at")
+        )
+        for t in spec_transitions:
+            events.append(
+                {
+                    "at": _iso_or_none(t.created_at),
+                    "label": _spec_transition_label(t),
+                    "actor": _person_display_name(t.actor),
+                    "href": None,
+                    "kind": "spec_transition",
+                }
+            )
+
+    # 3. Proposal itself.
+    events.append(
+        {
+            "at": _iso_or_none(getattr(proposal, "created_at", None)),
+            "label": "Proposal drafted",
+            "actor": _person_display_name(
+                getattr(proposal, "created_by", None)
+            ),
+            "href": proposal_url,
+            "kind": "proposal_created",
+        }
+    )
+
+    proposal_transitions = (
+        ProposalStatusTransition.objects.filter(proposal=proposal)
+        .select_related("actor")
+        .order_by("created_at")
+    )
+    for t in proposal_transitions:
+        events.append(
+            {
+                "at": _iso_or_none(t.created_at),
+                "label": _proposal_transition_label(t),
+                "actor": _person_display_name(t.actor),
+                "href": proposal_url,
+                "kind": "proposal_transition",
+            }
+        )
+
+    # Drop entries without a timestamp (defensive; the DB defaults
+    # ``created_at`` on every row we source from), then sort ascending
+    # so PSP renders oldest → newest without needing to re-sort.
+    filtered = [e for e in events if e.get("at")]
+    filtered.sort(key=lambda e: e["at"])
+    return filtered
+
+
+def _proposal_transition_label(t: Any) -> str:
+    from_h = _human_proposal_status(t.from_status)
+    to_h = _human_proposal_status(t.to_status)
+    return f"Proposal moved from {from_h} to {to_h}"
+
+
+def _spec_transition_label(t: Any) -> str:
+    code = t.sheet.code or "Spec sheet"
+    from_h = _human_spec_status(t.from_status)
+    to_h = _human_spec_status(t.to_status)
+    return f"{code} moved from {from_h} to {to_h}"
+
+
+def _proposal_transition_map(proposal: Any) -> dict[str, Any]:
+    """Latest transition per target status for the timeline.
+
+    For each of the three status transitions we care about (``approved``,
+    ``sent``, ``accepted``) we take the freshest row so the timeline
+    reflects the most recent flip. Older revert-and-redo cycles are
+    represented by their newest attempt.
+    """
+
+    from apps.proposals.models import ProposalStatusTransition
+
+    transitions = ProposalStatusTransition.objects.filter(
+        proposal=proposal,
+    ).select_related("actor").order_by("created_at")
+
+    per_status: dict[str, ProposalStatusTransition] = {}
+    for t in transitions:
+        per_status[t.to_status] = t
+
+    def _pair(status: str, at_key: str, by_key: str) -> dict[str, Any]:
+        row = per_status.get(status)
+        if row is None:
+            return {at_key: None, by_key: None}
+        return {
+            at_key: _iso_or_none(row.created_at),
+            by_key: _person_display_name(row.actor),
+        }
+
+    return {
+        **_pair(
+            "approved",
+            "npd_proposal_director_approved_at",
+            "npd_proposal_director_name",
+        ),
+        **_pair(
+            "sent",
+            "npd_proposal_sent_at",
+            "npd_proposal_sent_by_name",
+        ),
+        **_pair(
+            "accepted",
+            "npd_proposal_accepted_at",
+            "npd_proposal_accepted_by_name",
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

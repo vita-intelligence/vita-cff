@@ -19,10 +19,13 @@ export type {
   PspItemBomResponseDto,
 } from "./api";
 export {
+  pspAccessTokensQueryKey,
   pspQueryKeys,
   useClearPspConfig,
   useCreatePspFinishedProduct,
+  useMintPspAccessToken,
   useMirrorPspItem,
+  usePspAccessTokens,
   usePspConfig,
   usePspItemBom,
   usePspItemDetail,
@@ -32,10 +35,14 @@ export {
   usePspStorageTags,
   usePspUnitsOfMeasurement,
   usePspWorkstationGroups,
+  useRevokePspAccessToken,
   useSavePspConfig,
   useTestPspConnection,
 } from "./hooks";
 export type {
+  PspAccessTokenDto,
+  PspAccessTokenListDto,
+  PspAccessTokenMintResponseDto,
   PspConfigDto,
   PspItemDto,
   PspItemListResponseDto,

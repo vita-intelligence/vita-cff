@@ -29,9 +29,12 @@ import {
   fetchFormulationsPage,
   fetchCFFCandidates,
   fetchItemPrices,
+  fetchRoutingCosts,
   fetchProjectOverview,
   linkCFFToProject,
+  linkCustomerToProject,
   unlinkCFFFromProject,
+  unlinkCustomerFromProject,
   applyStageTemplate,
   createStageTemplate,
   deleteStageTemplate,
@@ -90,6 +93,7 @@ import type {
   ProjectOverviewDto,
   ReplaceLinesRequestDto,
   RollbackRequestDto,
+  RoutingCostsResponseDto,
   SaveVersionRequestDto,
   UpdateFormulationRequestDto,
   UpsertStagesRequestDto,
@@ -358,6 +362,44 @@ export function useItemPrices(
 }
 
 
+//: Same key shape as ``itemPricesQueryKey`` but for the routing costs
+//: endpoint — PSP workstation-group machine rate + labour rate + avg
+//: seconds/unit from the vita-performance kiosk history.
+export function routingCostsQueryKey(
+  orgId: string,
+  formulationId: string,
+  sortedUuids: readonly string[],
+) {
+  return [
+    ...formulationsQueryKeys.overview(orgId, formulationId),
+    "routing-costs",
+    sortedUuids.join(","),
+  ] as const;
+}
+
+
+export function useRoutingCosts(
+  orgId: string,
+  formulationId: string,
+  workstationGroupUuids: readonly string[],
+  options: { enabled?: boolean } = {},
+): UseQueryResult<RoutingCostsResponseDto, ApiError> {
+  const sortedUuids = [...workstationGroupUuids].sort();
+  return useQuery<RoutingCostsResponseDto, ApiError>({
+    queryKey: routingCostsQueryKey(orgId, formulationId, sortedUuids),
+    queryFn: () => fetchRoutingCosts(orgId, formulationId, sortedUuids),
+    enabled: (options.enabled ?? true) && sortedUuids.length > 0,
+    //: Rate + history change slowly on the shop floor; a 30 s cache
+    //: keeps the pill from re-fetching on every workstation-group
+    //: edit while still picking up wage / rate changes within a
+    //: page navigation.
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    placeholderData: (prev) => prev,
+  });
+}
+
+
 export function useCFFCandidates(
   orgId: string,
   formulationId: string,
@@ -438,6 +480,39 @@ export function useUnlinkCFFFromProject(
           "cff-candidates",
         ] as const,
       });
+    },
+  });
+}
+
+export function useLinkCustomerToProject(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<ProjectOverviewDto, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<ProjectOverviewDto, ApiError, string>({
+    mutationFn: (customerId) =>
+      linkCustomerToProject(orgId, formulationId, customerId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.overview(orgId, formulationId),
+        updated,
+      );
+    },
+  });
+}
+
+export function useUnlinkCustomerFromProject(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<ProjectOverviewDto, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<ProjectOverviewDto, ApiError, void>({
+    mutationFn: () => unlinkCustomerFromProject(orgId, formulationId),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(
+        formulationsQueryKeys.overview(orgId, formulationId),
+        updated,
+      );
     },
   });
 }

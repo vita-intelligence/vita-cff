@@ -20,6 +20,7 @@ import type {
   ProjectOverviewDto,
   ReplaceLinesRequestDto,
   RollbackRequestDto,
+  RoutingCostsResponseDto,
   SaveVersionRequestDto,
   UpdateFormulationRequestDto,
   UpsertStagesRequestDto,
@@ -195,6 +196,10 @@ export interface SyncPspResponseDto {
   synced: boolean;
   finished_product_uuid?: string | null;
   reason?: string;
+  /** Populated on ``502`` returns when the BOM push bubbled an
+   *  unexpected exception — surface verbatim so the operator has
+   *  something actionable instead of a generic "sync failed" toast. */
+  detail?: string;
 }
 
 /** Per-stage snapshot of the compute-derived BOM the FE displays.
@@ -338,6 +343,18 @@ export async function fetchItemPrices(
   return data;
 }
 
+export async function fetchRoutingCosts(
+  orgId: string,
+  formulationId: string,
+  workstationGroupUuids: readonly string[],
+): Promise<RoutingCostsResponseDto> {
+  const { data } = await apiClient.post<RoutingCostsResponseDto>(
+    formulationsEndpoints.routingCosts(orgId, formulationId),
+    { workstation_group_uuids: workstationGroupUuids },
+  );
+  return data;
+}
+
 export async function unlinkCFFFromProject(
   orgId: string,
   formulationId: string,
@@ -348,6 +365,37 @@ export async function unlinkCFFFromProject(
     {
       data: { cff_submission_id: cffSubmissionId },
     },
+  );
+  return data;
+}
+
+
+/** Attach a customer to this project (one customer per project —
+ *  posting with a customer already set overwrites in place). Fires
+ *  a PSP sync in the background so the kanban card + project detail
+ *  page swap the "NPD Placeholder" for the real customer name. */
+export async function linkCustomerToProject(
+  orgId: string,
+  formulationId: string,
+  customerId: string,
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.post<ProjectOverviewDto>(
+    formulationsEndpoints.linkCustomer(orgId, formulationId),
+    { customer_id: customerId },
+  );
+  return data;
+}
+
+
+/** Clear the project's linked customer. No-op when nothing is
+ *  currently linked. Fires the same PSP sync as ``link_customer``
+ *  so downstream state (project title, R&D team card) reverts. */
+export async function unlinkCustomerFromProject(
+  orgId: string,
+  formulationId: string,
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.delete<ProjectOverviewDto>(
+    formulationsEndpoints.linkCustomer(orgId, formulationId),
   );
   return data;
 }

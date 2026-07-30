@@ -3,6 +3,8 @@
 from django.urls import path
 
 from apps.psp.api.views import (
+    PspAccessTokenListCreateView,
+    PspAccessTokenRevokeView,
     PspCreateFinishedProductView,
     PspIntegrationView,
     PspItemBomView,
@@ -104,5 +106,19 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/finished-products/",
         PspCreateFinishedProductView.as_view(),
         name="psp-create-finished-product",
+    ),
+    # PSP-facing tokens — mint + list + revoke bearer tokens PSP
+    # presents on the reverse integration path (``/api/psp-integration/*``).
+    # Owner-only; the raw token leaves the boundary exactly once on
+    # mint and is never returned by any subsequent call.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp-access-tokens/",
+        PspAccessTokenListCreateView.as_view(),
+        name="psp-access-tokens",
+    ),
+    path(
+        "organizations/<uuid:org_id>/integrations/psp-access-tokens/<uuid:token_id>/revoke/",
+        PspAccessTokenRevokeView.as_view(),
+        name="psp-access-token-revoke",
     ),
 ]

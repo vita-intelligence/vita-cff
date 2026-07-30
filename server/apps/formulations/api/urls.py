@@ -27,6 +27,7 @@ from apps.formulations.api.views import (
     FormulationLeadScientistView,
     FormulationLinesView,
     FormulationLinkCFFView,
+    FormulationLinkCustomerView,
     FormulationListCreateView,
     FormulationOverviewView,
     FormulationPullPspBomView,
@@ -36,6 +37,7 @@ from apps.formulations.api.views import (
     FormulationSalesPersonView,
     FormulationStagesView,
     FormulationItemPricesView,
+    FormulationRoutingCostsView,
     FormulationVersionListView,
     FormulationWizardRoutingView,
     StageTemplateDetailView,
@@ -89,9 +91,19 @@ urlpatterns = [
         name="formulation-cff-candidates",
     ),
     path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/link-customer/",
+        FormulationLinkCustomerView.as_view(),
+        name="formulation-link-customer",
+    ),
+    path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/item-prices/",
         FormulationItemPricesView.as_view(),
         name="formulation-item-prices",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/routing-costs/",
+        FormulationRoutingCostsView.as_view(),
+        name="formulation-routing-costs",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/versions/",

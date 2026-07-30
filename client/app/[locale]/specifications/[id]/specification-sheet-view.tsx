@@ -668,7 +668,12 @@ export function SpecificationSheetView({
               order={rendered.section_order ?? []}
             />
           ) : null}
-          {canWrite ? (
+          {/* Public share is a customer-facing preview link — only
+              meaningful once the sheet has been promoted to FINAL. On
+              DRAFT-kind sheets it would surface an unfinished document
+              to whoever the link reaches, so we hide the affordance
+              entirely (BE still guards the endpoint on top of this). */}
+          {canWrite && sheet.document_kind !== "draft" ? (
             <SharePublicLinkButton orgId={orgId} sheet={sheet} />
           ) : null}
           {canAdmin && sheet.status === "draft" ? (
@@ -705,6 +710,52 @@ export function SpecificationSheetView({
         >
           {errorMessage}
         </p>
+      ) : null}
+
+      {/* ------------------------------------------------------------ */}
+      {/* Commercial-input warnings — surfaced whenever the sheet is    */}
+      {/* still editable AND either the unit cost or the margin hasn't  */}
+      {/* been captured. Both are needed for the customer price to      */}
+      {/* derive on approval, so we call this out before the director   */}
+      {/* opens the signature dialog rather than at the last click.     */}
+      {/* Hidden on read-only sheets (already signed / sent) — pointing */}
+      {/* the finger there is noise, not a fix.                         */}
+      {/* ------------------------------------------------------------ */}
+      {isEditableStatus ? (
+        (() => {
+          const missing: string[] = [];
+          if (sheet.unit_cost === null || sheet.unit_cost === undefined) {
+            missing.push(tSpecs("detail.warning_missing_cost"));
+          }
+          if (
+            sheet.margin_percent === null ||
+            sheet.margin_percent === undefined
+          ) {
+            missing.push(tSpecs("detail.warning_missing_margin"));
+          }
+          if (missing.length === 0) return null;
+          return (
+            <div
+              role="status"
+              className="flex items-start gap-3 rounded-xl bg-yellow-50 px-4 py-3 text-sm text-yellow-900 ring-1 ring-inset ring-yellow-200 print:hidden"
+            >
+              <span
+                aria-hidden
+                className="mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-yellow-200 text-[11px] font-bold text-yellow-900"
+              >
+                !
+              </span>
+              <div className="flex flex-col gap-0.5">
+                <p className="font-semibold">
+                  {tSpecs("detail.warning_title")}
+                </p>
+                <p className="text-xs text-yellow-800">
+                  {missing.join(" · ")}
+                </p>
+              </div>
+            </div>
+          );
+        })()
       ) : null}
 
       {/* ------------------------------------------------------------ */}

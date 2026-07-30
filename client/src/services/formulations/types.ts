@@ -981,6 +981,19 @@ export interface ProjectOverviewDto {
   //: reader; empty on any project created directly without the
   //: CFF-driven flow.
   readonly linked_cffs: readonly LinkedCFFDto[];
+  //: Linked customer — one-per-project. ``null`` when Sales hasn't
+  //: attached a client yet. The workspace card renders a picker to
+  //: link / swap / clear; a change fires a PSP sync so the kanban
+  //: swaps the placeholder for the real customer name.
+  readonly linked_customer: LinkedCustomerDto | null;
+}
+
+
+export interface LinkedCustomerDto {
+  readonly id: string;
+  readonly name: string;
+  readonly company: string;
+  readonly email: string;
 }
 
 
@@ -1040,6 +1053,30 @@ export interface ItemPriceDto {
 
 export interface ItemPricesResponseDto {
   readonly items: readonly ItemPriceDto[];
+  readonly psp_configured: boolean;
+  readonly error?: string;
+}
+
+
+//: Wire shape for one workstation-group's cost + throughput info.
+//: Powers the CostCalculator's routing cost line, keyed by
+//: ``FormulationStage.workstation_group_uuid``. Nulls on the two
+//: ``avg_*`` fields mean "no session history" — the FE falls back to
+//: the stage's declared ``cycle_time_min`` + the WSG's static
+//: ``machine_hourly_rate`` (no labour cost recovery in that case).
+export interface WorkstationCostDto {
+  readonly uuid: string;
+  readonly name: string;
+  readonly machine_hourly_rate: string | null;
+  readonly avg_labour_hourly_rate: string | null;
+  readonly avg_seconds_per_unit: string | null;
+  readonly session_count: number;
+  readonly currency_code: string;
+}
+
+
+export interface RoutingCostsResponseDto {
+  readonly items: readonly WorkstationCostDto[];
   readonly psp_configured: boolean;
   readonly error?: string;
 }

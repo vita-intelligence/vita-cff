@@ -16,6 +16,7 @@ from apps.proposals.api.views import (
     ProposalActivityView,
     ProposalAttachedSpecRenderView,
     ProposalAuditView,
+    ProposalBundleCreateView,
     ProposalCompleteRequiredFieldsView,
     ProposalCostPreviewView,
     ProposalDetailView,
@@ -37,6 +38,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/proposals/",
         ProposalListCreateView.as_view(),
         name="proposal-list",
+    ),
+    # Bulk-create from /signed's multi-select. Mounted ABOVE the
+    # ``<uuid:proposal_id>`` routes so ``bundle`` matches before
+    # Django attempts to parse it as a UUID.
+    path(
+        "organizations/<uuid:org_id>/proposals/bundle/",
+        ProposalBundleCreateView.as_view(),
+        name="proposal-bundle-create",
     ),
     # CRM-style pipeline board. Mounted ABOVE the ``<uuid:proposal_id>``
     # routes so ``pipeline`` is matched before Django attempts to

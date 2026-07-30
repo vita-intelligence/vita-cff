@@ -182,6 +182,21 @@ class LinkedCFFSnapshot:
     provenance: str
 
 
+@dataclass(frozen=True)
+class LinkedCustomerSnapshot:
+    """Slim projection of the linked customer for the workspace card.
+
+    Wide enough to render a "James Brown @ Acme Ltd" chip; narrow
+    enough that we're not shipping every phone / address every
+    render. The picker fetch has its own list endpoint for search.
+    """
+
+    id: str
+    name: str
+    company: str
+    email: str
+
+
 @dataclass
 class ProjectOverview:
     id: str
@@ -219,6 +234,11 @@ class ProjectOverview:
     #: reminder, not a blocking warning. Ordered by attach date
     #: descending so the most recent link renders first.
     linked_cffs: list[LinkedCFFSnapshot] = field(default_factory=list)
+    #: Linked customer. One-per-project (like the CFF link) — Sales
+    #: sets it via ``POST /formulations/<id>/link-customer/`` from
+    #: the project page. ``None`` until a client is attached. Mirrored
+    #: to PSP so the kanban swaps the placeholder for the real name.
+    linked_customer: "LinkedCustomerSnapshot | None" = None
 
 
 # ---------------------------------------------------------------------------
@@ -934,4 +954,22 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
             else None
         ),
         linked_cffs=_linked_cffs_snapshot(formulation),
+        linked_customer=_linked_customer_snapshot(formulation),
+    )
+
+
+def _linked_customer_snapshot(
+    formulation: Formulation,
+) -> LinkedCustomerSnapshot | None:
+    """Slim customer projection for the workspace card. Returns
+    ``None`` when the project has no linked customer."""
+
+    c = getattr(formulation, "customer", None)
+    if c is None:
+        return None
+    return LinkedCustomerSnapshot(
+        id=str(c.id),
+        name=(c.name or "").strip(),
+        company=(c.company or "").strip(),
+        email=(c.email or "").strip(),
     )

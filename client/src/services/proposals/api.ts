@@ -8,6 +8,7 @@ import type { RenderedSheetContext } from "@/services/specifications";
 import { proposalsEndpoints } from "./endpoints";
 import type {
   CostPreviewDto,
+  CreateProposalBundleRequestDto,
   CreateProposalLineRequestDto,
   CreateProposalRequestDto,
   PaginatedProposalsDto,
@@ -133,6 +134,17 @@ export async function createProposal(
 ): Promise<ProposalDto> {
   const { data } = await apiClient.post<ProposalDto>(
     proposalsEndpoints.list(orgId),
+    payload,
+  );
+  return data;
+}
+
+export async function createProposalBundle(
+  orgId: string,
+  payload: CreateProposalBundleRequestDto,
+): Promise<ProposalDto> {
+  const { data } = await apiClient.post<ProposalDto>(
+    proposalsEndpoints.bundle(orgId),
     payload,
   );
   return data;

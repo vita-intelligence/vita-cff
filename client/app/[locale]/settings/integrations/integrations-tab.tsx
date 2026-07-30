@@ -24,6 +24,7 @@ import {
   useTestMrpeasyConnection,
 } from "@/services/mrpeasy";
 import { PspCard } from "./psp-card";
+import { PspTokensCard } from "./psp-tokens-card";
 import {
   useClearWixCFFConfig,
   useSaveWixCFFConfig,
@@ -76,6 +77,9 @@ export function IntegrationsTab({
           switch lanes intentionally. Enabling one clears the other
           server-side. */}
       <PspCard organization={organization} />
+      {/* Reverse direction — PSP calls NPD. Mint tokens here that PSP
+          admins paste into their own R&D integration settings card. */}
+      <PspTokensCard organization={organization} />
       <MrpeasyCard orgId={organization.id} />
       <WixCFFCard orgId={organization.id} />
     </section>

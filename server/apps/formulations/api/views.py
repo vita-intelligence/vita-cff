@@ -781,7 +781,11 @@ class FormulationSyncPspView(APIView):
         except FormulationNotFound as exc:
             raise NotFound() from exc
 
-        from apps.psp.services import is_psp_live, push_bom_to_psp
+        from apps.psp.services import (
+            is_psp_live,
+            push_bom_to_psp,
+            sync_customer_order_to_psp,
+        )
 
         if not is_psp_live(self.organization):
             return Response(
@@ -827,6 +831,20 @@ class FormulationSyncPspView(APIView):
             logger.exception(
                 "sync-psp: push_bom_to_psp bubbled an unexpected exception"
                 " for formulation %s",
+                formulation.pk,
+            )
+
+        # Mirror the formulation as a CustomerOrder on PSP alongside the
+        # BOM push. First manual sync bootstraps a draft CO with
+        # ``uuid = formulation.id``; later syncs are idempotent. Kept
+        # independent of the BOM push outcome — an R&D formulation with
+        # no PSP linkage yet still gets its project card on PSP.
+        try:
+            sync_customer_order_to_psp(formulation=formulation)
+        except Exception:
+            logger.exception(
+                "sync-psp: sync_customer_order_to_psp bubbled an unexpected"
+                " exception for formulation %s",
                 formulation.pk,
             )
 
@@ -1636,6 +1654,75 @@ class FormulationLinkCFFView(APIView):
         return Response(asdict(overview), status=status.HTTP_200_OK)
 
 
+class FormulationLinkCustomerView(APIView):
+    """``POST`` / ``DELETE`` ``/.../formulations/<id>/link-customer/``.
+
+    Attaches or detaches the project's linked :class:`Customer`.
+    One-customer-per-project (same shape as the CFF link) — POST with
+    a customer already set overwrites in place; DELETE clears.
+
+    Payload: ``{ "customer_id": "<uuid>" }``. Gated on
+    ``formulations.edit`` — same as reassigning sales / lead — since
+    it's a workspace-metadata edit, not a formulation content mutation.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.customers.models import Customer
+        from apps.formulations.services import link_customer
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        customer_id = payload.get("customer_id")
+        if not customer_id:
+            return Response(
+                {"customer_id": ["required"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            formulation = get_formulation(
+                organization=self.organization,
+                formulation_id=formulation_id,
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        customer = Customer.objects.filter(
+            organization=self.organization, id=customer_id
+        ).first()
+        if customer is None:
+            return Response(
+                {"customer_id": ["customer_not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        link_customer(
+            formulation=formulation, customer=customer, actor=request.user
+        )
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)
+
+    def delete(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.formulations.services import unlink_customer
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization,
+                formulation_id=formulation_id,
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        unlink_customer(formulation=formulation, actor=request.user)
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)
+
+
 #: Cap per page for the cursor-paginated CFF picker. Kept small so
 #: a tenant with millions of rows still ships one page-worth of data
 #: per keystroke; the FE infinite-scrolls to reach subsequent pages
@@ -1928,6 +2015,91 @@ class FormulationItemPricesView(APIView):
 
         return Response(
             {"items": suggestions, "psp_configured": True},
+            status=status.HTTP_200_OK,
+        )
+
+
+class FormulationRoutingCostsView(APIView):
+    """``POST`` ``/.../formulations/<id>/routing-costs/``.
+
+    Bulk cost + throughput lookup keyed by PSP workstation-group UUID.
+    The FE sends the set of ``workstation_group_uuid`` values referenced
+    by this formulation's stages and gets back per-uuid machine + labour
+    rate + historical throughput from the vita-performance kiosk feed.
+
+    Mirrors :class:`FormulationItemPricesView` in shape + degradation
+    semantics — ``psp_configured: false`` when the org has no live PSP
+    integration; empty ``items`` short-circuits when the FE sent no
+    uuids (e.g. a formulation whose stages have no workstation picks
+    yet). The client computes the per-unit routing cost against the
+    cached response so cycle-time / fixed-cost edits reflect within
+    one paint.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.psp.services import (
+            PspClient,
+            PspNotConfigured,
+            PspError,
+            _client_factory,
+            get_psp_config,
+        )
+
+        try:
+            get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        raw_uuids = payload.get("workstation_group_uuids") or []
+        if not isinstance(raw_uuids, list):
+            return Response(
+                {"workstation_group_uuids": ["expected_list"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uuids = [
+            str(u).strip()
+            for u in raw_uuids
+            if isinstance(u, str) and str(u).strip()
+        ]
+
+        if not uuids:
+            return Response(
+                {"items": [], "psp_configured": True},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            config = get_psp_config(organization=self.organization)
+        except PspNotConfigured:
+            return Response(
+                {"items": [], "psp_configured": False},
+                status=status.HTTP_200_OK,
+            )
+        if not config.is_complete:
+            return Response(
+                {"items": [], "psp_configured": False},
+                status=status.HTTP_200_OK,
+            )
+
+        client: PspClient = _client_factory(config)
+        try:
+            items = client.workstation_costs(uuids)
+        except PspError as exc:
+            return Response(
+                {"items": [], "psp_configured": True, "error": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(
+            {"items": items, "psp_configured": True},
             status=status.HTTP_200_OK,
         )
 

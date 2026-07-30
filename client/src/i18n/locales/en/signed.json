@@ -11,6 +11,10 @@
     "signed": "Signed by customer",
     "signed_hint": "Already signed on the kiosk"
   },
+  "search": {
+    "placeholder": "Search customer, code, formulation…",
+    "clear": "Clear search"
+  },
   "sections": {
     "ready_to_send": "Approved — ready to send",
     "ready_to_send_hint": "Director-signed; waiting to be sent to the client",
@@ -44,9 +48,35 @@
     "signed_by": "by {name}",
     "proposal_linked": "Proposal {code} · {status}",
     "proposal_missing": "No proposal yet",
-    "proposal_create": "Create proposal"
+    "proposal_create": "Create proposal",
+    "bulk_select_locked": "Select from the same customer only",
+    "bulk_select_no_customer": "Link a customer on the project first"
+  },
+  "bulk": {
+    "sr_toggle": "Add to bulk selection",
+    "count_one": "{count} sheet selected",
+    "count_other": "{count} sheets selected",
+    "for_customer": "for {name}",
+    "create_proposal": "Create proposal",
+    "clear": "Clear"
   },
   "create_proposal": {
     "subtitle": "Quoting against the director-approved spec sheet below. Pick a customer, enter the cost + margin, and we derive the unit price."
+  },
+  "bulk_create_proposal": {
+    "title": "New proposal from {count} sheets",
+    "subtitle": "One proposal, one line per sheet. Customer comes from the project link.",
+    "quantity_label": "Quantity",
+    "deposit_label": "Deposit %",
+    "deposit_hint": "Applied to the whole proposal, not per line.",
+    "customer_chip": "Customer",
+    "cancel": "Cancel",
+    "submit": "Create proposal",
+    "submit_pending": "Creating…",
+    "errors": {
+      "generic": "Couldn't create the proposal. Try again.",
+      "mixed_customers": "Selected sheets belong to different customers.",
+      "requires_customer": "One of the sheets has no customer linked."
+    }
   }
 }

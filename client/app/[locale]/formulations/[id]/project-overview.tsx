@@ -22,6 +22,7 @@ import {
   type ProjectStatus,
 } from "@/services/formulations";
 
+import { ProjectCustomerCard } from "./project-customer-card";
 import { ProjectWarningsCard } from "./project-warnings-card";
 
 
@@ -53,6 +54,11 @@ export function ProjectOverview({
   return (
     <article className="flex flex-col gap-6">
       <ProjectWarningsCard
+        orgId={orgId}
+        overview={overview}
+        canEdit={canEdit}
+      />
+      <ProjectCustomerCard
         orgId={orgId}
         overview={overview}
         canEdit={canEdit}

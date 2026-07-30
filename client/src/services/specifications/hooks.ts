@@ -53,12 +53,16 @@ export const specificationsQueryKeys = {
   // queue (e.g. the director's approvals inbox) in one call.
   infiniteAll: (orgId: string) =>
     [...specificationsQueryKeys.all, orgId, "infinite"] as const,
-  infinite: (orgId: string, status?: string) =>
+  infinite: (orgId: string, status?: string, search?: string) =>
     [
       ...specificationsQueryKeys.all,
       orgId,
       "infinite",
       status ?? "__any__",
+      //: ``search`` becomes part of the cache key so different
+      //: substrings each get their own paginated result set. Empty
+      //: string is the "no filter" bucket.
+      search ?? "",
     ] as const,
   detail: (orgId: string, sheetId: string) =>
     [...specificationsQueryKeys.all, orgId, "detail", sheetId] as const,
@@ -80,12 +84,13 @@ export function useInfiniteSpecifications(
     pageSize?: number;
     initialFirstPage?: PaginatedSpecificationsDto | null;
     status?: string;
+    search?: string;
   } = {},
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedSpecificationsDto, string | null>,
   ApiError
 > {
-  const { pageSize, initialFirstPage, status } = options;
+  const { pageSize, initialFirstPage, status, search } = options;
   return useInfiniteQuery<
     PaginatedSpecificationsDto,
     ApiError,
@@ -93,11 +98,12 @@ export function useInfiniteSpecifications(
     readonly unknown[],
     string | null
   >({
-    queryKey: specificationsQueryKeys.infinite(orgId, status),
+    queryKey: specificationsQueryKeys.infinite(orgId, status, search),
     queryFn: ({ pageParam }) =>
       fetchSpecificationsPage(orgId, {
         pageSize,
         status,
+        search,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,
