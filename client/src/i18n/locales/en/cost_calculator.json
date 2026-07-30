@@ -1,0 +1,34 @@
+{
+  "pill": {
+    "label": "Cost",
+    "loading": "…",
+    "psp_not_ready": "PSP not connected",
+    "error": "Cost error",
+    "missing_hint": "{count} row(s) without PSP pricing"
+  },
+  "card": {
+    "title": "Cost breakdown",
+    "per_pack": "per finished pack",
+    "close": "Close cost card",
+    "loading": "Loading PSP prices…",
+    "psp_not_ready": "PSP integration isn't connected on this org yet — set it up under Settings → Integrations.",
+    "error": "Couldn't fetch prices from PSP.",
+    "retry": "Retry",
+    "empty": "No ingredients yet — add lines on the builder or routing tab.",
+    "col_item": "Item",
+    "col_source": "Source",
+    "col_unit_price": "Unit price",
+    "col_line_cost": "Line cost",
+    "total": "Total per pack"
+  },
+  "source": {
+    "po_history": "PO history",
+    "purchase_term": "Purchase term",
+    "bom_rollup": "BOM rollup",
+    "bom_rollup_partial": "BOM rollup (partial)",
+    "own_project_stage": "This project",
+    "none": "Missing",
+    "psp_missing": "PSP deleted",
+    "no_psp_link": "Not on PSP"
+  }
+}

@@ -390,6 +390,41 @@ class PspClient:
             return None
         return row
 
+    def suggest_costs(self, item_uuids: list[Any]) -> list[dict]:
+        """Bulk cost lookup — powers the vita-cff builder's live cost
+        calculator. Ships a POST with ``{item_uuids: [...]}`` and
+        returns the ``items`` list from PSP's response.
+
+        Each entry carries ``uuid`` + ``unit_cost`` (string decimal
+        or ``None``) + ``currency_code`` + ``uom_symbol`` + ``source``
+        (``"po_history" | "purchase_term" | "none"``) + ``vendor_name``.
+
+        Empty input short-circuits with ``[]`` so the caller doesn't
+        need to gate the call site. Missing / archived uuids silently
+        drop out of the response — the caller diffs input vs returned
+        to spot dead references.
+        """
+
+        cleaned = [
+            str(u).strip()
+            for u in (item_uuids or [])
+            if u and str(u).strip()
+        ]
+        if not cleaned:
+            return []
+
+        response = self._request(
+            "api/integration/items/suggest-costs",
+            method="POST",
+            body={"item_uuids": cleaned},
+        )
+        if not isinstance(response, dict):
+            return []
+        items = response.get("items")
+        if not isinstance(items, list):
+            return []
+        return items
+
     def delete_item(self, item_uuid: Any) -> dict:
         """Safe-delete a PSP catalog item. PSP's ``DELETE /items/:uuid``
         gates on ownership + reference count + history and returns:

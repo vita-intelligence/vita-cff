@@ -2,7 +2,7 @@ import { getTranslations, setRequestLocale } from "next-intl/server";
 
 import { ProtectedHeader } from "@/components/layout/protected-header";
 
-import { FormulationBuilder } from "../formulation-builder";
+import { BuilderShell } from "./builder-shell";
 import { loadProjectForTab } from "../_shared/load-project";
 import { ProjectShell } from "../project-shell";
 import { APP_VERSION } from "@/config/version";
@@ -31,9 +31,13 @@ export default async function ProjectBuilderPage({
           overview={overview}
           activeTab="builder"
         >
-          <FormulationBuilder
+          {/* Client shell that pairs FormulationBuilder with the
+              CostCalculator via a shared live-lines state. Extracted
+              into its own component because ``page.tsx`` is a server
+              component and can't hold reactive state itself. */}
+          <BuilderShell
             orgId={organization.id}
-            initialFormulation={formulation}
+            formulation={formulation}
             canWrite={canWrite}
             hasTrialBatches={(overview?.trial_batches?.total ?? 0) > 0}
           />

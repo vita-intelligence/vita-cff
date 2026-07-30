@@ -1843,6 +1843,95 @@ class FormulationCFFCandidatesView(APIView):
         )
 
 
+class FormulationItemPricesView(APIView):
+    """``POST`` ``/.../formulations/<id>/item-prices/``.
+
+    Bulk price lookup keyed by PSP source UUID. The FE sends the
+    live set of ``psp_source_uuid`` values it currently has on the
+    builder (including unsaved additions) and gets back a
+    per-uuid price + provenance map.
+
+    Deliberately does NOT walk the persisted ``FormulationLine`` set —
+    the previous version of this endpoint did, and it forced the
+    calculator to lag behind unsaved builder edits. Now the client
+    computes cost from ``live lines × cached prices`` and only fires
+    this call when the uuid set actually changes (add a new
+    ingredient) — deletes / claim edits stay 100% client-side.
+
+    ``psp_configured: false`` on any org whose PSP integration isn't
+    live; response ``items`` empty. Non-PSP items (never mirrored)
+    are simply absent from ``item_uuids`` on the FE side; the
+    calculator surfaces them as ``no_psp_link`` client-side.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.psp.services import (
+            PspClient,
+            PspNotConfigured,
+            PspError,
+            _client_factory,
+            get_psp_config,
+        )
+
+        try:
+            get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        raw_uuids = payload.get("item_uuids") or []
+        if not isinstance(raw_uuids, list):
+            return Response(
+                {"item_uuids": ["expected_list"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        uuids = [
+            str(u).strip()
+            for u in raw_uuids
+            if isinstance(u, str) and str(u).strip()
+        ]
+
+        if not uuids:
+            return Response(
+                {"items": [], "psp_configured": True},
+                status=status.HTTP_200_OK,
+            )
+
+        try:
+            config = get_psp_config(organization=self.organization)
+        except PspNotConfigured:
+            return Response(
+                {"items": [], "psp_configured": False},
+                status=status.HTTP_200_OK,
+            )
+        if not config.is_complete:
+            return Response(
+                {"items": [], "psp_configured": False},
+                status=status.HTTP_200_OK,
+            )
+
+        client: PspClient = _client_factory(config)
+        try:
+            suggestions = client.suggest_costs(uuids)
+        except PspError as exc:
+            return Response(
+                {"items": [], "psp_configured": True, "error": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        return Response(
+            {"items": suggestions, "psp_configured": True},
+            status=status.HTTP_200_OK,
+        )
+
+
 class FormulationCloneView(APIView):
     """``POST`` ``/.../formulations/<id>/clone/``.
 
