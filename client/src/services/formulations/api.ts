@@ -9,6 +9,7 @@ import type {
   AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
   CFFCandidatesResponseDto,
+  ItemPricesResponseDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
@@ -321,6 +322,18 @@ export async function linkCFFToProject(
   const { data } = await apiClient.post<ProjectOverviewDto>(
     formulationsEndpoints.linkCff(orgId, formulationId),
     { cff_submission_id: cffSubmissionId },
+  );
+  return data;
+}
+
+export async function fetchItemPrices(
+  orgId: string,
+  formulationId: string,
+  itemUuids: readonly string[],
+): Promise<ItemPricesResponseDto> {
+  const { data } = await apiClient.post<ItemPricesResponseDto>(
+    formulationsEndpoints.itemPrices(orgId, formulationId),
+    { item_uuids: itemUuids },
   );
   return data;
 }

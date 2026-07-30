@@ -35,6 +35,7 @@ from apps.formulations.api.views import (
     FormulationRTGPublishView,
     FormulationSalesPersonView,
     FormulationStagesView,
+    FormulationItemPricesView,
     FormulationVersionListView,
     FormulationWizardRoutingView,
     StageTemplateDetailView,
@@ -86,6 +87,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/cff-candidates/",
         FormulationCFFCandidatesView.as_view(),
         name="formulation-cff-candidates",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/item-prices/",
+        FormulationItemPricesView.as_view(),
+        name="formulation-item-prices",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/versions/",

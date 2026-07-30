@@ -573,6 +573,211 @@ def _live_draft_for_formulation(
     return None
 
 
+_MASS_UOM_TO_MG: dict[str, Decimal] = {
+    "mg": Decimal("1"),
+    "g": Decimal("1000"),
+    "kg": Decimal("1000000"),
+}
+#: UoM symbols we treat as "one piece per pack" — the unit price is
+#: the line's per-pack cost verbatim (typical for packaging + shells).
+_UNIT_UOMS: frozenset[str] = frozenset(
+    {"unit", "each", "pcs", "pack", "piece", "ea"}
+)
+
+
+def compute_unit_cost_for_version(
+    version: FormulationVersion,
+) -> Decimal | None:
+    """Roll the version's snapshot lines up into a per-pack unit cost.
+
+    Mirrors the builder's ``CostCalculator`` math one-for-one so a spec
+    sheet auto-populated on create / regenerate lands with the same
+    number the scientist saw on the pill: ``suggest_costs`` for every
+    line's PSP uuid, then per-line ``cost = mg_per_pack ÷ mass_conv ×
+    unit_cost`` for mass UoMs or ``cost = unit_cost`` for unit UoMs.
+
+    Own-project semi-finished outputs (``Formulation.psp_finished_product_uuid``
+    + every stage's ``psp_semi_finished_uuid``) are skipped — their
+    material cost lives inside their producing stage's BOM, so summing
+    them here would double-count. This matches ``own_project_stage``
+    on the FE.
+
+    Returns ``None`` when:
+
+    * The formulation has no PSP integration configured (no client).
+    * No line resolves to a live PSP uuid.
+    * Every priceable line came back ``source == "none"``.
+
+    A partial result (some lines priced, some missing) still returns —
+    the caller decides whether to persist it or fall back. Deliberately
+    lenient so a mid-spec review can still show a best-guess number
+    rather than nothing.
+    """
+
+    from apps.psp.services import (
+        PspClient,
+        PspError,
+        get_psp_config,
+        is_psp_live,
+    )
+
+    formulation = version.formulation
+    organization = formulation.organization
+
+    if not is_psp_live(organization):
+        return None
+
+    snapshot_lines = list(version.snapshot_lines or [])
+    if not snapshot_lines:
+        return None
+
+    # Skip stage outputs of this project — they're semi-finished
+    # products this project itself manufactures, so their material
+    # cost is captured inside the producing stage's BOM.
+    own_project_uuids: set[str] = set()
+    if formulation.psp_finished_product_uuid:
+        own_project_uuids.add(str(formulation.psp_finished_product_uuid))
+    for stage in formulation.stages.all():
+        if stage.psp_semi_finished_uuid:
+            own_project_uuids.add(str(stage.psp_semi_finished_uuid))
+
+    # Resolve every line's PSP uuid. Local-sourced lines carry the
+    # local Item pk in ``item_id``; the mirror service copies each
+    # Item.psp_source_uuid so we can hop from the local pk to the
+    # PSP identity in one query.
+    local_item_ids: list[Any] = []
+    for line in snapshot_lines:
+        if line.get("item_source") != "psp":
+            item_id = line.get("item_id")
+            if item_id:
+                local_item_ids.append(item_id)
+
+    psp_uuid_by_local_id: dict[str, str] = {}
+    if local_item_ids:
+        for item in Item.objects.filter(id__in=local_item_ids).only(
+            "id", "psp_source_uuid"
+        ):
+            if item.psp_source_uuid:
+                psp_uuid_by_local_id[str(item.id)] = str(item.psp_source_uuid)
+
+    # Build per-line records + collect the priceable uuids in one pass.
+    #
+    # ``priceable_lines`` carries only the lines whose PSP uuid we
+    # actually need a price for (i.e. not own-project stage outputs);
+    # ``uuids_to_price`` is the deduped set we ship to PSP.
+    class _LinePricingRow:
+        __slots__ = ("psp_uuid", "label_claim_mg", "own_project")
+
+        def __init__(self, psp_uuid: str, label_claim_mg: Decimal, own: bool):
+            self.psp_uuid = psp_uuid
+            self.label_claim_mg = label_claim_mg
+            self.own_project = own
+
+    pricing_rows: list[_LinePricingRow] = []
+    uuids_to_price: set[str] = set()
+
+    for line in snapshot_lines:
+        item_id_raw = line.get("item_id")
+        if not item_id_raw:
+            continue
+        item_id = str(item_id_raw)
+
+        if line.get("item_source") == "psp":
+            psp_uuid = item_id
+        else:
+            psp_uuid = psp_uuid_by_local_id.get(item_id, "")
+
+        if not psp_uuid:
+            continue
+
+        try:
+            label_claim_mg = Decimal(str(line.get("label_claim_mg") or "0"))
+        except (InvalidOperation, TypeError, ValueError):
+            label_claim_mg = Decimal("0")
+
+        is_own = psp_uuid in own_project_uuids
+        pricing_rows.append(
+            _LinePricingRow(psp_uuid, label_claim_mg, is_own)
+        )
+        if not is_own:
+            uuids_to_price.add(psp_uuid)
+
+    if not uuids_to_price:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+        client = PspClient(config)
+        price_items = client.suggest_costs(list(uuids_to_price))
+    except (PspError, Exception):  # noqa: BLE001 — surface as "no cost", not 500
+        return None
+
+    price_by_uuid: dict[str, dict] = {
+        str(row.get("uuid")): row
+        for row in (price_items or [])
+        if row and row.get("uuid")
+    }
+
+    # ``servings_per_pack`` came from the formulation at save time so we
+    # prefer the snapshot's copy; fall back to the live formulation for
+    # pre-migration versions that don't carry it.
+    metadata = version.snapshot_metadata or {}
+    servings = metadata.get("servings_per_pack")
+    if servings is None:
+        servings = getattr(formulation, "servings_per_pack", None) or 1
+    try:
+        servings_int = int(servings) if servings else 1
+    except (TypeError, ValueError):
+        servings_int = 1
+    servings_dec = Decimal(servings_int or 1)
+
+    total = Decimal("0")
+    priced_any = False
+
+    for row in pricing_rows:
+        if row.own_project:
+            # Own-project stage output — cost is inside the stage BOM.
+            continue
+
+        price = price_by_uuid.get(row.psp_uuid)
+        if price is None:
+            continue
+
+        unit_cost_raw = price.get("unit_cost")
+        if unit_cost_raw is None:
+            continue
+
+        try:
+            unit_cost = Decimal(str(unit_cost_raw))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+
+        uom = str(price.get("uom_symbol") or "").lower().strip()
+
+        if uom in _UNIT_UOMS:
+            line_cost = unit_cost
+        elif uom in _MASS_UOM_TO_MG:
+            mg_per_pack = row.label_claim_mg * servings_dec
+            if mg_per_pack <= 0:
+                continue
+            line_cost = (mg_per_pack / _MASS_UOM_TO_MG[uom]) * unit_cost
+        else:
+            # Unknown UoM — skip rather than guess. Fine-tune when we
+            # extend the vocabulary; today ml / L / IU aren't priced.
+            continue
+
+        total += line_cost
+        priced_any = True
+
+    if not priced_any:
+        return None
+
+    # Round to 4dp — matches the ``DecimalField`` precision on
+    # ``SpecificationSheet.unit_cost`` and the display fmt on the
+    # approval modal.
+    return total.quantize(Decimal("0.0001"))
+
+
 @transaction.atomic
 def regenerate_sheet(
     *,
@@ -686,6 +891,17 @@ def regenerate_sheet(
     for slot, item in resolved_by_slot.items():
         if getattr(sheet, slot) is None:
             setattr(sheet, slot, item)
+
+    # Re-price against the new version's snapshot lines so a
+    # regenerated draft carries the current builder cost rather than
+    # the price of whichever version was originally pinned. A director
+    # override survives — we only refresh when the sheet is unpriced
+    # or the previously computed value was auto-populated (i.e. the
+    # scientist hasn't manually locked in a number yet).
+    if sheet.unit_cost is None:
+        recomputed = compute_unit_cost_for_version(new_version)
+        if recomputed is not None:
+            sheet.unit_cost = recomputed
 
     sheet.updated_by = actor
     sheet.save()
@@ -907,6 +1123,12 @@ def create_sheet(
         if slot and slot not in packaging_by_slot:
             packaging_by_slot[slot] = item
 
+    # Auto-price the sheet from the version's snapshot lines + live PSP
+    # data so the director doesn't have to eyeball the builder's cost
+    # pill and re-type on approval. Director can still override on the
+    # approval modal — this only fills the starting value.
+    computed_unit_cost = compute_unit_cost_for_version(version)
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=version,
@@ -914,6 +1136,7 @@ def create_sheet(
         client_name=client_name,
         client_email=client_email,
         client_company=client_company,
+        unit_cost=computed_unit_cost,
         margin_percent=margin_percent,
         final_price=final_price,
         cover_notes=cover_notes,
@@ -1033,6 +1256,16 @@ def auto_create_final_spec_for_version(
         (getattr(source_draft, "code", "") or "").strip()
         or (formulation.code or "").strip()
     )
+    # Prefer whatever cost the source draft already had (a director
+    # may have overridden the auto-populate at approval); fall back to
+    # a fresh compute against the pinned version so the FINAL doesn't
+    # ship empty when no draft existed to seed from.
+    source_unit_cost = (
+        getattr(source_draft, "unit_cost", None) if source_draft else None
+    )
+    if source_unit_cost is None:
+        source_unit_cost = compute_unit_cost_for_version(formulation_version)
+
     sheet = SpecificationSheet.objects.create(
         organization=organization,
         formulation_version=formulation_version,
@@ -1040,7 +1273,7 @@ def auto_create_final_spec_for_version(
         client_name=_copy_or_default("client_name"),
         client_email=_copy_or_default("client_email"),
         client_company=_copy_or_default("client_company"),
-        unit_cost=getattr(source_draft, "unit_cost", None) if source_draft else None,
+        unit_cost=source_unit_cost,
         margin_percent=getattr(source_draft, "margin_percent", None)
         if source_draft
         else None,

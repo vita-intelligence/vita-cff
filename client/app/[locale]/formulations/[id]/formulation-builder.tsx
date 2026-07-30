@@ -1539,10 +1539,16 @@ export function FormulationBuilder({
   initialFormulation,
   canWrite,
   hasTrialBatches = false,
+  onLinesChange,
 }: {
   orgId: string;
   initialFormulation: FormulationDto;
   canWrite: boolean;
+  //: Fires every time the live builder line set changes (add /
+  //: remove / claim edit / stage reassign). Powers the sibling
+  //: cost calculator so client-side edits reflect in the pill
+  //: without a network round-trip. Undefined = feature disabled.
+  onLinesChange?: (lines: readonly BuilderLine[]) => void;
   /** True when the project already has at least one trial batch.
    *  The Excipient Ratios editor is gated on this so scientists
    *  don't touch override percentages before a trial run has
@@ -1610,6 +1616,13 @@ export function FormulationBuilder({
   const [lines, setLines] = useState<BuilderLine[]>(
     linesFrom(initialFormulation),
   );
+  // Publish the live line set to any parent that subscribed — the
+  // cost calculator uses this so unsaved builder edits reflect in
+  // the pill without a network round-trip. Fires on mount + on every
+  // ``setLines`` write.
+  useEffect(() => {
+    onLinesChange?.(lines);
+  }, [lines, onLinesChange]);
   // Grams-side draft for the powder fill-weight input. The source
   // of truth stays on ``metadata.target_fill_weight_mg`` (mg, matches
   // the API); this local state just preserves what the scientist

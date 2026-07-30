@@ -1011,6 +1011,40 @@ export interface LinkedProjectSummaryDto {
 }
 
 
+//: Wire shape for one PSP price row keyed by PSP source uuid.
+//: Consumed by the client-side cost calculator, which multiplies
+//: this against the live builder line set to produce a total.
+export interface ItemPriceDto {
+  readonly uuid: string;
+  readonly unit_cost: string | null;
+  readonly currency_code: string | null;
+  readonly uom_symbol: string | null;
+  //: Provenance of the returned ``unit_cost``. Consumers render a
+  //: badge per source so the operator can judge whether the price is
+  //: real money paid (``po_history``), a negotiated quote
+  //: (``purchase_term``), a rolled-up estimate derived from the
+  //: item's own BOM (``bom_rollup`` — every child priced,
+  //: ``bom_rollup_partial`` — some children unpriced), or nothing
+  //: at all (``none``). See PSP's
+  //: ``Backend.Purchasing.PurchaseTerms.suggest_costs_bulk`` for the
+  //: fallback chain.
+  readonly source:
+    | "po_history"
+    | "purchase_term"
+    | "bom_rollup"
+    | "bom_rollup_partial"
+    | "none";
+  readonly vendor_name: string | null;
+}
+
+
+export interface ItemPricesResponseDto {
+  readonly items: readonly ItemPriceDto[];
+  readonly psp_configured: boolean;
+  readonly error?: string;
+}
+
+
 export interface CFFCandidatesResponseDto {
   readonly candidates: readonly CFFCandidateDto[];
   //: Opaque cursor for the next page. ``null`` when the current

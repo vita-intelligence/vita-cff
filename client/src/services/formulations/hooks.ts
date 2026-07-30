@@ -28,6 +28,7 @@ import {
   fetchFormulations,
   fetchFormulationsPage,
   fetchCFFCandidates,
+  fetchItemPrices,
   fetchProjectOverview,
   linkCFFToProject,
   unlinkCFFFromProject,
@@ -79,6 +80,7 @@ import type {
   AssignLeadScientistRequestDto,
   AssignSalesPersonRequestDto,
   CFFCandidatesResponseDto,
+  ItemPricesResponseDto,
   CloneFormulationRequestDto,
   CreateFormulationRequestDto,
   FormulationDto,
@@ -311,6 +313,50 @@ export function useProjectOverview(
     // governs everything below the mutation-driven invalidation.
   });
 }
+
+//: Query key for the item-prices cache. Keyed on the *sorted* uuid
+//: list so identical sets share cache even when order differs. The
+//: FE cost calculator computes totals client-side from the builder's
+//: live BuilderLine[] × the cached prices; PSP only gets called when
+//: the uuid set actually changes (add a new ingredient), so
+//: deletes / claim edits stay 100% in memory.
+export function itemPricesQueryKey(
+  orgId: string,
+  formulationId: string,
+  sortedUuids: readonly string[],
+) {
+  return [
+    ...formulationsQueryKeys.overview(orgId, formulationId),
+    "item-prices",
+    sortedUuids.join(","),
+  ] as const;
+}
+
+
+export function useItemPrices(
+  orgId: string,
+  formulationId: string,
+  itemUuids: readonly string[],
+  options: { enabled?: boolean } = {},
+): UseQueryResult<ItemPricesResponseDto, ApiError> {
+  //: Sort so a set with the same members but different insertion
+  //: order shares the cache. Non-empty check keeps the query
+  //: disabled when there's nothing PSP-linked to price.
+  const sortedUuids = [...itemUuids].sort();
+  return useQuery<ItemPricesResponseDto, ApiError>({
+    queryKey: itemPricesQueryKey(orgId, formulationId, sortedUuids),
+    queryFn: () => fetchItemPrices(orgId, formulationId, sortedUuids),
+    enabled: (options.enabled ?? true) && sortedUuids.length > 0,
+    //: Prices don't change while the user edits so 30 s of cache is
+    //: plenty; each fresh uuid set gets its own key anyway.
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    //: Keep the previous total visible while refetching so the pill
+    //: doesn't flash to a spinner between every ingredient add.
+    placeholderData: (prev) => prev,
+  });
+}
+
 
 export function useCFFCandidates(
   orgId: string,
@@ -553,6 +599,8 @@ export function useUpsertStages(
       // Invalidate every ``[psp, orgId, items, ...]`` query so the
       // stage cards refetch fresh BOMs on the next render.
       queryClient.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
+      // Stages own the line set — a saved stage graph re-computes
+      // band-pick materialisation, which changes the cost breakdown.
     },
   });
 }
@@ -647,6 +695,8 @@ export function useSaveWizardRouting(
         updated,
       );
       queryClient.invalidateQueries({ queryKey: ["psp", orgId, "items"] });
+      // Routing writes materialise the wizard's band picks into new
+      // FormulationLine rows — the cost breakdown must refresh.
     },
   });
 }

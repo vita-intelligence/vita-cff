@@ -30,6 +30,8 @@ export const formulationsEndpoints = {
     const qs = params.toString();
     return qs ? `${base}?${qs}` : base;
   },
+  itemPrices: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/item-prices/`,
   salesPerson: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/sales-person/`,
   leadScientist: (orgId: string, formulationId: string) =>
