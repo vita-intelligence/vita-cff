@@ -16,7 +16,7 @@
  */
 
 import { useCallback, useState } from "react";
-import { CheckCircle2, Plus, Trash2, Upload } from "lucide-react";
+import { CheckCircle2, Upload } from "lucide-react";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
 import type { FormulationDto } from "@/services/formulations/types";
@@ -74,9 +74,6 @@ function RTGCatalogPanelInner({
       ? String(formulation.rtg_moq)
       : "",
   );
-  const [packaging, setPackaging] = useState<string[]>([
-    ...formulation.rtg_packaging_options,
-  ]);
   const [heroFile, setHeroFile] = useState<File | null>(null);
   const [heroPreview] = useState<string | null>(
     formulation.rtg_hero_image ?? null,
@@ -85,16 +82,6 @@ function RTGCatalogPanelInner({
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
-
-  const addPackaging = useCallback(() => {
-    setPackaging((prev) => [...prev, ""]);
-  }, []);
-  const removePackaging = useCallback((idx: number) => {
-    setPackaging((prev) => prev.filter((_, i) => i !== idx));
-  }, []);
-  const editPackaging = useCallback((idx: number, value: string) => {
-    setPackaging((prev) => prev.map((p, i) => (i === idx ? value : p)));
-  }, []);
 
   const submit = useCallback(
     async (nextPublished: boolean) => {
@@ -109,12 +96,6 @@ function RTGCatalogPanelInner({
         form.append("rtg_base_price", basePrice);
         form.append("rtg_moq", moq);
         form.append("rtg_currency_code", currency);
-        // Repeated key = list on the server side.
-        for (const entry of packaging) {
-          if (entry.trim()) {
-            form.append("rtg_packaging_options", entry.trim());
-          }
-        }
         if (heroFile) {
           form.append("rtg_hero_image", heroFile);
         }
@@ -164,7 +145,6 @@ function RTGCatalogPanelInner({
       heroFile,
       moq,
       orgId,
-      packaging,
     ],
   );
 
@@ -317,49 +297,14 @@ function RTGCatalogPanelInner({
           ) : null}
         </div>
 
-        <div className="md:col-span-2">
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
-            Packaging options
-          </label>
-          <div className="flex flex-col gap-2">
-            {packaging.map((opt, idx) => (
-              <div key={idx} className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={opt}
-                  onChange={(e) => editPackaging(idx, e.currentTarget.value)}
-                  disabled={disabled}
-                  placeholder="e.g. 60ct bottle"
-                  className="flex-1 rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
-                />
-                <button
-                  type="button"
-                  onClick={() => removePackaging(idx)}
-                  disabled={disabled}
-                  aria-label="Remove packaging option"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-ink-300 text-ink-600 hover:bg-ink-50 disabled:opacity-40"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
-            <button
-              type="button"
-              onClick={addPackaging}
-              disabled={disabled}
-              className="inline-flex w-fit items-center gap-1.5 rounded-lg border border-dashed border-ink-300 px-3 py-1.5 text-xs font-semibold text-ink-700 hover:bg-ink-50 disabled:opacity-40"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Add option
-            </button>
-          </div>
-          {fieldErrors.rtg_packaging_options ? (
-            <p className="mt-1 text-xs text-rose-700">
-              {fieldErrors.rtg_packaging_options}
-            </p>
-          ) : null}
-        </div>
       </div>
+
+      <p className="mt-4 rounded-lg border border-dashed border-ink-300 bg-ink-50 px-3 py-2 text-xs text-ink-700">
+        Packaging is now defined per-SKU in the <strong>Packaging
+        combos</strong> card above (bottle + lid + label bundles the
+        customer picks between at checkout). The old free-text
+        packaging options field has been retired.
+      </p>
 
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
         {published ? (
