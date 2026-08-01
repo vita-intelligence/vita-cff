@@ -240,8 +240,7 @@ def _accepted_proposal_for_formulation(formulation) -> Any | None:
     proposal, so no deposit gate applies.
     """
 
-    from apps.proposals.constants import ProposalStatus
-    from apps.proposals.models import ProposalLine
+    from apps.proposals.models import ProposalLine, ProposalStatus
 
     line = (
         ProposalLine.objects.filter(

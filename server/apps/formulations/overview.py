@@ -239,6 +239,12 @@ class ProjectOverview:
     #: the project page. ``None`` until a client is attached. Mirrored
     #: to PSP so the kanban swaps the placeholder for the real name.
     linked_customer: "LinkedCustomerSnapshot | None" = None
+    #: Trial-batch gate status — deposit paid / pending / not
+    #: required. Powers the yellow banner shown across every tab of
+    #: the project workspace when the customer owes a deposit before
+    #: scientists can schedule a run. Shape mirrors
+    #: :func:`apps.payments.services.trial_batch_gate_status`.
+    deposit_gate: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -955,7 +961,18 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         ),
         linked_cffs=_linked_cffs_snapshot(formulation),
         linked_customer=_linked_customer_snapshot(formulation),
+        deposit_gate=_deposit_gate_snapshot(formulation),
     )
+
+
+def _deposit_gate_snapshot(formulation: Formulation) -> dict:
+    """Lazy-imported wrapper around the payments-side helper. Keeps
+    the payments ↔ formulations ↔ proposals import graph clean at
+    module boot."""
+
+    from apps.payments.services import trial_batch_gate_status
+
+    return trial_batch_gate_status(formulation)
 
 
 def _linked_customer_snapshot(

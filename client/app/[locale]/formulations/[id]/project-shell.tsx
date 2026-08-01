@@ -18,6 +18,7 @@ import { Link, usePathname } from "@/i18n/navigation";
 import type { ProjectOverviewDto } from "@/services/formulations";
 import type { OrganizationDto } from "@/services/organizations/types";
 
+import { DepositGateBanner } from "./deposit-gate-banner";
 import { ProjectHeaderActions } from "./project-header-actions";
 
 
@@ -109,7 +110,13 @@ export function ProjectShell({
       icon: <FlaskConical className="h-4 w-4" />,
       count: overview.trial_batches.total,
       lockedReason: gates.trial_batches
-        ? undefined
+        ? // Even if the wizard-gate says "you can visit this tab",
+          // we still refuse trial-batch creation until the deposit
+          // clears. Surface it as the tab-level lock reason so the
+          // scientist sees the block before clicking through.
+          overview.deposit_gate.unlocked
+          ? undefined
+          : `Awaiting deposit on ${overview.deposit_gate.proposal_code ?? "the accepted proposal"} — trial batches unlock once finance approves the payment.`
         : gates.builder_complete
           ? "Send a proposal to the customer and get it signed before running trial batches."
           : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
@@ -142,6 +149,7 @@ export function ProjectShell({
         {tNav("main.formulations")}
       </Link>
       <CompactHeader organization={organization} overview={overview} />
+      <DepositGateBanner gate={overview.deposit_gate} />
       <TabBar tabs={tabs} activeTab={activeTab} />
       <div>{children}</div>
     </div>
