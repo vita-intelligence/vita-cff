@@ -40,6 +40,15 @@ import { useRouter } from "@/i18n/navigation";
 // ---------------------------------------------------------------------------
 
 
+export interface PortalRTGPackagingCombo {
+  readonly id: string;
+  readonly name: string;
+  readonly price_delta: string;
+  readonly is_default: boolean;
+  readonly items: ReadonlyArray<string>;
+}
+
+
 export interface PortalRTGCatalogItem {
   readonly id: string;
   readonly name: string;
@@ -49,6 +58,7 @@ export interface PortalRTGCatalogItem {
   readonly currency_code: string;
   readonly moq: number;
   readonly packaging_options: ReadonlyArray<string>;
+  readonly packaging_combos?: ReadonlyArray<PortalRTGPackagingCombo>;
 }
 
 
@@ -66,6 +76,7 @@ export interface ProfileShape {
 interface OrderForm {
   readonly quantity: string;
   readonly packaging: string;
+  readonly packaging_combo_id: string;
   readonly delivery_address: string;
   readonly target_ship_date: string;
   readonly notes: string;
@@ -223,13 +234,23 @@ function OrderForm({
     [profile.customer_id, sku.id],
   );
 
-  const initialState = useMemo<OrderForm>(() => ({
-    quantity: String(sku.moq),
-    packaging: sku.packaging_options[0] ?? "",
-    delivery_address: profile.delivery_address || "",
-    target_ship_date: "",
-    notes: "",
-  }), [sku, profile.delivery_address]);
+  const combos = useMemo(
+    () => sku.packaging_combos ?? [],
+    [sku.packaging_combos],
+  );
+  const hasCombos = combos.length > 0;
+
+  const initialState = useMemo<OrderForm>(() => {
+    const defaultCombo = combos.find((c) => c.is_default) ?? combos[0];
+    return {
+      quantity: String(sku.moq),
+      packaging: hasCombos ? "" : (sku.packaging_options[0] ?? ""),
+      packaging_combo_id: defaultCombo?.id ?? "",
+      delivery_address: profile.delivery_address || "",
+      target_ship_date: "",
+      notes: "",
+    };
+  }, [combos, hasCombos, sku, profile.delivery_address]);
 
   const [form, setForm] = useState<OrderForm>(initialState);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
@@ -284,10 +305,15 @@ function OrderForm({
 
   const quantityNum = Number(form.quantity) || 0;
   const belowMoq = quantityNum > 0 && quantityNum < sku.moq;
+  const selectedCombo = useMemo(
+    () => combos.find((c) => c.id === form.packaging_combo_id) ?? null,
+    [combos, form.packaging_combo_id],
+  );
   const subtotal = useMemo(() => {
     const price = Number(sku.base_price) || 0;
-    return quantityNum * price;
-  }, [quantityNum, sku.base_price]);
+    const delta = Number(selectedCombo?.price_delta ?? 0) || 0;
+    return quantityNum * (price + delta);
+  }, [quantityNum, sku.base_price, selectedCombo]);
 
   const handleSubmit = useCallback(async () => {
     setBanner(null);
@@ -297,7 +323,13 @@ function OrderForm({
     if (quantityNum < sku.moq) {
       errors.quantity = `Minimum order quantity is ${sku.moq}.`;
     }
-    if (!form.packaging) {
+    if (hasCombos) {
+      if (!form.packaging_combo_id) {
+        errors.packaging_combo_id = "Pick a packaging option.";
+      } else if (!combos.some((c) => c.id === form.packaging_combo_id)) {
+        errors.packaging_combo_id = "Pick a packaging option from the list.";
+      }
+    } else if (!form.packaging) {
       errors.packaging = "Pick a packaging option.";
     } else if (!sku.packaging_options.includes(form.packaging)) {
       errors.packaging = "Pick a packaging option from the list.";
@@ -315,7 +347,10 @@ function OrderForm({
       await apiClient.post("/api/portal/cffs/new-rtg/", {
         rtg_formulation_id: sku.id,
         quantity: quantityNum,
-        packaging: form.packaging,
+        packaging: hasCombos
+          ? (selectedCombo?.name ?? "")
+          : form.packaging,
+        packaging_combo_id: hasCombos ? form.packaging_combo_id : null,
         delivery_address: form.delivery_address.trim(),
         target_ship_date: form.target_ship_date || null,
         notes: form.notes.trim() || undefined,
@@ -349,13 +384,17 @@ function OrderForm({
       setSubmitting(false);
     }
   }, [
+    combos,
     form.delivery_address,
     form.notes,
     form.packaging,
+    form.packaging_combo_id,
     form.target_ship_date,
+    hasCombos,
     key,
     quantityNum,
     router,
+    selectedCombo,
     sku.id,
     sku.moq,
     sku.packaging_options,
@@ -413,28 +452,73 @@ function OrderForm({
               Packaging
             </span>
             <div className="flex flex-col gap-2">
-              {sku.packaging_options.map((opt) => (
-                <label
-                  key={opt}
-                  className={`flex cursor-pointer items-center gap-3 border-2 border-black bg-white px-3 py-2 text-sm ${
-                    form.packaging === opt ? "bg-orange-500" : ""
-                  }`}
-                >
-                  <input
-                    type="radio"
-                    name="packaging"
-                    value={opt}
-                    checked={form.packaging === opt}
-                    onChange={() => setField("packaging", opt)}
-                    className="accent-black"
-                  />
-                  <span className="font-medium">{opt}</span>
-                </label>
-              ))}
+              {hasCombos
+                ? combos.map((combo) => {
+                    const delta = Number(combo.price_delta) || 0;
+                    const deltaLabel =
+                      delta === 0
+                        ? ""
+                        : delta > 0
+                          ? `+${currencySymbol(sku.currency_code)}${delta.toFixed(2)}/unit`
+                          : `−${currencySymbol(sku.currency_code)}${Math.abs(delta).toFixed(2)}/unit`;
+                    const picked = form.packaging_combo_id === combo.id;
+                    return (
+                      <label
+                        key={combo.id}
+                        className={`flex cursor-pointer items-start gap-3 border-2 border-black bg-white px-3 py-2 text-sm ${
+                          picked ? "bg-orange-500" : ""
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="packaging_combo"
+                          value={combo.id}
+                          checked={picked}
+                          onChange={() =>
+                            setField("packaging_combo_id", combo.id)
+                          }
+                          className="mt-1 accent-black"
+                        />
+                        <span className="flex flex-1 flex-col gap-0.5">
+                          <span className="flex items-center justify-between gap-3">
+                            <span className="font-bold">{combo.name}</span>
+                            {deltaLabel ? (
+                              <span className="text-[11px] font-bold uppercase tracking-wide">
+                                {deltaLabel}
+                              </span>
+                            ) : null}
+                          </span>
+                          {combo.items.length > 0 ? (
+                            <span className="text-[11px] text-neutral-700">
+                              Includes: {combo.items.join(" · ")}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })
+                : sku.packaging_options.map((opt) => (
+                    <label
+                      key={opt}
+                      className={`flex cursor-pointer items-center gap-3 border-2 border-black bg-white px-3 py-2 text-sm ${
+                        form.packaging === opt ? "bg-orange-500" : ""
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="packaging"
+                        value={opt}
+                        checked={form.packaging === opt}
+                        onChange={() => setField("packaging", opt)}
+                        className="accent-black"
+                      />
+                      <span className="font-medium">{opt}</span>
+                    </label>
+                  ))}
             </div>
-            {fieldErrors.packaging ? (
+            {fieldErrors.packaging_combo_id || fieldErrors.packaging ? (
               <span className="mt-1.5 block text-[11px] font-bold uppercase tracking-wide text-red-700">
-                {fieldErrors.packaging}
+                {fieldErrors.packaging_combo_id || fieldErrors.packaging}
               </span>
             ) : null}
           </div>

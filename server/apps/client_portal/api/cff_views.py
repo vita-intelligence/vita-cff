@@ -596,6 +596,10 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
         source="rtg_packaging_options",
         child=serializers.CharField(),
     )
+    # Phase 2 packaging combos. Portal picker prefers this list when
+    # non-empty; falls back to the legacy free-text ``packaging_options``
+    # for cards published before the combo model existed.
+    packaging_combos = serializers.SerializerMethodField()
 
     def get_hero_image_url(self, obj) -> str | None:
         image = getattr(obj, "rtg_hero_image", None)
@@ -609,6 +613,28 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     def get_name(self, obj) -> str:
         display = (getattr(obj, "rtg_display_name", "") or "").strip()
         return display or obj.name
+
+    def get_packaging_combos(self, obj) -> list[dict]:
+        """Portal picker payload — combo id + name + price delta +
+        item names. Items are just labels here (no quantity / codes)
+        because the portal customer only needs to see what's in each
+        bundle, not the internal SKU shape."""
+
+        combos = obj.packaging_combos.all().prefetch_related("items__item")
+        return [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "price_delta": str(c.price_delta),
+                "is_default": c.is_default,
+                "items": [
+                    (row.item.name if row.item_id else "")
+                    for row in c.items.all()
+                    if row.item_id
+                ],
+            }
+            for c in combos
+        ]
 
 
 class PortalRTGCatalogView(PortalAPIView):
@@ -651,7 +677,12 @@ class PortalRTGCreateSerializer(serializers.Serializer):
 
     rtg_formulation_id = serializers.UUIDField()
     quantity = serializers.IntegerField(min_value=1)
-    packaging = serializers.CharField(max_length=200)
+    packaging = serializers.CharField(
+        max_length=200, required=False, allow_blank=True,
+    )
+    packaging_combo_id = serializers.UUIDField(
+        required=False, allow_null=True,
+    )
     delivery_address = serializers.CharField(max_length=1000)
     target_ship_date = serializers.DateField(required=False, allow_null=True)
     notes = serializers.CharField(
@@ -676,7 +707,7 @@ class PortalRTGCreateView(PortalAPIView):
         typed = PortalRTGSubmissionInput(
             rtg_formulation_id=str(data["rtg_formulation_id"]),
             quantity=int(data["quantity"]),
-            packaging=str(data["packaging"]),
+            packaging=str(data.get("packaging") or ""),
             delivery_address=str(data["delivery_address"]),
             target_ship_date=(
                 data["target_ship_date"].isoformat()
@@ -684,6 +715,11 @@ class PortalRTGCreateView(PortalAPIView):
                 else None
             ),
             notes=str(data.get("notes") or ""),
+            packaging_combo_id=(
+                str(data["packaging_combo_id"])
+                if data.get("packaging_combo_id")
+                else None
+            ),
         )
 
         try:

@@ -1595,6 +1595,12 @@ class PortalRTGSubmissionInput:
     delivery_address: str
     target_ship_date: str | None = None
     notes: str = ""
+    #: Phase 2 packaging combo pick. When set (and the formulation
+    #: has combos configured), overrides the free-text ``packaging``
+    #: validation — the combo's name becomes the display packaging
+    #: label + the combo FK lands on the ProposalLine so downstream
+    #: spec / routing cascade knows what to pull.
+    packaging_combo_id: str | None = None
 
 
 def _extract_rtg_summary(formulation, packaging: str) -> str:
@@ -1701,16 +1707,40 @@ def create_portal_rtg_submission(
         field_errors["quantity"] = (
             f"Minimum order quantity is {moq}."
         )
-    packaging_choice = (payload.packaging or "").strip()
-    allowed = [
-        str(entry).strip() for entry in (formulation.rtg_packaging_options or [])
-    ]
-    if not packaging_choice:
-        field_errors["packaging"] = "Pick a packaging option."
-    elif packaging_choice not in allowed:
-        field_errors["packaging"] = (
-            "That packaging isn't offered for this product."
+
+    # Phase 2: prefer packaging_combo_id when the formulation has
+    # combos configured. Falls back to the legacy free-text
+    # ``packaging`` field for pre-migration cards.
+    from apps.formulations.models import PackagingCombo
+
+    combo_choice: PackagingCombo | None = None
+    if payload.packaging_combo_id:
+        combo_choice = (
+            PackagingCombo.objects
+            .filter(id=payload.packaging_combo_id, formulation=formulation)
+            .first()
         )
+        if combo_choice is None:
+            field_errors["packaging_combo_id"] = (
+                "That packaging option isn't offered for this product."
+            )
+    packaging_choice = (payload.packaging or "").strip()
+    if combo_choice is not None:
+        # Display packaging label = combo name so the drafted proposal
+        # line still reads naturally even when the FE only sent the
+        # combo id.
+        packaging_choice = combo_choice.name
+    else:
+        allowed = [
+            str(entry).strip()
+            for entry in (formulation.rtg_packaging_options or [])
+        ]
+        if not packaging_choice:
+            field_errors["packaging"] = "Pick a packaging option."
+        elif allowed and packaging_choice not in allowed:
+            field_errors["packaging"] = (
+                "That packaging isn't offered for this product."
+            )
     delivery = (payload.delivery_address or "").strip()
     if not delivery:
         field_errors["delivery_address"] = "A delivery address is required."
@@ -1770,6 +1800,14 @@ def create_portal_rtg_submission(
     now = django_timezone.now()
     summary = _extract_rtg_summary(formulation, packaging_choice)
     unit_price = formulation.rtg_base_price
+    # Phase 2: combo price delta rides on top of the base RTG price.
+    # Applied once per unit so the customer sees "base + premium
+    # packaging uplift" reflected in the drafted quote.
+    if combo_choice is not None and unit_price is not None:
+        try:
+            unit_price = Decimal(unit_price) + Decimal(combo_choice.price_delta)
+        except Exception:  # pragma: no cover - defensive
+            pass
     currency = (formulation.rtg_currency_code or "GBP").upper()[:3]
 
     # 4) Draft proposal — mirrors what ``create_proposal`` would emit
@@ -1848,6 +1886,7 @@ def create_portal_rtg_submission(
         quantity=max(1, quantity),
         unit_price=unit_price,
         display_order=0,
+        selected_packaging_combo=combo_choice,
     )
 
     # 5) CFFSubmission with RTG discriminator + proposal FK.
@@ -1893,6 +1932,12 @@ def create_portal_rtg_submission(
                 "submitted_by_client_account_id": str(client_account.pk),
                 "rtg_source_formulation_id": str(formulation.pk),
                 "rtg_drafted_proposal_id": str(proposal.pk),
+                "rtg_packaging_combo_id": (
+                    str(combo_choice.id) if combo_choice else ""
+                ),
+                "rtg_packaging_combo_name": (
+                    combo_choice.name if combo_choice else ""
+                ),
             },
         },
         submitter_email=(customer.email or "").strip().lower(),
