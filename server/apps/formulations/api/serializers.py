@@ -372,6 +372,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "is_rtg_published",
             "rtg_display_name",
             "rtg_short_description",
+            "rtg_long_description",
             "rtg_hero_image",
             "rtg_base_price",
             "rtg_moq",

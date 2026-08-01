@@ -586,6 +586,12 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     # logic lives here so every consumer doesn't reimplement it.
     name = serializers.SerializerMethodField()
     short_description = serializers.CharField(source="rtg_short_description")
+    #: Full-length catalog page body — sanitized HTML authored by staff
+    #: in the rich-text editor. Portal renders it below the pricing
+    #: row so customers see full marketing copy before ordering.
+    long_description = serializers.CharField(
+        source="rtg_long_description", default=""
+    )
     hero_image_url = serializers.SerializerMethodField()
     base_price = serializers.DecimalField(
         source="rtg_base_price", max_digits=12, decimal_places=2,

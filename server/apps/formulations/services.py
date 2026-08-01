@@ -6324,6 +6324,57 @@ _RTG_PUBLISH_REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+#: Bleach whitelist for the RTG long-description rich-text field.
+#: Kept intentionally tight — every tag here matches something the
+#: TipTap editor is configured to emit, so the sanitizer only strips
+#: content that a compromised session (or a hand-crafted API call)
+#: injected outside the editor.
+_RTG_LONG_DESCRIPTION_TAGS: tuple[str, ...] = (
+    "p",
+    "br",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "strong",
+    "em",
+    "u",
+    "s",
+    "ul",
+    "ol",
+    "li",
+    "blockquote",
+    "a",
+    "img",
+    "code",
+    "pre",
+    "hr",
+)
+_RTG_LONG_DESCRIPTION_ATTRS: dict[str, list[str]] = {
+    "a": ["href", "title", "rel", "target"],
+    "img": ["src", "alt", "title", "width", "height"],
+}
+
+
+def _sanitize_rtg_long_description(html: str) -> str:
+    """Sanitize the rich-text long description before it lands in the
+    DB. Uses :mod:`bleach` with a fixed tag + attribute whitelist so a
+    compromised staff session can't smuggle ``<script>`` past the
+    editor's UI restrictions."""
+
+    import bleach
+
+    if not html:
+        return ""
+    return bleach.clean(
+        html,
+        tags=_RTG_LONG_DESCRIPTION_TAGS,
+        attributes=_RTG_LONG_DESCRIPTION_ATTRS,
+        protocols=("http", "https", "mailto"),
+        strip=True,
+    )
+
+
 def _rtg_marketing_field_errors(
     payload: dict[str, Any],
 ) -> dict[str, str]:
@@ -6448,6 +6499,7 @@ def publish_to_rtg_catalog(
     merged: dict[str, Any] = {
         "rtg_display_name": formulation.rtg_display_name,
         "rtg_short_description": formulation.rtg_short_description,
+        "rtg_long_description": formulation.rtg_long_description,
         "rtg_base_price": formulation.rtg_base_price,
         "rtg_moq": formulation.rtg_moq,
         "rtg_packaging_options": list(formulation.rtg_packaging_options or []),
@@ -6479,6 +6531,9 @@ def publish_to_rtg_catalog(
     formulation.rtg_short_description = str(
         merged["rtg_short_description"]
     ).strip()
+    formulation.rtg_long_description = _sanitize_rtg_long_description(
+        str(merged.get("rtg_long_description") or "")
+    )
     formulation.rtg_base_price = Decimal(str(merged["rtg_base_price"]))
     formulation.rtg_moq = int(merged["rtg_moq"])
     formulation.rtg_packaging_options = [
@@ -6578,6 +6633,10 @@ def save_rtg_marketing(
         formulation.rtg_short_description = str(
             marketing_fields.get("rtg_short_description") or ""
         ).strip()
+    if "rtg_long_description" in marketing_fields:
+        formulation.rtg_long_description = _sanitize_rtg_long_description(
+            str(marketing_fields.get("rtg_long_description") or "")
+        )
     if "rtg_base_price" in marketing_fields:
         raw_price = marketing_fields.get("rtg_base_price")
         formulation.rtg_base_price = (

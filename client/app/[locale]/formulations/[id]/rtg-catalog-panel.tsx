@@ -19,6 +19,7 @@ import { useCallback, useState } from "react";
 import { CheckCircle2, Save } from "lucide-react";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
+import { RichTextEditor } from "@/components/forms/rich-text-editor";
 import type { FormulationDto } from "@/services/formulations/types";
 
 
@@ -63,6 +64,9 @@ function RTGCatalogPanelInner({
   const [description, setDescription] = useState(
     formulation.rtg_short_description || "",
   );
+  const [longDescription, setLongDescription] = useState(
+    formulation.rtg_long_description || "",
+  );
   const [basePrice, setBasePrice] = useState(
     formulation.rtg_base_price || "",
   );
@@ -99,6 +103,7 @@ function RTGCatalogPanelInner({
       // header actions and hits the same endpoint with the flag.
       form.append("rtg_display_name", displayName);
       form.append("rtg_short_description", description);
+      form.append("rtg_long_description", longDescription);
       form.append("rtg_base_price", basePrice);
       form.append("rtg_moq", moq);
       form.append("rtg_currency_code", currency);
@@ -140,6 +145,7 @@ function RTGCatalogPanelInner({
     displayName,
     formulation.id,
     heroFile,
+    longDescription,
     moq,
     orgId,
   ]);
@@ -216,6 +222,29 @@ function RTGCatalogPanelInner({
           {fieldErrors.rtg_short_description ? (
             <p className="mt-1 text-xs text-rose-700">
               {fieldErrors.rtg_short_description}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
+            Full description
+          </label>
+          <p className="mb-2 text-xs text-ink-500">
+            The customer-facing product page body. Rich formatting is
+            preserved end-to-end — what you see here is what shoppers
+            see on the catalog.
+          </p>
+          <RichTextEditor
+            value={longDescription}
+            onChange={setLongDescription}
+            disabled={disabled}
+            placeholder="Describe the product in detail — ingredients story, benefits, usage tips, FAQs…"
+            minHeight="18rem"
+          />
+          {fieldErrors.rtg_long_description ? (
+            <p className="mt-1 text-xs text-rose-700">
+              {fieldErrors.rtg_long_description}
             </p>
           ) : null}
         </div>
