@@ -73,6 +73,7 @@ export function ProjectOverview({
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
         <SnapshotCard overview={overview} tProject={tProject} />
         <ComplianceCard overview={overview} tProject={tProject} />
+        <RiskCard overview={overview} />
       </section>
       <ActivityCard overview={overview} tProject={tProject} />
     </article>
@@ -480,6 +481,122 @@ function Row({ label, value }: { label: string; value: string }) {
     <div className="flex items-baseline justify-between gap-3">
       <dt className="text-ink-500">{label}</dt>
       <dd className="font-medium text-ink-1000">{value}</dd>
+    </div>
+  );
+}
+
+
+/**
+ * Regulatory-risk rollup card.
+ *
+ * Sits next to the Compliance card in the overview grid and gives
+ * scientists / auditors an at-a-glance answer to "how compliance-risky
+ * is this product?". The worst tier across bundled ingredients drives
+ * the headline chip; the per-tier counts summarise the mix; and the
+ * high / medium ingredient lists surface the offenders so a scientist
+ * can click straight through to the item detail page.
+ */
+function RiskCard({ overview }: { overview: ProjectOverviewDto }) {
+  const risk = overview.risk;
+  const total = risk.counts.low + risk.counts.medium + risk.counts.high;
+  const tone =
+    risk.worst_tier === "high"
+      ? {
+          card: "bg-danger/5 ring-danger/30",
+          chip: "bg-danger/10 text-danger ring-danger/30",
+          summary: "text-danger",
+          label: "High",
+          body: "At least one ingredient is flagged as high regulatory risk. Confirm novel-food status, restricted-market clearance and allergen documentation before signing off.",
+        }
+      : risk.worst_tier === "medium"
+        ? {
+            card: "bg-warning/5 ring-warning/30",
+            chip: "bg-warning/10 text-warning ring-warning/30",
+            summary: "text-warning",
+            label: "Medium",
+            body: "One or more ingredients need extra due diligence — usually a certificate check, a supplier audit, or a market-specific note.",
+          }
+        : {
+            card: "bg-ink-0 ring-ink-200",
+            chip: "bg-success/10 text-success ring-success/30",
+            summary: "text-success",
+            label: "Low",
+            body:
+              total === 0
+                ? "No ingredients recorded yet. Risk rollup activates as soon as the builder has lines."
+                : "All ingredients sit in the low regulatory-risk tier — nothing on this recipe requires additional compliance sign-off.",
+          };
+  return (
+    <div
+      className={`rounded-2xl p-6 shadow-sm ring-1 ${tone.card}`}
+    >
+      <div className="flex items-center gap-2">
+        <AlertTriangle className="h-4 w-4 text-ink-400" />
+        <h2 className="text-sm font-semibold text-ink-1000">
+          Regulatory risk
+        </h2>
+        <span
+          className={`ml-auto inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset ${tone.chip}`}
+        >
+          {tone.label}
+        </span>
+      </div>
+      <p className="mt-3 text-xs text-ink-700">{tone.body}</p>
+      {total > 0 ? (
+        <p className={`mt-3 text-xs font-medium ${tone.summary}`}>
+          {risk.counts.high > 0 ? `${risk.counts.high} high · ` : ""}
+          {risk.counts.medium > 0 ? `${risk.counts.medium} medium · ` : ""}
+          {risk.counts.low > 0 ? `${risk.counts.low} low` : ""}
+        </p>
+      ) : null}
+      {risk.high_lines.length > 0 ? (
+        <RiskLineList
+          title="High-risk ingredients"
+          tone="high"
+          lines={risk.high_lines}
+        />
+      ) : null}
+      {risk.medium_lines.length > 0 ? (
+        <RiskLineList
+          title="Medium-risk ingredients"
+          tone="medium"
+          lines={risk.medium_lines}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+
+function RiskLineList({
+  title,
+  tone,
+  lines,
+}: {
+  title: string;
+  tone: "high" | "medium";
+  lines: ProjectOverviewDto["risk"]["high_lines"];
+}) {
+  const chip =
+    tone === "high"
+      ? "bg-danger/10 text-danger ring-danger/30"
+      : "bg-warning/10 text-warning ring-warning/30";
+  return (
+    <div className="mt-4">
+      <p className="text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+        {title}
+      </p>
+      <ul className="mt-1 flex flex-wrap gap-1.5">
+        {lines.map((row) => (
+          <li
+            key={row.item_id}
+            className={`inline-flex max-w-full items-center gap-1 truncate rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${chip}`}
+            title={row.name}
+          >
+            <span className="truncate">{row.name}</span>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
