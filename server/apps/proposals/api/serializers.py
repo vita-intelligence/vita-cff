@@ -38,6 +38,12 @@ class ProposalLineReadSerializer(serializers.ModelSerializer):
         read_only=True, allow_null=True
     )
     subtotal = serializers.SerializerMethodField()
+    selected_packaging_combo_id = serializers.UUIDField(
+        read_only=True,
+        allow_null=True,
+    )
+    selected_packaging_combo_name = serializers.SerializerMethodField()
+    selected_packaging_combo_items = serializers.SerializerMethodField()
 
     class Meta:
         model = ProposalLine
@@ -56,6 +62,9 @@ class ProposalLineReadSerializer(serializers.ModelSerializer):
             "unit_price",
             "display_order",
             "subtotal",
+            "selected_packaging_combo_id",
+            "selected_packaging_combo_name",
+            "selected_packaging_combo_items",
         )
         read_only_fields = (
             "id",
@@ -64,11 +73,36 @@ class ProposalLineReadSerializer(serializers.ModelSerializer):
             "formulation_version_number",
             "specification_sheet_id",
             "subtotal",
+            "selected_packaging_combo_id",
+            "selected_packaging_combo_name",
+            "selected_packaging_combo_items",
         )
 
     def get_subtotal(self, obj: ProposalLine) -> str | None:
         sub = obj.subtotal
         return None if sub is None else str(sub)
+
+    def get_selected_packaging_combo_name(
+        self, obj: ProposalLine
+    ) -> str | None:
+        combo = obj.selected_packaging_combo
+        return combo.name if combo else None
+
+    def get_selected_packaging_combo_items(
+        self, obj: ProposalLine
+    ) -> list[dict] | None:
+        combo = obj.selected_packaging_combo
+        if combo is None:
+            return None
+        return [
+            {
+                "id": str(row.id),
+                "item_id": str(row.item_id) if row.item_id else None,
+                "item_name": row.item.name if row.item_id else "",
+                "quantity": row.quantity,
+            }
+            for row in combo.items.select_related("item").all()
+        ]
 
 
 class ProposalReadSerializer(serializers.ModelSerializer):

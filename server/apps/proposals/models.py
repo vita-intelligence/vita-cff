@@ -695,6 +695,20 @@ class ProposalLine(models.Model):
             "spec sheets — one per line."
         ),
     )
+    selected_packaging_combo = models.ForeignKey(
+        "formulations.PackagingCombo",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="+",
+        help_text=_(
+            "RTG-only. The packaging combo the customer picked at "
+            "order time. PROTECT because deleting a combo that a "
+            "customer already picked would silently orphan their "
+            "order's packaging spec. Null on Custom lines (they "
+            "bind packaging directly via the routing stages)."
+        ),
+    )
 
     product_code = models.CharField(
         _("product code"),
