@@ -11,6 +11,7 @@ import {
   Layers,
   PlusCircle,
   Sparkles,
+  Wallet,
 } from "lucide-react";
 
 import {
@@ -51,6 +52,7 @@ type Stage =
 type ActionKind =
   | "sign_proposal"
   | "sign_final_spec"
+  | "pay_deposit"
   | "label_choose_path"
   | "label_preferences"
   | "label_upload"
@@ -136,6 +138,7 @@ const ACTION_ICONS: Record<
 > = {
   sign_proposal: FileSignature,
   sign_final_spec: Sparkles,
+  pay_deposit: Wallet,
   label_choose_path: Layers,
   label_preferences: Layers,
   label_upload: Layers,
@@ -350,33 +353,47 @@ export default async function PortalProductsPage() {
 function ActionCard({ action }: { action: ActionItem }) {
   const Icon = ACTION_ICONS[action.kind] ?? Clock;
   const isUrgent = action.urgency === 1;
+  // Deposit is informational only — payment happens off-platform
+  // (invoice + bank transfer), so there's nowhere useful to click
+  // through to. Render as a static card without the arrow affordance.
+  const isInformational = action.kind === "pay_deposit";
+  const body = (
+    <div className="flex items-start gap-4">
+      <span
+        className={`inline-flex h-10 w-10 shrink-0 items-center justify-center border-2 border-black ${
+          isUrgent ? "bg-orange-500 text-black" : "bg-white text-black"
+        }`}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-500">
+          {action.product_code || "Project"}
+          {isUrgent ? (
+            <span className="ml-2 text-orange-700">· URGENT</span>
+          ) : null}
+        </p>
+        <p className="mt-1 text-base font-black uppercase leading-tight">
+          {action.title}
+        </p>
+        <p className="mt-1 text-sm text-neutral-700">{action.subtitle}</p>
+      </div>
+      {isInformational ? null : (
+        <ArrowRight className="h-5 w-5 shrink-0 text-neutral-400 transition-transform group-hover:translate-x-1" />
+      )}
+    </div>
+  );
+  if (isInformational) {
+    return (
+      <div className="block border-2 border-black bg-white p-4">{body}</div>
+    );
+  }
   return (
     <a
       href={action.url}
       className="group block border-2 border-black bg-white p-4 transition-all hover:shadow-[4px_4px_0_0_black]"
     >
-      <div className="flex items-start gap-4">
-        <span
-          className={`inline-flex h-10 w-10 shrink-0 items-center justify-center border-2 border-black ${
-            isUrgent ? "bg-orange-500 text-black" : "bg-white text-black"
-          }`}
-        >
-          <Icon className="h-5 w-5" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-neutral-500">
-            {action.product_code || "Project"}
-            {isUrgent ? (
-              <span className="ml-2 text-orange-700">· URGENT</span>
-            ) : null}
-          </p>
-          <p className="mt-1 text-base font-black uppercase leading-tight">
-            {action.title}
-          </p>
-          <p className="mt-1 text-sm text-neutral-700">{action.subtitle}</p>
-        </div>
-        <ArrowRight className="h-5 w-5 shrink-0 text-neutral-400 transition-transform group-hover:translate-x-1" />
-      </div>
+      {body}
     </a>
   );
 }
