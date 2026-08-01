@@ -5,6 +5,7 @@ import {
   Banknote,
   CheckCircle2,
   Loader2,
+  Paperclip,
   Plus,
   Receipt,
   Search,
@@ -435,6 +436,43 @@ function PendingRow({
 }
 
 
+/** Invoice cell: surfaces attached files with a paperclip + count,
+ *  falls back to the plain ``invoice_number`` text, and — when the
+ *  row has neither — shows an explicit "Attach" link deep-linking
+ *  into the detail page where the upload UI lives. Without this
+ *  affordance the list view has no visible path to the upload flow. */
+function InvoiceCell({ payment }: { payment: PaymentDto }) {
+  const count = payment.invoices.length;
+  if (count > 0) {
+    return (
+      <Link
+        href={`/finance/payments/${payment.id}`}
+        className="inline-flex items-center gap-1 text-ink-700 hover:text-orange-700"
+        title={`${count} file${count === 1 ? "" : "s"} attached`}
+      >
+        <Paperclip className="h-3.5 w-3.5" />
+        <span className="tabular-nums">{count}</span>
+        {payment.invoice_number ? (
+          <span className="ml-1 text-ink-500">· {payment.invoice_number}</span>
+        ) : null}
+      </Link>
+    );
+  }
+  if (payment.invoice_number) {
+    return <span>{payment.invoice_number}</span>;
+  }
+  return (
+    <Link
+      href={`/finance/payments/${payment.id}`}
+      className="inline-flex items-center gap-1 text-[11px] font-medium text-orange-700 hover:underline"
+    >
+      <Paperclip className="h-3 w-3" />
+      Attach
+    </Link>
+  );
+}
+
+
 function PaymentRow({
   payment,
   orgId,
@@ -488,7 +526,9 @@ function PaymentRow({
         </span>
       </td>
       <td className="px-3 py-2 capitalize">{payment.method.replace("_", " ")}</td>
-      <td className="px-3 py-2">{payment.invoice_number || "—"}</td>
+      <td className="px-3 py-2">
+        <InvoiceCell payment={payment} />
+      </td>
       <td className="px-3 py-2 text-ink-500">
         {payment.paid_at
           ? new Date(payment.paid_at).toLocaleDateString()
