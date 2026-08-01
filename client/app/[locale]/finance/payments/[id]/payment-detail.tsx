@@ -118,15 +118,37 @@ export function PaymentDetail({
             {data.invoice_number || "Payment"}{" "}
             <span className="text-ink-500">
               ·{" "}
-              {data.formulation_code || data.formulation_name || "project"}
+              {data.kind === "deposit"
+                ? data.proposal_code || "proposal"
+                : data.formulation_code || data.formulation_name || "project"}
             </span>
           </h1>
-          <p className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium">
+          <p className="mt-1 inline-flex items-center gap-2 text-xs font-medium">
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 ring-1 ring-inset ${tone}`}
             >
               <StatusIcon className="h-3 w-3" />
               {STATUS_LABEL[data.status]}
+            </span>
+            {/* Kind chip — makes the two gates visually distinct at a
+                glance. Amber for deposit (money-in before work starts),
+                sky for final (money-in before labelling). */}
+            <span
+              className={
+                "inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset " +
+                (data.kind === "deposit"
+                  ? "bg-amber-100 text-amber-800 ring-amber-300"
+                  : "bg-sky-100 text-sky-800 ring-sky-300")
+              }
+              title={
+                data.kind === "deposit"
+                  ? `Deposit (${data.proposal_deposit_percent ?? "?"}% of proposal total) — unlocks trial batches`
+                  : "Final payment — unlocks label design"
+              }
+            >
+              {data.kind === "deposit"
+                ? `Deposit${data.proposal_deposit_percent ? ` · ${data.proposal_deposit_percent}%` : ""}`
+                : "Final"}
             </span>
           </p>
         </div>
@@ -237,8 +259,26 @@ function Grid({
         ) : null}
       </Card>
 
-      <Card title="Linked label design">
-        {payment.label_design ? (
+      <Card
+        title={
+          payment.kind === "deposit"
+            ? "Linked proposal"
+            : "Linked label design"
+        }
+      >
+        {payment.kind === "deposit" ? (
+          payment.proposal ? (
+            <Link
+              href={`/proposals/${payment.proposal}`}
+              className="inline-flex items-center gap-1.5 text-sm font-medium text-amber-700 hover:underline"
+            >
+              <ShieldCheck className="h-4 w-4" />
+              Open {payment.proposal_code || "proposal"}
+            </Link>
+          ) : (
+            <p className="text-sm italic text-ink-500">No proposal linked</p>
+          )
+        ) : payment.label_design ? (
           <Link
             href={`/labelling/${payment.label_design}`}
             className="inline-flex items-center gap-1.5 text-sm font-medium text-orange-700 hover:underline"

@@ -26,7 +26,7 @@ from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 
-from apps.payments.constants import PaymentStatus
+from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
 
 
@@ -41,23 +41,34 @@ def _portal_product_url(formulation_id: Any) -> str:
 def _resolve_recipient(payment: Payment) -> tuple[str, str]:
     """Find the customer's email + display name for this payment.
 
-    Walks: ``LabelDesign.formulation`` → most-recent ``Proposal`` →
-    ``Proposal.customer.email`` (preferred) → ``Proposal.customer_email``
-    snapshot. Returns ``("", "")`` if no email is reachable, in which
-    case the email send is skipped.
+    Two resolution paths depending on payment kind:
+
+    * ``DEPOSIT`` — walks directly to ``payment.proposal.customer``
+      (deposits are bundle-level, so we know exactly which proposal
+      owns the customer identity).
+    * ``FINAL`` — walks ``payment.formulation`` → most-recent
+      ``Proposal`` → customer (the historical path — final payments
+      are per-formulation and may pre-date the bundled proposal
+      lifecycle).
+
+    Returns ``("", "")`` if no email is reachable, in which case the
+    email send is skipped rather than raising.
     """
 
-    from apps.proposals.models import Proposal
+    if payment.kind == PaymentKind.DEPOSIT and payment.proposal_id:
+        proposal = payment.proposal
+    else:
+        from apps.proposals.models import Proposal
 
-    proposal = (
-        Proposal.objects.filter(
-            organization=payment.organization,
-            formulation_version__formulation_id=payment.formulation_id,
+        proposal = (
+            Proposal.objects.filter(
+                organization=payment.organization,
+                formulation_version__formulation_id=payment.formulation_id,
+            )
+            .select_related("customer")
+            .order_by("-updated_at")
+            .first()
         )
-        .select_related("customer")
-        .order_by("-updated_at")
-        .first()
-    )
     if proposal is None:
         return "", ""
 
@@ -77,20 +88,25 @@ def _resolve_recipient(payment: Payment) -> tuple[str, str]:
 def _resolve_sales_person(payment: Payment) -> tuple[str, str]:
     """Pick the right "kind regards" signature. Prefer the linked
     proposal's sales person, fall back to the staff user who
-    approved this payment.
+    approved this payment. Deposit payments walk directly via
+    ``payment.proposal``; final payments walk via formulation like
+    the historical path.
     """
 
-    from apps.proposals.models import Proposal
+    if payment.kind == PaymentKind.DEPOSIT and payment.proposal_id:
+        proposal = payment.proposal
+    else:
+        from apps.proposals.models import Proposal
 
-    proposal = (
-        Proposal.objects.filter(
-            organization=payment.organization,
-            formulation_version__formulation_id=payment.formulation_id,
+        proposal = (
+            Proposal.objects.filter(
+                organization=payment.organization,
+                formulation_version__formulation_id=payment.formulation_id,
+            )
+            .select_related("sales_person")
+            .order_by("-updated_at")
+            .first()
         )
-        .select_related("sales_person")
-        .order_by("-updated_at")
-        .first()
-    )
     sales_person = (
         getattr(proposal, "sales_person", None) if proposal is not None else None
     )
@@ -115,7 +131,7 @@ def send_payment_received_to_client(*, payment_id: Any, actor: Any) -> None:
     """
 
     payment = (
-        Payment.objects.select_related("formulation", "organization")
+        Payment.objects.select_related("formulation", "organization", "proposal")
         .filter(pk=payment_id)
         .first()
     )
@@ -142,7 +158,6 @@ def send_payment_received_to_client(*, payment_id: Any, actor: Any) -> None:
 
     sales_person_name, sales_person_email = _resolve_sales_person(payment)
 
-    formulation = payment.formulation
     amount_label = ""
     if payment.amount is not None:
         amount_label = f"{payment.amount} {(payment.currency or '').strip()}".strip()
@@ -151,23 +166,59 @@ def send_payment_received_to_client(*, payment_id: Any, actor: Any) -> None:
         payment.paid_at.strftime("%d %b %Y") if payment.paid_at else ""
     )
 
+    # Deposit payments live at proposal level (no formulation FK).
+    # Route the portal deep-link to any formulation on the proposal
+    # (falls back to the proposal detail page on NPD if none is
+    # available). Final payments keep the historical per-formulation
+    # link.
+    is_deposit = payment.kind == PaymentKind.DEPOSIT
+    if is_deposit:
+        proposal = payment.proposal
+        project_code = (getattr(proposal, "code", "") or "").strip()
+        project_name = "your project"
+        first_line = proposal.lines.select_related(
+            "formulation_version__formulation"
+        ).first() if proposal else None
+        formulation_for_link = (
+            getattr(getattr(first_line, "formulation_version", None), "formulation", None)
+            if first_line
+            else None
+        )
+        portal_url = (
+            _portal_product_url(formulation_for_link.pk)
+            if formulation_for_link
+            else _portal_product_url("")
+        )
+        next_step_label = (
+            "trial batches are unlocked — our scientists start production shortly"
+        )
+    else:
+        formulation = payment.formulation
+        project_code = (getattr(formulation, "code", "") or "").strip()
+        project_name = (getattr(formulation, "name", "") or "").strip() or "your project"
+        portal_url = _portal_product_url(formulation.pk if formulation else "")
+        next_step_label = "label design starts now"
+
     context = {
-        "project_code": (formulation.code or "").strip(),
-        "project_name": (formulation.name or "").strip(),
+        "project_code": project_code,
+        "project_name": project_name,
         "customer_name": customer_name,
         "amount": str(payment.amount) if payment.amount is not None else "",
         "amount_label": amount_label,
         "invoice_number": (payment.invoice_number or "").strip(),
         "reference": (payment.external_reference or "").strip(),
         "paid_at_label": paid_at_label,
-        "portal_url": _portal_product_url(formulation.pk),
+        "portal_url": portal_url,
         "sales_person_name": sales_person_name,
         "sales_person_email": sales_person_email,
+        "payment_kind": payment.kind,
+        "is_deposit": is_deposit,
+        "next_step_label": next_step_label,
     }
 
-    subject = (
-        f"Payment received — {formulation.name or formulation.code or 'your project'}"
-    )
+    subject_prefix = "Deposit received" if is_deposit else "Payment received"
+    subject_body = project_name or project_code or "your project"
+    subject = f"{subject_prefix} — {subject_body}"
 
     html_body = render_to_string(
         "payments/email/payment_received.html", context
