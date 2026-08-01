@@ -185,3 +185,41 @@ class Payment(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"Payment({self.amount} {self.currency}, {self.status})"
+
+
+class PaymentFile(models.Model):
+    """Invoice / evidence document attached to a Payment.
+
+    Mirrors ``FormulationFile`` (bytes on our storage, not a URL) so
+    the audit trail can point at the actual PDF finance was working
+    against. Payments don't push to any external system, so there's
+    no ``psp_uuid`` column — this is a local-only artefact.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    payment = models.ForeignKey(
+        Payment,
+        on_delete=models.CASCADE,
+        related_name="invoices",
+    )
+    file = models.FileField(_("file"), upload_to="payment-invoices/")
+    filename = models.CharField(max_length=255)
+    mime = models.CharField(max_length=120)
+    byte_size = models.PositiveIntegerField()
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+    uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        verbose_name = _("payment file")
+        verbose_name_plural = _("payment files")
+        ordering = ("-uploaded_at",)
+        indexes = [
+            models.Index(fields=("payment", "-uploaded_at")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"PaymentFile({self.filename})"

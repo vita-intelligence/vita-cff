@@ -22,6 +22,17 @@ export type PaymentMethod =
   | "other";
 
 
+export interface PaymentInvoiceDto {
+  readonly id: string;
+  readonly url: string | null;
+  readonly filename: string;
+  readonly mime: string;
+  readonly byte_size: number;
+  readonly uploaded_by_email: string;
+  readonly uploaded_at: string;
+}
+
+
 export interface PaymentDto {
   readonly id: string;
   /** ``deposit`` — bundle-level, per-proposal, unlocks trial batches.
@@ -43,6 +54,7 @@ export interface PaymentDto {
   readonly method: PaymentMethod;
   readonly external_reference: string;
   readonly invoice_number: string;
+  readonly invoices: ReadonlyArray<PaymentInvoiceDto>;
   readonly paid_at: string;
   readonly recorded_by: string;
   readonly recorded_by_email: string;
@@ -86,6 +98,10 @@ const paymentsEndpoints = {
     `/api/organizations/${orgId}/payments/${paymentId}/assign-finance-officer/`,
   pendingProjects: (orgId: string) =>
     `/api/organizations/${orgId}/payments/pending-projects/`,
+  invoices: (orgId: string, paymentId: string) =>
+    `/api/organizations/${orgId}/payments/${paymentId}/invoices/`,
+  invoice: (orgId: string, paymentId: string, fileId: string) =>
+    `/api/organizations/${orgId}/payments/${paymentId}/invoices/${fileId}/`,
 };
 
 
@@ -372,6 +388,58 @@ export function useAssignPaymentFinanceOfficer(
         queryKey: paymentsQueryKeys.detail(orgId, paymentId),
       });
       _invalidatePaymentLists(qc, orgId);
+    },
+  });
+}
+
+
+export async function uploadPaymentInvoice(
+  orgId: string,
+  paymentId: string,
+  file: File,
+): Promise<PaymentInvoiceDto> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.post<{ file: PaymentInvoiceDto }>(
+    paymentsEndpoints.invoices(orgId, paymentId),
+    form,
+    { headers: { "Content-Type": "multipart/form-data" } },
+  );
+  return data.file;
+}
+
+
+export async function deletePaymentInvoice(
+  orgId: string,
+  paymentId: string,
+  fileId: string,
+): Promise<void> {
+  await apiClient.delete(paymentsEndpoints.invoice(orgId, paymentId, fileId));
+}
+
+
+export function useUploadPaymentInvoice(orgId: string, paymentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (file: File) => uploadPaymentInvoice(orgId, paymentId, file),
+    onSuccess: () => {
+      qc.refetchQueries({
+        queryKey: paymentsQueryKeys.detail(orgId, paymentId),
+      });
+    },
+  });
+}
+
+
+export function useDeletePaymentInvoice(orgId: string, paymentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (fileId: string) =>
+      deletePaymentInvoice(orgId, paymentId, fileId),
+    onSuccess: () => {
+      qc.refetchQueries({
+        queryKey: paymentsQueryKeys.detail(orgId, paymentId),
+      });
     },
   });
 }
