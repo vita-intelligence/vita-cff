@@ -96,6 +96,72 @@ def _build_actions(customer_ids) -> list[dict]:
             }
         )
 
+    # 1b) Deposit gate — proposal is signed but the customer's
+    #     deposit hasn't landed. One action per accepted proposal
+    #     with a PENDING deposit Payment. Skipped for 0%-deposit
+    #     proposals (no Payment row exists) and for approved
+    #     deposits (status filter). Picks the first formulation on
+    #     the proposal for the deep-link since deposits are bundle-
+    #     level and can span N products.
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+
+    pending_deposits = (
+        Payment.objects.filter(
+            kind=PaymentKind.DEPOSIT,
+            status=PaymentStatus.PENDING,
+            proposal__customer_id__in=customer_ids,
+        )
+        .select_related("proposal")
+        .prefetch_related(
+            "proposal__lines__formulation_version__formulation",
+        )
+        .order_by("created_at")
+    )
+    for deposit in pending_deposits:
+        proposal = deposit.proposal
+        first_line = next(iter(proposal.lines.all()), None)
+        formulation = (
+            first_line.formulation_version.formulation
+            if first_line and first_line.formulation_version
+            else None
+        )
+        percent = (
+            f"{proposal.deposit_percent}% "
+            if proposal.deposit_percent
+            else ""
+        )
+        amount_label = (
+            f"{deposit.amount} {deposit.currency}"
+            if deposit.amount is not None
+            else "your deposit"
+        )
+        product_label = (
+            (formulation.name or formulation.code)
+            if formulation
+            else "your project"
+        )
+        actions.append(
+            {
+                "kind": "pay_deposit",
+                "urgency": URGENCY_HIGH,
+                "title": "Pay your deposit",
+                "subtitle": (
+                    f"{percent}deposit on {proposal.code} ({amount_label}) — "
+                    "trial production starts the moment we confirm the payment."
+                ),
+                "url": (
+                    f"/portal/products/{formulation.id}"
+                    if formulation
+                    else "/portal/products"
+                ),
+                "product_code": formulation.code if formulation else "",
+                "product_name": product_label,
+                "reference_code": proposal.code,
+                "created_at": deposit.created_at.isoformat(),
+            }
+        )
+
     # 2) FINAL spec sheets at ``status=sent`` — customer must sign to
     #    authorise production. Highest urgency because this is the
     #    moment the project advances to APPROVED.
