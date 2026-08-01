@@ -9,7 +9,7 @@ from django.db import models
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
-from apps.payments.constants import PaymentMethod, PaymentStatus
+from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
 
 
 class Payment(models.Model):
@@ -17,12 +17,29 @@ class Payment(models.Model):
     project.
 
     Two-step lifecycle: ``record_payment`` writes ``PENDING``;
-    ``approve_payment`` flips to ``APPROVED`` AND drives the
-    matching :class:`LabelDesign` from ``PAYMENT_PENDING`` to
-    ``LABEL_PATH_PENDING``. Voiding an approved payment does NOT
-    roll back the LabelDesign — the gate is forward-only. The use
-    case for voids is "I miskeyed the amount; record a fresh
-    payment row alongside this voided one".
+    ``approve_payment`` flips to ``APPROVED`` AND opens the matching
+    downstream gate. Voiding an approved payment does NOT roll back
+    the gate — the gate is forward-only. The use case for voids is
+    "I miskeyed the amount; record a fresh payment row alongside
+    this voided one".
+
+    ``kind`` distinguishes two gates in the customer lifecycle:
+
+    * ``DEPOSIT`` — paid AFTER the customer signs the proposal on
+      the kiosk. Unlocks trial batches (scientists can't schedule a
+      run until finance confirms the deposit landed). One deposit
+      Payment per proposal (bundle-level — a single deposit covers
+      every formulation in the merged proposal).
+    * ``FINAL`` — paid AFTER trial batches pass QC and the customer
+      signs the FINAL spec sheet. Unlocks the label-design workflow
+      (per-formulation, matches the existing LabelDesign gate).
+
+    The two together sum to 100% of the proposal total, split by
+    ``Proposal.deposit_percent`` (asked at proposal creation). Either
+    edge can be 0 — a 0% deposit means no deposit gate exists (trial
+    batches are unlocked immediately on kiosk-sign), a 100% deposit
+    means no final gate exists (label design is unlocked immediately
+    once the final spec is customer-signed).
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -32,14 +49,44 @@ class Payment(models.Model):
         on_delete=models.CASCADE,
         related_name="payments",
     )
+    kind = models.CharField(
+        _("kind"),
+        max_length=16,
+        choices=PaymentKind.choices,
+        default=PaymentKind.FINAL,
+        db_index=True,
+        help_text=_(
+            "Which gate this payment opens — DEPOSIT (unlocks trial "
+            "batches, per-proposal) or FINAL (unlocks label design, "
+            "per-formulation). Existing rows pre-migration were all "
+            "the label-gate variant so the default keeps them intact."
+        ),
+    )
     formulation = models.ForeignKey(
         "formulations.Formulation",
         on_delete=models.PROTECT,
+        null=True,
+        blank=True,
         related_name="payments",
         help_text=_(
-            "PROTECT because a project that received a payment "
-            "cannot be silently deleted — finance audit relies on "
-            "the linkage."
+            "Set on FINAL payments (per-formulation). Null on DEPOSIT "
+            "payments — deposits are bundle-level and identify their "
+            "target via ``proposal`` instead. PROTECT because a "
+            "formulation that received a payment cannot be silently "
+            "deleted — finance audit relies on the linkage."
+        ),
+    )
+    proposal = models.ForeignKey(
+        "proposals.Proposal",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="payments",
+        help_text=_(
+            "Set on DEPOSIT payments (per-proposal). Null on FINAL "
+            "payments. One deposit covers every formulation on a "
+            "bundled proposal — the trial-batch gate for each "
+            "formulation walks back to its accepted proposal to check."
         ),
     )
     label_design = models.ForeignKey(
@@ -49,10 +96,11 @@ class Payment(models.Model):
         blank=True,
         related_name="payments",
         help_text=_(
-            "The downstream label-design workflow this payment "
-            "unlocks. SET_NULL so the payment record survives if "
-            "the label workflow is ever deleted (which should be "
-            "rare — kept conservative for the audit trail)."
+            "FINAL payments only — the downstream label-design "
+            "workflow this payment unlocks. SET_NULL so the payment "
+            "record survives if the label workflow is ever deleted "
+            "(which should be rare — kept conservative for the "
+            "audit trail)."
         ),
     )
 

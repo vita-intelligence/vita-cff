@@ -179,11 +179,44 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
         # revisions ARE the same product for label purposes.
         return existing
 
+    # Skip the PAYMENT_PENDING stage when the customer already paid
+    # 100% up-front (``proposal.deposit_percent = 100``) — there's
+    # no final payment owed, so the label workflow starts directly
+    # at LABEL_PATH_PENDING. Same logic as the deposit-side skip:
+    # a 0% edge means no gate applies.
+    from decimal import Decimal
+    from apps.proposals.constants import ProposalStatus
+    from apps.proposals.models import ProposalLine
+
+    accepted_line = (
+        ProposalLine.objects.filter(
+            formulation_version__formulation=formulation,
+            proposal__status=ProposalStatus.ACCEPTED.value,
+        )
+        .select_related("proposal")
+        .order_by("-proposal__updated_at")
+        .first()
+    )
+    skip_payment_stage = False
+    if accepted_line and accepted_line.proposal.deposit_percent is not None:
+        try:
+            skip_payment_stage = (
+                Decimal(accepted_line.proposal.deposit_percent) >= Decimal("100")
+            )
+        except Exception:  # noqa: BLE001
+            skip_payment_stage = False
+
+    initial_status = (
+        LabelDesignStatus.LABEL_PATH_PENDING
+        if skip_payment_stage
+        else LabelDesignStatus.PAYMENT_PENDING
+    )
+
     label_design = LabelDesign.objects.create(
         organization=formulation.organization,
         formulation=formulation,
         specification_sheet=spec_sheet,
-        status=LabelDesignStatus.PAYMENT_PENDING,
+        status=initial_status,
     )
 
     # First transition row is system-authored: actor + actor_client
@@ -191,13 +224,19 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
     LabelDesignTransition.objects.create(
         label_design=label_design,
         from_status="",
-        to_status=LabelDesignStatus.PAYMENT_PENDING,
+        to_status=initial_status,
         actor=None,
         actor_client_account=None,
-        notes="bootstrap on customer spec sign",
+        notes=(
+            "bootstrap on customer spec sign — deposit was 100%, "
+            "skipping payment stage"
+            if skip_payment_stage
+            else "bootstrap on customer spec sign"
+        ),
         metadata={
             "trigger": "spec_customer_signed",
             "spec_sheet_id": str(spec_sheet.pk),
+            "skip_payment_stage": skip_payment_stage,
         },
         created_at=timezone.now(),
     )
@@ -208,8 +247,9 @@ def bootstrap_for_spec(spec_sheet) -> LabelDesign | None:
         target=label_design,
         before=None,
         after={
-            "status": LabelDesignStatus.PAYMENT_PENDING,
+            "status": initial_status,
             "spec_sheet_id": str(spec_sheet.pk),
+            "skip_payment_stage": skip_payment_stage,
         },
     )
     return label_design

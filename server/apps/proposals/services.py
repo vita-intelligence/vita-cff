@@ -3163,6 +3163,25 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
                 actor=sheet.updated_by,
             )
 
+    # Push the accepted status + timestamps + timeline to PSP so the
+    # mirrored CO advances from :awaiting_customer_signature into
+    # :proposal_accepted. The staff-side ``transition_status`` fires
+    # this on every edge — the kiosk-finalize path skips that
+    # machinery, so we have to plant the sync explicitly. Without
+    # this call PSP's ``npd_proposal_status`` stays at "sent" even
+    # after the customer has signed, and the wizard column doesn't
+    # advance.
+    _schedule_proposal_psp_merge(proposal)
+
+    # Deposit gate — materialise a PENDING deposit Payment so
+    # finance has a row to work off the moment the customer signs.
+    # No-op when the proposal was quoted with ``deposit_percent = 0``
+    # (100% payable on final delivery — trial batches unlock
+    # immediately). Idempotent on retry / double-finalise.
+    from apps.payments.services import ensure_pending_deposit_payment
+
+    ensure_pending_deposit_payment(proposal=proposal, actor=proposal.updated_by)
+
     return {
         "status": proposal.status,
         "attached_specs": [

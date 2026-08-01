@@ -2189,11 +2189,29 @@ def unsync_proposal_from_psp(
 
 
 def _proposal_app_url(organization: Any, proposal: Any) -> str | None:
-    """Deep link back into NPD's own proposal detail. Nil-safe when
-    the org hasn't configured an ``app_base_url``.
+    """Deep link back into NPD's own proposal detail.
+
+    Base URL resolution — checked in order — matches the sibling
+    builders (``_formulation_app_url``, ``_spec_sheet_url``,
+    ``_cff_url``):
+
+    1. Per-org override (``organization.app_base_url``) when set —
+       lets an admin point a specific tenant at a bespoke domain.
+    2. Global ``django_settings.APP_BASE_URL`` — the default the
+       rest of the sync stack already uses.
+
+    Previously only step 1 was checked, which left the URL empty
+    for every proposal because ``app_base_url`` is a per-org
+    optional column that no tenant fills in in practice. PSP's
+    ``npd_proposal_url`` column stayed blank → the "Open signed
+    proposal on NPD" button never rendered.
     """
 
     base = (getattr(organization, "app_base_url", "") or "").strip()
+    if not base:
+        from django.conf import settings as django_settings
+
+        base = (getattr(django_settings, "APP_BASE_URL", "") or "").strip()
     if not base:
         return None
     return f"{base.rstrip('/')}/proposals/{proposal.id}"

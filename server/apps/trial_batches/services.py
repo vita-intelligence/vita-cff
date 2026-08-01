@@ -66,6 +66,19 @@ class InvalidBatchSizeMode(Exception):
     code = "invalid_batch_size_mode"
 
 
+class DepositRequired(Exception):
+    """The formulation is bundled onto an accepted proposal whose
+    deposit hasn't been paid + approved yet. Trial batches are
+    gated on the deposit landing so scientists can't burn floor
+    time on a project the client hasn't committed to. Cleared by
+    finance recording + approving the deposit Payment; commit-
+    committed proposals with ``deposit_percent = 0`` skip the
+    gate entirely.
+    """
+
+    code = "trial_batch_deposit_required"
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -136,6 +149,17 @@ def create_batch(
     )
     if version is None or version.formulation.organization_id != organization.id:
         raise FormulationVersionNotInOrg()
+
+    # Deposit gate — refuse to schedule a trial batch when the
+    # accepted proposal's deposit is still pending. Same silent-skip
+    # semantics as the labelling gate: proposals with no deposit
+    # required (``deposit_percent = 0``) or without any accepted
+    # proposal at all (early R&D iteration paths) sail through.
+    from apps.payments.services import trial_batch_gate_status
+
+    gate = trial_batch_gate_status(version.formulation)
+    if not gate["unlocked"]:
+        raise DepositRequired()
 
     batch = TrialBatch.objects.create(
         organization=organization,

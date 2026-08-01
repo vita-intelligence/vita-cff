@@ -17,3 +17,10 @@ class PaymentMethod(models.TextChoices):
     CARD = "card", _("Card")
     STRIPE = "stripe", _("Stripe")
     OTHER = "other", _("Other")
+
+
+class PaymentKind(models.TextChoices):
+    #: Bundle-level, paid after kiosk sign, unlocks trial batches.
+    DEPOSIT = "deposit", _("Deposit")
+    #: Per-formulation, paid after FINAL spec sign, unlocks labelling.
+    FINAL = "final", _("Final")
