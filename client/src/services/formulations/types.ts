@@ -1049,6 +1049,13 @@ export interface ProjectOverviewDto {
   //: the deposit lands. ``no_proposal`` / ``no_deposit_required`` /
   //: ``deposit_paid`` / ``deposit_pending`` are the reason codes.
   readonly deposit_gate: DepositGateDto;
+  //: Current RTG catalog visibility. ``false`` for Custom projects.
+  //: Header pill reflects this so a Live SKU flags itself at a glance.
+  readonly is_rtg_published: boolean;
+  //: Gate for the RTG Publish action — mirrors
+  //: ``FormulationDto.has_approved_final_spec``. Header menu disables
+  //: Publish until this flips.
+  readonly has_approved_final_spec: boolean;
 }
 
 

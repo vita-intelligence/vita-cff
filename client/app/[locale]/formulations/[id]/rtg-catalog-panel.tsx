@@ -16,8 +16,7 @@
  */
 
 import { useCallback, useState } from "react";
-import { CheckCircle2, Lock, Upload } from "lucide-react";
-import Link from "next/link";
+import { CheckCircle2, Save } from "lucide-react";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
 import type { FormulationDto } from "@/services/formulations/types";
@@ -79,85 +78,73 @@ function RTGCatalogPanelInner({
   const [heroPreview] = useState<string | null>(
     formulation.rtg_hero_image ?? null,
   );
-  const [published, setPublished] = useState(formulation.is_rtg_published);
+  // Read-only reflection of the current publish state. The toggle
+  // lives on the project header now — this pill is purely
+  // informational, so we don't need a local setter.
+  const published = formulation.is_rtg_published;
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  const submit = useCallback(
-    async (nextPublished: boolean) => {
-      setBanner(null);
-      setFieldErrors({});
-      setSaving(true);
-      try {
-        const form = new FormData();
-        form.append("is_rtg_published", nextPublished ? "true" : "false");
-        form.append("rtg_display_name", displayName);
-        form.append("rtg_short_description", description);
-        form.append("rtg_base_price", basePrice);
-        form.append("rtg_moq", moq);
-        form.append("rtg_currency_code", currency);
-        if (heroFile) {
-          form.append("rtg_hero_image", heroFile);
-        }
-        // Do NOT hand-set ``Content-Type: multipart/form-data`` —
-        // axios will populate it including the ``boundary=…`` token
-        // when it sees a ``FormData`` body. Setting the header
-        // manually strips the boundary and DRF's multipart parser
-        // can't split the parts, which surfaces as a bewildering
-        // ``415 unsupported_media_type``. Trust the runtime.
-        await apiClient.patch(
-          `/api/organizations/${orgId}/formulations/${formulation.id}/rtg-publish/`,
-          form,
-        );
-        setPublished(nextPublished);
-        setBanner(
-          nextPublished
-            ? "Published to the customer catalog."
-            : "Unpublished — the SKU is no longer visible in the customer catalog.",
-        );
-      } catch (error) {
-        const api = normalizeApiError(error);
-        const fields = (api.payload?.fields ?? null) as
-          | Record<string, string>
-          | null;
-        if (fields && typeof fields === "object") {
-          const next: Record<string, string> = {};
-          for (const [k, v] of Object.entries(fields)) {
-            if (typeof v === "string") next[k] = v;
-          }
-          setFieldErrors(next);
-        }
-        setBanner(
-          (api.payload?.detail as string | undefined) ||
-            api.message ||
-            "Failed to save the RTG marketing block.",
-        );
-      } finally {
-        setSaving(false);
+  const submit = useCallback(async () => {
+    setBanner(null);
+    setFieldErrors({});
+    setSaving(true);
+    try {
+      const form = new FormData();
+      // Note: we deliberately do NOT send ``is_rtg_published`` here.
+      // Omitting the key tells the server to save the marketing
+      // block as a draft — no publish flip, no FINAL-spec gate.
+      // The Publish / Take offline toggle lives on the project
+      // header actions and hits the same endpoint with the flag.
+      form.append("rtg_display_name", displayName);
+      form.append("rtg_short_description", description);
+      form.append("rtg_base_price", basePrice);
+      form.append("rtg_moq", moq);
+      form.append("rtg_currency_code", currency);
+      if (heroFile) {
+        form.append("rtg_hero_image", heroFile);
       }
-    },
-    [
-      basePrice,
-      currency,
-      description,
-      displayName,
-      formulation.id,
-      heroFile,
-      moq,
-      orgId,
-    ],
-  );
+      // Do NOT hand-set ``Content-Type: multipart/form-data`` —
+      // axios will populate it including the ``boundary=…`` token
+      // when it sees a ``FormData`` body.
+      await apiClient.patch(
+        `/api/organizations/${orgId}/formulations/${formulation.id}/rtg-publish/`,
+        form,
+      );
+      setBanner("Saved. Catalog listing updated with your latest copy.");
+    } catch (error) {
+      const api = normalizeApiError(error);
+      const fields = (api.payload?.fields ?? null) as
+        | Record<string, string>
+        | null;
+      if (fields && typeof fields === "object") {
+        const next: Record<string, string> = {};
+        for (const [k, v] of Object.entries(fields)) {
+          if (typeof v === "string") next[k] = v;
+        }
+        setFieldErrors(next);
+      }
+      setBanner(
+        (api.payload?.detail as string | undefined) ||
+          api.message ||
+          "Failed to save the RTG marketing block.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }, [
+    basePrice,
+    currency,
+    description,
+    displayName,
+    formulation.id,
+    heroFile,
+    moq,
+    orgId,
+  ]);
 
-  // Publish gate — a SKU can only reach the customer catalog once
-  // quality has signed off on the FINAL spec sheet. Server enforces
-  // the same rule; the FE guard just keeps the button dead so the
-  // "why did that fail?" round-trip doesn't happen.
-  const canPublish = formulation.has_approved_final_spec;
   const disabled = !canEdit || saving;
-  // Take-offline stays available on an already-published SKU even
-  // when the gate is off — pulling something back is always safe.
-  const publishDisabled = disabled || !canPublish;
 
   return (
     <section className="rounded-2xl border border-ink-200 bg-ink-0 p-6 shadow-sm">
@@ -167,19 +154,20 @@ function RTGCatalogPanelInner({
             Ready-to-Go catalog
           </p>
           <h2 className="text-lg font-semibold text-ink-1000">
-            Publish this recipe to the customer catalog
+            Customer-facing listing
           </h2>
+          <p className="mt-1 text-xs text-ink-500">
+            Fill in what customers see on the catalog. Saves as a
+            draft anytime — Publish lives up in the project header
+            and unlocks once the FINAL spec is approved.
+          </p>
         </div>
         {published ? (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-800">
             <CheckCircle2 className="h-3.5 w-3.5" />
             Live in catalog
           </span>
-        ) : (
-          <span className="inline-flex items-center rounded-full bg-ink-100 px-3 py-1 text-xs font-semibold text-ink-700">
-            Draft
-          </span>
-        )}
+        ) : null}
       </header>
 
       {banner ? (
@@ -315,58 +303,15 @@ function RTGCatalogPanelInner({
         packaging options field has been retired.
       </p>
 
-      {!canPublish ? (
-        <div className="mt-6 flex flex-wrap items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
-          <Lock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
-          <div className="flex-1">
-            <p className="font-semibold">
-              Publish is locked until the product is finished.
-            </p>
-            <p className="mt-0.5 leading-relaxed">
-              A FINAL spec sheet needs to be approved before this
-              recipe can appear on the customer catalog. Complete
-              trial batches, then create and approve a FINAL spec on
-              the{" "}
-              <Link
-                href={`/formulations/${formulation.id}/specifications`}
-                className="font-semibold underline underline-offset-2 hover:text-amber-800"
-              >
-                Spec Sheets tab
-              </Link>
-              .
-            </p>
-          </div>
-        </div>
-      ) : null}
-
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
-        {published ? (
-          <button
-            type="button"
-            onClick={() => submit(false)}
-            disabled={disabled}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-ink-300 px-3 py-2 text-sm font-semibold text-ink-800 hover:bg-ink-50 disabled:opacity-40"
-          >
-            Take offline
-          </button>
-        ) : null}
         <button
           type="button"
-          onClick={() => submit(true)}
-          disabled={publishDisabled}
-          title={
-            !canPublish
-              ? "Approve a FINAL spec sheet first — the product isn't finished yet."
-              : undefined
-          }
+          onClick={submit}
+          disabled={disabled}
           className="inline-flex items-center gap-1.5 rounded-lg bg-ink-1000 px-4 py-2 text-sm font-semibold text-ink-0 hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {!canPublish ? (
-            <Lock className="h-4 w-4" />
-          ) : (
-            <Upload className="h-4 w-4" />
-          )}
-          {published ? "Save changes" : "Publish to catalog"}
+          <Save className="h-4 w-4" />
+          Save changes
         </button>
       </div>
     </section>

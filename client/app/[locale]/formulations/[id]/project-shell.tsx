@@ -220,6 +220,8 @@ function CompactHeader({
         projectType={overview.project_type}
         salesPerson={overview.sales_person}
         leadScientist={overview.lead_scientist}
+        isRtgPublished={overview.is_rtg_published}
+        hasApprovedFinalSpec={overview.has_approved_final_spec}
       />
     </header>
   );
