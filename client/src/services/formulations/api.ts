@@ -64,12 +64,31 @@ export async function fetchFormulationsPage(
   if (args.salesPersonId) params.sales_person_id = args.salesPersonId;
   if (args.projectType) params.project_type = args.projectType;
   if (args.includePublishedRtg) params.include_published_rtg = "true";
+  if (typeof args.isRtgPublished === "boolean") {
+    params.is_rtg_published = args.isRtgPublished ? "true" : "false";
+  }
   const { data } = await apiClient.get<PaginatedFormulationsDto>(
     formulationsEndpoints.list(orgId),
     { params },
   );
   return data;
 }
+
+export interface RtgCatalogCountsDto {
+  readonly all: number;
+  readonly published: number;
+  readonly unpublished: number;
+}
+
+export async function fetchRtgCatalogCounts(
+  orgId: string,
+): Promise<RtgCatalogCountsDto> {
+  const { data } = await apiClient.get<RtgCatalogCountsDto>(
+    `/api/organizations/${orgId}/formulations/rtg-catalog-counts/`,
+  );
+  return data;
+}
+
 
 /**
  * @deprecated Use :func:`fetchFormulationsPage` — the list endpoint

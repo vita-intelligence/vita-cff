@@ -40,6 +40,7 @@ from apps.formulations.api.views import (
     FormulationRoutingCostsView,
     FormulationVersionListView,
     FormulationWizardRoutingView,
+    RtgCatalogCountsView,
     StageTemplateDetailView,
     StageTemplateListView,
 )
@@ -51,6 +52,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/",
         FormulationListCreateView.as_view(),
         name="formulation-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/rtg-catalog-counts/",
+        RtgCatalogCountsView.as_view(),
+        name="rtg-catalog-counts",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/",

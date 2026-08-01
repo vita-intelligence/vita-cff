@@ -144,6 +144,11 @@ export interface FormulationsListQuery {
    *  side so the projects list naturally hides published RTG rows
    *  (they belong on ``/rtg-catalog``, not in the project workspace). */
   readonly includePublishedRtg?: boolean;
+  /** Explicit publish-state filter for the RTG catalog tabs. ``true`` =
+   *  Published only; ``false`` = Unpublished only; omitted = both.
+   *  Runs at the DB layer so switching tabs on a huge catalog stays
+   *  cheap. */
+  readonly isRtgPublished?: boolean;
 }
 
 /**
