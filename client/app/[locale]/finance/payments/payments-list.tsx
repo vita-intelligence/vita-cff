@@ -453,14 +453,39 @@ function PaymentRow({
           href={`/finance/payments/${payment.id}`}
           className="block font-semibold text-ink-1000 hover:text-orange-700"
         >
-          {payment.formulation_code}
+          {payment.kind === "deposit"
+            ? payment.proposal_code || "Deposit"
+            : payment.formulation_code || "Payment"}
         </Link>
         <div className="text-[11px] text-ink-500">
-          {payment.formulation_name}
+          {payment.kind === "deposit"
+            ? "Deposit — bundle-level"
+            : payment.formulation_name}
         </div>
       </td>
       <td className="px-3 py-2 font-semibold tabular-nums">
         {payment.amount} {payment.currency}
+        {/* Kind chip in the amount cell so it stays visible on
+            narrow layouts (the deposit vs final distinction is the
+            single most important classification finance uses to
+            triage the queue). */}
+        <span
+          className={
+            "ml-2 inline-flex items-center rounded-full px-1.5 py-0.5 align-middle text-[9px] font-semibold uppercase tracking-wide ring-1 ring-inset " +
+            (payment.kind === "deposit"
+              ? "bg-amber-100 text-amber-800 ring-amber-300"
+              : "bg-sky-100 text-sky-800 ring-sky-300")
+          }
+          title={
+            payment.kind === "deposit"
+              ? `Deposit${payment.proposal_deposit_percent ? ` — ${payment.proposal_deposit_percent}% of proposal total` : ""}`
+              : "Final payment — unlocks label design"
+          }
+        >
+          {payment.kind === "deposit"
+            ? `Dep${payment.proposal_deposit_percent ? ` ${payment.proposal_deposit_percent}%` : ""}`
+            : "Final"}
+        </span>
       </td>
       <td className="px-3 py-2 capitalize">{payment.method.replace("_", " ")}</td>
       <td className="px-3 py-2">{payment.invoice_number || "—"}</td>

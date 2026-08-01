@@ -14,6 +14,7 @@ import { labelDesignKeys } from "@/services/label-design";
 
 
 export type PaymentStatus = "pending" | "approved" | "voided";
+export type PaymentKind = "deposit" | "final";
 export type PaymentMethod =
   | "bank_transfer"
   | "card"
@@ -23,9 +24,19 @@ export type PaymentMethod =
 
 export interface PaymentDto {
   readonly id: string;
-  readonly formulation: string;
+  /** ``deposit`` — bundle-level, per-proposal, unlocks trial batches.
+   *  ``final`` — per-formulation, unlocks label design. Existing rows
+   *  pre-migration default to ``final`` (label-gate flow). */
+  readonly kind: PaymentKind;
+  /** Set on ``final`` payments only. ``null`` on ``deposit`` (deposits
+   *  are bundle-level and identify their target via ``proposal``). */
+  readonly formulation: string | null;
   readonly formulation_code: string;
   readonly formulation_name: string;
+  /** Set on ``deposit`` payments only. */
+  readonly proposal: string | null;
+  readonly proposal_code: string;
+  readonly proposal_deposit_percent: string | null;
   readonly label_design: string | null;
   readonly amount: string;
   readonly currency: string;
@@ -48,7 +59,11 @@ export interface PaymentDto {
 
 
 export interface PaymentCreateBody {
-  readonly formulation: string;
+  /** ``final`` (default) requires ``formulation``; ``deposit``
+   *  requires ``proposal``. */
+  readonly kind?: PaymentKind;
+  readonly formulation?: string;
+  readonly proposal?: string;
   readonly amount: string;
   readonly currency?: string;
   readonly method?: PaymentMethod;
