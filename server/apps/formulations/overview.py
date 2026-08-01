@@ -292,6 +292,12 @@ class ProjectOverview:
     #: Gate that unlocks the header's Publish action — mirrors
     #: :meth:`FormulationReadSerializer.get_has_approved_final_spec`.
     has_approved_final_spec: bool = False
+    #: Customer-facing display name on the RTG catalog. Empty string
+    #: on Custom projects and on RTG projects that haven't been named
+    #: for the catalog yet. Header prefers this over the internal
+    #: ``name`` when non-empty so the workspace matches what customers
+    #: see on ``/portal/cffs/new/rtg``.
+    rtg_display_name: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -1067,6 +1073,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         deposit_gate=_deposit_gate_snapshot(formulation),
         is_rtg_published=bool(formulation.is_rtg_published),
         has_approved_final_spec=_has_approved_final_spec(formulation),
+        rtg_display_name=(formulation.rtg_display_name or "").strip(),
     )
 
 

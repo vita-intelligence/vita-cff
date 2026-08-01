@@ -200,8 +200,15 @@ function CompactHeader({
             </a>
           ) : null}
         </div>
+        {/* RTG projects prefer the customer-facing display name — it's
+            what portal users see on the catalog. Falls back to the
+            internal ``name`` for Custom projects and for RTG SKUs that
+            haven't been named for the catalog yet. */}
         <h1 className="mt-1 text-2xl font-semibold tracking-tight text-ink-1000 md:text-3xl">
-          {overview.name}
+          {overview.project_type === "ready_to_go" &&
+          overview.rtg_display_name
+            ? overview.rtg_display_name
+            : overview.name}
         </h1>
         {overview.latest_version !== null ? (
           <p className="mt-1 text-xs text-ink-500">

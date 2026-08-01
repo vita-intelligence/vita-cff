@@ -1056,6 +1056,11 @@ export interface ProjectOverviewDto {
   //: ``FormulationDto.has_approved_final_spec``. Header menu disables
   //: Publish until this flips.
   readonly has_approved_final_spec: boolean;
+  //: Customer-facing display name for RTG catalog listings. Empty on
+  //: Custom projects and on RTG projects that haven't been named for
+  //: the catalog. The header prefers this over ``name`` when set so
+  //: the staff workspace matches what customers see on the portal.
+  readonly rtg_display_name: string;
 }
 
 
