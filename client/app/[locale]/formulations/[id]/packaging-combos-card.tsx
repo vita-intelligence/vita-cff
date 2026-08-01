@@ -290,6 +290,19 @@ function ComboEditor({
   const [validation, setValidation] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLLIElement | null>(null);
+
+  // Body-scroll lock. Without this, the page behind the modal
+  // scrolls when the user rolls the trackpad over the backdrop —
+  // easy to miss until you notice the whole workspace has drifted
+  // behind an open dialog.
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, []);
   // Bumped whenever a search re-fires so a slow first-page fetch
   // can't race a fresh one and overwrite fresher results with
   // stale ones.
@@ -428,10 +441,10 @@ function ComboEditor({
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-xl"
+        className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <header className="mb-4 flex items-start justify-between gap-3">
+        <header className="flex items-start justify-between gap-3 border-b border-ink-200 px-6 py-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-ink-500">
               Packaging combo
@@ -450,7 +463,7 @@ function ComboEditor({
           </button>
         </header>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4">
           <label className="block">
             <span className="text-xs font-semibold uppercase tracking-wide text-ink-700">
               Combo name
@@ -635,33 +648,33 @@ function ComboEditor({
               {validation}
             </p>
           ) : null}
-
-          <footer className="mt-2 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onCancel}
-              disabled={busy}
-              className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-100"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={submit}
-              disabled={busy}
-              className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-60"
-            >
-              {busy ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Saving…
-                </>
-              ) : (
-                "Save"
-              )}
-            </button>
-          </footer>
         </div>
+
+        <footer className="flex items-center justify-end gap-2 border-t border-ink-200 bg-ink-50/60 px-6 py-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-700 hover:bg-ink-100"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={busy}
+            className="inline-flex items-center gap-2 rounded-lg bg-orange-600 px-4 py-1.5 text-sm font-semibold text-white hover:bg-orange-700 disabled:opacity-60"
+          >
+            {busy ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Saving…
+              </>
+            ) : (
+              "Save"
+            )}
+          </button>
+        </footer>
       </div>
     </div>
   );
