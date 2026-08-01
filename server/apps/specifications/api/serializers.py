@@ -94,6 +94,22 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     #: display since the project link is the single source of truth
     #: sales / R&D both edit against.
     linked_customer = serializers.SerializerMethodField()
+    #: True when the sheet's formulation is Ready-to-Go AND has one or
+    #: more :class:`PackagingCombo` rows configured. Signals to the FE
+    #: that the four ``packaging_*`` FK slots are intentionally empty
+    #: (customers pick their combo per order at checkout) so the
+    #: packaging section should render a placeholder rather than
+    #: four "—" rows. Falls out of the picker guard on the staff
+    #: workspace too — the packaging picker is hidden when this is
+    #: true because there's nothing meaningful for a scientist to
+    #: pin on the canonical sheet.
+    packaging_customer_choice = serializers.SerializerMethodField()
+
+    def get_packaging_customer_choice(self, obj) -> bool:
+        formulation = obj.formulation_version.formulation
+        if getattr(formulation, "project_type", "") != "ready_to_go":
+            return False
+        return formulation.packaging_combos.exists()
 
     def get_packaging_details(self, obj) -> dict:
         return {
@@ -219,6 +235,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "packaging_label",
             "packaging_antitemper",
             "packaging_details",
+            "packaging_customer_choice",
             "status",
             "document_kind",
             "snapshot_overrides",

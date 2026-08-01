@@ -1822,6 +1822,21 @@ def create_portal_rtg_submission(
     line_description = (
         f"{formulation.name or 'Ready-to-Go product'} · {packaging_choice}"
     ).strip(" ·")
+    # Phase 3: append the combo's item names so the pricing-table
+    # description column reads "SKU · Combo (item, item, item)".
+    # Puts the picked packaging on the proposal PDF without any
+    # bespoke section surgery — the pricing table is already there.
+    if combo_choice is not None:
+        combo_item_names = [
+            (row.item.name or "").strip()
+            for row in combo_choice.items.select_related("item").all()
+            if row.item_id
+        ]
+        combo_item_names = [n for n in combo_item_names if n]
+        if combo_item_names:
+            line_description = (
+                f"{line_description} ({', '.join(combo_item_names)})"
+            )
     # ``created_by`` / ``updated_by`` on Proposal are PROTECT + required.
     # RTG rows come off an authenticated customer, not a staff user;
     # attribute the create action to the sales person configured on

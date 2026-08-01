@@ -59,6 +59,13 @@ export interface SpecificationSheetDto {
   readonly packaging_label: string | null;
   readonly packaging_antitemper: string | null;
   readonly packaging_details: PackagingDetails;
+  /** True when the sheet's formulation is Ready-to-Go AND has at
+   *  least one PackagingCombo configured. Signals to the render
+   *  path that the four packaging FK slots are intentionally empty
+   *  (customers pick a combo per order) so the packaging section
+   *  should render a "chosen per order — see proposal" placeholder
+   *  instead of four "—" rows. */
+  readonly packaging_customer_choice: boolean;
   readonly status: SpecificationStatus;
   readonly document_kind: SpecificationDocumentKind;
   /** Phase G5a — last-mile per-section overrides applied at render
@@ -539,6 +546,11 @@ export interface RenderedSheetContext {
   readonly amino_acids: RenderedAminoAcids;
   readonly history: readonly RenderedTransition[];
   readonly packaging: {
+    /** True when the source formulation is RTG AND has packaging
+     *  combos configured. Render path shows a placeholder note
+     *  instead of the four FK slot rows (which are intentionally
+     *  empty on RTG SKUs since customers pick a combo per order). */
+    readonly customer_choice: boolean;
     readonly lid_description: string;
     readonly bottle_pouch_tub: string;
     readonly label_size: string;
