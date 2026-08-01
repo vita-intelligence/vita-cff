@@ -115,19 +115,36 @@ class PaymentListCreateView(APIView):
         )
 
     def post(self, request: Request, **kwargs) -> Response:
+        from apps.payments.constants import PaymentKind
+        from apps.proposals.models import Proposal
+
         serializer = PaymentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         payload = serializer.validated_data
 
-        formulation = Formulation.objects.filter(
-            organization=self.organization,
-            id=payload["formulation"],
-        ).first()
-        if formulation is None:
-            raise NotFound()
+        kind = payload.get("kind", PaymentKind.FINAL)
+        formulation = None
+        proposal = None
+
+        if kind == PaymentKind.DEPOSIT:
+            proposal = Proposal.objects.filter(
+                organization=self.organization,
+                id=payload["proposal"],
+            ).first()
+            if proposal is None:
+                raise NotFound()
+        else:
+            formulation = Formulation.objects.filter(
+                organization=self.organization,
+                id=payload["formulation"],
+            ).first()
+            if formulation is None:
+                raise NotFound()
 
         payment = record_payment(
+            kind=kind,
             formulation=formulation,
+            proposal=proposal,
             actor=request.user,
             amount=payload["amount"],
             paid_at=payload["paid_at"],

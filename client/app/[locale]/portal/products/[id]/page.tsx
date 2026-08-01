@@ -226,10 +226,31 @@ function NoActionBanner({
   currentStageKey: string | undefined;
   currentStageLabel: string | undefined;
 }) {
-  // Payment is special: the action HAS to happen, it just happens
-  // offline (bank transfer, card, etc.) rather than on the portal.
-  // We don't know whether the customer has already paid or not, so
-  // the copy covers both cases without being patronising.
+  // Both payment gates behave the same way from the customer's
+  // perspective: the action happens offline (bank transfer, card,
+  // Stripe link, etc.) and finance confirms it here. Copy differs
+  // only in which invoice the customer is paying against — deposit
+  // rides the accepted proposal, final rides the signed spec.
+  if (currentStageKey === "deposit") {
+    return (
+      <div className="mt-2 flex flex-col gap-2 border-2 border-black bg-amber-100 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-amber-900">
+            Waiting for deposit
+          </p>
+          <p className="mt-1 text-base font-bold">
+            Deposit unlocks trial production.
+          </p>
+          <p className="mt-1 text-sm text-amber-900">
+            You&apos;ll receive the deposit invoice by email if you
+            haven&apos;t already. As soon as our finance team confirms your
+            payment, our scientists start producing your trial batch.
+            Get in touch if you need the invoice re-sent.
+          </p>
+        </div>
+      </div>
+    );
+  }
   if (currentStageKey === "payment") {
     return (
       <div className="mt-2 flex flex-col gap-2 border-2 border-black bg-amber-100 p-5 sm:flex-row sm:items-center sm:justify-between">

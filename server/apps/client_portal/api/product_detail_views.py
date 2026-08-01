@@ -196,6 +196,55 @@ def _build_pipeline(
             "detail": "Our scientists will draft the recipe and share it here.",
         }
 
+    # ---- Stage 3.5: Deposit ---------------------------------------------
+    # Fires between "proposal signed" and "trial batch" for Custom, and
+    # between "proposal signed" and "payment (final)" for RTG. Skipped
+    # entirely when the accepted proposal was quoted with 0% deposit
+    # (deposit_percent = 0 means the full amount rides the final gate
+    # instead). ``trial_batch_gate_status`` is the single source of
+    # truth for the deposit state — same helper drives the scientist
+    # banner + trial-batch service refusal.
+    from apps.payments.services import trial_batch_gate_status
+
+    deposit_gate = trial_batch_gate_status(formulation)
+    if deposit_gate["reason"] == "no_proposal":
+        deposit_stage = {
+            "key": "deposit",
+            "label": "Deposit",
+            "state": "future",
+            "completed_at": None,
+            "detail": "Once you sign the proposal, we'll send you the deposit invoice.",
+        }
+    elif deposit_gate["reason"] == "no_deposit_required":
+        deposit_stage = {
+            "key": "deposit",
+            "label": "Deposit",
+            "state": "skipped",
+            "completed_at": None,
+            "detail": "This proposal has no deposit — the full amount is due on final delivery.",
+        }
+    elif deposit_gate["reason"] == "deposit_paid":
+        deposit_stage = {
+            "key": "deposit",
+            "label": "Deposit received",
+            "state": "done",
+            "completed_at": None,
+            "detail": "Thank you. Trial batches are unlocked.",
+        }
+    else:  # deposit_pending
+        percent = deposit_gate["deposit_percent"] or "0"
+        proposal_code = deposit_gate["proposal_code"] or "the accepted proposal"
+        deposit_stage = {
+            "key": "deposit",
+            "label": "Deposit pending",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                f"Your {percent}% deposit on {proposal_code} hasn't landed with "
+                "our finance team yet. Trial production begins the moment it clears."
+            ),
+        }
+
     # ---- Stage 4: Trial batch -------------------------------------------
     passed_validation = next(
         (v for v in validations if v.status == ValidationStatus.PASSED), None
@@ -398,13 +447,13 @@ def _build_pipeline(
 
     # Ready-to-go projects manufacture an existing validated recipe —
     # no lab development phase, so trial batch + final specification
-    # never happen. Emit 6 stages instead of 8 so the timeline reads
-    # honestly (as opposed to leaving two chips permanently stuck on
-    # "future"). Custom keeps the full 8.
+    # never happen. Emit 6 stages (7 with deposit) instead of 8 so the
+    # timeline reads honestly. Custom keeps the full 9.
     if formulation.project_type == ProjectType.READY_TO_GO.value:
         return [
             request_stage,
             proposal_stage,
+            deposit_stage,
             draft_stage,
             payment_stage,
             label_stage,
@@ -414,6 +463,7 @@ def _build_pipeline(
     return [
         request_stage,
         proposal_stage,
+        deposit_stage,
         draft_stage,
         trial_stage,
         final_stage,

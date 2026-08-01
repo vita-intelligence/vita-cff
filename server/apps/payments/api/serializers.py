@@ -6,16 +6,31 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
-from apps.payments.constants import PaymentMethod, PaymentStatus
+from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
 from apps.payments.models import Payment
 
 
 class PaymentReadSerializer(serializers.ModelSerializer):
+    #: For FINAL payments the CO has a formulation link; for DEPOSIT
+    #: payments both are null (the deposit sits at proposal level).
     formulation_code = serializers.CharField(
-        source="formulation.code", read_only=True
+        source="formulation.code", read_only=True, default=""
     )
     formulation_name = serializers.CharField(
-        source="formulation.name", read_only=True
+        source="formulation.name", read_only=True, default=""
+    )
+    #: Populated on DEPOSIT payments only — walks up to the accepted
+    #: proposal so the finance list can render "PROP-0009 · 50%
+    #: deposit" alongside the amount.
+    proposal_code = serializers.CharField(
+        source="proposal.code", read_only=True, default=""
+    )
+    proposal_deposit_percent = serializers.DecimalField(
+        source="proposal.deposit_percent",
+        max_digits=5,
+        decimal_places=2,
+        read_only=True,
+        default=None,
     )
     recorded_by_email = serializers.CharField(
         source="recorded_by.email", read_only=True, default=""
@@ -31,9 +46,13 @@ class PaymentReadSerializer(serializers.ModelSerializer):
         model = Payment
         fields = (
             "id",
+            "kind",
             "formulation",
             "formulation_code",
             "formulation_name",
+            "proposal",
+            "proposal_code",
+            "proposal_deposit_percent",
             "label_design",
             "amount",
             "currency",
@@ -61,7 +80,14 @@ class AssignPaymentFinanceOfficerSerializer(serializers.Serializer):
 
 
 class PaymentCreateSerializer(serializers.Serializer):
-    formulation = serializers.UUIDField()
+    #: ``FINAL`` requires ``formulation``; ``DEPOSIT`` requires
+    #: ``proposal``. The service layer raises ``PaymentKindConflict``
+    #: if the wrong target is supplied for the kind.
+    kind = serializers.ChoiceField(
+        choices=PaymentKind.choices, default=PaymentKind.FINAL
+    )
+    formulation = serializers.UUIDField(required=False, allow_null=True)
+    proposal = serializers.UUIDField(required=False, allow_null=True)
     amount = serializers.DecimalField(max_digits=12, decimal_places=2)
     currency = serializers.CharField(max_length=3, default="GBP")
     method = serializers.ChoiceField(
@@ -80,6 +106,18 @@ class PaymentCreateSerializer(serializers.Serializer):
         if value <= 0:
             raise serializers.ValidationError("amount must be positive")
         return value
+
+    def validate(self, data: dict) -> dict:
+        kind = data.get("kind", PaymentKind.FINAL)
+        if kind == PaymentKind.DEPOSIT and not data.get("proposal"):
+            raise serializers.ValidationError(
+                {"proposal": "Required for deposit payments."}
+            )
+        if kind == PaymentKind.FINAL and not data.get("formulation"):
+            raise serializers.ValidationError(
+                {"formulation": "Required for final payments."}
+            )
+        return data
 
 
 class PaymentVoidSerializer(serializers.Serializer):
