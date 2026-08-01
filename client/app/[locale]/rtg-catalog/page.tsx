@@ -98,7 +98,10 @@ export default async function RTGCatalogPage({
     primaryOrg.id,
     {
       ordering: "-updated_at",
-      pageSize: 100,
+      // Kept in lock-step with the grid's ``PAGE_SIZE`` so the SSR
+      // seed and the first client-side fetch don't misalign the
+      // cursor pagination window.
+      pageSize: 60,
       projectType: "ready_to_go",
       // Catalog page needs to see published RTG rows; the projects
       // list defaults to hiding them.
@@ -139,7 +142,7 @@ export default async function RTGCatalogPage({
           ) : null}
         </section>
 
-        <section className="mt-10 md:mt-12">
+        <section className="mt-10 mb-16 md:mt-12 md:mb-24">
           <RTGCatalogGrid
             orgId={primaryOrg.id}
             initialFirstPage={initialFirstPage}

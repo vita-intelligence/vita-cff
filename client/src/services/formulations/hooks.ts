@@ -27,6 +27,7 @@ import {
   fetchFormulationVersions,
   fetchFormulations,
   fetchFormulationsPage,
+  fetchRtgCatalogCounts,
   fetchCFFCandidates,
   fetchItemPrices,
   fetchRoutingCosts,
@@ -113,6 +114,7 @@ export const formulationsQueryKeys = {
       salesPersonId?: string;
       projectType?: string;
       includePublishedRtg?: boolean;
+      isRtgPublished?: boolean;
     },
   ) =>
     [
@@ -136,6 +138,11 @@ export const formulationsQueryKeys = {
       opts.salesPersonId ?? "",
       opts.projectType ?? "",
       opts.includePublishedRtg ? "with-published-rtg" : "no-published-rtg",
+      opts.isRtgPublished === undefined
+        ? "any-publish"
+        : opts.isRtgPublished
+          ? "published"
+          : "unpublished",
     ] as const,
   detail: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "detail", formulationId] as const,
@@ -176,6 +183,27 @@ export function useFormulations(
   });
 }
 
+
+/**
+ * All / Published / Unpublished counts for the RTG catalog page.
+ *
+ * Kept separate from the paginated list so tab pills don't force the
+ * caller to walk pages just to know how many rows exist. Cache is
+ * per-org — a mutation that changes publish state (see the RTG
+ * publish panel) should invalidate this key alongside the list.
+ */
+export function useRtgCatalogCounts(orgId: string) {
+  return useQuery({
+    queryKey: [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "rtg-catalog-counts",
+    ] as const,
+    queryFn: () => fetchRtgCatalogCounts(orgId),
+    enabled: Boolean(orgId),
+  });
+}
+
 /**
  * Cursor-paginated infinite-scroll fetch for the formulations list.
  *
@@ -207,6 +235,8 @@ export function useInfiniteFormulations(
     /** Opt-in for the /rtg-catalog surface. Defaults false so the
      *  projects list naturally hides published RTG rows. */
     includePublishedRtg?: boolean;
+    /** Explicit publish-state filter for the RTG catalog tabs. */
+    isRtgPublished?: boolean;
     initialFirstPage?: PaginatedFormulationsDto | null;
   },
 ): UseInfiniteQueryResult<
@@ -222,6 +252,7 @@ export function useInfiniteFormulations(
     salesPersonId,
     projectType,
     includePublishedRtg,
+    isRtgPublished,
     initialFirstPage,
   } = options;
   const normalisedSearch = search?.trim() ?? "";
@@ -247,6 +278,7 @@ export function useInfiniteFormulations(
       salesPersonId,
       projectType,
       includePublishedRtg,
+      isRtgPublished,
     }),
     queryFn: ({ pageParam }) =>
       fetchFormulationsPage(orgId, {
@@ -258,6 +290,7 @@ export function useInfiniteFormulations(
         salesPersonId,
         projectType,
         includePublishedRtg,
+        isRtgPublished,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,

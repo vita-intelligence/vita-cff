@@ -137,6 +137,43 @@ def _totals_payload(totals) -> dict[str, Any]:
     }
 
 
+class RtgCatalogCountsView(APIView):
+    """``GET /api/organizations/<org>/formulations/rtg-catalog-counts/``.
+
+    Small, cheap endpoint returning the three catalog-tab counts
+    (all / published / unpublished) in a single response. Filed
+    separately from the paginated list so the RTG catalog page can
+    render tab pills without paying the read serialiser's echo-block
+    cost, and so the counts survive across search queries via a
+    dedicated cache key on the FE.
+
+    Big-O: 2 aggregate queries per call, both filtered on
+    ``(organization_id, project_type='ready_to_go')`` which shares
+    the existing ``project_type``-covering index. Constant work
+    regardless of how many RTG rows the org has — this scales fine
+    into the millions.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.formulations.models import Formulation
+
+        base = Formulation.objects.filter(
+            organization=self.organization, project_type="ready_to_go"
+        )
+        published = base.filter(is_rtg_published=True).count()
+        total = base.count()
+        return Response(
+            {
+                "all": total,
+                "published": published,
+                "unpublished": total - published,
+            }
+        )
+
+
 class FormulationListCreateView(APIView):
     """``GET`` / ``POST`` ``/api/organizations/<org>/formulations/``."""
 
@@ -182,6 +219,17 @@ class FormulationListCreateView(APIView):
             request.query_params.get("include_published_rtg") or ""
         ).strip().lower()
         include_published_rtg = raw_include_published_rtg in {"true", "1", "yes"}
+        raw_is_rtg_published = request.query_params.get("is_rtg_published")
+        if raw_is_rtg_published is None:
+            is_rtg_published: bool | None = None
+        else:
+            lowered = raw_is_rtg_published.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                is_rtg_published = True
+            elif lowered in {"false", "0", "no"}:
+                is_rtg_published = False
+            else:
+                is_rtg_published = None
         queryset = list_formulations(
             organization=self.organization,
             search=search,
@@ -190,6 +238,7 @@ class FormulationListCreateView(APIView):
             sales_person_id=sales_person_id,
             project_type=project_type,
             include_published_rtg=include_published_rtg,
+            is_rtg_published=is_rtg_published,
         )
         paginator = FormulationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)

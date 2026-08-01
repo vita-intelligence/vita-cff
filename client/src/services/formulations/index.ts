@@ -62,6 +62,7 @@ export {
   useFormulationVersions,
   useFormulations,
   useInfiniteFormulations,
+  useRtgCatalogCounts,
   useProjectOverview,
   useReplaceLines,
   useRollbackFormulation,

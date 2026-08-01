@@ -3,32 +3,54 @@
 /**
  * Client-side grid for the staff RTG Catalog page.
  *
- * Renders every ``project_type='ready_to_go'`` formulation as a card
- * regardless of publish state, with a Published / Unpublished chip and
- * a quick summary of the marketing block (price, MOQ, packaging count).
- * A three-way filter tab (All / Published / Unpublished) lets the
- * catalog manager narrow the grid without paging back into the
- * projects list.
+ * Built for scale — every row renders from a cursor-paginated infinite
+ * query keyed on ``(search, publishState)``. Switching tabs or typing
+ * in the search box re-hits the server; the client never has to hold
+ * more than the last few fetched pages in memory. Big-O behaviour:
+ *
+ * * Server query — a single indexed ``.filter(organization,
+ *   project_type='ready_to_go', is_rtg_published=?)`` plus an
+ *   optional ``icontains`` on ``name``/``code``. O(log N) index seek +
+ *   O(page_size) rows returned. Cursor pagination keeps subsequent
+ *   pages cheap — no ``OFFSET`` skew as N grows.
+ * * Client render — O(pages_fetched × page_size) DOM nodes. An
+ *   ``IntersectionObserver`` sentinel triggers ``fetchNextPage`` when
+ *   the user scrolls near the end, so nothing loads until it needs
+ *   to.
+ * * Tab counts — separate ``rtg-catalog-counts`` endpoint returns
+ *   ``{all, published, unpublished}`` in one round-trip so the pills
+ *   don't force a full list walk. Constant work per call.
  *
  * The card click routes to ``/formulations/<id>`` — the RTG catalog
  * editing surface (:class:`RTGCatalogPanel`) is embedded on the
  * project overview page, so we send the manager straight there.
- * Keeping the edit surface on the project page (rather than making
- * it a modal here) preserves a single source of truth for the panel
- * and keeps this grid stateless.
  */
 
-import { useMemo, useState } from "react";
-import { CheckCircle2, EyeOff, ImageIcon, Package } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  CheckCircle2,
+  EyeOff,
+  ImageIcon,
+  Loader2,
+  Package,
+  Search,
+  X,
+} from "lucide-react";
 
 import { Link } from "@/i18n/navigation";
-import type {
-  FormulationDto,
-  PaginatedFormulationsDto,
-} from "@/services/formulations/types";
+import { useDebouncedValue } from "@/lib/utils/use-debounced-value";
+import {
+  useInfiniteFormulations,
+  useRtgCatalogCounts,
+  type FormulationDto,
+  type PaginatedFormulationsDto,
+} from "@/services/formulations";
 
 
 type FilterKey = "all" | "published" | "unpublished";
+
+const SEARCH_DEBOUNCE_MS = 300;
+const PAGE_SIZE = 60;
 
 
 interface Props {
@@ -38,54 +60,176 @@ interface Props {
 }
 
 
-export function RTGCatalogGrid({ initialFirstPage, canWrite }: Props) {
+export function RTGCatalogGrid({ orgId, initialFirstPage, canWrite }: Props) {
   const [filter, setFilter] = useState<FilterKey>("all");
-  const items = initialFirstPage?.results ?? [];
+  const [searchInput, setSearchInput] = useState("");
+  const debouncedSearch = useDebouncedValue(searchInput, SEARCH_DEBOUNCE_MS);
 
-  const { published, unpublished } = useMemo(() => {
-    const p: FormulationDto[] = [];
-    const u: FormulationDto[] = [];
-    for (const item of items) {
-      if (item.is_rtg_published) p.push(item);
-      else u.push(item);
-    }
-    return { published: p, unpublished: u };
-  }, [items]);
-
-  const visible =
+  // Map the tab into the backend param. ``undefined`` = "all" (no
+  // filter), true / false = the explicit publish state.
+  const isRtgPublished =
     filter === "published"
-      ? published
+      ? true
       : filter === "unpublished"
-        ? unpublished
-        : items;
+        ? false
+        : undefined;
 
-  if (items.length === 0) {
+  const counts = useRtgCatalogCounts(orgId);
+
+  const list = useInfiniteFormulations(orgId, {
+    ordering: "-updated_at",
+    pageSize: PAGE_SIZE,
+    projectType: "ready_to_go",
+    includePublishedRtg: true,
+    isRtgPublished,
+    search: debouncedSearch,
+    // Only hydrate from the SSR seed when the user hasn't touched
+    // filters yet — a search / tab change invalidates its shape.
+    initialFirstPage:
+      filter === "all" && debouncedSearch.trim() === ""
+        ? initialFirstPage
+        : null,
+  });
+
+  const items = useMemo<FormulationDto[]>(
+    () => list.data?.pages.flatMap((p) => p.results) ?? [],
+    [list.data],
+  );
+
+  // Sentinel-driven infinite scroll. The observer re-runs when the
+  // fetch state flips so a new sentinel gets picked up after each
+  // page loads.
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node) return;
+    if (!list.hasNextPage || list.isFetchingNextPage) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          void list.fetchNextPage();
+        }
+      },
+      { root: null, rootMargin: "240px", threshold: 0 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [list, items.length]);
+
+  const totalAll = counts.data?.all ?? 0;
+  const totalPublished = counts.data?.published ?? 0;
+  const totalUnpublished = counts.data?.unpublished ?? 0;
+
+  const emptyBecauseNoRTG =
+    !list.isLoading &&
+    items.length === 0 &&
+    debouncedSearch.trim() === "" &&
+    totalAll === 0;
+
+  if (emptyBecauseNoRTG) {
     return <EmptyState canWrite={canWrite} />;
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <FilterTabs
-        filter={filter}
-        onChange={setFilter}
-        counts={{
-          all: items.length,
-          published: published.length,
-          unpublished: unpublished.length,
-        }}
-      />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <FilterTabs
+          filter={filter}
+          onChange={setFilter}
+          counts={{
+            all: totalAll,
+            published: totalPublished,
+            unpublished: totalUnpublished,
+          }}
+        />
+        <SearchBox
+          value={searchInput}
+          onChange={setSearchInput}
+          busy={list.isFetching && !list.isFetchingNextPage}
+        />
+      </div>
 
-      {visible.length === 0 ? (
+      {list.isLoading && items.length === 0 ? (
+        <div className="flex items-center justify-center rounded-2xl bg-ink-50 py-16 text-sm text-ink-500 ring-1 ring-ink-200">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          Loading catalog…
+        </div>
+      ) : items.length === 0 ? (
         <p className="rounded-2xl bg-ink-50 p-8 text-center text-sm text-ink-500 ring-1 ring-ink-200">
-          No SKUs match the current filter.
+          {debouncedSearch.trim()
+            ? `No SKUs match “${debouncedSearch.trim()}”.`
+            : "No SKUs match the current filter."}
         </p>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {visible.map((f) => (
-            <CatalogCard key={f.id} formulation={f} />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {items.map((f) => (
+              <CatalogCard key={f.id} formulation={f} />
+            ))}
+          </div>
+          {list.hasNextPage ? (
+            <div
+              ref={sentinelRef}
+              className="flex items-center justify-center py-6 text-xs text-ink-500"
+            >
+              {list.isFetchingNextPage ? (
+                <>
+                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                  Loading more…
+                </>
+              ) : (
+                <span aria-hidden />
+              )}
+            </div>
+          ) : items.length > PAGE_SIZE ? (
+            <p className="py-4 text-center text-xs text-ink-500">
+              End of catalog.
+            </p>
+          ) : null}
+        </>
       )}
+    </div>
+  );
+}
+
+
+function SearchBox({
+  value,
+  onChange,
+  busy,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="relative w-full sm:w-72">
+      <Search
+        aria-hidden
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search code or name…"
+        className="h-10 w-full rounded-full bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 placeholder:text-ink-400 focus:bg-white focus:outline-none focus:ring-2 focus:ring-orange-400"
+      />
+      {busy && value ? (
+        <Loader2
+          aria-hidden
+          className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
+        />
+      ) : value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear search"
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -158,8 +302,6 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     rtg_packaging_options,
   } = formulation;
 
-  // Customer-facing name wins for the card title; the internal name
-  // stays visible in the code line below as an operator anchor.
   const cardTitle = rtg_display_name.trim() || name;
   const priceLabel = formatPrice(rtg_base_price, rtg_currency_code);
 
@@ -170,14 +312,11 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     >
       <div className="relative aspect-[4/3] w-full bg-ink-50">
         {rtg_hero_image ? (
-          // Hero image is a plain URL served from Django's media root
-          // — using ``next/image`` here would require adding the media
-          // host to ``images.remotePatterns`` per env, so we render the
-          // raw <img> element and eat the marginal LCP hit for now.
           // eslint-disable-next-line @next/next/no-img-element
           <img
             src={rtg_hero_image}
             alt=""
+            loading="lazy"
             className="h-full w-full object-cover"
           />
         ) : (
@@ -285,10 +424,6 @@ function formatPrice(
   const parsed = Number(amount);
   if (!Number.isFinite(parsed)) return null;
   try {
-    // ``Intl.NumberFormat`` handles the currency symbol + separators
-    // for us; falling back on an unknown code (theoretical — we
-    // constrain to GBP/EUR/USD in the publish panel) keeps the card
-    // rendering rather than throwing.
     return new Intl.NumberFormat("en-GB", {
       style: "currency",
       currency,

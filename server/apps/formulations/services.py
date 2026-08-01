@@ -2178,6 +2178,7 @@ def list_formulations(
     sales_person_id: Any = None,
     project_type: str | None = None,
     include_published_rtg: bool = False,
+    is_rtg_published: bool | None = None,
 ) -> QuerySet[Formulation]:
     """List formulations for an organisation, prefetched for the read
     serializer's echo blocks.
@@ -2271,6 +2272,13 @@ def list_formulations(
     # ``include_published_rtg=True`` so it can render them.
     if not include_published_rtg:
         queryset = queryset.exclude(is_rtg_published=True)
+
+    # Explicit publish-state filter used by the RTG catalog tabs.
+    # Runs at the DB layer so switching Published / Unpublished on a
+    # million-item catalog still returns the first page in a single
+    # index seek — no client-side filtering.
+    if is_rtg_published is not None:
+        queryset = queryset.filter(is_rtg_published=is_rtg_published)
 
     if has_open_proposal is not None:
         # Lazy import — sibling apps; avoid an import-time cycle.
