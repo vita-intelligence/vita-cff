@@ -53,6 +53,9 @@ export interface PortalRTGCatalogItem {
   readonly id: string;
   readonly name: string;
   readonly short_description: string;
+  //: Full-length catalog page body — pre-sanitized on the server
+  //: via bleach, so ``dangerouslySetInnerHTML`` is safe here.
+  readonly long_description: string;
   readonly hero_image_url: string | null;
   readonly base_price: string;
   readonly currency_code: string;
@@ -428,6 +431,19 @@ function OrderForm({
           {sku.base_price} per unit &middot; MOQ {sku.moq}
         </p>
       </Card>
+
+      {/* Rich catalog page body, authored in the staff RTG panel and
+          pre-sanitized on the server via bleach so
+          ``dangerouslySetInnerHTML`` is safe here. Self-hides when
+          the SKU hasn't been given a full description yet. */}
+      {sku.long_description ? (
+        <Card>
+          <div
+            className="prose prose-sm max-w-none prose-headings:font-black prose-headings:uppercase prose-headings:tracking-tight prose-a:text-orange-700"
+            dangerouslySetInnerHTML={{ __html: sku.long_description }}
+          />
+        </Card>
+      ) : null}
 
       {banner ? <ErrorBanner>{banner}</ErrorBanner> : null}
 

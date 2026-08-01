@@ -565,6 +565,10 @@ export interface FormulationDto {
    *  ``Signature Vanilla Whey``. */
   readonly rtg_display_name: string;
   readonly rtg_short_description: string;
+  /** Rich HTML for the catalog page body. Sanitized on save via
+   *  bleach's tag whitelist so consumers can render with
+   *  ``dangerouslySetInnerHTML`` safely. */
+  readonly rtg_long_description: string;
   readonly rtg_hero_image: string | null;
   readonly rtg_base_price: string | null;
   readonly rtg_moq: number | null;

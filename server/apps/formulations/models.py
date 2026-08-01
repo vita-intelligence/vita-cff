@@ -670,6 +670,18 @@ class Formulation(models.Model):
             "two sentences). Kept short so the grid stays scannable."
         ),
     )
+    rtg_long_description = models.TextField(
+        _("RTG long description (rich HTML)"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Full-length catalog page body — authored in the staff "
+            "rich-text editor, stored as sanitized HTML. Rendered on "
+            "the customer portal's product page below the pricing "
+            "row. Sanitized on save via ``bleach`` so a compromised "
+            "session can't inject scripts."
+        ),
+    )
     rtg_hero_image = models.ImageField(
         _("RTG hero image"),
         upload_to="rtg-hero/",

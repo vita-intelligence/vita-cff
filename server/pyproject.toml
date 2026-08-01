@@ -7,6 +7,9 @@ name = "vita-npd-server"
 version = "0.1.0"
 description = "Vita NPD platform backend"
 requires-python = ">=3.12"
+dependencies = [
+    "bleach>=6.4.0",
+]
 
 # Django project — not a distributable Python package. ``apps/`` is
 # imported by Django at runtime via ``INSTALLED_APPS`` rather than
