@@ -300,7 +300,16 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     rtg_currency_code,
     rtg_moq,
     rtg_packaging_options,
+    packaging_combos_count,
   } = formulation;
+
+  // Prefer the new combo count; fall back to the legacy free-text
+  // ``rtg_packaging_options`` count for cards that haven't migrated
+  // to combos yet. Phase 2 will drop the fallback.
+  const packagingCount =
+    packaging_combos_count > 0
+      ? packaging_combos_count
+      : rtg_packaging_options.length;
 
   const cardTitle = rtg_display_name.trim() || name;
   const priceLabel = formatPrice(rtg_base_price, rtg_currency_code);
@@ -374,11 +383,11 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
               MOQ {rtg_moq}
             </span>
           ) : null}
-          {rtg_packaging_options.length > 0 ? (
+          {packagingCount > 0 ? (
             <span className="inline-flex items-center gap-1 rounded-full bg-ink-50 px-2 py-0.5 font-medium">
               <Package className="h-3 w-3" aria-hidden />
-              {rtg_packaging_options.length} pack
-              {rtg_packaging_options.length === 1 ? "" : "s"}
+              {packagingCount} pack
+              {packagingCount === 1 ? "" : "s"}
             </span>
           ) : null}
         </div>

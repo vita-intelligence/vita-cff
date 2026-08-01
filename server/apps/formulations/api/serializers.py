@@ -278,6 +278,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     #: and to disable the "New trial batch" button. Same blob shape
     #: as :func:`apps.payments.services.trial_batch_gate_status`.
     deposit_gate = serializers.SerializerMethodField()
+    packaging_combos_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -369,6 +370,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "rtg_moq",
             "rtg_packaging_options",
             "rtg_currency_code",
+            "packaging_combos_count",
             "created_at",
             "updated_at",
         )
@@ -530,6 +532,17 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         from apps.payments.services import trial_batch_gate_status
 
         return trial_batch_gate_status(obj)
+
+    def get_packaging_combos_count(self, obj: Formulation) -> int:
+        """Number of packaging combos on this formulation. Zero for
+        Custom rows (they don't use the combo picker); N for RTG
+        rows. Powers the catalog card chip so the FE doesn't need a
+        second round-trip just to render "3 packaging options"."""
+
+        # Reads through the reverse-FK count aggregate — a single
+        # ``COUNT(*)`` per row. Cheap enough for the list serializer
+        # to keep as an inline field.
+        return obj.packaging_combos.count()
 
     def get_derived_allergen_uuids(self, obj: Formulation) -> list[str]:
         """Parallel list to :meth:`get_derived_allergen_keys` — the

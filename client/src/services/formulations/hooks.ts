@@ -28,6 +28,8 @@ import {
   fetchFormulations,
   fetchFormulationsPage,
   fetchRtgCatalogCounts,
+  fetchPackagingCombos,
+  replacePackagingCombos,
   fetchCFFCandidates,
   fetchItemPrices,
   fetchRoutingCosts,
@@ -192,6 +194,62 @@ export function useFormulations(
  * per-org — a mutation that changes publish state (see the RTG
  * publish panel) should invalidate this key alongside the list.
  */
+/**
+ * Packaging combos for one RTG formulation. Query key is the
+ * formulation id so a mutation on ``useReplacePackagingCombos``
+ * targets the same cache slot.
+ */
+export function usePackagingCombos(
+  orgId: string,
+  formulationId: string,
+  options?: { enabled?: boolean },
+) {
+  return useQuery({
+    queryKey: [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "packaging-combos",
+      formulationId,
+    ] as const,
+    queryFn: () => fetchPackagingCombos(orgId, formulationId),
+    enabled:
+      Boolean(orgId && formulationId) && (options?.enabled ?? true),
+  });
+}
+
+
+export function useReplacePackagingCombos(
+  orgId: string,
+  formulationId: string,
+) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (combos: Parameters<typeof replacePackagingCombos>[2]) =>
+      replacePackagingCombos(orgId, formulationId, combos),
+    onSuccess: (data) => {
+      qc.setQueryData(
+        [
+          ...formulationsQueryKeys.all,
+          orgId,
+          "packaging-combos",
+          formulationId,
+        ],
+        data,
+      );
+      // Invalidate the formulation detail so the read serializer's
+      // ``packaging_combos_count`` field refreshes on the overview.
+      qc.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, formulationId),
+      });
+      // Catalog card counts sit inside the paginated list responses;
+      // invalidating the whole formulations subtree keeps them fresh
+      // without us tracking each cursor page.
+      qc.invalidateQueries({ queryKey: formulationsQueryKeys.all });
+    },
+  });
+}
+
+
 export function useRtgCatalogCounts(orgId: string) {
   return useQuery({
     queryKey: [

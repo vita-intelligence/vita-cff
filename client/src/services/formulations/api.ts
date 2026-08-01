@@ -74,6 +74,66 @@ export async function fetchFormulationsPage(
   return data;
 }
 
+export interface PackagingComboItemDto {
+  readonly id: string;
+  readonly item_id: string;
+  readonly item_name: string;
+  readonly item_code: string;
+  readonly quantity: number;
+  readonly sort_order: number;
+}
+
+
+export interface PackagingComboDto {
+  readonly id: string;
+  readonly name: string;
+  readonly price_delta: string;
+  readonly sort_order: number;
+  readonly is_default: boolean;
+  readonly items: readonly PackagingComboItemDto[];
+}
+
+
+export interface PackagingCombosResponseDto {
+  readonly items: readonly PackagingComboDto[];
+}
+
+
+export interface PackagingComboInput {
+  readonly name: string;
+  readonly price_delta: string;
+  readonly is_default: boolean;
+  readonly items: ReadonlyArray<{
+    readonly item_id: string;
+    readonly quantity: number;
+  }>;
+}
+
+
+export async function fetchPackagingCombos(
+  orgId: string,
+  formulationId: string,
+): Promise<PackagingCombosResponseDto> {
+  const { data } = await apiClient.get<PackagingCombosResponseDto>(
+    `/api/organizations/${orgId}/formulations/${formulationId}/packaging-combos/`,
+  );
+  return data;
+}
+
+
+export async function replacePackagingCombos(
+  orgId: string,
+  formulationId: string,
+  combos: ReadonlyArray<PackagingComboInput>,
+): Promise<PackagingCombosResponseDto> {
+  const { data } = await apiClient.put<PackagingCombosResponseDto>(
+    `/api/organizations/${orgId}/formulations/${formulationId}/packaging-combos/`,
+    { combos },
+  );
+  return data;
+}
+
+
 export interface RtgCatalogCountsDto {
   readonly all: number;
   readonly published: number;

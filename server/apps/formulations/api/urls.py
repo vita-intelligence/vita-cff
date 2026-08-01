@@ -17,6 +17,7 @@ from apps.formulations.api.certificate_views import (
     FormulationCertificateDetailView,
     FormulationCertificatesView,
 )
+from apps.formulations.api.packaging_combo_views import PackagingCombosView
 from apps.formulations.api.views import (
     FormulationApplyStageTemplateView,
     FormulationApprovedVersionView,
@@ -226,6 +227,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/certificates/<uuid:cert_id>/",
         FormulationCertificateDetailView.as_view(),
         name="formulation-certificate-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/packaging-combos/",
+        PackagingCombosView.as_view(),
+        name="formulation-packaging-combos",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/rd-pipeline/",

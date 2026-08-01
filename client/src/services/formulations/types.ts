@@ -570,6 +570,11 @@ export interface FormulationDto {
   readonly rtg_moq: number | null;
   readonly rtg_packaging_options: readonly string[];
   readonly rtg_currency_code: string;
+  /** How many packaging combos this formulation defines. Zero on
+   *  Custom projects (they don't use the combo picker). Powers the
+   *  catalog card chip so the FE renders "3 packaging options"
+   *  without a second round-trip. */
+  readonly packaging_combos_count: number;
   readonly created_at: string;
   readonly updated_at: string;
 }
