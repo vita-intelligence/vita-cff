@@ -1034,16 +1034,20 @@ class FormulationWriteSerializer(serializers.Serializer):
     )
 
     def validate_name(self, value: str) -> str:
-        trimmed = value.strip()
-        if not trimmed:
-            raise serializers.ValidationError(_code("blank"))
-        return trimmed
+        # Blank is intentionally allowed — the service layer defaults
+        # the name to the (auto-)assigned code for RTG rows so the
+        # user isn't forced to type an "internal name" alongside the
+        # customer-facing display name. Custom-project callers can
+        # still submit a name; we just trim it.
+        return (value or "").strip()
 
     def validate_code(self, value: str) -> str:
-        trimmed = (value or "").strip()
-        if not trimmed:
-            raise serializers.ValidationError(_code("blank"))
-        return trimmed
+        # Blank is intentionally allowed here too — the service
+        # auto-assigns ``RTG#####`` for ready-to-go rows. Custom
+        # projects still require a non-blank code, but that guard
+        # lives in the service (``FormulationCodeRequired``) so both
+        # paths funnel through a single place.
+        return (value or "").strip()
 
 
 class FormulationLineWriteSerializer(serializers.Serializer):
