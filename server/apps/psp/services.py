@@ -2081,6 +2081,35 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         formulation = line.formulation_version.formulation
         if formulation is None:
             continue
+        # Phase 3: attach the customer's picked packaging combo (if
+        # any) so PSP can overlay the CO's packaging BOM with the
+        # combo's items instead of the canonical formulation's default
+        # packaging picks. Sent as a self-contained list of
+        # ``{psp_item_uuid, name, quantity}`` so PSP doesn't have to
+        # round-trip back into NPD to resolve items.
+        combo = getattr(line, "selected_packaging_combo", None)
+        combo_uuid: str | None = None
+        combo_name: str = ""
+        combo_items: list[dict[str, Any]] = []
+        if combo is not None:
+            combo_uuid = str(combo.id)
+            combo_name = combo.name or ""
+            for row in combo.items.select_related("item").all():
+                if row.item_id is None:
+                    continue
+                combo_items.append(
+                    {
+                        "npd_item_uuid": str(row.item_id),
+                        "psp_item_uuid": (
+                            str(row.item.psp_source_uuid)
+                            if getattr(row.item, "psp_source_uuid", None)
+                            else None
+                        ),
+                        "name": row.item.name or "",
+                        "quantity": int(row.quantity or 1),
+                    }
+                )
+
         line_payload.append(
             {
                 "npd_formulation_uuid": str(formulation.id),
@@ -2098,6 +2127,9 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
                     if getattr(line, "line_subtotal", None) is not None
                     else None
                 ),
+                "packaging_combo_uuid": combo_uuid,
+                "packaging_combo_name": combo_name,
+                "packaging_combo_items": combo_items,
             }
         )
 

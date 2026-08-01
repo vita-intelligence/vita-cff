@@ -4417,6 +4417,20 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "amino_acids": amino_acids,
         "history": history,
         "packaging": {
+            # Phase 3: True when the source formulation is RTG AND has
+            # packaging combos. Signals the render path to show the
+            # "chosen per order — see proposal" placeholder rather than
+            # the four FK slot rows (which are intentionally empty on
+            # RTG SKUs since customers pick a combo per order).
+            "customer_choice": (
+                getattr(
+                    sheet.formulation_version.formulation,
+                    "project_type",
+                    "",
+                )
+                == "ready_to_go"
+                and sheet.formulation_version.formulation.packaging_combos.exists()
+            ),
             "lid_description": _packaging_label(sheet.packaging_lid),
             "bottle_pouch_tub": _packaging_label(sheet.packaging_container),
             "label_size": _packaging_label(sheet.packaging_label),

@@ -937,48 +937,57 @@ export function SpecSheetContent({
         <SectionTitle>
           {tSpecs("sheet.sections.packaging")}
         </SectionTitle>
-        <SpecTable>
-          <SpecRow
-            label={tSpecs("sheet.fields.lid_description")}
-            value={rendered.packaging.lid_description}
-          />
-          <SpecRow
-            label={tSpecs("sheet.fields.bottle_pouch_tub")}
-            value={rendered.packaging.bottle_pouch_tub}
-          />
-          <SpecRow
-            label={tSpecs("sheet.fields.label_size")}
-            value={rendered.packaging.label_size}
-          />
-          <SpecRow
-            label={tSpecs("sheet.fields.antitemper")}
-            value={rendered.packaging.antitemper}
-          />
-          {rendered.packaging.unit_quantity ? (
+        {rendered.packaging.customer_choice ? (
+          <div className="rounded-md border border-dashed border-neutral-300 bg-neutral-50 p-3 text-sm text-neutral-700">
+            Packaging is selected by the customer at order time from
+            the available combinations. See the customer&rsquo;s
+            proposal for the chosen bottle, lid, label, and any
+            tamper-evidence for that order.
+          </div>
+        ) : (
+          <SpecTable>
             <SpecRow
-              label={tSpecs("sheet.fields.unit_quantity")}
-              value={String(rendered.packaging.unit_quantity)}
+              label={tSpecs("sheet.fields.lid_description")}
+              value={rendered.packaging.lid_description}
             />
-          ) : null}
-          {rendered.packaging.food_contact_status ? (
             <SpecRow
-              label={tSpecs("sheet.fields.food_contact_status")}
-              value={rendered.packaging.food_contact_status}
+              label={tSpecs("sheet.fields.bottle_pouch_tub")}
+              value={rendered.packaging.bottle_pouch_tub}
             />
-          ) : null}
-          {rendered.packaging.shelf_life ? (
             <SpecRow
-              label={tSpecs("sheet.fields.shelf_life")}
-              value={rendered.packaging.shelf_life}
+              label={tSpecs("sheet.fields.label_size")}
+              value={rendered.packaging.label_size}
             />
-          ) : null}
-          {rendered.packaging.storage_conditions ? (
             <SpecRow
-              label={tSpecs("sheet.fields.storage_conditions")}
-              value={rendered.packaging.storage_conditions}
+              label={tSpecs("sheet.fields.antitemper")}
+              value={rendered.packaging.antitemper}
             />
-          ) : null}
-        </SpecTable>
+            {rendered.packaging.unit_quantity ? (
+              <SpecRow
+                label={tSpecs("sheet.fields.unit_quantity")}
+                value={String(rendered.packaging.unit_quantity)}
+              />
+            ) : null}
+            {rendered.packaging.food_contact_status ? (
+              <SpecRow
+                label={tSpecs("sheet.fields.food_contact_status")}
+                value={rendered.packaging.food_contact_status}
+              />
+            ) : null}
+            {rendered.packaging.shelf_life ? (
+              <SpecRow
+                label={tSpecs("sheet.fields.shelf_life")}
+                value={rendered.packaging.shelf_life}
+              />
+            ) : null}
+            {rendered.packaging.storage_conditions ? (
+              <SpecRow
+                label={tSpecs("sheet.fields.storage_conditions")}
+                value={rendered.packaging.storage_conditions}
+              />
+            ) : null}
+          </SpecTable>
+        )}
       </>
     ),
     compliance: () => (
