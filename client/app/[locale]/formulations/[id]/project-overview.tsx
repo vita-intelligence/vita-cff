@@ -139,8 +139,15 @@ function HeaderCard({
               variant="compact"
             />
           </div>
+          {/* RTG projects prefer the customer-facing display name so
+              the workspace matches what shoppers see on the catalog.
+              Custom projects and un-named RTG rows fall through to
+              the internal ``name``. */}
           <h1 className="mt-1 text-3xl font-semibold tracking-tight text-ink-1000">
-            {overview.name}
+            {overview.project_type === "ready_to_go" &&
+            overview.rtg_display_name
+              ? overview.rtg_display_name
+              : overview.name}
           </h1>
           {overview.description ? (
             <p className="mt-2 text-sm text-ink-600">{overview.description}</p>
