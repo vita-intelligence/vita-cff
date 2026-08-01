@@ -3173,14 +3173,11 @@ def finalize_proposal_kiosk(*, proposal: Proposal) -> dict[str, Any]:
     # advance.
     _schedule_proposal_psp_merge(proposal)
 
-    # Deposit gate — materialise a PENDING deposit Payment so
-    # finance has a row to work off the moment the customer signs.
-    # No-op when the proposal was quoted with ``deposit_percent = 0``
-    # (100% payable on final delivery — trial batches unlock
-    # immediately). Idempotent on retry / double-finalise.
-    from apps.payments.services import ensure_pending_deposit_payment
-
-    ensure_pending_deposit_payment(proposal=proposal, actor=proposal.updated_by)
+    # Deposit gate: signing no longer materialises a placeholder
+    # Payment row. Finance records the payment themselves off the
+    # "Awaiting payment · Deposits" queue on ``/finance/payments``
+    # once the money lands. Payment rows should represent real
+    # money-in events, not "we're expecting money" placeholders.
 
     return {
         "status": proposal.status,

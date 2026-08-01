@@ -7,6 +7,7 @@ from apps.payments.api.file_views import (
     PaymentInvoicesView,
 )
 from apps.payments.api.views import (
+    AwaitingDepositsView,
     PaymentApproveView,
     PaymentAssignFinanceOfficerView,
     PaymentDetailView,
@@ -32,6 +33,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/payments/pending-projects/",
         PendingPaymentProjectsView.as_view(),
         name="payment-pending-projects",
+    ),
+    path(
+        "organizations/<uuid:org_id>/payments/awaiting-deposits/",
+        AwaitingDepositsView.as_view(),
+        name="payment-awaiting-deposits",
     ),
     path(
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/",

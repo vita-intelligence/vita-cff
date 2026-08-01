@@ -102,7 +102,63 @@ const paymentsEndpoints = {
     `/api/organizations/${orgId}/payments/${paymentId}/invoices/`,
   invoice: (orgId: string, paymentId: string, fileId: string) =>
     `/api/organizations/${orgId}/payments/${paymentId}/invoices/${fileId}/`,
+  awaitingDeposits: (orgId: string) =>
+    `/api/organizations/${orgId}/payments/awaiting-deposits/`,
 };
+
+
+export interface AwaitingDepositDto {
+  readonly proposal_id: string;
+  readonly proposal_code: string;
+  readonly proposal_accepted_at: string | null;
+  /** Percent as decimal string, e.g. ``"50.00"``. */
+  readonly deposit_percent: string;
+  /** Amount as decimal string, e.g. ``"29621.78"``; may be null when
+   *  the proposal has no priced subtotal yet (rare). */
+  readonly deposit_amount: string | null;
+  readonly currency: string;
+  /** First bundled formulation on the proposal — the anchor product
+   *  the deposit is being paid against. Null when the proposal has
+   *  no lines yet (defensive; shouldn't happen in practice). */
+  readonly formulation_id: string | null;
+  readonly formulation_code: string;
+  readonly formulation_name: string;
+  readonly line_count: number;
+  readonly customer_name: string;
+  readonly customer_company: string;
+  readonly customer_email: string;
+}
+
+
+export interface AwaitingDepositsPage {
+  readonly items: ReadonlyArray<AwaitingDepositDto>;
+  readonly total: number;
+  readonly has_more: boolean;
+  readonly next_offset: number | null;
+}
+
+
+export async function fetchAwaitingDeposits(
+  orgId: string,
+  options: {
+    readonly search?: string;
+    readonly limit?: number;
+    readonly offset?: number;
+  } = {},
+): Promise<AwaitingDepositsPage> {
+  const params = new URLSearchParams();
+  if (options.search) params.set("search", options.search);
+  if (typeof options.limit === "number")
+    params.set("limit", String(options.limit));
+  if (typeof options.offset === "number")
+    params.set("offset", String(options.offset));
+  const qs = params.toString();
+  const url = qs
+    ? `${paymentsEndpoints.awaitingDeposits(orgId)}?${qs}`
+    : paymentsEndpoints.awaitingDeposits(orgId);
+  const { data } = await apiClient.get<AwaitingDepositsPage>(url);
+  return data;
+}
 
 
 export interface PendingProjectDto {
@@ -267,6 +323,14 @@ export const paymentsQueryKeys = {
       "pending-projects",
       search,
     ] as const,
+  awaitingDeposits: (orgId: string, search: string) =>
+    [
+      ...rootQueryKey,
+      "payments",
+      orgId,
+      "awaiting-deposits",
+      search,
+    ] as const,
 } as const;
 
 
@@ -293,6 +357,29 @@ export function usePayment(
     queryKey: paymentsQueryKeys.detail(orgId, paymentId),
     queryFn: () => fetchPayment(orgId, paymentId),
     enabled: Boolean(orgId && paymentId),
+  });
+}
+
+
+export function useAwaitingDeposits(
+  orgId: string,
+  search: string = "",
+): UseInfiniteQueryResult<
+  { pages: AwaitingDepositsPage[]; pageParams: unknown[] },
+  Error
+> {
+  return useInfiniteQuery({
+    queryKey: paymentsQueryKeys.awaitingDeposits(orgId, search),
+    queryFn: ({ pageParam }) =>
+      fetchAwaitingDeposits(orgId, {
+        search,
+        limit: PENDING_PAGE_SIZE,
+        offset: (pageParam as number) ?? 0,
+      }),
+    initialPageParam: 0 as number,
+    getNextPageParam: (last: AwaitingDepositsPage) =>
+      last.has_more ? last.next_offset : undefined,
+    enabled: Boolean(orgId),
   });
 }
 
