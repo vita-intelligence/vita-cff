@@ -58,11 +58,16 @@ export function ProjectOverview({
         overview={overview}
         canEdit={canEdit}
       />
-      <ProjectCustomerCard
-        orgId={orgId}
-        overview={overview}
-        canEdit={canEdit}
-      />
+      {/* Customer card is a custom-project concept — RTG catalog SKUs
+          don't have owning customers (anyone can order them). Hide the
+          card entirely on RTG rather than render it in a stub state. */}
+      {overview.project_type !== "ready_to_go" ? (
+        <ProjectCustomerCard
+          orgId={orgId}
+          overview={overview}
+          canEdit={canEdit}
+        />
+      ) : null}
       <HeaderCard orgId={orgId} overview={overview} tProject={tProject} />
       <KpiRow overview={overview} tProject={tProject} />
       <section className="grid grid-cols-1 gap-4 md:grid-cols-2">
