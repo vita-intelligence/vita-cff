@@ -112,6 +112,7 @@ export const formulationsQueryKeys = {
       statuses?: readonly string[];
       salesPersonId?: string;
       projectType?: string;
+      includePublishedRtg?: boolean;
     },
   ) =>
     [
@@ -134,6 +135,7 @@ export const formulationsQueryKeys = {
       [...(opts.statuses ?? [])].sort().join(","),
       opts.salesPersonId ?? "",
       opts.projectType ?? "",
+      opts.includePublishedRtg ? "with-published-rtg" : "no-published-rtg",
     ] as const,
   detail: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "detail", formulationId] as const,
@@ -202,6 +204,9 @@ export function useInfiniteFormulations(
     salesPersonId?: string;
     /** ``custom`` vs ``ready_to_go``. */
     projectType?: string;
+    /** Opt-in for the /rtg-catalog surface. Defaults false so the
+     *  projects list naturally hides published RTG rows. */
+    includePublishedRtg?: boolean;
     initialFirstPage?: PaginatedFormulationsDto | null;
   },
 ): UseInfiniteQueryResult<
@@ -216,6 +221,7 @@ export function useInfiniteFormulations(
     statuses,
     salesPersonId,
     projectType,
+    includePublishedRtg,
     initialFirstPage,
   } = options;
   const normalisedSearch = search?.trim() ?? "";
@@ -240,6 +246,7 @@ export function useInfiniteFormulations(
       statuses,
       salesPersonId,
       projectType,
+      includePublishedRtg,
     }),
     queryFn: ({ pageParam }) =>
       fetchFormulationsPage(orgId, {
@@ -250,6 +257,7 @@ export function useInfiniteFormulations(
         statuses,
         salesPersonId,
         projectType,
+        includePublishedRtg,
         cursorUrl: pageParam ?? undefined,
       }),
     initialPageParam: null as string | null,

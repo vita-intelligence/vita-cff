@@ -119,8 +119,22 @@ export function FormulationsTable({
         enableSorting: true,
         cell: (ctx) => (
           <div className="flex flex-col">
-            <span className="text-sm font-medium text-ink-1000">
+            <span className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-1000">
               {ctx.row.original.name}
+              {/* RTG-in-development marker on the projects list so
+                  scientists can tell a catalog-recipe-in-progress
+                  apart from a customer-owned custom project at a
+                  glance. Published RTG rows are hidden from this
+                  list (they belong on /rtg-catalog) so any RTG row
+                  reaching this render is by definition unpublished. */}
+              {ctx.row.original.project_type === "ready_to_go" ? (
+                <span
+                  className="inline-flex items-center rounded-full bg-amber-100 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-amber-800 ring-1 ring-inset ring-amber-300"
+                  title="Ready-to-Go recipe in development — publish from /rtg-catalog"
+                >
+                  RTG
+                </span>
+              ) : null}
             </span>
             {ctx.row.original.code ? (
               <span className="text-xs text-ink-500">

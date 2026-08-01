@@ -459,6 +459,9 @@ export async function getFormulationsFirstPageServer(
     ordering?: string;
     pageSize?: number;
     projectType?: "custom" | "ready_to_go";
+    /** Opt-in for the /rtg-catalog surface; server-side default hides
+     *  published RTG rows (they belong on catalog, not projects). */
+    includePublishedRtg?: boolean;
   } = {},
 ): Promise<PaginatedFormulationsDto | null> {
   const params = new URLSearchParams();
@@ -468,6 +471,7 @@ export async function getFormulationsFirstPageServer(
   // Catalog page so we never ship Custom projects (which carry
   // unpublished recipe drafts) into a marketing-listing surface.
   if (options.projectType) params.set("project_type", options.projectType);
+  if (options.includePublishedRtg) params.set("include_published_rtg", "true");
   const query = params.toString();
   const url = `${formulationsEndpoints.list(orgId)}${
     query ? `?${query}` : ""
