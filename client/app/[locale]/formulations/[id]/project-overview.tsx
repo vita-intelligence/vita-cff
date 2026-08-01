@@ -22,6 +22,7 @@ import {
   type ProjectStatus,
 } from "@/services/formulations";
 
+import { PackagingCombosCard } from "./packaging-combos-card";
 import { ProjectCustomerCard } from "./project-customer-card";
 import { ProjectWarningsCard } from "./project-warnings-card";
 
@@ -75,6 +76,16 @@ export function ProjectOverview({
         <ComplianceCard overview={overview} tProject={tProject} />
         <RiskCard overview={overview} />
       </section>
+      {/* RTG-only: customer-selectable packaging bundles the scientist
+          defines here, the customer picks at order time, and Phase 2
+          will cascade into the customer's personal spec + routing. */}
+      {overview.project_type === "ready_to_go" ? (
+        <PackagingCombosCard
+          orgId={orgId}
+          formulationId={overview.id}
+          canEdit={canEdit}
+        />
+      ) : null}
       <ActivityCard overview={overview} tProject={tProject} />
     </article>
   );

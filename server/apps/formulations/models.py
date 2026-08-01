@@ -707,11 +707,10 @@ class Formulation(models.Model):
         default=list,
         blank=True,
         help_text=_(
-            "List of packaging variant labels the customer picks "
-            "from at order time (e.g. ``[\"120g jar\", \"60-count "
-            "pouch\"]``). At least one entry required to publish. "
-            "The submission service validates the chosen packaging "
-            "against this list."
+            "Legacy free-text list of packaging labels. Superseded by "
+            ":class:`PackagingCombo` — kept for backwards compat with "
+            "already-published cards and the submission validator "
+            "until Phase 2 migrates the portal picker to combos."
         ),
     )
     rtg_currency_code = models.CharField(
@@ -1947,3 +1946,126 @@ class FormulationStageTemplate(models.Model):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.organization_id})"
+
+
+class PackagingCombo(models.Model):
+    """A customer-selectable packaging bundle on an RTG formulation.
+
+    Each combo is a named collection of packaging items (bottle +
+    label + lid, or pouch + sticker). The RTG catalog card lists the
+    combos as a picker; the customer's choice at order time drives
+    the packaging cascade into that customer's spec sheet + routing
+    snapshot. Only meaningful on ``project_type=ready_to_go`` rows —
+    custom projects still bind their packaging directly via the
+    routing stages.
+
+    ``price_delta`` is an add-on applied on top of ``rtg_base_price``
+    when the customer picks this combo. Positive = upcharge (premium
+    pack), zero = base, negative = allowed (rare).
+
+    Phase 1 exposes create/read/update/delete via the workspace
+    editor; Phase 2 hooks the portal picker + spec cascade.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.CASCADE,
+        related_name="packaging_combos",
+    )
+    name = models.CharField(
+        _("name"),
+        max_length=120,
+        help_text=_(
+            "Customer-facing combo label (e.g. \"Bottle 60ct — "
+            "premium\"). Rendered on the catalog card + portal picker."
+        ),
+    )
+    price_delta = models.DecimalField(
+        _("price delta"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text=_(
+            "Uplift applied on top of ``rtg_base_price`` when the "
+            "customer picks this combo. Same currency as the RTG base."
+        ),
+    )
+    sort_order = models.PositiveIntegerField(
+        _("sort order"),
+        default=0,
+        help_text=_(
+            "Ascending order combos render in on the picker. Editor "
+            "renumbers on drag."
+        ),
+    )
+    is_default = models.BooleanField(
+        _("default"),
+        default=False,
+        help_text=_(
+            "Pre-selected in the portal picker when the customer lands "
+            "on the product page. At most one per formulation."
+        ),
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("packaging combo")
+        verbose_name_plural = _("packaging combos")
+        ordering = ("sort_order", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("formulation", "name"),
+                name="packaging_combo_unique_name_per_formulation",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.name} ({self.formulation_id})"
+
+
+class PackagingComboItem(models.Model):
+    """One packaging line on a :class:`PackagingCombo`.
+
+    Points at an ``Item`` in the org's packaging catalogue. Quantity
+    defaults to 1 (typical: 1 bottle + 1 label + 1 lid); scientists
+    can bump it for multi-pack SKUs.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    combo = models.ForeignKey(
+        PackagingCombo,
+        on_delete=models.CASCADE,
+        related_name="items",
+    )
+    item = models.ForeignKey(
+        "catalogues.Item",
+        on_delete=models.PROTECT,
+        related_name="+",
+        help_text=_(
+            "Packaging SKU from the catalogue. PROTECT because deleting "
+            "an item that's referenced by a customer's chosen combo "
+            "would silently break the audit trail on that order."
+        ),
+    )
+    quantity = models.PositiveIntegerField(
+        _("quantity"),
+        default=1,
+        help_text=_("Number of this item consumed per unit sold."),
+    )
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        verbose_name = _("packaging combo item")
+        verbose_name_plural = _("packaging combo items")
+        ordering = ("sort_order", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("combo", "item"),
+                name="packaging_combo_item_unique_per_combo",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.item_id} × {self.quantity}"
