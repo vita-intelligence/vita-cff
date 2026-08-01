@@ -578,30 +578,13 @@ def _build_next_action(
             "urgency": "high",
         }
 
-    # Deposit gate — proposal is signed, awaiting the deposit payment
-    # that unlocks trial production. Fires between the proposal-sign
-    # step and any spec/label action; customers with 0% deposit skip
-    # this branch entirely (reason = ``no_deposit_required``).
-    from apps.payments.services import trial_batch_gate_status
-
-    gate = trial_batch_gate_status(formulation)
-    if gate["reason"] == "deposit_pending":
-        percent = gate["deposit_percent"] or ""
-        proposal_code = gate["proposal_code"] or "your proposal"
-        percent_prefix = f"{percent}% deposit on {proposal_code}" if percent else "Deposit"
-        return {
-            "label": "Deposit invoice is on its way",
-            "subtitle": (
-                f"{percent_prefix} — pay it when the invoice lands and we'll "
-                "start producing your trial batch the moment finance confirms."
-            ),
-            # No self-serve payment page yet — customers pay offline
-            # (bank transfer / card). Deep-link back to the product page
-            # so the CTA stays on-brand instead of dead-ending.
-            "url": f"/portal/products/{formulation.id}",
-            "urgency": "high",
-        }
-
+    # Deposit gate is intentionally NOT emitted as a next_action. Payment
+    # happens off-platform (bank transfer / card), so there's no useful
+    # destination for a CTA button. The ``NoActionBanner`` on the product
+    # page has a dedicated informational "Waiting for deposit" card that
+    # fires when ``next_action`` is null and the pipeline stage is
+    # ``deposit`` — that's the right surface for a purely informative
+    # message.
     return None
 
 
