@@ -204,6 +204,11 @@ class ProjectOverview:
     name: str
     description: str
     project_status: str
+    #: ``custom`` vs ``ready_to_go``. Drives per-type UI decisions on
+    #: the project overview page (e.g. RTG suppresses customer / sales /
+    #: CFF warning rows because catalog SKUs don't have owning
+    #: customers, commercial owners, or origin CFF submissions).
+    project_type: str
     dosage_form: str
     size_label: str
     updated_at: str
@@ -934,6 +939,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         name=formulation.name,
         description=formulation.description,
         project_status=formulation.project_status,
+        project_type=formulation.project_type,
         dosage_form=formulation.dosage_form,
         size_label=_size_label(formulation),
         updated_at=formulation.updated_at.isoformat(),

@@ -955,6 +955,11 @@ export interface ProjectOverviewDto {
   readonly name: string;
   readonly description: string;
   readonly project_status: ProjectStatus;
+  /** ``custom`` vs ``ready_to_go``. Drives per-type UI decisions —
+   *  e.g. RTG suppresses customer / sales / CFF warning rows because
+   *  catalog SKUs don't have owning customers, commercial owners, or
+   *  origin CFF submissions. */
+  readonly project_type: ProjectType;
   readonly dosage_form: string;
   readonly size_label: string;
   readonly updated_at: string;

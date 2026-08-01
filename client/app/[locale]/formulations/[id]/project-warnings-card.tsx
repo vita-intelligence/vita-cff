@@ -57,17 +57,25 @@ export function ProjectWarningsCard({
   const [linkModalOpen, setLinkModalOpen] = useState(false);
   const [unlinkError, setUnlinkError] = useState<string | null>(null);
 
-  const missingSales = overview.sales_person === null;
+  // RTG is a catalog SKU, not a customer-owned project. Suppress the
+  // three warnings that don't apply: no owning customer, no
+  // commercial owner, and no origin CFF submission. Lead scientist
+  // still matters — scientists build + own the recipe regardless of
+  // sale model.
+  const isRtg = overview.project_type === "ready_to_go";
+
+  const missingSales = !isRtg && overview.sales_person === null;
   const missingScientist = overview.lead_scientist === null;
-  const missingCustomer = overview.linked_customer === null;
+  const missingCustomer = !isRtg && overview.linked_customer === null;
   const hasCFF = overview.linked_cffs.length > 0;
+  const showCFFRow = !isRtg;
 
   const anythingToShow =
     missingCustomer ||
     missingSales ||
     missingScientist ||
-    !hasCFF ||
-    overview.linked_cffs.length;
+    (showCFFRow && !hasCFF) ||
+    (showCFFRow && overview.linked_cffs.length);
 
   const unlinkMutation = useUnlinkCFFFromProject(orgId, overview.id);
   const tErrors = useTranslations("errors");
@@ -126,7 +134,7 @@ export function ProjectWarningsCard({
           />
         ) : null}
 
-        {!hasCFF ? (
+        {showCFFRow && !hasCFF ? (
           <WarningRow
             tone="blue"
             icon={<ClipboardList className="h-4 w-4" />}
@@ -151,7 +159,7 @@ export function ProjectWarningsCard({
           />
         ) : null}
 
-        {hasCFF ? (
+        {showCFFRow && hasCFF ? (
           <li className="flex flex-col gap-2 rounded-xl bg-ink-50 p-3 ring-1 ring-inset ring-ink-200">
             <p className="text-xs font-semibold uppercase tracking-wide text-ink-600">
               {tWarnings("linked.title")}
