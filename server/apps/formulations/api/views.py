@@ -76,6 +76,7 @@ from apps.formulations.services import (
     publish_to_rtg_catalog,
     replace_lines,
     rollback_to_version,
+    save_rtg_marketing,
     save_version,
     save_wizard_routing,
     set_approved_version,
@@ -2335,10 +2336,16 @@ class FormulationRTGPublishView(APIView):
 
         data = request.data
         is_published_raw = data.get("is_rtg_published")
+        # Three-way branch below:
+        # * key absent → save marketing draft (no publish flip, no
+        #   FINAL-spec gate). Lets scientists persist in-progress
+        #   copy while the recipe is still going through approvals.
+        # * key present + truthy → publish toggle (gated on FINAL
+        #   spec being approved).
+        # * key present + falsy → unpublish (always allowed).
         # ``FormData`` submissions arrive as strings; JSON POSTs
-        # arrive as native bools. Accept both so the caller isn't
-        # forced to pick a content type based on whether they have
-        # a file to attach.
+        # arrive as native bools. Both are accepted here.
+        publish_flip_requested = is_published_raw not in (None, "")
         if isinstance(is_published_raw, str):
             is_published = is_published_raw.strip().lower() in {
                 "true",
@@ -2386,7 +2393,16 @@ class FormulationRTGPublishView(APIView):
             marketing_fields["rtg_hero_image"] = data.get("rtg_hero_image")
 
         try:
-            if is_published:
+            if not publish_flip_requested:
+                # Draft-save path — the panel's "Save changes" button
+                # writes here so scientists can persist copy without
+                # triggering the publish workflow.
+                updated = save_rtg_marketing(
+                    formulation,
+                    actor=request.user,
+                    marketing_fields=marketing_fields,
+                )
+            elif is_published:
                 updated = publish_to_rtg_catalog(
                     formulation,
                     actor=request.user,

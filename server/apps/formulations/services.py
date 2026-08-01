@@ -6368,19 +6368,16 @@ def _rtg_marketing_field_errors(
             if as_int < 1:
                 errors["rtg_moq"] = "MOQ must be at least 1."
 
+    # ``rtg_packaging_options`` used to be a required free-text list;
+    # it's now superseded by the PackagingCombo card on the RTG
+    # workspace, and the FE publish panel no longer sends it at all.
+    # We keep the type check for legacy callers but no longer treat
+    # an empty list as a publish blocker.
     packaging = payload.get("rtg_packaging_options") or []
     if not isinstance(packaging, (list, tuple)):
         errors["rtg_packaging_options"] = (
             "Packaging options must be a list of labels."
         )
-    else:
-        cleaned = [
-            str(entry).strip() for entry in packaging if str(entry).strip()
-        ]
-        if not cleaned:
-            errors["rtg_packaging_options"] = (
-                "Add at least one packaging option before publishing."
-            )
 
     return errors
 
@@ -6503,6 +6500,109 @@ def publish_to_rtg_catalog(
         organization=formulation.organization,
         actor=actor,
         action="formulation.rtg_publish",
+        target=formulation,
+        before=before,
+        after=snapshot(formulation),
+    )
+    return formulation
+
+
+@transaction.atomic
+def save_rtg_marketing(
+    formulation: Formulation,
+    *,
+    actor: Any,
+    marketing_fields: dict[str, Any],
+) -> Formulation:
+    """Persist RTG marketing fields as a draft, without publishing.
+
+    The publish flow (:func:`publish_to_rtg_catalog`) requires every
+    marketing field to be complete AND a FINAL spec sheet to be
+    approved. Neither guard fires here — scientists can save
+    in-progress copy while the recipe is still going through trial
+    batches. Field values are type-validated (base_price is numeric,
+    MOQ is a positive int) but presence is not required.
+
+    Never flips ``is_rtg_published`` — that toggle lives on the
+    project header's publish menu, which routes through
+    :func:`publish_to_rtg_catalog` / :func:`unpublish_from_rtg_catalog`.
+    """
+
+    if formulation.project_type != ProjectType.READY_TO_GO:
+        exc = FormulationRTGError(
+            "Only Ready-to-Go projects have RTG marketing fields."
+        )
+        exc.code = "not_ready_to_go"  # type: ignore[attr-defined]
+        raise exc
+
+    # Loose type validation only — a scientist mid-draft should be
+    # able to save whatever they have so far without hitting a wall.
+    field_errors: dict[str, str] = {}
+    if "rtg_base_price" in marketing_fields:
+        base_price = marketing_fields.get("rtg_base_price")
+        if base_price not in (None, ""):
+            try:
+                dec = Decimal(str(base_price))
+                if dec < 0:
+                    field_errors["rtg_base_price"] = (
+                        "Base price cannot be negative."
+                    )
+            except (InvalidOperation, TypeError, ValueError):
+                field_errors["rtg_base_price"] = (
+                    "Base price must be a number."
+                )
+    if "rtg_moq" in marketing_fields:
+        moq = marketing_fields.get("rtg_moq")
+        if moq not in (None, ""):
+            try:
+                as_int = int(moq)
+                if as_int < 1:
+                    field_errors["rtg_moq"] = "MOQ must be at least 1."
+            except (TypeError, ValueError):
+                field_errors["rtg_moq"] = "MOQ must be a whole number."
+    if field_errors:
+        exc = FormulationRTGError(
+            "Some marketing fields have invalid values."
+        )
+        exc.field_errors = field_errors  # type: ignore[attr-defined]
+        raise exc
+
+    before = snapshot(formulation)
+    # Apply only what the caller sent — partial patches keep the
+    # rest of the marketing block intact.
+    if "rtg_display_name" in marketing_fields:
+        formulation.rtg_display_name = str(
+            marketing_fields.get("rtg_display_name") or ""
+        ).strip()[:200]
+    if "rtg_short_description" in marketing_fields:
+        formulation.rtg_short_description = str(
+            marketing_fields.get("rtg_short_description") or ""
+        ).strip()
+    if "rtg_base_price" in marketing_fields:
+        raw_price = marketing_fields.get("rtg_base_price")
+        formulation.rtg_base_price = (
+            Decimal(str(raw_price)) if raw_price not in (None, "") else None
+        )
+    if "rtg_moq" in marketing_fields:
+        raw_moq = marketing_fields.get("rtg_moq")
+        formulation.rtg_moq = (
+            int(raw_moq) if raw_moq not in (None, "") else None
+        )
+    if "rtg_currency_code" in marketing_fields:
+        formulation.rtg_currency_code = (
+            str(marketing_fields.get("rtg_currency_code") or "GBP")
+            .strip()
+            .upper()[:3]
+        )
+    hero = marketing_fields.get("rtg_hero_image")
+    if hero is not None:
+        formulation.rtg_hero_image = hero
+    formulation.updated_by = actor
+    formulation.save()
+    record_audit(
+        organization=formulation.organization,
+        actor=actor,
+        action="formulation.rtg_marketing_save",
         target=formulation,
         before=before,
         after=snapshot(formulation),

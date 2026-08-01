@@ -284,6 +284,14 @@ class ProjectOverview:
     #: scientists can schedule a run. Shape mirrors
     #: :func:`apps.payments.services.trial_batch_gate_status`.
     deposit_gate: dict = field(default_factory=dict)
+    #: Current RTG catalog visibility. Meaningful only when
+    #: ``project_type == 'ready_to_go'``; ``False`` otherwise. Powers
+    #: the header's Live-in-catalog pill so the workspace flags a
+    #: published SKU at-a-glance.
+    is_rtg_published: bool = False
+    #: Gate that unlocks the header's Publish action — mirrors
+    #: :meth:`FormulationReadSerializer.get_has_approved_final_spec`.
+    has_approved_final_spec: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1057,6 +1065,35 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         linked_cffs=_linked_cffs_snapshot(formulation),
         linked_customer=_linked_customer_snapshot(formulation),
         deposit_gate=_deposit_gate_snapshot(formulation),
+        is_rtg_published=bool(formulation.is_rtg_published),
+        has_approved_final_spec=_has_approved_final_spec(formulation),
+    )
+
+
+def _has_approved_final_spec(formulation: Formulation) -> bool:
+    """True when this project has a FINAL spec sheet in
+    approved / sent / accepted status. Drives the RTG publish gate
+    surfaced on the project header — same rule the serializer applies,
+    kept in one place so a future change lands consistently."""
+
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    return (
+        SpecificationSheet.objects
+        .filter(
+            formulation_version__formulation=formulation,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status__in=(
+                SpecificationStatus.APPROVED,
+                SpecificationStatus.SENT,
+                SpecificationStatus.ACCEPTED,
+            ),
+        )
+        .exists()
     )
 
 

@@ -6,11 +6,13 @@ import {
   CheckCircle2,
   ChevronDown,
   FlaskConical,
+  Lock,
   MoreVertical,
   Pencil,
   PlayCircle,
   Plus,
   Trash2,
+  Upload,
   UserRound,
   X,
 } from "lucide-react";
@@ -25,7 +27,7 @@ import {
 } from "react";
 
 import { useRouter } from "@/i18n/navigation";
-import { ApiError } from "@/lib/api";
+import { ApiError, apiClient, normalizeApiError } from "@/lib/api";
 import { hasFlatCapability } from "@/lib/auth/capabilities";
 import { translateCode } from "@/lib/errors/translate";
 import { useMemberships } from "@/services/members";
@@ -76,6 +78,8 @@ export function ProjectHeaderActions({
   projectType,
   salesPerson,
   leadScientist,
+  isRtgPublished,
+  hasApprovedFinalSpec,
 }: {
   organization: OrganizationDto;
   formulationId: string;
@@ -84,6 +88,14 @@ export function ProjectHeaderActions({
   projectType: ProjectType;
   salesPerson: SalesPersonDto | null;
   leadScientist: LeadScientistDto | null;
+  //: RTG catalog visibility — only meaningful when
+  //: ``projectType === 'ready_to_go'``; ignored otherwise. Sourced
+  //: from ``FormulationDto.is_rtg_published``.
+  isRtgPublished: boolean;
+  //: Gate for the Publish action on the RTG menu — reflects the
+  //: workflow rule that a SKU can only reach the customer catalog
+  //: once a FINAL spec sheet is approved.
+  hasApprovedFinalSpec: boolean;
 }) {
   const tProject = useTranslations("project_overview");
 
@@ -128,6 +140,17 @@ export function ProjectHeaderActions({
         canEdit={canEdit}
         tProject={tProject}
       />
+      {/* RTG-only: publish / take offline lives in the header so the
+          go/no-go decision isn't buried inside the marketing card. */}
+      {projectType === "ready_to_go" ? (
+        <RTGPublishMenu
+          orgId={organization.id}
+          formulationId={formulationId}
+          isPublished={isRtgPublished}
+          canPublish={hasApprovedFinalSpec}
+          canEdit={canEdit}
+        />
+      ) : null}
       {canEdit || canDelete ? (
         <MoreActionsMenu
           orgId={organization.id}
@@ -246,6 +269,168 @@ function ProjectStatusMenu({
               </button>
             );
           })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// RTG catalog publish toggle (RTG-only)
+// ---------------------------------------------------------------------------
+
+
+/**
+ * Compact publish menu for Ready-to-Go projects.
+ *
+ * Renders a status pill (Live in catalog / Draft) that opens a small
+ * menu with the toggle. When the FINAL spec isn't approved yet, the
+ * Publish action is disabled with an explainer — mirrors the server
+ * gate so a rogue click doesn't hit the round-trip.
+ */
+function RTGPublishMenu({
+  orgId,
+  formulationId,
+  isPublished,
+  canPublish,
+  canEdit,
+}: {
+  orgId: string;
+  formulationId: string;
+  isPublished: boolean;
+  canPublish: boolean;
+  canEdit: boolean;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useClickOutside(containerRef, () => {
+    setOpen(false);
+    setError(null);
+  });
+
+  const toggle = async (next: boolean) => {
+    setSaving(true);
+    setError(null);
+    try {
+      const form = new FormData();
+      form.append("is_rtg_published", next ? "true" : "false");
+      await apiClient.patch(
+        `/api/organizations/${orgId}/formulations/${formulationId}/rtg-publish/`,
+        form,
+      );
+      setOpen(false);
+      // Round-trip so the header pill + panel banner both pick up
+      // the new state without a manual reload.
+      router.refresh();
+    } catch (err) {
+      const api = normalizeApiError(err);
+      setError(
+        (api.payload?.detail as string | undefined) ||
+          api.message ||
+          "Could not update the catalog visibility.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const pillClasses = isPublished
+    ? "bg-emerald-100 text-emerald-800 ring-emerald-200"
+    : "bg-ink-100 text-ink-700 ring-ink-200";
+
+  if (!canEdit) {
+    return (
+      <span
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset ${pillClasses}`}
+      >
+        {isPublished ? (
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        ) : (
+          <Lock className="h-3.5 w-3.5" />
+        )}
+        {isPublished ? "Live in catalog" : "Draft"}
+      </span>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        disabled={saving}
+        className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-opacity hover:opacity-90 disabled:opacity-60 ${pillClasses}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        {isPublished ? (
+          <CheckCircle2 className="h-3.5 w-3.5" />
+        ) : (
+          <Lock className="h-3.5 w-3.5" />
+        )}
+        {isPublished ? "Live in catalog" : "Draft"}
+        <ChevronDown className="h-3 w-3" />
+      </button>
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-20 mt-2 flex w-72 flex-col gap-0.5 rounded-xl bg-ink-0 p-1.5 shadow-lg ring-1 ring-ink-200"
+        >
+          {isPublished ? (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={saving}
+              onClick={() => toggle(false)}
+              className="flex items-start gap-2 rounded-lg px-2 py-2 text-left text-sm text-ink-800 transition-colors hover:bg-ink-50 disabled:opacity-60"
+            >
+              <X className="mt-0.5 h-4 w-4 flex-shrink-0" />
+              <span className="flex-1">
+                <span className="block font-semibold">Take offline</span>
+                <span className="mt-0.5 block text-xs text-ink-500">
+                  Hide this SKU from the customer catalog. Reversible.
+                </span>
+              </span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={saving || !canPublish}
+              onClick={() => toggle(true)}
+              title={
+                !canPublish
+                  ? "Approve a FINAL spec sheet before publishing."
+                  : undefined
+              }
+              className="flex items-start gap-2 rounded-lg px-2 py-2 text-left text-sm text-ink-800 transition-colors hover:bg-ink-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {canPublish ? (
+                <Upload className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-700" />
+              ) : (
+                <Lock className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600" />
+              )}
+              <span className="flex-1">
+                <span className="block font-semibold">
+                  Publish to catalog
+                </span>
+                <span className="mt-0.5 block text-xs text-ink-500">
+                  {canPublish
+                    ? "Make this SKU visible to every customer on the RTG catalog."
+                    : "Locked — a FINAL spec sheet needs to be approved first."}
+                </span>
+              </span>
+            </button>
+          )}
+          {error ? (
+            <p className="mt-1 rounded-lg bg-danger/10 px-2 py-1.5 text-xs text-danger">
+              {error}
+            </p>
+          ) : null}
         </div>
       ) : null}
     </div>
