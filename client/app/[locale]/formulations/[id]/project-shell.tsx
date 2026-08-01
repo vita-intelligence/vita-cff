@@ -92,6 +92,10 @@ export function ProjectShell({
           ? "Save an explicit version of the Builder first (auto-snapshots don't count)."
           : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
     },
+    // Proposals live at the customer/order level for RTG catalog
+    // SKUs — a single RTG spec can be on N different proposals across
+    // N different customers, so a per-project proposals tab doesn't
+    // fit. Filtered out below when project_type=ready_to_go.
     {
       key: "proposals",
       label: tTabs("proposals"),
@@ -150,7 +154,13 @@ export function ProjectShell({
       </Link>
       <CompactHeader organization={organization} overview={overview} />
       <DepositGateBanner gate={overview.deposit_gate} />
-      <TabBar tabs={tabs} activeTab={activeTab} />
+      <TabBar
+        tabs={tabs.filter(
+          (t) =>
+            !(t.key === "proposals" && overview.project_type === "ready_to_go"),
+        )}
+        activeTab={activeTab}
+      />
       <div>{children}</div>
     </div>
   );
@@ -207,6 +217,7 @@ function CompactHeader({
         formulationId={overview.id}
         formulationCode={overview.code}
         projectStatus={overview.project_status}
+        projectType={overview.project_type}
         salesPerson={overview.sales_person}
         leadScientist={overview.lead_scientist}
       />

@@ -37,6 +37,7 @@ import {
   useUpdateFormulation,
   type LeadScientistDto,
   type ProjectStatus,
+  type ProjectType,
   type SalesPersonDto,
 } from "@/services/formulations";
 
@@ -72,6 +73,7 @@ export function ProjectHeaderActions({
   formulationId,
   formulationCode,
   projectStatus,
+  projectType,
   salesPerson,
   leadScientist,
 }: {
@@ -79,6 +81,7 @@ export function ProjectHeaderActions({
   formulationId: string;
   formulationCode: string;
   projectStatus: ProjectStatus;
+  projectType: ProjectType;
   salesPerson: SalesPersonDto | null;
   leadScientist: LeadScientistDto | null;
 }) {
@@ -106,13 +109,18 @@ export function ProjectHeaderActions({
         canAssign={canAssignScientist}
         tProject={tProject}
       />
-      <SalesPersonMenu
-        orgId={organization.id}
-        formulationId={formulationId}
-        salesPerson={salesPerson}
-        canAssign={canAssignSales}
-        tProject={tProject}
-      />
+      {/* Sales person is a custom-project concept — RTG catalog SKUs
+          don't have a per-project commercial owner (any customer can
+          order and the proposal-level owner covers that flow). */}
+      {projectType !== "ready_to_go" ? (
+        <SalesPersonMenu
+          orgId={organization.id}
+          formulationId={formulationId}
+          salesPerson={salesPerson}
+          canAssign={canAssignSales}
+          tProject={tProject}
+        />
+      ) : null}
       <ProjectStatusMenu
         orgId={organization.id}
         formulationId={formulationId}
