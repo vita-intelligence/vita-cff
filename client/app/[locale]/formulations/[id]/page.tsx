@@ -5,7 +5,6 @@ import { ProtectedHeader } from "@/components/layout/protected-header";
 import { loadProjectForTab } from "./_shared/load-project";
 import { ProjectOverview } from "./project-overview";
 import { ProjectShell } from "./project-shell";
-import { RTGCatalogPanel } from "./rtg-catalog-panel";
 import { APP_VERSION } from "@/config/version";
 
 
@@ -37,13 +36,6 @@ export default async function ProjectOverviewPage({
               orgId={organization.id}
               formulationId={formulation.id}
               initialData={overview}
-              canEdit={canWrite}
-            />
-            {/* RTG catalog publish panel — self-gates on
-                ``project_type === 'ready_to_go'`` internally so the
-                page stays untouched for Custom projects. */}
-            <RTGCatalogPanel
-              orgId={organization.id}
               formulation={formulation}
               canEdit={canWrite}
             />

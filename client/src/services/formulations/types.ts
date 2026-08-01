@@ -575,6 +575,12 @@ export interface FormulationDto {
    *  catalog card chip so the FE renders "3 packaging options"
    *  without a second round-trip. */
   readonly packaging_combos_count: number;
+  /** True when this project has a FINAL spec sheet in approved /
+   *  sent / accepted status. Gate for RTG Publish — the panel keeps
+   *  Publish disabled until this flips, matching the compliance
+   *  workflow (build → draft spec → approve → trial batches →
+   *  FINAL spec → FINAL approved → catalog). */
+  readonly has_approved_final_spec: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }

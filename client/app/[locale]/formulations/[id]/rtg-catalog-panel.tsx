@@ -16,7 +16,8 @@
  */
 
 import { useCallback, useState } from "react";
-import { CheckCircle2, Upload } from "lucide-react";
+import { CheckCircle2, Lock, Upload } from "lucide-react";
+import Link from "next/link";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
 import type { FormulationDto } from "@/services/formulations/types";
@@ -148,7 +149,15 @@ function RTGCatalogPanelInner({
     ],
   );
 
+  // Publish gate — a SKU can only reach the customer catalog once
+  // quality has signed off on the FINAL spec sheet. Server enforces
+  // the same rule; the FE guard just keeps the button dead so the
+  // "why did that fail?" round-trip doesn't happen.
+  const canPublish = formulation.has_approved_final_spec;
   const disabled = !canEdit || saving;
+  // Take-offline stays available on an already-published SKU even
+  // when the gate is off — pulling something back is always safe.
+  const publishDisabled = disabled || !canPublish;
 
   return (
     <section className="rounded-2xl border border-ink-200 bg-ink-0 p-6 shadow-sm">
@@ -306,6 +315,30 @@ function RTGCatalogPanelInner({
         packaging options field has been retired.
       </p>
 
+      {!canPublish ? (
+        <div className="mt-6 flex flex-wrap items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+          <Lock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="font-semibold">
+              Publish is locked until the product is finished.
+            </p>
+            <p className="mt-0.5 leading-relaxed">
+              A FINAL spec sheet needs to be approved before this
+              recipe can appear on the customer catalog. Complete
+              trial batches, then create and approve a FINAL spec on
+              the{" "}
+              <Link
+                href={`/formulations/${formulation.id}/specifications`}
+                className="font-semibold underline underline-offset-2 hover:text-amber-800"
+              >
+                Spec Sheets tab
+              </Link>
+              .
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
         {published ? (
           <button
@@ -320,10 +353,19 @@ function RTGCatalogPanelInner({
         <button
           type="button"
           onClick={() => submit(true)}
-          disabled={disabled}
-          className="inline-flex items-center gap-1.5 rounded-lg bg-ink-1000 px-4 py-2 text-sm font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-40"
+          disabled={publishDisabled}
+          title={
+            !canPublish
+              ? "Approve a FINAL spec sheet first — the product isn't finished yet."
+              : undefined
+          }
+          className="inline-flex items-center gap-1.5 rounded-lg bg-ink-1000 px-4 py-2 text-sm font-semibold text-ink-0 hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          <Upload className="h-4 w-4" />
+          {!canPublish ? (
+            <Lock className="h-4 w-4" />
+          ) : (
+            <Upload className="h-4 w-4" />
+          )}
           {published ? "Save changes" : "Publish to catalog"}
         </button>
       </div>

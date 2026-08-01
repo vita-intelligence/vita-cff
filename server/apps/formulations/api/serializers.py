@@ -279,6 +279,13 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     #: as :func:`apps.payments.services.trial_batch_gate_status`.
     deposit_gate = serializers.SerializerMethodField()
     packaging_combos_count = serializers.SerializerMethodField()
+    #: Gate for RTG publish. Flips true when this project has a
+    #: FINAL-kind spec sheet in ``approved`` / ``sent`` / ``accepted``
+    #: status — the workflow definition of "the product is finished
+    #: and ready to be sold." The publish panel disables its Publish
+    #: button until this is true so scientists can't accidentally
+    #: expose an unfinished SKU on the customer catalog.
+    has_approved_final_spec = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -371,6 +378,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "rtg_packaging_options",
             "rtg_currency_code",
             "packaging_combos_count",
+            "has_approved_final_spec",
             "created_at",
             "updated_at",
         )
@@ -543,6 +551,36 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         # ``COUNT(*)`` per row. Cheap enough for the list serializer
         # to keep as an inline field.
         return obj.packaging_combos.count()
+
+    def get_has_approved_final_spec(self, obj: Formulation) -> bool:
+        """True when there's a FINAL spec sheet on this project whose
+        status is at or past ``approved``. Drives the RTG publish gate:
+        the panel refuses to expose an unfinished SKU on the customer
+        catalog until quality has signed off on the FINAL spec.
+
+        ``sent`` / ``accepted`` also count — they're both post-approval
+        states in the spec lifecycle. Kept as a single ``.exists()`` so
+        the field costs one indexed lookup per formulation."""
+
+        from apps.specifications.models import (
+            SpecificationDocumentKind,
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        return (
+            SpecificationSheet.objects
+            .filter(
+                formulation_version__formulation=obj,
+                document_kind=SpecificationDocumentKind.FINAL,
+                status__in=(
+                    SpecificationStatus.APPROVED,
+                    SpecificationStatus.SENT,
+                    SpecificationStatus.ACCEPTED,
+                ),
+            )
+            .exists()
+        )
 
     def get_derived_allergen_uuids(self, obj: Formulation) -> list[str]:
         """Parallel list to :meth:`get_derived_allergen_keys` — the
