@@ -914,6 +914,31 @@ export interface ComplianceSnapshotDto {
   readonly kosher: boolean | null;
 }
 
+
+export type RegulatoryRiskTier = "low" | "medium" | "high";
+
+
+export interface RiskLineEntryDto {
+  readonly item_id: string;
+  readonly name: string;
+  readonly tier: RegulatoryRiskTier;
+}
+
+
+export interface RiskSnapshotDto {
+  /** Worst tier across bundled ingredients — drives the risk chip. */
+  readonly worst_tier: RegulatoryRiskTier;
+  /** Line counts per tier for the summary line ("1 high · 3 medium · 12 low"). */
+  readonly counts: {
+    readonly low: number;
+    readonly medium: number;
+    readonly high: number;
+  };
+  /** Names of offending ingredients (top N per tier — 10). */
+  readonly high_lines: readonly RiskLineEntryDto[];
+  readonly medium_lines: readonly RiskLineEntryDto[];
+}
+
 export interface OverviewTotalsDto {
   readonly total_active_mg: string | null;
   readonly total_weight_mg: string | null;
@@ -975,6 +1000,12 @@ export interface ProjectOverviewDto {
   readonly qc: QCCountsDto;
   readonly allergens: AllergenSnapshotDto;
   readonly compliance: ComplianceSnapshotDto;
+  //: Regulatory-risk rollup across the formulation's live lines.
+  //: ``worst_tier`` drives the risk chip on the project overview;
+  //: ``counts`` powers the "1 high · 3 medium · 12 low" summary; and
+  //: ``high_lines`` / ``medium_lines`` surface the offending items so
+  //: scientists can click straight into the item detail page.
+  readonly risk: RiskSnapshotDto;
   readonly totals: OverviewTotalsDto;
   readonly activity: readonly ProjectActivityEntryDto[];
   readonly stage_gates: StageGatesDto;

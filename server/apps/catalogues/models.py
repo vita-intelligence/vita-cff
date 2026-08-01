@@ -162,6 +162,26 @@ class Item(models.Model):
     )
     is_archived = models.BooleanField(_("archived"), default=False)
 
+    class RegulatoryRisk(models.TextChoices):
+        LOW = "low", _("Low")
+        MEDIUM = "medium", _("Medium")
+        HIGH = "high", _("High")
+
+    regulatory_risk = models.CharField(
+        _("regulatory risk"),
+        max_length=8,
+        choices=RegulatoryRisk.choices,
+        default=RegulatoryRisk.LOW,
+        db_index=True,
+        help_text=_(
+            "Compliance-risk tier for this ingredient. Rolled up on the "
+            "project overview to flag products carrying a "
+            "novel-food / restricted-market / high-allergen ingredient. "
+            "Worst tier across bundled lines drives the product-level "
+            "risk chip."
+        ),
+    )
+
     #: The PSP integration item this row mirrors, if any. Populated
     #: on rows the PSP-mirror service (:func:`apps.psp.services.
     #: mirror_psp_item`) creates when a scientist picks a PSP item

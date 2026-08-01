@@ -84,6 +84,36 @@ class ComplianceSnapshot:
 
 
 @dataclass
+class RiskLineEntry:
+    #: Item UUID — lets the FE deep-link into the item detail page.
+    item_id: str
+    #: Human-readable name for the row list.
+    name: str
+    #: ``low`` / ``medium`` / ``high``.
+    tier: str
+
+
+@dataclass
+class RiskSnapshot:
+    """Project-level regulatory-risk rollup.
+
+    ``worst_tier`` is the ceiling across all bundled ingredients — a
+    single ``high`` line pins the whole product to ``high``. ``counts``
+    is a per-tier line count so the card can render "1 high · 3
+    medium · 12 low" without a second round-trip. ``high_lines`` and
+    ``medium_lines`` surface the offending items so scientists can
+    click straight through.
+    """
+
+    #: ``low`` / ``medium`` / ``high``. Defaults to ``low`` when the
+    #: formulation has no lines yet.
+    worst_tier: str = "low"
+    counts: dict = field(default_factory=lambda: {"low": 0, "medium": 0, "high": 0})
+    high_lines: list[RiskLineEntry] = field(default_factory=list)
+    medium_lines: list[RiskLineEntry] = field(default_factory=list)
+
+
+@dataclass
 class TotalsSnapshot:
     total_active_mg: str | None = None
     total_weight_mg: str | None = None
@@ -224,6 +254,10 @@ class ProjectOverview:
     qc: QCCounts
     allergens: AllergenSnapshot
     compliance: ComplianceSnapshot
+    #: Regulatory-risk rollup across the formulation's live lines.
+    #: Product-level worst tier drives the risk chip on the overview
+    #: card; the offending-item lists power the drill-down.
+    risk: RiskSnapshot
     totals: TotalsSnapshot
     activity: list[ActivityEntry]
     #: Wizard-style gating map for the project workspace tabs.
@@ -414,6 +448,60 @@ def _trial_batch_counts(formulation: Formulation) -> TrialBatchCounts:
         counts.latest_label = latest.label
         counts.latest_packs = latest.batch_size_units
     return counts
+
+
+#: Priority ordering used to compute the "worst tier" ceiling on the
+#: project rollup. Higher index = worse. Lets ``max(tiers, key=...)``
+#: pick the highest tier present across the bundled lines.
+_RISK_TIER_ORDER = {"low": 0, "medium": 1, "high": 2}
+#: Cap on how many item names we surface per tier — a bloated recipe
+#: could otherwise ship a 40-row payload. Ten is enough to jog memory
+#: without turning the card into a wall of text.
+_RISK_LINES_LIMIT = 10
+
+
+def _risk_snapshot(formulation: Formulation) -> RiskSnapshot:
+    """Roll up ``Item.regulatory_risk`` across the formulation's live
+    lines. Reads through the FK; the caller has already prefetched
+    ``select_related('item')`` on the lines relation via the standard
+    Formulation queryset used by ``compute_project_overview``.
+
+    Reads live lines (not the version snapshot) so a scientist adding
+    a high-risk ingredient sees the card flip red immediately —
+    same-tick feedback matches the compliance card's semantics.
+    """
+
+    snap = RiskSnapshot()
+    for line in formulation.lines.select_related("item"):
+        if not line.item_id or line.item is None:
+            continue
+        tier = (line.item.regulatory_risk or "low").strip().lower()
+        if tier not in _RISK_TIER_ORDER:
+            tier = "low"
+        snap.counts[tier] = snap.counts.get(tier, 0) + 1
+        if tier == "high" and len(snap.high_lines) < _RISK_LINES_LIMIT:
+            snap.high_lines.append(
+                RiskLineEntry(
+                    item_id=str(line.item_id),
+                    name=line.item.name or "",
+                    tier=tier,
+                )
+            )
+        elif tier == "medium" and len(snap.medium_lines) < _RISK_LINES_LIMIT:
+            snap.medium_lines.append(
+                RiskLineEntry(
+                    item_id=str(line.item_id),
+                    name=line.item.name or "",
+                    tier=tier,
+                )
+            )
+    if snap.counts.get("high", 0):
+        snap.worst_tier = "high"
+    elif snap.counts.get("medium", 0):
+        snap.worst_tier = "medium"
+    else:
+        snap.worst_tier = "low"
+    return snap
 
 
 def _compliance_snapshot(latest: FormulationVersion | None) -> ComplianceSnapshot:
@@ -957,6 +1045,7 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         qc=_qc_counts(formulation),
         allergens=_allergens_snapshot(latest),
         compliance=_compliance_snapshot(latest),
+        risk=_risk_snapshot(formulation),
         totals=_totals_snapshot(latest),
         activity=_activity_feed(formulation),
         stage_gates=_compute_stage_gates(formulation),
