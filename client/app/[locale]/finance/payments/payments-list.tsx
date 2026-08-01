@@ -15,6 +15,7 @@ import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import {
   fetchPendingPaymentProjects,
+  uploadPaymentInvoice,
   useAwaitingDeposits,
   usePayments,
   usePendingPaymentProjects,
@@ -1093,12 +1094,16 @@ function RecordDepositDialog({
     "bank_transfer" | "card" | "stripe" | "other"
   >("bank_transfer");
   const [externalRef, setExternalRef] = useState("");
-  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [invoiceFile, setInvoiceFile] = useState<File | null>(null);
   const [paidAt, setPaidAt] = useState(
     new Date().toISOString().slice(0, 10),
   );
   const [notes, setNotes] = useState("");
   const [err, setErr] = useState<string | null>(null);
+  // Tracks the second step (file upload) so the button stays in
+  // "Saving…" state across both create + upload rather than flickering
+  // back to idle mid-flow.
+  const [uploading, setUploading] = useState(false);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1110,24 +1115,46 @@ function RecordDepositDialog({
       if (!Number.isFinite(n)) return trimmed;
       return n.toFixed(2);
     })();
+    let created: PaymentDto;
     try {
-      await record.mutateAsync({
+      created = await record.mutateAsync({
         kind: "deposit",
         proposal: deposit.proposal_id,
         amount: normalisedAmount,
         currency,
         method,
         external_reference: externalRef,
-        invoice_number: invoiceNumber,
         paid_at: new Date(paidAt).toISOString(),
         notes,
       });
-      onClose();
     } catch (e) {
       // eslint-disable-next-line no-console
       console.error("Record deposit failed:", e);
       setErr(formatPaymentError(e));
+      return;
     }
+    // Payment row exists now. Attach the invoice as a second step —
+    // the upload endpoint is keyed on payment_id, so it needs the
+    // row to exist first. If the upload fails we surface the error
+    // without discarding the Payment (better than losing the record);
+    // the user can retry the upload from the detail page.
+    if (invoiceFile) {
+      setUploading(true);
+      try {
+        await uploadPaymentInvoice(orgId, created.id, invoiceFile);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.error("Invoice upload failed:", e);
+        setErr(
+          "Payment recorded, but the invoice file didn't upload. " +
+            "You can attach it from the payment detail page.",
+        );
+        setUploading(false);
+        return;
+      }
+      setUploading(false);
+    }
+    onClose();
   };
 
   return (
@@ -1219,12 +1246,20 @@ function RecordDepositDialog({
               className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
             />
           </FormRow>
-          <FormRow label="Invoice number">
+          <FormRow label="Invoice file">
             <input
-              value={invoiceNumber}
-              onChange={(e) => setInvoiceNumber(e.target.value)}
-              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+              type="file"
+              accept="application/pdf,image/jpeg,image/png,image/webp,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+              onChange={(e) =>
+                setInvoiceFile(e.target.files?.[0] ?? null)
+              }
+              className="block w-full text-xs text-ink-700 file:mr-2 file:rounded file:border-0 file:bg-ink-100 file:px-2 file:py-1 file:text-xs file:font-semibold file:text-ink-700 hover:file:bg-ink-200"
             />
+            <p className="mt-1 text-[10px] text-ink-500">
+              {invoiceFile
+                ? `${invoiceFile.name} · ${(invoiceFile.size / 1024).toFixed(1)} KB`
+                : "PDF / image / Office doc (max 20 MB). Optional — you can attach it later from the payment detail page."}
+            </p>
           </FormRow>
           <FormRow label="Paid at">
             <input
@@ -1260,10 +1295,14 @@ function RecordDepositDialog({
             </button>
             <button
               type="submit"
-              disabled={record.isPending}
+              disabled={record.isPending || uploading}
               className="rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
             >
-              {record.isPending ? "Saving…" : "Record"}
+              {record.isPending
+                ? "Saving…"
+                : uploading
+                  ? "Uploading invoice…"
+                  : "Record"}
             </button>
           </div>
         </form>
