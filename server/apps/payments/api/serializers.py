@@ -7,7 +7,30 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
-from apps.payments.models import Payment
+from apps.payments.models import Payment, PaymentFile
+
+
+class PaymentFileReadSerializer(serializers.ModelSerializer):
+    url = serializers.SerializerMethodField()
+    uploaded_by_email = serializers.CharField(
+        source="uploaded_by.email", read_only=True, default=""
+    )
+
+    class Meta:
+        model = PaymentFile
+        fields = (
+            "id",
+            "url",
+            "filename",
+            "mime",
+            "byte_size",
+            "uploaded_by_email",
+            "uploaded_at",
+        )
+        read_only_fields = fields
+
+    def get_url(self, obj: PaymentFile) -> str | None:
+        return obj.file.url if obj.file else None
 
 
 class PaymentReadSerializer(serializers.ModelSerializer):
@@ -41,6 +64,7 @@ class PaymentReadSerializer(serializers.ModelSerializer):
     assigned_finance_officer_email = serializers.CharField(
         source="assigned_finance_officer.email", read_only=True, default=""
     )
+    invoices = PaymentFileReadSerializer(many=True, read_only=True)
 
     class Meta:
         model = Payment
@@ -59,6 +83,7 @@ class PaymentReadSerializer(serializers.ModelSerializer):
             "method",
             "external_reference",
             "invoice_number",
+            "invoices",
             "paid_at",
             "recorded_by",
             "recorded_by_email",

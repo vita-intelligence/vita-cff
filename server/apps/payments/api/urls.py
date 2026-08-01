@@ -2,6 +2,10 @@
 
 from django.urls import path
 
+from apps.payments.api.file_views import (
+    PaymentInvoiceDetailView,
+    PaymentInvoicesView,
+)
 from apps.payments.api.views import (
     PaymentApproveView,
     PaymentAssignFinanceOfficerView,
@@ -48,5 +52,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/assign-finance-officer/",
         PaymentAssignFinanceOfficerView.as_view(),
         name="payment-assign-finance-officer",
+    ),
+    path(
+        "organizations/<uuid:org_id>/payments/<uuid:payment_id>/invoices/",
+        PaymentInvoicesView.as_view(),
+        name="payment-invoices",
+    ),
+    path(
+        "organizations/<uuid:org_id>/payments/<uuid:payment_id>/invoices/<uuid:file_id>/",
+        PaymentInvoiceDetailView.as_view(),
+        name="payment-invoice-detail",
     ),
 ]

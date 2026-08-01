@@ -20,23 +20,30 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock,
+  Download,
+  FileText,
   Loader2,
   Pencil,
   Save,
   ShieldCheck,
+  Trash2,
+  Upload,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
 import { useMemberships } from "@/services/members";
 import {
   useApprovePayment,
   useAssignPaymentFinanceOfficer,
+  useDeletePaymentInvoice,
   usePatchPayment,
   usePayment,
+  useUploadPaymentInvoice,
   useVoidPayment,
   type PaymentDto,
+  type PaymentInvoiceDto,
   type PaymentStatus,
 } from "@/services/payments";
 
@@ -292,6 +299,15 @@ function Grid({
           </p>
         )}
       </Card>
+
+      <div className="lg:col-span-3">
+        <InvoiceFilesCard
+          orgId={orgId}
+          paymentId={payment.id}
+          invoices={payment.invoices}
+          canEdit={canEdit}
+        />
+      </div>
 
       <Card title="Notes" className="lg:col-span-3">
         {payment.notes ? (
@@ -593,6 +609,150 @@ function Card({
       </h3>
       <div className="mt-2">{children}</div>
     </article>
+  );
+}
+
+
+const _MAX_INVOICE_MB = 20;
+
+
+function _formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+
+/** Attached invoice files (PDFs, scans of paper receipts, etc.).
+ *  Always renders download links so an approved / voided payment
+ *  still surfaces its audit evidence. Upload + delete only when
+ *  ``canEdit`` — same gate as the "Edit payment details" button. */
+function InvoiceFilesCard({
+  orgId,
+  paymentId,
+  invoices,
+  canEdit,
+}: {
+  orgId: string;
+  paymentId: string;
+  invoices: ReadonlyArray<PaymentInvoiceDto>;
+  canEdit: boolean;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const upload = useUploadPaymentInvoice(orgId, paymentId);
+  const remove = useDeletePaymentInvoice(orgId, paymentId);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const onPick = (file: File | null) => {
+    if (!file) return;
+    setUploadError(null);
+    if (file.size > _MAX_INVOICE_MB * 1024 * 1024) {
+      setUploadError(`File too large — max ${_MAX_INVOICE_MB} MB.`);
+      return;
+    }
+    upload.mutate(file, {
+      onError: (err: unknown) => {
+        const msg =
+          (err as { response?: { data?: { detail?: string } } })?.response
+            ?.data?.detail || "Upload failed.";
+        setUploadError(msg);
+      },
+      onSuccess: () => {
+        if (inputRef.current) inputRef.current.value = "";
+      },
+    });
+  };
+
+  return (
+    <Card title="Invoice files">
+      {invoices.length === 0 ? (
+        <p className="text-sm italic text-ink-500">
+          No invoice attached yet.
+          {canEdit
+            ? " Upload the invoice PDF you sent the customer so it's on the audit trail."
+            : ""}
+        </p>
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {invoices.map((f) => (
+            <li
+              key={f.id}
+              className="flex items-center gap-3 py-2 first:pt-0 last:pb-0"
+            >
+              <FileText className="h-4 w-4 shrink-0 text-ink-400" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink-1000">
+                  {f.filename}
+                </p>
+                <p className="text-xs text-ink-500">
+                  {_formatFileSize(f.byte_size)} · Uploaded by{" "}
+                  {f.uploaded_by_email || "—"} ·{" "}
+                  {new Date(f.uploaded_at).toLocaleDateString()}
+                </p>
+              </div>
+              {f.url ? (
+                <a
+                  href={f.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                >
+                  <Download className="h-3 w-3" />
+                  Open
+                </a>
+              ) : null}
+              {canEdit ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (remove.isPending) return;
+                    if (
+                      window.confirm(
+                        `Remove "${f.filename}" from this payment?`,
+                      )
+                    ) {
+                      remove.mutate(f.id);
+                    }
+                  }}
+                  disabled={remove.isPending}
+                  className="inline-flex items-center rounded-md p-1 text-ink-400 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                  aria-label={`Delete ${f.filename}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {canEdit ? (
+        <div className="mt-3 flex items-center gap-2">
+          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-ink-1000 px-3 py-2 text-xs font-semibold text-ink-0 hover:bg-ink-800">
+            {upload.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Upload className="h-3.5 w-3.5" />
+            )}
+            {upload.isPending ? "Uploading…" : "Attach invoice"}
+            <input
+              ref={inputRef}
+              type="file"
+              className="hidden"
+              accept="application/pdf,image/jpeg,image/png,image/webp,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain"
+              onChange={(e) => onPick(e.target.files?.[0] ?? null)}
+              disabled={upload.isPending}
+            />
+          </label>
+          <p className="text-[11px] text-ink-500">
+            PDF, image, or Office doc up to {_MAX_INVOICE_MB} MB.
+          </p>
+        </div>
+      ) : null}
+      {uploadError ? (
+        <p className="mt-2 text-xs text-rose-700">{uploadError}</p>
+      ) : null}
+    </Card>
   );
 }
 
