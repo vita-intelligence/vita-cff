@@ -273,6 +273,11 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     #: ``allergen_uuids`` above.
     derived_allergen_keys = serializers.SerializerMethodField()
     derived_allergen_uuids = serializers.SerializerMethodField()
+    #: Trial-batch gate status — deposit paid / pending / not required.
+    #: FE reads this on the project detail page to render the banner
+    #: and to disable the "New trial batch" button. Same blob shape
+    #: as :func:`apps.payments.services.trial_batch_gate_status`.
+    deposit_gate = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -344,6 +349,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "approved_version_number",
             "sales_person",
             "lead_scientist",
+            "deposit_gate",
             "lines",
             "stages",
             # Ready-to-Go marketing block. Empty / default on Custom
@@ -510,6 +516,20 @@ class FormulationReadSerializer(serializers.ModelSerializer):
         from apps.formulations.services import derive_ingredient_allergens
 
         return derive_ingredient_allergens(formulation=obj)["keys"]
+
+    def get_deposit_gate(self, obj: Formulation) -> dict[str, Any]:
+        """Trial-batch gate — deposit paid / pending / not required.
+
+        Same blob shape as
+        :func:`apps.payments.services.trial_batch_gate_status`
+        so a single source of truth drives both the FE banner and
+        the create-batch guard. Lazy import to avoid a circular
+        formulations ↔ payments ↔ proposals dependency at boot.
+        """
+
+        from apps.payments.services import trial_batch_gate_status
+
+        return trial_batch_gate_status(obj)
 
     def get_derived_allergen_uuids(self, obj: Formulation) -> list[str]:
         """Parallel list to :meth:`get_derived_allergen_keys` — the

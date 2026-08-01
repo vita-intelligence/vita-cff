@@ -986,6 +986,27 @@ export interface ProjectOverviewDto {
   //: link / swap / clear; a change fires a PSP sync so the kanban
   //: swaps the placeholder for the real customer name.
   readonly linked_customer: LinkedCustomerDto | null;
+  //: Trial-batch gate — driven by the accepted proposal's
+  //: ``deposit_percent``. When ``unlocked === false`` the workspace
+  //: mounts a bright yellow banner across every tab telling the
+  //: scientist that trial batches are blocked until finance confirms
+  //: the deposit lands. ``no_proposal`` / ``no_deposit_required`` /
+  //: ``deposit_paid`` / ``deposit_pending`` are the reason codes.
+  readonly deposit_gate: DepositGateDto;
+}
+
+
+export interface DepositGateDto {
+  readonly unlocked: boolean;
+  readonly reason:
+    | "no_proposal"
+    | "no_deposit_required"
+    | "deposit_paid"
+    | "deposit_pending";
+  readonly proposal_id: string | null;
+  readonly proposal_code: string | null;
+  readonly deposit_percent: string | null;
+  readonly pending_payment_id: string | null;
 }
 
 
