@@ -105,6 +105,7 @@ def _build_actions(customer_ids) -> list[dict]:
     from apps.payments.constants import PaymentKind, PaymentStatus
     from apps.payments.models import Payment
     from apps.proposals.models import ProposalStatus
+    from apps.trial_batches.models import TrialBatch
 
     paid_deposit_proposal_ids = set(
         Payment.objects.filter(
@@ -112,6 +113,23 @@ def _build_actions(customer_ids) -> list[dict]:
             status=PaymentStatus.APPROVED,
             proposal__customer_id__in=customer_ids,
         ).values_list("proposal_id", flat=True)
+    )
+    # Formulations that already moved past the deposit gate — see the
+    # same reasoning in ``AwaitingDepositsView``. Suppresses stale
+    # "pay your deposit" actions for legacy projects whose trial batch
+    # (or FINAL payment) is already done and dusted.
+    formulations_past_gate = set(
+        TrialBatch.objects.filter(
+            formulation_version__formulation__customer_id__in=customer_ids,
+        ).values_list("formulation_version__formulation_id", flat=True)
+    ) | set(
+        Payment.objects.filter(
+            kind=PaymentKind.FINAL,
+            status=PaymentStatus.APPROVED,
+            formulation__customer_id__in=customer_ids,
+        )
+        .exclude(formulation__isnull=True)
+        .values_list("formulation_id", flat=True)
     )
     unpaid_deposit_proposals = (
         Proposal.objects.filter(
@@ -123,6 +141,10 @@ def _build_actions(customer_ids) -> list[dict]:
         .prefetch_related("lines__formulation_version__formulation")
         .order_by("updated_at")
     )
+    if formulations_past_gate:
+        unpaid_deposit_proposals = unpaid_deposit_proposals.exclude(
+            lines__formulation_version__formulation_id__in=formulations_past_gate
+        )
     for proposal in unpaid_deposit_proposals:
         first_line = next(iter(proposal.lines.all()), None)
         formulation = (
