@@ -204,8 +204,8 @@ class FormulationListCreateView(APIView):
             formulation = create_formulation(
                 organization=self.organization,
                 actor=request.user,
-                name=data["name"],
-                code=data["code"],
+                name=data.get("name", ""),
+                code=data.get("code", ""),
                 description=data.get("description", ""),
                 dosage_form=data.get("dosage_form", "capsule"),
                 capsule_size=data.get("capsule_size", ""),
