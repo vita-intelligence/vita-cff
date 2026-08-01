@@ -18,7 +18,7 @@
  * routing snapshot on order.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Package,
@@ -286,48 +286,106 @@ function ComboEditor({
   const [search, setSearch] = useState("");
   const [options, setOptions] = useState<PackagingItemOption[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
+  const [nextUrl, setNextUrl] = useState<string | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const sentinelRef = useRef<HTMLLIElement | null>(null);
+  // Bumped whenever a search re-fires so a slow first-page fetch
+  // can't race a fresh one and overwrite fresher results with
+  // stale ones.
+  const searchGenRef = useRef(0);
 
-  // Load packaging items lazily on open + on each search change.
-  // Debounced to 250 ms so keystrokes don't hammer the API. Fetches
-  // the first page (limit 20) — the picker is a quick lookup, not
-  // an exhaustive browser.
+  const mapResults = useCallback(
+    (rows: readonly PackagingItemOption[]): PackagingItemOption[] =>
+      rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        code:
+          (r as unknown as { internal_code?: string }).internal_code ?? "",
+      })),
+    [],
+  );
+
+  // First-page fetch on open + on every search change. Debounced
+  // 250 ms so keystrokes don't hammer the API. Resets pagination
+  // state so a stale ``nextUrl`` from the previous query can't
+  // fetch page 2 of the wrong query.
   useEffect(() => {
-    let cancelled = false;
+    const gen = searchGenRef.current + 1;
+    searchGenRef.current = gen;
+
     const t = setTimeout(async () => {
       setLoadingOptions(true);
       try {
         const params = new URLSearchParams();
-        params.set("page_size", "20");
+        // Larger page size — the picker used to cap at 20 which
+        // stopped working the moment the catalog held anything
+        // real. 50 is a good tradeoff for the modal viewport.
+        params.set("page_size", "50");
         params.set("ordering", "name");
         if (search.trim()) params.set("search", search.trim());
         const { data } = await apiClient.get<{
           results: PackagingItemOption[];
+          next: string | null;
         }>(
           `/api/organizations/${orgId}/catalogues/packaging/items/?${params.toString()}`,
         );
-        if (!cancelled) {
-          setOptions(
-            (data.results ?? []).map((r: PackagingItemOption) => ({
-              id: r.id,
-              name: r.name,
-              code:
-                (r as unknown as { internal_code?: string })
-                  .internal_code ?? "",
-            })),
-          );
-        }
+        if (searchGenRef.current !== gen) return;
+        setOptions(mapResults(data.results ?? []));
+        setNextUrl(data.next ?? null);
       } catch {
-        if (!cancelled) setOptions([]);
+        if (searchGenRef.current !== gen) return;
+        setOptions([]);
+        setNextUrl(null);
       } finally {
-        if (!cancelled) setLoadingOptions(false);
+        if (searchGenRef.current === gen) setLoadingOptions(false);
       }
     }, 250);
-    return () => {
-      cancelled = true;
-      clearTimeout(t);
-    };
-  }, [orgId, search]);
+    return () => clearTimeout(t);
+  }, [orgId, search, mapResults]);
+
+  // Fetch the next page. Cursor URL comes from the backend (DRF
+  // cursor pagination emits absolute URLs) so we don't have to
+  // hand-craft the cursor token.
+  const fetchNext = useCallback(async () => {
+    if (!nextUrl || loadingOptions) return;
+    const gen = searchGenRef.current;
+    setLoadingOptions(true);
+    try {
+      const { data } = await apiClient.get<{
+        results: PackagingItemOption[];
+        next: string | null;
+      }>(nextUrl);
+      if (searchGenRef.current !== gen) return;
+      setOptions((prev) => [...prev, ...mapResults(data.results ?? [])]);
+      setNextUrl(data.next ?? null);
+    } catch {
+      // Silent — leaves the current page shown. User can scroll
+      // again to retry; a hard failure isn't worth a toast in a
+      // small picker.
+    } finally {
+      if (searchGenRef.current === gen) setLoadingOptions(false);
+    }
+  }, [nextUrl, loadingOptions, mapResults]);
+
+  // Sentinel-driven auto-load. ``rootMargin`` = 120px so the next
+  // page starts loading before the user actually hits the bottom
+  // (avoids the "wait for content" pause on scroll).
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    const root = listRef.current;
+    if (!sentinel || !root || !nextUrl) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          void fetchNext();
+        }
+      },
+      { root, rootMargin: "120px" },
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [fetchNext, nextUrl, options.length]);
 
   const pickedIds = useMemo(
     () => new Set(items.map((i) => i.item_id)),
@@ -495,8 +553,11 @@ function ComboEditor({
                 placeholder="Search packaging catalog…"
                 className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
               />
-              <div className="mt-1 max-h-40 overflow-y-auto rounded-lg bg-ink-50 ring-1 ring-inset ring-ink-200">
-                {loadingOptions ? (
+              <div
+                ref={listRef}
+                className="mt-1 max-h-60 overflow-y-auto rounded-lg bg-ink-50 ring-1 ring-inset ring-ink-200"
+              >
+                {options.length === 0 && loadingOptions ? (
                   <p className="p-3 text-xs text-ink-500">
                     <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
                     Loading…
@@ -544,6 +605,25 @@ function ComboEditor({
                         </li>
                       );
                     })}
+                    {nextUrl ? (
+                      <li
+                        ref={sentinelRef}
+                        className="flex items-center justify-center gap-1.5 px-3 py-2 text-[10px] text-ink-500"
+                      >
+                        {loadingOptions ? (
+                          <>
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            Loading more…
+                          </>
+                        ) : (
+                          <span>Scroll for more</span>
+                        )}
+                      </li>
+                    ) : options.length > 20 ? (
+                      <li className="px-3 py-2 text-center text-[10px] text-ink-400">
+                        End of catalog
+                      </li>
+                    ) : null}
                   </ul>
                 )}
               </div>
