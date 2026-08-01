@@ -156,6 +156,35 @@ class FormulationVersionNotFound(Exception):
     code = "formulation_version_not_found"
 
 
+_RTG_CODE_PREFIX = "RTG"
+_RTG_CODE_PADDING = 5
+
+
+def _next_rtg_code(organization: Organization) -> str:
+    """Compute the next ``RTG#####`` code for ``organization``.
+
+    Scans existing formulations whose code already matches the
+    prefix, extracts the numeric suffix, and returns
+    ``RTG<max+1>`` zero-padded to :data:`_RTG_CODE_PADDING` digits.
+    Falls back to ``RTG00001`` when the org has no RTG rows yet.
+    Not race-safe on its own — the caller's uniqueness check on
+    ``(organization, code)`` catches the extremely rare tie.
+    """
+
+    existing = Formulation.objects.filter(
+        organization=organization, code__startswith=_RTG_CODE_PREFIX
+    ).values_list("code", flat=True)
+    highest = 0
+    for candidate in existing:
+        suffix = candidate[len(_RTG_CODE_PREFIX) :]
+        if suffix.isdigit():
+            try:
+                highest = max(highest, int(suffix))
+            except ValueError:
+                continue
+    return f"{_RTG_CODE_PREFIX}{highest + 1:0{_RTG_CODE_PADDING}d}"
+
+
 class InvalidDosageForm(Exception):
     code = "invalid_dosage_form"
 
@@ -2368,6 +2397,13 @@ def create_formulation(
     """
 
     code = (code or "").strip()
+    # RTG catalog rows are catalog SKUs (not project references the
+    # scientist types in), so we auto-assign a ``RTG#####`` code when
+    # the caller omits one. Custom projects still require a caller-
+    # supplied code — the code appears on BOMs / spec sheets / proposals
+    # and the business types it in themselves.
+    if not code and project_type == ProjectType.READY_TO_GO.value:
+        code = _next_rtg_code(organization)
     if not code:
         raise FormulationCodeRequired()
 
@@ -2378,6 +2414,15 @@ def create_formulation(
     ).exists()
     if duplicate:
         raise FormulationCodeConflict()
+
+    # RTG rows can be created with a placeholder ``name`` — there's
+    # only one customer-facing name for an RTG (edited on the overview
+    # page after creation) so forcing the user to type an "internal
+    # name" up front is just noise. Falling back to the code keeps the
+    # model constraint (``name`` is required at the DB level) happy.
+    name = (name or "").strip()
+    if not name:
+        name = code
 
     if capsule_size and capsule_size_by_key(capsule_size) is None:
         raise InvalidCapsuleSize()

@@ -713,13 +713,15 @@ class FormulationWriteSerializer(serializers.Serializer):
     that's how the scientist's spreadsheet workflow splits them too.
     """
 
-    # Mandatory on create — the project code is the scientist's own
-    # reference and the system no longer auto-generates it. On update
-    # the serializer is instantiated with ``partial=True`` so omitting
-    # ``code`` is still fine when only other fields are changing; a
-    # caller who *does* submit it must still provide a non-blank value.
-    code = serializers.CharField(max_length=64)
-    name = serializers.CharField(max_length=200)
+    # Custom projects: caller supplies the code (scientist's own
+    # reference — appears on BOMs / spec sheets / proposals).
+    # RTG projects: blank is accepted and the service auto-assigns
+    # ``RTG#####``. Same relaxation for name — RTG rows have only one
+    # customer-facing name (edited on the overview page), so we
+    # default a blank input to the code so the model constraint stays
+    # happy. Update is unaffected (``partial=True`` — omit to leave).
+    code = serializers.CharField(max_length=64, allow_blank=True, required=False, default="")
+    name = serializers.CharField(max_length=200, allow_blank=True, required=False, default="")
     # PSP integration link. Optional — a formulation without a
     # linked finished-product still saves + versions normally, no
     # BOM push fires. Populated by the "Pick from PSP catalogue"
