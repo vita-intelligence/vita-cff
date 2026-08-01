@@ -598,6 +598,7 @@ class AwaitingDepositsView(APIView):
 
         from apps.payments.constants import PaymentKind
         from apps.proposals.models import ProposalStatus
+        from apps.trial_batches.models import TrialBatch
 
         search = (request.query_params.get("search") or "").strip()
         try:
@@ -618,6 +619,28 @@ class AwaitingDepositsView(APIView):
                 status=PaymentStatus.APPROVED,
             ).values_list("proposal_id", flat=True)
         )
+        # Formulations that have already moved past the deposit gate.
+        # If any of these are true the deposit is moot and the row
+        # would be stale noise on the queue:
+        #  * A TrialBatch has been created — the gate was bypassed /
+        #    satisfied before this feature existed, so surfacing the
+        #    proposal now would ask finance to chase money for work
+        #    that already ran.
+        #  * A FINAL Payment has been approved — the project is
+        #    already at labelling, deposits are ancient history.
+        formulations_past_gate = set(
+            TrialBatch.objects.filter(
+                organization=self.organization,
+            ).values_list("formulation_version__formulation_id", flat=True)
+        ) | set(
+            Payment.objects.filter(
+                organization=self.organization,
+                kind=PaymentKind.FINAL,
+                status=PaymentStatus.APPROVED,
+            )
+            .exclude(formulation__isnull=True)
+            .values_list("formulation_id", flat=True)
+        )
 
         qs = (
             Proposal.objects.filter(
@@ -629,6 +652,10 @@ class AwaitingDepositsView(APIView):
             .select_related("customer")
             .prefetch_related("lines__formulation_version__formulation")
         )
+        if formulations_past_gate:
+            qs = qs.exclude(
+                lines__formulation_version__formulation_id__in=formulations_past_gate
+            )
         if search:
             qs = qs.filter(
                 Q(code__icontains=search)
