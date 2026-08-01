@@ -572,3 +572,142 @@ class PendingPaymentProjectsView(APIView):
                 "next_offset": next_offset if has_more else None,
             }
         )
+
+
+class AwaitingDepositsView(APIView):
+    """``GET /api/organizations/<org>/payments/awaiting-deposits/``.
+
+    Deposits side of the "Awaiting payment" queue: accepted proposals
+    with ``deposit_percent > 0`` that don't yet have an approved
+    DEPOSIT ``Payment``. Signing a proposal no longer materialises a
+    placeholder Payment row — finance records the deposit off this
+    queue once the money lands.
+
+    Same pagination + search shape as ``PendingPaymentProjectsView``.
+    Search covers proposal ``code``, customer name/company (denormalised
+    columns + FK), and the first bundled formulation's ``code`` / ``name``.
+    """
+
+    permission_classes = [HasFinancePermission]
+    required_capability = FinanceCapability.VIEW
+
+    def get(self, request: Request, **kwargs) -> Response:
+        from decimal import ROUND_HALF_UP, Decimal
+
+        from django.db.models import Q
+
+        from apps.payments.constants import PaymentKind
+        from apps.proposals.models import ProposalStatus
+
+        search = (request.query_params.get("search") or "").strip()
+        try:
+            limit = int(request.query_params.get("limit") or 20)
+        except (TypeError, ValueError):
+            limit = 20
+        limit = max(1, min(limit, 100))
+        try:
+            offset = int(request.query_params.get("offset") or 0)
+        except (TypeError, ValueError):
+            offset = 0
+        offset = max(0, offset)
+
+        paid_proposal_ids = set(
+            Payment.objects.filter(
+                organization=self.organization,
+                kind=PaymentKind.DEPOSIT,
+                status=PaymentStatus.APPROVED,
+            ).values_list("proposal_id", flat=True)
+        )
+
+        qs = (
+            Proposal.objects.filter(
+                organization=self.organization,
+                status=ProposalStatus.ACCEPTED,
+                deposit_percent__gt=0,
+            )
+            .exclude(id__in=paid_proposal_ids)
+            .select_related("customer")
+            .prefetch_related("lines__formulation_version__formulation")
+        )
+        if search:
+            qs = qs.filter(
+                Q(code__icontains=search)
+                | Q(customer__company__icontains=search)
+                | Q(customer__name__icontains=search)
+                | Q(customer_company__icontains=search)
+                | Q(customer_name__icontains=search)
+                | Q(
+                    lines__formulation_version__formulation__code__icontains=search
+                )
+                | Q(
+                    lines__formulation_version__formulation__name__icontains=search
+                )
+            ).distinct()
+        qs = qs.order_by("updated_at")
+        total = qs.count()
+        page = list(qs[offset : offset + limit])
+
+        items: list[dict] = []
+        for proposal in page:
+            first_line = next(iter(proposal.lines.all()), None)
+            formulation = (
+                first_line.formulation_version.formulation
+                if first_line and first_line.formulation_version
+                else None
+            )
+            customer = getattr(proposal, "customer", None)
+            customer_name = (
+                (getattr(customer, "name", "") if customer else "")
+                or (getattr(proposal, "customer_name", "") or "")
+            )
+            customer_company = (
+                (getattr(customer, "company", "") if customer else "")
+                or (getattr(proposal, "customer_company", "") or "")
+            )
+            customer_email = (
+                getattr(customer, "email", "") if customer else ""
+            )
+            subtotal = getattr(proposal, "subtotal", None)
+            percent = Decimal(proposal.deposit_percent or 0)
+            deposit_amount = None
+            if subtotal is not None:
+                try:
+                    deposit_amount = str(
+                        (Decimal(subtotal) * percent / Decimal("100")).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
+                        )
+                    )
+                except Exception:  # pragma: no cover - defensive
+                    deposit_amount = None
+            items.append(
+                {
+                    "proposal_id": str(proposal.id),
+                    "proposal_code": proposal.code,
+                    "proposal_accepted_at": (
+                        proposal.updated_at.isoformat()
+                        if proposal.updated_at
+                        else None
+                    ),
+                    "deposit_percent": str(proposal.deposit_percent),
+                    "deposit_amount": deposit_amount,
+                    "currency": (getattr(proposal, "currency", "") or "").strip(),
+                    "formulation_id": str(formulation.id) if formulation else None,
+                    "formulation_code": getattr(formulation, "code", "") if formulation else "",
+                    "formulation_name": getattr(formulation, "name", "") if formulation else "",
+                    "line_count": len(list(proposal.lines.all())),
+                    "customer_name": customer_name,
+                    "customer_company": customer_company,
+                    "customer_email": customer_email,
+                }
+            )
+
+        next_offset = offset + limit
+        has_more = next_offset < total
+        return Response(
+            {
+                "items": items,
+                "total": total,
+                "has_more": has_more,
+                "next_offset": next_offset if has_more else None,
+            }
+        )

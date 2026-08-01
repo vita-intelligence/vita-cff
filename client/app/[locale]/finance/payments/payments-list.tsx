@@ -3,25 +3,23 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Banknote,
-  CheckCircle2,
   Loader2,
   Paperclip,
   Plus,
   Receipt,
   Search,
   X,
-  XCircle,
 } from "lucide-react";
 
 import { Link } from "@/i18n/navigation";
 import { ApiError } from "@/lib/api";
 import {
   fetchPendingPaymentProjects,
-  useApprovePayment,
+  useAwaitingDeposits,
   usePayments,
   usePendingPaymentProjects,
   useRecordPayment,
-  useVoidPayment,
+  type AwaitingDepositDto,
   type PaymentDto,
   type PendingProjectDto,
 } from "@/services/payments";
@@ -156,6 +154,34 @@ export function PaymentsList({
     setShowCreate(true);
   };
 
+  // Deposit-side dialog. Separate from the finals dialog because the
+  // preset shape is different (proposal vs formulation) and the copy
+  // reads differently. Signing a proposal no longer materialises a
+  // Payment row automatically — finance records it here off the
+  // "Awaiting payment · Deposits" sub-tab once the money lands.
+  const [depositDialog, setDepositDialog] =
+    useState<AwaitingDepositDto | null>(null);
+
+  // Which sub-tab is active on the "Awaiting payment" section.
+  //   "finals"   — projects whose customer signed the FINAL spec and
+  //                are waiting on money before label design starts.
+  //                Query: ``pending-projects`` (LabelDesign at
+  //                PAYMENT_PENDING).
+  //   "deposits" — accepted proposals with a deposit % > 0 that don't
+  //                yet have an approved DEPOSIT payment. Query:
+  //                ``awaiting-deposits``.
+  const [awaitingTab, setAwaitingTab] = useState<"finals" | "deposits">(
+    "finals",
+  );
+  const [depositSearchInput, setDepositSearchInput] = useState("");
+  const debouncedDepositSearch = useDebounced(depositSearchInput, 250);
+  const awaitingDeposits = useAwaitingDeposits(orgId, debouncedDepositSearch);
+  const depositItems = useMemo<ReadonlyArray<AwaitingDepositDto>>(
+    () => awaitingDeposits.data?.pages.flatMap((p) => p.items) ?? [],
+    [awaitingDeposits.data],
+  );
+  const depositsTotal = awaitingDeposits.data?.pages[0]?.total ?? 0;
+
   return (
     <section className="mt-6 flex flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -189,25 +215,69 @@ export function PaymentsList({
         </div>
       </header>
 
-      {/* Pending-payment queue. Filter bar (search + age chips) mirrors
-          the projects-page pattern; the body is a clean table that
-          scales to thousands of rows because the backend paginates
-          and we render only what's been fetched. */}
-      {pendingTotal > 0 || debouncedSearch || pending.isLoading ? (
+      {/* Awaiting-payment queue. Two sub-tabs:
+           * Finals   — LabelDesign rows at PAYMENT_PENDING (customer
+                        signed the final spec, money not landed yet).
+           * Deposits — accepted proposals with deposit_percent > 0
+                        that don't yet have an approved DEPOSIT
+                        payment. */}
+      {pendingTotal > 0 ||
+      depositsTotal > 0 ||
+      debouncedSearch ||
+      debouncedDepositSearch ||
+      pending.isLoading ||
+      awaitingDeposits.isLoading ? (
         <div className="rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
           <header className="border-b border-ink-100 p-4">
-            <div className="flex items-center gap-2">
-              <Receipt className="h-4 w-4 text-amber-700" />
-              <h2 className="text-sm font-semibold text-ink-1000">
-                Awaiting payment
-                {pendingTotal > 0 ? ` · ${pendingTotal}` : ""}
-              </h2>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Receipt className="h-4 w-4 text-amber-700" />
+                <h2 className="text-sm font-semibold text-ink-1000">
+                  Awaiting payment
+                </h2>
+              </div>
+              <div className="flex items-center gap-1 rounded-full bg-ink-50 p-0.5 ring-1 ring-inset ring-ink-200">
+                {(
+                  [
+                    { key: "finals" as const, label: "Finals", count: pendingTotal },
+                    { key: "deposits" as const, label: "Deposits", count: depositsTotal },
+                  ]
+                ).map((tab) => (
+                  <button
+                    key={tab.key}
+                    type="button"
+                    onClick={() => setAwaitingTab(tab.key)}
+                    aria-pressed={awaitingTab === tab.key}
+                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-colors ${
+                      awaitingTab === tab.key
+                        ? "bg-ink-1000 text-ink-0"
+                        : "text-ink-600 hover:text-ink-1000"
+                    }`}
+                  >
+                    {tab.label}
+                    {tab.count > 0 ? (
+                      <span
+                        className={`rounded-full px-1.5 py-px text-[10px] font-semibold ${
+                          awaitingTab === tab.key
+                            ? "bg-ink-0/20 text-ink-0"
+                            : "bg-ink-200 text-ink-700"
+                        }`}
+                      >
+                        {tab.count}
+                      </span>
+                    ) : null}
+                  </button>
+                ))}
+              </div>
             </div>
             <p className="mt-1 text-[11px] text-ink-500">
-              Projects whose customer has signed the final spec and are
-              waiting on you to confirm payment.
+              {awaitingTab === "finals"
+                ? "Projects whose customer has signed the final spec and are waiting on you to confirm payment."
+                : "Signed proposals waiting on the deposit — record the payment here once it lands so scientists can start trial production."}
             </p>
 
+            {awaitingTab === "finals" ? (
+            <>
             <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative flex-1">
                 <Search
@@ -263,9 +333,97 @@ export function PaymentsList({
                 </button>
               ))}
             </div>
+            </>
+            ) : (
+            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative flex-1">
+                <Search
+                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+                  aria-hidden
+                />
+                <input
+                  type="search"
+                  value={depositSearchInput}
+                  onChange={(e) => setDepositSearchInput(e.target.value)}
+                  placeholder="Search proposal, customer, or product…"
+                  className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+                />
+                {awaitingDeposits.isFetching && depositItems.length > 0 ? (
+                  <Loader2
+                    aria-hidden
+                    className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
+                  />
+                ) : depositSearchInput ? (
+                  <button
+                    type="button"
+                    onClick={() => setDepositSearchInput("")}
+                    aria-label="Clear search"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                ) : null}
+              </div>
+            </div>
+            )}
           </header>
 
-          {pending.isLoading && pendingItems.length === 0 ? (
+          {awaitingTab === "deposits" ? (
+            awaitingDeposits.isLoading && depositItems.length === 0 ? (
+              <p className="p-4 text-xs text-ink-500">
+                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                Loading awaiting deposits…
+              </p>
+            ) : depositItems.length === 0 ? (
+              <p className="p-4 text-xs text-ink-500">
+                {debouncedDepositSearch
+                  ? `No proposals match "${debouncedDepositSearch}".`
+                  : "No proposals awaiting a deposit right now."}
+              </p>
+            ) : (
+              <>
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-ink-50 text-[10px] uppercase tracking-wide text-ink-500">
+                    <tr>
+                      <th className="px-3 py-2">Proposal</th>
+                      <th className="px-3 py-2">Customer</th>
+                      <th className="px-3 py-2">Expected deposit</th>
+                      <th className="px-3 py-2">Signed</th>
+                      <th className="px-3 py-2 text-right"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {depositItems.map((d) => (
+                      <DepositRow
+                        key={d.proposal_id}
+                        deposit={d}
+                        canRecord={canRecord}
+                        onRecord={() => setDepositDialog(d)}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+                {awaitingDeposits.hasNextPage ? (
+                  <div className="border-t border-ink-100 p-3 text-center">
+                    <button
+                      type="button"
+                      onClick={() => awaitingDeposits.fetchNextPage()}
+                      disabled={awaitingDeposits.isFetchingNextPage}
+                      className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold text-ink-700 ring-1 ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+                    >
+                      {awaitingDeposits.isFetchingNextPage ? (
+                        <>
+                          <Loader2 className="h-3 w-3 animate-spin" /> Loading…
+                        </>
+                      ) : (
+                        <>Load more</>
+                      )}
+                    </button>
+                  </div>
+                ) : null}
+              </>
+            )
+          ) : pending.isLoading && pendingItems.length === 0 ? (
             <p className="p-4 text-xs text-ink-500">
               <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
               Loading pending projects…
@@ -345,12 +503,7 @@ export function PaymentsList({
             </thead>
             <tbody>
               {data.map((p) => (
-                <PaymentRow
-                  key={p.id}
-                  payment={p}
-                  orgId={orgId}
-                  canApprove={canApprove}
-                />
+                <PaymentRow key={p.id} payment={p} />
               ))}
             </tbody>
           </table>
@@ -365,6 +518,14 @@ export function PaymentsList({
             setShowCreate(false);
             setPrefilledProject(null);
           }}
+        />
+      ) : null}
+
+      {depositDialog && canRecord ? (
+        <RecordDepositDialog
+          orgId={orgId}
+          deposit={depositDialog}
+          onClose={() => setDepositDialog(null)}
         />
       ) : null}
     </section>
@@ -436,6 +597,84 @@ function PendingRow({
 }
 
 
+function DepositRow({
+  deposit,
+  canRecord,
+  onRecord,
+}: {
+  deposit: AwaitingDepositDto;
+  canRecord: boolean;
+  onRecord: () => void;
+}) {
+  const signed = deposit.proposal_accepted_at
+    ? new Date(deposit.proposal_accepted_at)
+    : null;
+  const daysWaiting = signed
+    ? Math.max(
+        0,
+        Math.floor((Date.now() - signed.getTime()) / 86_400_000),
+      )
+    : null;
+  return (
+    <tr className="border-t border-ink-100 align-middle">
+      <td className="px-3 py-2">
+        <div className="font-semibold text-ink-1000">{deposit.proposal_code}</div>
+        <div className="text-[11px] text-ink-500">
+          {deposit.formulation_name || deposit.formulation_code || "—"}
+          {deposit.line_count > 1
+            ? ` · +${deposit.line_count - 1} more`
+            : ""}
+        </div>
+      </td>
+      <td className="px-3 py-2">
+        <div className="text-ink-1000">
+          {deposit.customer_company || deposit.customer_name || "—"}
+        </div>
+        {deposit.customer_email ? (
+          <div className="text-[11px] text-ink-500">
+            {deposit.customer_email}
+          </div>
+        ) : null}
+      </td>
+      <td className="px-3 py-2">
+        <div className="font-semibold tabular-nums text-ink-1000">
+          {deposit.deposit_amount ?? "—"}{" "}
+          <span className="text-ink-500">{deposit.currency}</span>
+        </div>
+        <div className="text-[11px] text-ink-500">
+          {deposit.deposit_percent}% of proposal
+        </div>
+      </td>
+      <td className="px-3 py-2 text-ink-500">
+        {signed ? (
+          <>
+            {signed.toLocaleDateString()}
+            {daysWaiting !== null && daysWaiting > 0 ? (
+              <span className="ml-1 text-[11px]">
+                · {daysWaiting}d
+              </span>
+            ) : null}
+          </>
+        ) : (
+          "—"
+        )}
+      </td>
+      <td className="px-3 py-2 text-right">
+        {canRecord ? (
+          <button
+            type="button"
+            onClick={onRecord}
+            className="inline-flex items-center gap-1 rounded-md bg-ink-1000 px-2 py-1 text-[11px] font-semibold text-ink-0 hover:bg-ink-900"
+          >
+            <Plus className="h-3 w-3" /> Record payment
+          </button>
+        ) : null}
+      </td>
+    </tr>
+  );
+}
+
+
 /** Invoice cell: surfaces attached files with a paperclip + count,
  *  falls back to the plain ``invoice_number`` text, and — when the
  *  row has neither — shows an explicit "Attach" link deep-linking
@@ -475,15 +714,9 @@ function InvoiceCell({ payment }: { payment: PaymentDto }) {
 
 function PaymentRow({
   payment,
-  orgId,
-  canApprove,
 }: {
   payment: PaymentDto;
-  orgId: string;
-  canApprove: boolean;
 }) {
-  const approve = useApprovePayment(orgId);
-  const voidIt = useVoidPayment(orgId);
   return (
     <tr className="border-t border-ink-100 align-middle">
       <td className="px-3 py-2">
@@ -538,31 +771,16 @@ function PaymentRow({
         <StatusBadge status={payment.status} />
       </td>
       <td className="px-3 py-2 text-right">
-        {canApprove && payment.status === "pending" ? (
-          <div className="flex justify-end gap-1">
-            <button
-              type="button"
-              onClick={() => approve.mutate(payment.id)}
-              disabled={approve.isPending}
-              className="inline-flex items-center gap-1 rounded-md bg-emerald-100 px-2 py-1 text-[11px] font-semibold text-emerald-900 hover:bg-emerald-200 disabled:opacity-50"
-            >
-              <CheckCircle2 className="h-3 w-3" /> Approve
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                voidIt.mutate({
-                  paymentId: payment.id,
-                  notes: window.prompt("Reason for voiding?") ?? "",
-                })
-              }
-              disabled={voidIt.isPending}
-              className="inline-flex items-center gap-1 rounded-md bg-rose-100 px-2 py-1 text-[11px] font-semibold text-rose-900 hover:bg-rose-200 disabled:opacity-50"
-            >
-              <XCircle className="h-3 w-3" /> Void
-            </button>
-          </div>
-        ) : null}
+        {/* Approve / Void moved to the detail page so a mis-click on
+            the list can't accidentally approve a payment. Row-level
+            actions here would sit millimetres from the row link and
+            fire the wrong mutation. */}
+        <Link
+          href={`/finance/payments/${payment.id}`}
+          className="inline-flex items-center gap-1 text-[11px] font-medium text-ink-500 hover:text-orange-700"
+        >
+          Open
+        </Link>
       </td>
     </tr>
   );
@@ -762,6 +980,206 @@ function RecordPaymentDialog({
                 <p className="mt-1 text-[10px] text-ink-500">
                   Pre-filled from proposal{" "}
                   {selectedProject.proposal_code || ""} subtotal.
+                </p>
+              ) : null}
+            </FormRow>
+            <FormRow label="Currency">
+              <input
+                value={currency}
+                onChange={(e) => setCurrency(e.target.value)}
+                maxLength={3}
+                className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+              />
+            </FormRow>
+          </div>
+          <FormRow label="Method">
+            <select
+              value={method}
+              onChange={(e) =>
+                setMethod(
+                  e.target.value as
+                    | "bank_transfer"
+                    | "card"
+                    | "stripe"
+                    | "other",
+                )
+              }
+              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+            >
+              <option value="bank_transfer">Bank transfer</option>
+              <option value="card">Card</option>
+              <option value="stripe">Stripe</option>
+              <option value="other">Other</option>
+            </select>
+          </FormRow>
+          <FormRow label="External reference">
+            <input
+              value={externalRef}
+              onChange={(e) => setExternalRef(e.target.value)}
+              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+            />
+          </FormRow>
+          <FormRow label="Invoice number">
+            <input
+              value={invoiceNumber}
+              onChange={(e) => setInvoiceNumber(e.target.value)}
+              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+            />
+          </FormRow>
+          <FormRow label="Paid at">
+            <input
+              type="date"
+              value={paidAt}
+              onChange={(e) => setPaidAt(e.target.value)}
+              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+            />
+          </FormRow>
+          <FormRow label="Notes">
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={2}
+              className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+            />
+          </FormRow>
+          {err ? (
+            <div
+              role="alert"
+              className="rounded-md border border-danger/30 bg-danger/10 px-3 py-2 text-xs font-medium text-danger"
+            >
+              {err}
+            </div>
+          ) : null}
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md bg-ink-100 px-3 py-1.5 text-xs font-semibold text-ink-700 hover:bg-ink-200"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={record.isPending}
+              className="rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900 disabled:opacity-50"
+            >
+              {record.isPending ? "Saving…" : "Record"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+/** Deposit-side record dialog. Sibling of ``RecordPaymentDialog`` for
+ *  finals — different preset shape (proposal + expected amount + %),
+ *  posts with ``kind: "deposit"`` and the proposal FK instead of a
+ *  formulation FK. */
+function RecordDepositDialog({
+  orgId,
+  deposit,
+  onClose,
+}: {
+  orgId: string;
+  deposit: AwaitingDepositDto;
+  onClose: () => void;
+}) {
+  const record = useRecordPayment(orgId);
+  const [amount, setAmount] = useState(deposit.deposit_amount ?? "");
+  const [currency, setCurrency] = useState(deposit.currency || "GBP");
+  const [method, setMethod] = useState<
+    "bank_transfer" | "card" | "stripe" | "other"
+  >("bank_transfer");
+  const [externalRef, setExternalRef] = useState("");
+  const [invoiceNumber, setInvoiceNumber] = useState("");
+  const [paidAt, setPaidAt] = useState(
+    new Date().toISOString().slice(0, 10),
+  );
+  const [notes, setNotes] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+
+  const onSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    const normalisedAmount = (() => {
+      const trimmed = amount.trim();
+      if (!trimmed) return trimmed;
+      const n = Number(trimmed);
+      if (!Number.isFinite(n)) return trimmed;
+      return n.toFixed(2);
+    })();
+    try {
+      await record.mutateAsync({
+        kind: "deposit",
+        proposal: deposit.proposal_id,
+        amount: normalisedAmount,
+        currency,
+        method,
+        external_reference: externalRef,
+        invoice_number: invoiceNumber,
+        paid_at: new Date(paidAt).toISOString(),
+        notes,
+      });
+      onClose();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("Record deposit failed:", e);
+      setErr(formatPaymentError(e));
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+      <div className="w-full max-w-md rounded-2xl bg-ink-0 p-5 shadow-lg">
+        <header className="mb-3 flex items-center justify-between">
+          <h2 className="inline-flex items-center gap-2 text-sm font-semibold text-ink-1000">
+            <Banknote className="h-4 w-4" /> Record deposit
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-xs text-ink-500 hover:text-ink-700"
+          >
+            ✕
+          </button>
+        </header>
+        <form onSubmit={onSubmit} className="space-y-2">
+          <FormRow label="Proposal">
+            <div className="rounded-md bg-amber-50 px-3 py-2 ring-1 ring-amber-200">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                {deposit.proposal_code} · {deposit.deposit_percent}% deposit
+              </p>
+              <p className="truncate text-sm font-semibold text-ink-1000">
+                {deposit.customer_company ||
+                  deposit.customer_name ||
+                  "—"}
+              </p>
+              {deposit.formulation_name || deposit.formulation_code ? (
+                <p className="truncate text-[11px] text-ink-500">
+                  {deposit.formulation_name || deposit.formulation_code}
+                  {deposit.line_count > 1
+                    ? ` · +${deposit.line_count - 1} more`
+                    : ""}
+                </p>
+              ) : null}
+            </div>
+          </FormRow>
+          <div className="grid grid-cols-2 gap-2">
+            <FormRow label="Amount">
+              <input
+                required
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                inputMode="decimal"
+                className="w-full rounded border border-ink-200 px-2 py-1.5 text-xs"
+              />
+              {deposit.deposit_amount &&
+              amount === deposit.deposit_amount ? (
+                <p className="mt-1 text-[10px] text-ink-500">
+                  Pre-filled — {deposit.deposit_percent}% of{" "}
+                  {deposit.proposal_code} subtotal.
                 </p>
               ) : null}
             </FormRow>
