@@ -140,6 +140,10 @@ export interface FormulationsListQuery {
   readonly salesPersonId?: string;
   /** Custom vs ready_to_go engagement model. */
   readonly projectType?: string;
+  /** Opt-in flag for the RTG catalog page. Defaults to false server-
+   *  side so the projects list naturally hides published RTG rows
+   *  (they belong on ``/rtg-catalog``, not in the project workspace). */
+  readonly includePublishedRtg?: boolean;
 }
 
 /**

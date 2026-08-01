@@ -63,6 +63,7 @@ export async function fetchFormulationsPage(
   }
   if (args.salesPersonId) params.sales_person_id = args.salesPersonId;
   if (args.projectType) params.project_type = args.projectType;
+  if (args.includePublishedRtg) params.include_published_rtg = "true";
   const { data } = await apiClient.get<PaginatedFormulationsDto>(
     formulationsEndpoints.list(orgId),
     { params },

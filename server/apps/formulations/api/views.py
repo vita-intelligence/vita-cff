@@ -178,6 +178,10 @@ class FormulationListCreateView(APIView):
         statuses = request.query_params.getlist("status") or None
         sales_person_id = request.query_params.get("sales_person_id")
         project_type = request.query_params.get("project_type")
+        raw_include_published_rtg = (
+            request.query_params.get("include_published_rtg") or ""
+        ).strip().lower()
+        include_published_rtg = raw_include_published_rtg in {"true", "1", "yes"}
         queryset = list_formulations(
             organization=self.organization,
             search=search,
@@ -185,6 +189,7 @@ class FormulationListCreateView(APIView):
             statuses=statuses,
             sales_person_id=sales_person_id,
             project_type=project_type,
+            include_published_rtg=include_published_rtg,
         )
         paginator = FormulationCursorPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)

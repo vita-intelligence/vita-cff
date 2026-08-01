@@ -2148,6 +2148,7 @@ def list_formulations(
     statuses: list[str] | None = None,
     sales_person_id: Any = None,
     project_type: str | None = None,
+    include_published_rtg: bool = False,
 ) -> QuerySet[Formulation]:
     """List formulations for an organisation, prefetched for the read
     serializer's echo blocks.
@@ -2234,6 +2235,13 @@ def list_formulations(
         cleaned_type = project_type.strip()
         if cleaned_type:
             queryset = queryset.filter(project_type=cleaned_type)
+
+    # Published RTG formulations belong on ``/rtg-catalog`` (they're
+    # catalog SKUs, not projects). The projects list defaults to
+    # hiding them; the RTG catalog page opts in via
+    # ``include_published_rtg=True`` so it can render them.
+    if not include_published_rtg:
+        queryset = queryset.exclude(is_rtg_published=True)
 
     if has_open_proposal is not None:
         # Lazy import — sibling apps; avoid an import-time cycle.

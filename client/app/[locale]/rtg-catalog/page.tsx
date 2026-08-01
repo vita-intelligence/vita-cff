@@ -96,7 +96,14 @@ export default async function RTGCatalogPage({
   // an empty list on a fetch error rather than 500-ing the whole page.
   const initialFirstPage = await getFormulationsFirstPageServer(
     primaryOrg.id,
-    { ordering: "-updated_at", pageSize: 100, projectType: "ready_to_go" },
+    {
+      ordering: "-updated_at",
+      pageSize: 100,
+      projectType: "ready_to_go",
+      // Catalog page needs to see published RTG rows; the projects
+      // list defaults to hiding them.
+      includePublishedRtg: true,
+    },
   );
   const canWrite = canManage || canPublish;
 
