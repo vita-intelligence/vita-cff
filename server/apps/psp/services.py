@@ -2354,7 +2354,15 @@ def _build_full_timeline(organization: Any, proposal: Any) -> list[dict[str, Any
 def _proposal_transition_label(t: Any) -> str:
     from_h = _human_proposal_status(t.from_status)
     to_h = _human_proposal_status(t.to_status)
-    return f"Proposal moved from {from_h} to {to_h}"
+    base = f"Proposal moved from {from_h} to {to_h}"
+    # Preserve the reject reason across the sync — reject dialog +
+    # revert-to-draft dialog both write it to ``notes`` on the
+    # transition row. Without this the reason is orphaned on NPD and
+    # PSP's timeline is blind to WHY the proposal died.
+    notes = (getattr(t, "notes", "") or "").strip()
+    if notes and t.to_status in {"rejected", "draft"}:
+        return f"{base} — Reason: {notes}"
+    return base
 
 
 def _spec_transition_label(t: Any) -> str:

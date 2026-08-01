@@ -330,7 +330,17 @@ export function SignedDocuments({
     (sheet: SpecificationSheetDto) => {
       const customerId = sheet.linked_customer?.id ?? null;
       if (!customerId) return false;
-      if (sheet.linked_proposal) return false;
+      // Terminal-state proposals don't block a re-quote: a rejected
+      // deal is dead and the customer wants a fresh offer against
+      // the same spec; an accepted proposal is legally signed so
+      // any new proposal against the same spec is a follow-on
+      // (repeat order) which we also allow. Only live in-flight
+      // proposals (draft / in_review / approved / sent) block the
+      // sheet from being bundled into another quote.
+      const status = sheet.linked_proposal?.status;
+      const hasLiveProposal =
+        status != null && status !== "rejected" && status !== "accepted";
+      if (hasLiveProposal) return false;
       if (selectedCustomerId && customerId !== selectedCustomerId) return false;
       return true;
     },
@@ -909,12 +919,19 @@ function SpecCard({
   const [createOpen, setCreateOpen] = useState(false);
 
   //: Checkbox is only shown on approved-mode cards where the sheet is
-  //: eligible for a new proposal (no proposal yet) — otherwise there's
-  //: nothing to bulk-do with the row.
+  //: eligible for a new proposal. Terminal-state proposals (rejected /
+  //: accepted) don't block re-quoting — the deal is dead or the sheet
+  //: is signed for a repeat order — so we still show the checkbox in
+  //: those cases. Live proposals (draft / in_review / approved / sent)
+  //: hide the checkbox because bundling a sheet into a second live
+  //: quote would race against the first.
+  const linkedStatus = sheet.linked_proposal?.status;
+  const hasLiveLinkedProposal =
+    linkedStatus != null &&
+    linkedStatus !== "rejected" &&
+    linkedStatus !== "accepted";
   const showCheckbox =
-    mode === "approved" &&
-    bulkSelection !== undefined &&
-    sheet.linked_proposal === null;
+    mode === "approved" && bulkSelection !== undefined && !hasLiveLinkedProposal;
   const isSelected = bulkSelection?.selectedIds.has(sheet.id) ?? false;
   const hasLinkedCustomer = sheet.linked_customer !== null;
   //: A card without a linked customer can never be selected — call it

@@ -819,6 +819,26 @@ def create_proposal(
         and getattr(version.formulation, "project_type", "custom")
         != "ready_to_go"
     )
+
+    # A Custom sheet can only hold ONE proposal in the legacy OneToOne
+    # slot at a time (schema-level uniqueness). When the prior proposal
+    # for this sheet has died (rejected) or was signed (accepted), it's
+    # legally a closed record — but its OneToOne link still occupies
+    # the slot and would cause a UNIQUE-constraint 500 on the new
+    # ``Proposal.objects.create`` below. Free the slot up so a fresh
+    # quote can be raised. The old proposal keeps its ProposalLine FK
+    # references to the sheet (that's the durable audit trail — every
+    # line row records "this sheet was on that dead deal"), just not
+    # the OneToOne header link.
+    if should_pin_legacy_slot:
+        existing = getattr(sheet, "proposal", None)
+        if existing is not None and existing.status in (
+            ProposalStatus.REJECTED.value,
+            ProposalStatus.ACCEPTED.value,
+        ):
+            existing.specification_sheet = None
+            existing.save(update_fields=["specification_sheet", "updated_at"])
+
     proposal = Proposal.objects.create(
         organization=organization,
         formulation_version=version,
@@ -1758,7 +1778,23 @@ def transition_status(
     # sent → accepted flips the phase between "Awaiting proposal
     # approval", "Ready to send", "Awaiting customer signature",
     # then into Setup once accepted).
-    _schedule_proposal_psp_merge(proposal)
+    #
+    # Rejection is different: the proposal is dead, so the N R&D
+    # formulations that were folded into the primary CO should split
+    # back into individual orders — mirroring what NPD looks like
+    # (separate projects) once the dead proposal no longer binds them.
+    # We fire the same unmerge path as ``delete_proposal`` so PSP
+    # restores every secondary CO, fans comments back to their home,
+    # and wipes the primary's proposal identity. The proposal row
+    # itself stays on NPD (terminal state) as the audit anchor for
+    # the rejection reason.
+    if to_status == ProposalStatus.REJECTED.value:
+        _schedule_proposal_psp_unmerge(
+            organization=proposal.organization,
+            proposal_uuid=str(proposal.pk),
+        )
+    else:
+        _schedule_proposal_psp_merge(proposal)
 
     # When the proposal is sent to the client, pull every attached
     # spec into ``SENT`` alongside it. The kiosk signs the whole
@@ -2486,25 +2522,38 @@ def _promote_attached_specs_to_sent(
 def _revert_attached_specs_after_rejection(
     *, proposal: Proposal, actor: Any
 ) -> list[SpecificationSheet]:
-    """Inverse of :func:`_promote_attached_specs_to_sent`.
+    """Full reset every attached spec back to ``DRAFT``.
 
-    When a proposal is rejected (customer kiosk OR staff manual)
-    the specs that rode the send to ``SENT`` are dead weight on a
-    dead deal — and worse, they block the team from issuing a
-    fresh proposal against the same recipe because the proposal
-    builder requires specs at ``APPROVED``. This function walks
-    each attached sheet and reverts it to ``APPROVED`` so the team
-    can spawn another attempt.
+    When the proposal dies, the whole compliance cycle failed —
+    the customer rejected the offering. We can't assume the
+    scientist's draft or the director's sign-off are still valid,
+    because sales may need to revise the recipe (not just re-price).
+    So we wipe both internal signatures and bounce the sheet all the
+    way back to ``DRAFT``, giving the scientist a clean slate to
+    iterate on.
+
+    Downstream effect on PSP: the ``APPROVED → DRAFT`` transition
+    fires the existing "spec cleared" sync (see
+    :func:`apps.specifications.services._fire_spec_reverted_sync`),
+    which wipes ``npd_spec_approved_at`` on each affected CO. That
+    flips the PSP wizard from ``:awaiting_proposal`` back to
+    ``:r_and_d`` — matching NPD's reality that the project is
+    genuinely back on the R&D bench.
 
     Two specs are deliberately left alone:
 
     * ``ACCEPTED`` — the customer has signed the spec. Signed
       documents are legally binding regardless of the proposal's
       fate; we never tear that down.
-    * ``SENT`` but bound to ANOTHER non-terminal proposal — the
-      sibling deal is still in flight and needs the spec at
-      ``SENT`` to keep its kiosk render valid. Pulling the rug
-      mid-flight would break the parallel proposal.
+    * Any spec bound to ANOTHER non-terminal proposal — the
+      sibling deal is still in flight and needs the spec intact.
+      Ripping the signatures out would break the parallel proposal.
+
+    Note: customer signature fields (``customer_*``) are also
+    preserved — a customer-signed spec is already terminal
+    (``ACCEPTED``) and won't reach this branch anyway, but keeping
+    the defensive check means we never accidentally destroy
+    customer identity captured at kiosk.
 
     Returns the list of reverted sheets so callers can audit the
     cleanup count.
@@ -2513,12 +2562,18 @@ def _revert_attached_specs_after_rejection(
     from apps.specifications.services import SpecificationStatus
 
     reverted: list[SpecificationSheet] = []
+    # Sheets in every non-terminal state get bounced. We only skip
+    # the terminal customer-signed lane (``ACCEPTED``) and sheets
+    # bound to a still-live sibling proposal.
+    resettable_statuses = {
+        SpecificationStatus.DRAFT,
+        SpecificationStatus.IN_REVIEW,
+        SpecificationStatus.APPROVED,
+        SpecificationStatus.SENT,
+        SpecificationStatus.REJECTED,
+    }
     for sheet in _attached_spec_sheets(proposal):
-        if sheet.status != SpecificationStatus.SENT:
-            # Only specs we promoted via send sit at ``SENT``; the
-            # rest (``DRAFT`` / ``APPROVED`` / ``IN_REVIEW`` /
-            # ``ACCEPTED`` / ``REJECTED``) keep whatever state
-            # their own lifecycle put them in.
+        if sheet.status not in resettable_statuses:
             continue
         # Look for ANY other proposal that still references this
         # spec and is not terminal. ``REJECTED`` doesn't count
@@ -2546,11 +2601,45 @@ def _revert_attached_specs_after_rejection(
         if other_live_exists:
             continue
 
-        before = {"status": sheet.status}
-        sheet.status = SpecificationStatus.APPROVED
+        previous_status = sheet.status
+        before = {
+            "status": sheet.status,
+            "director_signed_at": (
+                sheet.director_signed_at.isoformat()
+                if sheet.director_signed_at
+                else None
+            ),
+            "prepared_by_signed_at": (
+                sheet.prepared_by_signed_at.isoformat()
+                if sheet.prepared_by_signed_at
+                else None
+            ),
+        }
+        sheet.status = SpecificationStatus.DRAFT
+        # Clear both internal signatures — director AND scientist —
+        # so the rework starts from a truly clean slate. Without
+        # this, the sheet would look "approved" in every UI even
+        # though its status says DRAFT (stale signatures leak into
+        # the header banners and the audit trail).
+        sheet.prepared_by_signature_image = ""
+        sheet.prepared_by_signed_at = None
+        sheet.prepared_by_user = None
+        sheet.director_signature_image = ""
+        sheet.director_signed_at = None
+        sheet.director_user = None
         sheet.updated_by = actor
         sheet.save(
-            update_fields=["status", "updated_by", "updated_at"]
+            update_fields=[
+                "status",
+                "prepared_by_signature_image",
+                "prepared_by_signed_at",
+                "prepared_by_user",
+                "director_signature_image",
+                "director_signed_at",
+                "director_user",
+                "updated_by",
+                "updated_at",
+            ]
         )
         record_audit(
             organization=sheet.organization,
@@ -2563,6 +2652,35 @@ def _revert_attached_specs_after_rejection(
                 "proposal_id": str(proposal.id),
             },
         )
+
+        # If the sheet was APPROVED (or beyond) at the point of
+        # rejection, tell PSP to clear ``npd_spec_approved_at`` on
+        # the mirrored CO. The specifications-side ``transition_status``
+        # normally fires this on ``APPROVED → not-APPROVED``, but we
+        # bypass that machinery here with a raw save. Mirror the
+        # same on-commit hook so PSP flips back to ``:r_and_d``.
+        if previous_status in {
+            SpecificationStatus.APPROVED,
+            SpecificationStatus.SENT,
+        }:
+            formulation = sheet.formulation_version.formulation
+
+            def _fire_spec_cleared_sync(f=formulation) -> None:
+                from apps.psp.services import sync_customer_order_to_psp
+
+                try:
+                    sync_customer_order_to_psp(
+                        formulation=f, spec_cleared=True
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "proposal-reject: spec-cleared sync bubbled "
+                        "for formulation %s",
+                        f.pk,
+                    )
+
+            transaction.on_commit(_fire_spec_cleared_sync)
+
         reverted.append(sheet)
     return reverted
 
