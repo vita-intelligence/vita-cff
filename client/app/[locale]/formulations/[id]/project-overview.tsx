@@ -18,6 +18,7 @@ import { useTranslations } from "next-intl";
 import { MrpeasyItemLink } from "@/components/mrpeasy/mrpeasy-item-link";
 import {
   useProjectOverview,
+  type FormulationDto,
   type ProjectOverviewDto,
   type ProjectStatus,
 } from "@/services/formulations";
@@ -25,6 +26,7 @@ import {
 import { PackagingCombosCard } from "./packaging-combos-card";
 import { ProjectCustomerCard } from "./project-customer-card";
 import { ProjectWarningsCard } from "./project-warnings-card";
+import { RTGCatalogPanel } from "./rtg-catalog-panel";
 
 
 /**
@@ -41,11 +43,13 @@ export function ProjectOverview({
   orgId,
   formulationId,
   initialData,
+  formulation,
   canEdit,
 }: {
   orgId: string;
   formulationId: string;
   initialData: ProjectOverviewDto;
+  formulation: FormulationDto;
   canEdit: boolean;
 }) {
   const tProject = useTranslations("project_overview");
@@ -76,15 +80,24 @@ export function ProjectOverview({
         <ComplianceCard overview={overview} tProject={tProject} />
         <RiskCard overview={overview} />
       </section>
-      {/* RTG-only: customer-selectable packaging bundles the scientist
-          defines here, the customer picks at order time, and Phase 2
-          will cascade into the customer's personal spec + routing. */}
+      {/* RTG surfaces stack top-to-bottom by workflow order:
+          1. Catalog panel — the "go/no-go" publish gate.
+          2. Packaging combos — bundles the customer picks between at
+             checkout, populated once the recipe is stable.
+          Both are RTG-only and self-hide on Custom projects. */}
       {overview.project_type === "ready_to_go" ? (
-        <PackagingCombosCard
-          orgId={orgId}
-          formulationId={overview.id}
-          canEdit={canEdit}
-        />
+        <>
+          <RTGCatalogPanel
+            orgId={orgId}
+            formulation={formulation}
+            canEdit={canEdit}
+          />
+          <PackagingCombosCard
+            orgId={orgId}
+            formulationId={overview.id}
+            canEdit={canEdit}
+          />
+        </>
       ) : null}
       <ActivityCard overview={overview} tProject={tProject} />
     </article>

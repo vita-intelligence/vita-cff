@@ -6417,6 +6417,37 @@ def publish_to_rtg_catalog(
         exc.code = "not_ready_to_go"  # type: ignore[attr-defined]
         raise exc
 
+    # Workflow gate — a SKU only reaches the customer catalog once
+    # quality has signed off on the FINAL spec sheet. Blocks the
+    # "publish an unfinished product" mistake at the service layer so
+    # a rogue script or an out-of-date FE can't bypass the UI gate.
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+        SpecificationStatus,
+    )
+
+    has_approved_final = (
+        SpecificationSheet.objects
+        .filter(
+            formulation_version__formulation=formulation,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status__in=(
+                SpecificationStatus.APPROVED,
+                SpecificationStatus.SENT,
+                SpecificationStatus.ACCEPTED,
+            ),
+        )
+        .exists()
+    )
+    if not has_approved_final:
+        exc = FormulationRTGError(
+            "This product isn't finished yet — approve a FINAL spec "
+            "sheet before publishing to the customer catalog."
+        )
+        exc.code = "final_spec_not_approved"  # type: ignore[attr-defined]
+        raise exc
+
     merged: dict[str, Any] = {
         "rtg_display_name": formulation.rtg_display_name,
         "rtg_short_description": formulation.rtg_short_description,
