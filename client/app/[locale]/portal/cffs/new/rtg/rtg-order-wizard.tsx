@@ -62,6 +62,14 @@ export interface PortalRTGCatalogItem {
   //: Puck's ``<Render>`` and skip the legacy HTML fallback.
   readonly page_content: unknown | null;
   readonly hero_image_url: string | null;
+  //: Full storefront gallery (primary first). Empty when staff
+  //: haven't added any photos; wizard falls back to just the hero.
+  readonly gallery?: ReadonlyArray<{
+    readonly id: string;
+    readonly url: string;
+    readonly caption: string;
+    readonly is_primary: boolean;
+  }>;
   readonly base_price: string;
   readonly currency_code: string;
   readonly moq: number;

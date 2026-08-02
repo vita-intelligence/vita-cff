@@ -13,7 +13,7 @@ import logging
 import mimetypes
 from typing import Any
 
-from django.db import transaction
+from django.db import models, transaction
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -62,6 +62,7 @@ def _photo_payload(photo: FormulationPhoto) -> dict[str, Any]:
         "id": str(photo.id),
         "url": photo.image.url if photo.image else None,
         "caption": photo.caption,
+        "purpose": photo.purpose,
         "is_primary": photo.is_primary,
         "sort_order": photo.sort_order,
         "original_filename": photo.original_filename,
@@ -70,6 +71,22 @@ def _photo_payload(photo: FormulationPhoto) -> dict[str, Any]:
         "psp_uuid": str(photo.psp_uuid) if photo.psp_uuid else None,
         "uploaded_at": photo.uploaded_at.isoformat(),
     }
+
+
+_ALLOWED_PURPOSES = frozenset(
+    (FormulationPhoto.Purpose.INTERNAL, FormulationPhoto.Purpose.CATALOG)
+)
+
+
+def _resolve_purpose(raw: Any) -> str:
+    """Coerce a client-supplied purpose to a valid choice, defaulting
+    to ``internal`` so legacy callers that never sent the field keep
+    behaving as they did before."""
+
+    value = (str(raw) if raw is not None else "").strip().lower()
+    if value in _ALLOWED_PURPOSES:
+        return value
+    return FormulationPhoto.Purpose.INTERNAL
 
 
 def _file_payload(file_row: FormulationFile) -> dict[str, Any]:
@@ -214,6 +231,9 @@ class FormulationPhotosView(APIView):
     def get(self, request: Request, org_id: str, formulation_id: str) -> Response:
         formulation = self._get_formulation(formulation_id)
         rows = formulation.photos.all()
+        purpose_filter = request.query_params.get("purpose")
+        if purpose_filter:
+            rows = rows.filter(purpose=_resolve_purpose(purpose_filter))
         return Response({"items": [_photo_payload(p) for p in rows]})
 
     def post(self, request: Request, org_id: str, formulation_id: str) -> Response:
@@ -239,23 +259,36 @@ class FormulationPhotosView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         caption = str(request.data.get("caption", "")).strip()[:200]
+        purpose = _resolve_purpose(request.data.get("purpose"))
         make_primary = str(request.data.get("is_primary", "")).lower() in {
             "true",
             "1",
             "yes",
         }
+        scope = formulation.photos.filter(purpose=purpose)
         with transaction.atomic():
             if make_primary:
-                formulation.photos.filter(is_primary=True).update(is_primary=False)
-            elif not formulation.photos.exists():
-                # First photo auto-promotes to primary so the catalog
-                # card has something to render.
+                scope.filter(is_primary=True).update(is_primary=False)
+            elif not scope.exists():
+                # First photo in this purpose scope auto-promotes so
+                # the catalog card (or Setup hero) has something to
+                # render without a manual "make primary" click.
                 make_primary = True
+            # New photos land at the end of the sort order for their
+            # purpose. Reorder endpoint (below) rewrites the whole
+            # sequence when the user drags things around.
+            next_sort = (
+                (scope.aggregate(m=models.Max("sort_order")).get("m") or 0) + 1
+                if scope.exists()
+                else 0
+            )
             photo = FormulationPhoto.objects.create(
                 formulation=formulation,
                 image=upload,
                 caption=caption,
+                purpose=purpose,
                 is_primary=make_primary,
+                sort_order=next_sort,
                 original_filename=upload.name or "",
                 content_type=mime,
                 byte_size=upload.size or 0,
@@ -291,20 +324,80 @@ class FormulationPhotoDetailView(APIView):
         self, request: Request, org_id: str, formulation_id: str, photo_id: str
     ) -> Response:
         photo = self._get_photo(formulation_id, photo_id)
+        replacement = request.FILES.get("file")
         changed_fields: list[str] = []
         if "caption" in request.data:
             photo.caption = str(request.data.get("caption") or "").strip()[:200]
             changed_fields.append("caption")
+        if "sort_order" in request.data:
+            try:
+                photo.sort_order = max(0, int(request.data["sort_order"]))
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "invalid_sort_order"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            changed_fields.append("sort_order")
+        if replacement is not None:
+            mime = replacement.content_type or mimetypes.guess_type(
+                replacement.name or ""
+            )[0]
+            if not mime or mime not in _ALLOWED_IMAGE_MIMES:
+                return Response(
+                    {
+                        "error": "invalid_mime_type",
+                        "detail": f"Unsupported image type ({mime or 'unknown'}).",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if replacement.size > _MAX_IMAGE_BYTES:
+                return Response(
+                    {
+                        "error": "file_too_large",
+                        "detail": f"Max {_MAX_IMAGE_BYTES // 1024 // 1024} MB.",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            # Drop the old file first so the storage layer doesn't
+            # keep an orphan. ``save=False`` lets the coming save
+            # persist the new image + metadata in one write.
+            photo.image.delete(save=False)
+            photo.image = replacement
+            photo.original_filename = replacement.name or ""
+            photo.content_type = mime
+            photo.byte_size = replacement.size or 0
+            # Clear ``psp_uuid`` so the next push cascade re-uploads
+            # the replacement bytes instead of keeping the stale
+            # remote asset.
+            photo.psp_uuid = None
+            changed_fields.extend(
+                [
+                    "image",
+                    "original_filename",
+                    "content_type",
+                    "byte_size",
+                    "psp_uuid",
+                ]
+            )
         if str(request.data.get("is_primary", "")).lower() in {"true", "1", "yes"}:
             with transaction.atomic():
-                photo.formulation.photos.filter(is_primary=True).exclude(
-                    id=photo.id
-                ).update(is_primary=False)
+                # ``is_primary`` is scoped per purpose so making a
+                # catalog photo primary doesn't unset the Setup
+                # primary (or vice versa).
+                photo.formulation.photos.filter(
+                    purpose=photo.purpose, is_primary=True
+                ).exclude(id=photo.id).update(is_primary=False)
                 photo.is_primary = True
                 photo.save(update_fields=["is_primary", *changed_fields])
+                if replacement is not None:
+                    _push_photo_to_psp(photo.formulation, photo)
+                photo.refresh_from_db()
                 return Response({"photo": _photo_payload(photo)})
         if changed_fields:
             photo.save(update_fields=changed_fields)
+        if replacement is not None:
+            _push_photo_to_psp(photo.formulation, photo)
+            photo.refresh_from_db()
         return Response({"photo": _photo_payload(photo)})
 
     def delete(
@@ -318,6 +411,53 @@ class FormulationPhotoDetailView(APIView):
         if psp_uuid:
             _delete_photo_on_psp(formulation, psp_uuid)
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FormulationPhotoReorderView(APIView):
+    """``POST`` bulk reorder for a purpose scope.
+
+    Body: ``{"purpose": "catalog", "order": ["<uuid1>", "<uuid2>", …]}``.
+    Rewrites ``sort_order`` for every listed photo to match the sequence.
+    Any photo in the same purpose scope not present in ``order`` keeps
+    its current sort_order (should not happen from the UI, but avoids
+    accidental data loss)."""
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(self, request: Request, org_id: str, formulation_id: str) -> Response:
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+        purpose = _resolve_purpose(request.data.get("purpose"))
+        order_raw = request.data.get("order") or []
+        if not isinstance(order_raw, list):
+            return Response(
+                {"error": "invalid_order", "detail": "`order` must be a list of UUIDs."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        order_ids = [str(x) for x in order_raw if x]
+        scope = formulation.photos.filter(purpose=purpose)
+        known = {str(p.id): p for p in scope}
+        with transaction.atomic():
+            for index, photo_id in enumerate(order_ids):
+                photo = known.get(photo_id)
+                if photo is None:
+                    continue
+                if photo.sort_order != index:
+                    photo.sort_order = index
+                    photo.save(update_fields=["sort_order"])
+        return Response(
+            {
+                "items": [
+                    _photo_payload(p)
+                    for p in formulation.photos.filter(purpose=purpose)
+                ]
+            }
+        )
 
 
 # ---- Files -----------------------------------------------------------

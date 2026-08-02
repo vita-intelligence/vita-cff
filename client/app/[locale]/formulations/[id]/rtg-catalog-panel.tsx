@@ -21,6 +21,7 @@ import { Link } from "@/i18n/navigation";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
 import type { FormulationDto } from "@/services/formulations/types";
+import { CatalogPhotoGallery } from "./catalog-photo-gallery";
 
 
 // Curated shortlist covering the currencies the RTG catalog is
@@ -75,10 +76,11 @@ function RTGCatalogPanelInner({
       ? String(formulation.rtg_moq)
       : "",
   );
-  const [heroFile, setHeroFile] = useState<File | null>(null);
-  const [heroPreview] = useState<string | null>(
-    formulation.rtg_hero_image ?? null,
-  );
+  // Legacy single-hero uploader has been replaced by the full
+  // ``CatalogPhotoGallery`` (see below). We keep the underlying
+  // ``rtg_hero_image`` value around only for backwards-compat display
+  // on rows that pre-date the gallery — new uploads no longer touch
+  // this field.
   // Read-only reflection of the current publish state. The toggle
   // lives on the project header now — this pill is purely
   // informational, so we don't need a local setter.
@@ -103,9 +105,6 @@ function RTGCatalogPanelInner({
       form.append("rtg_base_price", basePrice);
       form.append("rtg_moq", moq);
       form.append("rtg_currency_code", currency);
-      if (heroFile) {
-        form.append("rtg_hero_image", heroFile);
-      }
       // Do NOT hand-set ``Content-Type: multipart/form-data`` —
       // axios will populate it including the ``boundary=…`` token
       // when it sees a ``FormData`` body.
@@ -140,7 +139,6 @@ function RTGCatalogPanelInner({
     description,
     displayName,
     formulation.id,
-    heroFile,
     moq,
     orgId,
   ]);
@@ -302,24 +300,14 @@ function RTGCatalogPanelInner({
           ) : null}
         </div>
 
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
-            Hero image
-          </label>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => setHeroFile(e.currentTarget.files?.[0] ?? null)}
-            disabled={disabled}
-            className="w-full rounded-lg border border-dashed border-ink-300 bg-white px-3 py-2 text-sm"
-          />
-          {heroPreview ? (
-            <p className="mt-1 text-xs text-ink-500">
-              Existing image kept unless a new file is picked.
-            </p>
-          ) : null}
-        </div>
+      </div>
 
+      <div className="mt-4">
+        <CatalogPhotoGallery
+          orgId={orgId}
+          formulationId={formulation.id}
+          canEdit={canEdit}
+        />
       </div>
 
       <p className="mt-4 rounded-lg border border-dashed border-ink-300 bg-ink-50 px-3 py-2 text-xs text-ink-700">

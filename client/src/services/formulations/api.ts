@@ -665,10 +665,13 @@ export async function applyStageTemplate(
 
 // ---- Photos + files ------------------------------------------------
 
+export type FormulationPhotoPurpose = "internal" | "catalog";
+
 export interface FormulationPhotoDto {
   readonly id: string;
   readonly url: string | null;
   readonly caption: string;
+  readonly purpose: FormulationPhotoPurpose;
   readonly is_primary: boolean;
   readonly sort_order: number;
   readonly original_filename: string;
@@ -700,9 +703,11 @@ export interface FormulationFilesListDto {
 export async function fetchFormulationPhotos(
   orgId: string,
   formulationId: string,
+  purpose?: FormulationPhotoPurpose,
 ): Promise<FormulationPhotosListDto> {
   const { data } = await apiClient.get<FormulationPhotosListDto>(
     formulationsEndpoints.photos(orgId, formulationId),
+    purpose ? { params: { purpose } } : undefined,
   );
   return data;
 }
@@ -710,12 +715,18 @@ export async function fetchFormulationPhotos(
 export async function uploadFormulationPhoto(
   orgId: string,
   formulationId: string,
-  args: { file: File; caption?: string; is_primary?: boolean },
+  args: {
+    file: File;
+    caption?: string;
+    is_primary?: boolean;
+    purpose?: FormulationPhotoPurpose;
+  },
 ): Promise<{ photo: FormulationPhotoDto }> {
   const form = new FormData();
   form.append("file", args.file);
   if (args.caption) form.append("caption", args.caption);
   if (args.is_primary) form.append("is_primary", "true");
+  if (args.purpose) form.append("purpose", args.purpose);
   // Do NOT set Content-Type — axios populates boundary automatically.
   const { data } = await apiClient.post<{ photo: FormulationPhotoDto }>(
     formulationsEndpoints.photos(orgId, formulationId),
@@ -728,11 +739,30 @@ export async function updateFormulationPhoto(
   orgId: string,
   formulationId: string,
   photoId: string,
-  patch: { caption?: string; is_primary?: boolean },
+  patch: {
+    caption?: string;
+    is_primary?: boolean;
+    sort_order?: number;
+  },
 ): Promise<{ photo: FormulationPhotoDto }> {
   const { data } = await apiClient.patch<{ photo: FormulationPhotoDto }>(
     formulationsEndpoints.photoDetail(orgId, formulationId, photoId),
     patch,
+  );
+  return data;
+}
+
+export async function replaceFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+  photoId: string,
+  file: File,
+): Promise<{ photo: FormulationPhotoDto }> {
+  const form = new FormData();
+  form.append("file", file);
+  const { data } = await apiClient.patch<{ photo: FormulationPhotoDto }>(
+    formulationsEndpoints.photoDetail(orgId, formulationId, photoId),
+    form,
   );
   return data;
 }
@@ -745,6 +775,18 @@ export async function deleteFormulationPhoto(
   await apiClient.delete(
     formulationsEndpoints.photoDetail(orgId, formulationId, photoId),
   );
+}
+
+export async function reorderFormulationPhotos(
+  orgId: string,
+  formulationId: string,
+  args: { purpose: FormulationPhotoPurpose; order: readonly string[] },
+): Promise<FormulationPhotosListDto> {
+  const { data } = await apiClient.post<FormulationPhotosListDto>(
+    formulationsEndpoints.photosReorder(orgId, formulationId),
+    { purpose: args.purpose, order: args.order },
+  );
+  return data;
 }
 
 export async function fetchFormulationFiles(
