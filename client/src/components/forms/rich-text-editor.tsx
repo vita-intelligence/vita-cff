@@ -3,16 +3,25 @@
 /**
  * Rich-text editor used for RTG catalog page bodies.
  *
- * TipTap under the hood — battle-tested React editor with a JSON /
+ * TipTap v3 under the hood — battle-tested React editor with a JSON /
  * HTML output. We store the HTML on the server (sanitized via
  * ``bleach`` on save) so consumers only need a plain HTML renderer
  * to display the content identically to what the author saw.
  *
- * The toolbar is deliberately minimal — bold / italic / underline /
- * strike, three heading levels, ordered + unordered lists, blockquote,
- * link, image, undo / redo. Anything the toolbar exposes here has a
- * matching entry in the server sanitizer's tag whitelist so a valid
- * click can't emit HTML the server will strip.
+ * Feature surface:
+ * - Marks: bold, italic, underline, strike, superscript, subscript,
+ *   text color, highlight
+ * - Blocks: paragraphs, H1-H3, bullet / ordered / task lists,
+ *   blockquote, horizontal rule
+ * - Alignment: left / center / right / justify
+ * - Media: link, image (URL), YouTube embed
+ * - Tables: insert, add/remove row + column, header row,
+ *   drag-to-resize columns
+ * - Character count in the footer
+ *
+ * Every tag the toolbar can produce is on the server's bleach
+ * whitelist. Adding a new extension here means adding its emitted
+ * tags to ``_RTG_LONG_DESCRIPTION_TAGS`` server-side too.
  */
 
 import { useCallback, useEffect } from "react";
@@ -20,21 +29,47 @@ import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
+import { TextStyle } from "@tiptap/extension-text-style";
+import Color from "@tiptap/extension-color";
+import Highlight from "@tiptap/extension-highlight";
+import Superscript from "@tiptap/extension-superscript";
+import Subscript from "@tiptap/extension-subscript";
+import TaskList from "@tiptap/extension-task-list";
+import TaskItem from "@tiptap/extension-task-item";
+import TextAlign from "@tiptap/extension-text-align";
+import Youtube from "@tiptap/extension-youtube";
+import CharacterCount from "@tiptap/extension-character-count";
+import { TableKit } from "@tiptap/extension-table";
 import {
+  AlignCenter,
+  AlignJustify,
+  AlignLeft,
+  AlignRight,
   Bold,
+  CheckSquare,
+  Columns3,
   Heading1,
   Heading2,
   Heading3,
+  Highlighter,
   Image as ImageIcon,
   Italic,
   Link as LinkIcon,
   List,
   ListOrdered,
+  Minus,
+  Palette,
   Quote,
   Redo2,
+  Rows3,
   Strikethrough,
+  Subscript as SubIcon,
+  Superscript as SupIcon,
+  Table as TableIcon,
+  Trash2,
   Underline as UnderlineIcon,
   Undo2,
+  Film as YoutubeIcon,
 } from "lucide-react";
 
 
@@ -43,9 +78,12 @@ interface Props {
   readonly onChange: (html: string) => void;
   readonly placeholder?: string;
   readonly disabled?: boolean;
-  //: Height of the editable region. Toolbar renders on top and is
-  //: not counted; content area scrolls internally when overflowed.
+  //: Height of the editable region. Toolbar + footer render around
+  //: it; content area scrolls internally when overflowed.
   readonly minHeight?: string;
+  //: Soft cap surfaced in the footer counter. Content past this is
+  //: still accepted — the number turns red to nudge the author.
+  readonly softCharLimit?: number;
 }
 
 
@@ -54,7 +92,8 @@ export function RichTextEditor({
   onChange,
   placeholder = "Start writing…",
   disabled = false,
-  minHeight = "16rem",
+  minHeight = "18rem",
+  softCharLimit = 8000,
 }: Props) {
   const editor = useEditor({
     // SSR hydration — Next.js renders the initial HTML on the server;
@@ -63,13 +102,12 @@ export function RichTextEditor({
     immediatelyRender: false,
     editable: !disabled,
     extensions: [
-      // TipTap v3 StarterKit bundles bold / italic / strike /
-      // underline / link / lists / headings / blockquote / code /
-      // hard-break / horizontal-rule / dropcursor / undo-redo out of
-      // the box. Registering any of those separately would create
-      // a duplicate extension and silently break command execution
-      // (clicks land but the doc never mutates), so we only add
-      // extensions StarterKit does NOT include — image + placeholder.
+      // StarterKit already ships bold / italic / strike / underline /
+      // link / lists / heading / blockquote / code / hard-break /
+      // horizontal-rule / dropcursor / gapcursor / undo-redo /
+      // paragraph / text. Registering any of those separately would
+      // create a duplicate ProseMirror plugin and silently no-op
+      // command execution.
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         link: {
@@ -80,22 +118,46 @@ export function RichTextEditor({
           },
         },
       }),
-      Image.configure({
-        HTMLAttributes: {
-          class: "max-w-full rounded-md",
-        },
+      // TextStyle is a prerequisite for Color — Color adds a
+      // ``color`` attribute onto TextStyle marks. Highlight is
+      // independent; ``multicolor`` lets us pass a hex through the
+      // toolbar picker.
+      TextStyle,
+      Color,
+      Highlight.configure({ multicolor: true }),
+      Superscript,
+      Subscript,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      TextAlign.configure({
+        types: ["heading", "paragraph"],
+        alignments: ["left", "center", "right", "justify"],
       }),
+      Image.configure({
+        HTMLAttributes: { class: "max-w-full rounded-md" },
+      }),
+      Youtube.configure({
+        // Keep the responsive container so the embed adapts to the
+        // catalog card width. ``controls`` on so shoppers can seek /
+        // mute; ``nocookie`` for a lighter GDPR footprint.
+        controls: true,
+        nocookie: true,
+        HTMLAttributes: { class: "aspect-video w-full rounded-md" },
+      }),
+      TableKit.configure({
+        table: { resizable: true },
+      }),
+      CharacterCount,
       Placeholder.configure({ placeholder }),
     ],
     content: value,
     editorProps: {
       attributes: {
-        // ``rich-content`` matches the scoped styles declared in
-        // ``app/globals.css``. We deliberately don't use ``prose``
-        // (Tailwind Typography) because the plugin isn't installed
-        // — without it, Preflight strips bold / italic / list
-        // defaults and the editor looks broken even though TipTap
-        // is emitting correct markup.
+        // ``rich-content`` matches the scoped styles in globals.css.
+        // We deliberately don't use ``prose`` (Tailwind Typography)
+        // because the plugin isn't installed — without it Preflight
+        // strips bold / italic / list defaults and the editor looks
+        // broken even though TipTap emits correct markup.
         class: "rich-content ProseMirror",
       },
     },
@@ -114,8 +176,6 @@ export function RichTextEditor({
     if (value !== current) {
       editor.commands.setContent(value || "", { emitUpdate: false });
     }
-    // Not depending on ``editor`` because that would fire on every
-    // keystroke — we only need to react to external ``value`` swaps.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
@@ -144,6 +204,7 @@ export function RichTextEditor({
       >
         <EditorContent editor={editor} />
       </div>
+      <Footer editor={editor} softLimit={softCharLimit} />
     </div>
   );
 }
@@ -172,11 +233,60 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
     editor.chain().focus().setImage({ src: url }).run();
   }, [editor]);
 
+  const promptYoutube = useCallback(() => {
+    const url = window.prompt(
+      "YouTube URL (paste the full watch link)",
+      "https://www.youtube.com/watch?v=",
+    );
+    if (!url) return;
+    editor.commands.setYoutubeVideo({ src: url });
+  }, [editor]);
+
+  const promptColor = useCallback(() => {
+    const current = editor.getAttributes("textStyle").color as
+      | string
+      | undefined;
+    const value = window.prompt("Text color (#hex)", current || "#c2410c");
+    if (value === null) return;
+    if (value === "") {
+      editor.chain().focus().unsetColor().run();
+      return;
+    }
+    editor.chain().focus().setColor(value).run();
+  }, [editor]);
+
+  const promptHighlight = useCallback(() => {
+    const current = editor.getAttributes("highlight").color as
+      | string
+      | undefined;
+    const value = window.prompt(
+      "Highlight color (#hex)",
+      current || "#fef08a",
+    );
+    if (value === null) return;
+    if (value === "") {
+      editor.chain().focus().unsetHighlight().run();
+      return;
+    }
+    editor.chain().focus().toggleHighlight({ color: value }).run();
+  }, [editor]);
+
+  const insertTable = useCallback(() => {
+    editor
+      .chain()
+      .focus()
+      .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
+      .run();
+  }, [editor]);
+
+  const inTable = editor.isActive("table");
+
   return (
     <div
       role="toolbar"
       className="flex flex-wrap items-center gap-0.5 border-b border-ink-200 bg-ink-50 px-2 py-1.5"
     >
+      {/* Text marks */}
       <ToolbarButton
         title="Bold"
         active={editor.isActive("bold")}
@@ -209,7 +319,42 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
       >
         <Strikethrough className="h-3.5 w-3.5" />
       </ToolbarButton>
+      <ToolbarButton
+        title="Superscript (H₂O, mg²)"
+        active={editor.isActive("superscript")}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().toggleSuperscript().run()}
+      >
+        <SupIcon className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Subscript"
+        active={editor.isActive("subscript")}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().toggleSubscript().run()}
+      >
+        <SubIcon className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Text color"
+        active={!!editor.getAttributes("textStyle").color}
+        disabled={disabled}
+        onClick={promptColor}
+      >
+        <Palette className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Highlight"
+        active={editor.isActive("highlight")}
+        disabled={disabled}
+        onClick={promptHighlight}
+      >
+        <Highlighter className="h-3.5 w-3.5" />
+      </ToolbarButton>
+
       <Divider />
+
+      {/* Block structure */}
       <ToolbarButton
         title="Heading 1"
         active={editor.isActive("heading", { level: 1 })}
@@ -240,7 +385,10 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
       >
         <Heading3 className="h-3.5 w-3.5" />
       </ToolbarButton>
+
       <Divider />
+
+      {/* Lists + quote + rule */}
       <ToolbarButton
         title="Bulleted list"
         active={editor.isActive("bulletList")}
@@ -258,6 +406,14 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
         <ListOrdered className="h-3.5 w-3.5" />
       </ToolbarButton>
       <ToolbarButton
+        title="Task list (checkboxes)"
+        active={editor.isActive("taskList")}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().toggleTaskList().run()}
+      >
+        <CheckSquare className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
         title="Quote"
         active={editor.isActive("blockquote")}
         disabled={disabled}
@@ -265,7 +421,54 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
       >
         <Quote className="h-3.5 w-3.5" />
       </ToolbarButton>
+      <ToolbarButton
+        title="Horizontal rule"
+        active={false}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().setHorizontalRule().run()}
+      >
+        <Minus className="h-3.5 w-3.5" />
+      </ToolbarButton>
+
       <Divider />
+
+      {/* Alignment */}
+      <ToolbarButton
+        title="Align left"
+        active={editor.isActive({ textAlign: "left" })}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().setTextAlign("left").run()}
+      >
+        <AlignLeft className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Align center"
+        active={editor.isActive({ textAlign: "center" })}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().setTextAlign("center").run()}
+      >
+        <AlignCenter className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Align right"
+        active={editor.isActive({ textAlign: "right" })}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().setTextAlign("right").run()}
+      >
+        <AlignRight className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Justify"
+        active={editor.isActive({ textAlign: "justify" })}
+        disabled={disabled}
+        onClick={() => editor.chain().focus().setTextAlign("justify").run()}
+      >
+        <AlignJustify className="h-3.5 w-3.5" />
+      </ToolbarButton>
+
+      <Divider />
+
+      {/* Media + tables */}
       <ToolbarButton
         title="Link"
         active={editor.isActive("link")}
@@ -282,6 +485,56 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
       >
         <ImageIcon className="h-3.5 w-3.5" />
       </ToolbarButton>
+      <ToolbarButton
+        title="YouTube video"
+        active={false}
+        disabled={disabled}
+        onClick={promptYoutube}
+      >
+        <YoutubeIcon className="h-3.5 w-3.5" />
+      </ToolbarButton>
+      <ToolbarButton
+        title="Insert table (3 × 3 with header row)"
+        active={inTable}
+        disabled={disabled}
+        onClick={insertTable}
+      >
+        <TableIcon className="h-3.5 w-3.5" />
+      </ToolbarButton>
+
+      {/* Contextual table controls — only surface when the caret sits
+          inside a table so the toolbar isn't cluttered otherwise. */}
+      {inTable ? (
+        <>
+          <ToolbarButton
+            title="Add column"
+            active={false}
+            disabled={disabled}
+            onClick={() => editor.chain().focus().addColumnAfter().run()}
+          >
+            <Columns3 className="h-3.5 w-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Add row"
+            active={false}
+            disabled={disabled}
+            onClick={() => editor.chain().focus().addRowAfter().run()}
+          >
+            <Rows3 className="h-3.5 w-3.5" />
+          </ToolbarButton>
+          <ToolbarButton
+            title="Delete table"
+            active={false}
+            disabled={disabled}
+            onClick={() => editor.chain().focus().deleteTable().run()}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </ToolbarButton>
+        </>
+      ) : null}
+
+      {/* Undo / redo pinned to the right so authors can always find
+          them regardless of how wide the toolbar has grown. */}
       <div className="ml-auto flex items-center gap-0.5">
         <ToolbarButton
           title="Undo"
@@ -300,6 +553,32 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
           <Redo2 className="h-3.5 w-3.5" />
         </ToolbarButton>
       </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Footer
+// ---------------------------------------------------------------------------
+
+
+function Footer({
+  editor,
+  softLimit,
+}: {
+  editor: Editor;
+  softLimit: number;
+}) {
+  const chars = editor.storage.characterCount?.characters?.() ?? 0;
+  const words = editor.storage.characterCount?.words?.() ?? 0;
+  const over = chars > softLimit;
+  return (
+    <div className="flex items-center justify-between gap-3 border-t border-ink-200 bg-ink-50/60 px-3 py-1.5 text-[11px] text-ink-500">
+      <span>{words} words</span>
+      <span className={over ? "font-semibold text-rose-600" : ""}>
+        {chars} / {softLimit} characters
+      </span>
     </div>
   );
 }

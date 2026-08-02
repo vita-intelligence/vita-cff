@@ -331,3 +331,125 @@ body {
   height: 0;
   pointer-events: none;
 }
+
+/* Tables — TipTap's Table extension wraps in a scrollable container
+ * so wide tables don't force the page layout. Header row gets a
+ * subtle fill so it visually anchors as the heading. */
+.rich-content .tableWrapper {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+}
+.rich-content table {
+  border-collapse: collapse;
+  margin: 0;
+  overflow: hidden;
+  table-layout: fixed;
+  width: 100%;
+}
+.rich-content table td,
+.rich-content table th {
+  border: 1px solid #cccccc;
+  min-width: 3rem;
+  padding: 0.4rem 0.6rem;
+  position: relative;
+  vertical-align: top;
+}
+.rich-content table th {
+  background: #f4f4f4;
+  font-weight: 600;
+  text-align: left;
+}
+.rich-content table .selectedCell::after {
+  background: rgba(194, 65, 12, 0.15);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 2;
+}
+.rich-content table .column-resize-handle {
+  background: #c2410c;
+  bottom: -2px;
+  pointer-events: none;
+  position: absolute;
+  right: -2px;
+  top: 0;
+  width: 4px;
+}
+.rich-content .resize-cursor {
+  cursor: col-resize;
+}
+
+/* Task lists — swap the default marker for a real checkbox. */
+.rich-content ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.rich-content ul[data-type="taskList"] li {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+.rich-content ul[data-type="taskList"] li > label {
+  flex-shrink: 0;
+  margin-top: 0.3rem;
+  user-select: none;
+}
+.rich-content ul[data-type="taskList"] li > div {
+  flex: 1;
+  min-width: 0;
+}
+.rich-content ul[data-type="taskList"] li > div > p {
+  margin: 0;
+}
+.rich-content ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: #999999;
+  text-decoration: line-through;
+}
+
+/* Highlight — wraps text in <mark>. */
+.rich-content mark {
+  background: #fef08a;
+  border-radius: 0.15rem;
+  padding: 0 0.15rem;
+}
+
+/* Text alignment — TipTap sets ``style="text-align: X"`` on the
+ * block via the TextAlign extension, so no extra CSS is needed here.
+ * Kept as a placeholder in case we want alignment-aware utility
+ * classes later.
+ */
+
+/* YouTube embed — TipTap emits ``<div data-youtube-video><iframe … />``
+ * with responsive sizing via ``aspect-video``. Extra tweak to keep
+ * the iframe from being tinted by parent link colors on hover.
+ */
+.rich-content div[data-youtube-video] {
+  margin: 0.75rem 0;
+}
+.rich-content div[data-youtube-video] iframe {
+  aspect-ratio: 16 / 9;
+  border: none;
+  border-radius: 0.5rem;
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+/* Superscript / subscript — Preflight strips vertical-align, so
+ * spell it out to keep the offsets legible. */
+.rich-content sup {
+  font-size: 0.75em;
+  line-height: 0;
+  position: relative;
+  top: -0.5em;
+  vertical-align: baseline;
+}
+.rich-content sub {
+  font-size: 0.75em;
+  line-height: 0;
+  position: relative;
+  bottom: -0.25em;
+  vertical-align: baseline;
+}
