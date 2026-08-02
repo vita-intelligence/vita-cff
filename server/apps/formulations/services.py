@@ -6325,52 +6325,130 @@ _RTG_PUBLISH_REQUIRED_FIELDS: tuple[tuple[str, str], ...] = (
 
 
 #: Bleach whitelist for the RTG long-description rich-text field.
-#: Kept intentionally tight — every tag here matches something the
-#: TipTap editor is configured to emit, so the sanitizer only strips
-#: content that a compromised session (or a hand-crafted API call)
-#: injected outside the editor.
+#: Every tag here matches something the TipTap editor is configured
+#: to emit, so the sanitizer only strips content that a compromised
+#: session (or a hand-crafted API call) injected outside the editor.
+#: Adding a new TipTap extension means adding its output tags here.
 _RTG_LONG_DESCRIPTION_TAGS: tuple[str, ...] = (
-    "p",
-    "br",
-    "h1",
-    "h2",
-    "h3",
-    "h4",
-    "strong",
-    "em",
-    "u",
-    "s",
-    "ul",
-    "ol",
-    "li",
-    "blockquote",
-    "a",
-    "img",
-    "code",
-    "pre",
-    "hr",
+    # Text primitives
+    "p", "br", "span",
+    # Headings
+    "h1", "h2", "h3", "h4",
+    # Marks
+    "strong", "em", "u", "s", "sup", "sub", "mark", "code",
+    # Blocks
+    "ul", "ol", "li", "blockquote", "pre", "hr",
+    # Media
+    "a", "img", "iframe",
+    # Tables
+    "table", "thead", "tbody", "tfoot", "tr", "th", "td", "colgroup",
+    "col",
+    # Task-list — TipTap emits <label> + <input> per item so the
+    # rendered checkbox stays interactive in read-only contexts too.
+    "label", "input", "div",
 )
+#: A minimal ``style`` attribute is allowed on paragraphs / headings /
+#: table cells for the TextAlign extension (``text-align: X``) and on
+#: <span> for the Color extension (``color: #hex``). Bleach's
+#: ``css_sanitizer`` filters the declarations against a property
+#: allowlist so a smuggled ``background-image: url(javascript:…)``
+#: gets dropped even though ``style`` is on.
 _RTG_LONG_DESCRIPTION_ATTRS: dict[str, list[str]] = {
+    "*": ["style", "class"],
     "a": ["href", "title", "rel", "target"],
     "img": ["src", "alt", "title", "width", "height"],
+    # YouTube embeds — the extension emits an iframe with ``src``
+    # pointing at youtube-nocookie.com. We restrict src to a matcher
+    # below (see ``_ALLOWED_IFRAME_HOSTS``) so a hand-crafted iframe
+    # can't point at an attacker origin.
+    "iframe": [
+        "src", "width", "height", "frameborder", "allow",
+        "allowfullscreen", "referrerpolicy", "title",
+    ],
+    # Task list — data attrs carry the checked state.
+    "ul": ["data-type"],
+    "li": ["data-type", "data-checked"],
+    "input": ["type", "checked", "disabled"],
+    "div": ["data-youtube-video", "data-type"],
+    # Tables — colspan / rowspan / colwidth surface the drag-resize
+    # widths TipTap writes onto <th> / <td>.
+    "th": ["colspan", "rowspan", "colwidth", "scope", "style"],
+    "td": ["colspan", "rowspan", "colwidth", "style"],
+    # TextAlign writes ``style="text-align: X"`` on headings +
+    # paragraphs; already covered by the ``*`` wildcard above but
+    # spelling out keeps the intent visible.
+    "p": ["style"],
+    "h1": ["style"], "h2": ["style"], "h3": ["style"], "h4": ["style"],
+    # Color writes ``style="color: #hex"`` onto <span>.
+    "span": ["style"],
 }
+
+#: iframe ``src`` is only accepted when the host matches one of these
+#: — YouTube for the video embed, plus its nocookie mirror.
+_ALLOWED_IFRAME_HOSTS: frozenset[str] = frozenset({
+    "www.youtube.com",
+    "youtube.com",
+    "www.youtube-nocookie.com",
+    "youtube-nocookie.com",
+})
+
+#: CSS property whitelist for the ``style`` attribute filter.
+_ALLOWED_STYLE_PROPS: tuple[str, ...] = (
+    "color", "background-color", "text-align",
+)
+
+
+def _allow_iframe_src(tag: str, name: str, value: str) -> bool:
+    """Attribute filter for iframe src — only accept https URLs on
+    the allowed host list."""
+
+    if tag != "iframe" or name != "src":
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(value)
+    except Exception:
+        return False
+    if parsed.scheme != "https":
+        return False
+    return parsed.netloc.lower() in _ALLOWED_IFRAME_HOSTS
 
 
 def _sanitize_rtg_long_description(html: str) -> str:
     """Sanitize the rich-text long description before it lands in the
     DB. Uses :mod:`bleach` with a fixed tag + attribute whitelist so a
     compromised staff session can't smuggle ``<script>`` past the
-    editor's UI restrictions."""
+    editor's UI restrictions.
+
+    ``style`` attributes are gated through :mod:`bleach.css_sanitizer`
+    with a property allowlist so a valid TextAlign / Color emission
+    survives while a smuggled ``background-image: url(javascript:…)``
+    does not.
+    """
 
     import bleach
+    from bleach.css_sanitizer import CSSSanitizer
 
     if not html:
         return ""
+
+    def _attribute_filter(tag: str, name: str, value: str) -> bool:
+        # Special-case iframe src so we only allow YouTube embeds.
+        if tag == "iframe" and name == "src":
+            return _allow_iframe_src(tag, name, value)
+        allowed = _RTG_LONG_DESCRIPTION_ATTRS.get(tag, [])
+        if name in allowed:
+            return True
+        return name in _RTG_LONG_DESCRIPTION_ATTRS.get("*", [])
+
     return bleach.clean(
         html,
         tags=_RTG_LONG_DESCRIPTION_TAGS,
-        attributes=_RTG_LONG_DESCRIPTION_ATTRS,
+        attributes=_attribute_filter,
         protocols=("http", "https", "mailto"),
+        css_sanitizer=CSSSanitizer(
+            allowed_css_properties=_ALLOWED_STYLE_PROPS,
+        ),
         strip=True,
     )
 
