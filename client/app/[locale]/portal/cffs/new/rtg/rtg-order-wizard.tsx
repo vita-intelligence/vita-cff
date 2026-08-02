@@ -439,7 +439,7 @@ function OrderForm({
       {sku.long_description ? (
         <Card>
           <div
-            className="prose prose-sm max-w-none prose-headings:font-black prose-headings:uppercase prose-headings:tracking-tight prose-a:text-orange-700"
+            className="rich-content"
             dangerouslySetInnerHTML={{ __html: sku.long_description }}
           />
         </Card>
