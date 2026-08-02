@@ -23,6 +23,8 @@
 import type { Config } from "@puckeditor/core";
 import type { CSSProperties, ReactNode } from "react";
 
+import { RichTextField } from "./rich-text-field";
+
 
 // ---------------------------------------------------------------------------
 // Shared prop helpers
@@ -154,10 +156,13 @@ function Heading({ text, level, align, color, padding }: HeadingProps) {
 
 
 interface ParagraphProps {
-  text: string;
+  // Puck v0.22 stores rich HTML on ``html``; ``text`` is a legacy
+  // fallback for any block created before we swapped to the TipTap
+  // inline editor. Legacy plain-text renders wrapped in a <p>.
+  html?: string;
+  text?: string;
   align: "left" | "center" | "right";
   color: string;
-  fontSize: number | string;
   padding: {
     top: number | string;
     right: number | string;
@@ -167,27 +172,26 @@ interface ParagraphProps {
 }
 
 function Paragraph({
+  html,
   text,
   align,
   color,
-  fontSize,
   padding,
 }: ParagraphProps) {
+  // Prefer the new HTML value; fall back to any legacy plain text.
+  const body = html && html.trim() ? html : text
+    ? `<p>${text.replace(/</g, "&lt;")}</p>`
+    : '<p style="color:#999">Type here — click the toolbar in the sidebar to format.</p>';
   return (
-    <div style={paddingStyle(padding)}>
-      <p
-        style={{
-          color: color || undefined,
-          fontSize: toPx(fontSize) || "1rem",
-          lineHeight: 1.65,
-          margin: 0,
-          textAlign: align,
-          whiteSpace: "pre-wrap",
-        }}
-      >
-        {text || "Add your copy here…"}
-      </p>
-    </div>
+    <div
+      className="rich-content"
+      style={{
+        ...paddingStyle(padding),
+        color: color || undefined,
+        textAlign: align,
+      }}
+      dangerouslySetInnerHTML={{ __html: body }}
+    />
   );
 }
 
@@ -526,6 +530,9 @@ export const pageBuilderConfig: Config<any> = {
     content: {
       title: "Content",
       components: ["Heading", "Paragraph", "ButtonBlock"],
+      // ``Paragraph`` is the rich-text block — labelled "Rich text"
+      // in the drawer so authors know it accepts formatting, not
+      // just plain paragraphs.
     },
     media: {
       title: "Media",
@@ -584,26 +591,25 @@ export const pageBuilderConfig: Config<any> = {
       render: Heading as any,
     },
     Paragraph: {
-      label: "Paragraph",
+      label: "Rich text",
       fields: {
-        text: {
-          type: "textarea",
-          label: "Text",
+        // ``custom`` render pipes our TipTap editor into the Puck
+        // sidebar so authors can format the block's content
+        // inline (bold, headings, lists, tables, colors — the works).
+        html: {
+          type: "custom",
+          label: "Content",
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          render: RichTextField as any,
         },
         align: alignField,
-        color: { type: "text", label: "Color (#hex)" },
-        fontSize: {
-          type: "number",
-          label: "Font size (px)",
-          min: 8,
-        },
+        color: { type: "text", label: "Default text color (#hex)" },
         padding: paddingField,
       },
       defaultProps: {
-        text: "",
+        html: "",
         align: "left",
         color: "",
-        fontSize: 16,
         padding: { top: 0, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -776,10 +782,9 @@ export const pageBuilderStarter = {
       type: "Paragraph",
       props: {
         id: "Paragraph-starter-1",
-        text: "Use the sidebar on the left to drag blocks onto the canvas. Every block has its own padding, colours and layout controls — click one to see them in the right sidebar.",
+        html: "<p>Use the sidebar on the left to drag blocks onto the canvas. Click a block to edit it in the right sidebar — the <strong>Rich text</strong> block ships with a full formatting toolbar (bold, headings, lists, tables, links, colours, and more).</p>",
         align: "center",
         color: "#404040",
-        fontSize: 18,
         padding: { top: 0, right: 0, bottom: 24, left: 0 },
       },
     },

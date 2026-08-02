@@ -6453,6 +6453,46 @@ def _sanitize_rtg_long_description(html: str) -> str:
     )
 
 
+#: Prop names inside a Puck block that carry rich HTML authored by
+#: TipTap and therefore need bleach sanitisation on save. Anything
+#: not in this set is left alone (labels, colors, alignment enums
+#: etc. are plain scalars that don't need cleaning).
+_PUCK_RICH_HTML_PROPS: frozenset[str] = frozenset({"html"})
+
+
+def _sanitize_puck_tree(node: Any) -> Any:
+    """Recursively walk a Puck JSON tree and sanitise any rich-HTML
+    prop through :func:`_sanitize_rtg_long_description`.
+
+    The tree shape (as of Puck 0.22) is roughly::
+
+        {
+            "root": {"props": {...}},
+            "content": [
+                {"type": "Paragraph", "props": {"html": "...", ...}},
+                ...
+            ],
+            "zones": {...}  # nested slots
+        }
+
+    Walk dicts + lists depth-first. When a key is in
+    :data:`_PUCK_RICH_HTML_PROPS` and the value is a string, run it
+    through bleach. All other values pass through unchanged.
+    """
+
+    if isinstance(node, dict):
+        cleaned: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in _PUCK_RICH_HTML_PROPS and isinstance(value, str):
+                cleaned[key] = _sanitize_rtg_long_description(value)
+            else:
+                cleaned[key] = _sanitize_puck_tree(value)
+        return cleaned
+    if isinstance(node, list):
+        return [_sanitize_puck_tree(item) for item in node]
+    return node
+
+
 def _rtg_marketing_field_errors(
     payload: dict[str, Any],
 ) -> dict[str, str]:
@@ -6717,21 +6757,29 @@ def save_rtg_marketing(
         )
     if "rtg_page_content" in marketing_fields:
         # Puck stores its state as JSON. Accept dict / list / None.
-        # A None value clears the page — useful when the author wants
-        # to fall back to the legacy long-description HTML.
+        # A None value clears the page.
         raw = marketing_fields.get("rtg_page_content")
+        parsed = None
         if raw in (None, "", "null"):
-            formulation.rtg_page_content = None
+            parsed = None
         elif isinstance(raw, (dict, list)):
-            formulation.rtg_page_content = raw
+            parsed = raw
         elif isinstance(raw, str):
             import json
             try:
-                formulation.rtg_page_content = json.loads(raw)
+                parsed = json.loads(raw)
             except (TypeError, ValueError):
                 # Silently keep the previous value on a parse failure
                 # so an aborted save doesn't wipe good content.
-                pass
+                parsed = formulation.rtg_page_content
+        # Sanitize any HTML strings inside the tree before persisting.
+        # The Rich-text block stores its content in an ``html`` prop
+        # authored via TipTap; without a sanitisation pass a
+        # compromised session could stuff a ``<script>`` past the
+        # editor's UI restrictions.
+        if parsed is not None:
+            parsed = _sanitize_puck_tree(parsed)
+        formulation.rtg_page_content = parsed
     if "rtg_base_price" in marketing_fields:
         raw_price = marketing_fields.get("rtg_base_price")
         formulation.rtg_base_price = (

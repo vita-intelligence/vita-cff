@@ -20,7 +20,6 @@ import { CheckCircle2, LayoutTemplate, Save } from "lucide-react";
 import { Link } from "@/i18n/navigation";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
-import { RichTextEditor } from "@/components/forms/rich-text-editor";
 import type { FormulationDto } from "@/services/formulations/types";
 
 
@@ -65,9 +64,6 @@ function RTGCatalogPanelInner({
   const [description, setDescription] = useState(
     formulation.rtg_short_description || "",
   );
-  const [longDescription, setLongDescription] = useState(
-    formulation.rtg_long_description || "",
-  );
   const [basePrice, setBasePrice] = useState(
     formulation.rtg_base_price || "",
   );
@@ -104,7 +100,6 @@ function RTGCatalogPanelInner({
       // header actions and hits the same endpoint with the flag.
       form.append("rtg_display_name", displayName);
       form.append("rtg_short_description", description);
-      form.append("rtg_long_description", longDescription);
       form.append("rtg_base_price", basePrice);
       form.append("rtg_moq", moq);
       form.append("rtg_currency_code", currency);
@@ -146,7 +141,6 @@ function RTGCatalogPanelInner({
     displayName,
     formulation.id,
     heroFile,
-    longDescription,
     moq,
     orgId,
   ]);
@@ -227,38 +221,29 @@ function RTGCatalogPanelInner({
           ) : null}
         </div>
 
+        {/* Store-page authoring lives on the dedicated page builder
+            route. Rich text formatting (bold / headings / lists /
+            tables / colors) happens inside each Rich text block in
+            the builder — no separate rich-text field needed here. */}
         <div className="md:col-span-2">
-          <div className="mb-2 flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border-2 border-dashed border-ink-300 bg-ink-50 px-4 py-3">
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-ink-700">
-                Full description
-              </label>
-              <p className="mt-1 text-xs text-ink-500">
-                Quick rich-text body used as a fallback. For a proper
-                store page with sections / columns / media, use the
-                visual page builder →
+              <p className="text-sm font-semibold text-ink-1000">
+                Store page content
+              </p>
+              <p className="mt-0.5 text-xs text-ink-500">
+                Design the customer-facing product page — sections,
+                columns, rich text, images, video, tables.
               </p>
             </div>
             <Link
               href={`/formulations/${formulation.id}/rtg-page`}
-              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-ink-1000 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wide text-ink-1000 hover:bg-ink-1000 hover:text-white"
+              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-ink-1000 bg-ink-1000 px-3 py-2 text-xs font-bold uppercase tracking-wide text-white hover:bg-ink-800"
             >
               <LayoutTemplate className="h-3.5 w-3.5" />
-              Design store page
+              Open page builder
             </Link>
           </div>
-          <RichTextEditor
-            value={longDescription}
-            onChange={setLongDescription}
-            disabled={disabled}
-            placeholder="Describe the product in detail — ingredients story, benefits, usage tips, FAQs…"
-            minHeight="18rem"
-          />
-          {fieldErrors.rtg_long_description ? (
-            <p className="mt-1 text-xs text-rose-700">
-              {fieldErrors.rtg_long_description}
-            </p>
-          ) : null}
         </div>
 
         <div>
