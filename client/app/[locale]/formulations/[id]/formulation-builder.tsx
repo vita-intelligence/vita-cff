@@ -6114,6 +6114,7 @@ export function FormulationBuilder({
                 | "fields.serving_size_hint_tablet"
                 | "fields.serving_size_hint_gummy"
                 | "fields.serving_size_hint_powder"
+                | "fields.serving_size_hint_liquid"
                 | "fields.serving_size_hint_default",
             )}
           />
@@ -6135,6 +6136,7 @@ export function FormulationBuilder({
                 | "fields.appearance_placeholder_tablet"
                 | "fields.appearance_placeholder_gummy"
                 | "fields.appearance_placeholder_powder"
+                | "fields.appearance_placeholder_liquid"
                 | "fields.appearance_placeholder_default",
             )}
             hint={tFormulations("fields.appearance_hint")}
@@ -6162,6 +6164,7 @@ export function FormulationBuilder({
                 | "fields.directions_of_use_placeholder_tablet"
                 | "fields.directions_of_use_placeholder_gummy"
                 | "fields.directions_of_use_placeholder_powder"
+                | "fields.directions_of_use_placeholder_liquid"
                 | "fields.directions_of_use_placeholder_default",
             )}
             hint={tFormulations("fields.directions_of_use_hint")}
@@ -6179,6 +6182,7 @@ export function FormulationBuilder({
                 | "fields.suggested_dosage_placeholder_tablet"
                 | "fields.suggested_dosage_placeholder_gummy"
                 | "fields.suggested_dosage_placeholder_powder"
+                | "fields.suggested_dosage_placeholder_liquid"
                 | "fields.suggested_dosage_placeholder_default",
             )}
             hint={tFormulations("fields.suggested_dosage_hint")}
