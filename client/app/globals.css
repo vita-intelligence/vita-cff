@@ -433,6 +433,168 @@ body {
   }
 }
 
+/* --------------------------------------------------------------------
+ * Rich-text field (Puck sidebar) + fullscreen editor modal
+ * --------------------------------------------------------------------
+ * The Puck sidebar is ~320px wide — way too narrow for TipTap's
+ * toolbar. Sidebar shows a preview + "Edit content" button; the
+ * button opens a fullscreen modal where the editor has room.
+ */
+.pb-rich-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.pb-rich-field-open {
+  align-items: center;
+  background: #262626;
+  border: none;
+  border-radius: 0.5rem;
+  color: #ffffff;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  gap: 0.5rem;
+  justify-content: center;
+  padding: 0.5rem 0.75rem;
+  transition: background-color 120ms ease;
+  width: 100%;
+}
+.pb-rich-field-open:hover:not(:disabled) {
+  background: #161616;
+}
+.pb-rich-field-open:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.pb-rich-field-preview {
+  background: #ffffff;
+  border: 1px solid #e6e6e6;
+  border-radius: 0.5rem;
+  max-height: 12rem;
+  overflow: hidden;
+  padding: 0.75rem;
+  pointer-events: none;
+  position: relative;
+}
+.pb-rich-field-preview::after {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, #ffffff 100%);
+  bottom: 0;
+  content: "";
+  height: 3rem;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
+/* Modal shell */
+.pb-rich-modal-backdrop {
+  align-items: center;
+  animation: page-builder-toast-in 140ms ease-out;
+  background: rgba(15, 15, 15, 0.6);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 2rem;
+  position: fixed;
+  z-index: 100000;
+}
+.pb-rich-modal {
+  background: #ffffff;
+  border-radius: 1rem;
+  box-shadow: 0 32px 100px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  height: min(92vh, 1000px);
+  max-width: 1200px;
+  overflow: hidden;
+  width: min(96vw, 1200px);
+}
+.pb-rich-modal-header {
+  align-items: center;
+  border-bottom: 1px solid #e6e6e6;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+  padding: 1rem 1.5rem;
+}
+.pb-rich-modal-eyebrow {
+  color: #666666;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  margin: 0;
+  text-transform: uppercase;
+}
+.pb-rich-modal-title {
+  color: #161616;
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0.125rem 0 0;
+}
+.pb-rich-modal-actions {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+}
+.pb-rich-modal-btn {
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  padding: 0.5rem 1rem;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+.pb-rich-modal-btn-ghost {
+  background: transparent;
+  color: #404040;
+}
+.pb-rich-modal-btn-ghost:hover {
+  background: #f4f4f4;
+}
+.pb-rich-modal-btn-primary {
+  background: #c2410c;
+  color: #ffffff;
+}
+.pb-rich-modal-btn-primary:hover:not(:disabled) {
+  background: #9a3412;
+}
+.pb-rich-modal-btn-primary:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.pb-rich-modal-close {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  color: #666666;
+  cursor: pointer;
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  transition: background-color 120ms ease;
+  width: 2rem;
+}
+.pb-rich-modal-close:hover {
+  background: #f4f4f4;
+  color: #161616;
+}
+.pb-rich-modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 1.25rem 1.5rem;
+}
+.pb-rich-modal-body > * {
+  height: 100%;
+}
+
 /* Tables — TipTap's Table extension wraps in a scrollable container
  * so wide tables don't force the page layout. Header row gets a
  * subtle fill so it visually anchors as the heading. */
