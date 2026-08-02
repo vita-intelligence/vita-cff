@@ -23,7 +23,31 @@
 import type { Config } from "@puckeditor/core";
 import type { CSSProperties, ReactNode } from "react";
 
+import { NumberField } from "./number-field";
 import { RichTextField } from "./rich-text-field";
+
+
+// Small helper: build a Puck ``custom`` field bound to our
+// clearable NumberField component. ``min`` is only a soft clamp
+// applied on blur so a user can freely delete every digit while
+// typing (which the native ``<input type="number">`` refuses to
+// let them do).
+function pxField(label: string, min: number = 0) {
+  return {
+    type: "custom" as const,
+    label,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    render: ((props: any) => (
+      <NumberField
+        value={props.value}
+        onChange={props.onChange}
+        readOnly={props.readOnly}
+        min={min}
+      />
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    )) as any,
+  };
+}
 
 
 // ---------------------------------------------------------------------------
@@ -478,15 +502,16 @@ function Columns({
 
 
 // Padding object field reused by every block. Four number inputs
-// so authors can type any value in pixels — no dropdown limit.
+// so authors can type any value in pixels — free typing via the
+// custom ``pxField`` so ``0`` can be cleared like any other text.
 const paddingField = {
   type: "object" as const,
   label: "Padding (px)",
   objectFields: {
-    top: { type: "number" as const, label: "Top", min: 0 },
-    right: { type: "number" as const, label: "Right", min: 0 },
-    bottom: { type: "number" as const, label: "Bottom", min: 0 },
-    left: { type: "number" as const, label: "Left", min: 0 },
+    top: pxField("Top"),
+    right: pxField("Right"),
+    bottom: pxField("Bottom"),
+    left: pxField("Left"),
   },
 };
 
@@ -546,11 +571,7 @@ export const pageBuilderConfig: Config<any> = {
         padding: paddingField,
         backgroundColor: { type: "text", label: "Background (#hex)" },
         textColor: { type: "text", label: "Text color (#hex)" },
-        maxWidth: {
-          type: "number",
-          label: "Max width (px, 0 = full)",
-          min: 0,
-        },
+        maxWidth: pxField("Max width (px, 0 = full)"),
         align: alignField,
       },
       defaultProps: {
@@ -621,16 +642,8 @@ export const pageBuilderConfig: Config<any> = {
         src: { type: "text", label: "Image URL" },
         alt: { type: "text", label: "Alt text" },
         align: alignField,
-        maxWidth: {
-          type: "number",
-          label: "Max width (px, 0 = full)",
-          min: 0,
-        },
-        borderRadius: {
-          type: "number",
-          label: "Corner radius (px)",
-          min: 0,
-        },
+        maxWidth: pxField("Max width (px, 0 = full)"),
+        borderRadius: pxField("Corner radius (px)"),
         padding: paddingField,
       },
       defaultProps: {
@@ -698,11 +711,7 @@ export const pageBuilderConfig: Config<any> = {
       label: "Divider",
       fields: {
         color: { type: "text", label: "Color (#hex)" },
-        thickness: {
-          type: "number",
-          label: "Thickness (px)",
-          min: 1,
-        },
+        thickness: pxField("Thickness (px)", 1),
         padding: paddingField,
       },
       defaultProps: {
@@ -716,7 +725,7 @@ export const pageBuilderConfig: Config<any> = {
     Spacer: {
       label: "Spacer",
       fields: {
-        height: { type: "number", label: "Height (px)", min: 1 },
+        height: pxField("Height (px)", 1),
       },
       defaultProps: { height: 32 },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -733,7 +742,7 @@ export const pageBuilderConfig: Config<any> = {
             { label: "3 columns", value: 3 },
           ],
         },
-        gap: { type: "number", label: "Gap (px)", min: 0 },
+        gap: pxField("Gap (px)"),
         padding: paddingField,
         // Slot fields let the author drop other blocks into each
         // column. Puck renders them as drop zones on the canvas.

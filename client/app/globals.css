@@ -595,6 +595,23 @@ body {
   height: 100%;
 }
 
+/* Custom clearable number input — matches Puck's own field
+ * styling so it doesn't stick out in the sidebar. */
+.pb-number-field {
+  background: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 0.375rem;
+  color: #161616;
+  font-size: 0.875rem;
+  padding: 0.375rem 0.5rem;
+  transition: border-color 120ms ease;
+  width: 100%;
+}
+.pb-number-field:focus {
+  border-color: #c2410c;
+  outline: none;
+}
+
 /* Tables — TipTap's Table extension wraps in a scrollable container
  * so wide tables don't force the page layout. Header row gets a
  * subtle fill so it visually anchors as the heading. */
