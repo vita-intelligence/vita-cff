@@ -22,6 +22,9 @@ interface Props {
   //: starter template so the canvas isn't a scary void.
   readonly initialData: unknown | null;
   readonly onSave: (data: unknown) => Promise<void>;
+  //: Fired after a successful save so the parent can navigate away
+  //: from the builder route. Optional — omit to stay in the editor.
+  readonly onAfterSave?: () => void;
   //: Rendered above the toolbar so authors know which SKU they're
   //: editing without leaving the builder.
   readonly title?: string;
@@ -29,14 +32,21 @@ interface Props {
 }
 
 
+type Toast =
+  | { kind: "saving" }
+  | { kind: "success"; message: string }
+  | { kind: "error"; message: string }
+  | null;
+
+
 export function PageBuilderEditor({
   initialData,
   onSave,
+  onAfterSave,
   title,
   disabled = false,
 }: Props) {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast>(null);
 
   const seededData = useMemo(() => {
     if (initialData && typeof initialData === "object") {
@@ -49,21 +59,28 @@ export function PageBuilderEditor({
 
   const handlePublish = useCallback(
     async (data: unknown) => {
-      setError(null);
-      setSaving(true);
+      setToast({ kind: "saving" });
       try {
         await onSave(data);
+        setToast({ kind: "success", message: "Page saved" });
+        // Give the user a beat to see the confirmation, then bounce
+        // back to whatever the parent wants (usually the RTG
+        // project overview).
+        window.setTimeout(() => {
+          setToast(null);
+          onAfterSave?.();
+        }, 1200);
       } catch (e) {
-        setError(
-          e instanceof Error
-            ? e.message
-            : "Something went wrong saving the page.",
-        );
-      } finally {
-        setSaving(false);
+        setToast({
+          kind: "error",
+          message:
+            e instanceof Error
+              ? e.message
+              : "Something went wrong saving the page.",
+        });
       }
     },
-    [onSave],
+    [onSave, onAfterSave],
   );
 
   return (
@@ -72,17 +89,41 @@ export function PageBuilderEditor({
         config={pageBuilderConfig}
         data={seededData}
         onPublish={handlePublish}
-        // Puck emits a "publish" button in its own header; we
-        // customise the header renderActions so the button shows
-        // save state + the SKU title.
         headerTitle={title || "Product page"}
       />
-      {saving ? (
-        <div className="page-builder-toast">Saving…</div>
-      ) : null}
-      {error ? (
-        <div className="page-builder-toast page-builder-toast-error">
-          {error}
+      {toast ? (
+        <div
+          className={`page-builder-toast page-builder-toast-${toast.kind}`}
+          role={toast.kind === "error" ? "alert" : "status"}
+        >
+          {toast.kind === "saving" ? (
+            <>
+              <span className="page-builder-toast-spinner" aria-hidden />
+              Saving…
+            </>
+          ) : toast.kind === "success" ? (
+            <>
+              <span className="page-builder-toast-check" aria-hidden>
+                ✓
+              </span>
+              {toast.message}
+            </>
+          ) : (
+            <>
+              <span className="page-builder-toast-cross" aria-hidden>
+                !
+              </span>
+              <span>{toast.message}</span>
+              <button
+                type="button"
+                onClick={() => setToast(null)}
+                className="page-builder-toast-dismiss"
+                aria-label="Dismiss"
+              >
+                ×
+              </button>
+            </>
+          )}
         </div>
       ) : null}
       {disabled ? (

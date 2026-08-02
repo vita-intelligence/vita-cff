@@ -332,6 +332,107 @@ body {
   pointer-events: none;
 }
 
+/* --------------------------------------------------------------------
+ * Page-builder toast (save state overlay)
+ * --------------------------------------------------------------------
+ * Bottom-center pill that appears while Puck is saving / after it
+ * saves / on failure. Sits above the editor's own chrome so authors
+ * always see the feedback regardless of scroll position.
+ */
+.page-builder-shell {
+  height: 100%;
+  position: relative;
+  width: 100%;
+}
+.page-builder-toast {
+  align-items: center;
+  animation: page-builder-toast-in 180ms ease-out;
+  border-radius: 999px;
+  bottom: 1.5rem;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  display: inline-flex;
+  font-size: 0.875rem;
+  font-weight: 600;
+  gap: 0.5rem;
+  left: 50%;
+  padding: 0.625rem 1.125rem;
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 10000;
+}
+.page-builder-toast-saving {
+  background: #262626;
+  color: #ffffff;
+}
+.page-builder-toast-success {
+  background: #16a34a;
+  color: #ffffff;
+}
+.page-builder-toast-error {
+  background: #dc2626;
+  color: #ffffff;
+}
+.page-builder-toast-spinner {
+  animation: page-builder-toast-spin 700ms linear infinite;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  border-top-color: #ffffff;
+  display: inline-block;
+  height: 0.875rem;
+  width: 0.875rem;
+}
+.page-builder-toast-check {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.75rem;
+  height: 1.125rem;
+  justify-content: center;
+  width: 1.125rem;
+}
+.page-builder-toast-cross {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 800;
+  height: 1.125rem;
+  justify-content: center;
+  width: 1.125rem;
+}
+.page-builder-toast-dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+  margin-left: 0.25rem;
+  padding: 0 0.25rem;
+}
+.page-builder-shield {
+  inset: 0;
+  position: absolute;
+  z-index: 5;
+}
+@keyframes page-builder-toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+@keyframes page-builder-toast-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Tables — TipTap's Table extension wraps in a scrollable container
  * so wide tables don't force the page layout. Header row gets a
  * subtle fill so it visually anchors as the heading. */
