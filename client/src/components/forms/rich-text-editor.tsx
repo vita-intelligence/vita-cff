@@ -90,12 +90,13 @@ export function RichTextEditor({
     content: value,
     editorProps: {
       attributes: {
-        // Tailwind Typography would be ideal here; scoped styling
-        // works too and keeps the editor self-contained.
-        class:
-          "prose prose-sm max-w-none focus:outline-none px-4 py-3 " +
-          "prose-headings:mt-4 prose-headings:mb-2 " +
-          "prose-p:my-2 prose-ul:my-2 prose-ol:my-2",
+        // ``rich-content`` matches the scoped styles declared in
+        // ``app/globals.css``. We deliberately don't use ``prose``
+        // (Tailwind Typography) because the plugin isn't installed
+        // — without it, Preflight strips bold / italic / list
+        // defaults and the editor looks broken even though TipTap
+        // is emitting correct markup.
+        class: "rich-content ProseMirror",
       },
     },
     onUpdate: ({ editor }) => {
