@@ -296,12 +296,20 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
     rtg_display_name,
     rtg_short_description,
     rtg_hero_image,
+    catalog_photos,
     rtg_base_price,
     rtg_currency_code,
     rtg_moq,
     rtg_packaging_options,
     packaging_combos_count,
   } = formulation;
+
+  // Prefer the primary catalog photo (first row in the serializer's
+  // ``-is_primary, sort_order`` ordering) so new gallery uploads
+  // surface on the card immediately. Fall back to the legacy
+  // ``rtg_hero_image`` for rows created before the gallery shipped.
+  const heroSrc =
+    (catalog_photos ?? []).find((p) => p.url)?.url || rtg_hero_image;
 
   // Prefer the new combo count; fall back to the legacy free-text
   // ``rtg_packaging_options`` count for cards that haven't migrated
@@ -320,10 +328,10 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
       className="group flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-ink-200 transition-shadow hover:shadow-md"
     >
       <div className="relative aspect-[4/3] w-full bg-ink-50">
-        {rtg_hero_image ? (
+        {heroSrc ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            src={rtg_hero_image}
+            src={heroSrc}
             alt=""
             loading="lazy"
             className="h-full w-full object-cover"

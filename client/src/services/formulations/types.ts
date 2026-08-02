@@ -576,6 +576,18 @@ export interface FormulationDto {
    *  through Puck's ``<Render>``. */
   readonly rtg_page_content: unknown | null;
   readonly rtg_hero_image: string | null;
+  /** Storefront catalog photo gallery, primary first. Empty until
+   *  staff upload via the CatalogPhotoGallery on the project detail
+   *  page. Card + list consumers prefer ``catalog_photos[0].url``
+   *  and fall back to ``rtg_hero_image`` for rows created before
+   *  the gallery shipped. */
+  readonly catalog_photos: readonly {
+    readonly id: string;
+    readonly url: string | null;
+    readonly caption: string;
+    readonly is_primary: boolean;
+    readonly sort_order: number;
+  }[];
   readonly rtg_base_price: string | null;
   readonly rtg_moq: number | null;
   readonly rtg_packaging_options: readonly string[];
