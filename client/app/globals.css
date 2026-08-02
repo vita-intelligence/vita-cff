@@ -612,6 +612,116 @@ body {
   outline: none;
 }
 
+/* Puck sidebar colour field: swatch + native picker + hex input +
+ * curated palette grid. Kept compact so it fits Puck's ~320px
+ * sidebar without pushing other fields around. */
+.pb-color-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.pb-color-field-row {
+  align-items: center;
+  display: flex;
+  gap: 0.375rem;
+}
+.pb-color-field-swatch {
+  align-items: center;
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(-45deg, #e6e6e6 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e6e6e6 75%),
+    linear-gradient(-45deg, transparent 75%, #e6e6e6 75%);
+  background-position:
+    0 0,
+    0 4px,
+    4px -4px,
+    -4px 0;
+  background-size: 8px 8px;
+  border: 1px solid #cccccc;
+  border-radius: 0.375rem;
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 1.75rem;
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  width: 1.75rem;
+}
+.pb-color-field-swatch-native > input[type="color"] {
+  cursor: pointer;
+  height: 100%;
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+}
+.pb-color-field-hex {
+  background: #ffffff;
+  border: 1px solid #cccccc;
+  border-radius: 0.375rem;
+  color: #161616;
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8125rem;
+  min-width: 0;
+  padding: 0.375rem 0.5rem;
+  text-transform: lowercase;
+}
+.pb-color-field-hex:focus {
+  border-color: #c2410c;
+  outline: none;
+}
+.pb-color-field-clear {
+  align-items: center;
+  background: transparent;
+  border: 1px solid #cccccc;
+  border-radius: 0.375rem;
+  color: #525252;
+  cursor: pointer;
+  display: inline-flex;
+  flex-shrink: 0;
+  height: 1.75rem;
+  justify-content: center;
+  transition: background 120ms ease;
+  width: 1.75rem;
+}
+.pb-color-field-clear:hover:not(:disabled) {
+  background: #f5f5f5;
+}
+.pb-color-field-clear:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+.pb-color-field-palette {
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+}
+.pb-color-field-chip {
+  aspect-ratio: 1 / 1;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  padding: 0;
+  transition:
+    transform 100ms ease,
+    box-shadow 120ms ease;
+  width: 100%;
+}
+.pb-color-field-chip:hover:not(:disabled) {
+  transform: scale(1.08);
+}
+.pb-color-field-chip.is-active {
+  box-shadow: 0 0 0 2px #c2410c;
+}
+.pb-color-field-chip:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* Tables — TipTap's Table extension wraps in a scrollable container
  * so wide tables don't force the page layout. Header row gets a
  * subtle fill so it visually anchors as the heading. */

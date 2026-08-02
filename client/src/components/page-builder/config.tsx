@@ -23,6 +23,7 @@
 import type { Config } from "@puckeditor/core";
 import type { CSSProperties, ReactNode } from "react";
 
+import { ColorField } from "./color-field";
 import { NumberField } from "./number-field";
 import { RichTextField } from "./rich-text-field";
 
@@ -43,6 +44,26 @@ function pxField(label: string, min: number = 0) {
         onChange={props.onChange}
         readOnly={props.readOnly}
         min={min}
+      />
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    )) as any,
+  };
+}
+
+
+// Colour picker (swatch palette + native picker + hex input) so
+// authors don't have to know hex codes to change backgrounds / text
+// / dividers. Empty state = no override.
+function colorField(label: string) {
+  return {
+    type: "custom" as const,
+    label,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    render: ((props: any) => (
+      <ColorField
+        value={props.value}
+        onChange={props.onChange}
+        readOnly={props.readOnly}
       />
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     )) as any,
@@ -569,8 +590,8 @@ export const pageBuilderConfig: Config<any> = {
       label: "Section",
       fields: {
         padding: paddingField,
-        backgroundColor: { type: "text", label: "Background (#hex)" },
-        textColor: { type: "text", label: "Text color (#hex)" },
+        backgroundColor: colorField("Background"),
+        textColor: colorField("Text color"),
         maxWidth: pxField("Max width (px, 0 = full)"),
         align: alignField,
       },
@@ -598,7 +619,7 @@ export const pageBuilderConfig: Config<any> = {
           ],
         },
         align: alignField,
-        color: { type: "text", label: "Color (#hex)" },
+        color: colorField("Color"),
         padding: paddingField,
       },
       defaultProps: {
@@ -624,7 +645,7 @@ export const pageBuilderConfig: Config<any> = {
           render: RichTextField as any,
         },
         align: alignField,
-        color: { type: "text", label: "Default text color (#hex)" },
+        color: colorField("Default text color"),
         padding: paddingField,
       },
       defaultProps: {
@@ -710,7 +731,7 @@ export const pageBuilderConfig: Config<any> = {
     Divider: {
       label: "Divider",
       fields: {
-        color: { type: "text", label: "Color (#hex)" },
+        color: colorField("Color"),
         thickness: pxField("Thickness (px)", 1),
         padding: paddingField,
       },
