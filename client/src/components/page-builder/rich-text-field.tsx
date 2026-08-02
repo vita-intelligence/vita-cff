@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
-import { Maximize2, X } from "lucide-react";
+import { Maximize2 } from "lucide-react";
 
 import { RichTextEditor } from "@/components/forms/rich-text-editor";
 
@@ -127,14 +127,6 @@ export function RichTextField({
                   disabled={readOnly}
                 >
                   Done
-                </button>
-                <button
-                  type="button"
-                  onClick={cancel}
-                  className="pb-rich-modal-close"
-                  aria-label="Close"
-                >
-                  <X className="h-4 w-4" />
                 </button>
               </div>
             </header>
