@@ -16,7 +16,8 @@
  */
 
 import { useCallback, useState } from "react";
-import { CheckCircle2, Save } from "lucide-react";
+import { CheckCircle2, LayoutTemplate, Save } from "lucide-react";
+import { Link } from "@/i18n/navigation";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
 import { RichTextEditor } from "@/components/forms/rich-text-editor";
@@ -227,14 +228,25 @@ function RTGCatalogPanelInner({
         </div>
 
         <div className="md:col-span-2">
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
-            Full description
-          </label>
-          <p className="mb-2 text-xs text-ink-500">
-            The customer-facing product page body. Rich formatting is
-            preserved end-to-end — what you see here is what shoppers
-            see on the catalog.
-          </p>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-ink-700">
+                Full description
+              </label>
+              <p className="mt-1 text-xs text-ink-500">
+                Quick rich-text body used as a fallback. For a proper
+                store page with sections / columns / media, use the
+                visual page builder →
+              </p>
+            </div>
+            <Link
+              href={`/formulations/${formulation.id}/rtg-page`}
+              className="inline-flex items-center gap-1.5 rounded-lg border-2 border-ink-1000 bg-white px-3 py-2 text-xs font-bold uppercase tracking-wide text-ink-1000 hover:bg-ink-1000 hover:text-white"
+            >
+              <LayoutTemplate className="h-3.5 w-3.5" />
+              Design store page
+            </Link>
+          </div>
           <RichTextEditor
             value={longDescription}
             onChange={setLongDescription}

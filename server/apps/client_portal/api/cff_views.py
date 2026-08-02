@@ -586,11 +586,17 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     # logic lives here so every consumer doesn't reimplement it.
     name = serializers.SerializerMethodField()
     short_description = serializers.CharField(source="rtg_short_description")
-    #: Full-length catalog page body — sanitized HTML authored by staff
-    #: in the rich-text editor. Portal renders it below the pricing
-    #: row so customers see full marketing copy before ordering.
+    #: Legacy sanitized HTML body from the standalone rich-text
+    #: editor. Portal falls back to this when ``page_content`` is
+    #: null so pre-migration listings still render.
     long_description = serializers.CharField(
         source="rtg_long_description", default=""
+    )
+    #: Puck page-builder JSON schema. Portal renders this via
+    #: Puck's ``<Render>`` when set — takes precedence over the
+    #: legacy HTML. ``None`` means the SKU still uses the old flow.
+    page_content = serializers.JSONField(
+        source="rtg_page_content", allow_null=True
     )
     hero_image_url = serializers.SerializerMethodField()
     base_price = serializers.DecimalField(

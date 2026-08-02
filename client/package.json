@@ -16,6 +16,7 @@
     "@gsap/react": "^2.1.2",
     "@heroui/react": "latest",
     "@hookform/resolvers": "^5.2.2",
+    "@puckeditor/core": "^0.22.4",
     "@tanstack/react-query": "^5.62.11",
     "@tanstack/react-query-devtools": "^5.62.11",
     "@tanstack/react-table": "^8.21.3",

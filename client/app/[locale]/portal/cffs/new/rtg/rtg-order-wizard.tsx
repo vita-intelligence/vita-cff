@@ -31,6 +31,7 @@ import {
   PortalInput,
   PortalTextarea,
 } from "@/components/portal/brutalist";
+import { PageBuilderRender } from "@/components/page-builder/page-builder-render";
 import { apiClient, normalizeApiError } from "@/lib/api";
 import { useRouter } from "@/i18n/navigation";
 
@@ -53,9 +54,13 @@ export interface PortalRTGCatalogItem {
   readonly id: string;
   readonly name: string;
   readonly short_description: string;
-  //: Full-length catalog page body — pre-sanitized on the server
-  //: via bleach, so ``dangerouslySetInnerHTML`` is safe here.
+  //: Legacy sanitized HTML body. Server pre-sanitizes via bleach,
+  //: so ``dangerouslySetInnerHTML`` is safe. Rendered only when
+  //: ``page_content`` is null (pre-migration listings).
   readonly long_description: string;
+  //: Puck page-builder JSON schema. When set, we render this via
+  //: Puck's ``<Render>`` and skip the legacy HTML fallback.
+  readonly page_content: unknown | null;
   readonly hero_image_url: string | null;
   readonly base_price: string;
   readonly currency_code: string;
@@ -436,7 +441,15 @@ function OrderForm({
           pre-sanitized on the server via bleach so
           ``dangerouslySetInnerHTML`` is safe here. Self-hides when
           the SKU hasn't been given a full description yet. */}
-      {sku.long_description ? (
+      {/* Two rendering paths:
+          1. If ``page_content`` is set, the SKU was authored in the
+             Puck page builder — render it through ``<Render>``.
+          2. Otherwise fall back to the legacy sanitized-HTML long
+             description so pre-migration listings still show
+             marketing copy. */}
+      {sku.page_content ? (
+        <PageBuilderRender data={sku.page_content} />
+      ) : sku.long_description ? (
         <Card>
           <div
             className="rich-content"
