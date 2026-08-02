@@ -18,10 +18,8 @@
 import { useCallback, useEffect } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
-import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import Placeholder from "@tiptap/extension-placeholder";
-import Underline from "@tiptap/extension-underline";
 import {
   Bold,
   Heading1,
@@ -65,17 +63,21 @@ export function RichTextEditor({
     immediatelyRender: false,
     editable: !disabled,
     extensions: [
+      // TipTap v3 StarterKit bundles bold / italic / strike /
+      // underline / link / lists / headings / blockquote / code /
+      // hard-break / horizontal-rule / dropcursor / undo-redo out of
+      // the box. Registering any of those separately would create
+      // a duplicate extension and silently break command execution
+      // (clicks land but the doc never mutates), so we only add
+      // extensions StarterKit does NOT include — image + placeholder.
       StarterKit.configure({
-        // We add Link + Underline as dedicated extensions so their
-        // markers can carry custom classes + click handlers.
         heading: { levels: [1, 2, 3] },
-      }),
-      Underline,
-      Link.configure({
-        openOnClick: false,
-        HTMLAttributes: {
-          rel: "noopener noreferrer",
-          target: "_blank",
+        link: {
+          openOnClick: false,
+          HTMLAttributes: {
+            rel: "noopener noreferrer",
+            target: "_blank",
+          },
         },
       }),
       Image.configure({
