@@ -2382,6 +2382,7 @@ class FormulationRTGPublishView(APIView):
             "rtg_display_name",
             "rtg_short_description",
             "rtg_long_description",
+            "rtg_page_content",
             "rtg_base_price",
             "rtg_moq",
             "rtg_currency_code",

@@ -6715,6 +6715,23 @@ def save_rtg_marketing(
         formulation.rtg_long_description = _sanitize_rtg_long_description(
             str(marketing_fields.get("rtg_long_description") or "")
         )
+    if "rtg_page_content" in marketing_fields:
+        # Puck stores its state as JSON. Accept dict / list / None.
+        # A None value clears the page — useful when the author wants
+        # to fall back to the legacy long-description HTML.
+        raw = marketing_fields.get("rtg_page_content")
+        if raw in (None, "", "null"):
+            formulation.rtg_page_content = None
+        elif isinstance(raw, (dict, list)):
+            formulation.rtg_page_content = raw
+        elif isinstance(raw, str):
+            import json
+            try:
+                formulation.rtg_page_content = json.loads(raw)
+            except (TypeError, ValueError):
+                # Silently keep the previous value on a parse failure
+                # so an aborted save doesn't wipe good content.
+                pass
     if "rtg_base_price" in marketing_fields:
         raw_price = marketing_fields.get("rtg_base_price")
         formulation.rtg_base_price = (

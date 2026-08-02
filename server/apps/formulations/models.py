@@ -675,11 +675,23 @@ class Formulation(models.Model):
         blank=True,
         default="",
         help_text=_(
-            "Full-length catalog page body — authored in the staff "
-            "rich-text editor, stored as sanitized HTML. Rendered on "
-            "the customer portal's product page below the pricing "
-            "row. Sanitized on save via ``bleach`` so a compromised "
-            "session can't inject scripts."
+            "Legacy sanitized-HTML content authored in the standalone "
+            "TipTap editor. Superseded by ``rtg_page_content`` (the "
+            "Puck-authored page schema); kept as a graceful fallback "
+            "so pre-migration catalog listings keep rendering."
+        ),
+    )
+    rtg_page_content = models.JSONField(
+        _("RTG page content (Puck schema)"),
+        blank=True,
+        null=True,
+        default=None,
+        help_text=_(
+            "Structured page layout authored in the visual page "
+            "builder (@puckeditor/core). Stored as JSON — safer than "
+            "raw HTML because the render walks a fixed component "
+            "schema so there's no XSS surface. When set, the portal "
+            "renders this over ``rtg_long_description``."
         ),
     )
     rtg_hero_image = models.ImageField(
