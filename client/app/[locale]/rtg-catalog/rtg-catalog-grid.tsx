@@ -327,7 +327,12 @@ function CatalogCard({ formulation }: { formulation: FormulationDto }) {
       href={`/formulations/${id}`}
       className="group flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-ink-200 transition-shadow hover:shadow-md"
     >
-      <div className="relative aspect-[4/3] w-full bg-ink-50">
+      {/* Fixed thumbnail height so the card sizes don't drift with
+          image aspect ratio: a portrait shot doesn't blow the card
+          up, a landscape shot doesn't leave it stubby, and the whole
+          grid stays uniform. ``object-cover`` clips whatever doesn't
+          fit the 4:3-ish window. */}
+      <div className="relative h-48 w-full overflow-hidden bg-ink-50">
         {heroSrc ? (
           // eslint-disable-next-line @next/next/no-img-element
           <img
