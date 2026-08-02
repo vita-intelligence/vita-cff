@@ -29,47 +29,34 @@ import type { CSSProperties, ReactNode } from "react";
 // ---------------------------------------------------------------------------
 
 
-/** Spacing preset (matches Tailwind's rem scale) — 0 / 4 / 8 / 16 /
- *  24 / 32 / 48 / 64 / 96 px. Picker rather than free-text keeps the
- *  canvas visually consistent and avoids a scientist typing "1000px"
- *  by accident. */
-const SPACING_OPTIONS = [
-  { label: "None", value: "0" },
-  { label: "XS (4)", value: "4" },
-  { label: "S (8)", value: "8" },
-  { label: "M (16)", value: "16" },
-  { label: "L (24)", value: "24" },
-  { label: "XL (32)", value: "32" },
-  { label: "2XL (48)", value: "48" },
-  { label: "3XL (64)", value: "64" },
-  { label: "4XL (96)", value: "96" },
-];
-
 const ALIGN_OPTIONS = [
   { label: "Left", value: "left" },
   { label: "Center", value: "center" },
   { label: "Right", value: "right" },
 ];
 
-const MAX_WIDTH_OPTIONS = [
-  { label: "Narrow (640)", value: "640" },
-  { label: "Medium (960)", value: "960" },
-  { label: "Wide (1200)", value: "1200" },
-  { label: "Full width", value: "" },
-];
 
+function toPx(value: number | string | undefined | null): string | undefined {
+  // Explicit ``0`` is a valid, intentional padding — don't drop it
+  // through a falsy check. Anything unset / empty / non-numeric falls
+  // through as ``undefined`` so CSS uses the browser default.
+  if (value === undefined || value === null || value === "") return undefined;
+  const n = typeof value === "number" ? value : Number(value);
+  if (Number.isNaN(n)) return undefined;
+  return `${n}px`;
+}
 
 function paddingStyle(padding: {
-  top?: string;
-  right?: string;
-  bottom?: string;
-  left?: string;
+  top?: number | string;
+  right?: number | string;
+  bottom?: number | string;
+  left?: number | string;
 }): CSSProperties {
   return {
-    paddingTop: padding.top ? `${padding.top}px` : undefined,
-    paddingRight: padding.right ? `${padding.right}px` : undefined,
-    paddingBottom: padding.bottom ? `${padding.bottom}px` : undefined,
-    paddingLeft: padding.left ? `${padding.left}px` : undefined,
+    paddingTop: toPx(padding.top),
+    paddingRight: toPx(padding.right),
+    paddingBottom: toPx(padding.bottom),
+    paddingLeft: toPx(padding.left),
   };
 }
 
@@ -81,14 +68,14 @@ function paddingStyle(padding: {
 
 interface SectionProps {
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
   backgroundColor: string;
   textColor: string;
-  maxWidth: string;
+  maxWidth: number | string;
   align: "left" | "center" | "right";
   children: ReactNode;
 }
@@ -101,6 +88,9 @@ function Section({
   align,
   children,
 }: SectionProps) {
+  // ``maxWidth: 0`` = full width (no cap). Anything positive caps
+  // the inner container.
+  const capped = toPx(maxWidth);
   return (
     <section
       style={{
@@ -113,7 +103,7 @@ function Section({
         style={{
           ...paddingStyle(padding),
           margin: "0 auto",
-          maxWidth: maxWidth ? `${maxWidth}px` : undefined,
+          maxWidth: capped === "0px" ? undefined : capped,
         }}
       >
         {children}
@@ -129,10 +119,10 @@ interface HeadingProps {
   align: "left" | "center" | "right";
   color: string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -167,12 +157,12 @@ interface ParagraphProps {
   text: string;
   align: "left" | "center" | "right";
   color: string;
-  fontSize: string;
+  fontSize: number | string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -188,7 +178,7 @@ function Paragraph({
       <p
         style={{
           color: color || undefined,
-          fontSize: fontSize ? `${fontSize}px` : "1rem",
+          fontSize: toPx(fontSize) || "1rem",
           lineHeight: 1.65,
           margin: 0,
           textAlign: align,
@@ -206,13 +196,13 @@ interface ImageBlockProps {
   src: string;
   alt: string;
   align: "left" | "center" | "right";
-  maxWidth: string;
-  borderRadius: string;
+  maxWidth: number | string;
+  borderRadius: number | string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -230,6 +220,7 @@ function ImageBlock({
       : align === "right"
         ? { textAlign: "right" }
         : { textAlign: "left" };
+  const cappedWidth = toPx(maxWidth);
   if (!src) {
     return (
       <div
@@ -247,9 +238,9 @@ function ImageBlock({
         src={src}
         alt={alt || ""}
         style={{
-          borderRadius: borderRadius ? `${borderRadius}px` : undefined,
+          borderRadius: toPx(borderRadius),
           display: "inline-block",
-          maxWidth: maxWidth ? `${maxWidth}px` : "100%",
+          maxWidth: cappedWidth === "0px" ? "100%" : cappedWidth || "100%",
           width: "100%",
         }}
       />
@@ -261,10 +252,10 @@ function ImageBlock({
 interface VideoProps {
   url: string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -340,10 +331,10 @@ interface ButtonBlockProps {
   size: "sm" | "md" | "lg";
   align: "left" | "center" | "right";
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -403,12 +394,12 @@ function ButtonBlock({
 
 interface DividerProps {
   color: string;
-  thickness: string;
+  thickness: number | string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
 }
 
@@ -419,7 +410,7 @@ function Divider({ color, thickness, padding }: DividerProps) {
         style={{
           background: color || "#e6e6e6",
           border: "none",
-          height: thickness ? `${thickness}px` : "1px",
+          height: toPx(thickness) || "1px",
           margin: 0,
         }}
       />
@@ -429,22 +420,22 @@ function Divider({ color, thickness, padding }: DividerProps) {
 
 
 interface SpacerProps {
-  height: string;
+  height: number | string;
 }
 
 function Spacer({ height }: SpacerProps) {
-  return <div style={{ height: `${height || "32"}px` }} aria-hidden />;
+  return <div style={{ height: toPx(height) || "32px" }} aria-hidden />;
 }
 
 
 interface ColumnsProps {
   columns: number;
-  gap: string;
+  gap: number | string;
   padding: {
-    top: string;
-    right: string;
-    bottom: string;
-    left: string;
+    top: number | string;
+    right: number | string;
+    bottom: number | string;
+    left: number | string;
   };
   left: ReactNode;
   middle: ReactNode;
@@ -465,7 +456,7 @@ function Columns({
       style={{
         ...paddingStyle(padding),
         display: "grid",
-        gap: `${gap || "16"}px`,
+        gap: toPx(gap) || "16px",
         gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
       }}
     >
@@ -482,32 +473,16 @@ function Columns({
 // ---------------------------------------------------------------------------
 
 
-// Padding object field reused by every block. Split so authors
-// have four-side control without a bespoke UI.
+// Padding object field reused by every block. Four number inputs
+// so authors can type any value in pixels — no dropdown limit.
 const paddingField = {
   type: "object" as const,
   label: "Padding (px)",
   objectFields: {
-    top: {
-      type: "select" as const,
-      label: "Top",
-      options: SPACING_OPTIONS,
-    },
-    right: {
-      type: "select" as const,
-      label: "Right",
-      options: SPACING_OPTIONS,
-    },
-    bottom: {
-      type: "select" as const,
-      label: "Bottom",
-      options: SPACING_OPTIONS,
-    },
-    left: {
-      type: "select" as const,
-      label: "Left",
-      options: SPACING_OPTIONS,
-    },
+    top: { type: "number" as const, label: "Top", min: 0 },
+    right: { type: "number" as const, label: "Right", min: 0 },
+    bottom: { type: "number" as const, label: "Bottom", min: 0 },
+    left: { type: "number" as const, label: "Left", min: 0 },
   },
 };
 
@@ -565,17 +540,17 @@ export const pageBuilderConfig: Config<any> = {
         backgroundColor: { type: "text", label: "Background (#hex)" },
         textColor: { type: "text", label: "Text color (#hex)" },
         maxWidth: {
-          type: "select",
-          label: "Max width",
-          options: MAX_WIDTH_OPTIONS,
+          type: "number",
+          label: "Max width (px, 0 = full)",
+          min: 0,
         },
         align: alignField,
       },
       defaultProps: {
-        padding: { top: "48", right: "24", bottom: "48", left: "24" },
+        padding: { top: 48, right: 24, bottom: 48, left: 24 },
         backgroundColor: "",
         textColor: "",
-        maxWidth: "1200",
+        maxWidth: 1200,
         align: "left",
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -603,7 +578,7 @@ export const pageBuilderConfig: Config<any> = {
         level: "h2",
         align: "left",
         color: "",
-        padding: { top: "0", right: "0", bottom: "16", left: "0" },
+        padding: { top: 0, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Heading as any,
@@ -618,15 +593,9 @@ export const pageBuilderConfig: Config<any> = {
         align: alignField,
         color: { type: "text", label: "Color (#hex)" },
         fontSize: {
-          type: "select",
+          type: "number",
           label: "Font size (px)",
-          options: [
-            { label: "14", value: "14" },
-            { label: "16", value: "16" },
-            { label: "18", value: "18" },
-            { label: "20", value: "20" },
-            { label: "24", value: "24" },
-          ],
+          min: 8,
         },
         padding: paddingField,
       },
@@ -634,8 +603,8 @@ export const pageBuilderConfig: Config<any> = {
         text: "",
         align: "left",
         color: "",
-        fontSize: "16",
-        padding: { top: "0", right: "0", bottom: "16", left: "0" },
+        fontSize: 16,
+        padding: { top: 0, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Paragraph as any,
@@ -647,26 +616,14 @@ export const pageBuilderConfig: Config<any> = {
         alt: { type: "text", label: "Alt text" },
         align: alignField,
         maxWidth: {
-          type: "select",
-          label: "Max width (px)",
-          options: [
-            { label: "Full width", value: "" },
-            { label: "400", value: "400" },
-            { label: "600", value: "600" },
-            { label: "800", value: "800" },
-            { label: "1000", value: "1000" },
-          ],
+          type: "number",
+          label: "Max width (px, 0 = full)",
+          min: 0,
         },
         borderRadius: {
-          type: "select",
+          type: "number",
           label: "Corner radius (px)",
-          options: [
-            { label: "None", value: "0" },
-            { label: "S (4)", value: "4" },
-            { label: "M (8)", value: "8" },
-            { label: "L (16)", value: "16" },
-            { label: "XL (24)", value: "24" },
-          ],
+          min: 0,
         },
         padding: paddingField,
       },
@@ -674,9 +631,9 @@ export const pageBuilderConfig: Config<any> = {
         src: "",
         alt: "",
         align: "center",
-        maxWidth: "800",
-        borderRadius: "8",
-        padding: { top: "0", right: "0", bottom: "16", left: "0" },
+        maxWidth: 800,
+        borderRadius: 8,
+        padding: { top: 0, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: ImageBlock as any,
@@ -689,7 +646,7 @@ export const pageBuilderConfig: Config<any> = {
       },
       defaultProps: {
         url: "",
-        padding: { top: "16", right: "0", bottom: "16", left: "0" },
+        padding: { top: 16, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Video as any,
@@ -726,7 +683,7 @@ export const pageBuilderConfig: Config<any> = {
         variant: "primary",
         size: "md",
         align: "left",
-        padding: { top: "8", right: "0", bottom: "8", left: "0" },
+        padding: { top: 8, right: 0, bottom: 8, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: ButtonBlock as any,
@@ -736,21 +693,16 @@ export const pageBuilderConfig: Config<any> = {
       fields: {
         color: { type: "text", label: "Color (#hex)" },
         thickness: {
-          type: "select",
+          type: "number",
           label: "Thickness (px)",
-          options: [
-            { label: "Hairline (1)", value: "1" },
-            { label: "Thin (2)", value: "2" },
-            { label: "Medium (4)", value: "4" },
-            { label: "Thick (8)", value: "8" },
-          ],
+          min: 1,
         },
         padding: paddingField,
       },
       defaultProps: {
         color: "#e6e6e6",
-        thickness: "1",
-        padding: { top: "16", right: "0", bottom: "16", left: "0" },
+        thickness: 1,
+        padding: { top: 16, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Divider as any,
@@ -758,13 +710,9 @@ export const pageBuilderConfig: Config<any> = {
     Spacer: {
       label: "Spacer",
       fields: {
-        height: {
-          type: "select",
-          label: "Height (px)",
-          options: SPACING_OPTIONS.filter((o) => o.value !== "0"),
-        },
+        height: { type: "number", label: "Height (px)", min: 1 },
       },
-      defaultProps: { height: "32" },
+      defaultProps: { height: 32 },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Spacer as any,
     },
@@ -779,11 +727,7 @@ export const pageBuilderConfig: Config<any> = {
             { label: "3 columns", value: 3 },
           ],
         },
-        gap: {
-          type: "select",
-          label: "Gap (px)",
-          options: SPACING_OPTIONS,
-        },
+        gap: { type: "number", label: "Gap (px)", min: 0 },
         padding: paddingField,
         // Slot fields let the author drop other blocks into each
         // column. Puck renders them as drop zones on the canvas.
@@ -793,8 +737,8 @@ export const pageBuilderConfig: Config<any> = {
       },
       defaultProps: {
         columns: 2,
-        gap: "24",
-        padding: { top: "16", right: "0", bottom: "16", left: "0" },
+        gap: 24,
+        padding: { top: 16, right: 0, bottom: 16, left: 0 },
       },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       render: Columns as any,
@@ -810,10 +754,10 @@ export const pageBuilderStarter = {
       type: "Section",
       props: {
         id: "Section-starter-1",
-        padding: { top: "48", right: "24", bottom: "48", left: "24" },
+        padding: { top: 48, right: 24, bottom: 48, left: 24 },
         backgroundColor: "#faf8f4",
         textColor: "",
-        maxWidth: "1200",
+        maxWidth: 1200,
         align: "center",
       },
     },
@@ -825,7 +769,7 @@ export const pageBuilderStarter = {
         level: "h1",
         align: "center",
         color: "",
-        padding: { top: "0", right: "0", bottom: "16", left: "0" },
+        padding: { top: 0, right: 0, bottom: 16, left: 0 },
       },
     },
     {
@@ -835,8 +779,8 @@ export const pageBuilderStarter = {
         text: "Use the sidebar on the left to drag blocks onto the canvas. Every block has its own padding, colours and layout controls — click one to see them in the right sidebar.",
         align: "center",
         color: "#404040",
-        fontSize: "18",
-        padding: { top: "0", right: "0", bottom: "24", left: "0" },
+        fontSize: 18,
+        padding: { top: 0, right: 0, bottom: 24, left: 0 },
       },
     },
   ],
