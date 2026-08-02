@@ -1649,7 +1649,17 @@ class FormulationPhoto(models.Model):
     persistence + preview. On sync the push cascade forwards any row
     with a null ``psp_uuid`` to PSP's finished-product item — the uuid
     the response returns caches back onto this row so re-syncs skip it.
+
+    ``purpose`` splits the pool into two disjoint galleries:
+    ``internal`` (Setup > Photos, spec / label reference) and
+    ``catalog`` (RTG storefront). ``is_primary`` and ``sort_order`` are
+    scoped per (formulation, purpose) — an internal primary doesn't
+    collide with a catalog primary.
     """
+
+    class Purpose(models.TextChoices):
+        INTERNAL = "internal", _("Internal spec / label reference")
+        CATALOG = "catalog", _("Ready-to-Go catalog storefront")
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
@@ -1668,12 +1678,24 @@ class FormulationPhoto(models.Model):
         blank=True,
         default="",
     )
+    purpose = models.CharField(
+        _("purpose"),
+        max_length=16,
+        choices=Purpose.choices,
+        default=Purpose.INTERNAL,
+        help_text=_(
+            "Which surface this photo belongs to. Internal photos live "
+            "on the Setup tab for the scientist; catalog photos drive "
+            "the customer-facing RTG storefront."
+        ),
+    )
     is_primary = models.BooleanField(
         _("is primary"),
         default=False,
         help_text=_(
-            "Marks the hero shot used on catalog cards + label "
-            "previews. Enforced single-primary in the service layer."
+            "Marks the hero shot for this photo's ``purpose`` scope. "
+            "Enforced single-primary per (formulation, purpose) in "
+            "the service layer."
         ),
     )
     sort_order = models.PositiveIntegerField(
@@ -1708,7 +1730,10 @@ class FormulationPhoto(models.Model):
         verbose_name_plural = _("formulation photos")
         ordering = ("-is_primary", "sort_order", "uploaded_at")
         indexes = [
-            models.Index(fields=("formulation", "-is_primary", "sort_order")),
+            models.Index(
+                fields=("formulation", "purpose", "-is_primary", "sort_order"),
+                name="formphoto_scope_idx",
+            ),
         ]
 
     def __str__(self) -> str:

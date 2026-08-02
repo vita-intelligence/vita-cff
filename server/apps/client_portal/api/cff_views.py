@@ -599,6 +599,10 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
         source="rtg_page_content", allow_null=True
     )
     hero_image_url = serializers.SerializerMethodField()
+    #: Full multi-photo gallery for the storefront (primary first).
+    #: Empty when staff hasn't added any. Portal renders the whole
+    #: list as a click-through gallery below the hero.
+    gallery = serializers.SerializerMethodField()
     base_price = serializers.DecimalField(
         source="rtg_base_price", max_digits=12, decimal_places=2,
     )
@@ -613,7 +617,36 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     # for cards published before the combo model existed.
     packaging_combos = serializers.SerializerMethodField()
 
+    def _catalog_photos(self, obj):
+        """Ordered catalog gallery for this formulation — primary
+        first, then explicit sort order. Cached on the wrapper so
+        both ``hero_image_url`` and ``gallery`` reuse the same query
+        per row without a second trip."""
+
+        cached = getattr(self, "_catalog_photos_cache", None)
+        if cached is not None and cached[0] is obj:
+            return cached[1]
+        from apps.formulations.models import FormulationPhoto
+
+        rows = list(
+            obj.photos.filter(
+                purpose=FormulationPhoto.Purpose.CATALOG,
+            ).order_by("-is_primary", "sort_order", "uploaded_at")
+        )
+        self._catalog_photos_cache = (obj, rows)
+        return rows
+
     def get_hero_image_url(self, obj) -> str | None:
+        # Prefer the primary catalog photo when the new gallery has
+        # anything at all — every card added post-migration comes in
+        # through the gallery, so the legacy hero is only a fallback
+        # for rows that pre-date the feature.
+        for photo in self._catalog_photos(obj):
+            if photo.image:
+                try:
+                    return photo.image.url
+                except ValueError:
+                    continue
         image = getattr(obj, "rtg_hero_image", None)
         if image and hasattr(image, "url"):
             try:
@@ -621,6 +654,25 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
             except ValueError:
                 return None
         return None
+
+    def get_gallery(self, obj) -> list[dict]:
+        out: list[dict] = []
+        for photo in self._catalog_photos(obj):
+            if not photo.image:
+                continue
+            try:
+                url = photo.image.url
+            except ValueError:
+                continue
+            out.append(
+                {
+                    "id": str(photo.id),
+                    "url": url,
+                    "caption": photo.caption,
+                    "is_primary": photo.is_primary,
+                }
+            )
+        return out
 
     def get_name(self, obj) -> str:
         display = (getattr(obj, "rtg_display_name", "") or "").strip()

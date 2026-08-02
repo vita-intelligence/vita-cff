@@ -64,6 +64,8 @@ import {
   deleteFormulationPhoto,
   fetchFormulationFiles,
   fetchFormulationPhotos,
+  replaceFormulationPhoto,
+  reorderFormulationPhotos,
   updateFormulationPhoto,
   uploadFormulationFile,
   uploadFormulationPhoto,
@@ -78,6 +80,7 @@ import {
   type FormulationFileDto,
   type FormulationFilesListDto,
   type FormulationPhotoDto,
+  type FormulationPhotoPurpose,
   type FormulationPhotosListDto,
   type PspCertificateCatalogDto,
   type UpdateFormulationCertificateRequestDto,
@@ -154,8 +157,18 @@ export const formulationsQueryKeys = {
     [...formulationsQueryKeys.all, orgId, "versions", formulationId] as const,
   overview: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "overview", formulationId] as const,
-  photos: (orgId: string, formulationId: string) =>
-    [...formulationsQueryKeys.all, orgId, "photos", formulationId] as const,
+  photos: (
+    orgId: string,
+    formulationId: string,
+    purpose?: FormulationPhotoPurpose,
+  ) =>
+    [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "photos",
+      formulationId,
+      purpose ?? "all",
+    ] as const,
   files: (orgId: string, formulationId: string) =>
     [...formulationsQueryKeys.all, orgId, "files", formulationId] as const,
   certificates: (orgId: string, formulationId: string) =>
@@ -1000,13 +1013,34 @@ export function useSetApprovedVersion(
 export function useFormulationPhotos(
   orgId: string,
   formulationId: string,
+  purpose?: FormulationPhotoPurpose,
 ): UseQueryResult<FormulationPhotosListDto, ApiError> {
   return useQuery<FormulationPhotosListDto, ApiError>({
-    queryKey: formulationsQueryKeys.photos(orgId, formulationId),
-    queryFn: () => fetchFormulationPhotos(orgId, formulationId),
+    queryKey: formulationsQueryKeys.photos(orgId, formulationId, purpose),
+    queryFn: () => fetchFormulationPhotos(orgId, formulationId, purpose),
     enabled: Boolean(orgId && formulationId),
   });
 }
+
+
+// Every photo mutation invalidates ``photos`` at the formulation level
+// so both the scoped Setup / Catalog gallery queries pick up the
+// change without each mutation needing to know which scope's cached.
+function invalidateAllPhotoScopes(
+  queryClient: ReturnType<typeof useQueryClient>,
+  orgId: string,
+  formulationId: string,
+): void {
+  queryClient.invalidateQueries({
+    queryKey: [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "photos",
+      formulationId,
+    ],
+  });
+}
+
 
 export function useUploadFormulationPhoto(
   orgId: string,
@@ -1014,15 +1048,18 @@ export function useUploadFormulationPhoto(
 ): UseMutationResult<
   { photo: FormulationPhotoDto },
   ApiError,
-  { file: File; caption?: string; is_primary?: boolean }
+  {
+    file: File;
+    caption?: string;
+    is_primary?: boolean;
+    purpose?: FormulationPhotoPurpose;
+  }
 > {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (args) => uploadFormulationPhoto(orgId, formulationId, args),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
-      });
+      invalidateAllPhotoScopes(queryClient, orgId, formulationId);
     },
   });
 }
@@ -1033,16 +1070,52 @@ export function useUpdateFormulationPhoto(
 ): UseMutationResult<
   { photo: FormulationPhotoDto },
   ApiError,
-  { photoId: string; patch: { caption?: string; is_primary?: boolean } }
+  {
+    photoId: string;
+    patch: { caption?: string; is_primary?: boolean; sort_order?: number };
+  }
 > {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ photoId, patch }) =>
       updateFormulationPhoto(orgId, formulationId, photoId, patch),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
-      });
+      invalidateAllPhotoScopes(queryClient, orgId, formulationId);
+    },
+  });
+}
+
+export function useReplaceFormulationPhoto(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  { photo: FormulationPhotoDto },
+  ApiError,
+  { photoId: string; file: File }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ photoId, file }) =>
+      replaceFormulationPhoto(orgId, formulationId, photoId, file),
+    onSuccess: () => {
+      invalidateAllPhotoScopes(queryClient, orgId, formulationId);
+    },
+  });
+}
+
+export function useReorderFormulationPhotos(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  FormulationPhotosListDto,
+  ApiError,
+  { purpose: FormulationPhotoPurpose; order: readonly string[] }
+> {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (args) => reorderFormulationPhotos(orgId, formulationId, args),
+    onSuccess: () => {
+      invalidateAllPhotoScopes(queryClient, orgId, formulationId);
     },
   });
 }
@@ -1056,9 +1129,7 @@ export function useDeleteFormulationPhoto(
     mutationFn: (photoId: string) =>
       deleteFormulationPhoto(orgId, formulationId, photoId),
     onSuccess: () => {
-      queryClient.invalidateQueries({
-        queryKey: formulationsQueryKeys.photos(orgId, formulationId),
-      });
+      invalidateAllPhotoScopes(queryClient, orgId, formulationId);
     },
   });
 }

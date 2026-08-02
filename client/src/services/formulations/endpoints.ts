@@ -62,6 +62,8 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulations/${formulationId}/photos/`,
   photoDetail: (orgId: string, formulationId: string, photoId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/photos/${photoId}/`,
+  photosReorder: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/photos/reorder/`,
   files: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/files/`,
   fileDetail: (orgId: string, formulationId: string, fileId: string) =>

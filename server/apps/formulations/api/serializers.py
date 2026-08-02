@@ -286,6 +286,13 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     #: button until this is true so scientists can't accidentally
     #: expose an unfinished SKU on the customer catalog.
     has_approved_final_spec = serializers.SerializerMethodField()
+    #: Photos on the RTG catalog storefront (``purpose='catalog'``).
+    #: Ordered primary-first so the FE gallery + portal can pluck the
+    #: hero without extra sorting. Photos on the internal Setup tab
+    #: (``purpose='internal'``) surface via a separate endpoint —
+    #: they're deliberately not on this payload to keep the RTG panel
+    #: read-model focused.
+    catalog_photos = serializers.SerializerMethodField()
 
     class Meta:
         model = Formulation
@@ -381,6 +388,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "rtg_currency_code",
             "packaging_combos_count",
             "has_approved_final_spec",
+            "catalog_photos",
             "created_at",
             "updated_at",
         )
@@ -583,6 +591,30 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             )
             .exists()
         )
+
+    def get_catalog_photos(self, obj: Formulation) -> list[dict[str, Any]]:
+        """Serialised photos in the RTG catalog scope, primary first.
+
+        Deliberately narrow (id / url / caption / is_primary /
+        sort_order) — the FE gallery + portal storefront don't need
+        the PSP mirror uuid or upload metadata that Setup > Photos
+        surfaces. Keeps the RTG payload lean."""
+
+        from apps.formulations.models import FormulationPhoto
+
+        rows = obj.photos.filter(
+            purpose=FormulationPhoto.Purpose.CATALOG,
+        ).order_by("-is_primary", "sort_order", "uploaded_at")
+        return [
+            {
+                "id": str(p.id),
+                "url": p.image.url if p.image else None,
+                "caption": p.caption,
+                "is_primary": p.is_primary,
+                "sort_order": p.sort_order,
+            }
+            for p in rows
+        ]
 
     def get_derived_allergen_uuids(self, obj: Formulation) -> list[str]:
         """Parallel list to :meth:`get_derived_allergen_keys` — the

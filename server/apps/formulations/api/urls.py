@@ -10,6 +10,7 @@ from apps.formulations.api.photo_file_views import (
     FormulationFileDetailView,
     FormulationFilesView,
     FormulationPhotoDetailView,
+    FormulationPhotoReorderView,
     FormulationPhotosView,
 )
 from apps.formulations.api.certificate_views import (
@@ -198,6 +199,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/photos/<uuid:photo_id>/",
         FormulationPhotoDetailView.as_view(),
         name="formulation-photo-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/photos/reorder/",
+        FormulationPhotoReorderView.as_view(),
+        name="formulation-photos-reorder",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/files/",
