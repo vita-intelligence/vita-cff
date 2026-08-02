@@ -36,7 +36,6 @@ export function PageBuilderClient({ orgId, formulation, canEdit }: Props) {
           `/api/organizations/${orgId}/formulations/${formulation.id}/rtg-publish/`,
           form,
         );
-        router.refresh();
       } catch (error) {
         const api = normalizeApiError(error);
         throw new Error(
@@ -46,13 +45,21 @@ export function PageBuilderClient({ orgId, formulation, canEdit }: Props) {
         );
       }
     },
-    [formulation.id, orgId, router],
+    [formulation.id, orgId],
   );
+
+  const handleAfterSave = useCallback(() => {
+    // Back to the project overview so the author sees the RTG
+    // catalog panel with the new state.
+    router.push(`/formulations/${formulation.id}`);
+    router.refresh();
+  }, [formulation.id, router]);
 
   return (
     <PageBuilderEditor
       initialData={formulation.rtg_page_content ?? null}
       onSave={handleSave}
+      onAfterSave={handleAfterSave}
       title={
         formulation.rtg_display_name || formulation.name || "Product page"
       }
