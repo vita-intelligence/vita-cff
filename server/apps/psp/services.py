@@ -2778,15 +2778,88 @@ def _unit_factor_for(item: Any) -> Decimal:
     return _UOM_MG_FACTOR.get(unit, Decimal("1"))
 
 
-def _has_known_unit(item: Any) -> bool:
-    """True when the item carries a mass/volume unit we can convert
-    mg into (kg / g / mg / l / ml). Count-based or blank units land
-    here as False so :func:`_bom_lines_from` can drop the line and
-    log a warning — silently sending an mg quantity onwards is how
-    the "Water 160,165 mg for 10 L drink" bug happened."""
+def _unit_symbol_for(item: Any) -> str:
+    """Return the child item's unit symbol lowercased (kg / g / mg /
+    l / ml) or the empty string when the item has no unit set on
+    NPD's mirror. The caller decides how to interpret the blank
+    (fall back to ``"mg"`` since NPD compute is mg, or leave the
+    line untyped).
+    """
 
-    unit = str(getattr(item, "unit", "") or "").strip().lower()
-    return unit in _UOM_MG_FACTOR
+    return str(getattr(item, "unit", "") or "").strip().lower()
+
+
+# In-memory cache of PSP's UoM catalogue keyed by
+# ``(organization_pk, lowered_symbol)``. The catalogue is small and
+# essentially static per company; caching it keeps the BOM push
+# from making an extra roundtrip per formulation save. Cleared on
+# demand via :func:`_reset_psp_unit_cache` in tests.
+_PSP_UNIT_CACHE: dict[tuple[Any, str], str] = {}
+
+
+def _psp_uom_uuid_for(
+    client: "PspClient", organization: Any, symbol: str
+) -> str | None:
+    """Look up a PSP UoM UUID by symbol (case-insensitive). Lazy-
+    populates :data:`_PSP_UNIT_CACHE` on first call per org so a
+    formulation with N lines only pays for one PSP round-trip.
+
+    Returns ``None`` when PSP has no UoM with that symbol — the
+    caller decides whether to skip the field (send the line without
+    ``uom_uuid``, keeping the legacy fall-back-to-part-stock-UoM
+    behaviour on PSP) or refuse the line entirely.
+    """
+
+    key = str(symbol or "").strip().lower()
+    if not key:
+        return None
+    org_key = getattr(organization, "pk", None) or getattr(organization, "id", None)
+    cache_key = (org_key, key)
+    hit = _PSP_UNIT_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    try:
+        rows = client.list_units_of_measurement()
+    except PspError:
+        logger.exception(
+            "PSP push_bom: list_units_of_measurement failed while "
+            "resolving symbol=%r for org %s",
+            key,
+            org_key,
+        )
+        return None
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").strip().lower()
+        uuid = str(row.get("uuid") or "").strip()
+        if sym and uuid:
+            _PSP_UNIT_CACHE[(org_key, sym)] = uuid
+    return _PSP_UNIT_CACHE.get(cache_key)
+
+
+def _resolve_line_uom_uuid(
+    client: "PspClient",
+    organization: Any,
+    item: Any,
+) -> str | None:
+    """Best-effort resolve of the per-line UoM UUID to embed in the
+    PSP BOM push. Uses the child item's declared unit when known;
+    falls back to ``"mg"`` because that's NPD's compute unit — any
+    quantity from :attr:`FormulationLine.mg_per_serving_cached`
+    that reaches PSP without a scaling factor is literally mg, so
+    tagging it as mg keeps the display honest even when the item
+    itself has no ``stock_uom`` on PSP.
+
+    Returns ``None`` when PSP has no matching symbol in its
+    catalogue — the caller lets the line ride through without a UoM
+    marker (legacy behaviour) rather than blocking the push.
+    """
+
+    symbol = _unit_symbol_for(item)
+    if not symbol:
+        symbol = "mg"
+    return _psp_uom_uuid_for(client, organization, symbol)
 
 
 def _bom_lines_from(
@@ -2794,6 +2867,8 @@ def _bom_lines_from(
     *,
     start_index: int = 0,
     servings_per_output_unit: Decimal | None = None,
+    client: "PspClient | None" = None,
+    organization: Any = None,
 ) -> list[dict[str, Any]]:
     """Project a list of ``FormulationLine`` rows into the PSP BOM
     line shape. Skips rows whose local Item has no ``psp_source_uuid``
@@ -2806,6 +2881,12 @@ def _bom_lines_from(
     scales mg-based lines to PSP's per-1-parent-unit BOM convention.
     Defaults to 1.0 so callers that don't know the stage context
     preserve the legacy behavior.
+
+    ``client`` + ``organization`` — when both provided, each output
+    line gets a ``uom_uuid`` tag so PSP renders "600 mg" instead of
+    a bare "600". Missing either arg falls back to the legacy
+    UoM-less shape (PSP resolves the line's UoM from the part's
+    stock_uom, which may be null).
 
     Manual picks (``source_kind == "manual"``) bypass the mg → UoM
     conversion — their ``label_claim_mg`` is the user-typed qty in
@@ -2833,22 +2914,11 @@ def _bom_lines_from(
             #   qty = mg_per_serving × servings_per_output_unit
             #                        × unit_factor(child)
             #
-            # Refuse to push a mg quantity when the child item has no
-            # known mass/volume unit — the unit_factor would silently
-            # default to 1 and PSP would receive the raw mg number,
-            # which is exactly how "Water 160,165 mg / 10 L" landed
-            # in a manufacturing order. Better to skip the line and
-            # log so the operator fixes the item's UoM first.
-            if not _has_known_unit(item):
-                logger.warning(
-                    "PSP push_bom: skipping line for item %s (%s) — "
-                    "no known unit on Item.unit=%r; a mg qty would "
-                    "have been sent uncoverted.",
-                    getattr(item, "pk", "?"),
-                    getattr(item, "name", "?"),
-                    getattr(item, "unit", None),
-                )
-                continue
+            # When the child item's ``unit`` is blank / unknown the
+            # factor is 1 (identity) and the qty stays in raw mg.
+            # The push still lands — the paired ``uom_uuid`` below
+            # tags the line as ``mg`` so PSP renders the correct
+            # unit label instead of an ambiguous bare number.
             qty = (
                 Decimal(str(raw_qty))
                 * servings
@@ -2856,13 +2926,16 @@ def _bom_lines_from(
             )
         if qty <= 0:
             continue
-        out.append(
-            {
-                "part_uuid": str(item.psp_source_uuid),
-                "qty": str(qty),
-                "sort_order": start_index + offset,
-            }
-        )
+        row: dict[str, Any] = {
+            "part_uuid": str(item.psp_source_uuid),
+            "qty": str(qty),
+            "sort_order": start_index + offset,
+        }
+        if client is not None and organization is not None:
+            uom_uuid = _resolve_line_uom_uuid(client, organization, item)
+            if uom_uuid:
+                row["uom_uuid"] = uom_uuid
+        out.append(row)
     return out
 
 
@@ -2871,6 +2944,8 @@ def _override_to_bom_lines(
     *,
     item_lookup_by_local_id: dict[str, dict[str, str]],
     servings_per_output_unit: Decimal | None = None,
+    client: "PspClient | None" = None,
+    organization: Any = None,
 ) -> list[dict[str, Any]]:
     """Project the FE-computed stage snapshot into the PSP BOM line
     shape. Each incoming row is ``{"item_id", "mg", "sort_order"}``
@@ -2883,6 +2958,11 @@ def _override_to_bom_lines(
     child PSP uuid AND convert mg → the child's native stock UoM.
     ``servings_per_output_unit`` scales per-serving mg into the
     per-1-parent-unit that PSP's BOM math expects (defaults to 1.0).
+
+    ``client`` + ``organization`` — when both provided, each output
+    line gets a ``uom_uuid`` tag (from the child's declared unit, or
+    ``mg`` when the item has none) so PSP renders the qty with its
+    real unit label.
 
     Rows without a resolvable PSP uuid (unmirrored placeholders from
     empty picker bands) or with non-positive mg are dropped so the
@@ -2913,20 +2993,11 @@ def _override_to_bom_lines(
         if mg <= 0:
             continue
         unit = (info["unit"] if info else "").strip().lower()
-        if unit not in _UOM_MG_FACTOR:
-            # Same guard as :func:`_bom_lines_from` — no known unit
-            # means the mg qty would ride through unconverted. Skip
-            # + log; the operator fixes the child item's Stock UoM
-            # on PSP and re-runs Save-stages.
-            logger.warning(
-                "PSP push_bom (override): skipping row psp_uuid=%s — "
-                "no known unit (info=%r); a mg qty would have been "
-                "sent unconverted.",
-                psp_uuid,
-                info,
-            )
-            continue
-        unit_factor = _UOM_MG_FACTOR[unit]
+        # Unknown / blank unit ⇒ leave qty in raw mg (factor 1) so
+        # the number matches NPD's mg-based compute. The paired
+        # ``uom_uuid`` below tags the line as mg so PSP renders
+        # "160,165 mg" rather than an ambiguous "160,165".
+        unit_factor = _UOM_MG_FACTOR.get(unit, Decimal("1"))
         qty = mg * servings * unit_factor
         if qty <= 0:
             continue
@@ -2934,13 +3005,24 @@ def _override_to_bom_lines(
             sort_order = int(row.get("sort_order", len(out)))
         except (TypeError, ValueError):
             sort_order = len(out)
-        out.append(
-            {
-                "part_uuid": str(psp_uuid),
-                "qty": str(qty),
-                "sort_order": sort_order,
-            }
-        )
+        line_row: dict[str, Any] = {
+            "part_uuid": str(psp_uuid),
+            "qty": str(qty),
+            "sort_order": sort_order,
+        }
+        if client is not None and organization is not None:
+            # Reuse the same fallback rule as the item-driven path:
+            # child's unit if known, else mg.
+            line_row["uom_uuid"] = _psp_uom_uuid_for(
+                client,
+                organization,
+                unit if unit in _UOM_MG_FACTOR else "mg",
+            )
+            # Drop the key entirely when the lookup came back empty
+            # so the payload stays clean.
+            if not line_row["uom_uuid"]:
+                line_row.pop("uom_uuid")
+        out.append(line_row)
     return out
 
 
@@ -2965,12 +3047,16 @@ def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
     lines = _bom_lines_from(
         _lines_for_stage(formulation, stage_id=None),
         servings_per_output_unit=fallback_servings,
+        client=client,
+        organization=formulation.organization,
     )
     all_lines = _bom_lines_from(
         list(
             formulation.lines.select_related("item").order_by("display_order")
         ),
         servings_per_output_unit=fallback_servings,
+        client=client,
+        organization=formulation.organization,
     )
     # A formulation with NULL-stage lines + no stages carries the
     # same set both ways; keeping ``all_lines`` as the source of
@@ -3108,6 +3194,8 @@ def _push_staged_cascade(
                 override,
                 item_lookup_by_local_id=override_item_lookup,
                 servings_per_output_unit=stage_servings,
+                client=client,
+                organization=formulation.organization,
             )
         else:
             assigned = _lines_for_stage(formulation, stage_id=stage.id)
@@ -3116,7 +3204,10 @@ def _push_staged_cascade(
                     formulation, stage_id=None
                 )
             bom_lines = _bom_lines_from(
-                assigned, servings_per_output_unit=stage_servings
+                assigned,
+                servings_per_output_unit=stage_servings,
+                client=client,
+                organization=formulation.organization,
             )
 
         # Prior-stage semi input: how many stock-units of the prior
