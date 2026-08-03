@@ -765,6 +765,65 @@ def _short_id(raw: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _refresh_incomplete_batch_chain_status(formulation: Formulation) -> None:
+    """Best-effort refresh of ``TrialBatch.psp_all_stages_completed``
+    for every batch on this formulation that:
+
+    * has a linked PSP MO (``psp_manufacturing_order_uuid`` set), and
+    * is still cached as ``False`` (i.e. the last known chain state
+      had at least one non-completed stage).
+
+    Called before the QC-tab gate is computed so the gate lifts on
+    the very first overview render after the shop floor closes out
+    the trial run — even if the user never opens the trial-batch
+    detail page (which is the other place the flag gets refreshed).
+
+    Silent-degrade posture:
+
+    * If PSP isn't configured / is unreachable / returns an error →
+      we leave the flag alone. The overview endpoint absolutely
+      cannot 500 because PSP is having a bad afternoon.
+    * If the chain is empty or malformed → we leave the flag alone.
+    * Once a batch's flag flips to ``True`` we stop touching it —
+      MOs don't un-complete themselves.
+    """
+
+    from apps.trial_batches.models import TrialBatch
+
+    incomplete = list(
+        TrialBatch.objects.filter(
+            formulation_version__formulation=formulation,
+            psp_all_stages_completed=False,
+            psp_manufacturing_order_uuid__isnull=False,
+        ).only("id", "organization_id", "psp_manufacturing_order_uuid")
+    )
+    if not incomplete:
+        return
+
+    from apps.psp.services import get_psp_manufacturing_order_chain
+
+    for batch in incomplete:
+        try:
+            payload = get_psp_manufacturing_order_chain(
+                organization=batch.organization,
+                mo_uuid=batch.psp_manufacturing_order_uuid,
+            )
+        except Exception:
+            # Any PSP failure — network, auth, decrypt, server —
+            # keeps the flag stale rather than blowing up the
+            # overview render. The panel-side poll will retry later.
+            continue
+        if not payload:
+            continue
+        chain = payload.get("chain") or []
+        all_completed = bool(chain) and all(
+            (node.get("status") or "") == "completed" for node in chain
+        )
+        if all_completed:
+            batch.psp_all_stages_completed = True
+            batch.save(update_fields=["psp_all_stages_completed"])
+
+
 def _compute_stage_gates(formulation: Formulation) -> StageGates:
     """Wizard-style gate map for the project workspace tabs.
 
@@ -793,8 +852,20 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         customer_signed_at__isnull=False,
     ).exists()
 
-    has_trial_batch = TrialBatch.objects.filter(
-        formulation_version__formulation=formulation
+    # QC unlocks only when at least one trial batch has actually
+    # been produced end-to-end — i.e. its PSP MO chain (finished-
+    # product parent + every semi-finished child) is all
+    # ``status = completed``. The flag is cached locally on the
+    # trial batch and refreshed by the trial-batch panel poll
+    # (20s cadence) plus the inline refresh below on overview
+    # renders. Existing behaviour ("any trial batch") isn't good
+    # enough — validating a formulation before the trial run is
+    # done gives a QC certificate for a product that doesn't
+    # physically exist yet.
+    _refresh_incomplete_batch_chain_status(formulation)
+    has_completed_trial_batch = TrialBatch.objects.filter(
+        formulation_version__formulation=formulation,
+        psp_all_stages_completed=True,
     ).exists()
 
     # Builder-complete: at least one stage exists, at least one line
@@ -984,7 +1055,7 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         trial_batches=has_approved_spec
         if is_rtg
         else has_customer_signed_proposal,
-        qc=has_trial_batch,
+        qc=has_completed_trial_batch,
     )
 
 

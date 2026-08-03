@@ -135,7 +135,7 @@ export function ProjectShell({
       count: overview.qc.total,
       lockedReason: gates.qc
         ? undefined
-        : "Run at least one trial batch to unlock QC.",
+        : "Finish a trial run first — create a PSP MO on a trial batch and let the shop floor close every stage before QC unlocks.",
     },
     {
       key: "history",
