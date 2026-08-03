@@ -11,6 +11,7 @@ from apps.psp.api.views import (
     PspItemDetailView,
     PspItemListView,
     PspItemMirrorView,
+    PspRndWarehousesListView,
     PspTestConnectionView,
     PspAllergensListView,
     PspProductFamiliesListView,
@@ -98,6 +99,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/integrations/psp/storage-tags/",
         PspStorageTagsListView.as_view(),
         name="psp-storage-tags",
+    ),
+    # Create-MO-on-PSP warehouse dropdown. PSP filters to warehouses
+    # with ≥1 R&D-tagged cell so a scientist can only route trial
+    # batches to warehouses actually set up for R&D flow.
+    path(
+        "organizations/<uuid:org_id>/integrations/psp/rnd-warehouses/",
+        PspRndWarehousesListView.as_view(),
+        name="psp-rnd-warehouses",
     ),
     # Create a new PSP finished-product item from the New-formulation
     # dialog when the scientist doesn't want to link an existing SKU.

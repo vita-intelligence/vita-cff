@@ -27,7 +27,7 @@ import {
   Package,
   X,
 } from "lucide-react";
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import { useTranslations } from "next-intl";
@@ -38,7 +38,7 @@ import {
   type PspTrialMoChainNodeDto,
   type TrialBatchDto,
 } from "@/services/trial_batches";
-import { usePspConfig } from "@/services/psp";
+import { usePspRndWarehouses } from "@/services/psp";
 
 
 export function PspMoPanel({
@@ -111,7 +111,6 @@ function CreateMoModal({
   onClose: () => void;
 }) {
   const tErrors = useTranslations("errors");
-  const pspConfig = usePspConfig(orgId);
 
   // Quantity, project_type, and finished-product uuid all live
   // elsewhere already:
@@ -122,6 +121,12 @@ function CreateMoModal({
   // field-design smell (see CLAUDE.md rule #2 — "if it can be
   // computed, don't ask"). Only genuinely optional annotations
   // remain in the form.
+  //
+  // Warehouse is the exception — it's a per-MO choice (multi-site
+  // R&D setups can route different trial batches to different
+  // R&D warehouses) so we ask via a dropdown filtered to
+  // warehouses PSP has flagged as R&D-tagged.
+  const [warehouseUuid, setWarehouseUuid] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [banner, setBanner] = useState<
@@ -129,16 +134,36 @@ function CreateMoModal({
     | null
   >(null);
 
-  const createMutation = useCreateTrialBatchPspMo(orgId, batch.id);
+  const warehousesQuery = usePspRndWarehouses(orgId);
+  const warehouses = warehousesQuery.data?.items ?? [];
+  const warehousesLoading = warehousesQuery.isLoading;
+  const noRndWarehouses =
+    !warehousesLoading && warehouses.length === 0;
 
-  const warehouseUuid = pspConfig.data?.psp_warehouse_uuid ?? "";
-  const warehouseMissing = pspConfig.isSuccess && !warehouseUuid;
+  // Auto-select the only option — a company with a single R&D
+  // warehouse shouldn't force the scientist to open a dropdown of
+  // one to pick the obvious answer.
+  useEffect(() => {
+    if (!warehouseUuid && warehouses.length === 1 && warehouses[0]?.uuid) {
+      setWarehouseUuid(warehouses[0].uuid);
+    }
+  }, [warehouseUuid, warehouses]);
+
+  const createMutation = useCreateTrialBatchPspMo(orgId, batch.id);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBanner(null);
+    if (!warehouseUuid) {
+      setBanner({
+        kind: "error",
+        message: "Pick a PSP warehouse for this MO.",
+      });
+      return;
+    }
     try {
       await createMutation.mutateAsync({
+        warehouse_uuid: warehouseUuid,
         due_date: dueDate.trim() || undefined,
         notes: notes.trim() || undefined,
       });
@@ -180,10 +205,11 @@ function CreateMoModal({
           </button>
         </div>
 
-        {warehouseMissing ? (
+        {noRndWarehouses ? (
           <div className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-inset ring-amber-200">
-            No PSP warehouse configured on /settings/integrations. Set
-            the R&amp;D warehouse UUID there before creating an MO.
+            No R&amp;D warehouse configured on PSP. Tag at least one
+            cell (or rack) with the reserved <code>rnd</code> tag on
+            PSP&apos;s warehouse editor before creating an MO.
           </div>
         ) : null}
 
@@ -206,6 +232,41 @@ function CreateMoModal({
               different size, edit the trial batch first.
             </p>
           </dl>
+
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="psp-mo-warehouse"
+              className="text-xs font-medium text-ink-700"
+            >
+              R&amp;D warehouse on PSP
+            </label>
+            <select
+              id="psp-mo-warehouse"
+              value={warehouseUuid}
+              onChange={(e) => setWarehouseUuid(e.target.value)}
+              required
+              disabled={warehousesLoading || noRndWarehouses}
+              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-ink-50 disabled:text-ink-400"
+            >
+              <option value="">
+                {warehousesLoading
+                  ? "Loading warehouses…"
+                  : noRndWarehouses
+                    ? "No R&D warehouse available"
+                    : "Select a warehouse…"}
+              </option>
+              {warehouses.map((w) => (
+                <option key={w.uuid} value={w.uuid}>
+                  {w.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] text-ink-500">
+              Filtered to warehouses with at least one R&amp;D-tagged
+              cell — trial-batch consumption + finished output land
+              here, isolated from production stock.
+            </p>
+          </div>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex flex-col gap-1.5">
@@ -250,7 +311,12 @@ function CreateMoModal({
             </button>
             <button
               type="submit"
-              disabled={createMutation.isPending || warehouseMissing}
+              disabled={
+                createMutation.isPending ||
+                noRndWarehouses ||
+                warehousesLoading ||
+                !warehouseUuid
+              }
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-ink-0 hover:bg-emerald-700 disabled:opacity-60"
             >
               {createMutation.isPending ? (

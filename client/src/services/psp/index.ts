@@ -32,6 +32,7 @@ export {
   usePspItems,
   usePspAllergens,
   usePspProductFamilies,
+  usePspRndWarehouses,
   usePspStorageTags,
   usePspUnitsOfMeasurement,
   usePspWorkstationGroups,
