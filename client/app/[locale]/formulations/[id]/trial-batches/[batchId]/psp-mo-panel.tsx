@@ -54,7 +54,20 @@ export function PspMoPanel({
 }) {
   const moUuid = batch.psp_manufacturing_order_uuid;
 
-  if (moUuid) {
+  // Pull the chain so we know the root MO's status. If the previously
+  // linked MO ended in ``cancelled``, PSP's partial unique index has
+  // freed the trial-batch slot, so the scientist can re-fire Create
+  // MO to spawn a fresh chain (same trial batch, new run). We show
+  // the button in place of the chip in that case — the trial batch
+  // is the plan, cancellation abandons only the run.
+  const chainQuery = useTrialBatchPspMoChain(orgId, batch.id, {
+    enabled: !!moUuid,
+    refetchInterval: 20_000,
+  });
+  const rootStatus = chainQuery.data?.chain?.[0]?.status;
+  const linkedButCancelled = !!moUuid && rootStatus === "cancelled";
+
+  if (moUuid && !linkedButCancelled) {
     return (
       <LinkedMoChip
         orgId={orgId}
@@ -65,29 +78,53 @@ export function PspMoPanel({
     );
   }
 
-  return <CreateMoButton orgId={orgId} batch={batch} />;
+  return (
+    <CreateMoButton
+      orgId={orgId}
+      batch={batch}
+      previousCancelled={linkedButCancelled}
+    />
+  );
 }
 
 
 function CreateMoButton({
   orgId,
   batch,
+  previousCancelled = false,
 }: {
   orgId: string;
   batch: TrialBatchDto;
+  /** True when the trial batch had an MO but it was cancelled on
+   *  PSP — the button label + tooltip flip to reflect a retry rather
+   *  than a first-time create. */
+  previousCancelled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+
+  const label = previousCancelled ? "Create new MO" : "Create MO on PSP";
+  const title = previousCancelled
+    ? "The previous MO was cancelled on PSP — click to spawn a fresh chain against the same trial batch."
+    : "Create a Manufacturing Order on PSP for this trial batch";
 
   return (
     <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Create a Manufacturing Order on PSP for this trial batch"
+        title={title}
+        aria-label={previousCancelled ? `${label} (previous was cancelled)` : label}
         className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-sm font-medium text-ink-0 transition-colors hover:bg-emerald-700"
       >
         <FlaskConical className="h-4 w-4" />
-        Create MO on PSP
+        {label}
+        {previousCancelled ? (
+          <span
+            aria-hidden
+            className="ml-0.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-300"
+            title="Previous MO was cancelled"
+          />
+        ) : null}
       </button>
       {open ? (
         <CreateMoModal

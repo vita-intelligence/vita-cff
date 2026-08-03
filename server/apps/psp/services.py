@@ -494,10 +494,19 @@ class PspClient:
         instead of a generic "PSP said no".
         """
 
+        # ``quantity`` may arrive as int / str / Decimal — normalise to
+        # a plain string so ``json.dumps`` doesn't choke on Decimal.
+        # PSP parses the field with :decimal, so a numeric string round-
+        # trips cleanly including fractions (e.g. "0.166667" packs).
+        if isinstance(quantity, Decimal):
+            quantity_serial: Any = format(quantity, "f")
+        else:
+            quantity_serial = quantity
+
         body: dict[str, Any] = {
             "item_uuid": str(item_uuid or "").strip(),
             "warehouse_uuid": str(warehouse_uuid or "").strip(),
-            "quantity": quantity,
+            "quantity": quantity_serial,
             "npd_trial_batch_uuid": str(npd_trial_batch_uuid or "").strip(),
             "project_type": project_type or "trial",
             "notes": notes or "",
@@ -2789,53 +2798,144 @@ def _unit_symbol_for(item: Any) -> str:
     return str(getattr(item, "unit", "") or "").strip().lower()
 
 
-# In-memory cache of PSP's UoM catalogue keyed by
-# ``(organization_pk, lowered_symbol)``. The catalogue is small and
-# essentially static per company; caching it keeps the BOM push
-# from making an extra roundtrip per formulation save. Cleared on
-# demand via :func:`_reset_psp_unit_cache` in tests.
-_PSP_UNIT_CACHE: dict[tuple[Any, str], str] = {}
+# In-memory catalog of PSP's UoM registry per organization. Filled
+# lazily on first BOM push so the round-trip cost is amortised
+# across every line in the formulation. Two views:
+#
+# * ``_PSP_UNIT_INFO_CACHE`` — keyed by ``(org_pk, symbol_lower)``:
+#   ``{uuid, symbol, dimension, factor_to_base: Decimal, is_base: bool}``.
+#   Used to convert a source qty into PSP's base unit and tag the
+#   line with the base UoM's uuid.
+# * ``_PSP_UNIT_BASE_CACHE`` — keyed by ``(org_pk, dimension)`` →
+#   the same shape as above for whichever UoM has ``is_base=true``.
+#   Used to find "the kg for mass" / "the L for volume" without
+#   scanning the catalog per lookup.
+#
+# Both are cleared via :func:`_reset_psp_unit_cache` in tests.
+_PSP_UNIT_INFO_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
+_PSP_UNIT_BASE_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
+# Legacy alias — external tests reference the old name. Points at
+# ``_PSP_UNIT_INFO_CACHE`` so its cache-invalidation semantics carry
+# through.
+_PSP_UNIT_CACHE = _PSP_UNIT_INFO_CACHE
 
 
-def _psp_uom_uuid_for(
-    client: "PspClient", organization: Any, symbol: str
-) -> str | None:
-    """Look up a PSP UoM UUID by symbol (case-insensitive). Lazy-
-    populates :data:`_PSP_UNIT_CACHE` on first call per org so a
-    formulation with N lines only pays for one PSP round-trip.
+def _load_psp_unit_catalog(
+    client: "PspClient", organization: Any
+) -> Any:
+    """Populate the UoM caches for ``organization`` if not already
+    warm. Returns the organization's cache key so the caller can do
+    subsequent lookups without recomputing the key. Silently no-ops
+    (leaves caches empty) when PSP is unreachable — the caller
+    still ships the line, minus the ``uom_uuid`` tag."""
 
-    Returns ``None`` when PSP has no UoM with that symbol — the
-    caller decides whether to skip the field (send the line without
-    ``uom_uuid``, keeping the legacy fall-back-to-part-stock-UoM
-    behaviour on PSP) or refuse the line entirely.
-    """
-
-    key = str(symbol or "").strip().lower()
-    if not key:
-        return None
     org_key = getattr(organization, "pk", None) or getattr(organization, "id", None)
-    cache_key = (org_key, key)
-    hit = _PSP_UNIT_CACHE.get(cache_key)
-    if hit is not None:
-        return hit
+    already_hot = any(k[0] == org_key for k in _PSP_UNIT_INFO_CACHE)
+    if already_hot:
+        return org_key
     try:
         rows = client.list_units_of_measurement()
     except PspError:
         logger.exception(
-            "PSP push_bom: list_units_of_measurement failed while "
-            "resolving symbol=%r for org %s",
-            key,
+            "PSP push_bom: list_units_of_measurement failed for org %s",
             org_key,
         )
-        return None
+        return org_key
     for row in rows or []:
         if not isinstance(row, dict):
             continue
         sym = str(row.get("symbol") or "").strip().lower()
         uuid = str(row.get("uuid") or "").strip()
-        if sym and uuid:
-            _PSP_UNIT_CACHE[(org_key, sym)] = uuid
-    return _PSP_UNIT_CACHE.get(cache_key)
+        if not sym or not uuid:
+            continue
+        try:
+            factor = Decimal(str(row.get("factor_to_base") or "1"))
+        except (InvalidOperation, TypeError, ValueError):
+            factor = Decimal("1")
+        info: dict[str, Any] = {
+            "uuid": uuid,
+            "symbol": sym,
+            "dimension": str(row.get("dimension") or "").strip().lower() or None,
+            "factor_to_base": factor,
+            "is_base": bool(row.get("is_base")),
+        }
+        _PSP_UNIT_INFO_CACHE[(org_key, sym)] = info
+        if info["is_base"] and info["dimension"]:
+            _PSP_UNIT_BASE_CACHE[(org_key, info["dimension"])] = info
+    return org_key
+
+
+def _psp_unit_info_for(
+    client: "PspClient", organization: Any, symbol: str
+) -> dict[str, Any] | None:
+    """Return the full PSP UoM catalog row for ``symbol`` or ``None``."""
+
+    key = str(symbol or "").strip().lower()
+    if not key:
+        return None
+    org_key = _load_psp_unit_catalog(client, organization)
+    return _PSP_UNIT_INFO_CACHE.get((org_key, key))
+
+
+def _psp_uom_uuid_for(
+    client: "PspClient", organization: Any, symbol: str
+) -> str | None:
+    """Backward-compatible symbol → uuid lookup. Prefer
+    :func:`_psp_unit_info_for` in new code so callers can also read
+    the dimension / conversion factor."""
+
+    info = _psp_unit_info_for(client, organization, symbol)
+    return info["uuid"] if info else None
+
+
+def _psp_base_unit_for_dimension(
+    client: "PspClient", organization: Any, dimension: str
+) -> dict[str, Any] | None:
+    """Return the base UoM (``is_base=true``) for a dimension, or
+    ``None`` when PSP has none seeded for that dimension. Caches
+    piggyback on :func:`_load_psp_unit_catalog`."""
+
+    key = str(dimension or "").strip().lower()
+    if not key:
+        return None
+    org_key = _load_psp_unit_catalog(client, organization)
+    return _PSP_UNIT_BASE_CACHE.get((org_key, key))
+
+
+def _convert_qty_to_base(
+    qty: Decimal,
+    source_symbol: str,
+    *,
+    client: "PspClient | None",
+    organization: Any,
+) -> tuple[Decimal, str | None, str | None]:
+    """Normalise ``(qty, source_symbol)`` to PSP's base unit for its
+    dimension. Returns ``(qty_in_base, base_symbol, base_uom_uuid)``.
+
+    Falls back to the original (qty, source_symbol, None) when:
+
+    * ``client`` / ``organization`` weren't provided (offline call).
+    * PSP's UoM catalog is unreachable.
+    * The source symbol isn't in PSP's registry (unknown unit).
+    * The source unit's dimension has no ``is_base`` row.
+
+    The fallback keeps every line shipping — the qty just stays in
+    the source unit and the caller can decide whether to tag it.
+    """
+
+    if client is None or organization is None:
+        return qty, source_symbol or None, None
+    src = _psp_unit_info_for(client, organization, source_symbol)
+    if src is None or not src.get("dimension"):
+        return qty, source_symbol or None, None
+    base = _psp_base_unit_for_dimension(client, organization, src["dimension"])
+    if base is None:
+        return qty, src["symbol"], src["uuid"]
+    if src["uuid"] == base["uuid"]:
+        # Already in the base unit — skip the arithmetic.
+        return qty, base["symbol"], base["uuid"]
+    converted = qty * src["factor_to_base"]
+    return converted, base["symbol"], base["uuid"]
 
 
 def _resolve_line_uom_uuid(
@@ -2905,25 +3005,26 @@ def _bom_lines_from(
             continue
         source_kind = getattr(line, "source_kind", "active")
         if source_kind == "manual":
-            # User typed the qty in the item's native unit already;
-            # send it through as-is.
-            qty = Decimal(str(raw_qty))
+            # User typed qty in the item's native unit; keep that as
+            # the source unit + let the base-normaliser rescale it.
+            source_qty = Decimal(str(raw_qty))
+            source_symbol = _unit_symbol_for(item) or "mg"
         else:
-            # Actives + band picks: mg per serving → per-1-parent-unit
-            # in the child item's native UoM. Formula:
-            #   qty = mg_per_serving × servings_per_output_unit
-            #                        × unit_factor(child)
-            #
-            # When the child item's ``unit`` is blank / unknown the
-            # factor is 1 (identity) and the qty stays in raw mg.
-            # The push still lands — the paired ``uom_uuid`` below
-            # tags the line as ``mg`` so PSP renders the correct
-            # unit label instead of an ambiguous bare number.
-            qty = (
-                Decimal(str(raw_qty))
-                * servings
-                * _unit_factor_for(item)
-            )
+            # Actives + band picks: compute is always mg per serving;
+            # scale to per-1-parent-unit then let the base-normaliser
+            # move it to kg / L. We deliberately skip the historical
+            # ``_unit_factor_for(item)`` step — that pre-converted to
+            # the item's declared unit, which sometimes matched the
+            # base and sometimes didn't. Feeding raw mg straight into
+            # the normaliser is unambiguous.
+            source_qty = Decimal(str(raw_qty)) * servings
+            source_symbol = "mg"
+        qty, _base_symbol, base_uom_uuid = _convert_qty_to_base(
+            source_qty,
+            source_symbol,
+            client=client,
+            organization=organization,
+        )
         if qty <= 0:
             continue
         row: dict[str, Any] = {
@@ -2931,10 +3032,17 @@ def _bom_lines_from(
             "qty": str(qty),
             "sort_order": start_index + offset,
         }
-        if client is not None and organization is not None:
-            uom_uuid = _resolve_line_uom_uuid(client, organization, item)
-            if uom_uuid:
-                row["uom_uuid"] = uom_uuid
+        if base_uom_uuid:
+            row["uom_uuid"] = base_uom_uuid
+        elif client is not None and organization is not None:
+            # Base lookup failed (dimension-less item, unknown symbol,
+            # or PSP unreachable). Fall back to the source-unit uuid
+            # so downstream still gets a UoM label.
+            fallback_uuid = _psp_uom_uuid_for(
+                client, organization, source_symbol
+            )
+            if fallback_uuid:
+                row["uom_uuid"] = fallback_uuid
         out.append(row)
     return out
 
@@ -2992,13 +3100,18 @@ def _override_to_bom_lines(
             continue
         if mg <= 0:
             continue
-        unit = (info["unit"] if info else "").strip().lower()
-        # Unknown / blank unit ⇒ leave qty in raw mg (factor 1) so
-        # the number matches NPD's mg-based compute. The paired
-        # ``uom_uuid`` below tags the line as mg so PSP renders
-        # "160,165 mg" rather than an ambiguous "160,165".
-        unit_factor = _UOM_MG_FACTOR.get(unit, Decimal("1"))
-        qty = mg * servings * unit_factor
+        # Compute is mg per serving → scale to per-1-parent-unit. Then
+        # hand off to the base-normaliser so the line lands on PSP in
+        # kg / L, tagged with the base UoM's uuid. See the twin
+        # comment in ``_bom_lines_from`` for why we skip the historic
+        # per-item unit-factor step.
+        source_qty = mg * servings
+        qty, _base_symbol, base_uom_uuid = _convert_qty_to_base(
+            source_qty,
+            "mg",
+            client=client,
+            organization=organization,
+        )
         if qty <= 0:
             continue
         try:
@@ -3010,18 +3123,14 @@ def _override_to_bom_lines(
             "qty": str(qty),
             "sort_order": sort_order,
         }
-        if client is not None and organization is not None:
-            # Reuse the same fallback rule as the item-driven path:
-            # child's unit if known, else mg.
-            line_row["uom_uuid"] = _psp_uom_uuid_for(
-                client,
-                organization,
-                unit if unit in _UOM_MG_FACTOR else "mg",
-            )
-            # Drop the key entirely when the lookup came back empty
-            # so the payload stays clean.
-            if not line_row["uom_uuid"]:
-                line_row.pop("uom_uuid")
+        if base_uom_uuid:
+            line_row["uom_uuid"] = base_uom_uuid
+        elif client is not None and organization is not None:
+            # Same fallback as the item-driven path: tag the line with
+            # the source unit's uuid so PSP still shows a UoM label.
+            fallback_uuid = _psp_uom_uuid_for(client, organization, "mg")
+            if fallback_uuid:
+                line_row["uom_uuid"] = fallback_uuid
         out.append(line_row)
     return out
 
@@ -3119,6 +3228,12 @@ def _push_staged_cascade(
         stages[-1],
     )
     previous_semi_uuid: str | None = None
+    # Track the previous stage's declared stock UoM uuid so the parent
+    # stage's BOM line for the semi-finished input can be tagged with
+    # it. Without this, the parent MO Parts table on PSP falls back to
+    # "?" for the semi row even though the semi item itself has a
+    # stock_uom set — because BOM lines carry their own UoM slot.
+    previous_semi_stock_uom_uuid: str | None = None
     previous_servings: Decimal = Decimal("1")
     last_response: dict | None = None
 
@@ -3221,13 +3336,16 @@ def _push_staged_cascade(
                 prior_qty = stage_servings / previous_servings
             else:
                 prior_qty = Decimal("1")
-            bom_lines = [
-                {
-                    "part_uuid": previous_semi_uuid,
-                    "qty": str(prior_qty),
-                    "sort_order": -1,
-                }
-            ] + bom_lines
+            prior_line: dict[str, Any] = {
+                "part_uuid": previous_semi_uuid,
+                "qty": str(prior_qty),
+                "sort_order": -1,
+            }
+            # Tag with the semi item's declared stock UoM so the parent
+            # MO Parts table renders "0.03 L" instead of "0.03 ?".
+            if previous_semi_stock_uom_uuid:
+                prior_line["uom_uuid"] = str(previous_semi_stock_uom_uuid)
+            bom_lines = [prior_line] + bom_lines
             # Renumber sort_order so PSP's storage stays dense.
             for i, row in enumerate(bom_lines):
                 row["sort_order"] = i
@@ -3312,8 +3430,14 @@ def _push_staged_cascade(
 
         if is_finished:
             previous_semi_uuid = None
+            previous_semi_stock_uom_uuid = None
         else:
             previous_semi_uuid = output_uuid
+            previous_semi_stock_uom_uuid = (
+                str(stage.psp_item_stock_uom_uuid)
+                if stage.psp_item_stock_uom_uuid
+                else None
+            )
             previous_servings = stage_servings
 
     return last_response
@@ -3706,6 +3830,76 @@ class PspCreateFinishedProductFailed(Exception):
     code = "psp_create_finished_product_failed"
 
 
+def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
+    """Translate a trial batch's planned scale into PSP's
+    ``mo.quantity`` — expressed in the finished-product's stock unit.
+
+    Two conversions stack:
+
+    1. The trial batch stores ``batch_size_units`` in one of two
+       modes (``BatchSizeMode``):
+       * ``pack`` — user typed a pack count. Total-servings intent is
+         ``batch_size_units × formulation.servings_per_pack``.
+       * ``unit`` — user typed the raw servings count. Intent is
+         ``batch_size_units`` as-is.
+    2. PSP's BOM lines are per-1-stock-unit-of-finished. If the
+       finished stage sets ``servings_per_output_unit = N``, then one
+       stock unit already bundles N servings, so ``mo.quantity =
+       target_servings / N``.
+
+    Rounding: caller quantises to 6 dp. Zero / null anywhere
+    collapses to ``batch_size_units`` (the raw number) so the trial
+    still MOs rather than 400-ing on missing config.
+    """
+
+    batch_size_raw = getattr(trial_batch, "batch_size_units", None)
+    if batch_size_raw in (None, ""):
+        raise ValueError("trial_batch.batch_size_units is required")
+
+    try:
+        batch_size = Decimal(str(batch_size_raw))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError(
+            "trial_batch.batch_size_units must be numeric"
+        ) from exc
+    if batch_size <= 0:
+        raise ValueError(
+            "trial_batch.batch_size_units must be positive"
+        )
+
+    # Step 1: convert to target servings.
+    mode = getattr(trial_batch, "batch_size_mode", None) or "pack"
+    formulation = trial_batch.formulation_version.formulation
+    servings_per_pack = getattr(formulation, "servings_per_pack", None)
+    if mode == "pack":
+        multiplier = Decimal(str(servings_per_pack or 1))
+        if multiplier <= 0:
+            multiplier = Decimal("1")
+        target_servings = batch_size * multiplier
+    else:  # "unit" — batch_size is already in individual servings
+        target_servings = batch_size
+
+    # Step 2: divide by servings-per-stock-unit (per finished stage).
+    finished_stage = (
+        formulation.stages.filter(psp_item_type="finished_product")
+        .order_by("-sort_order")
+        .first()
+    )
+    if finished_stage is None:
+        divisor = Decimal("1")
+    else:
+        try:
+            divisor = Decimal(
+                str(finished_stage.servings_per_output_unit or 1)
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            divisor = Decimal("1")
+        if divisor <= 0:
+            divisor = Decimal("1")
+
+    return target_servings / divisor
+
+
 def create_psp_manufacturing_order_for_trial_batch(
     *,
     organization: Any,
@@ -3776,20 +3970,31 @@ def create_psp_manufacturing_order_for_trial_batch(
             "spawning a trial MO."
         )
 
-    # Default quantity to the trial batch's planned scale — the whole
+    # Default quantity from the trial batch's planned scale — the whole
     # point of a trial batch is to fix the run size, so re-asking the
     # scientist to type it is a compliance-first field-design smell.
     # Callers can still override (e.g. an integration test) but the
     # standard "Create MO" click sends nothing and lands here.
+    #
+    # PSP's ``mo.quantity`` is expressed in the finished-product's
+    # stock unit. The trial batch's ``batch_size_units`` is in either
+    # packs OR individual servings depending on ``batch_size_mode``,
+    # so we normalise both branches to a servings target first, then
+    # divide by the finished stage's ``servings_per_output_unit`` so
+    # the number PSP sees means the same thing as PSP's BOM lines
+    # (which are per-1-stock-unit).
     if quantity in (None, ""):
-        quantity = getattr(trial_batch, "batch_size_units", None)
+        quantity = _derive_psp_mo_quantity(trial_batch)
 
     try:
-        qty_int = int(quantity)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("quantity must be a positive integer") from exc
-    if qty_int <= 0:
-        raise ValueError("quantity must be a positive integer")
+        qty_dec = Decimal(str(quantity))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("quantity must be a positive number") from exc
+    if qty_dec <= 0:
+        raise ValueError("quantity must be a positive number")
+    # Cap at 6 dp so a fractional-pack MO (e.g. 10 servings / 60 =
+    # 0.16666666… packs) reaches PSP with clean digits.
+    qty_dec = qty_dec.quantize(Decimal("0.000001"))
 
     if project_type not in ("trial", "sample"):
         raise ValueError("project_type must be 'trial' or 'sample'")
@@ -3799,7 +4004,7 @@ def create_psp_manufacturing_order_for_trial_batch(
         mo = client.create_manufacturing_order(
             item_uuid=resolved_item_uuid,
             warehouse_uuid=resolved_warehouse_uuid,
-            quantity=qty_int,
+            quantity=qty_dec,
             npd_trial_batch_uuid=str(trial_batch.id),
             project_type=project_type,
             due_date=due_date,
@@ -3843,15 +4048,26 @@ def create_psp_manufacturing_order_for_trial_batch(
         )
 
     with transaction.atomic():
+        # Detect the re-attempt case: PSP handed back a different MO
+        # uuid than the one we had pinned, which means the previous
+        # MO was cancelled and PSP minted a fresh chain. Reset the
+        # gate flag so the QC tab locks again until this fresh chain
+        # completes end-to-end.
+        previous_uuid = trial_batch.psp_manufacturing_order_uuid
+        is_fresh_chain = (
+            previous_uuid is not None and str(previous_uuid) != str(mo["uuid"])
+        )
         trial_batch.psp_manufacturing_order_uuid = mo["uuid"]
         trial_batch.updated_by = actor
-        trial_batch.save(
-            update_fields=[
-                "psp_manufacturing_order_uuid",
-                "updated_by",
-                "updated_at",
-            ]
-        )
+        update_fields = [
+            "psp_manufacturing_order_uuid",
+            "updated_by",
+            "updated_at",
+        ]
+        if is_fresh_chain:
+            trial_batch.psp_all_stages_completed = False
+            update_fields.append("psp_all_stages_completed")
+        trial_batch.save(update_fields=update_fields)
         record_audit(
             organization=organization,
             actor=actor,

@@ -166,6 +166,20 @@ export function useCreateTrialBatchPspMo(
       queryClient.invalidateQueries({
         queryKey: trialBatchesQueryKeys.pspMoBookings(orgId, batchId),
       });
+      // Chain query drives the "linked-vs-create-new" gate on the
+      // toolbar. On a retry after a cancelled MO the cached chain
+      // still reports ``cancelled`` and the button stays labelled
+      // "Create new MO" until the next 20s poll tick. Invalidating
+      // here flips the toolbar to the "linked MO" chip immediately.
+      queryClient.invalidateQueries({
+        queryKey: trialBatchesQueryKeys.pspMoChain(orgId, batchId),
+      });
+      // Overview + render caches carry the linked-MO status too
+      // (QC-tab gate, activity row). Invalidate so the whole page
+      // reflects the new run without a manual refresh.
+      queryClient.invalidateQueries({
+        queryKey: trialBatchesQueryKeys.render(orgId, batchId),
+      });
     },
   });
 }
