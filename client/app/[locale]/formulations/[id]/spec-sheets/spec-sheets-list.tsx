@@ -108,7 +108,15 @@ function SpecSheetCard({ sheet }: { sheet: SpecificationSheetDto }) {
                 {sheet.code || tSpec("untitled")}
               </p>
               <p className="text-sm font-medium text-ink-1000">
-                {sheet.client_name ||
+                {/* One customer per project — prefer the project-linked
+                    customer over the sheet's own client fields (which
+                    are scientist-typed at draft time and often left
+                    empty). Falls back to the sheet fields only for
+                    legacy sheets whose formulation still has no
+                    customer linked. */}
+                {sheet.linked_customer?.name ||
+                  sheet.linked_customer?.company ||
+                  sheet.client_name ||
                   sheet.client_company ||
                   tSpec("no_client_yet")}
               </p>

@@ -315,8 +315,17 @@ function SpecificationCard({ sheet }: { sheet: SpecificationSheetDto }) {
   const format = useFormatter();
   const now = useNow({ updateInterval: 60_000 });
 
+  // Prefer the project's linked customer (single source of truth,
+  // set by sales on the project workspace) over the sheet's own
+  // scientist-typed client_name / client_company. Falls back to the
+  // sheet fields only for legacy sheets whose project has no
+  // customer linked.
   const client =
-    sheet.client_company || sheet.client_name || t("card.no_client");
+    sheet.linked_customer?.company ||
+    sheet.linked_customer?.name ||
+    sheet.client_company ||
+    sheet.client_name ||
+    t("card.no_client");
 
   return (
     <li className="rounded-xl bg-ink-0 px-4 py-3 ring-1 ring-inset ring-ink-200 transition-colors hover:bg-ink-50">
