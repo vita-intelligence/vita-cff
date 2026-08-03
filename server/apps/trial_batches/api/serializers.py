@@ -35,6 +35,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "formulation_id",
             "formulation_name",
             "formulation_version_number",
+            "psp_manufacturing_order_uuid",
             "created_by_name",
             "created_at",
             "updated_at",

@@ -7,7 +7,10 @@ import { apiClient } from "@/lib/api";
 import { trialBatchesEndpoints } from "./endpoints";
 import type {
   BOMResult,
+  CreateTrialBatchPspMoRequestDto,
+  CreateTrialBatchPspMoResponseDto,
   CreateTrialBatchRequestDto,
+  PspTrialMoBookingsResponseDto,
   TrialBatchDto,
   UpdateTrialBatchRequestDto,
 } from "./types";
@@ -71,4 +74,26 @@ export async function deleteTrialBatch(
   batchId: string,
 ): Promise<void> {
   await apiClient.delete(trialBatchesEndpoints.detail(orgId, batchId));
+}
+
+export async function createTrialBatchPspMo(
+  orgId: string,
+  batchId: string,
+  payload: CreateTrialBatchPspMoRequestDto,
+): Promise<CreateTrialBatchPspMoResponseDto> {
+  const { data } = await apiClient.post<CreateTrialBatchPspMoResponseDto>(
+    trialBatchesEndpoints.createPspMo(orgId, batchId),
+    payload,
+  );
+  return data;
+}
+
+export async function fetchTrialBatchPspMoBookings(
+  orgId: string,
+  batchId: string,
+): Promise<PspTrialMoBookingsResponseDto> {
+  const { data } = await apiClient.get<PspTrialMoBookingsResponseDto>(
+    trialBatchesEndpoints.pspMoBookings(orgId, batchId),
+  );
+  return data;
 }

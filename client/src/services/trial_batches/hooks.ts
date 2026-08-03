@@ -15,15 +15,20 @@ import { rootQueryKey } from "@/lib/query";
 
 import {
   createTrialBatch,
+  createTrialBatchPspMo,
   deleteTrialBatch,
   fetchTrialBatch,
+  fetchTrialBatchPspMoBookings,
   fetchTrialBatchRender,
   fetchTrialBatches,
   updateTrialBatch,
 } from "./api";
 import type {
   BOMResult,
+  CreateTrialBatchPspMoRequestDto,
+  CreateTrialBatchPspMoResponseDto,
   CreateTrialBatchRequestDto,
+  PspTrialMoBookingsResponseDto,
   TrialBatchDto,
   UpdateTrialBatchRequestDto,
 } from "./types";
@@ -41,6 +46,13 @@ export const trialBatchesQueryKeys = {
     [...trialBatchesQueryKeys.all, orgId, "detail", batchId] as const,
   render: (orgId: string, batchId: string) =>
     [...trialBatchesQueryKeys.all, orgId, "render", batchId] as const,
+  pspMoBookings: (orgId: string, batchId: string) =>
+    [
+      ...trialBatchesQueryKeys.all,
+      orgId,
+      "psp-mo-bookings",
+      batchId,
+    ] as const,
 } as const;
 
 export function useTrialBatches(
@@ -115,6 +127,50 @@ export function useUpdateTrialBatch(
         queryKey: trialBatchesQueryKeys.render(orgId, batchId),
       });
     },
+  });
+}
+
+export function useCreateTrialBatchPspMo(
+  orgId: string,
+  batchId: string,
+): UseMutationResult<
+  CreateTrialBatchPspMoResponseDto,
+  ApiError,
+  CreateTrialBatchPspMoRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    CreateTrialBatchPspMoResponseDto,
+    ApiError,
+    CreateTrialBatchPspMoRequestDto
+  >({
+    mutationFn: (payload) =>
+      createTrialBatchPspMo(orgId, batchId, payload),
+    onSuccess: (response) => {
+      // Prime the detail cache with the fresh row so the toolbar
+      // chip flips from "Create MO" to "MO: <status>" without a
+      // roundtrip.
+      queryClient.setQueryData(
+        trialBatchesQueryKeys.detail(orgId, batchId),
+        response.trial_batch,
+      );
+      queryClient.invalidateQueries({
+        queryKey: trialBatchesQueryKeys.pspMoBookings(orgId, batchId),
+      });
+    },
+  });
+}
+
+export function useTrialBatchPspMoBookings(
+  orgId: string,
+  batchId: string,
+  options: { enabled?: boolean; refetchInterval?: number } = {},
+): UseQueryResult<PspTrialMoBookingsResponseDto, ApiError> {
+  return useQuery<PspTrialMoBookingsResponseDto, ApiError>({
+    queryKey: trialBatchesQueryKeys.pspMoBookings(orgId, batchId),
+    queryFn: () => fetchTrialBatchPspMoBookings(orgId, batchId),
+    enabled: options.enabled ?? true,
+    refetchInterval: options.refetchInterval,
   });
 }
 

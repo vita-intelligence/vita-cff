@@ -29,6 +29,11 @@ export interface PspConfigDto {
    *  round-trip. ``null`` when never tested (or when the token
    *  was rotated since). */
   readonly last_tested_at: string | null;
+  /** Target PSP warehouse uuid for trial-batch MO creation. Blank
+   *  when unset — the trial-batch "Create MO on PSP" button gates
+   *  on this being present. Not required for general PSP liveness
+   *  (search, pricing, BOM sync all work without it). */
+  readonly psp_warehouse_uuid: string;
 }
 
 
@@ -44,6 +49,11 @@ export interface SavePspConfigRequestDto {
    *  preserves whatever's already on file so the operator can
    *  change the URL without re-pasting the token. */
   readonly integration_token?: string | null;
+  /** Target PSP warehouse uuid for trial-batch MO creation. Same
+   *  absent-vs-empty semantics as ``ui_base_url``: ``null`` /
+   *  omitted preserves whatever's stored; empty string clears;
+   *  non-empty replaces. */
+  readonly psp_warehouse_uuid?: string | null;
 }
 
 

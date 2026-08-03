@@ -22,6 +22,9 @@ import {
   useTrialBatchRender,
 } from "@/services/trial_batches";
 
+import { usePspConfig } from "@/services/psp";
+
+import { PspMoPanel } from "./psp-mo-panel";
 import { ValidationLink } from "./validation-link";
 
 
@@ -48,6 +51,14 @@ export function TrialBatchDetail({
 
   const batchQuery = useTrialBatch(orgId, initialBatch.id);
   const renderQuery = useTrialBatchRender(orgId, initialBatch.id);
+  // Only for the PSP-MO chip deep link. Blank when PSP isn't
+  // configured — the panel skips rendering itself in that case.
+  const pspConfigQuery = usePspConfig(orgId);
+  const pspIsLive = pspConfigQuery.data?.has_token ?? false;
+  const pspUiBaseUrl =
+    pspConfigQuery.data?.ui_base_url ||
+    pspConfigQuery.data?.base_url ||
+    "";
 
   const batch = batchQuery.data ?? initialBatch;
   const bom = renderQuery.data ?? initialBom;
@@ -260,6 +271,13 @@ export function TrialBatchDetail({
             formulationId={formulationId}
             batchId={initialBatch.id}
           />
+          {pspIsLive ? (
+            <PspMoPanel
+              orgId={orgId}
+              batch={batch}
+              pspUiBaseUrl={pspUiBaseUrl}
+            />
+          ) : null}
         </div>
       </header>
 
