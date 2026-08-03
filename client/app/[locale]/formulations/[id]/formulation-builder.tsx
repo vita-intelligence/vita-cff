@@ -3831,6 +3831,20 @@ export function FormulationBuilder({
   const rtgPackagingReady =
     rtgCombos.length > 0 && rtgUnassignedCombos.length === 0;
   const isRtg = formulation.project_type === "ready_to_go";
+  // Group combos by their assigned stage so the strip can drop a
+  // "📦 Packaging: <combo names>" chip on each target stage card.
+  // Undefined on Custom projects — the strip prop is optional.
+  const packagingCombosByStage = useMemo(() => {
+    if (!isRtg) return undefined;
+    const map = new Map<string, { id: string; name: string }[]>();
+    for (const c of rtgCombos) {
+      if (!c.stage_id) continue;
+      const arr = map.get(c.stage_id) ?? [];
+      arr.push({ id: c.id, name: c.name });
+      map.set(c.stage_id, arr);
+    }
+    return map;
+  }, [isRtg, rtgCombos]);
   const readinessSignals = useMemo(() => {
     // Resolve each line's ACTIVE stage — line.stage_id is the last-
     // saved value, but the operator's unsaved routing drafts live on
@@ -6316,6 +6330,7 @@ export function FormulationBuilder({
         onRegisterSave={(fn) => {
           stagesSaveHandleRef.current = fn;
         }}
+        packagingCombosByStage={packagingCombosByStage}
       />
 
       </div>
