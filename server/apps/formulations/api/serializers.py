@@ -286,6 +286,16 @@ class FormulationReadSerializer(serializers.ModelSerializer):
     #: button until this is true so scientists can't accidentally
     #: expose an unfinished SKU on the customer catalog.
     has_approved_final_spec = serializers.SerializerMethodField()
+    #: True when the project has any spec sheet (draft or FINAL) at
+    #: or past ``approved`` status. Distinct from
+    #: ``has_approved_final_spec`` which is FINAL-only.
+    #:
+    #: Powers the RTG catalog panel's "Base price locked from spec"
+    #: pill — the field only presents the locked amount as real when
+    #: an approval has actually fired, so any stale legacy
+    #: ``rtg_base_price`` on a project with no approvals surfaces as
+    #: "Not set yet" instead of dressing up an unsigned number.
+    has_approved_spec = serializers.SerializerMethodField()
     #: Photos on the RTG catalog storefront (``purpose='catalog'``).
     #: Ordered primary-first so the FE gallery + portal can pluck the
     #: hero without extra sorting. Photos on the internal Setup tab
@@ -388,6 +398,7 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "rtg_currency_code",
             "packaging_combos_count",
             "has_approved_final_spec",
+            "has_approved_spec",
             "catalog_photos",
             "created_at",
             "updated_at",
@@ -583,6 +594,31 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             .filter(
                 formulation_version__formulation=obj,
                 document_kind=SpecificationDocumentKind.FINAL,
+                status__in=(
+                    SpecificationStatus.APPROVED,
+                    SpecificationStatus.SENT,
+                    SpecificationStatus.ACCEPTED,
+                ),
+            )
+            .exists()
+        )
+
+    def get_has_approved_spec(self, obj: Formulation) -> bool:
+        """True when any spec sheet on this project (draft OR final)
+        has reached ``approved`` (or a later post-approval status).
+        Used by the RTG catalog panel to distinguish a legitimately
+        locked ``rtg_base_price`` from a stale value that pre-dates
+        the spec-driven price flow."""
+
+        from apps.specifications.models import (
+            SpecificationSheet,
+            SpecificationStatus,
+        )
+
+        return (
+            SpecificationSheet.objects
+            .filter(
+                formulation_version__formulation=obj,
                 status__in=(
                     SpecificationStatus.APPROVED,
                     SpecificationStatus.SENT,
