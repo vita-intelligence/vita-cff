@@ -393,6 +393,22 @@ class TrialBatchPspMoChainView(APIView):
         )
         if not payload:
             raise NotFound()
+
+        # Cache the "every stage completed" bit on the batch — the QC
+        # tab wizard gate reads this locally instead of hopping to PSP
+        # on every project-overview render. The trial-batch panel
+        # polls this endpoint at 20s, so the flag flips automatically
+        # within one poll interval of the shop floor closing out the
+        # last stage. Empty chain (shouldn't happen — the parent MO
+        # alone gives 1) is treated as "not completed" to be safe.
+        chain = payload.get("chain") or []
+        all_completed = bool(chain) and all(
+            (node.get("status") or "") == "completed" for node in chain
+        )
+        if bool(batch.psp_all_stages_completed) != all_completed:
+            batch.psp_all_stages_completed = all_completed
+            batch.save(update_fields=["psp_all_stages_completed"])
+
         return Response(payload, status=status.HTTP_200_OK)
 
 

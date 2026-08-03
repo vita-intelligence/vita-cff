@@ -108,6 +108,28 @@ class TrialBatch(models.Model):
         ),
     )
 
+    #: Cached "every stage MO in the linked chain has status =
+    #: completed" flag. Kept locally so the QC-tab wizard gate on the
+    #: project overview doesn't have to make an HTTP hop to PSP on
+    #: every render. Refreshed:
+    #:
+    #: * whenever the trial-batch detail page fetches the MO chain
+    #:   (the panel polls at 20s), or
+    #: * by the overview endpoint itself when it notices a linked
+    #:   batch is still ``False`` — silent-degrade on any PSP error.
+    #:
+    #: Once ``True`` the shop floor has finished producing the batch
+    #: and QC / validation is fair game. Default ``False`` because a
+    #: brand-new batch (with or without a linked MO) has never been
+    #: manufactured.
+    psp_all_stages_completed = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Cached: every stage MO in the PSP chain has "
+            "``status = completed``. Drives the QC tab gate."
+        ),
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,
