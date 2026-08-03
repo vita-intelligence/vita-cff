@@ -818,21 +818,32 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
     all_stages_have_lines = has_stages and all(
         stage_id in stage_ids_with_lines for stage_id in stage_ids
     )
-    # Packaging check — a finished product can't ship without at least
-    # one packaging component. PSP classifies items on the ``type``
-    # field (raw_material / packaging / semi_finished /
-    # finished_product); the mirror stores it as ``psp_item_type`` on
-    # ``Item.attributes``. That's the item-level PSP classification,
-    # NOT ``use_as`` (which sub-classifies raw materials — active,
-    # sweetener, colour, etc. — and would false-positive on any
-    # ingredient that happens to have a use_as starting with "packag").
-    has_packaging = False
-    for line in formulation.lines.select_related("item"):
-        attrs = line.effective_item_attributes or {}
-        psp_type = str(attrs.get("psp_item_type") or "").strip().lower()
-        if psp_type == "packaging":
-            has_packaging = True
-            break
+    # Packaging check — different for RTG vs Custom projects.
+    #
+    # * Custom projects declare packaging as an ingredient line typed
+    #   ``psp_item_type = packaging``. The gate passes when at least one
+    #   such line exists (any bottle / jar / sachet / pouch / carton).
+    #
+    # * RTG projects offer customers a picker of ``PackagingCombo``
+    #   bundles (bottle + label + lid, or pouch + sticker). The gate
+    #   passes when the SKU has at least one combo defined AND every
+    #   combo has a ``stage_id`` — the Routing tab decision that says
+    #   which stage assembles the packaging on the customer's PO. Any
+    #   still-unassigned combo blocks the gate because at order time
+    #   the packaging cascade would have nowhere to land.
+    if formulation.project_type == Formulation.ProjectType.READY_TO_GO:
+        combos = list(formulation.packaging_combos.all())
+        has_packaging = bool(combos) and all(
+            c.stage_id is not None for c in combos
+        )
+    else:
+        has_packaging = False
+        for line in formulation.lines.select_related("item"):
+            attrs = line.effective_item_attributes or {}
+            psp_type = str(attrs.get("psp_item_type") or "").strip().lower()
+            if psp_type == "packaging":
+                has_packaging = True
+                break
 
     # Stage-type flow check — sequential stages auto-consume the prior
     # stage's semi output, so every non-last stage MUST be

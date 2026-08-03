@@ -90,6 +90,11 @@ export interface PackagingComboDto {
   readonly price_delta: string;
   readonly sort_order: number;
   readonly is_default: boolean;
+  /** Stage that will assemble this combo's packaging on the
+   *  customer's PO. ``null`` until the scientist wires it up on the
+   *  Routing tab; RTG Builder readiness refuses to advance while any
+   *  combo is still unassigned. */
+  readonly stage_id: string | null;
   readonly items: readonly PackagingComboItemDto[];
 }
 
@@ -103,6 +108,10 @@ export interface PackagingComboInput {
   readonly name: string;
   readonly price_delta: string;
   readonly is_default: boolean;
+  /** Optional stage assignment. Server validates the ID belongs to
+   *  this formulation. Send ``null`` (or omit) to leave the combo
+   *  unassigned — RTG Builder gate will flag it. */
+  readonly stage_id?: string | null;
   readonly items: ReadonlyArray<{
     readonly item_id: string;
     readonly quantity: number;

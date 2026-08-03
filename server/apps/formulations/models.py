@@ -2056,6 +2056,22 @@ class PackagingCombo(models.Model):
             "on the product page. At most one per formulation."
         ),
     )
+    #: Stage that assembles this combo's packaging when a customer picks
+    #: it at checkout. Nullable while the scientist is still authoring
+    #: combos; the Builder readiness gate on RTG projects flags any
+    #: combo still lacking a stage before Spec sheets unlock.
+    stage = models.ForeignKey(
+        "formulations.FormulationStage",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="packaging_combos",
+        help_text=_(
+            "Stage that will assemble this combo's packaging on the "
+            "customer's PO. Required on RTG projects before Builder can "
+            "advance."
+        ),
+    )
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
