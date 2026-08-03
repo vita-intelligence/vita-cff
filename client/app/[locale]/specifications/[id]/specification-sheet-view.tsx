@@ -1321,7 +1321,11 @@ export function SpecSheetContent({
           />
           <SpecRow
             label={tSpecs("sheet.fields.product_description")}
-            value={rendered.formulation.name}
+            // Prefer the customer-facing display name for RTG SKUs
+            // so the printed spec matches the catalog listing the
+            // customer ordered against. Falls back to the internal
+            // name on Custom projects (no marketing layer above).
+            value={rendered.formulation.display_name || rendered.formulation.name}
           />
         </SpecTable>
 

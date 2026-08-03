@@ -4338,6 +4338,17 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
             "version_label": version.label,
             "code": metadata.get("code", ""),
             "name": metadata.get("name", ""),
+            # Customer-facing name for the Product Description field.
+            # RTG projects prefer the marketing display name (what the
+            # customer sees on the catalog) so the spec matches the
+            # SKU they ordered. Custom projects fall through to the
+            # internal name — no marketing layer above it.
+            "display_name": (
+                (metadata.get("rtg_display_name") or "").strip()
+                if metadata.get("project_type") == "ready_to_go"
+                and (metadata.get("rtg_display_name") or "").strip()
+                else metadata.get("name", "")
+            ),
             "description": metadata.get("description", ""),
             "dosage_form": metadata.get("dosage_form", ""),
             "capsule_size": metadata.get("capsule_size", ""),

@@ -158,7 +158,7 @@
     </tr>
     <tr>
       <td class="label">Product Description:</td>
-      <td class="value">{{ formulation.name }}</td>
+      <td class="value">{{ formulation.display_name|default:formulation.name }}</td>
     </tr>
   </table>
 

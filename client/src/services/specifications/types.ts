@@ -473,6 +473,12 @@ export interface RenderedSheetContext {
     readonly version_label: string;
     readonly code: string;
     readonly name: string;
+    /** Customer-facing name for the Product Description row. RTG
+     *  projects surface the marketing display name (what the customer
+     *  saw on the catalog card); Custom projects fall through to
+     *  the internal ``name``. Frozen into the version snapshot at
+     *  save time so rollbacks reproduce the same wording. */
+    readonly display_name: string;
     readonly description: string;
     readonly dosage_form: string;
     readonly capsule_size: string;
