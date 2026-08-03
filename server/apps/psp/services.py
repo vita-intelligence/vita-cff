@@ -133,6 +133,12 @@ class PspConfig:
     enabled: bool
     base_url: str
     integration_token: str
+    #: Optional — the PSP warehouse uuid trial-batch MOs get created
+    #: against. Not required for general PSP liveness (search,
+    #: pricing, BOM sync all work without it); required for the
+    #: trial-batch MO create flow. Kept on the same config blob so
+    #: settings management is one page.
+    psp_warehouse_uuid: str = ""
 
     @property
     def is_complete(self) -> bool:
@@ -462,6 +468,78 @@ class PspClient:
         if not isinstance(items, list):
             return []
         return items
+
+    def create_manufacturing_order(
+        self,
+        *,
+        item_uuid: Any,
+        warehouse_uuid: Any,
+        quantity: Any,
+        npd_trial_batch_uuid: Any,
+        project_type: str = "trial",
+        due_date: Any = None,
+        notes: str = "",
+    ) -> dict:
+        """POST ``/api/integration/manufacturing-orders``.
+
+        Idempotent by ``npd_trial_batch_uuid`` — a retry of the same
+        trial batch uuid returns the existing MO (200) rather than
+        spawning a duplicate (201). Either way we get back the
+        ``manufacturing_order`` object with its uuid + status.
+
+        Raises :class:`PspUnreachable` on any non-2xx, with the PSP
+        response body embedded in the exception message so the API
+        layer can surface actionable validation errors ("this item
+        doesn't exist on PSP", "the target warehouse is missing", …)
+        instead of a generic "PSP said no".
+        """
+
+        body: dict[str, Any] = {
+            "item_uuid": str(item_uuid or "").strip(),
+            "warehouse_uuid": str(warehouse_uuid or "").strip(),
+            "quantity": quantity,
+            "npd_trial_batch_uuid": str(npd_trial_batch_uuid or "").strip(),
+            "project_type": project_type or "trial",
+            "notes": notes or "",
+        }
+        if due_date:
+            body["due_date"] = str(due_date)
+
+        response = self._request(
+            "api/integration/manufacturing-orders",
+            method="POST",
+            body=body,
+        )
+        if not isinstance(response, dict):
+            raise PspUnreachable(
+                "PSP returned no body for MO create."
+            )
+        mo = response.get("manufacturing_order")
+        if not isinstance(mo, dict):
+            raise PspUnreachable(
+                "PSP returned a create response without a "
+                "``manufacturing_order`` object."
+            )
+        return mo
+
+    def list_mo_bookings(self, mo_uuid: Any) -> dict | None:
+        """GET ``/api/integration/manufacturing-orders/:uuid/bookings``.
+
+        Returns the ``{bookings, summary}`` shape PSP ships so NPD
+        can render the "picker at step N/M" indicator on the trial
+        batch card. Returns ``None`` on 404 (unknown mo uuid) — the
+        UI treats that as "no bookings yet".
+        """
+
+        cleaned = str(mo_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/manufacturing-orders/{cleaned}/bookings"
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
 
     def delete_item(self, item_uuid: Any) -> dict:
         """Safe-delete a PSP catalog item. PSP's ``DELETE /items/:uuid``
@@ -1314,6 +1392,7 @@ def _decode_config(raw: dict) -> PspConfig:
         enabled=bool(raw.get("enabled")),
         base_url=str(raw.get("base_url") or "").rstrip("/"),
         integration_token=plaintext,
+        psp_warehouse_uuid=str(raw.get("psp_warehouse_uuid") or "").strip(),
     )
 
 
@@ -1347,6 +1426,11 @@ def serialize_psp_config_for_api(organization: Any) -> dict[str, Any]:
         # blank and the FE falls back to ``base_url``.
         "ui_base_url": str(raw.get("ui_base_url") or ""),
         "has_token": bool(raw.get("integration_token_ciphertext")),
+        # Optional target warehouse for trial-batch MO creation. Kept
+        # in the same blob so the settings form stays one page; blank
+        # is fine — everything except the "Create MO on PSP" action
+        # works without it.
+        "psp_warehouse_uuid": str(raw.get("psp_warehouse_uuid") or ""),
         "last_tested_at": raw.get("last_tested_at") or None,
     }
 
@@ -1359,6 +1443,7 @@ def set_psp_config(
     base_url: str,
     integration_token: str | None,
     ui_base_url: str | None = None,
+    psp_warehouse_uuid: str | None = None,
 ) -> dict[str, Any]:
     """Persist the org's PSP config.
 
@@ -1405,11 +1490,22 @@ def set_psp_config(
         else:
             resolved_ui_base_url = (ui_base_url or "").strip().rstrip("/")
 
+        # psp_warehouse_uuid follows the same "None = preserve,
+        # empty string = clear" convention as ui_base_url. The FE
+        # doesn't have to re-send the value on every unrelated toggle.
+        if psp_warehouse_uuid is None:
+            resolved_warehouse_uuid = str(
+                existing.get("psp_warehouse_uuid") or ""
+            )
+        else:
+            resolved_warehouse_uuid = (psp_warehouse_uuid or "").strip()
+
         organization.psp_config = {
             "enabled": bool(enabled),
             "base_url": (base_url or "").strip().rstrip("/"),
             "ui_base_url": resolved_ui_base_url,
             "integration_token_ciphertext": ciphertext,
+            "psp_warehouse_uuid": resolved_warehouse_uuid,
             "last_tested_at": preserved_last_tested,
         }
         organization.save(update_fields=["psp_config", "updated_at"])
@@ -3376,12 +3472,219 @@ class PspMirrorItemNotFound(Exception):
     code = "psp_mirror_item_not_found"
 
 
+class PspTrialBatchWarehouseMissing(Exception):
+    """The org has PSP live but hasn't picked the target warehouse on
+    /settings/integrations. Without it we can't tell PSP where to
+    consume + deposit stock for the trial MO. API layer maps to 409
+    ("configure first") — a different remediation from a generic 400.
+    """
+
+    code = "psp_trial_batch_warehouse_missing"
+
+
+class PspTrialBatchItemMissing(Exception):
+    """The formulation the trial batch pins isn't linked to a PSP
+    finished product yet (``psp_finished_product_uuid`` is null). We
+    can't create an MO for an item PSP doesn't know about. API layer
+    maps to 409.
+    """
+
+    code = "psp_trial_batch_item_missing"
+
+
+class PspCreateManufacturingOrderFailed(Exception):
+    """Passthrough for validation errors PSP raised while creating the
+    MO (missing warehouse, missing item, rd_stream_mismatch, etc.).
+    Carries the PSP-side error code + detail so the FE can surface a
+    specific hint instead of a generic "PSP said no".
+    """
+
+    def __init__(self, message: str, *, psp_error: str = "", detail: str = ""):
+        super().__init__(message)
+        self.psp_error = psp_error
+        self.detail = detail
+
+    code = "psp_create_manufacturing_order_failed"
+
+
 class PspCreateFinishedProductFailed(Exception):
     """PSP accepted the request but returned an unexpected shape (no
     uuid on the response). API layer maps to 502 — soft failure
     that's neither auth nor rate limit."""
 
     code = "psp_create_finished_product_failed"
+
+
+def create_psp_manufacturing_order_for_trial_batch(
+    *,
+    organization: Any,
+    actor: Any,
+    trial_batch: Any,
+    quantity: Any,
+    project_type: str = "trial",
+    item_uuid: Any = None,
+    due_date: Any = None,
+    notes: str = "",
+) -> dict:
+    """Create a PSP Manufacturing Order for a trial batch + pin the
+    returned uuid on ``TrialBatch.psp_manufacturing_order_uuid``.
+
+    Resolves inputs in this order (values in parentheses win):
+
+    * ``item_uuid`` — caller override (raw string) or
+      ``trial_batch.formulation_version.formulation.psp_finished_product_uuid``.
+    * ``warehouse_uuid`` — from org's ``psp_warehouse_uuid`` config
+      only; no per-request override in the MVP.
+    * ``project_type`` — caller override (``trial`` | ``sample``);
+      defaults to ``trial``.
+    * ``quantity`` — required, whole number > 0.
+
+    Idempotent by ``trial_batch.id`` — PSP's unique partial index on
+    ``manufacturing_orders_npd_trial_batch_uuid_unique`` guarantees
+    the same trial can't spawn a duplicate MO; a retry returns the
+    existing MO (200) which we still persist through so the local
+    row's uuid heals on any drift.
+
+    Records an audit row on success. Raises typed exceptions on
+    config gaps so the API layer can map each to a distinct 4xx.
+    """
+
+    from django.db import transaction
+
+    from apps.audit.services import record as record_audit
+
+    if not is_psp_live(organization):
+        raise PspNotConfigured(
+            "PSP is not configured or is disabled on this workspace."
+        )
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        # Same silent-degrade posture as every other create-path
+        # helper — the FE surfaces "PSP unavailable, check settings".
+        raise
+
+    if not config.psp_warehouse_uuid:
+        raise PspTrialBatchWarehouseMissing(
+            "Set a PSP warehouse on /settings/integrations first."
+        )
+
+    resolved_item_uuid = str(item_uuid or "").strip()
+    if not resolved_item_uuid:
+        formulation = trial_batch.formulation_version.formulation
+        raw = getattr(formulation, "psp_finished_product_uuid", None)
+        resolved_item_uuid = str(raw or "").strip()
+    if not resolved_item_uuid:
+        raise PspTrialBatchItemMissing(
+            "Link this formulation to a PSP finished product before "
+            "spawning a trial MO."
+        )
+
+    try:
+        qty_int = int(quantity)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("quantity must be a positive integer") from exc
+    if qty_int <= 0:
+        raise ValueError("quantity must be a positive integer")
+
+    if project_type not in ("trial", "sample"):
+        raise ValueError("project_type must be 'trial' or 'sample'")
+
+    client = _client_factory(config)
+    try:
+        mo = client.create_manufacturing_order(
+            item_uuid=resolved_item_uuid,
+            warehouse_uuid=config.psp_warehouse_uuid,
+            quantity=qty_int,
+            npd_trial_batch_uuid=str(trial_batch.id),
+            project_type=project_type,
+            due_date=due_date,
+            notes=notes or "",
+        )
+    except PspUnreachable as exc:
+        # PSP-side validation errors come through as PspUnreachable
+        # with the JSON body embedded in the message. Try to project
+        # them onto a specific typed exception the API layer can map
+        # to a 4xx with actionable copy.
+        message = str(exc)
+        if '"rd_stream_mismatch"' in message:
+            raise PspCreateManufacturingOrderFailed(
+                "One or more BOM components are R&D-only (tagged "
+                "`rnd`). Set project_type=trial or remove the rnd tag "
+                "from the offending items on PSP.",
+                psp_error="rd_stream_mismatch",
+                detail=message,
+            ) from exc
+        if '"item_not_found"' in message:
+            raise PspCreateManufacturingOrderFailed(
+                "PSP couldn't find the finished-product item. Push "
+                "the formulation first, then retry.",
+                psp_error="item_not_found",
+                detail=message,
+            ) from exc
+        if '"warehouse_not_found"' in message:
+            raise PspCreateManufacturingOrderFailed(
+                "PSP couldn't find the target warehouse. Update "
+                "`psp_warehouse_uuid` on /settings/integrations.",
+                psp_error="warehouse_not_found",
+                detail=message,
+            ) from exc
+        raise
+
+    if not mo.get("uuid"):
+        raise PspCreateManufacturingOrderFailed(
+            "PSP accepted the create but returned no MO uuid.",
+            psp_error="no_uuid",
+            detail=str(mo),
+        )
+
+    with transaction.atomic():
+        trial_batch.psp_manufacturing_order_uuid = mo["uuid"]
+        trial_batch.updated_by = actor
+        trial_batch.save(
+            update_fields=[
+                "psp_manufacturing_order_uuid",
+                "updated_by",
+                "updated_at",
+            ]
+        )
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="psp.trial_batch.mo.create",
+            target=trial_batch,
+            after={
+                "psp_manufacturing_order_uuid": mo.get("uuid"),
+                "status": mo.get("status"),
+                "quantity": mo.get("quantity"),
+                "project_type": mo.get("project_type"),
+                "item_uuid": resolved_item_uuid,
+                "warehouse_uuid": config.psp_warehouse_uuid,
+            },
+        )
+    return mo
+
+
+def get_psp_manufacturing_order_bookings(
+    *,
+    organization: Any,
+    mo_uuid: Any,
+) -> dict | None:
+    """Fetch the per-booking pick/consumption state for a trial MO —
+    powers the "picker at step N/M" indicator on the trial batch
+    card. Returns ``None`` when PSP has no such MO or the org has
+    no live PSP integration.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    return client.list_mo_bookings(mo_uuid)
 
 
 def create_psp_finished_product(

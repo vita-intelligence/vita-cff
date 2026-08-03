@@ -92,6 +92,22 @@ class TrialBatch(models.Model):
     )
     notes = models.TextField(_("notes"), blank=True, default="")
 
+    #: PSP Manufacturing Order uuid this batch spawned. Nullable —
+    #: blank until the scientist clicks "Create MO on PSP". Populated
+    #: on that action + used as the idempotency handle for retry-safe
+    #: creates (PSP's ``manufacturing_orders_npd_trial_batch_uuid``
+    #: unique partial index enforces one MO per trial). We store the
+    #: raw uuid rather than an FK because PSP lives in its own
+    #: database — the uuid is the cross-system reference.
+    psp_manufacturing_order_uuid = models.UUIDField(
+        null=True,
+        blank=True,
+        help_text=_(
+            "Cross-system handle for the PSP Manufacturing Order this "
+            "trial batch spawned."
+        ),
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.PROTECT,

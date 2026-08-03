@@ -62,6 +62,11 @@ export function PspCard({
   // so the "Open on PSP" deep-link chip on the builder points at
   // the frontend, not the Phoenix API.
   const [uiBaseUrl, setUiBaseUrl] = useState("");
+  // Target PSP warehouse uuid for trial-batch MO creation. Blank
+  // when unset — the trial batch detail's "Create MO on PSP"
+  // button gates on this being present. Not required for general
+  // PSP liveness.
+  const [warehouseUuid, setWarehouseUuid] = useState("");
   const [token, setToken] = useState("");
   const [banner, setBanner] = useState<Banner>(null);
 
@@ -76,6 +81,7 @@ export function PspCard({
     setEnabled(cfg.has_token ? cfg.enabled : true);
     setBaseUrl(cfg.base_url);
     setUiBaseUrl(cfg.ui_base_url);
+    setWarehouseUuid(cfg.psp_warehouse_uuid);
     setToken("");
   }, [configQuery.data]);
 
@@ -99,6 +105,9 @@ export function PspCard({
         // the operator's POV, not a "keep existing" sentinel.
         // Backend distinguishes ``None`` (absent) from ``""``.
         ui_base_url: uiBaseUrl.trim(),
+        // Same absent-vs-empty semantics as ui_base_url — send an
+        // empty string when the operator explicitly clears the field.
+        psp_warehouse_uuid: warehouseUuid.trim(),
         // Empty string is the "keep existing token" sentinel —
         // same UX as MRPEasy / Dynamics. Non-empty rotates.
         integration_token: token,
@@ -249,6 +258,26 @@ export function PspCard({
           </div>
           <div className="flex flex-col gap-1.5 md:col-span-2">
             <label className="text-xs font-medium text-ink-700">
+              R&amp;D warehouse UUID (for trial-batch MOs)
+            </label>
+            <input
+              type="text"
+              value={warehouseUuid}
+              onChange={(e) => setWarehouseUuid(e.target.value)}
+              placeholder="e.g. 4b1e5f2c-…-d9a1"
+              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm font-mono"
+            />
+            <p className="text-[11px] text-ink-500">
+              Optional. The PSP warehouse the "Create MO on PSP"
+              button on the trial-batch page targets. Copy from PSP →
+              Warehouses → the R&amp;D warehouse detail page's URL.
+              Leave blank if you don&apos;t run trial batches through
+              PSP — item pickers and price hints still work without
+              it.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1.5 md:col-span-2">
+            <label className="text-xs font-medium text-ink-700">
               Integration token
             </label>
             <input
@@ -263,10 +292,16 @@ export function PspCard({
               className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm font-mono"
             />
             <p className="text-[11px] text-ink-500">
-              Mint on PSP → Settings → Integration tokens. Grant the{" "}
-              <span className="font-mono">item:read</span> scope so
-              NPD can list items. Never leaves this device — encrypted
-              at rest and only decrypted server-side on outbound calls.
+              Mint on PSP → Settings → Integration tokens. Grant{" "}
+              <span className="font-mono">item:read</span> for the
+              picker,{" "}
+              <span className="font-mono">item:write</span> for BOM /
+              spec sync, and{" "}
+              <span className="font-mono">mo:write</span> +{" "}
+              <span className="font-mono">mo:read</span> for the
+              trial-batch MO push. Never leaves this device —
+              encrypted at rest and only decrypted server-side on
+              outbound calls.
             </p>
           </div>
         </div>

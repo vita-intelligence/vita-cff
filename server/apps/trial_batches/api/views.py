@@ -185,6 +185,176 @@ class TrialBatchDetailView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class TrialBatchCreatePspMoView(APIView):
+    """``POST`` ``/.../trial-batches/<id>/create-psp-mo/``.
+
+    Push a Manufacturing Order to PSP for this trial batch. Body:
+
+        {
+          "quantity": 100,                # required, positive int
+          "project_type": "trial",        # trial | sample, default trial
+          "item_uuid": "...",             # optional override; defaults
+                                          # to formulation's linked PSP
+                                          # finished-product uuid
+          "due_date": "2026-08-15",       # optional
+          "notes": "..."                  # optional
+        }
+
+    Idempotent — PSP's own unique constraint on
+    ``npd_trial_batch_uuid`` de-dupes; a re-fire returns the existing
+    MO. On success the returned MO uuid is pinned onto
+    ``TrialBatch.psp_manufacturing_order_uuid`` and the trial batch
+    row is returned.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def _load(self, batch_id: str):
+        try:
+            return get_batch(
+                organization=self.organization, batch_id=batch_id
+            )
+        except TrialBatchNotFound as exc:
+            raise NotFound() from exc
+
+    def post(
+        self, request: Request, org_id: str, batch_id: str
+    ) -> Response:
+        from apps.psp.services import (
+            PspAuthFailed,
+            PspCreateManufacturingOrderFailed,
+            PspDecryptionFailed,
+            PspError,
+            PspNotConfigured,
+            PspRateLimited,
+            PspTrialBatchItemMissing,
+            PspTrialBatchWarehouseMissing,
+            PspUnreachable,
+            create_psp_manufacturing_order_for_trial_batch,
+        )
+
+        batch = self._load(batch_id)
+        body = request.data if isinstance(request.data, dict) else {}
+
+        try:
+            mo = create_psp_manufacturing_order_for_trial_batch(
+                organization=batch.organization,
+                actor=request.user,
+                trial_batch=batch,
+                quantity=body.get("quantity"),
+                project_type=str(body.get("project_type") or "trial"),
+                item_uuid=body.get("item_uuid"),
+                due_date=body.get("due_date"),
+                notes=str(body.get("notes") or ""),
+            )
+        except PspNotConfigured as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspTrialBatchWarehouseMissing as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except PspTrialBatchItemMissing as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except PspDecryptionFailed as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PspAuthFailed as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PspRateLimited as exc:
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except PspCreateManufacturingOrderFailed as exc:
+            return Response(
+                {
+                    "error": exc.code,
+                    "psp_error": exc.psp_error,
+                    "detail": str(exc),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        except PspUnreachable as exc:
+            return Response(
+                {"error": "psp_unreachable", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except PspError as exc:
+            return Response(
+                {"error": "psp_error", "detail": str(exc)},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "bad_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Refresh so the trial batch row we return carries the newly
+        # pinned uuid + refreshed updated_at.
+        batch.refresh_from_db()
+        return Response(
+            {
+                "manufacturing_order": mo,
+                "trial_batch": TrialBatchReadSerializer(batch).data,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class TrialBatchPspMoBookingsView(APIView):
+    """``GET`` ``/.../trial-batches/<id>/psp-mo-bookings/``.
+
+    Fetch the per-booking pick / consumption state for the trial
+    batch's linked PSP MO. Returns 404 when the trial batch has no
+    linked MO yet or PSP has no such row. The FE polls this on the
+    trial batch detail page.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def _load(self, batch_id: str):
+        try:
+            return get_batch(
+                organization=self.organization, batch_id=batch_id
+            )
+        except TrialBatchNotFound as exc:
+            raise NotFound() from exc
+
+    def get(
+        self, request: Request, org_id: str, batch_id: str
+    ) -> Response:
+        from apps.psp.services import (
+            get_psp_manufacturing_order_bookings,
+        )
+
+        batch = self._load(batch_id)
+        mo_uuid = batch.psp_manufacturing_order_uuid
+        if not mo_uuid:
+            raise NotFound()
+        payload = get_psp_manufacturing_order_bookings(
+            organization=batch.organization,
+            mo_uuid=mo_uuid,
+        )
+        if not payload:
+            raise NotFound()
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class TrialBatchRenderView(APIView):
     """``GET`` ``/.../trial-batches/<id>/render/``.
 

@@ -19,9 +19,66 @@ export interface TrialBatchDto {
   readonly formulation_id: string;
   readonly formulation_name: string;
   readonly formulation_version_number: number;
+  /** PSP Manufacturing Order uuid this batch spawned. ``null``
+   *  when the scientist hasn't clicked "Create MO on PSP" yet;
+   *  populated on that action + used as the PSP-side idempotency
+   *  key so retries don't duplicate. */
+  readonly psp_manufacturing_order_uuid: string | null;
   readonly created_by_name: string;
   readonly created_at: string;
   readonly updated_at: string;
+}
+
+export interface CreateTrialBatchPspMoRequestDto {
+  readonly quantity: number;
+  readonly project_type?: "trial" | "sample";
+  /** Optional finished-product item override. When absent, the
+   *  server resolves from ``formulation.psp_finished_product_uuid``. */
+  readonly item_uuid?: string;
+  readonly due_date?: string;
+  readonly notes?: string;
+}
+
+/** MO summary PSP returns on create — shape mirrors PSP's
+ *  ``IntegrationManufacturingOrderController.mo_summary`` verbatim. */
+export interface PspManufacturingOrderSummaryDto {
+  readonly uuid: string;
+  readonly status: string;
+  readonly quantity: string;
+  readonly project_type: string;
+  readonly npd_trial_batch_uuid: string;
+  readonly due_date: string | null;
+  readonly inserted_at: string;
+}
+
+export interface CreateTrialBatchPspMoResponseDto {
+  readonly manufacturing_order: PspManufacturingOrderSummaryDto;
+  readonly trial_batch: TrialBatchDto;
+}
+
+/** One booking on the trial MO — shape mirrors PSP's
+ *  ``IntegrationManufacturingOrderController.booking_payload``. */
+export interface PspTrialMoBookingDto {
+  readonly uuid: string;
+  readonly status: string;
+  readonly quantity: string;
+  readonly picked_at: string | null;
+  readonly item: { readonly uuid: string; readonly name: string } | null;
+  readonly lot:
+    | { readonly uuid: string; readonly status: string }
+    | null;
+  readonly cell: { readonly uuid: string; readonly name: string } | null;
+}
+
+export interface PspTrialMoBookingsResponseDto {
+  readonly bookings: readonly PspTrialMoBookingDto[];
+  readonly summary: {
+    readonly total: number;
+    readonly picked: number;
+    readonly released: number;
+    readonly consumed: number;
+    readonly outstanding: number;
+  };
 }
 
 export interface CreateTrialBatchRequestDto {

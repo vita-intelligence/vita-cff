@@ -129,6 +129,10 @@ class PspIntegrationView(APIView):
         # Same key handling as ``integration_token``'s keep-existing
         # sentinel.
         raw_ui_base_url = body.get("ui_base_url")
+        # ``psp_warehouse_uuid`` — target warehouse for trial-batch
+        # MO creation. Same absent-vs-empty semantics as ui_base_url:
+        # absent (None) preserves, "" clears, non-empty replaces.
+        raw_warehouse_uuid = body.get("psp_warehouse_uuid")
         payload = set_psp_config(
             organization=self.organization,
             actor=request.user,
@@ -140,6 +144,7 @@ class PspIntegrationView(APIView):
             # preserves, so an operator can save a URL change
             # without re-typing the token.
             integration_token=body.get("integration_token"),
+            psp_warehouse_uuid=raw_warehouse_uuid,
         )
         return Response(payload, status=status.HTTP_200_OK)
 

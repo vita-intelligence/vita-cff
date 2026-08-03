@@ -4,8 +4,10 @@ from django.urls import path
 
 from apps.trial_batches.api.views import (
     TrialBatchBOMExportView,
+    TrialBatchCreatePspMoView,
     TrialBatchDetailView,
     TrialBatchListCreateView,
+    TrialBatchPspMoBookingsView,
     TrialBatchRenderView,
 )
 
@@ -31,5 +33,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/bom/",
         TrialBatchBOMExportView.as_view(),
         name="trial-batch-bom",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/create-psp-mo/",
+        TrialBatchCreatePspMoView.as_view(),
+        name="trial-batch-create-psp-mo",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/psp-mo-bookings/",
+        TrialBatchPspMoBookingsView.as_view(),
+        name="trial-batch-psp-mo-bookings",
     ),
 ]
