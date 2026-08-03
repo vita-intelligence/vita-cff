@@ -6821,22 +6821,22 @@ def save_rtg_marketing(
         exc.code = "not_ready_to_go"  # type: ignore[attr-defined]
         raise exc
 
+    # ``rtg_base_price`` + ``rtg_currency_code`` are DERIVED — the
+    # values land on the formulation when the associated spec sheet
+    # transitions to ``approved``, snapshotting cost + margin into a
+    # signed number. The RTG catalog panel PATCH endpoint accepts
+    # whatever the FE sends (older clients still POST these keys) but
+    # silently drops any incoming write so scientists can't drift the
+    # signed price by mistake. Anything else in ``marketing_fields``
+    # keeps flowing through.
+    marketing_fields = {
+        k: v
+        for k, v in marketing_fields.items()
+        if k not in {"rtg_base_price", "rtg_currency_code"}
+    }
     # Loose type validation only — a scientist mid-draft should be
     # able to save whatever they have so far without hitting a wall.
     field_errors: dict[str, str] = {}
-    if "rtg_base_price" in marketing_fields:
-        base_price = marketing_fields.get("rtg_base_price")
-        if base_price not in (None, ""):
-            try:
-                dec = Decimal(str(base_price))
-                if dec < 0:
-                    field_errors["rtg_base_price"] = (
-                        "Base price cannot be negative."
-                    )
-            except (InvalidOperation, TypeError, ValueError):
-                field_errors["rtg_base_price"] = (
-                    "Base price must be a number."
-                )
     if "rtg_moq" in marketing_fields:
         moq = marketing_fields.get("rtg_moq")
         if moq not in (None, ""):
@@ -6893,11 +6893,8 @@ def save_rtg_marketing(
         if parsed is not None:
             parsed = _sanitize_puck_tree(parsed)
         formulation.rtg_page_content = parsed
-    if "rtg_base_price" in marketing_fields:
-        raw_price = marketing_fields.get("rtg_base_price")
-        formulation.rtg_base_price = (
-            Decimal(str(raw_price)) if raw_price not in (None, "") else None
-        )
+    # ``rtg_base_price`` + ``rtg_currency_code`` deliberately not
+    # written from here — they're locked in by spec-sheet approval.
     if "rtg_moq" in marketing_fields:
         raw_moq = marketing_fields.get("rtg_moq")
         formulation.rtg_moq = (

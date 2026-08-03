@@ -2268,6 +2268,33 @@ def transition_status(
             version_number=sheet.formulation_version.version_number,
         )
 
+        # RTG price lock — approval is the moment cost + margin land
+        # on a signed number, so we push the sheet's ``final_price`` +
+        # ``currency`` into the RTG catalog fields on the formulation.
+        # From here the catalog panel's Base price row is derived, not
+        # typed; the panel's PATCH endpoint refuses ``rtg_base_price``
+        # writes too so scientists can't drift it away from the signed
+        # value. Custom projects don't touch these fields (they price
+        # per-proposal / per-customer, not per-SKU).
+        _rtg_lock_formulation = sheet.formulation_version.formulation
+        if (
+            _rtg_lock_formulation.project_type == "ready_to_go"
+            and sheet.final_price is not None
+        ):
+            fields_to_write: list[str] = []
+            if _rtg_lock_formulation.rtg_base_price != sheet.final_price:
+                _rtg_lock_formulation.rtg_base_price = sheet.final_price
+                fields_to_write.append("rtg_base_price")
+            sheet_currency = (sheet.currency or "").strip().upper()
+            if (
+                sheet_currency
+                and _rtg_lock_formulation.rtg_currency_code != sheet_currency
+            ):
+                _rtg_lock_formulation.rtg_currency_code = sheet_currency
+                fields_to_write.append("rtg_currency_code")
+            if fields_to_write:
+                _rtg_lock_formulation.save(update_fields=fields_to_write)
+
         # Mirror the sign-off to PSP's CustomerOrder so its wizard
         # phase moves R&D → Awaiting proposal. Fires on
         # ``transaction.on_commit`` so a rollback (rare here but

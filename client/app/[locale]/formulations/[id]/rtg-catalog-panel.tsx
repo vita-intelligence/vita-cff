@@ -26,11 +26,10 @@ import type { FormulationDto } from "@/services/formulations/types";
 import { CatalogPhotoGallery } from "./catalog-photo-gallery";
 
 
-// Curated shortlist covering the currencies the RTG catalog is
-// expected to price in. The wider CurrencyPicker lives inside the
-// staff proposal builder; a lean shortlist here keeps the panel
-// self-contained without dragging that dependency in.
-const CURRENCY_OPTIONS = ["GBP", "EUR", "USD"] as const;
+// Base-price + currency used to be picked from a shortlist here.
+// Both are now derived from the associated spec sheet's approval
+// (see backend ``transition_sheet_status``), so the panel no longer
+// hosts the picker or the input.
 
 
 interface Props {
@@ -69,12 +68,13 @@ function RTGCatalogPanelInner({
   const [description, setDescription] = useState(
     formulation.rtg_short_description || "",
   );
-  const [basePrice, setBasePrice] = useState(
-    formulation.rtg_base_price || "",
-  );
-  const [currency, setCurrency] = useState(
-    formulation.rtg_currency_code || "GBP",
-  );
+  // Base price + currency are derived from the latest approved spec
+  // sheet's ``final_price`` + ``currency`` — the panel reads them
+  // straight off the formulation and no longer offers an editable
+  // input. The BE endpoint drops any incoming write on these fields
+  // too, so a rogue payload can't drift the signed value.
+  const basePrice = formulation.rtg_base_price || "";
+  const currency = formulation.rtg_currency_code || "GBP";
   const [moq, setMoq] = useState(
     formulation.rtg_moq !== null && formulation.rtg_moq !== undefined
       ? String(formulation.rtg_moq)
@@ -106,9 +106,10 @@ function RTGCatalogPanelInner({
       // header actions and hits the same endpoint with the flag.
       form.append("rtg_display_name", displayName);
       form.append("rtg_short_description", description);
-      form.append("rtg_base_price", basePrice);
+      // ``rtg_base_price`` + ``rtg_currency_code`` are locked in
+      // through spec-sheet approval — the server drops them from
+      // this endpoint's payload, so we don't send them at all.
       form.append("rtg_moq", moq);
-      form.append("rtg_currency_code", currency);
       // Do NOT hand-set ``Content-Type: multipart/form-data`` —
       // axios will populate it including the ``boundary=…`` token
       // when it sees a ``FormData`` body.
@@ -159,8 +160,6 @@ function RTGCatalogPanelInner({
       setSaving(false);
     }
   }, [
-    basePrice,
-    currency,
     description,
     displayName,
     formulation.id,
@@ -271,42 +270,20 @@ function RTGCatalogPanelInner({
           </div>
         </div>
 
-        <div>
+        <div className="md:col-span-2">
           <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
             Base price (per unit)
           </label>
-          <input
-            type="number"
-            step="0.01"
-            min="0"
-            value={basePrice}
-            onChange={(e) => setBasePrice(e.currentTarget.value)}
-            disabled={disabled}
-            className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
-          />
-          {fieldErrors.rtg_base_price ? (
-            <p className="mt-1 text-xs text-rose-700">
-              {fieldErrors.rtg_base_price}
-            </p>
-          ) : null}
-        </div>
-
-        <div>
-          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
-            Currency
-          </label>
-          <select
-            value={currency}
-            onChange={(e) => setCurrency(e.currentTarget.value)}
-            disabled={disabled}
-            className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
-          >
-            {CURRENCY_OPTIONS.map((code) => (
-              <option key={code} value={code}>
-                {code}
-              </option>
-            ))}
-          </select>
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed border-ink-300 bg-ink-50 px-3 py-2">
+            <span className="text-lg font-semibold text-ink-1000">
+              {basePrice ? `${currency} ${basePrice}` : "—"}
+            </span>
+            <span className="text-xs text-ink-600">
+              {basePrice
+                ? "Locked from the latest approved spec sheet. Change cost or margin on the spec + re-approve to update."
+                : "Not set yet. Approve a spec sheet (cost + margin → final price) to lock the customer-facing base price here."}
+            </span>
+          </div>
         </div>
 
         <div>
