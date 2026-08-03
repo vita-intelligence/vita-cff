@@ -355,6 +355,47 @@ class TrialBatchPspMoBookingsView(APIView):
         return Response(payload, status=status.HTTP_200_OK)
 
 
+class TrialBatchPspMoChainView(APIView):
+    """``GET`` ``/.../trial-batches/<id>/psp-mo-chain/``.
+
+    Fetch the full parent → child MO tree for the trial batch's
+    linked PSP MO. NPD's trial-batch panel uses this to render the
+    stage chain — one row per stage MO, indented by depth. Returns
+    404 when the trial batch has no linked MO yet or PSP can't find
+    it.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def _load(self, batch_id: str):
+        try:
+            return get_batch(
+                organization=self.organization, batch_id=batch_id
+            )
+        except TrialBatchNotFound as exc:
+            raise NotFound() from exc
+
+    def get(
+        self, request: Request, org_id: str, batch_id: str
+    ) -> Response:
+        from apps.psp.services import (
+            get_psp_manufacturing_order_chain,
+        )
+
+        batch = self._load(batch_id)
+        mo_uuid = batch.psp_manufacturing_order_uuid
+        if not mo_uuid:
+            raise NotFound()
+        payload = get_psp_manufacturing_order_chain(
+            organization=batch.organization,
+            mo_uuid=mo_uuid,
+        )
+        if not payload:
+            raise NotFound()
+        return Response(payload, status=status.HTTP_200_OK)
+
+
 class TrialBatchRenderView(APIView):
     """``GET`` ``/.../trial-batches/<id>/render/``.
 

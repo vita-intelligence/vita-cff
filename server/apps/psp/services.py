@@ -522,6 +522,34 @@ class PspClient:
             )
         return mo
 
+    def get_manufacturing_order_chain(self, mo_uuid: Any) -> dict | None:
+        """GET ``/api/integration/manufacturing-orders/:uuid/chain``.
+
+        Returns the full parent → child MO tree rooted at the trial
+        MO. Payload shape (per PSP's controller):
+
+            {"chain": [
+              {"uuid", "status", "quantity", "project_type",
+               "npd_trial_batch_uuid", "due_date", "inserted_at",
+               "parent_uuid", "depth", "is_root",
+               "item": {"uuid", "name"}},
+              ...
+            ]}
+
+        Returns ``None`` on 404 (unknown mo uuid) — NPD's panel treats
+        that as "nothing to render yet".
+        """
+
+        cleaned = str(mo_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/manufacturing-orders/{cleaned}/chain"
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
     def list_mo_bookings(self, mo_uuid: Any) -> dict | None:
         """GET ``/api/integration/manufacturing-orders/:uuid/bookings``.
 
@@ -3664,6 +3692,28 @@ def create_psp_manufacturing_order_for_trial_batch(
             },
         )
     return mo
+
+
+def get_psp_manufacturing_order_chain(
+    *,
+    organization: Any,
+    mo_uuid: Any,
+) -> dict | None:
+    """Fetch the full parent → child MO tree for a trial batch's
+    linked PSP MO. Powers the "stage chain" list on the trial-batch
+    detail page — one row per stage MO, indented by depth. Returns
+    ``None`` when PSP has no such MO or the org has no live PSP
+    integration.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    return client.get_manufacturing_order_chain(mo_uuid)
 
 
 def get_psp_manufacturing_order_bookings(

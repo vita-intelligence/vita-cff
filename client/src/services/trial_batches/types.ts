@@ -81,6 +81,28 @@ export interface PspTrialMoBookingsResponseDto {
   };
 }
 
+/** One node in the parent → child MO tree. Depth is 0 for the root
+ *  (finished-product MO); every semi-finished child adds 1. Sorted
+ *  by (depth, inserted_at) on the server so the FE can render as a
+ *  flat indented list without re-computing the tree. */
+export interface PspTrialMoChainNodeDto {
+  readonly uuid: string;
+  readonly status: string;
+  readonly quantity: string;
+  readonly project_type: string;
+  readonly npd_trial_batch_uuid: string | null;
+  readonly due_date: string | null;
+  readonly inserted_at: string;
+  readonly parent_uuid: string | null;
+  readonly depth: number;
+  readonly is_root: boolean;
+  readonly item: { readonly uuid: string; readonly name: string } | null;
+}
+
+export interface PspTrialMoChainResponseDto {
+  readonly chain: readonly PspTrialMoChainNodeDto[];
+}
+
 export interface CreateTrialBatchRequestDto {
   readonly formulation_version_id: string;
   readonly batch_size_units: number;

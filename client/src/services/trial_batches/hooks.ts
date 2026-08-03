@@ -19,6 +19,7 @@ import {
   deleteTrialBatch,
   fetchTrialBatch,
   fetchTrialBatchPspMoBookings,
+  fetchTrialBatchPspMoChain,
   fetchTrialBatchRender,
   fetchTrialBatches,
   updateTrialBatch,
@@ -29,6 +30,7 @@ import type {
   CreateTrialBatchPspMoResponseDto,
   CreateTrialBatchRequestDto,
   PspTrialMoBookingsResponseDto,
+  PspTrialMoChainResponseDto,
   TrialBatchDto,
   UpdateTrialBatchRequestDto,
 } from "./types";
@@ -51,6 +53,13 @@ export const trialBatchesQueryKeys = {
       ...trialBatchesQueryKeys.all,
       orgId,
       "psp-mo-bookings",
+      batchId,
+    ] as const,
+  pspMoChain: (orgId: string, batchId: string) =>
+    [
+      ...trialBatchesQueryKeys.all,
+      orgId,
+      "psp-mo-chain",
       batchId,
     ] as const,
 } as const;
@@ -169,6 +178,19 @@ export function useTrialBatchPspMoBookings(
   return useQuery<PspTrialMoBookingsResponseDto, ApiError>({
     queryKey: trialBatchesQueryKeys.pspMoBookings(orgId, batchId),
     queryFn: () => fetchTrialBatchPspMoBookings(orgId, batchId),
+    enabled: options.enabled ?? true,
+    refetchInterval: options.refetchInterval,
+  });
+}
+
+export function useTrialBatchPspMoChain(
+  orgId: string,
+  batchId: string,
+  options: { enabled?: boolean; refetchInterval?: number } = {},
+): UseQueryResult<PspTrialMoChainResponseDto, ApiError> {
+  return useQuery<PspTrialMoChainResponseDto, ApiError>({
+    queryKey: trialBatchesQueryKeys.pspMoChain(orgId, batchId),
+    queryFn: () => fetchTrialBatchPspMoChain(orgId, batchId),
     enabled: options.enabled ?? true,
     refetchInterval: options.refetchInterval,
   });
