@@ -831,7 +831,7 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
     #   which stage assembles the packaging on the customer's PO. Any
     #   still-unassigned combo blocks the gate because at order time
     #   the packaging cascade would have nowhere to land.
-    if formulation.project_type == Formulation.ProjectType.READY_TO_GO:
+    if formulation.project_type == "ready_to_go":
         combos = list(formulation.packaging_combos.all())
         has_packaging = bool(combos) and all(
             c.stage_id is not None for c in combos
