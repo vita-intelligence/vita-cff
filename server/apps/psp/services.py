@@ -2090,6 +2090,17 @@ def sync_customer_order_to_psp(
     if not is_psp_live(organization):
         return None
 
+    # RTG-track formulations are catalog dev, not customer projects.
+    # They shouldn't ride the CustomerOrder mirror — until a customer
+    # actually orders one via the portal, they have no owner. When
+    # someone does order, the Proposal → CustomerOrder merge path
+    # (``PspClient.merge_customer_orders_from_proposal``) handles the
+    # push separately.
+    from apps.formulations.models import ProjectType
+
+    if getattr(formulation, "project_type", None) == ProjectType.READY_TO_GO:
+        return None
+
     try:
         config = get_psp_config(organization=organization)
     except PspDecryptionFailed:
