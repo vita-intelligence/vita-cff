@@ -583,6 +583,14 @@ export interface StageStripProps {
   readonly onRegisterSave?: (
     save: () => Promise<FormulationDto>,
   ) => void;
+  /** RTG packaging combos with per-combo stage assignment. Drives a
+   *  small "Packaging: X" chip on each stage card so the operator
+   *  can see at a glance which combos land at which stage. Undefined
+   *  / empty on Custom projects (combos don't apply). */
+  readonly packagingCombosByStage?: ReadonlyMap<
+    string,
+    readonly { readonly id: string; readonly name: string }[]
+  >;
 }
 
 
@@ -600,6 +608,7 @@ export function StageStrip({
   syncPending,
   onDirtyChange,
   onRegisterSave,
+  packagingCombosByStage,
 }: StageStripProps) {
   const [drafts, setDrafts] = useState<StageDraft[]>(() =>
     formulation.stages.map(toDraft),
@@ -1215,6 +1224,30 @@ export function StageStrip({
                     : `Spawns its own PSP item · stage ${i + 1}`}
                 </span>
               </div>
+              {/* RTG packaging combos wired to this stage on the
+                  Routing tab. Reads through the ``packagingCombosByStage``
+                  prop so the strip stays render-only — no extra query.
+                  Undefined on Custom projects (prop omitted); empty on
+                  RTG stages that no combo lands on. */}
+              {stageId ? (
+                (() => {
+                  const combosHere = packagingCombosByStage?.get(stageId);
+                  if (!combosHere || combosHere.length === 0) return null;
+                  return (
+                    <div
+                      className="mb-2 inline-flex max-w-full flex-wrap items-center gap-1.5 rounded-lg bg-orange-50 px-2 py-1 text-[11px] font-medium text-orange-900 ring-1 ring-inset ring-orange-200"
+                      title="These packaging combos route to this stage on the Routing tab. Whichever the customer picks at checkout, its items land in this stage's BOM at order time."
+                    >
+                      <span className="font-semibold uppercase tracking-wide text-orange-700">
+                        📦 Packaging
+                      </span>
+                      <span className="truncate">
+                        {combosHere.map((c) => c.name).join(", ")}
+                      </span>
+                    </div>
+                  );
+                })()
+              ) : null}
               {/* Per-stage PSP deep-link + Sync-now row. Renders only
                   when PSP is live for the org AND the stage already has
                   an item on PSP (or, for the terminal stage, the

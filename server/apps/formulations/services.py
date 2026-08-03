@@ -5103,7 +5103,57 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
         "dcp_carrier_item_ids": _m2m_ids(formulation.dcp_carrier_items),
         "anti_caking_item_ids": _m2m_ids(formulation.anti_caking_items),
         "powder_carrier_item_ids": _m2m_ids(formulation.powder_carrier_items),
+        # ---- RTG packaging combos (with per-combo stage routing) ----
+        # Frozen so rollback restores the exact combo definitions +
+        # their Routing-tab stage assignments. Stage is stored as
+        # ``stage_index`` (position in the ordered stage graph) so it
+        # round-trips through the stage delete+recreate step of
+        # rollback — same trick line-level ``stage_index`` uses.
+        "packaging_combos": _snapshot_packaging_combos(formulation),
     }
+
+
+def _snapshot_packaging_combos(
+    formulation: Formulation,
+) -> list[dict[str, Any]]:
+    """Freeze the RTG packaging combos + per-combo stage routing for
+    version snapshots. Returns an empty list on custom projects (they
+    don't use combos)."""
+
+    stage_index_by_id: dict[str, int] = {
+        str(stage.id): int(stage.sort_order)
+        for stage in formulation.stages.all()
+    }
+    out: list[dict[str, Any]] = []
+    combos = (
+        formulation.packaging_combos.all()
+        .order_by("sort_order")
+        .prefetch_related("items__item")
+    )
+    for combo in combos:
+        stage_id_str = str(combo.stage_id) if combo.stage_id else None
+        out.append(
+            {
+                "name": combo.name,
+                "price_delta": str(combo.price_delta),
+                "sort_order": combo.sort_order,
+                "is_default": combo.is_default,
+                "stage_index": (
+                    stage_index_by_id.get(stage_id_str)
+                    if stage_id_str is not None
+                    else None
+                ),
+                "items": [
+                    {
+                        "item_id": str(row.item_id) if row.item_id else None,
+                        "quantity": row.quantity,
+                        "sort_order": row.sort_order,
+                    }
+                    for row in combo.items.all()
+                ],
+            }
+        )
+    return out
 
 
 #: Attribute keys copied from each line's source raw material into the
@@ -6055,6 +6105,63 @@ def rollback_to_version(
             }
         )
     replace_lines(formulation=formulation, actor=actor, lines=lines_payload)
+
+    # ---- 5. Restore packaging combos (RTG projects) ---------------
+    # Wholesale replace: wipe existing combos, recreate from snapshot,
+    # remap ``stage_index`` back to the freshly-created stage row's
+    # id. Missing key on legacy snapshots (pre-migration 0070) leaves
+    # the current combos untouched.
+    combos_snapshot = metadata.get("packaging_combos")
+    if combos_snapshot is not None:
+        from apps.formulations.models import (
+            PackagingCombo,
+            PackagingComboItem,
+        )
+
+        formulation.packaging_combos.all().delete()
+        # Prefetch items referenced across the entire snapshot in a
+        # single query so N combos don't fire N * M item lookups.
+        referenced_item_ids: set[str] = set()
+        for combo_data in combos_snapshot:
+            for item_data in combo_data.get("items") or []:
+                iid = item_data.get("item_id")
+                if iid:
+                    referenced_item_ids.add(str(iid))
+        combo_items_by_id: dict[str, Item] = {}
+        if referenced_item_ids:
+            combo_items_by_id = {
+                str(i.id): i
+                for i in Item.objects.filter(
+                    catalogue__organization=formulation.organization,
+                    id__in=list(referenced_item_ids),
+                )
+            }
+        for combo_data in combos_snapshot:
+            stage_index = combo_data.get("stage_index")
+            restored_stage_id: str | None = None
+            if stage_index is not None:
+                restored_stage_id = stage_id_by_index.get(int(stage_index))
+            new_combo = PackagingCombo.objects.create(
+                formulation=formulation,
+                name=combo_data.get("name") or "",
+                price_delta=combo_data.get("price_delta") or "0",
+                sort_order=int(combo_data.get("sort_order") or 0),
+                is_default=bool(combo_data.get("is_default")),
+                stage_id=restored_stage_id,
+            )
+            PackagingComboItem.objects.bulk_create(
+                [
+                    PackagingComboItem(
+                        combo=new_combo,
+                        item=combo_items_by_id[str(item_data["item_id"])],
+                        quantity=int(item_data.get("quantity") or 1),
+                        sort_order=int(item_data.get("sort_order") or 0),
+                    )
+                    for item_data in (combo_data.get("items") or [])
+                    if item_data.get("item_id")
+                    and str(item_data["item_id"]) in combo_items_by_id
+                ]
+            )
 
     # Reload from DB so scalar assignments (Decimal / int / JSON) come
     # back as their proper Python types rather than the raw JSON
