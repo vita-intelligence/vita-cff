@@ -44,6 +44,7 @@ from apps.psp.services import (
     create_psp_finished_product,
     get_psp_item,
     get_psp_item_bom,
+    get_psp_rnd_warehouses,
     list_psp_allergens,
     list_psp_items,
     list_psp_product_families,
@@ -129,10 +130,6 @@ class PspIntegrationView(APIView):
         # Same key handling as ``integration_token``'s keep-existing
         # sentinel.
         raw_ui_base_url = body.get("ui_base_url")
-        # ``psp_warehouse_uuid`` — target warehouse for trial-batch
-        # MO creation. Same absent-vs-empty semantics as ui_base_url:
-        # absent (None) preserves, "" clears, non-empty replaces.
-        raw_warehouse_uuid = body.get("psp_warehouse_uuid")
         payload = set_psp_config(
             organization=self.organization,
             actor=request.user,
@@ -144,7 +141,6 @@ class PspIntegrationView(APIView):
             # preserves, so an operator can save a URL change
             # without re-typing the token.
             integration_token=body.get("integration_token"),
-            psp_warehouse_uuid=raw_warehouse_uuid,
         )
         return Response(payload, status=status.HTTP_200_OK)
 
@@ -553,6 +549,23 @@ class PspAllergensListView(APIView):
 
     def get(self, request: Request, org_id: str) -> Response:
         rows = list_psp_allergens(organization=self.organization)
+        return Response({"items": rows}, status=status.HTTP_200_OK)
+
+
+class PspRndWarehousesListView(APIView):
+    """``GET`` ``/api/organizations/<org>/integrations/psp/rnd-warehouses/``.
+
+    Powers the warehouse dropdown in the Create-MO-on-PSP modal.
+    PSP filters to warehouses with at least one R&D-tagged cell /
+    rack. Silent-degrade to an empty list on any PSP failure —
+    the FE surfaces "no R&D warehouse available on PSP".
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str) -> Response:
+        rows = get_psp_rnd_warehouses(organization=self.organization)
         return Response({"items": rows}, status=status.HTTP_200_OK)
 
 

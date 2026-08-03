@@ -26,6 +26,7 @@ import {
   fetchPspItems,
   fetchPspAllergens,
   fetchPspProductFamilies,
+  fetchPspRndWarehouses,
   fetchPspStorageTags,
   fetchPspUnitsOfMeasurement,
   fetchPspWorkstationGroups,
@@ -40,6 +41,7 @@ import {
   type PspAllergensListResponseDto,
   type PspItemBomResponseDto,
   type PspProductFamiliesListResponseDto,
+  type PspRndWarehousesListResponseDto,
   type PspStorageTagsListResponseDto,
   type PspUnitsOfMeasurementListResponseDto,
 } from "./api";
@@ -91,6 +93,8 @@ export const pspQueryKeys = {
     ["psp", orgId, "product-families"] as const,
   allergens: (orgId: string) => ["psp", orgId, "allergens"] as const,
   storageTags: (orgId: string) => ["psp", orgId, "storage-tags"] as const,
+  rndWarehouses: (orgId: string) =>
+    ["psp", orgId, "rnd-warehouses"] as const,
 };
 
 
@@ -302,6 +306,27 @@ export function usePspStorageTags(
     queryKey: pspQueryKeys.storageTags(orgId),
     queryFn: () => fetchPspStorageTags(orgId),
     enabled: Boolean(orgId) && enabled,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+
+/** R&D warehouse picker for the Create-MO-on-PSP modal. PSP
+ *  filters to warehouses with ≥1 R&D-tagged cell so the scientist
+ *  can only route trial batches to warehouses actually set up for
+ *  R&D. Only fires when ``enabled`` — no reason to hit PSP until
+ *  the modal is actually open. */
+export function usePspRndWarehouses(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PspRndWarehousesListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PspRndWarehousesListResponseDto, ApiError>({
+    queryKey: pspQueryKeys.rndWarehouses(orgId),
+    queryFn: () => fetchPspRndWarehouses(orgId),
+    enabled: Boolean(orgId) && enabled,
+    // Warehouses + their R&D tagging change rarely, and the picker
+    // is a one-shot per modal open — safe to cache aggressively.
     staleTime: 5 * 60 * 1000,
   });
 }

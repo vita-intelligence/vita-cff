@@ -550,6 +550,26 @@ class PspClient:
             return None
         return response
 
+    def list_rnd_warehouses(self) -> list[dict]:
+        """GET ``/api/integration/warehouses``.
+
+        Returns the list of R&D-tagged warehouses for the
+        Create-MO-on-PSP dropdown. PSP filters to warehouses that
+        have at least one cell (or rack) carrying the reserved
+        ``rnd`` stream tag, so the picker only shows warehouses
+        actually set up for R&D flow.
+
+        Payload: ``{"warehouses": [{"uuid", "name"}, ...]}``.
+        Returns ``[]`` if the org has no R&D-tagged warehouses or
+        PSP returned an unexpected shape.
+        """
+
+        response = self._request("api/integration/warehouses")
+        if not isinstance(response, dict):
+            return []
+        raw = response.get("warehouses")
+        return raw if isinstance(raw, list) else []
+
     def list_mo_bookings(self, mo_uuid: Any) -> dict | None:
         """GET ``/api/integration/manufacturing-orders/:uuid/bookings``.
 
@@ -3560,6 +3580,7 @@ def create_psp_manufacturing_order_for_trial_batch(
     actor: Any,
     trial_batch: Any,
     quantity: Any,
+    warehouse_uuid: Any,
     project_type: str = "trial",
     item_uuid: Any = None,
     due_date: Any = None,
@@ -3572,8 +3593,10 @@ def create_psp_manufacturing_order_for_trial_batch(
 
     * ``item_uuid`` — caller override (raw string) or
       ``trial_batch.formulation_version.formulation.psp_finished_product_uuid``.
-    * ``warehouse_uuid`` — from org's ``psp_warehouse_uuid`` config
-      only; no per-request override in the MVP.
+    * ``warehouse_uuid`` — required per-request from the modal's
+      dropdown. Was previously a global setting; moved to per-MO
+      choice so multi-site R&D setups can route different trial
+      batches to different R&D warehouses without editing settings.
     * ``project_type`` — caller override (``trial`` | ``sample``);
       defaults to ``trial``.
     * ``quantity`` — required, whole number > 0.
@@ -3604,9 +3627,10 @@ def create_psp_manufacturing_order_for_trial_batch(
         # helper — the FE surfaces "PSP unavailable, check settings".
         raise
 
-    if not config.psp_warehouse_uuid:
+    resolved_warehouse_uuid = str(warehouse_uuid or "").strip()
+    if not resolved_warehouse_uuid:
         raise PspTrialBatchWarehouseMissing(
-            "Set a PSP warehouse on /settings/integrations first."
+            "Pick a PSP warehouse for this trial MO."
         )
 
     resolved_item_uuid = str(item_uuid or "").strip()
@@ -3642,7 +3666,7 @@ def create_psp_manufacturing_order_for_trial_batch(
     try:
         mo = client.create_manufacturing_order(
             item_uuid=resolved_item_uuid,
-            warehouse_uuid=config.psp_warehouse_uuid,
+            warehouse_uuid=resolved_warehouse_uuid,
             quantity=qty_int,
             npd_trial_batch_uuid=str(trial_batch.id),
             project_type=project_type,
@@ -3707,7 +3731,7 @@ def create_psp_manufacturing_order_for_trial_batch(
                 "quantity": mo.get("quantity"),
                 "project_type": mo.get("project_type"),
                 "item_uuid": resolved_item_uuid,
-                "warehouse_uuid": config.psp_warehouse_uuid,
+                "warehouse_uuid": resolved_warehouse_uuid,
             },
         )
     return mo
@@ -3754,6 +3778,28 @@ def get_psp_manufacturing_order_bookings(
         return None
     client = _client_factory(config)
     return client.list_mo_bookings(mo_uuid)
+
+
+def get_psp_rnd_warehouses(*, organization: Any) -> list[dict]:
+    """List R&D-tagged PSP warehouses for the Create-MO dropdown.
+
+    Silent-degrade posture — returns ``[]`` when PSP isn't configured,
+    can't decrypt the token, or doesn't respond. The Create-MO modal
+    surfaces "no R&D warehouse available" and disables the submit
+    button in that case, same as before.
+    """
+
+    if not is_psp_live(organization):
+        return []
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return []
+    client = _client_factory(config)
+    try:
+        return client.list_rnd_warehouses()
+    except PspError:
+        return []
 
 
 def create_psp_finished_product(

@@ -243,6 +243,7 @@ class TrialBatchCreatePspMoView(APIView):
                 actor=request.user,
                 trial_batch=batch,
                 quantity=body.get("quantity"),
+                warehouse_uuid=body.get("warehouse_uuid"),
                 project_type=str(body.get("project_type") or "trial"),
                 item_uuid=body.get("item_uuid"),
                 due_date=body.get("due_date"),

@@ -35,6 +35,11 @@ export interface CreateTrialBatchPspMoRequestDto {
    *  when a scientist wants PSP to run a smaller MO than the planned
    *  scale. */
   readonly quantity?: number;
+  /** Required. PSP warehouse UUID picked from the R&D warehouse
+   *  dropdown. Was previously a global setting; per-MO now so
+   *  multi-site R&D setups can route each trial batch to the right
+   *  warehouse without editing settings. */
+  readonly warehouse_uuid: string;
   /** Optional. Defaults to ``"trial"`` server-side. */
   readonly project_type?: "trial" | "sample";
   /** Optional finished-product item override. When absent, the

@@ -194,6 +194,25 @@ export async function fetchPspAllergens(
 }
 
 
+/** R&D warehouse picker for the Create-MO-on-PSP modal. PSP
+ *  filters to warehouses with ≥1 R&D-tagged cell. */
+export interface PspRndWarehouseDto {
+  uuid: string;
+  name: string;
+}
+export interface PspRndWarehousesListResponseDto {
+  items: readonly PspRndWarehouseDto[];
+}
+export async function fetchPspRndWarehouses(
+  orgId: string,
+): Promise<PspRndWarehousesListResponseDto> {
+  const { data } = await apiClient.get<PspRndWarehousesListResponseDto>(
+    pspEndpoints.rndWarehouses(orgId),
+  );
+  return data;
+}
+
+
 /** Setup form's ``Storage tags`` multi-picker. Company-scoped on PSP. */
 export interface PspStorageTagDto {
   uuid: string;
