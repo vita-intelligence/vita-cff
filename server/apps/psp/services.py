@@ -3620,6 +3620,14 @@ def create_psp_manufacturing_order_for_trial_batch(
             "spawning a trial MO."
         )
 
+    # Default quantity to the trial batch's planned scale — the whole
+    # point of a trial batch is to fix the run size, so re-asking the
+    # scientist to type it is a compliance-first field-design smell.
+    # Callers can still override (e.g. an integration test) but the
+    # standard "Create MO" click sends nothing and lands here.
+    if quantity in (None, ""):
+        quantity = getattr(trial_batch, "batch_size_units", None)
+
     try:
         qty_int = int(quantity)
     except (TypeError, ValueError) as exc:
