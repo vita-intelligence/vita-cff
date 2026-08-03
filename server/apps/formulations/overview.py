@@ -183,7 +183,10 @@ class StageGates:
       Builder has a version.
     * ``trial_batches`` — Custom projects need a customer-signed
       proposal (``customer_signed_at IS NOT NULL``). RTG projects
-      can run trial batches freely once Builder has a version.
+      need an approved spec sheet — the intended workflow is
+      build → draft spec → spec approved → trial batches → final
+      spec → final approved, so trials can't jump ahead of spec
+      approval on either track.
     * ``qc`` — unlocked once at least one trial batch exists.
     """
 
@@ -973,7 +976,12 @@ def _compute_stage_gates(formulation: Formulation) -> StageGates:
         proposals=spec_sheets_unlocked
         if is_rtg
         else has_approved_spec,
-        trial_batches=spec_sheets_unlocked
+        # RTG trial batches don't require a customer signature (there
+        # isn't one — customers order later through the portal), but
+        # they DO require the spec sheet to be approved so the trial
+        # runs against a signed-off recipe. Matches the intended flow
+        # build → draft spec → spec approved → trial batches.
+        trial_batches=has_approved_spec
         if is_rtg
         else has_customer_signed_proposal,
         qc=has_trial_batch,
