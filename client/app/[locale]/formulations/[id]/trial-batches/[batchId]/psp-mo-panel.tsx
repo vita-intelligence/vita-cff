@@ -24,6 +24,7 @@ import {
   FlaskConical,
   Layers,
   Loader2,
+  Package,
   X,
 } from "lucide-react";
 import { useMemo, useState, type FormEvent } from "react";
@@ -100,9 +101,6 @@ function CreateMoButton({
 }
 
 
-type ProjectType = "trial" | "sample";
-
-
 function CreateMoModal({
   orgId,
   batch,
@@ -115,9 +113,15 @@ function CreateMoModal({
   const tErrors = useTranslations("errors");
   const pspConfig = usePspConfig(orgId);
 
-  const [quantity, setQuantity] = useState(String(batch.batch_size_units));
-  const [projectType, setProjectType] = useState<ProjectType>("trial");
-  const [itemUuidOverride, setItemUuidOverride] = useState("");
+  // Quantity, project_type, and finished-product uuid all live
+  // elsewhere already:
+  //   * quantity → ``TrialBatch.batch_size_units`` (backend default)
+  //   * project_type → always "trial" for trial batches
+  //   * item_uuid → ``Formulation.psp_finished_product_uuid``
+  // Re-asking the scientist for any of them is a compliance-first
+  // field-design smell (see CLAUDE.md rule #2 — "if it can be
+  // computed, don't ask"). Only genuinely optional annotations
+  // remain in the form.
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
   const [banner, setBanner] = useState<
@@ -133,19 +137,8 @@ function CreateMoModal({
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setBanner(null);
-    const qtyInt = Number.parseInt(quantity, 10);
-    if (!Number.isFinite(qtyInt) || qtyInt <= 0) {
-      setBanner({
-        kind: "error",
-        message: "Quantity must be a positive whole number.",
-      });
-      return;
-    }
     try {
       await createMutation.mutateAsync({
-        quantity: qtyInt,
-        project_type: projectType,
-        item_uuid: itemUuidOverride.trim() || undefined,
         due_date: dueDate.trim() || undefined,
         notes: notes.trim() || undefined,
       });
@@ -195,85 +188,24 @@ function CreateMoModal({
         ) : null}
 
         <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-ink-700">
-              Quantity (finished units)
-            </label>
-            <input
-              type="number"
-              min={1}
-              step={1}
-              value={quantity}
-              onChange={(e) => setQuantity(e.target.value)}
-              required
-              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
-            />
-            <p className="text-[11px] text-ink-500">
-              Defaults to the trial batch&apos;s size ({batch.batch_size_units}
-              ). Edit if you want PSP to make fewer than the planned
-              scale-up.
-            </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <span className="text-xs font-medium text-ink-700">
-              Project type
-            </span>
-            <div className="flex gap-2">
-              <label
-                className={`inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ring-1 ring-inset transition-colors ${
-                  projectType === "trial"
-                    ? "bg-emerald-500 text-ink-0 ring-emerald-500"
-                    : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-50"
-                }`}
-              >
-                <input
-                  type="radio"
-                  className="sr-only"
-                  name="project_type"
-                  value="trial"
-                  checked={projectType === "trial"}
-                  onChange={() => setProjectType("trial")}
-                />
-                Trial
-              </label>
-              <label
-                className={`inline-flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium ring-1 ring-inset transition-colors ${
-                  projectType === "sample"
-                    ? "bg-emerald-500 text-ink-0 ring-emerald-500"
-                    : "bg-ink-0 text-ink-600 ring-ink-200 hover:bg-ink-50"
-                }`}
-              >
-                <input
-                  type="radio"
-                  className="sr-only"
-                  name="project_type"
-                  value="sample"
-                  checked={projectType === "sample"}
-                  onChange={() => setProjectType("sample")}
-                />
-                Sample
-              </label>
+          {/* Read-only summary of what will be sent. Everything here
+              is derived from the trial batch + formulation so the
+              scientist can see what PSP will receive without having
+              to type it. If any of these look wrong the fix is to
+              edit the trial batch / formulation, not the MO. */}
+          <dl className="flex flex-col gap-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
+            <div className="flex items-center gap-1.5">
+              <Package className="h-3 w-3 text-ink-500" />
+              <dt className="font-medium text-ink-700">Quantity</dt>
+              <dd className="tabular-nums text-ink-1000">
+                {batch.batch_size_units} finished units
+              </dd>
             </div>
-            <p className="text-[11px] text-ink-500">
-              Both consume from the R&amp;D stock pool + drop to the
-              R&amp;D cell configured on PSP. Sample = bench-scale
-              one-offs; Trial = the standard workflow.
+            <p className="text-[10px] text-ink-500">
+              Pulled from this trial batch&apos;s planned scale. To run a
+              different size, edit the trial batch first.
             </p>
-          </div>
-
-          <div className="flex flex-col gap-1.5">
-            <label className="text-xs font-medium text-ink-700">
-              PSP finished-product item UUID (optional override)
-            </label>
-            <input
-              type="text"
-              value={itemUuidOverride}
-              onChange={(e) => setItemUuidOverride(e.target.value)}
-              placeholder="Leave blank to use the formulation's linked item"
-              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm font-mono"
-            />
-          </div>
+          </dl>
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex flex-col gap-1.5">

@@ -30,7 +30,12 @@ export interface TrialBatchDto {
 }
 
 export interface CreateTrialBatchPspMoRequestDto {
-  readonly quantity: number;
+  /** Optional. When omitted, the server defaults to the trial
+   *  batch's ``batch_size_units``. Only override for the rare case
+   *  when a scientist wants PSP to run a smaller MO than the planned
+   *  scale. */
+  readonly quantity?: number;
+  /** Optional. Defaults to ``"trial"`` server-side. */
   readonly project_type?: "trial" | "sample";
   /** Optional finished-product item override. When absent, the
    *  server resolves from ``formulation.psp_finished_product_uuid``. */
