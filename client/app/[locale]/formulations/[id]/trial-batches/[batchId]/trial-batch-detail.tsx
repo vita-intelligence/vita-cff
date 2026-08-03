@@ -270,6 +270,7 @@ export function TrialBatchDetail({
             orgId={orgId}
             formulationId={formulationId}
             batchId={initialBatch.id}
+            linkedPspMoUuid={batch.psp_manufacturing_order_uuid}
           />
           {pspIsLive ? (
             <PspMoPanel

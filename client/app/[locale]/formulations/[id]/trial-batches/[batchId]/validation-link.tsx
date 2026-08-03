@@ -3,6 +3,7 @@
 import { Button } from "@heroui/react";
 import { ShieldCheck } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useMemo } from "react";
 
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
@@ -12,6 +13,7 @@ import {
   useCreateValidation,
   useValidationForBatch,
 } from "@/services/product_validation";
+import { useTrialBatchPspMoChain } from "@/services/trial_batches";
 
 
 /**
@@ -21,15 +23,28 @@ import {
  * exists the button creates one in-place and routes to the new
  * page; when one does, it's a plain link so the user can peek at
  * the draft status from the URL (shareable to the R&D manager).
+ *
+ * Gating rule: when the trial batch has a linked PSP MO chain,
+ * "Start validation" stays disabled until every MO in the chain
+ * (finished-product parent + every semi-finished child) hits
+ * ``status = completed``. You can't validate a product that hasn't
+ * actually been produced yet. If no PSP MO is linked (legacy trial
+ * batches or ones the scientist chose not to push), the CTA is
+ * unrestricted — same as before.
  */
 export function ValidationLink({
   orgId,
   formulationId,
   batchId,
+  linkedPspMoUuid = null,
 }: {
   orgId: string;
   formulationId: string;
   batchId: string;
+  /** PSP MO uuid from ``TrialBatch.psp_manufacturing_order_uuid``.
+   *  When set, gates the Start button on the chain being fully
+   *  completed. When null, no gate. */
+  linkedPspMoUuid?: string | null;
 }) {
   const tV = useTranslations("product_validation");
   const tErrors = useTranslations("errors");
@@ -37,6 +52,37 @@ export function ValidationLink({
 
   const existingQuery = useValidationForBatch(orgId, batchId);
   const createMutation = useCreateValidation(orgId);
+
+  // Only fetch the chain when a PSP MO exists. Poll at the same 20s
+  // cadence as the linked-MO chip so the gate lifts automatically
+  // when the last stage completes, without the scientist refreshing.
+  const chainQuery = useTrialBatchPspMoChain(orgId, batchId, {
+    enabled: Boolean(linkedPspMoUuid),
+    refetchInterval: linkedPspMoUuid ? 20_000 : undefined,
+  });
+
+  const moGate = useMemo(() => {
+    if (!linkedPspMoUuid) return { blocked: false, reason: null as string | null };
+    const chain = chainQuery.data?.chain ?? [];
+    if (chainQuery.isLoading && chain.length === 0) {
+      return { blocked: true, reason: "Loading MO status…" };
+    }
+    if (chain.length === 0) {
+      return {
+        blocked: true,
+        reason:
+          "PSP MO chain not available yet — the trial run must complete before validation.",
+      };
+    }
+    const pending = chain.filter((n) => n.status !== "completed");
+    if (pending.length === 0) return { blocked: false, reason: null };
+    return {
+      blocked: true,
+      reason: `Finish the trial run first — ${pending.length} of ${chain.length} stage MO${
+        chain.length === 1 ? "" : "s"
+      } still ${pending.length === 1 ? "is" : "are"} not completed on PSP.`,
+    };
+  }, [linkedPspMoUuid, chainQuery.data, chainQuery.isLoading]);
 
   const isBusy = createMutation.isPending || existingQuery.isLoading;
 
@@ -57,6 +103,10 @@ export function ValidationLink({
   }
 
   const handleStart = async () => {
+    // Client-side guard — the button is also disabled, but a race
+    // where the chain query resolves "incomplete" between click
+    // and mount is still possible on slow connections. Bail early.
+    if (moGate.blocked) return;
     try {
       const created = await createMutation.mutateAsync({
         trial_batch_id: batchId,
@@ -75,20 +125,28 @@ export function ValidationLink({
     }
   };
 
+  const disabled = isBusy || moGate.blocked;
+
   return (
-    <Button
-      type="button"
-      variant="primary"
-      size="sm"
-      className="rounded-lg bg-orange-500 px-3 py-2 font-medium text-ink-0 hover:bg-orange-600"
-      isDisabled={isBusy}
-      onClick={handleStart}
-    >
-      <span className="inline-flex items-center gap-1.5">
-        <ShieldCheck className="h-4 w-4" />
-        {tV("link.start")}
-      </span>
-    </Button>
+    // Wrapper span carries the hover tooltip because HeroUI's
+    // Button doesn't accept ``title`` — and the gate's *why* needs
+    // to be discoverable without a design-heavy Tooltip component.
+    <span title={moGate.reason ?? undefined} className="inline-flex">
+      <Button
+        type="button"
+        variant="primary"
+        size="sm"
+        className="rounded-lg bg-orange-500 px-3 py-2 font-medium text-ink-0 hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-60"
+        isDisabled={disabled}
+        onClick={handleStart}
+        aria-disabled={disabled}
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <ShieldCheck className="h-4 w-4" />
+          {tV("link.start")}
+        </span>
+      </Button>
+    </span>
   );
 }
 
