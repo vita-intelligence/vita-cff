@@ -312,10 +312,13 @@ export function usePspStorageTags(
 
 
 /** R&D warehouse picker for the Create-MO-on-PSP modal. PSP
- *  filters to warehouses with ≥1 R&D-tagged cell so the scientist
- *  can only route trial batches to warehouses actually set up for
- *  R&D. Only fires when ``enabled`` — no reason to hit PSP until
- *  the modal is actually open. */
+ *  filters to warehouses with ≥1 cell whose Purpose is R&D so the
+ *  scientist can only route trial batches to warehouses actually
+ *  set up for R&D. Only fires when ``enabled`` — no reason to hit
+ *  PSP until the modal is actually open. Always refetches on
+ *  mount: a scientist who just set a shelf's purpose on PSP and
+ *  reopened this modal should see the warehouse appear
+ *  immediately, not wait out a stale cache. */
 export function usePspRndWarehouses(
   orgId: string,
   args: { enabled?: boolean } = {},
@@ -325,9 +328,8 @@ export function usePspRndWarehouses(
     queryKey: pspQueryKeys.rndWarehouses(orgId),
     queryFn: () => fetchPspRndWarehouses(orgId),
     enabled: Boolean(orgId) && enabled,
-    // Warehouses + their R&D tagging change rarely, and the picker
-    // is a one-shot per modal open — safe to cache aggressively.
-    staleTime: 5 * 60 * 1000,
+    refetchOnMount: "always",
+    staleTime: 0,
   });
 }
 

@@ -207,9 +207,10 @@ function CreateMoModal({
 
         {noRndWarehouses ? (
           <div className="mt-4 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900 ring-1 ring-inset ring-amber-200">
-            No R&amp;D warehouse configured on PSP. Tag at least one
-            cell (or rack) with the reserved <code>rnd</code> tag on
-            PSP&apos;s warehouse editor before creating an MO.
+            No R&amp;D warehouse configured on PSP. Open a warehouse
+            plan on PSP, pick a shelf, and set its{" "}
+            <strong>Purpose</strong> to <em>R&amp;D</em> — one shelf is
+            enough for the warehouse to show up here.
           </div>
         ) : null}
 
