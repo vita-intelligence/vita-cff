@@ -275,14 +275,31 @@ function RTGCatalogPanelInner({
             Base price (per unit)
           </label>
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed border-ink-300 bg-ink-50 px-3 py-2">
-            <span className="text-lg font-semibold text-ink-1000">
-              {basePrice ? `${currency} ${basePrice}` : "—"}
-            </span>
-            <span className="text-xs text-ink-600">
-              {basePrice
-                ? "Locked from the latest approved spec sheet. Change cost or margin on the spec + re-approve to update."
-                : "Not set yet. Approve a spec sheet (cost + margin → final price) to lock the customer-facing base price here."}
-            </span>
+            {/* The rtg_base_price field can carry a legacy value from
+                before we made it derived. Only show it as legitimately
+                locked when the project has actually approved a spec
+                sheet — otherwise treat as "not set yet" and ignore
+                the stale value. */}
+            {basePrice && formulation.has_approved_spec ? (
+              <>
+                <span className="text-lg font-semibold text-ink-1000">
+                  {currency} {basePrice}
+                </span>
+                <span className="text-xs text-ink-600">
+                  Locked from the latest approved spec sheet. Change
+                  cost or margin on the spec + re-approve to update.
+                </span>
+              </>
+            ) : (
+              <>
+                <span className="text-lg font-semibold text-ink-500">—</span>
+                <span className="text-xs text-ink-600">
+                  Not set yet. Approve a spec sheet (cost + margin →
+                  final price) to lock the customer-facing base price
+                  here.
+                </span>
+              </>
+            )}
           </div>
         </div>
 

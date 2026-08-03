@@ -603,6 +603,15 @@ export interface FormulationDto {
    *  workflow (build → draft spec → approve → trial batches →
    *  FINAL spec → FINAL approved → catalog). */
   readonly has_approved_final_spec: boolean;
+  /** True when the project has any spec sheet (draft or FINAL) at
+   *  or past ``approved``. Powers the RTG catalog panel's "Base
+   *  price locked from spec" display — the pill only shows the
+   *  amount as legitimately locked when this flips true, so any
+   *  legacy ``rtg_base_price`` on a project with zero approvals
+   *  surfaces as "Not set yet" instead of dressing up an unsigned
+   *  number. Distinct from ``has_approved_final_spec`` which is
+   *  FINAL-only and drives the Publish gate. */
+  readonly has_approved_spec: boolean;
   readonly created_at: string;
   readonly updated_at: string;
 }
