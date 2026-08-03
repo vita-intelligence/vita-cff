@@ -1232,10 +1232,15 @@ def create_sheet(
     if version is None or version.formulation.organization_id != organization.id:
         raise FormulationVersionNotInOrg()
 
-    # A spec sheet is a per-customer artifact — cover notes, prices,
-    # delivery terms all belong to a real client. Refuse creation
-    # until the project workspace has one linked.
-    if version.formulation.customer_id is None:
+    # A spec sheet is a per-customer artifact for Custom projects —
+    # cover notes, prices, delivery terms all belong to a real client.
+    # RTG projects don't have a customer at this point (customers order
+    # later through the portal), so the check is skipped for them; the
+    # spec covers the SKU itself, not a client contract.
+    if (
+        version.formulation.customer_id is None
+        and version.formulation.project_type != "ready_to_go"
+    ):
         raise SpecRequiresCustomer()
 
     if code:
@@ -2129,13 +2134,18 @@ def transition_status(
             raise MissingDeliveryCapture()
 
     # Director approval is gated on the project having a linked
-    # customer. Signing off a spec whose formulation still points at
-    # nothing (or the "NPD Placeholder" via PSP) locks in commercial
-    # terms against an unknown client — bad for audit and worse for
-    # the proposal team who needs to know who to invoice.
+    # customer — for CUSTOM projects. Signing off a Custom spec whose
+    # formulation still points at nothing (or the "NPD Placeholder"
+    # via PSP) locks in commercial terms against an unknown client —
+    # bad for audit and worse for the proposal team who needs to know
+    # who to invoice. RTG projects skip this — their specs cover the
+    # SKU itself and customers get attached later at portal-order time.
     if next_status == SpecificationStatus.APPROVED:
         formulation = sheet.formulation_version.formulation
-        if formulation.customer_id is None:
+        if (
+            formulation.customer_id is None
+            and formulation.project_type != "ready_to_go"
+        ):
             raise SpecRequiresCustomer()
 
     # Slot uniqueness on the ``in_review`` lane: the director has at
