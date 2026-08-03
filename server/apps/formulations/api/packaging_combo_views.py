@@ -38,6 +38,10 @@ def _combo_payload(combo: PackagingCombo) -> dict:
         "price_delta": str(combo.price_delta),
         "sort_order": combo.sort_order,
         "is_default": combo.is_default,
+        # Stage assignment for the packaging cascade. Nullable until
+        # the scientist wires it up on the Routing tab; RTG readiness
+        # gate refuses to advance without every combo having a stage.
+        "stage_id": str(combo.stage_id) if combo.stage_id else None,
         "items": [
             {
                 "id": str(row.id),
@@ -103,6 +107,13 @@ class PackagingCombosView(APIView):
         # Cache Item lookups so a combo with N identical items only
         # hits the DB once per unique item.
         item_cache: dict[str, Item] = {}
+        # Prefetch valid stage IDs on this formulation so combo
+        # ``stage_id`` values can be validated in-memory without an
+        # N+1 lookup per row.
+        valid_stage_ids = {
+            str(sid)
+            for sid in formulation.stages.values_list("id", flat=True)
+        }
         for i, raw in enumerate(combos_in):
             if not isinstance(raw, dict):
                 return Response(
@@ -151,6 +162,28 @@ class PackagingCombosView(APIView):
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 default_seen = True
+            # Stage assignment — optional (nullable so scientists can
+            # draft combos before wiring routing). Must belong to this
+            # formulation when provided.
+            stage_id_raw = raw.get("stage_id")
+            if stage_id_raw is None or (
+                isinstance(stage_id_raw, str) and not stage_id_raw.strip()
+            ):
+                stage_id: str | None = None
+            else:
+                candidate = str(stage_id_raw).strip()
+                if candidate not in valid_stage_ids:
+                    return Response(
+                        {
+                            "error": "invalid_stage",
+                            "detail": (
+                                f'Combo "{name}" is assigned to a stage '
+                                "that doesn't belong to this formulation."
+                            ),
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                stage_id = candidate
             items_raw = raw.get("items")
             if not isinstance(items_raw, list) or len(items_raw) == 0:
                 return Response(
@@ -214,6 +247,7 @@ class PackagingCombosView(APIView):
                     "name": name,
                     "price_delta": price_delta,
                     "is_default": is_default,
+                    "stage_id": stage_id,
                     "sort_order": i,
                     "items": cleaned_items,
                 }
@@ -229,6 +263,7 @@ class PackagingCombosView(APIView):
                     name=row["name"],
                     price_delta=row["price_delta"],
                     is_default=row["is_default"],
+                    stage_id=row["stage_id"],
                     sort_order=row["sort_order"],
                 )
                 PackagingComboItem.objects.bulk_create(

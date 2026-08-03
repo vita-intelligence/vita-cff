@@ -6,6 +6,7 @@ import { AlertCircle, Check, Copy, CopyPlus, ExternalLink, Loader2, Printer, Ref
 import { CountryMultiPicker } from "@/components/forms/country-multi-picker";
 
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
+import { PackagingRoutingSection } from "./packaging-routing-section";
 import { StageBomsPreview } from "./stage-boms-preview";
 import { StageStrip } from "./stage-strip";
 import { useLocale, useTranslations } from "next-intl";
@@ -62,6 +63,7 @@ import {
   useUpdateFormulationPhoto,
   useUploadFormulationPhoto,
   useFormulationVersions,
+  usePackagingCombos,
   useReplaceLines,
   useRollbackFormulation,
   useSaveVersion,
@@ -3817,6 +3819,18 @@ export function FormulationBuilder({
   // lines). Computed from the live local state so the card clears the
   // moment the scientist fixes a row — no server round-trip needed.
   // ---------------------------------------------------------------------
+  // RTG packaging gate — on RTG projects, packaging is chosen through
+  // PackagingCombos + assigned per-combo to a stage on the Routing tab.
+  // Every combo must have a ``stage_id`` for the Builder gate to pass.
+  // Custom projects still use the ingredient-line check further below.
+  const rtgCombosQuery = usePackagingCombos(orgId, formulation.id, {
+    enabled: formulation.project_type === "ready_to_go",
+  });
+  const rtgCombos = rtgCombosQuery.data?.items ?? [];
+  const rtgUnassignedCombos = rtgCombos.filter((c) => !c.stage_id);
+  const rtgPackagingReady =
+    rtgCombos.length > 0 && rtgUnassignedCombos.length === 0;
+  const isRtg = formulation.project_type === "ready_to_go";
   const readinessSignals = useMemo(() => {
     // Resolve each line's ACTIVE stage — line.stage_id is the last-
     // saved value, but the operator's unsaved routing drafts live on
@@ -3833,7 +3847,7 @@ export function FormulationBuilder({
     };
     const stagesWithLines = new Set<string>();
     let orphanLineCount = 0;
-    let hasPackaging = false;
+    let hasPackagingLine = false;
     for (const line of lines) {
       const effectiveStageId = stageForLine(line);
       if (effectiveStageId) {
@@ -3841,21 +3855,21 @@ export function FormulationBuilder({
       } else {
         orphanLineCount += 1;
       }
-      // Packaging check — a finished product can't ship without at
-      // least one packaging component (bottle, jar, sachet, blister,
-      // pouch, carton, label, etc.). PSP classifies items on the
-      // ``type`` field (raw_material / packaging / semi_finished /
-      // finished_product) which mirror stores as ``psp_item_type`` on
-      // the line's item attributes. That's the item-level PSP
-      // classification — distinct from ``use_as``, which sub-classifies
-      // raw materials (active / sweetener / etc.).
+      // Packaging check — Custom projects declare packaging as an
+      // ingredient line typed ``psp_item_type === "packaging"``.
+      // RTG projects offer combos instead and this line-level check
+      // is overridden below with the combo assignment state.
       const pspType = (line.item_attributes?.psp_item_type ?? "")
         .toString()
         .toLowerCase();
       if (pspType === "packaging") {
-        hasPackaging = true;
+        hasPackagingLine = true;
       }
     }
+    // Split gate per project_type. RTG readiness comes from combo
+    // definitions + per-combo stage assignments (computed above the
+    // memo); custom projects still use the ingredient-line signal.
+    const hasPackaging = isRtg ? rtgPackagingReady : hasPackagingLine;
     const emptyStages = formulation.stages.filter(
       (s) => !stagesWithLines.has(s.id),
     );
@@ -4019,7 +4033,7 @@ export function FormulationBuilder({
       missingSetup,
       isComplete,
     };
-  }, [lines, formulation.stages, effectiveRouting, metadata]);
+  }, [lines, formulation.stages, effectiveRouting, metadata, isRtg, rtgPackagingReady]);
 
 
   // Pick-in-flight tracking so the picker overlay + row-disable
@@ -5109,15 +5123,22 @@ export function FormulationBuilder({
                   <li className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
                     <span>
-                      No packaging picked yet — a finished product can&apos;t
-                      ship without a bottle / jar / sachet / pouch.
+                      {isRtg
+                        ? rtgCombos.length === 0
+                          ? "No packaging combos defined yet. Add at least one on the RTG catalog panel — that's what the customer picks between at checkout."
+                          : `${rtgUnassignedCombos.length} packaging combo${rtgUnassignedCombos.length === 1 ? "" : "s"} still need a stage assignment on the Routing tab.`
+                        : "No packaging picked yet — a finished product can't ship without a bottle / jar / sachet / pouch."}
                     </span>
                     <button
                       type="button"
                       onClick={() => setActiveTab("routing")}
                       className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
                     >
-                      Add packaging
+                      {isRtg && rtgCombos.length > 0
+                        ? "Route combos"
+                        : isRtg
+                          ? "Open catalog panel"
+                          : "Add packaging"}
                     </button>
                   </li>
                 ) : null}
@@ -7089,6 +7110,14 @@ export function FormulationBuilder({
       {/* each stage's real BOM from the ORM.                          */}
       {/* ------------------------------------------------------------ */}
       <div className={activeTab === "routing" ? "flex flex-col gap-6" : "hidden"}>
+        {/* RTG-only: per-combo stage assignment. Custom projects
+            declare packaging as an ingredient line via the picker
+            below and skip this section. */}
+        <PackagingRoutingSection
+          orgId={orgId}
+          formulation={formulation}
+          canWrite={canWrite}
+        />
         <RoutingTabBody
           orgId={orgId}
           formulation={formulation}
@@ -8511,6 +8540,10 @@ const RoutingTabBody = memo(function RoutingTabBody({
               typeChipLabel={typeChipLabel}
               canWrite={canWrite}
               pickBusy={pickBusy}
+              // Hide the Packaging chip + filter packaging items from
+              // results on RTG projects — packaging is chosen through
+              // combos on the panel above, not this inventory picker.
+              hidePackaging={formulation.project_type === "ready_to_go"}
             />
           ) : (
             <>
@@ -9175,6 +9208,7 @@ function RoutingInventoryPicker({
   typeChipLabel,
   canWrite,
   pickBusy,
+  hidePackaging,
 }: {
   search: string;
   onSearchChange: (v: string) => void;
@@ -9198,16 +9232,43 @@ function RoutingInventoryPicker({
   typeChipLabel: (itemType: string) => string;
   canWrite: boolean;
   pickBusy: boolean;
+  /** RTG projects handle packaging through combos, not this picker.
+   *  When true: the Packaging chip is hidden and any ``item_type ===
+   *  "packaging"`` row is filtered out of ``otherResults`` even
+   *  under the "All" filter. */
+  hidePackaging?: boolean;
 }) {
+  // Force the picker back to "All" if the parent state landed on the
+  // Packaging chip while packaging is being hidden (e.g. RTG project
+  // that migrated over with a stale local state).
+  useEffect(() => {
+    if (hidePackaging && pickerType === "packaging") {
+      onPickerTypeChange("all");
+    }
+  }, [hidePackaging, pickerType, onPickerTypeChange]);
   const chips: {
     key: "all" | "raw_material" | "semi_finished" | "packaging";
     label: string;
-  }[] = [
-    { key: "all", label: "All" },
-    { key: "raw_material", label: "Raw" },
-    { key: "semi_finished", label: "Semi" },
-    { key: "packaging", label: "Packaging" },
-  ];
+  }[] = hidePackaging
+    ? [
+        { key: "all", label: "All" },
+        { key: "raw_material", label: "Raw" },
+        { key: "semi_finished", label: "Semi" },
+      ]
+    : [
+        { key: "all", label: "All" },
+        { key: "raw_material", label: "Raw" },
+        { key: "semi_finished", label: "Semi" },
+        { key: "packaging", label: "Packaging" },
+      ];
+  // On RTG, drop any packaging rows from the "other" results so the
+  // "All" view doesn't leak packaging into the ingredient list.
+  const filteredOtherResults = hidePackaging
+    ? otherResults.filter(
+        (item) =>
+          (item.item_type ?? "").toString().toLowerCase() !== "packaging",
+      )
+    : otherResults;
 
   const renderRow = (item: PspItemDto) => {
     const isSelected = selection.has(item.uuid);
@@ -9325,9 +9386,9 @@ function RoutingInventoryPicker({
             </ul>
           </div>
         ) : null}
-        {isLoading && otherResults.length === 0 ? (
+        {isLoading && filteredOtherResults.length === 0 ? (
           <p className="text-center text-xs text-ink-500">Loading…</p>
-        ) : otherResults.length === 0 && pinnedResults.length === 0 ? (
+        ) : filteredOtherResults.length === 0 && pinnedResults.length === 0 ? (
           <p className="rounded-lg bg-ink-50 px-3 py-6 text-center text-xs text-ink-500">
             {search
               ? "No matches."
@@ -9335,7 +9396,7 @@ function RoutingInventoryPicker({
           </p>
         ) : (
           <ul className="flex flex-col gap-1">
-            {otherResults.map(renderRow)}
+            {filteredOtherResults.map(renderRow)}
           </ul>
         )}
       </div>
