@@ -191,7 +191,12 @@ class TrialBatchCreatePspMoView(APIView):
     Push a Manufacturing Order to PSP for this trial batch. Body:
 
         {
-          "quantity": 100,                # required, positive int
+          "warehouse_uuid": "...",        # required — R&D warehouse
+                                          # picked in the modal dropdown
+          "quantity": "...",              # optional override — normally
+                                          # derived from the trial batch
+                                          # (batch_size_mode + servings
+                                          # ratio → PSP stock unit)
           "project_type": "trial",        # trial | sample, default trial
           "item_uuid": "...",             # optional override; defaults
                                           # to formulation's linked PSP
