@@ -17,7 +17,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.formulations.models import Formulation, ProjectStatus
+from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.psp.token_services import verify_psp_access_token
 
 
@@ -95,8 +95,16 @@ class InDevelopmentFormulationsView(APIView):
     def get(self, request: Request) -> Response:
         token = _resolve_token(request)
 
+        # Only ship CUSTOM (customer-driven) formulations to PSP's
+        # production pipeline. RTGs are catalog dev — they have no
+        # order attached until a customer picks one from the portal
+        # and a Proposal is merged as a CustomerOrder (which reaches
+        # PSP through the ProposalMerge path, not this mirror). Until
+        # then they're pure catalog work with no owner and shouldn't
+        # clutter the shop-floor kanban.
         queryset = Formulation.objects.filter(
-            project_status=ProjectStatus.IN_DEVELOPMENT
+            project_status=ProjectStatus.IN_DEVELOPMENT,
+            project_type=ProjectType.CUSTOM,
         )
         # DB-backed token = scoped to the token's org. Env-var fallback
         # keeps the legacy cross-tenant behaviour so an existing dev
