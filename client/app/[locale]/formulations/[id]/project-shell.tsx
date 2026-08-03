@@ -122,7 +122,9 @@ export function ProjectShell({
           ? undefined
           : `Awaiting deposit on ${overview.deposit_gate.proposal_code ?? "the accepted proposal"} — trial batches unlock once finance approves the payment.`
         : gates.builder_complete
-          ? "Send a proposal to the customer and get it signed before running trial batches."
+          ? overview.project_type === "ready_to_go"
+            ? "Get the draft spec sheet approved before running trial batches."
+            : "Send a proposal to the customer and get it signed before running trial batches."
           : "Finish the Builder first — every stage needs at least one ingredient and every ingredient needs a stage assignment.",
     },
     {
