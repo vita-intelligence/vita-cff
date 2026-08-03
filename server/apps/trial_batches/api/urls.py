@@ -8,6 +8,7 @@ from apps.trial_batches.api.views import (
     TrialBatchDetailView,
     TrialBatchListCreateView,
     TrialBatchPspMoBookingsView,
+    TrialBatchPspMoChainView,
     TrialBatchRenderView,
 )
 
@@ -43,5 +44,10 @@ urlpatterns = [
         "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/psp-mo-bookings/",
         TrialBatchPspMoBookingsView.as_view(),
         name="trial-batch-psp-mo-bookings",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/psp-mo-chain/",
+        TrialBatchPspMoChainView.as_view(),
+        name="trial-batch-psp-mo-chain",
     ),
 ]

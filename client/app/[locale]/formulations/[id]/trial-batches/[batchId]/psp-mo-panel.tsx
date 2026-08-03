@@ -18,9 +18,11 @@
  */
 
 import {
+  ChevronRight,
   ClipboardCheck,
   ExternalLink,
   FlaskConical,
+  Layers,
   Loader2,
   X,
 } from "lucide-react";
@@ -31,6 +33,8 @@ import { useTranslations } from "next-intl";
 import {
   useCreateTrialBatchPspMo,
   useTrialBatchPspMoBookings,
+  useTrialBatchPspMoChain,
+  type PspTrialMoChainNodeDto,
   type TrialBatchDto,
 } from "@/services/trial_batches";
 import { usePspConfig } from "@/services/psp";
@@ -341,6 +345,8 @@ function LinkedMoChip({
   moUuid: string;
   pspUiBaseUrl: string;
 }) {
+  const [chainOpen, setChainOpen] = useState(false);
+
   // Poll every 20s — cheap enough that scientists watching progress
   // don't have to refresh manually, quiet enough that a tab left
   // open overnight doesn't hammer PSP.
@@ -348,7 +354,16 @@ function LinkedMoChip({
     refetchInterval: 20_000,
   });
 
+  // Chain fetch — only fires when the expander opens. Polls at the
+  // same 20s cadence so the child-MO statuses stay live while the
+  // scientist is watching.
+  const chainQuery = useTrialBatchPspMoChain(orgId, batchId, {
+    enabled: chainOpen,
+    refetchInterval: chainOpen ? 20_000 : undefined,
+  });
+
   const summary = bookingsQuery.data?.summary;
+  const chain = chainQuery.data?.chain ?? [];
 
   const label = useMemo(() => {
     if (!summary || summary.total === 0) return "MO created";
@@ -357,26 +372,151 @@ function LinkedMoChip({
 
   // Prefer the UI host when configured (dev + split-host prod). Fall
   // back to the API host in single-origin deployments.
+  const pspBaseHost = useMemo(
+    () => (pspUiBaseUrl || "").replace(/\/$/, ""),
+    [pspUiBaseUrl],
+  );
   const openHref = useMemo(() => {
-    const base = (pspUiBaseUrl || "").replace(/\/$/, "");
-    if (!base) return "";
-    return `${base}/production/manufacturing-orders/${moUuid}`;
-  }, [pspUiBaseUrl, moUuid]);
+    if (!pspBaseHost) return "";
+    return `${pspBaseHost}/production/manufacturing-orders/${moUuid}`;
+  }, [pspBaseHost, moUuid]);
 
   return (
-    <div className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
-      <ClipboardCheck className="h-4 w-4" />
-      <span>{label}</span>
-      {openHref ? (
-        <a
-          href={openHref}
-          target="_blank"
-          rel="noreferrer noopener"
-          className="ml-1 inline-flex items-center gap-0.5 text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-900"
+    <div className="inline-flex flex-col items-start gap-1">
+      <div className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+        <ClipboardCheck className="h-4 w-4" />
+        <span>{label}</span>
+        <button
+          type="button"
+          onClick={() => setChainOpen((v) => !v)}
+          title={
+            chainOpen ? "Hide the stage MO chain" : "Show the stage MO chain"
+          }
+          className="ml-1 inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 text-emerald-700 hover:bg-emerald-100"
         >
-          Open on PSP <ExternalLink className="h-3 w-3" />
-        </a>
+          <Layers className="h-3 w-3" />
+          Stages
+          <ChevronRight
+            className={`h-3 w-3 transition-transform ${
+              chainOpen ? "rotate-90" : ""
+            }`}
+          />
+        </button>
+        {openHref ? (
+          <a
+            href={openHref}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="ml-1 inline-flex items-center gap-0.5 text-emerald-700 underline decoration-dotted underline-offset-2 hover:text-emerald-900"
+          >
+            Open on PSP <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : null}
+      </div>
+
+      {chainOpen ? (
+        <div className="w-[min(28rem,90vw)] rounded-lg border border-ink-200 bg-ink-0 p-2 text-xs shadow-sm">
+          {chainQuery.isLoading && chain.length === 0 ? (
+            <p className="flex items-center gap-1.5 px-2 py-3 text-ink-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              Loading stage chain…
+            </p>
+          ) : chain.length === 0 ? (
+            <p className="px-2 py-3 text-ink-500">
+              No stage chain yet — the MO was created but hasn&apos;t booked
+              a BOM yet. Refresh in a moment.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-0.5">
+              {chain.map((node) => (
+                <MoChainRow
+                  key={node.uuid}
+                  node={node}
+                  isCurrent={node.uuid === moUuid}
+                  pspBaseHost={pspBaseHost}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
       ) : null}
     </div>
   );
+}
+
+
+function MoChainRow({
+  node,
+  isCurrent,
+  pspBaseHost,
+}: {
+  node: PspTrialMoChainNodeDto;
+  isCurrent: boolean;
+  pspBaseHost: string;
+}) {
+  const href = pspBaseHost
+    ? `${pspBaseHost}/production/manufacturing-orders/${node.uuid}`
+    : "";
+
+  return (
+    <li
+      className={`flex items-center gap-1.5 rounded-md px-2 py-1.5 ${
+        isCurrent
+          ? "bg-emerald-50 ring-1 ring-inset ring-emerald-200"
+          : "hover:bg-ink-50"
+      }`}
+      style={{ paddingLeft: `${0.5 + node.depth * 1}rem` }}
+    >
+      {node.depth > 0 ? (
+        <span className="text-ink-400" aria-hidden>
+          └
+        </span>
+      ) : (
+        <FlaskConical className="h-3 w-3 text-emerald-600" />
+      )}
+      <span className="min-w-0 flex-1 truncate font-medium text-ink-800">
+        {node.item?.name ?? "(unnamed item)"}
+      </span>
+      <span
+        className={`rounded-full px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${moStatusChipClass(
+          node.status,
+        )}`}
+      >
+        {node.status.replace(/_/g, " ")}
+      </span>
+      <span className="tabular-nums text-ink-500">{node.quantity}</span>
+      {href ? (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer noopener"
+          className="text-ink-500 hover:text-emerald-700"
+          title="Open on PSP"
+        >
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      ) : null}
+    </li>
+  );
+}
+
+
+function moStatusChipClass(status: string): string {
+  switch (status) {
+    case "draft":
+      return "bg-ink-100 text-ink-700";
+    case "prepared":
+    case "approved":
+      return "bg-blue-50 text-blue-700";
+    case "scheduled":
+      return "bg-indigo-50 text-indigo-700";
+    case "in_progress":
+      return "bg-amber-50 text-amber-800";
+    case "completed":
+      return "bg-emerald-50 text-emerald-800";
+    case "cancelled":
+      return "bg-danger/10 text-danger";
+    default:
+      return "bg-ink-100 text-ink-700";
+  }
 }

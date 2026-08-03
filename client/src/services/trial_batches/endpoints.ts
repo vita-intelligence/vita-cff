@@ -15,4 +15,6 @@ export const trialBatchesEndpoints = {
     `/api/organizations/${orgId}/trial-batches/${batchId}/create-psp-mo/`,
   pspMoBookings: (orgId: string, batchId: string) =>
     `/api/organizations/${orgId}/trial-batches/${batchId}/psp-mo-bookings/`,
+  pspMoChain: (orgId: string, batchId: string) =>
+    `/api/organizations/${orgId}/trial-batches/${batchId}/psp-mo-chain/`,
 } as const;

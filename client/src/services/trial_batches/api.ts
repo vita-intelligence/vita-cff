@@ -11,6 +11,7 @@ import type {
   CreateTrialBatchPspMoResponseDto,
   CreateTrialBatchRequestDto,
   PspTrialMoBookingsResponseDto,
+  PspTrialMoChainResponseDto,
   TrialBatchDto,
   UpdateTrialBatchRequestDto,
 } from "./types";
@@ -94,6 +95,16 @@ export async function fetchTrialBatchPspMoBookings(
 ): Promise<PspTrialMoBookingsResponseDto> {
   const { data } = await apiClient.get<PspTrialMoBookingsResponseDto>(
     trialBatchesEndpoints.pspMoBookings(orgId, batchId),
+  );
+  return data;
+}
+
+export async function fetchTrialBatchPspMoChain(
+  orgId: string,
+  batchId: string,
+): Promise<PspTrialMoChainResponseDto> {
+  const { data } = await apiClient.get<PspTrialMoChainResponseDto>(
+    trialBatchesEndpoints.pspMoChain(orgId, batchId),
   );
   return data;
 }
