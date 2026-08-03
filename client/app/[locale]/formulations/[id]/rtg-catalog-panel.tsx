@@ -16,10 +16,12 @@
  */
 
 import { useCallback, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { CheckCircle2, LayoutTemplate, Save } from "lucide-react";
-import { Link } from "@/i18n/navigation";
+import { Link, useRouter } from "@/i18n/navigation";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
+import { formulationsQueryKeys } from "@/services/formulations";
 import type { FormulationDto } from "@/services/formulations/types";
 import { CatalogPhotoGallery } from "./catalog-photo-gallery";
 
@@ -59,6 +61,8 @@ function RTGCatalogPanelInner({
   formulation,
   canEdit,
 }: Props) {
+  const queryClient = useQueryClient();
+  const router = useRouter();
   const [displayName, setDisplayName] = useState(
     formulation.rtg_display_name || "",
   );
@@ -112,6 +116,27 @@ function RTGCatalogPanelInner({
         `/api/organizations/${orgId}/formulations/${formulation.id}/rtg-publish/`,
         form,
       );
+      // Kick the query cache so the project header title + the /rtg-
+      // catalog card pick up the new display name / description /
+      // price without a page refresh. ``detail`` powers the header
+      // + this panel's own inputs; ``overview`` powers the sales /
+      // scientist meta and the catalog card. RTG catalog list rows
+      // hang off ``list`` so we invalidate that too.
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, formulation.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.overview(orgId, formulation.id),
+      });
+      queryClient.invalidateQueries({
+        queryKey: [...formulationsQueryKeys.all, orgId, "list"],
+      });
+      // The project shell + overview cards are server-rendered from
+      // ``loadProjectForTab`` — React Query invalidation alone won't
+      // touch their props. ``router.refresh()`` re-runs the server
+      // component, so the header title / page heading pick up the
+      // new ``rtg_display_name`` without a hard reload.
+      router.refresh();
       setBanner("Saved. Catalog listing updated with your latest copy.");
     } catch (error) {
       const api = normalizeApiError(error);
@@ -141,6 +166,8 @@ function RTGCatalogPanelInner({
     formulation.id,
     moq,
     orgId,
+    queryClient,
+    router,
   ]);
 
   const disabled = !canEdit || saving;
