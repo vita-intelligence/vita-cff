@@ -2778,6 +2778,17 @@ def _unit_factor_for(item: Any) -> Decimal:
     return _UOM_MG_FACTOR.get(unit, Decimal("1"))
 
 
+def _has_known_unit(item: Any) -> bool:
+    """True when the item carries a mass/volume unit we can convert
+    mg into (kg / g / mg / l / ml). Count-based or blank units land
+    here as False so :func:`_bom_lines_from` can drop the line and
+    log a warning — silently sending an mg quantity onwards is how
+    the "Water 160,165 mg for 10 L drink" bug happened."""
+
+    unit = str(getattr(item, "unit", "") or "").strip().lower()
+    return unit in _UOM_MG_FACTOR
+
+
 def _bom_lines_from(
     items: list[Any],
     *,
@@ -2821,6 +2832,23 @@ def _bom_lines_from(
             # in the child item's native UoM. Formula:
             #   qty = mg_per_serving × servings_per_output_unit
             #                        × unit_factor(child)
+            #
+            # Refuse to push a mg quantity when the child item has no
+            # known mass/volume unit — the unit_factor would silently
+            # default to 1 and PSP would receive the raw mg number,
+            # which is exactly how "Water 160,165 mg / 10 L" landed
+            # in a manufacturing order. Better to skip the line and
+            # log so the operator fixes the item's UoM first.
+            if not _has_known_unit(item):
+                logger.warning(
+                    "PSP push_bom: skipping line for item %s (%s) — "
+                    "no known unit on Item.unit=%r; a mg qty would "
+                    "have been sent uncoverted.",
+                    getattr(item, "pk", "?"),
+                    getattr(item, "name", "?"),
+                    getattr(item, "unit", None),
+                )
+                continue
             qty = (
                 Decimal(str(raw_qty))
                 * servings
@@ -2885,7 +2913,20 @@ def _override_to_bom_lines(
         if mg <= 0:
             continue
         unit = (info["unit"] if info else "").strip().lower()
-        unit_factor = _UOM_MG_FACTOR.get(unit, Decimal("1"))
+        if unit not in _UOM_MG_FACTOR:
+            # Same guard as :func:`_bom_lines_from` — no known unit
+            # means the mg qty would ride through unconverted. Skip
+            # + log; the operator fixes the child item's Stock UoM
+            # on PSP and re-runs Save-stages.
+            logger.warning(
+                "PSP push_bom (override): skipping row psp_uuid=%s — "
+                "no known unit (info=%r); a mg qty would have been "
+                "sent unconverted.",
+                psp_uuid,
+                info,
+            )
+            continue
+        unit_factor = _UOM_MG_FACTOR[unit]
         qty = mg * servings * unit_factor
         if qty <= 0:
             continue
