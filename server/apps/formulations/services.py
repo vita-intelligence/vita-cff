@@ -5037,6 +5037,12 @@ def _snapshot_metadata(formulation: Formulation) -> dict[str, Any]:
         "code": formulation.code,
         "description": formulation.description,
         "dosage_form": formulation.dosage_form,
+        # RTG marketing / project_type — frozen so a rolled-back
+        # version still speaks the same customer-facing name on
+        # any spec rendered from the snapshot. Empty on Custom rows;
+        # the render helpers coerce them to the internal ``name``.
+        "project_type": formulation.project_type,
+        "rtg_display_name": formulation.rtg_display_name or "",
         "capsule_size": formulation.capsule_size,
         "tablet_size": formulation.tablet_size,
         "serving_size": formulation.serving_size,
