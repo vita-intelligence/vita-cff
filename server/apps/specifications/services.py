@@ -3822,6 +3822,23 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
     metadata = version.snapshot_metadata or {}
     totals = version.snapshot_totals or {}
     snapshot_lines = version.snapshot_lines or []
+
+    # Some fields we want on the sheet are *marketing metadata* rather
+    # than frozen scientific spec — the customer-facing Product
+    # Description especially. Older snapshots (saved before
+    # ``rtg_display_name`` / ``project_type`` were added to
+    # ``_snapshot_metadata`` in G6) don't have them; fall through to
+    # the live formulation so the rendered sheet stays accurate for
+    # RTG SKUs without forcing a fresh spec-sheet regenerate.
+    live_formulation = version.formulation
+    if not metadata.get("rtg_display_name") and getattr(
+        live_formulation, "rtg_display_name", None
+    ):
+        metadata = {**metadata, "rtg_display_name": live_formulation.rtg_display_name}
+    if not metadata.get("project_type") and getattr(
+        live_formulation, "project_type", None
+    ):
+        metadata = {**metadata, "project_type": live_formulation.project_type}
     # Phase G5a — last-mile overrides applied at render time. The
     # validator already coerces the payload at write time so by the
     # time we reach here every key sits in the canonical schema.

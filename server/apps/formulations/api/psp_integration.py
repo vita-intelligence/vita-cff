@@ -10,8 +10,9 @@ of projects still in R&D so its ``/projects`` kanban can render an
 from __future__ import annotations
 
 from django.conf import settings
+from django.http import HttpResponse
 from rest_framework import status
-from rest_framework.exceptions import AuthenticationFailed
+from rest_framework.exceptions import AuthenticationFailed, NotFound
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -19,6 +20,8 @@ from rest_framework.views import APIView
 
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.psp.token_services import verify_psp_access_token
+from apps.specifications.models import SpecificationSheet
+from apps.specifications.services import render_html
 
 
 def _extract_bearer(request: Request) -> str | None:
@@ -162,3 +165,74 @@ class InDevelopmentFormulationsView(APIView):
             )
 
         return Response({"items": items}, status=status.HTTP_200_OK)
+
+
+class LatestSpecSheetHtmlView(APIView):
+    """``GET /api/psp-integration/specifications/latest.html?psp_item_uuid=…``.
+
+    Server-renders the latest :class:`SpecificationSheet` for the
+    formulation whose :attr:`Formulation.psp_finished_product_uuid`
+    matches ``psp_item_uuid``, using the same Django template
+    WeasyPrint feeds into for PDF export. Returned as ``text/html``
+    for a caller (PSP) to embed in an ``<iframe>``. Because PSP is
+    the only caller and it authenticates with the shared integration
+    bearer, this bypasses the ``FINAL``-only gate that the customer-
+    facing :func:`rotate_public_token` enforces — the render is
+    otherwise identical to what NPD shows internally.
+
+    Preference order for picking a sheet:
+
+    1. Latest ``FINAL`` (approved / sent / accepted) — the sheet a
+       customer would actually see, priority for QA sign-off comparison.
+    2. Latest ``DRAFT`` — for R&D lots QA still needs to compare
+       against before a customer sheet exists.
+
+    Returns 404 when the formulation isn't found or has no sheet on
+    file. The bearer chain matches :class:`InDevelopmentFormulationsView`.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request) -> HttpResponse:
+        token = _resolve_token(request)
+
+        raw_uuid = (request.query_params.get("psp_item_uuid") or "").strip()
+        if not raw_uuid:
+            raise NotFound("psp_item_uuid_required")
+
+        formulations = Formulation.objects.filter(
+            psp_finished_product_uuid=raw_uuid
+        )
+        if token is not None:
+            formulations = formulations.filter(organization=token.organization)
+
+        formulation = formulations.first()
+        if formulation is None:
+            raise NotFound("formulation_not_found")
+
+        sheets = SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation
+        ).select_related("formulation_version", "organization")
+
+        final_sheet = (
+            sheets.filter(status__in=("approved", "sent", "accepted"))
+            .order_by("-created_at")
+            .first()
+        )
+        chosen = final_sheet or sheets.order_by("-created_at").first()
+
+        if chosen is None:
+            raise NotFound("no_spec_sheet")
+
+        html = render_html(chosen)
+        response = HttpResponse(html, content_type="text/html; charset=utf-8")
+        # Cache: force-fresh; QA needs to see the latest sheet even
+        # if the browser has an older render buffered from a peer tab.
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        # Allow same-origin iframe embed from the PSP proxy (PSP will
+        # serve the HTML from its own origin, so from the browser's
+        # perspective this response is same-origin). Belt-and-braces
+        # in case a caller ever embeds direct.
+        response["X-Frame-Options"] = "SAMEORIGIN"
+        return response
