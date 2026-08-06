@@ -8,7 +8,11 @@ import { useEffect, useState, type FormEvent } from "react";
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
-import type { FormulationVersionDto } from "@/services/formulations";
+import type {
+  FormulationVersionDto,
+  PackagingComboDto,
+} from "@/services/formulations";
+import { usePackagingCombos } from "@/services/formulations";
 import type { BatchKind } from "@/services/trial_batches";
 import {
   useCreateTrialBatch,
@@ -138,8 +142,18 @@ export function TrialBatchesPanel({
                   {formatInteger(batch.batch_size_units)}{" "}
                   {batch.kind === "trial"
                     ? tBatches("list.units")
-                    : tBatches("list.packs")}{" "}
-                  ·{" "}
+                    : tBatches("list.packs")}
+                  {batch.kind === "sample" ? (
+                    <>
+                      {" · "}
+                      <span className="italic">
+                        {batch.packaging_combo_name
+                          ? batch.packaging_combo_name
+                          : tBatches("list.packaging_none")}
+                      </span>
+                    </>
+                  ) : null}
+                  {" · "}
                   {tBatches("list.created_by", {
                     name: batch.created_by_name,
                   })}
@@ -208,6 +222,18 @@ function NewTrialBatchButton({
   const [label, setLabel] = useState("");
   const [batchSize, setBatchSize] = useState<string>("");
   const [kind, setKind] = useState<BatchKind>("sample");
+  // Empty string = "no packaging" (kind=sample), or forced-empty
+  // (kind=trial — server refuses any combo attach). A real combo
+  // UUID = pick that combo. Tri-state collapses to nullable UUID
+  // on submit.
+  const [packagingComboId, setPackagingComboId] = useState<string>("");
+
+  // Only fetched when the modal opens + kind=sample — trial batches
+  // never carry packaging so we skip the request entirely.
+  const combosQuery = usePackagingCombos(orgId, formulationId, {
+    enabled: isOpen && kind === "sample",
+  });
+  const combos: readonly PackagingComboDto[] = combosQuery.data?.items ?? [];
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -240,6 +266,7 @@ function NewTrialBatchButton({
     setLabel("");
     setBatchSize("");
     setKind("sample");
+    setPackagingComboId("");
     setNotes("");
     setError(null);
   };
@@ -262,6 +289,12 @@ function NewTrialBatchButton({
         formulation_version_id: versionId,
         batch_size_units: sizeNum,
         kind,
+        // Only send combo on sample kind. Trial batches with an
+        // accidentally-populated ID (should never happen — the
+        // picker is hidden — but be defensive) send null so the BE
+        // doesn't reject the whole request.
+        packaging_combo_id:
+          kind === "sample" && packagingComboId ? packagingComboId : null,
         label: label.trim(),
         notes: notes.trim(),
       });
@@ -412,6 +445,89 @@ function NewTrialBatchButton({
                     )}
                   </span>
                 </label>
+
+                {kind === "sample" ? (
+                  <fieldset className="flex flex-col gap-1.5">
+                    <legend className="text-xs font-medium text-ink-700">
+                      {tBatches("create.packaging_label")}
+                    </legend>
+                    {combosQuery.isLoading ? (
+                      <p className="text-xs text-ink-500">
+                        {tBatches("create.packaging_loading")}
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-1.5">
+                        {/* Explicit no-packaging option is always
+                            listed first so it's the obvious default
+                            when the scientist doesn't want a full
+                            packed sample (loose bulk output). */}
+                        <label
+                          className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
+                            packagingComboId === ""
+                              ? "bg-orange-50 ring-orange-400"
+                              : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="packaging_combo_id"
+                            value=""
+                            checked={packagingComboId === ""}
+                            onChange={() => setPackagingComboId("")}
+                            className="mt-0.5 h-3.5 w-3.5"
+                          />
+                          <div className="flex flex-col gap-0.5">
+                            <span className="font-medium text-ink-1000">
+                              {tBatches("create.packaging_none")}
+                            </span>
+                            <span className="text-[11px] text-ink-500">
+                              {tBatches("create.packaging_none_hint")}
+                            </span>
+                          </div>
+                        </label>
+                        {combos.map((combo) => (
+                          <label
+                            key={combo.id}
+                            className={`flex cursor-pointer items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1 ring-inset transition-colors ${
+                              packagingComboId === combo.id
+                                ? "bg-orange-50 ring-orange-400"
+                                : "bg-ink-0 ring-ink-200 hover:bg-ink-50"
+                            }`}
+                          >
+                            <input
+                              type="radio"
+                              name="packaging_combo_id"
+                              value={combo.id}
+                              checked={packagingComboId === combo.id}
+                              onChange={() => setPackagingComboId(combo.id)}
+                              className="mt-0.5 h-3.5 w-3.5"
+                            />
+                            <div className="flex flex-col gap-0.5">
+                              <span className="font-medium text-ink-1000">
+                                {combo.name}
+                              </span>
+                              {combo.items.length > 0 ? (
+                                <span className="text-[11px] text-ink-500">
+                                  {combo.items
+                                    .map(
+                                      (item) =>
+                                        `${item.quantity}× ${item.item_name || item.item_code || "—"}`,
+                                    )
+                                    .join(" · ")}
+                                </span>
+                              ) : null}
+                            </div>
+                          </label>
+                        ))}
+                        {combos.length === 0 && !combosQuery.isLoading ? (
+                          <p className="text-[11px] text-ink-500">
+                            {tBatches("create.packaging_empty_hint")}
+                          </p>
+                        ) : null}
+                      </div>
+                    )}
+                  </fieldset>
+                ) : null}
 
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-ink-700">

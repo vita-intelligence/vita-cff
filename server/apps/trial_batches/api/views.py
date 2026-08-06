@@ -25,6 +25,8 @@ from apps.trial_batches.services import (
     FormulationVersionNotInOrg,
     InvalidBatchKind,
     InvalidBatchSize,
+    PackagingComboNotAllowedForTrial,
+    PackagingComboNotFound,
     TrialBatchNotFound,
     compute_batch_scaleup,
     create_batch,
@@ -77,6 +79,7 @@ class TrialBatchListCreateView(APIView):
                 formulation_version_id=data["formulation_version_id"],
                 batch_size_units=data["batch_size_units"],
                 kind=data.get("kind", "sample"),
+                packaging_combo_id=data.get("packaging_combo_id"),
                 label=data.get("label", ""),
                 notes=data.get("notes", ""),
             )
@@ -97,6 +100,16 @@ class TrialBatchListCreateView(APIView):
         except InvalidBatchKind:
             return Response(
                 {"kind": ["invalid_batch_kind"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PackagingComboNotAllowedForTrial:
+            return Response(
+                {"packaging_combo_id": ["packaging_combo_not_allowed_for_trial"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PackagingComboNotFound:
+            return Response(
+                {"packaging_combo_id": ["packaging_combo_not_found"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -159,6 +172,16 @@ class TrialBatchDetailView(APIView):
         except InvalidBatchKind:
             return Response(
                 {"kind": ["invalid_batch_kind"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PackagingComboNotAllowedForTrial:
+            return Response(
+                {"packaging_combo_id": ["packaging_combo_not_allowed_for_trial"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except PackagingComboNotFound:
+            return Response(
+                {"packaging_combo_id": ["packaging_combo_not_found"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(TrialBatchReadSerializer(updated).data)

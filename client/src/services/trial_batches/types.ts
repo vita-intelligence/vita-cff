@@ -18,6 +18,15 @@ export interface TrialBatchDto {
   readonly label: string;
   readonly batch_size_units: number;
   readonly kind: BatchKind;
+  /** Optional packaging combo picked at batch-create time. Only
+   *  ever populated on ``kind: "sample"`` batches — the trial-kind
+   *  path bypasses packaging entirely and the server refuses the
+   *  pairing. ``null`` on sample batches means "no combo picked"
+   *  (loose-bulk output, no packaging on the PSP MO). */
+  readonly packaging_combo_id: string | null;
+  /** Denormalised combo name so the FE can render a chip without a
+   *  second fetch. Empty string when no combo is set. */
+  readonly packaging_combo_name: string;
   readonly notes: string;
   readonly formulation_version: string;
   readonly formulation_id: string;
@@ -130,6 +139,9 @@ export interface CreateTrialBatchRequestDto {
   readonly formulation_version_id: string;
   readonly batch_size_units: number;
   readonly kind?: BatchKind;
+  /** Only valid on ``kind: "sample"``. ``null`` (or absent) means
+   *  no combo picked — the PSP MO runs without packaging. */
+  readonly packaging_combo_id?: string | null;
   readonly label?: string;
   readonly notes?: string;
 }
@@ -138,6 +150,7 @@ export type UpdateTrialBatchRequestDto = Partial<{
   readonly label: string;
   readonly batch_size_units: number;
   readonly kind: BatchKind;
+  readonly packaging_combo_id: string | null;
   readonly notes: string;
 }>;
 

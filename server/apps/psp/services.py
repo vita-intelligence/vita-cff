@@ -480,6 +480,7 @@ class PspClient:
         project_type: str = "trial",
         due_date: Any = None,
         notes: str = "",
+        packaging_combo_items: Any = None,
     ) -> dict:
         """POST ``/api/integration/manufacturing-orders``.
 
@@ -520,6 +521,20 @@ class PspClient:
             body["npd_formulation_uuid"] = str(npd_formulation_uuid).strip()
         if due_date:
             body["due_date"] = str(due_date)
+        # Packaging overlay is a three-state signal on PSP:
+        #
+        #   * absent            → no overlay (default packaging BOM)
+        #   * ``[]``            → overlay active, no items to book
+        #                         (sample with no combo picked =
+        #                         loose bulk output)
+        #   * populated list    → overlay active, substitute these
+        #                         for packaging-typed BOM lines
+        #
+        # ``packaging_combo_items is None`` collapses to the first
+        # bucket (skip the key entirely). Trial batches always land
+        # here.
+        if packaging_combo_items is not None:
+            body["packaging_combo_items"] = packaging_combo_items
 
         response = self._request(
             "api/integration/manufacturing-orders",
@@ -3953,6 +3968,55 @@ def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
     return target_servings / divisor
 
 
+def _build_packaging_overlay(trial_batch: Any, kind: str) -> Any:
+    """Translate ``TrialBatch.packaging_combo`` into the payload PSP
+    expects on the MO create endpoint.
+
+    Return values follow the three-state contract on
+    :meth:`PspClient.create_manufacturing_order`:
+
+    * ``None`` — no overlay. Trial-kind batches always hit this branch
+      (bench-scale, packaging not applicable) so the MO consumes the
+      finished item's default packaging BOM lines. Also the fallback
+      for sample batches where a combo was picked but every item is
+      un-mirrored (extremely unusual — if PSP hasn't seen any of
+      the items we can't overlay, so we defer to default packaging).
+    * ``[]`` — sample with no combo. Overlay is active + empty; PSP
+      skips packaging-typed BOM lines and books nothing in their
+      place (loose bulk output — same as trial batches produced
+      before the sample split).
+    * populated list — combo picked, at least one item mirrored to
+      PSP. Each row is ``{"item_uuid": <psp uuid>, "quantity": str}``.
+      Items missing ``psp_source_uuid`` are dropped from the list
+      (silent skip; audit lives on the NPD combo row).
+    """
+    if kind == "trial":
+        return None
+
+    combo = getattr(trial_batch, "packaging_combo", None)
+    if combo is None:
+        return []
+
+    payload: list[dict[str, Any]] = []
+    for row in combo.items.select_related("item").all():
+        item = row.item
+        psp_uuid = getattr(item, "psp_source_uuid", None) if item else None
+        if not psp_uuid:
+            # The catalogue item was never mirrored to PSP. Skipping
+            # is preferable to a hard 400 — the scientist can still
+            # schedule the batch, and the combo row on the NPD side
+            # remains the record of intent.
+            continue
+        payload.append(
+            {
+                "item_uuid": str(psp_uuid),
+                "quantity": str(row.quantity),
+            }
+        )
+
+    return payload
+
+
 def create_psp_manufacturing_order_for_trial_batch(
     *,
     organization: Any,
@@ -4058,6 +4122,31 @@ def create_psp_manufacturing_order_for_trial_batch(
     kind = getattr(trial_batch, "kind", None) or "sample"
     project_type = "trial" if kind == "trial" else "sample"
 
+    # Packaging overlay — only for sample batches, and only sent
+    # when the scientist opted into one. Three legal states:
+    #
+    #   * kind == "trial"                  → None (default packaging
+    #                                        BOM), same as pre-overlay
+    #                                        behaviour
+    #   * kind == "sample", no combo       → [] (overlay active but
+    #                                        empty; PSP skips
+    #                                        packaging-typed BOM
+    #                                        lines and books nothing
+    #                                        in their place — loose
+    #                                        bulk output)
+    #   * kind == "sample", combo picked   → populated list, each
+    #                                        row ``{item_uuid,
+    #                                        quantity}``, resolved to
+    #                                        PSP's mirrored item uuid
+    #
+    # A combo whose item is missing ``psp_source_uuid`` (never
+    # mirrored to PSP) is dropped from the payload with a warning —
+    # the alternative is a hard 400 on MO create, which would leave
+    # the scientist unable to schedule a batch while a stale mirror
+    # gets fixed. The overlay stays active either way so the default
+    # packaging isn't silently re-inserted.
+    packaging_overlay = _build_packaging_overlay(trial_batch, kind)
+
     client = _client_factory(config)
     try:
         mo = client.create_manufacturing_order(
@@ -4073,6 +4162,7 @@ def create_psp_manufacturing_order_for_trial_batch(
             project_type=project_type,
             due_date=due_date,
             notes=notes or "",
+            packaging_combo_items=packaging_overlay,
         )
     except PspUnreachable as exc:
         # PSP-side validation errors come through as PspUnreachable
