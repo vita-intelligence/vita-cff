@@ -2118,17 +2118,27 @@ function ApprovalPricingForm({
        *  cost + margin and never typed. Renders as a read-only chip
        *  so the director sees the exact number that will land on the
        *  signed snapshot before they pick up the pen. */}
-      <div className="flex items-baseline justify-between rounded-lg bg-amber-100 px-3 py-2 ring-1 ring-inset ring-amber-300">
+      {/* Stack the chip vertically so the "switch to Markup" hint
+          has room to breathe on narrow columns — a horizontal
+          justify-between crushes the label into 2 lines the moment
+          the right side isn't a short price string. */}
+      <div className="flex flex-col gap-1 rounded-lg bg-amber-100 px-3 py-2 ring-1 ring-inset ring-amber-300">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
           {tSpecs("approval.customer_pays")}
         </span>
-        <span className="text-base font-semibold text-amber-950">
-          {"price" in priceHint
-            ? `${(currency || "GBP").toUpperCase()} ${priceHint.price}`
-            : priceHint.reason === "over_100"
-              ? tSpecs("approval.customer_pays_margin_over_100")
-              : tSpecs("approval.customer_pays_placeholder")}
-        </span>
+        {"price" in priceHint ? (
+          <span className="text-base font-semibold text-amber-950">
+            {(currency || "GBP").toUpperCase()} {priceHint.price}
+          </span>
+        ) : priceHint.reason === "over_100" ? (
+          <span className="text-xs font-medium leading-snug text-amber-900">
+            {tSpecs("approval.customer_pays_margin_over_100")}
+          </span>
+        ) : (
+          <span className="text-xs italic text-amber-800">
+            {tSpecs("approval.customer_pays_placeholder")}
+          </span>
+        )}
       </div>
 
       {/* MRPEasy hint — the catalogue-suggested customer price
@@ -2207,7 +2217,12 @@ function marginToMarkup(marginStr: string): string {
 function markupToMargin(markupStr: string): string {
   const mk = Number.parseFloat(markupStr);
   if (!Number.isFinite(mk) || mk < 0) return markupStr;
-  return ((mk / (100 + mk)) * 100).toFixed(4);
+  // 2 decimals matches the BE ``margin_percent`` column shape
+  // (``DecimalField(max_digits=6, decimal_places=2)``); serializer
+  // refuses any extras with "Too many digits after the decimal
+  // point" so we can't hand it 4 here even though the math produces
+  // more precision. Round-trip loss at 2 decimals is <0.5% of price.
+  return ((mk / (100 + mk)) * 100).toFixed(2);
 }
 
 
