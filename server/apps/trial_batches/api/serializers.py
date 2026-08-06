@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from apps.trial_batches.models import BatchSizeMode, TrialBatch
+from apps.trial_batches.models import BatchKind, TrialBatch
 
 
 class TrialBatchReadSerializer(serializers.ModelSerializer):
@@ -38,7 +38,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "id",
             "label",
             "batch_size_units",
-            "batch_size_mode",
+            "kind",
             "notes",
             "formulation_version",
             "formulation_id",
@@ -56,8 +56,8 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
 class TrialBatchCreateSerializer(serializers.Serializer):
     formulation_version_id = serializers.UUIDField()
     batch_size_units = serializers.IntegerField(min_value=1)
-    batch_size_mode = serializers.ChoiceField(
-        choices=BatchSizeMode.choices, required=False
+    kind = serializers.ChoiceField(
+        choices=BatchKind.choices, required=False
     )
     label = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default=""
@@ -72,7 +72,7 @@ class TrialBatchUpdateSerializer(serializers.Serializer):
         max_length=200, required=False, allow_blank=True
     )
     batch_size_units = serializers.IntegerField(required=False, min_value=1)
-    batch_size_mode = serializers.ChoiceField(
-        choices=BatchSizeMode.choices, required=False
+    kind = serializers.ChoiceField(
+        choices=BatchKind.choices, required=False
     )
     notes = serializers.CharField(required=False, allow_blank=True)

@@ -23,7 +23,7 @@ export {
   useUpdateTrialBatch,
 } from "./hooks";
 export type {
-  BatchSizeMode,
+  BatchKind,
   BOMEntry,
   BOMResult,
   CreateTrialBatchPspMoRequestDto,

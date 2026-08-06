@@ -2,18 +2,22 @@
  * Transport types for the trial-batches domain.
  */
 
-/** ``pack`` means the entered number is multiplied by the
- *  formulation's ``servings_per_pack`` snapshot to reach a finished
- *  unit count; ``unit`` means the entered number IS the raw count of
- *  finished units. Scientists pick ``unit`` for bench-scale QC tests
- *  (e.g. 10 capsules) so the BOM doesn't silently scale it to 3 600. */
-export type BatchSizeMode = "pack" | "unit";
+/** ``trial`` — bench-scale test. Entered ``batch_size_units`` is the
+ *  raw count of finished individual units (10 capsules, not 10 × 360).
+ *  The linked PSP MO runs as ``project_type=trial`` and bypasses
+ *  Final Release.
+ *
+ *  ``sample`` — customer-sample production. Entered ``batch_size_units``
+ *  is a pack count that scales by the formulation's ``servings_per_pack``.
+ *  The linked PSP MO runs as ``project_type=sample`` and follows the
+ *  full commercial release path. */
+export type BatchKind = "trial" | "sample";
 
 export interface TrialBatchDto {
   readonly id: string;
   readonly label: string;
   readonly batch_size_units: number;
-  readonly batch_size_mode: BatchSizeMode;
+  readonly kind: BatchKind;
   readonly notes: string;
   readonly formulation_version: string;
   readonly formulation_id: string;
@@ -51,8 +55,6 @@ export interface CreateTrialBatchPspMoRequestDto {
    *  multi-site R&D setups can route each trial batch to the right
    *  warehouse without editing settings. */
   readonly warehouse_uuid: string;
-  /** Optional. Defaults to ``"trial"`` server-side. */
-  readonly project_type?: "trial" | "sample";
   /** Optional finished-product item override. When absent, the
    *  server resolves from ``formulation.psp_finished_product_uuid``. */
   readonly item_uuid?: string;
@@ -127,7 +129,7 @@ export interface PspTrialMoChainResponseDto {
 export interface CreateTrialBatchRequestDto {
   readonly formulation_version_id: string;
   readonly batch_size_units: number;
-  readonly batch_size_mode?: BatchSizeMode;
+  readonly kind?: BatchKind;
   readonly label?: string;
   readonly notes?: string;
 }
@@ -135,7 +137,7 @@ export interface CreateTrialBatchRequestDto {
 export type UpdateTrialBatchRequestDto = Partial<{
   readonly label: string;
   readonly batch_size_units: number;
-  readonly batch_size_mode: BatchSizeMode;
+  readonly kind: BatchKind;
   readonly notes: string;
 }>;
 
@@ -166,14 +168,14 @@ export interface BOMEntry {
 export interface BOMResult {
   readonly batch_id: string;
   readonly label: string;
-  /** Entered number; interpretation depends on ``batch_size_mode``. */
+  /** Entered number; interpretation depends on ``kind``. */
   readonly batch_size_units: number;
-  readonly batch_size_mode: BatchSizeMode;
+  readonly kind: BatchKind;
   /** Individual capsules/tablets/etc. inside each finished pack. */
   readonly units_per_pack: number;
   /** Total individual units the BOM multiplies mg-per-unit against.
-   * In ``pack`` mode that's ``batch_size_units × units_per_pack``;
-   * in ``unit`` mode it equals ``batch_size_units`` directly. */
+   * In ``sample`` kind that's ``batch_size_units × units_per_pack``;
+   * in ``trial`` kind it equals ``batch_size_units`` directly. */
   readonly total_units_in_batch: number;
   readonly formulation_id: string;
   readonly formulation_name: string;

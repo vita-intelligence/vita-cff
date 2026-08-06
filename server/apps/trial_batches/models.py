@@ -24,19 +24,30 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 
 
-class BatchSizeMode(models.TextChoices):
-    """Two ways the scientist can size a trial run.
+class BatchKind(models.TextChoices):
+    """Two flavours of R&D manufacturing run — chosen once at
+    creation, drives everything downstream.
 
-    ``PACK`` multiplies the entered quantity by the formulation's
-    ``servings_per_pack`` snapshot — useful for production-scale
-    runs ("plan 1000 bottles of 60 capsules"). ``UNIT`` treats the
-    quantity as the raw number of finished individual capsules /
-    tablets / scoops — useful for bench-scale tests where the
-    scientist only needs 10 capsules, not 10 × 360 = 3 600.
+    ``TRIAL`` is a **bench-scale test**: the entered ``batch_size_units``
+    is the raw count of finished individual capsules / tablets /
+    scoops the scientist wants to produce (typically 10-50 to prove
+    the recipe blends, encapsulates, tastes right, etc). No pack
+    multiplier. On PSP the linked MO gets ``project_type = "trial"``,
+    which bypasses Final Release and short-circuits the R&D chain
+    back to the R&D warehouse after Output QC passes.
+
+    ``SAMPLE`` is a **customer-sample production run**: the entered
+    ``batch_size_units`` is a number of finished packs and the BOM
+    scales by the formulation's ``servings_per_pack`` snapshot
+    ("plan 1 000 bottles of 60 capsules"). On PSP the linked MO
+    gets ``project_type = "sample"``, which follows the full
+    commercial release path — put-away to quarantine, Final Release
+    signed off, then available for dispatch. Same procedure a real
+    order would follow so ops can practice the flow end-to-end.
     """
 
-    PACK = "pack", _("Pack")
-    UNIT = "unit", _("Individual units")
+    TRIAL = "trial", _("Trial")
+    SAMPLE = "sample", _("Sample")
 
 
 class TrialBatch(models.Model):
@@ -72,22 +83,24 @@ class TrialBatch(models.Model):
     batch_size_units = models.PositiveIntegerField(
         _("batch size"),
         help_text=_(
-            "Numeric input; interpretation depends on ``batch_size_mode``. "
-            "In ``pack`` mode this is the number of finished packs "
-            "(bottles/pouches/tubs); in ``unit`` mode it is the raw "
-            "count of individual capsules/tablets/scoops."
+            "Numeric input; interpretation depends on ``kind``. "
+            "For ``sample`` this is the number of finished packs "
+            "(bottles/pouches/tubs) and scales by servings_per_pack; "
+            "for ``trial`` it is the raw count of individual "
+            "capsules/tablets/scoops (no pack multiplier)."
         ),
     )
-    batch_size_mode = models.CharField(
-        _("batch size mode"),
+    kind = models.CharField(
+        _("kind"),
         max_length=8,
-        choices=BatchSizeMode.choices,
-        default=BatchSizeMode.PACK,
+        choices=BatchKind.choices,
+        default=BatchKind.SAMPLE,
         help_text=_(
-            "``pack`` multiplies by servings_per_pack; ``unit`` uses "
-            "the entered number directly. Bench-scale QC tests "
-            "usually want ``unit`` so a 10-capsule test does not get "
-            "scaled up to 10 × 360 = 3 600."
+            "``trial`` = bench-scale test, raw unit count, PSP MO "
+            "runs as project_type=trial (bypasses Final Release). "
+            "``sample`` = customer-sample production, entered number "
+            "× servings_per_pack, PSP MO runs as project_type=sample "
+            "(follows the commercial release path)."
         ),
     )
     notes = models.TextField(_("notes"), blank=True, default="")
