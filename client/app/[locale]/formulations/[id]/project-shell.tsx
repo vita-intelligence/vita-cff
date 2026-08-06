@@ -19,6 +19,7 @@ import type { ProjectOverviewDto } from "@/services/formulations";
 import type { OrganizationDto } from "@/services/organizations/types";
 
 import { DepositGateBanner } from "./deposit-gate-banner";
+import { FinalSpecAvailableBanner } from "./final-spec-available-banner";
 import { ProjectHeaderActions } from "./project-header-actions";
 
 
@@ -156,6 +157,11 @@ export function ProjectShell({
       </Link>
       <CompactHeader organization={organization} overview={overview} />
       <DepositGateBanner gate={overview.deposit_gate} />
+      <FinalSpecAvailableBanner
+        orgId={organization.id}
+        overview={overview}
+        canWrite
+      />
       <TabBar
         tabs={tabs.filter(
           (t) =>

@@ -24,6 +24,7 @@ from apps.formulations.api.views import (
     FormulationApprovedVersionView,
     FormulationCFFCandidatesView,
     FormulationCloneView,
+    FormulationCreateFinalSpecView,
     FormulationComputeView,
     FormulationDetailView,
     FormulationLeadScientistView,
@@ -187,6 +188,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/rtg-publish/",
         FormulationRTGPublishView.as_view(),
         name="formulation-rtg-publish",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/create-final-spec/",
+        FormulationCreateFinalSpecView.as_view(),
+        name="formulation-create-final-spec",
     ),
     # Photos + files. Bytes live on NPD storage; the push cascade
     # mirrors them onto the finished-product PSP item best-effort.

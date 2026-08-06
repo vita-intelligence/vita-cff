@@ -145,7 +145,7 @@ export function TrialBatchesPanel({
                   />
                   {tBatches("list.view_bom")}
                 </Link>
-                {canDelete ? (
+                {canDelete && batch.validation_status !== "passed" ? (
                   <button
                     type="button"
                     aria-label={tBatches("list.delete")}
@@ -155,6 +155,14 @@ export function TrialBatchesPanel({
                   >
                     <Trash2 className="h-4 w-4" />
                   </button>
+                ) : null}
+                {batch.validation_status === "passed" ? (
+                  <span
+                    title="Deletion locked — this batch is the evidentiary root of a passed validation. Deleting it would break the audit trail (BRCGS § 5.6)."
+                    className="inline-flex h-9 items-center gap-1 rounded-full bg-emerald-50 px-2.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 ring-1 ring-inset ring-emerald-200"
+                  >
+                    QC passed
+                  </span>
                 ) : null}
               </div>
             </li>

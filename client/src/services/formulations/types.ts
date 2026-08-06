@@ -1092,6 +1092,26 @@ export interface ProjectOverviewDto {
   //: the catalog. The header prefers this over ``name`` when set so
   //: the staff workspace matches what customers see on the portal.
   readonly rtg_display_name: string;
+  //: When non-null, a trial batch has passed validation AND the
+  //: project has no FINAL spec yet — the workspace surfaces the
+  //: "Final spec is available for creation" banner + modal. Cleared
+  //: back to ``null`` the moment a FINAL lands, so the banner is
+  //: self-dismissing.
+  readonly final_spec_available: FinalSpecAvailableDto | null;
+}
+
+
+export interface FinalSpecAvailableDto {
+  readonly trial_batch_id: string;
+  readonly trial_batch_label: string;
+  readonly formulation_version_id: string;
+  readonly formulation_version_number: number;
+  readonly formulation_version_label: string;
+  //: ISO timestamp — the moment the trial batch's validation
+  //: flipped to ``passed``. Rendered below the banner as
+  //: "Passed <relative time>" so the scientist can eyeball
+  //: freshness.
+  readonly validation_passed_at: string | null;
 }
 
 

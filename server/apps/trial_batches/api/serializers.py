@@ -18,10 +18,19 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
         source="formulation_version.version_number", read_only=True
     )
     created_by_name = serializers.SerializerMethodField()
+    #: Terminal-or-in-progress validation status attached to this
+    #: batch. Nullable — batches without a validation record return
+    #: ``None``. FE uses this to gate the delete button (passed →
+    #: delete refused with an audit-trail-integrity 409).
+    validation_status = serializers.SerializerMethodField()
 
     def get_created_by_name(self, obj) -> str:
         user = obj.created_by
         return (user.get_full_name() or user.email or "").strip()
+
+    def get_validation_status(self, obj) -> str | None:
+        validation = getattr(obj, "validation", None)
+        return validation.status if validation is not None else None
 
     class Meta:
         model = TrialBatch
@@ -36,6 +45,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "formulation_name",
             "formulation_version_number",
             "psp_manufacturing_order_uuid",
+            "validation_status",
             "created_by_name",
             "created_at",
             "updated_at",

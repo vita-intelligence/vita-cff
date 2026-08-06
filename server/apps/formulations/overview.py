@@ -122,6 +122,29 @@ class TotalsSnapshot:
 
 
 @dataclass
+class FinalSpecAvailable:
+    """Snapshot that powers the "final spec is available for creation"
+    banner on the project workspace.
+
+    The banner shows when a trial batch has a ``passed`` validation
+    AND the project has no FINAL spec yet. Its button opens a modal
+    pre-filled with this trial + version pair so the scientist can
+    confirm (or override) which pair the FINAL cites — the FINAL's
+    audit row will pin the batch id as evidentiary basis.
+
+    ``None`` on the overview (the outer dataclass field) means either
+    no trial has passed yet OR the FINAL already exists.
+    """
+
+    trial_batch_id: str
+    trial_batch_label: str
+    formulation_version_id: str
+    formulation_version_number: int
+    formulation_version_label: str
+    validation_passed_at: str | None
+
+
+@dataclass
 class ActivityEntry:
     id: str
     #: ``"version_saved" | "spec_sheet_created" | "spec_sheet_status"``
@@ -301,6 +324,12 @@ class ProjectOverview:
     #: ``name`` when non-empty so the workspace matches what customers
     #: see on ``/portal/cffs/new/rtg``.
     rtg_display_name: str = ""
+    #: When non-null, a trial batch has passed validation AND no FINAL
+    #: spec exists yet — the workspace surfaces the banner + explicit
+    #: create modal (see ``FormulationCreateFinalSpecView``). Cleared
+    #: (``None``) the moment a FINAL spec lands, so the banner is
+    #: self-dismissing.
+    final_spec_available: FinalSpecAvailable | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1164,6 +1193,69 @@ def compute_project_overview(formulation: Formulation) -> ProjectOverview:
         is_rtg_published=bool(formulation.is_rtg_published),
         has_approved_final_spec=_has_approved_final_spec(formulation),
         rtg_display_name=(formulation.rtg_display_name or "").strip(),
+        final_spec_available=_final_spec_available_snapshot(formulation),
+    )
+
+
+def _final_spec_available_snapshot(
+    formulation: Formulation,
+) -> FinalSpecAvailable | None:
+    """Compute the "final spec is available for creation" state.
+
+    Fires only when both are true:
+
+      * At least one trial batch on this formulation has a
+        ``ProductValidation`` in ``passed`` status (evidentiary
+        basis).
+      * The formulation has no FINAL spec sheet yet
+        (one-FINAL-per-project is the invariant; a re-tune should
+        produce a new named DRAFT before the FINAL cutover, not a
+        second FINAL).
+
+    Picks the ``most recently passed`` trial batch to pre-fill the
+    modal's dropdowns. The scientist can override the trial + version
+    pair in the modal, but this default matches the common case of
+    "just finished the run, ready to freeze the recipe."
+    """
+    from apps.product_validation.models import ProductValidation
+    from apps.specifications.models import (
+        SpecificationDocumentKind,
+        SpecificationSheet,
+    )
+
+    has_final = SpecificationSheet.objects.filter(
+        formulation_version__formulation=formulation,
+        document_kind=SpecificationDocumentKind.FINAL,
+    ).exists()
+    if has_final:
+        return None
+
+    latest_passed = (
+        ProductValidation.objects.select_related(
+            "trial_batch__formulation_version"
+        )
+        .filter(
+            trial_batch__formulation_version__formulation=formulation,
+            status="passed",
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+    if latest_passed is None or latest_passed.trial_batch is None:
+        return None
+
+    batch = latest_passed.trial_batch
+    version = batch.formulation_version
+    return FinalSpecAvailable(
+        trial_batch_id=str(batch.id),
+        trial_batch_label=(batch.label or "").strip() or str(batch.id)[:8],
+        formulation_version_id=str(version.id),
+        formulation_version_number=version.version_number,
+        formulation_version_label=(version.label or "").strip()
+        or f"v{version.version_number}",
+        validation_passed_at=latest_passed.updated_at.isoformat()
+        if latest_passed.updated_at
+        else None,
     )
 
 

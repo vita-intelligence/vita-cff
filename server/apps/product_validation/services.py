@@ -68,6 +68,46 @@ class SignatureRequired(Exception):
     code = "signature_required"
 
 
+class TargetsIncomplete(Exception):
+    """Raised when ``draft → in_progress`` is attempted while one or
+    more target/spec fields (weight target, tolerance, disintegration
+    limit / temperature, organoleptic target descriptors) are still
+    blank. The scientist has to define the pass/fail criteria BEFORE
+    they start recording samples — otherwise there's no yardstick to
+    measure against.
+
+    ``missing_fields`` is a list of dot-paths (e.g. ``weight.target_mg``,
+    ``organoleptic.target.colour``) so the FE can highlight the
+    specific inputs that are still empty.
+    """
+
+    code = "targets_incomplete"
+
+    def __init__(self, missing_fields: list[str]) -> None:
+        super().__init__(f"missing targets: {', '.join(missing_fields)}")
+        self.missing_fields = missing_fields
+
+
+class SamplesIncomplete(Exception):
+    """Raised when ``in_progress → passed`` is attempted while one or
+    more sections are still missing samples / actual readings. Passing
+    the batch without evidence in every section skips real measurement
+    — the RD manager would be signing off on empty test data.
+
+    Same shape as :class:`TargetsIncomplete` so the FE can render both
+    the same way (banner + per-field highlights). ``failed`` deliberately
+    does NOT trigger this gate — a scientist can fail early on a bad
+    weight without also being forced to record disintegration + organoleptic
+    samples.
+    """
+
+    code = "samples_incomplete"
+
+    def __init__(self, missing_fields: list[str]) -> None:
+        super().__init__(f"missing samples: {', '.join(missing_fields)}")
+        self.missing_fields = missing_fields
+
+
 #: Permissible moves through the validation lifecycle. Kept explicit
 #: (rather than "any transition to any state") so a misclick in the
 #: UI cannot mark a validation as ``passed`` straight from ``draft``
@@ -134,6 +174,119 @@ def _empty_organoleptic_test() -> dict[str, Any]:
         "passed": None,
         "notes": "",
     }
+
+
+def _missing_target_fields(validation: ProductValidation) -> list[str]:
+    """Dot-paths of target/spec fields that are still blank.
+
+    Used by the draft → in_progress gate (see :func:`transition_status`)
+    and the wizard readiness check. A field counts as ``missing`` when
+    it's ``None``, an empty / whitespace-only string, or (for numeric
+    fields) can't be coerced to a number.
+
+    Paths mirror the ``ProductValidation`` JSON schema so the FE can
+    highlight the specific input without an ad-hoc mapping.
+    """
+
+    missing: list[str] = []
+
+    def _numeric_missing(container: dict[str, Any] | None, key: str) -> bool:
+        if not isinstance(container, dict):
+            return True
+        value = container.get(key)
+        if value is None or value == "":
+            return True
+        try:
+            float(value)
+        except (TypeError, ValueError):
+            return True
+        return False
+
+    def _string_missing(container: dict[str, Any] | None, key: str) -> bool:
+        if not isinstance(container, dict):
+            return True
+        value = container.get(key)
+        return not isinstance(value, str) or value.strip() == ""
+
+    weight = validation.weight_test or {}
+    if _numeric_missing(weight, "target_mg"):
+        missing.append("weight.target_mg")
+    if _numeric_missing(weight, "tolerance_pct"):
+        missing.append("weight.tolerance_pct")
+
+    disintegration = validation.disintegration_test or {}
+    if _numeric_missing(disintegration, "limit_minutes"):
+        missing.append("disintegration.limit_minutes")
+    if _numeric_missing(disintegration, "temperature_c"):
+        missing.append("disintegration.temperature_c")
+
+    organoleptic = validation.organoleptic_test or {}
+    target = organoleptic.get("target") if isinstance(organoleptic, dict) else None
+    if _string_missing(target, "colour"):
+        missing.append("organoleptic.target.colour")
+    if _string_missing(target, "taste"):
+        missing.append("organoleptic.target.taste")
+    if _string_missing(target, "odour"):
+        missing.append("organoleptic.target.odour")
+
+    return missing
+
+
+def _missing_sample_fields(validation: ProductValidation) -> list[str]:
+    """Dot-paths of sample/actual fields that are still blank.
+
+    Used by the ``in_progress → passed`` gate. A section counts as
+    complete when:
+
+      * ``weight``          — at least one numeric sample
+      * ``disintegration``  — at least one numeric sample
+      * ``organoleptic``    — all three actual descriptors filled AND
+        the pass/fail toggle explicitly set (not left as ``None``)
+
+    Failing the validation deliberately skips this check — see
+    :class:`SamplesIncomplete`.
+    """
+
+    missing: list[str] = []
+
+    def _samples_missing(container: dict[str, Any] | None) -> bool:
+        if not isinstance(container, dict):
+            return True
+        samples = container.get("samples") or []
+        if not isinstance(samples, list) or len(samples) == 0:
+            return True
+        # Every sample must be numeric — an empty entry counts as no
+        # measurement even though it's in the list.
+        for s in samples:
+            try:
+                float(s)
+            except (TypeError, ValueError):
+                return True
+        return False
+
+    def _string_missing(container: dict[str, Any] | None, key: str) -> bool:
+        if not isinstance(container, dict):
+            return True
+        value = container.get(key)
+        return not isinstance(value, str) or value.strip() == ""
+
+    if _samples_missing(validation.weight_test):
+        missing.append("weight.samples")
+    if _samples_missing(validation.disintegration_test):
+        missing.append("disintegration.samples")
+
+    organoleptic = validation.organoleptic_test or {}
+    actual = organoleptic.get("actual") if isinstance(organoleptic, dict) else None
+    if _string_missing(actual, "colour"):
+        missing.append("organoleptic.actual.colour")
+    if _string_missing(actual, "taste"):
+        missing.append("organoleptic.actual.taste")
+    if _string_missing(actual, "odour"):
+        missing.append("organoleptic.actual.odour")
+    if not isinstance(organoleptic, dict) or organoleptic.get("passed") is None:
+        missing.append("organoleptic.passed")
+
+    return missing
 
 
 def _empty_mrpeasy_checklist() -> dict[str, Any]:
@@ -466,6 +619,12 @@ def compute_stats(validation: ProductValidation) -> ValidationStats:
         validation.disintegration_test or {}
     )
     organoleptic = _compute_organoleptic(validation.organoleptic_test or {})
+    # Checklist is retained on the model for historical rows but no
+    # longer gates the overall verdict — PSP is the ERP source of
+    # truth, so "raw materials / finished product / BOMs" being
+    # created is now the outcome of the MO push cascade, not a manual
+    # ticklist the scientist rides. Computed for stats-payload back-
+    # compat only; not appended to ``section_outcomes``.
     checklist = _compute_checklist(validation.mrpeasy_checklist or {})
 
     section_outcomes = [
@@ -475,11 +634,6 @@ def compute_stats(validation: ProductValidation) -> ValidationStats:
         disintegration.passed,
         organoleptic.passed,
     ]
-    # Fold the checklist in as a required gate — the batch cannot pass
-    # until its ERP wiring is confirmed, so any missing checkbox is a
-    # fail. Represent it as ``True``/``False`` (never ``None``) since
-    # the checkboxes always carry a value.
-    section_outcomes.append(checklist.passed)
 
     resolved = [o for o in section_outcomes if o is not None]
     if not resolved:
@@ -697,6 +851,33 @@ def transition_status(
     if next_status not in allowed:
         raise InvalidValidationTransition()
 
+    # Gate: draft → in_progress requires the target/spec fields to be
+    # defined. Recording samples without a target means there's no
+    # pass/fail yardstick, and the scientist could game the verdict
+    # by back-filling targets to match samples. The FE walks the
+    # scientist through these as a wizard so this gate is normally
+    # unreachable via the UI — enforced here for the direct-API path.
+    if (
+        validation.status == ValidationStatus.DRAFT
+        and next_status == ValidationStatus.IN_PROGRESS
+    ):
+        missing = _missing_target_fields(validation)
+        if missing:
+            raise TargetsIncomplete(missing)
+
+    # Gate: in_progress → passed requires every section to have
+    # samples / actual readings. Signing off "passed" against empty
+    # test data is exactly the audit trail failure this system exists
+    # to prevent. ``failed`` deliberately skips this gate — see
+    # SamplesIncomplete.
+    if (
+        validation.status == ValidationStatus.IN_PROGRESS
+        and next_status == ValidationStatus.PASSED
+    ):
+        missing = _missing_sample_fields(validation)
+        if missing:
+            raise SamplesIncomplete(missing)
+
     scientist_sign = (
         next_status == ValidationStatus.IN_PROGRESS
         and validation.status == ValidationStatus.DRAFT
@@ -750,33 +931,333 @@ def transition_status(
         after={"status": next_status},
     )
 
-    # Trial-batch pass → auto-create the FINAL spec sheet so the
-    # scientist doesn't have to click "new sheet" and toggle Final.
-    # Idempotent (no-op if the project already has a FINAL). Failures
-    # are swallowed: the validation pass is the source of truth; a
-    # spec-creation hiccup must not undo it.
-    if next_status == ValidationStatus.PASSED:
-        try:
-            from apps.specifications.services import (
-                auto_create_final_spec_for_version,
-            )
+    # Note: we deliberately do NOT auto-create the FINAL spec sheet
+    # here anymore. A pass verdict now surfaces a "final spec is
+    # available for creation" banner on the project workspace instead
+    # (see ``compute_project_overview.final_spec_available``). The
+    # banner opens a modal where the scientist explicitly links the
+    # trial batch + formulation version — the pair that will be
+    # cited on the audit trail as the evidentiary basis for the spec.
+    #
+    # Rationale: a pass verdict doesn't always mean "we're ready to
+    # freeze the recipe". Scientists routinely re-tune the formulation
+    # between a passed trial and the FINAL (e.g. tightening a filler
+    # ratio after tasting notes). Auto-creating the FINAL on pass
+    # pinned it to the trial's version and forced a manual archive
+    # cycle to swap it. The explicit-create flow lets them re-run,
+    # tweak, and then pick the version + trial they actually want
+    # cited on the FINAL.
 
-            trial_batch = getattr(validation, "trial_batch", None)
-            version = (
-                getattr(trial_batch, "formulation_version", None)
-                if trial_batch is not None
-                else None
-            )
-            if version is not None:
-                auto_create_final_spec_for_version(
-                    formulation_version=version, actor=actor
-                )
+    # Push the state snapshot to PSP so its Output QC page can (a)
+    # flip the status pill from "Not started" → "In progress" the
+    # moment the scientist starts, (b) unblock the Pass QC button
+    # on ``passed``, or (c) auto-fail the output lot on ``failed``.
+    #
+    # Swallowed like the spec-sheet auto-create above: the transition
+    # is the source of truth; a PSP sync hiccup must not undo it.
+    # Missed syncs get picked up next transition (idempotent on PSP).
+    if next_status in (
+        ValidationStatus.IN_PROGRESS,
+        ValidationStatus.PASSED,
+        ValidationStatus.FAILED,
+    ):
+        try:
+            _sync_validation_state_to_psp(validation)
         except Exception:  # pragma: no cover - defence in depth
             import logging
 
             logging.getLogger(__name__).exception(
-                "auto_create_final_spec failed for validation %s",
+                "psp trial_validation sync failed for validation %s",
                 validation.pk,
             )
 
     return validation
+
+
+def _sync_validation_state_to_psp(validation: ProductValidation) -> None:
+    """Push the current validation status to PSP's Output QC gate.
+
+    Extracted so tests can patch a single seam. Silently returns when
+    the org has no PSP integration or when the validation isn't linked
+    to a trial batch (nothing for PSP to key on).
+    """
+
+    from apps.psp.services import (
+        PspNotConfigured,
+        _client_factory,
+        get_psp_config,
+        is_psp_live,
+    )
+
+    trial_batch = getattr(validation, "trial_batch", None)
+    if trial_batch is None:
+        return
+
+    org = validation.organization
+    if not is_psp_live(org):
+        return
+
+    try:
+        config = get_psp_config(organization=org)
+    except PspNotConfigured:
+        return
+    client = _client_factory(config)
+
+    status = validation.status
+    failure_reason = (validation.notes or "").strip() if status == "failed" else None
+
+    client.sync_trial_validation(
+        npd_trial_batch_uuid=str(trial_batch.id),
+        validation_uuid=str(validation.id),
+        status=status,
+        failure_reason=failure_reason,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Sheet rendering (WeasyPrint HTML + PDF)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_num(value: Any, decimals: int = 2) -> str:
+    """Format a numeric value for the sheet. Blank ⇒ ``—``; strips
+    trailing zeros so ``1270.00`` becomes ``1270``."""
+
+    if value is None or value == "":
+        return "—"
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    text = f"{n:.{decimals}f}".rstrip("0").rstrip(".")
+    return text if text != "-0" else "0"
+
+
+def build_sheet_context(validation: ProductValidation) -> dict[str, Any]:
+    """Assemble the template context for
+    ``product_validation/sheet.html``.
+
+    Pure function — no I/O, no side effects. All numeric formatting
+    uses ``.`` decimals and no thousands separator to match the
+    editor's `formatNumber` on the FE (avoids "1,143 vs 1143"
+    confusion in locales that use ``,`` as a decimal mark).
+    """
+
+    from apps.audit.models import AuditLog  # local import — avoids app-loading order issues
+
+    stats = compute_stats(validation)
+
+    trial_batch = getattr(validation, "trial_batch", None)
+    version = getattr(trial_batch, "formulation_version", None) if trial_batch else None
+    formulation = getattr(version, "formulation", None) if version else None
+
+    # Prefer the RTG display name (customer-friendly, e.g. "Vita Gummy
+    # Multivitamin") over the internal ``name`` (which is often a
+    # code-ish slug like "RTG00001"). Falls back gracefully when the
+    # formulation isn't an RTG variant or the field is blank.
+    formulation_display = ""
+    if formulation is not None:
+        display = (getattr(formulation, "rtg_display_name", "") or "").strip()
+        formulation_display = display or (formulation.name or "")
+
+    weight_samples_fmt = [_fmt_num(s) for s in stats.weight.samples]
+    weight_pass_flags = list(stats.weight.per_sample_passed)
+    weight_ctx = {
+        "target_mg": _fmt_num(stats.weight.target_mg),
+        "tolerance_pct": _fmt_num(stats.weight.tolerance_pct),
+        "range_display": (
+            f"{_fmt_num(stats.weight.min_allowed_mg)} – {_fmt_num(stats.weight.max_allowed_mg)} mg"
+            if stats.weight.min_allowed_mg is not None
+            and stats.weight.max_allowed_mg is not None
+            else "—"
+        ),
+        "samples": weight_samples_fmt,
+        "per_sample_passed": weight_pass_flags,
+        # Pre-zipped rows so the template can iterate ``(value, passed)``
+        # pairs without needing an index-by-variable filter (Django's
+        # built-in ``|slice`` doesn't accept a loop-var index).
+        "sample_rows": [
+            {"index": i + 1, "value": v, "passed": bool(p)}
+            for i, (v, p) in enumerate(
+                zip(weight_samples_fmt, weight_pass_flags)
+            )
+        ],
+        "mean_display": (
+            f"{_fmt_num(stats.weight.mean)} mg"
+            if stats.weight.mean is not None
+            else "—"
+        ),
+        "stdev_display": (
+            f"{_fmt_num(stats.weight.stdev)} mg"
+            if stats.weight.stdev is not None
+            else "—"
+        ),
+        "out_of_range_count": sum(
+            1 for p in stats.weight.per_sample_passed if not p
+        ),
+        "passed": stats.weight.passed,
+        "notes": (validation.weight_test or {}).get("notes", ""),
+    }
+
+    dis_samples_fmt = [_fmt_num(s) for s in stats.disintegration.samples]
+    dis_pass_flags = list(stats.disintegration.per_sample_passed)
+    disintegration_ctx = {
+        "limit_minutes": _fmt_num(stats.disintegration.limit_minutes),
+        "temperature_c": _fmt_num(stats.disintegration.temperature_c),
+        "samples": dis_samples_fmt,
+        "per_sample_passed": dis_pass_flags,
+        "sample_rows": [
+            {"index": i + 1, "value": v, "passed": bool(p)}
+            for i, (v, p) in enumerate(zip(dis_samples_fmt, dis_pass_flags))
+        ],
+        "worst_display": (
+            f"{_fmt_num(stats.disintegration.worst_minutes)} min"
+            if stats.disintegration.worst_minutes is not None
+            else "—"
+        ),
+        "passed": stats.disintegration.passed,
+        "notes": (validation.disintegration_test or {}).get("notes", ""),
+    }
+
+    org = validation.organoleptic_test or {}
+    target = org.get("target") or {}
+    actual = org.get("actual") or {}
+    organoleptic_ctx = {
+        "target": {
+            "colour": target.get("colour", ""),
+            "taste": target.get("taste", ""),
+            "odour": target.get("odour", ""),
+        },
+        "actual": {
+            "colour": actual.get("colour", ""),
+            "taste": actual.get("taste", ""),
+            "odour": actual.get("odour", ""),
+        },
+        "passed": stats.organoleptic.passed,
+        "notes": org.get("notes", ""),
+    }
+
+    def _actor(actor: Any, signed_at: Any, signature_image: str) -> dict[str, Any] | None:
+        if actor is None or signed_at is None:
+            return None
+        return {
+            "name": (actor.get_full_name() or actor.email or "").strip(),
+            "signed_at": signed_at.strftime("%d %b %Y, %H:%M UTC")
+            if signed_at
+            else "",
+            "signature_image": signature_image or "",
+        }
+
+    scientist_ctx = _actor(
+        validation.scientist_signature,
+        validation.scientist_signed_at,
+        validation.scientist_signature_image or "",
+    )
+    rd_manager_ctx = _actor(
+        validation.rd_manager_signature,
+        validation.rd_manager_signed_at,
+        validation.rd_manager_signature_image or "",
+    )
+
+    # Change history — every audit row targeted at this validation,
+    # newest first. `record_audit` uses ``target_type = "productvalidation"``
+    # (model_name of the class); mirror that literal here.
+    audit_rows = (
+        AuditLog.objects.filter(
+            organization=validation.organization,
+            target_type="productvalidation",
+            target_id=str(validation.pk),
+        )
+        .select_related("actor")
+        .order_by("-created_at")
+    )
+    history: list[dict[str, Any]] = []
+    for row in audit_rows:
+        summary_bits: list[str] = []
+        if row.action == "product_validation.status_transition":
+            before = (row.before or {}).get("status")
+            after = (row.after or {}).get("status")
+            if before and after:
+                summary_bits.append(f"Status: {before} → {after}")
+            elif after:
+                summary_bits.append(f"Status → {after}")
+        else:
+            # Fall back to the raw action slug so unknown events
+            # still show up rather than silently drop.
+            summary_bits.append(row.action)
+        actor_name = "System"
+        if row.actor is not None:
+            actor_name = (
+                row.actor.get_full_name() or row.actor.email or "Unknown"
+            ).strip()
+        history.append(
+            {
+                "when": row.created_at.strftime("%d %b %Y, %H:%M UTC"),
+                "actor_name": actor_name,
+                "summary": " · ".join(summary_bits) or "—",
+                "notes": "",
+            }
+        )
+
+    organization_name = ""
+    try:
+        organization_name = validation.organization.name or ""
+    except Exception:  # pragma: no cover
+        pass
+
+    return {
+        "sheet": {
+            "code": (formulation and getattr(formulation, "code", None))
+            or "PV",
+            "status": validation.status,
+        },
+        "formulation": {
+            "name": formulation_display or "Untitled",
+            "version_number": getattr(version, "version_number", 1),
+        },
+        "trial_batch": {
+            "label": getattr(trial_batch, "label", "") or "",
+        },
+        "weight": weight_ctx,
+        "disintegration": disintegration_ctx,
+        "organoleptic": organoleptic_ctx,
+        "overall_passed": stats.overall_passed,
+        "overall_notes": validation.notes or "",
+        "scientist": scientist_ctx,
+        "rd_manager": rd_manager_ctx,
+        "history": history,
+        "report_date": timezone.now().strftime("%d %b %Y"),
+        "organization_name": organization_name,
+    }
+
+
+def render_validation_html(validation: ProductValidation) -> str:
+    """Render the WeasyPrint template to an HTML string. Callers with
+    an HTTP response can send the string as-is; the PDF endpoint hands
+    it to WeasyPrint for PDF conversion."""
+
+    from django.template.loader import render_to_string
+
+    context = build_sheet_context(validation)
+    return render_to_string("product_validation/sheet.html", context)
+
+
+def render_validation_pdf(validation: ProductValidation) -> tuple[bytes, str]:
+    """Render the validation sheet as a PDF. Returns (bytes, filename)
+    so the view can set ``Content-Disposition`` without re-deriving
+    the code."""
+
+    from weasyprint import HTML  # local import — heavy dependency, keep out of module load
+
+    html_string = render_validation_html(validation)
+    pdf_bytes = HTML(string=html_string).write_pdf()
+
+    code_parts: list[str] = []
+    trial_batch = getattr(validation, "trial_batch", None)
+    if trial_batch is not None:
+        version = getattr(trial_batch, "formulation_version", None)
+        formulation = getattr(version, "formulation", None) if version else None
+        if formulation is not None and formulation.code:
+            code_parts.append(formulation.code)
+    filename = "-".join(code_parts) if code_parts else "validation"
+    return pdf_bytes, f"{filename}-validation.pdf"
