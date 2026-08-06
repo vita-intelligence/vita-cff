@@ -2055,20 +2055,28 @@ function ApprovalPricingForm({
 }) {
   // Live derived-price preview so the director sees exactly what
   // the customer will be quoted before they sign. Same formula
-  // the spec edit modal uses: ``cost / (1 - margin/100)``.
-  const derivedHint = (() => {
+  // the spec edit modal uses: ``cost / (1 - margin/100)`` — gross
+  // margin, matching the BE (`suggest_unit_price` in proposals
+  // services) so the number on-screen equals the number on the
+  // signed record.
+  //
+  // Return either the formatted price or an explicit reason so the
+  // caller can pick a precise message. The old "collapse-to-null"
+  // shape confused the operator when they typed a mathematically
+  // undefined margin (≥ 100 divides by zero on gross-margin math)
+  // and got a "Enter cost and margin" prompt that read as "you
+  // didn't fill the fields" — they had. Two different failures
+  // deserve two different hints.
+  const priceHint: { price: string } | { reason: "missing" | "over_100" } = (() => {
     const c = Number.parseFloat(unitCost);
     const m = Number.parseFloat(margin);
-    if (
-      !Number.isFinite(c) ||
-      c <= 0 ||
-      !Number.isFinite(m) ||
-      m < 0 ||
-      m >= 100
-    ) {
-      return null;
+    if (!Number.isFinite(c) || c <= 0 || !Number.isFinite(m) || m < 0) {
+      return { reason: "missing" };
     }
-    return (c / (1 - m / 100)).toFixed(2);
+    if (m >= 100) {
+      return { reason: "over_100" };
+    }
+    return { price: (c / (1 - m / 100)).toFixed(2) };
   })();
 
   return (
@@ -2091,13 +2099,11 @@ function ApprovalPricingForm({
           placeholder="0.00"
           inputMode="decimal"
         />
-        <PricingField
-          label={tSpecs("approval.margin")}
-          value={margin}
-          onChange={onMarginChange}
+        <MarginMarkupField
+          marginValue={margin}
+          onMarginChange={onMarginChange}
           disabled={busy}
-          placeholder="30"
-          inputMode="decimal"
+          tSpecs={tSpecs}
         />
         <PricingField
           label={tSpecs("approval.currency")}
@@ -2117,9 +2123,11 @@ function ApprovalPricingForm({
           {tSpecs("approval.customer_pays")}
         </span>
         <span className="text-base font-semibold text-amber-950">
-          {derivedHint
-            ? `${(currency || "GBP").toUpperCase()} ${derivedHint}`
-            : tSpecs("approval.customer_pays_placeholder")}
+          {"price" in priceHint
+            ? `${(currency || "GBP").toUpperCase()} ${priceHint.price}`
+            : priceHint.reason === "over_100"
+              ? tSpecs("approval.customer_pays_margin_over_100")
+              : tSpecs("approval.customer_pays_placeholder")}
         </span>
       </div>
 
@@ -2162,6 +2170,143 @@ function ApprovalPricingForm({
         </p>
       ) : null}
     </div>
+  );
+}
+
+
+/**
+ * Convert a gross-margin percent into the equivalent markup percent.
+ * Both express the profit relationship on a cost + price pair, just
+ * against different denominators:
+ *
+ *   * Margin (% of price):  price = cost / (1 - margin/100)
+ *   * Markup (% of cost):   price = cost * (1 + markup/100)
+ *
+ * Equivalence:  markup = margin / (1 - margin/100) = margin / (100 - margin) * 100
+ *
+ * Undefined for margin >= 100 (asymptote) — bail with the raw string
+ * so the caller can decide the UX.
+ */
+function marginToMarkup(marginStr: string): string {
+  const m = Number.parseFloat(marginStr);
+  if (!Number.isFinite(m) || m <= 0 || m >= 100) return marginStr;
+  return ((m / (100 - m)) * 100).toFixed(2);
+}
+
+
+/**
+ * Inverse — convert markup back to the equivalent gross-margin so
+ * the stored ``margin_percent`` on the sheet stays canonical (< 100).
+ *
+ *   margin = markup / (1 + markup/100) = markup / (100 + markup) * 100
+ *
+ * Well-defined for any markup >= 0; unlike the forward direction there
+ * is no asymptote, so markup 100% -> margin 50%, 200% -> 66.67%,
+ * 1000% -> 90.91%, etc.
+ */
+function markupToMargin(markupStr: string): string {
+  const mk = Number.parseFloat(markupStr);
+  if (!Number.isFinite(mk) || mk < 0) return markupStr;
+  return ((mk / (100 + mk)) * 100).toFixed(4);
+}
+
+
+type PricingMode = "margin" | "markup";
+
+
+/**
+ * Pricing-input field with a Margin / Markup toggle. Storage is
+ * always the gross-margin percent (< 100) so the BE + downstream
+ * dashboards keep a single interpretation of ``margin_percent``.
+ * The toggle is a pure input-convenience: when the operator picks
+ * Markup we convert to the equivalent gross-margin at each
+ * keystroke and forward that via ``onMarginChange``.
+ *
+ * Why: gross-margin math bakes an asymptote at 100% (price = cost / 0),
+ * which meant an operator wanting to "quote at 200%" got a
+ * "Enter cost and margin" placeholder that read as "you didn't fill
+ * the field". Markup mode has no asymptote — any percent produces
+ * a sensible price — so operators can pick the mental model that
+ * matches how they think about a deal.
+ */
+function MarginMarkupField({
+  marginValue,
+  onMarginChange,
+  disabled,
+  tSpecs,
+}: {
+  marginValue: string;
+  onMarginChange: (v: string) => void;
+  disabled: boolean;
+  tSpecs: ReturnType<typeof useTranslations<"specifications">>;
+}) {
+  const [mode, setMode] = useState<PricingMode>("margin");
+  // Locally-controlled display value so per-keystroke conversion
+  // round-trips (marginValue -> markup -> marginValue) don't stomp
+  // the operator's mid-edit input. We only re-sync from the parent
+  // on an explicit mode flip.
+  const [displayValue, setDisplayValue] = useState<string>(marginValue);
+
+  const switchMode = (next: PricingMode) => {
+    if (next === mode) return;
+    // Snap the display to the mode-appropriate representation of
+    // whatever margin the parent currently holds.
+    setDisplayValue(
+      next === "markup" ? marginToMarkup(marginValue) : marginValue,
+    );
+    setMode(next);
+  };
+
+  const handleInput = (v: string) => {
+    setDisplayValue(v);
+    onMarginChange(mode === "markup" ? markupToMargin(v) : v);
+  };
+
+  return (
+    <label className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+          {mode === "markup"
+            ? tSpecs("approval.markup")
+            : tSpecs("approval.margin")}
+        </span>
+        <div className="inline-flex items-center rounded-full bg-amber-100 p-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1 ring-inset ring-amber-300">
+          <button
+            type="button"
+            onClick={() => switchMode("margin")}
+            disabled={disabled}
+            className={`rounded-full px-2 py-0.5 transition-colors ${
+              mode === "margin"
+                ? "bg-amber-500 text-white"
+                : "text-amber-800 hover:text-amber-950"
+            }`}
+          >
+            {tSpecs("approval.mode_margin")}
+          </button>
+          <button
+            type="button"
+            onClick={() => switchMode("markup")}
+            disabled={disabled}
+            className={`rounded-full px-2 py-0.5 transition-colors ${
+              mode === "markup"
+                ? "bg-amber-500 text-white"
+                : "text-amber-800 hover:text-amber-950"
+            }`}
+          >
+            {tSpecs("approval.mode_markup")}
+          </button>
+        </div>
+      </div>
+      <input
+        type="text"
+        inputMode="decimal"
+        value={displayValue}
+        onChange={(e) => handleInput(e.target.value)}
+        disabled={disabled}
+        placeholder={mode === "markup" ? "100" : "30"}
+        className="w-full rounded-lg bg-ink-0 px-2.5 py-1.5 text-sm text-ink-1000 ring-1 ring-inset ring-amber-200 outline-none focus:ring-2 focus:ring-orange-400 disabled:bg-ink-50"
+      />
+    </label>
   );
 }
 
