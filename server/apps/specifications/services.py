@@ -1409,30 +1409,102 @@ def create_sheet(
 
 
 @transaction.atomic
+class FinalSpecAlreadyExists(Exception):
+    """Raised when a FINAL spec already exists on the formulation
+    but the caller asked to create a new one. The banner + endpoint
+    filter this state out before the user gets a chance to click, so
+    hitting it in practice means someone raced the button; the API
+    surfaces it as ``409``.
+    """
+
+
+@transaction.atomic
+def create_final_spec_from_trial(
+    *,
+    trial_batch: Any,
+    formulation_version: FormulationVersion,
+    actor: Any,
+) -> SpecificationSheet:
+    """Explicitly create a ``document_kind=FINAL`` spec sheet, pinning
+    it to ``formulation_version`` and citing ``trial_batch`` as the
+    evidentiary basis on the audit row.
+
+    Called by ``POST /formulations/<id>/create-final-spec/`` (backed by
+    the "Final spec is available for creation" banner on the project
+    workspace). Refuses if the project already has a FINAL — one FINAL
+    per project is the rule.
+
+    ``trial_batch`` is required so the audit trail records which run's
+    evidence the FINAL was cut against; if the scientist later re-tunes
+    the formulation and re-passes on a different trial, they explicitly
+    pick that new pair via the banner rather than auto-inheriting.
+
+    Raises :class:`FinalSpecAlreadyExists` when the guard trips.
+    """
+    return _build_final_spec(
+        formulation_version=formulation_version,
+        actor=actor,
+        source="create_final_spec",
+        trial_batch=trial_batch,
+    )
+
+
+@transaction.atomic
 def auto_create_final_spec_for_version(
     *,
     formulation_version: FormulationVersion,
     actor: Any,
 ) -> SpecificationSheet | None:
-    """Create a ``document_kind=FINAL`` spec sheet on
-    ``formulation_version`` if the project does not already have one.
-
-    Idempotent — second call (or a re-fire of the validation pass
-    that triggered the first) is a no-op and returns ``None``.
-
-    Most fields are seeded from the most recent draft spec on the
-    same project so the scientist isn't re-typing storage / shelf
-    life / packaging / client info. The new sheet lands at
-    ``status=DRAFT`` so the existing scientist → director → sent →
-    customer sign chain still applies — the auto-step only removes
-    the "click new sheet" friction.
-
-    Returns the new sheet on creation, or ``None`` when no work was
-    needed.
+    """Legacy path — kept for tests and any orgs still relying on the
+    old auto-on-pass hook. The current UX creates FINAL specs
+    explicitly via :func:`create_final_spec_from_trial`; this helper
+    is idempotent (returns ``None`` when the project already has a
+    FINAL) so a stray call from a stale integration is a no-op.
     """
+    formulation = formulation_version.formulation
+    if _existing_final_for_formulation(formulation_id=formulation.id) is not None:
+        return None
+    try:
+        return _build_final_spec(
+            formulation_version=formulation_version,
+            actor=actor,
+            source="auto_create_final",
+            trial_batch=None,
+        )
+    except FinalSpecAlreadyExists:
+        # Race between the up-front guard and the row insert. Legacy
+        # path silently no-ops (the "auto" contract) so callers don't
+        # blow up on a retry.
+        return None
 
+
+def _build_final_spec(
+    *,
+    formulation_version: FormulationVersion,
+    actor: Any,
+    source: str,
+    trial_batch: Any | None,
+) -> SpecificationSheet:
+    """Shared spec-creation body used by both the explicit banner path
+    (:func:`create_final_spec_from_trial`) and the legacy auto path
+    (:func:`auto_create_final_spec_for_version`).
+
+    Callers are responsible for the "already exists" guard — this
+    helper unconditionally creates one so a race between the guard
+    and the insert doesn't silently no-op. Wrapped in a transaction
+    by the enclosing service functions.
+
+    ``source`` is stamped on the audit action (``spec_sheet.<source>``)
+    so history reads distinguish which pathway created the sheet.
+    """
     formulation = formulation_version.formulation
     organization = formulation.organization
+
+    if _existing_final_for_formulation(formulation_id=formulation.id) is not None:
+        # Guard here too — the caller does its own check but we don't
+        # trust the caller (auto-path swallows, explicit-path raises).
+        # Raise unconditionally so races can't produce two FINALs.
+        raise FinalSpecAlreadyExists()
 
     def _next_unique_final_code(*, base: str) -> str:
         """Pick a per-org-unique ``-FINAL`` suffix on ``base``.
@@ -1456,13 +1528,6 @@ def auto_create_final_spec_for_version(
             candidate = f"{base}-FINAL-{suffix}"
             suffix += 1
         return candidate
-
-    if _existing_final_for_formulation(formulation_id=formulation.id) is not None:
-        # A final already exists somewhere on this project — could be
-        # the customer-signed one (project should be APPROVED already)
-        # or an unsigned draft we made on a previous trial-pass cycle.
-        # Either way, the invariant is satisfied; no-op.
-        return None
 
     # Pre-populate from the most recent draft on the same project.
     # We deliberately walk all formulation_versions (not just the one
@@ -1541,12 +1606,23 @@ def auto_create_final_spec_for_version(
         created_by=actor,
         updated_by=actor,
     )
+    # Snapshot the sheet + stamp the trial-batch citation when the
+    # explicit-create path drove this call. The audit row is the
+    # evidentiary link between "we passed validation on batch X" and
+    # "we created the FINAL spec on version Y" — legally load-bearing
+    # for BRCGS Issue 9 § 5.6 traceability.
+    audit_after = snapshot(sheet)
+    if trial_batch is not None:
+        audit_after = {
+            **audit_after,
+            "created_from_trial_batch_id": str(trial_batch.id),
+        }
     record_audit(
         organization=organization,
         actor=actor,
-        action="spec_sheet.auto_create_final",
+        action=f"spec_sheet.{source}",
         target=sheet,
-        after=snapshot(sheet),
+        after=audit_after,
     )
     return sheet
 

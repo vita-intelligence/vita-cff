@@ -489,6 +489,31 @@ export async function unlinkCustomerFromProject(
   return data;
 }
 
+
+/**
+ * Explicitly create the FINAL spec for this project, citing the
+ * given passed trial batch + formulation version as the evidentiary
+ * pair. Called from the "Final spec is available for creation"
+ * banner modal on the project workspace.
+ *
+ * Returns the fresh overview so the caller can drop the banner and
+ * re-render spec counts atomically.
+ */
+export async function createFinalSpecFromTrial(
+  orgId: string,
+  formulationId: string,
+  args: { trialBatchId: string; formulationVersionId: string },
+): Promise<ProjectOverviewDto> {
+  const { data } = await apiClient.post<ProjectOverviewDto>(
+    formulationsEndpoints.createFinalSpec(orgId, formulationId),
+    {
+      trial_batch_id: args.trialBatchId,
+      formulation_version_id: args.formulationVersionId,
+    },
+  );
+  return data;
+}
+
 /**
  * Set or clear the project's commercial owner.
  *

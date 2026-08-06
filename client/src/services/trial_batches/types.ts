@@ -24,6 +24,17 @@ export interface TrialBatchDto {
    *  populated on that action + used as the PSP-side idempotency
    *  key so retries don't duplicate. */
   readonly psp_manufacturing_order_uuid: string | null;
+  /** Terminal-or-in-progress validation status attached to this
+   *  batch. ``null`` when no validation record exists yet. When
+   *  ``"passed"``, the batch is the evidentiary root of downstream
+   *  artefacts (the FINAL spec's audit row cites it) — server
+   *  refuses to delete it and the FE hides the delete button. */
+  readonly validation_status:
+    | "draft"
+    | "in_progress"
+    | "passed"
+    | "failed"
+    | null;
   readonly created_by_name: string;
   readonly created_at: string;
   readonly updated_at: string;

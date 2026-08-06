@@ -33,6 +33,7 @@ import {
   fetchCFFCandidates,
   fetchItemPrices,
   fetchRoutingCosts,
+  createFinalSpecFromTrial,
   fetchProjectOverview,
   linkCFFToProject,
   linkCustomerToProject,
@@ -548,6 +549,39 @@ export function useCFFCandidates(
     staleTime: 15_000,
   });
 }
+
+export function useCreateFinalSpecFromTrial(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  ProjectOverviewDto,
+  ApiError,
+  { trialBatchId: string; formulationVersionId: string }
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    ProjectOverviewDto,
+    ApiError,
+    { trialBatchId: string; formulationVersionId: string }
+  >({
+    mutationFn: (args) =>
+      createFinalSpecFromTrial(orgId, formulationId, args),
+    onSuccess: (updated) => {
+      // Overview payload comes back fresh (banner cleared, spec
+      // counts bumped); swap it into cache atomically.
+      queryClient.setQueryData(
+        formulationsQueryKeys.overview(orgId, formulationId),
+        updated,
+      );
+      // The specifications list on the /spec-sheets tab needs to
+      // re-fetch to pick up the new FINAL row.
+      queryClient.invalidateQueries({
+        queryKey: [...rootQueryKey, "specifications"] as const,
+      });
+    },
+  });
+}
+
 
 export function useLinkCFFToProject(
   orgId: string,

@@ -169,6 +169,22 @@ class TrialBatchDetailView(APIView):
         from apps.audit.services import record as record_audit, snapshot
 
         batch = self._load(batch_id)
+
+        # Audit-trail integrity gate. Once a validation has landed a
+        # ``passed`` verdict against a batch, that batch has become
+        # the evidentiary root for downstream artefacts (the FINAL
+        # spec's audit row cites its id; a released production lot
+        # traces back to it). Deleting it would leave dangling
+        # citations that fail a BRCGS Issue 9 § 5.6 traceability
+        # walk. Refuse hard — no override; if the batch really was
+        # a mistake, void it via a note instead.
+        validation = getattr(batch, "validation", None)
+        if validation is not None and validation.status == "passed":
+            return Response(
+                {"detail": "trial_batch_has_passed_validation"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
         organization = batch.organization
         target_id = str(batch.pk)
         before = snapshot(batch)

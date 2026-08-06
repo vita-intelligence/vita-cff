@@ -2429,3 +2429,108 @@ class FormulationRTGPublishView(APIView):
             FormulationReadSerializer(updated).data,
             status=status.HTTP_200_OK,
         )
+
+
+class FormulationCreateFinalSpecView(APIView):
+    """``POST`` ``/.../formulations/<id>/create-final-spec/``.
+
+    Explicit FINAL-spec creation driven by the "Final spec is
+    available for creation" banner. Body:
+
+        {
+          "trial_batch_id":         "<uuid>",   # required
+          "formulation_version_id": "<uuid>"    # required
+        }
+
+    Validates that the trial batch belongs to this formulation, has a
+    passed validation, and the version belongs to this formulation.
+    Returns the updated project overview (with the banner cleared).
+    Gated on ``formulations.edit`` — same capability as any spec-sheet
+    write.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.formulations.models import FormulationVersion
+        from apps.specifications.services import (
+            FinalSpecAlreadyExists,
+            create_final_spec_from_trial,
+        )
+        from apps.trial_batches.models import TrialBatch
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        payload = request.data if isinstance(request.data, dict) else {}
+        trial_batch_id = payload.get("trial_batch_id")
+        version_id = payload.get("formulation_version_id")
+
+        errors: dict[str, list[str]] = {}
+        if not trial_batch_id:
+            errors["trial_batch_id"] = ["required"]
+        if not version_id:
+            errors["formulation_version_id"] = ["required"]
+        if errors:
+            return Response(errors, status=status.HTTP_400_BAD_REQUEST)
+
+        trial_batch = TrialBatch.objects.filter(
+            organization=self.organization,
+            id=trial_batch_id,
+        ).first()
+        if trial_batch is None:
+            return Response(
+                {"trial_batch_id": ["not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Every trial batch links to a single formulation via its
+        # version; refuse a mismatch so a compromised FE can't build a
+        # FINAL that cites a batch from a different project (would
+        # break the audit chain).
+        if str(trial_batch.formulation_version.formulation_id) != str(
+            formulation.id
+        ):
+            return Response(
+                {"trial_batch_id": ["trial_batch_wrong_formulation"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        validation = getattr(trial_batch, "validation", None)
+        if validation is None or validation.status != "passed":
+            return Response(
+                {"trial_batch_id": ["trial_batch_not_passed"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        version = FormulationVersion.objects.filter(
+            formulation=formulation, id=version_id
+        ).first()
+        if version is None:
+            return Response(
+                {"formulation_version_id": ["not_found"]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            create_final_spec_from_trial(
+                trial_batch=trial_batch,
+                formulation_version=version,
+                actor=request.user,
+            )
+        except FinalSpecAlreadyExists:
+            return Response(
+                {"detail": "final_spec_already_exists"},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        overview = compute_project_overview(formulation)
+        return Response(asdict(overview), status=status.HTTP_200_OK)
+
