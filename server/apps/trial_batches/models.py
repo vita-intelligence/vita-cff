@@ -105,6 +105,33 @@ class TrialBatch(models.Model):
     )
     notes = models.TextField(_("notes"), blank=True, default="")
 
+    #: Optional packaging overlay for ``sample``-kind batches. Null
+    #: everywhere else (``trial``-kind bench runs never have
+    #: packaging). When set, the linked PSP MO's packaging BOM lines
+    #: are replaced by this combo's items at MO-create time — the
+    #: same mechanism the proposal → CO flow will use, so a sample MO
+    #: rehearses the exact packaging cascade a real customer order
+    #: would trigger. When null on a sample batch, the MO runs
+    #: without any packaging (loose-bulk output).
+    #:
+    #: SET_NULL on delete so removing a formulation-level combo
+    #: doesn't wipe the batch's audit trail — the row survives with
+    #: a null pointer, and the PSP MO already has its own copy of
+    #: the combo items baked in.
+    packaging_combo = models.ForeignKey(
+        "formulations.PackagingCombo",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="trial_batches",
+        help_text=_(
+            "Optional packaging overlay for sample batches. NULL = no "
+            "combo picked (loose-bulk output or trial-kind bench run); "
+            "populated = the PSP MO's packaging BOM lines are replaced "
+            "by the combo's items at MO-create time."
+        ),
+    )
+
     #: PSP Manufacturing Order uuid this batch spawned. Nullable —
     #: blank until the scientist clicks "Create MO on PSP". Populated
     #: on that action + used as the idempotency handle for retry-safe

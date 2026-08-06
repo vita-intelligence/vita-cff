@@ -67,6 +67,26 @@ class InvalidBatchKind(Exception):
     code = "invalid_batch_kind"
 
 
+class PackagingComboNotFound(Exception):
+    """The caller referenced a ``packaging_combo_id`` that either
+    doesn't exist, belongs to a different formulation, or lives in
+    another organization. Refuse hard — silently ignoring would
+    produce a batch with the wrong packaging cascade + no audit
+    trail of the intent."""
+
+    code = "packaging_combo_not_found"
+
+
+class PackagingComboNotAllowedForTrial(Exception):
+    """Trial-kind batches are bench-scale runs; they never carry
+    packaging. Rejecting the pairing at the service layer keeps the
+    UI honest — the modal only shows the picker on ``kind=sample``,
+    but the API is the last line of defence against a rogue client
+    posting one anyway."""
+
+    code = "packaging_combo_not_allowed_for_trial"
+
+
 class DepositRequired(Exception):
     """The formulation is bundled onto an accepted proposal whose
     deposit hasn't been paid + approved yet. Trial batches are
@@ -120,6 +140,48 @@ def _validate_kind(value: str) -> None:
         raise InvalidBatchKind()
 
 
+def _resolve_packaging_combo(
+    *,
+    organization: Organization,
+    formulation_id: Any,
+    kind: str,
+    combo_id: Any,
+) -> Any:
+    """Look up + validate a combo attach.
+
+    Returns the ``PackagingCombo`` instance or ``None`` for the
+    "no combo picked" case. Raises typed errors when the caller
+    references something that shouldn't be attached.
+
+    Validation rules:
+
+    * ``combo_id is None`` → OK, returns ``None``. Both trial and
+      sample can opt into "no packaging".
+    * ``kind == "trial"`` with a non-null combo → refuse
+      (:class:`PackagingComboNotAllowedForTrial`). Trials never
+      have packaging.
+    * ``combo_id`` not found or belonging to a different formulation
+      /organization → :class:`PackagingComboNotFound`.
+    """
+    from apps.formulations.models import PackagingCombo
+
+    if combo_id is None:
+        return None
+    if kind == BatchKind.TRIAL.value:
+        raise PackagingComboNotAllowedForTrial()
+    combo = (
+        PackagingCombo.objects.filter(
+            id=combo_id,
+            formulation_id=formulation_id,
+            formulation__organization=organization,
+        )
+        .first()
+    )
+    if combo is None:
+        raise PackagingComboNotFound()
+    return combo
+
+
 @transaction.atomic
 def create_batch(
     *,
@@ -130,6 +192,7 @@ def create_batch(
     label: str = "",
     notes: str = "",
     kind: str = BatchKind.SAMPLE.value,
+    packaging_combo_id: Any = None,
 ) -> TrialBatch:
     """Plan a new manufacturing run against a saved version snapshot.
 
@@ -162,12 +225,20 @@ def create_batch(
     if not gate["unlocked"]:
         raise DepositRequired()
 
+    combo = _resolve_packaging_combo(
+        organization=organization,
+        formulation_id=version.formulation_id,
+        kind=kind,
+        combo_id=packaging_combo_id,
+    )
+
     batch = TrialBatch.objects.create(
         organization=organization,
         formulation_version=version,
         label=label,
         batch_size_units=batch_size_units,
         kind=kind,
+        packaging_combo=combo,
         notes=notes,
         created_by=actor,
         updated_by=actor,
@@ -203,6 +274,18 @@ def update_batch(
         kind = changes["kind"]
         _validate_kind(kind)
         batch.kind = kind
+    if "packaging_combo_id" in changes:
+        # Nullable field — an explicit ``None`` clears the combo.
+        # Uses the (possibly just-updated) ``batch.kind`` so a caller
+        # that flips kind + combo in the same PATCH gets validated
+        # against the new kind (e.g. trial + null combo is fine).
+        combo = _resolve_packaging_combo(
+            organization=batch.organization,
+            formulation_id=batch.formulation_version.formulation_id,
+            kind=batch.kind,
+            combo_id=changes["packaging_combo_id"],
+        )
+        batch.packaging_combo = combo
     if changes.get("label") is not None:
         batch.label = changes["label"]
     if changes.get("notes") is not None:

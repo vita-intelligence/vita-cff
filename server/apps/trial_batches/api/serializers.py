@@ -23,6 +23,10 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     #: ``None``. FE uses this to gate the delete button (passed →
     #: delete refused with an audit-trail-integrity 409).
     validation_status = serializers.SerializerMethodField()
+    #: Human-readable combo name, denormalised into the read payload
+    #: so the FE can render a chip without a second fetch. Empty
+    #: string when no combo is set (sample "no packaging" or trial).
+    packaging_combo_name = serializers.SerializerMethodField()
 
     def get_created_by_name(self, obj) -> str:
         user = obj.created_by
@@ -32,6 +36,10 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
         validation = getattr(obj, "validation", None)
         return validation.status if validation is not None else None
 
+    def get_packaging_combo_name(self, obj) -> str:
+        combo = obj.packaging_combo
+        return combo.name if combo is not None else ""
+
     class Meta:
         model = TrialBatch
         fields = (
@@ -39,6 +47,8 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "label",
             "batch_size_units",
             "kind",
+            "packaging_combo_id",
+            "packaging_combo_name",
             "notes",
             "formulation_version",
             "formulation_id",
@@ -59,6 +69,12 @@ class TrialBatchCreateSerializer(serializers.Serializer):
     kind = serializers.ChoiceField(
         choices=BatchKind.choices, required=False
     )
+    #: Optional packaging combo. Only meaningful for ``kind=sample`` —
+    #: the service refuses it on ``kind=trial`` batches. ``null`` (or
+    #: absent) means "no combo picked".
+    packaging_combo_id = serializers.UUIDField(
+        required=False, allow_null=True
+    )
     label = serializers.CharField(
         max_length=200, required=False, allow_blank=True, default=""
     )
@@ -74,5 +90,8 @@ class TrialBatchUpdateSerializer(serializers.Serializer):
     batch_size_units = serializers.IntegerField(required=False, min_value=1)
     kind = serializers.ChoiceField(
         choices=BatchKind.choices, required=False
+    )
+    packaging_combo_id = serializers.UUIDField(
+        required=False, allow_null=True
     )
     notes = serializers.CharField(required=False, allow_blank=True)
