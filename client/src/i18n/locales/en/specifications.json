@@ -208,9 +208,13 @@
     "pricing_subtitle": "These figures are part of the snapshot you're approving. They'll flow into every proposal that bundles this spec and freeze once you sign.",
     "unit_cost": "Unit cost",
     "margin": "Margin %",
+    "markup": "Markup %",
+    "mode_margin": "Margin",
+    "mode_markup": "Markup",
     "currency": "Currency",
     "customer_pays": "Customer pays",
     "customer_pays_placeholder": "Enter cost and margin",
+    "customer_pays_margin_over_100": "Margin must be under 100% — switch to Markup for higher %",
     "pricing_required": "Enter cost and margin before you can sign."
   },
   "signature": {
