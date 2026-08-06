@@ -108,7 +108,6 @@ function CreateFinalSpecModal({
   const tErrors = useTranslations("errors");
   const batchesQuery = useTrialBatches(orgId, formulationId);
   const versionsQuery = useFormulationVersions(orgId, formulationId);
-  const versions = versionsQuery.data ?? [];
   const createMutation = useCreateFinalSpecFromTrial(orgId, formulationId);
 
   const [trialBatchId, setTrialBatchId] = useState(defaults.trial_batch_id);
@@ -125,14 +124,35 @@ function CreateFinalSpecModal({
     [batchesQuery.data],
   );
 
+  // Only offer versions that are ready — same filter the New Draft
+  // Spec picker uses (see ``new-spec-sheet-button.tsx``): drop
+  // ``is_auto=true`` intermediates AND versions that didn't pass the
+  // readiness gate. A FINAL cut against a half-built version would
+  // be a broken artefact from day one.
+  const readyVersions = useMemo(
+    () =>
+      (versionsQuery.data ?? []).filter((v) => !v.is_auto && v.is_complete),
+    [versionsQuery.data],
+  );
+
+  // Default from the banner snapshot may point at a version that's
+  // no longer "ready" (someone edited it back into an incomplete
+  // state between pass + open). Fall back to the newest ready
+  // version so the dropdown lands on a valid option instead of
+  // rendering a stale ghost selection.
+  const effectiveVersionId = useMemo(() => {
+    if (readyVersions.some((v) => v.id === versionId)) return versionId;
+    return readyVersions[0]?.id ?? "";
+  }, [readyVersions, versionId]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!trialBatchId || !versionId) return;
+    if (!trialBatchId || !effectiveVersionId) return;
     setErrorMessage(null);
     try {
       await createMutation.mutateAsync({
         trialBatchId,
-        formulationVersionId: versionId,
+        formulationVersionId: effectiveVersionId,
       });
       onClose();
     } catch (err) {
@@ -191,19 +211,25 @@ function CreateFinalSpecModal({
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>Formulation version</span>
                   <select
-                    value={versionId}
+                    value={effectiveVersionId}
                     onChange={(e) => setVersionId(e.target.value)}
                     className={INPUT_CLASS}
                     disabled={versionsQuery.isLoading}
                     required
                   >
-                    {versions.map((v) => (
+                    {readyVersions.map((v) => (
                       <option key={v.id} value={v.id}>
                         v{v.version_number}
                         {v.label ? ` — ${v.label}` : ""}
                       </option>
                     ))}
                   </select>
+                  {readyVersions.length === 0 && !versionsQuery.isLoading ? (
+                    <span className="text-xs text-warning">
+                      No named + complete versions on this project yet.
+                      Save a named version from the builder first.
+                    </span>
+                  ) : null}
                 </label>
 
                 {errorMessage ? (
@@ -232,7 +258,9 @@ function CreateFinalSpecModal({
                   size="md"
                   className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600 disabled:bg-ink-200 disabled:text-ink-500"
                   isDisabled={
-                    createMutation.isPending || !trialBatchId || !versionId
+                    createMutation.isPending ||
+                    !trialBatchId ||
+                    !effectiveVersionId
                   }
                 >
                   Create final spec
