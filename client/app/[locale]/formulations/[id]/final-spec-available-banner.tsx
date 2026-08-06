@@ -5,6 +5,7 @@ import { FileCheck2, Sparkles, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useMemo, useState, type FormEvent } from "react";
 
+import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import type {
   FinalSpecAvailableDto,
@@ -43,9 +44,17 @@ export function FinalSpecAvailableBanner({
   canWrite: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // Optimistic dismiss. The overview comes in as an SSR prop, so the
+  // parent's cache write from the create mutation isn't observed here
+  // until the page revalidates. We drop the banner locally the moment
+  // the create succeeds and call ``router.refresh()`` in parallel so
+  // the next SSR pass returns ``final_spec_available: null`` on its
+  // own. Without this the operator sees the banner linger for a full
+  // reload after their click.
+  const [dismissed, setDismissed] = useState(false);
 
   const state = overview.final_spec_available;
-  if (state === null || !canWrite) return null;
+  if (state === null || dismissed || !canWrite) return null;
 
   return (
     <>
@@ -83,6 +92,7 @@ export function FinalSpecAvailableBanner({
       <CreateFinalSpecModal
         open={open}
         onClose={() => setOpen(false)}
+        onCreated={() => setDismissed(true)}
         orgId={orgId}
         formulationId={overview.id}
         defaults={state}
@@ -95,17 +105,20 @@ export function FinalSpecAvailableBanner({
 function CreateFinalSpecModal({
   open,
   onClose,
+  onCreated,
   orgId,
   formulationId,
   defaults,
 }: {
   open: boolean;
   onClose: () => void;
+  onCreated: () => void;
   orgId: string;
   formulationId: string;
   defaults: FinalSpecAvailableDto;
 }) {
   const tErrors = useTranslations("errors");
+  const router = useRouter();
   const batchesQuery = useTrialBatches(orgId, formulationId);
   const versionsQuery = useFormulationVersions(orgId, formulationId);
   const createMutation = useCreateFinalSpecFromTrial(orgId, formulationId);
@@ -154,6 +167,12 @@ function CreateFinalSpecModal({
         trialBatchId,
         formulationVersionId: effectiveVersionId,
       });
+      // Drop the banner locally + trigger an SSR revalidation. The
+      // overview is loaded server-side (`load-project.ts`), so the
+      // query-cache write inside the hook wouldn't cascade to the
+      // banner prop on its own — refresh re-runs the loader.
+      onCreated();
+      router.refresh();
       onClose();
     } catch (err) {
       setErrorMessage(extractApiErrorMessage(err, tErrors));
