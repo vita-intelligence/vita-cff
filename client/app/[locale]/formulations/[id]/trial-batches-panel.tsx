@@ -9,7 +9,7 @@ import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import type { FormulationVersionDto } from "@/services/formulations";
-import type { BatchSizeMode } from "@/services/trial_batches";
+import type { BatchKind } from "@/services/trial_batches";
 import {
   useCreateTrialBatch,
   useDeleteTrialBatch,
@@ -123,9 +123,20 @@ export function TrialBatchesPanel({
                   {batch.label || tBatches("list.untitled")}
                 </Link>
                 <span className="text-xs text-ink-500">
+                  <span
+                    className={`mr-1.5 inline-flex h-[18px] items-center rounded px-1.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
+                      batch.kind === "trial"
+                        ? "bg-amber-50 text-amber-800 ring-amber-200"
+                        : "bg-sky-50 text-sky-800 ring-sky-200"
+                    }`}
+                  >
+                    {batch.kind === "trial"
+                      ? tBatches("list.kind_trial")
+                      : tBatches("list.kind_sample")}
+                  </span>
                   v{batch.formulation_version_number} ·{" "}
                   {formatInteger(batch.batch_size_units)}{" "}
-                  {batch.batch_size_mode === "unit"
+                  {batch.kind === "trial"
                     ? tBatches("list.units")
                     : tBatches("list.packs")}{" "}
                   ·{" "}
@@ -196,7 +207,7 @@ function NewTrialBatchButton({
   const [versionId, setVersionId] = useState<string>("");
   const [label, setLabel] = useState("");
   const [batchSize, setBatchSize] = useState<string>("");
-  const [sizeMode, setSizeMode] = useState<BatchSizeMode>("pack");
+  const [kind, setKind] = useState<BatchKind>("sample");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -228,7 +239,7 @@ function NewTrialBatchButton({
   const reset = () => {
     setLabel("");
     setBatchSize("");
-    setSizeMode("pack");
+    setKind("sample");
     setNotes("");
     setError(null);
   };
@@ -250,7 +261,7 @@ function NewTrialBatchButton({
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         batch_size_units: sizeNum,
-        batch_size_mode: sizeMode,
+        kind,
         label: label.trim(),
         notes: notes.trim(),
       });
@@ -338,29 +349,29 @@ function NewTrialBatchButton({
 
                 <fieldset className="flex flex-col gap-1.5">
                   <legend className="text-xs font-medium text-ink-700">
-                    {tBatches("create.batch_size_mode")}
+                    {tBatches("create.kind_label")}
                   </legend>
                   <div className="flex flex-wrap gap-2">
                     {(
                       [
-                        ["pack", "create.mode_pack"],
-                        ["unit", "create.mode_unit"],
+                        ["trial", "create.kind_trial"],
+                        ["sample", "create.kind_sample"],
                       ] as const
                     ).map(([value, label]) => (
                       <label
                         key={value}
                         className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium ring-1 ring-inset transition-colors ${
-                          sizeMode === value
+                          kind === value
                             ? "bg-orange-500 text-ink-0 ring-orange-500"
                             : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
                         }`}
                       >
                         <input
                           type="radio"
-                          name="batch_size_mode"
+                          name="kind"
                           value={value}
-                          checked={sizeMode === value}
-                          onChange={() => setSizeMode(value)}
+                          checked={kind === value}
+                          onChange={() => setKind(value)}
                           className="sr-only"
                         />
                         {tBatches(label)}
@@ -369,9 +380,9 @@ function NewTrialBatchButton({
                   </div>
                   <span className="text-xs text-ink-500">
                     {tBatches(
-                      sizeMode === "unit"
-                        ? "create.mode_unit_hint"
-                        : "create.mode_pack_hint",
+                      kind === "trial"
+                        ? "create.kind_trial_hint"
+                        : "create.kind_sample_hint",
                     )}
                   </span>
                 </fieldset>
@@ -379,7 +390,7 @@ function NewTrialBatchButton({
                 <label className="flex flex-col gap-1.5">
                   <span className="text-xs font-medium text-ink-700">
                     {tBatches(
-                      sizeMode === "unit"
+                      kind === "trial"
                         ? "create.batch_size_unit_label"
                         : "create.batch_size",
                     )}
@@ -390,12 +401,12 @@ function NewTrialBatchButton({
                     step={1}
                     value={batchSize}
                     onChange={(e) => setBatchSize(e.target.value)}
-                    placeholder={sizeMode === "unit" ? "10" : "10000"}
+                    placeholder={kind === "trial" ? "10" : "10000"}
                     className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                   />
                   <span className="text-xs text-ink-500">
                     {tBatches(
-                      sizeMode === "unit"
+                      kind === "trial"
                         ? "create.batch_size_unit_hint"
                         : "create.batch_size_hint",
                     )}

@@ -23,8 +23,8 @@ from apps.trial_batches.api.serializers import (
 )
 from apps.trial_batches.services import (
     FormulationVersionNotInOrg,
+    InvalidBatchKind,
     InvalidBatchSize,
-    InvalidBatchSizeMode,
     TrialBatchNotFound,
     compute_batch_scaleup,
     create_batch,
@@ -76,7 +76,7 @@ class TrialBatchListCreateView(APIView):
                 actor=request.user,
                 formulation_version_id=data["formulation_version_id"],
                 batch_size_units=data["batch_size_units"],
-                batch_size_mode=data.get("batch_size_mode", "pack"),
+                kind=data.get("kind", "sample"),
                 label=data.get("label", ""),
                 notes=data.get("notes", ""),
             )
@@ -94,9 +94,9 @@ class TrialBatchListCreateView(APIView):
                 {"batch_size_units": ["invalid_batch_size"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except InvalidBatchSizeMode:
+        except InvalidBatchKind:
             return Response(
-                {"batch_size_mode": ["invalid_batch_size_mode"]},
+                {"kind": ["invalid_batch_kind"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(
@@ -156,9 +156,9 @@ class TrialBatchDetailView(APIView):
                 {"batch_size_units": ["invalid_batch_size"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except InvalidBatchSizeMode:
+        except InvalidBatchKind:
             return Response(
-                {"batch_size_mode": ["invalid_batch_size_mode"]},
+                {"kind": ["invalid_batch_kind"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(TrialBatchReadSerializer(updated).data)
@@ -211,15 +211,20 @@ class TrialBatchCreatePspMoView(APIView):
                                           # picked in the modal dropdown
           "quantity": "...",              # optional override — normally
                                           # derived from the trial batch
-                                          # (batch_size_mode + servings
-                                          # ratio → PSP stock unit)
-          "project_type": "trial",        # trial | sample, default trial
+                                          # (kind + servings ratio →
+                                          # PSP stock unit)
           "item_uuid": "...",             # optional override; defaults
                                           # to formulation's linked PSP
                                           # finished-product uuid
           "due_date": "2026-08-15",       # optional
           "notes": "..."                  # optional
         }
+
+    ``project_type`` on the resulting PSP MO is derived from
+    ``batch.kind`` — no request field. Trial batches produce
+    ``project_type=trial`` MOs (bypass Final Release); sample
+    batches produce ``project_type=sample`` MOs (commercial-path
+    release). Never asked twice.
 
     Idempotent — PSP's own unique constraint on
     ``npd_trial_batch_uuid`` de-dupes; a re-fire returns the existing
@@ -265,7 +270,6 @@ class TrialBatchCreatePspMoView(APIView):
                 trial_batch=batch,
                 quantity=body.get("quantity"),
                 warehouse_uuid=body.get("warehouse_uuid"),
-                project_type=str(body.get("project_type") or "trial"),
                 item_uuid=body.get("item_uuid"),
                 due_date=body.get("due_date"),
                 notes=str(body.get("notes") or ""),
@@ -588,7 +592,7 @@ class TrialBatchBOMExportView(APIView):
                     "dosage_form": result.dosage_form,
                     "size_label": result.size_label,
                     "batch_size_packs": result.batch_size_units,
-                    "batch_size_mode": result.batch_size_mode,
+                    "kind": result.kind,
                     "units_per_pack": result.units_per_pack,
                     "total_units_in_batch": result.total_units_in_batch,
                 },

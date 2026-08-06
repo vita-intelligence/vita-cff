@@ -476,6 +476,7 @@ class PspClient:
         warehouse_uuid: Any,
         quantity: Any,
         npd_trial_batch_uuid: Any,
+        npd_formulation_uuid: Any = None,
         project_type: str = "trial",
         due_date: Any = None,
         notes: str = "",
@@ -511,6 +512,12 @@ class PspClient:
             "project_type": project_type or "trial",
             "notes": notes or "",
         }
+        # Formulation UUID is optional on PSP; only include when we have
+        # one so a payload from an unlinked / legacy trial doesn't send
+        # ``"None"``. PSP uses it to build the Output QC → NPD deep-link
+        # (`/formulations/{uuid}/qc/`).
+        if npd_formulation_uuid:
+            body["npd_formulation_uuid"] = str(npd_formulation_uuid).strip()
         if due_date:
             body["due_date"] = str(due_date)
 
@@ -530,6 +537,52 @@ class PspClient:
                 "``manufacturing_order`` object."
             )
         return mo
+
+    def sync_trial_validation(
+        self,
+        *,
+        npd_trial_batch_uuid: Any,
+        validation_uuid: Any,
+        status: str,
+        failure_reason: str | None = None,
+    ) -> dict:
+        """POST ``/api/integration/trial-validations/sync``.
+
+        Push the current ProductValidation state to PSP so its Output QC
+        gate for the paired trial MO can (a) unblock the operator's pass
+        button when we reach ``passed``, or (b) auto-fail the output lot
+        when we reach ``failed``.
+
+        Idempotent — a resend of the same status is a 200 no-op on
+        PSP's side. Fires ``failure_reason`` only for ``failed`` (PSP
+        rejects the payload otherwise).
+
+        Raises :class:`PspUnreachable` on any non-2xx.
+        """
+
+        body: dict[str, Any] = {
+            "npd_trial_batch_uuid": str(npd_trial_batch_uuid or "").strip(),
+            "validation": {
+                "uuid": str(validation_uuid or "").strip(),
+                "status": status,
+            },
+        }
+        if status == "failed":
+            # PSP refuses ``failed`` without a reason so the auto-fail
+            # LotEvent has something to render. Empty string ⇒ nil on
+            # PSP; the controller's guard returns 400 if truly missing.
+            body["validation"]["failure_reason"] = failure_reason or ""
+
+        response = self._request(
+            "api/integration/trial-validations/sync",
+            method="POST",
+            body=body,
+        )
+        if not isinstance(response, dict):
+            raise PspUnreachable(
+                "PSP returned no body for trial-validation sync."
+            )
+        return response
 
     def get_manufacturing_order_chain(self, mo_uuid: Any) -> dict | None:
         """GET ``/api/integration/manufacturing-orders/:uuid/chain``.
@@ -3837,11 +3890,11 @@ def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
     Two conversions stack:
 
     1. The trial batch stores ``batch_size_units`` in one of two
-       modes (``BatchSizeMode``):
-       * ``pack`` — user typed a pack count. Total-servings intent is
-         ``batch_size_units × formulation.servings_per_pack``.
-       * ``unit`` — user typed the raw servings count. Intent is
-         ``batch_size_units`` as-is.
+       flavours (``BatchKind``):
+       * ``sample`` — user typed a pack count. Total-servings intent
+         is ``batch_size_units × formulation.servings_per_pack``.
+       * ``trial`` — user typed the raw servings count. Intent is
+         ``batch_size_units`` as-is (bench-scale unit count).
     2. PSP's BOM lines are per-1-stock-unit-of-finished. If the
        finished stage sets ``servings_per_output_unit = N``, then one
        stock unit already bundles N servings, so ``mo.quantity =
@@ -3868,15 +3921,15 @@ def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
         )
 
     # Step 1: convert to target servings.
-    mode = getattr(trial_batch, "batch_size_mode", None) or "pack"
+    kind = getattr(trial_batch, "kind", None) or "sample"
     formulation = trial_batch.formulation_version.formulation
     servings_per_pack = getattr(formulation, "servings_per_pack", None)
-    if mode == "pack":
+    if kind == "sample":
         multiplier = Decimal(str(servings_per_pack or 1))
         if multiplier <= 0:
             multiplier = Decimal("1")
         target_servings = batch_size * multiplier
-    else:  # "unit" — batch_size is already in individual servings
+    else:  # "trial" — batch_size is already in individual servings
         target_servings = batch_size
 
     # Step 2: divide by servings-per-stock-unit (per finished stage).
@@ -3907,7 +3960,6 @@ def create_psp_manufacturing_order_for_trial_batch(
     trial_batch: Any,
     quantity: Any,
     warehouse_uuid: Any,
-    project_type: str = "trial",
     item_uuid: Any = None,
     due_date: Any = None,
     notes: str = "",
@@ -3923,8 +3975,10 @@ def create_psp_manufacturing_order_for_trial_batch(
       dropdown. Was previously a global setting; moved to per-MO
       choice so multi-site R&D setups can route different trial
       batches to different R&D warehouses without editing settings.
-    * ``project_type`` — caller override (``trial`` | ``sample``);
-      defaults to ``trial``.
+    * ``project_type`` — **derived from ``trial_batch.kind``**, not a
+      caller kwarg. ``trial`` batches produce ``project_type=trial``
+      MOs (bypass Final Release); ``sample`` batches produce
+      ``project_type=sample`` MOs (commercial-path release).
     * ``quantity`` — required, whole number > 0.
 
     Idempotent by ``trial_batch.id`` — PSP's unique partial index on
@@ -3978,8 +4032,8 @@ def create_psp_manufacturing_order_for_trial_batch(
     #
     # PSP's ``mo.quantity`` is expressed in the finished-product's
     # stock unit. The trial batch's ``batch_size_units`` is in either
-    # packs OR individual servings depending on ``batch_size_mode``,
-    # so we normalise both branches to a servings target first, then
+    # packs OR individual servings depending on ``kind``, so we
+    # normalise both branches to a servings target first, then
     # divide by the finished stage's ``servings_per_output_unit`` so
     # the number PSP sees means the same thing as PSP's BOM lines
     # (which are per-1-stock-unit).
@@ -3996,8 +4050,13 @@ def create_psp_manufacturing_order_for_trial_batch(
     # 0.16666666… packs) reaches PSP with clean digits.
     qty_dec = qty_dec.quantize(Decimal("0.000001"))
 
-    if project_type not in ("trial", "sample"):
-        raise ValueError("project_type must be 'trial' or 'sample'")
+    # Derive from batch.kind — same field the BOM scale-up reads,
+    # so trial vs sample is decided once at batch-create time and
+    # every downstream leg (BOM, MO, release flow) reads from it.
+    # Falls back to ``sample`` on legacy rows that were created
+    # before ``kind`` existed.
+    kind = getattr(trial_batch, "kind", None) or "sample"
+    project_type = "trial" if kind == "trial" else "sample"
 
     client = _client_factory(config)
     try:
@@ -4006,6 +4065,11 @@ def create_psp_manufacturing_order_for_trial_batch(
             warehouse_uuid=resolved_warehouse_uuid,
             quantity=qty_dec,
             npd_trial_batch_uuid=str(trial_batch.id),
+            # Pass the parent formulation uuid so PSP's Output QC page
+            # can deep-link back into this NPD formulation's QC tab.
+            npd_formulation_uuid=str(
+                trial_batch.formulation_version.formulation.id
+            ),
             project_type=project_type,
             due_date=due_date,
             notes=notes or "",

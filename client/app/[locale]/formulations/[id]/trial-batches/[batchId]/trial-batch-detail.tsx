@@ -97,16 +97,17 @@ export function TrialBatchDetail({
 
   const [legendOpen, setLegendOpen] = useState(false);
 
-  // Columns actually relevant to this batch's size mode. ``pack``
-  // mode exposes every BOM column; ``unit`` mode drops the pack
-  // derivative — a 10-capsule bench run has no "per pack" quantity
-  // to reference, and showing the number would invite confusion.
+  // Columns actually relevant to this batch's kind. ``sample`` (full
+  // packs) exposes every BOM column; ``trial`` (bench units) drops
+  // the pack derivative — a 10-capsule bench run has no "per pack"
+  // quantity to reference, and showing the number would invite
+  // confusion.
   const availableColumns = useMemo<readonly ColumnKey[]>(
     () =>
-      bom.batch_size_mode === "unit"
+      bom.kind === "trial"
         ? COLUMN_KEYS.filter((k) => !PACK_ONLY_COLUMNS.has(k))
         : COLUMN_KEYS,
-    [bom.batch_size_mode],
+    [bom.kind],
   );
 
   // Column-visibility state for the print view. Default: every
@@ -223,7 +224,7 @@ export function TrialBatchDetail({
             {batch.label || tBatches("detail.untitled")}
           </h1>
           <p className="mt-1 text-sm text-ink-500">
-            {bom.batch_size_mode === "unit"
+            {bom.kind === "trial"
               ? tBatches("detail.scale_equation_unit", {
                   units: formatInteger(bom.total_units_in_batch),
                 })
@@ -378,7 +379,7 @@ export function TrialBatchDetail({
           <div className="text-[9pt] text-ink-500">
             {tBatches("detail.print.printed_on", { date: printedOn })}
             {" · "}
-            {bom.batch_size_mode === "unit"
+            {bom.kind === "trial"
               ? tBatches("detail.scale_equation_unit", {
                   units: formatInteger(bom.total_units_in_batch),
                 })
@@ -608,7 +609,7 @@ export function TrialBatchDetail({
             label={tBatches("detail.fill_per_unit")}
             value={`${formatNumber(bom.total_mg_per_unit, 4)} mg`}
           />
-          {bom.batch_size_mode === "pack" ? (
+          {bom.kind === "sample" ? (
             <TotalTile
               label={tBatches("detail.fill_per_pack")}
               value={`${formatNumber(bom.total_g_per_pack, 4)} g`}

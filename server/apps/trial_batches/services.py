@@ -30,7 +30,7 @@ from apps.formulations.constants import (
 )
 from apps.formulations.models import FormulationVersion
 from apps.organizations.models import Organization
-from apps.trial_batches.models import BatchSizeMode, TrialBatch
+from apps.trial_batches.models import BatchKind, TrialBatch
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +58,13 @@ class InvalidBatchSize(Exception):
     code = "invalid_batch_size"
 
 
-class InvalidBatchSizeMode(Exception):
-    """The caller passed a ``batch_size_mode`` that is not a member
-    of :class:`BatchSizeMode`. Keeps a bad kwarg from silently
-    falling back to "pack" and producing a 360× over-count."""
+class InvalidBatchKind(Exception):
+    """The caller passed a ``kind`` that is not a member of
+    :class:`BatchKind`. Keeps a bad kwarg from silently falling
+    back to ``sample`` and producing a 360× over-count on what
+    was meant to be a bench-scale trial."""
 
-    code = "invalid_batch_size_mode"
+    code = "invalid_batch_kind"
 
 
 class DepositRequired(Exception):
@@ -114,9 +115,9 @@ def get_batch(
     return batch
 
 
-def _validate_batch_size_mode(value: str) -> None:
-    if value not in {mode.value for mode in BatchSizeMode}:
-        raise InvalidBatchSizeMode()
+def _validate_kind(value: str) -> None:
+    if value not in {kind.value for kind in BatchKind}:
+        raise InvalidBatchKind()
 
 
 @transaction.atomic
@@ -128,7 +129,7 @@ def create_batch(
     batch_size_units: int,
     label: str = "",
     notes: str = "",
-    batch_size_mode: str = BatchSizeMode.PACK.value,
+    kind: str = BatchKind.SAMPLE.value,
 ) -> TrialBatch:
     """Plan a new manufacturing run against a saved version snapshot.
 
@@ -140,7 +141,7 @@ def create_batch(
 
     if not isinstance(batch_size_units, int) or batch_size_units <= 0:
         raise InvalidBatchSize()
-    _validate_batch_size_mode(batch_size_mode)
+    _validate_kind(kind)
 
     version = (
         FormulationVersion.objects.select_related("formulation")
@@ -166,7 +167,7 @@ def create_batch(
         formulation_version=version,
         label=label,
         batch_size_units=batch_size_units,
-        batch_size_mode=batch_size_mode,
+        kind=kind,
         notes=notes,
         created_by=actor,
         updated_by=actor,
@@ -198,10 +199,10 @@ def update_batch(
         if not isinstance(size, int) or size <= 0:
             raise InvalidBatchSize()
         batch.batch_size_units = size
-    if "batch_size_mode" in changes and changes["batch_size_mode"] is not None:
-        mode = changes["batch_size_mode"]
-        _validate_batch_size_mode(mode)
-        batch.batch_size_mode = mode
+    if "kind" in changes and changes["kind"] is not None:
+        kind = changes["kind"]
+        _validate_kind(kind)
+        batch.kind = kind
     if changes.get("label") is not None:
         batch.label = changes["label"]
     if changes.get("notes") is not None:
@@ -292,7 +293,7 @@ class BOMResult:
     batch_id: str
     label: str
     batch_size_units: int
-    batch_size_mode: str
+    kind: str
     units_per_pack: int
     total_units_in_batch: int
     formulation_id: str
@@ -450,13 +451,14 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
         units_per_pack = 1
     if units_per_pack <= 0:
         units_per_pack = 1
-    # ``pack`` mode multiplies by units_per_pack (a run of N full
-    # bottles); ``unit`` mode treats the entered number as the raw
-    # count of individual finished units — bench-scale QC testing
-    # with 10 capsules instead of 10 × 360. The pack column in the
-    # BOM still renders the ratio, just derived from 1 pack of
-    # ``units_per_pack`` units rather than the total run.
-    if batch.batch_size_mode == BatchSizeMode.UNIT.value:
+    # ``sample`` multiplies by units_per_pack (a run of N full
+    # bottles that follow the commercial release path); ``trial``
+    # treats the entered number as the raw count of individual
+    # finished units — bench-scale QC testing with 10 capsules
+    # instead of 10 × 360. The pack column in the BOM still renders
+    # the ratio, just derived from 1 pack of ``units_per_pack``
+    # units rather than the total run.
+    if batch.kind == BatchKind.TRIAL.value:
         total_units_in_batch = batch.batch_size_units
     else:
         total_units_in_batch = batch.batch_size_units * units_per_pack
@@ -465,7 +467,7 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
         batch_id=str(batch.id),
         label=batch.label,
         batch_size_units=batch.batch_size_units,
-        batch_size_mode=batch.batch_size_mode,
+        kind=batch.kind,
         units_per_pack=units_per_pack,
         total_units_in_batch=total_units_in_batch,
         formulation_id=str(version.formulation_id),
