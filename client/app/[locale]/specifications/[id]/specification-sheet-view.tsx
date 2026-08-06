@@ -2279,7 +2279,13 @@ function MarginMarkupField({
 
   return (
     <label className="flex flex-col gap-1">
-      <div className="flex items-center justify-between gap-2">
+      {/* The header row reserves ``h-6`` so the sibling ``PricingField``s
+          (plain label, ~14px tall) line up with this one (label +
+          toggle pill, ~20px tall). Without a fixed header height the
+          left-column input would sit visibly higher than the right,
+          breaking the grid rhythm the operator uses to sight-read
+          Cost <-> Margin. */}
+      <div className="flex h-6 items-center justify-between gap-2">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
           {mode === "markup"
             ? tSpecs("approval.markup")
@@ -2345,7 +2351,11 @@ function PricingField({
 }) {
   return (
     <label className="flex flex-col gap-1">
-      <span className="text-[10px] font-semibold uppercase tracking-wide text-amber-900">
+      {/* ``h-6`` matches the toggle-bearing header in
+          ``MarginMarkupField`` so the two grid columns align at the
+          input baseline. Keep in lockstep if the toggle chip shape
+          changes. */}
+      <span className="flex h-6 items-center text-[10px] font-semibold uppercase tracking-wide text-amber-900">
         {label}
       </span>
       <input
