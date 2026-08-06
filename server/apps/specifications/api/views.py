@@ -41,6 +41,7 @@ from apps.specifications.services import (
     PACKAGING_SLOT_TYPES,
     PackagingItemNotAllowed,
     PublicLinkNotAllowedForDraft,
+    PublicLinkNotAllowedForRtg,
     PublicLinkNotEnabled,
     SheetLockedBySignedProposal,
     SheetRegenerationRequiresForce,
@@ -836,7 +837,7 @@ class SpecificationPublicLinkView(APIView):
         sheet = self._load(sheet_id)
         try:
             updated = rotate_public_token(sheet=sheet, actor=request.user)
-        except PublicLinkNotAllowedForDraft as exc:
+        except (PublicLinkNotAllowedForDraft, PublicLinkNotAllowedForRtg) as exc:
             return Response(
                 {"detail": str(exc) or exc.code, "code": exc.code},
                 status=status.HTTP_409_CONFLICT,
