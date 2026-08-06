@@ -86,6 +86,71 @@ class SpecificationCodeConflict(Exception):
     code = "specification_code_conflict"
 
 
+#: Signed = director has approved. Same set treated as "the price is
+#: real" everywhere the RTG lock reads.
+_SIGNED_SPEC_STATUSES: tuple[str, ...] = (
+    SpecificationStatus.APPROVED,
+    SpecificationStatus.SENT,
+    SpecificationStatus.ACCEPTED,
+)
+
+
+def _resolve_rtg_priority_pricing_spec(formulation: Any) -> Any:
+    """Pick the spec whose ``final_price`` should back the RTG
+    catalog price on ``formulation``.
+
+    Priority: latest signed **FINAL**, then latest signed **DRAFT**.
+    Once a FINAL exists it wins — an updated DRAFT approval must not
+    silently overwrite the customer-facing FINAL price.
+
+    Returns ``None`` when neither a signed FINAL nor a signed DRAFT
+    with a price exists. Caller keeps the current rtg fields as-is.
+    """
+    final = (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation,
+            document_kind=SpecificationDocumentKind.FINAL,
+            status__in=_SIGNED_SPEC_STATUSES,
+            final_price__isnull=False,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+    if final is not None:
+        return final
+    return (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation=formulation,
+            document_kind=SpecificationDocumentKind.DRAFT,
+            status__in=_SIGNED_SPEC_STATUSES,
+            final_price__isnull=False,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+
+def _sync_rtg_pricing_from_priority_spec(formulation: Any) -> None:
+    """Recompute ``rtg_base_price`` + ``rtg_currency_code`` from
+    :func:`_resolve_rtg_priority_pricing_spec`. Idempotent — writes
+    only the fields that would actually change, so calling it on
+    every spec transition is cheap.
+    """
+    priority = _resolve_rtg_priority_pricing_spec(formulation)
+    if priority is None or priority.final_price is None:
+        return
+    fields_to_write: list[str] = []
+    if formulation.rtg_base_price != priority.final_price:
+        formulation.rtg_base_price = priority.final_price
+        fields_to_write.append("rtg_base_price")
+    sheet_currency = (priority.currency or "").strip().upper()
+    if sheet_currency and formulation.rtg_currency_code != sheet_currency:
+        formulation.rtg_currency_code = sheet_currency
+        fields_to_write.append("rtg_currency_code")
+    if fields_to_write:
+        formulation.save(update_fields=fields_to_write)
+
+
 class FinalSpecAlreadyExists(Exception):
     """A project may have at most one FINAL specification sheet.
 
@@ -1419,16 +1484,6 @@ def create_sheet(
 
 
 @transaction.atomic
-class FinalSpecAlreadyExists(Exception):
-    """Raised when a FINAL spec already exists on the formulation
-    but the caller asked to create a new one. The banner + endpoint
-    filter this state out before the user gets a chance to click, so
-    hitting it in practice means someone raced the button; the API
-    surfaces it as ``409``.
-    """
-
-
-@transaction.atomic
 def create_final_spec_from_trial(
     *,
     trial_batch: Any,
@@ -2355,31 +2410,25 @@ def transition_status(
         )
 
         # RTG price lock — approval is the moment cost + margin land
-        # on a signed number, so we push the sheet's ``final_price`` +
-        # ``currency`` into the RTG catalog fields on the formulation.
-        # From here the catalog panel's Base price row is derived, not
-        # typed; the panel's PATCH endpoint refuses ``rtg_base_price``
-        # writes too so scientists can't drift it away from the signed
-        # value. Custom projects don't touch these fields (they price
+        # on a signed number, so we push the pricing into the RTG
+        # catalog fields on the formulation. From here the catalog
+        # panel's Base price row is derived, not typed; the panel's
+        # PATCH endpoint refuses ``rtg_base_price`` writes too so
+        # scientists can't drift it away from the signed value.
+        # Custom projects don't touch these fields (they price
         # per-proposal / per-customer, not per-SKU).
+        #
+        # Priority: a signed FINAL always wins over any DRAFT. The
+        # earlier version wrote whichever sheet just transitioned,
+        # so approving an updated DRAFT after the FINAL had already
+        # locked the price silently overwrote the FINAL's number.
+        # ``_resolve_rtg_priority_pricing_spec`` picks the latest
+        # signed FINAL first, then falls back to the latest signed
+        # DRAFT — this call resolves the pointer every time an
+        # approval fires, so the FINAL's price stays sticky.
         _rtg_lock_formulation = sheet.formulation_version.formulation
-        if (
-            _rtg_lock_formulation.project_type == "ready_to_go"
-            and sheet.final_price is not None
-        ):
-            fields_to_write: list[str] = []
-            if _rtg_lock_formulation.rtg_base_price != sheet.final_price:
-                _rtg_lock_formulation.rtg_base_price = sheet.final_price
-                fields_to_write.append("rtg_base_price")
-            sheet_currency = (sheet.currency or "").strip().upper()
-            if (
-                sheet_currency
-                and _rtg_lock_formulation.rtg_currency_code != sheet_currency
-            ):
-                _rtg_lock_formulation.rtg_currency_code = sheet_currency
-                fields_to_write.append("rtg_currency_code")
-            if fields_to_write:
-                _rtg_lock_formulation.save(update_fields=fields_to_write)
+        if _rtg_lock_formulation.project_type == "ready_to_go":
+            _sync_rtg_pricing_from_priority_spec(_rtg_lock_formulation)
 
         # Mirror the sign-off to PSP's CustomerOrder so its wizard
         # phase moves R&D → Awaiting proposal. Fires on
