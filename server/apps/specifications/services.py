@@ -337,6 +337,16 @@ class PublicLinkNotAllowedForDraft(Exception):
     code = "public_link_not_allowed_for_draft"
 
 
+class PublicLinkNotAllowedForRtg(Exception):
+    """Ready-to-Go SKUs are already discoverable on the public catalog
+    (``/portal/cffs/new/rtg``) — issuing a per-sheet preview link
+    duplicates the surface, muddies the audit trail of who reached
+    what, and diverges from the catalog copy. FE hides the button;
+    this guard blocks a direct API hit."""
+
+    code = "public_link_not_allowed_for_rtg"
+
+
 class PackagingItemNotAllowed(Exception):
     """The caller tried to pin a packaging slot to an item that either
     does not live in the sheet's org packaging catalogue or has the
@@ -2483,6 +2493,10 @@ def rotate_public_token(
 
     if sheet.document_kind == SpecificationDocumentKind.DRAFT:
         raise PublicLinkNotAllowedForDraft()
+
+    formulation = sheet.formulation_version.formulation
+    if getattr(formulation, "project_type", "") == "ready_to_go":
+        raise PublicLinkNotAllowedForRtg()
 
     previous_token = sheet.public_token
     sheet.public_token = uuid.uuid4()

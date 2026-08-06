@@ -672,8 +672,14 @@ export function SpecificationSheetView({
               meaningful once the sheet has been promoted to FINAL. On
               DRAFT-kind sheets it would surface an unfinished document
               to whoever the link reaches, so we hide the affordance
-              entirely (BE still guards the endpoint on top of this). */}
-          {canWrite && sheet.document_kind !== "draft" ? (
+              entirely (BE still guards the endpoint on top of this).
+              Also skipped for RTG projects: a Ready-to-Go SKU is
+              already discoverable on the public catalog page, so a
+              separate share-link would just duplicate the surface
+              and confuse the audit trail of who reached what. */}
+          {canWrite &&
+          sheet.document_kind !== "draft" &&
+          sheet.formulation_project_type !== "ready_to_go" ? (
             <SharePublicLinkButton orgId={orgId} sheet={sheet} />
           ) : null}
           {canAdmin && sheet.status === "draft" ? (
