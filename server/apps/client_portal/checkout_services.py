@@ -268,19 +268,23 @@ def _resolve_formulation(formulation_id: str) -> Formulation:
 
 
 def _resolve_version(formulation: Formulation) -> FormulationVersion:
-    """Prefer the latest approved version, fall back to any version.
+    """Prefer the pinned approved version, fall back to any version.
 
-    Matches the RTG portal-submit tolerance: a mis-configured RTG
-    (published without a signed approval) should still produce a
-    draft proposal rather than 500. Staff sees the row in triage.
+    Approval on a Formulation lives on ``approved_version_number``
+    (not on a boolean flag per version — see the RTG portal-submit
+    service which uses this exact pattern). Falling back to the
+    latest version keeps a mis-configured RTG (published without a
+    signed approval) from 500-ing the checkout; staff can retriage.
     """
 
-    version = (
-        FormulationVersion.objects
-        .filter(formulation=formulation, is_approved=True)
-        .order_by("-version_number")
-        .first()
-    )
+    approved_number = getattr(formulation, "approved_version_number", None)
+    version: FormulationVersion | None = None
+    if approved_number is not None:
+        version = (
+            FormulationVersion.objects
+            .filter(formulation=formulation, version_number=approved_number)
+            .first()
+        )
     if version is None:
         version = (
             FormulationVersion.objects
