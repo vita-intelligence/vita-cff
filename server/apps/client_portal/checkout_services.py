@@ -51,6 +51,11 @@ from apps.proposals.models import (
     ProposalTemplateType,
 )
 from apps.proposals.services import _generate_unique_code
+from apps.specifications.models import (
+    SpecificationDocumentKind,
+    SpecificationSheet,
+    SpecificationStatus,
+)
 
 
 CartKind = Literal["product", "sample"]
@@ -192,6 +197,24 @@ def _create_batch_proposal(
     proposal.reference = proposal.code
     proposal.save(update_fields=["reference"])
 
+    # Attach a per-order clone of the formulation's FINAL sheet.
+    # Every checkout needs its own sheet copy because
+    # ``Proposal.specification_sheet`` is OneToOne — sharing the
+    # template with two customers would race on customer-accept.
+    # The clone inherits the pre-signed template's approved status
+    # (prep + director signatures) so sales / the kiosk can render
+    # both docs together at Send time.
+    cloned_sheet = _clone_final_sheet_for_checkout(
+        formulation=first_formulation,
+        formulation_version=first_version,
+        proposal=proposal,
+        actor=proposal_actor,
+        payload=payload,
+    )
+    if cloned_sheet is not None:
+        proposal.specification_sheet = cloned_sheet
+        proposal.save(update_fields=["specification_sheet"])
+
     for idx, line in enumerate(product_lines):
         formulation = (
             first_formulation
@@ -306,6 +329,132 @@ def _resolve_combo(combo_id: str) -> PackagingCombo | None:
         return PackagingCombo.objects.filter(pk=UUID(str(combo_id))).first()
     except (ValueError, TypeError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Spec sheet clone — per-order copy of the RTG formulation's FINAL sheet
+# ---------------------------------------------------------------------------
+
+
+# Content fields we carry over verbatim from the template into the
+# customer's copy. Kept as a tuple so the intent is obvious and a
+# newly-added SpecificationSheet column doesn't silently sneak in.
+_SHEET_CONTENT_FIELDS: tuple[str, ...] = (
+    "unit_quantity",
+    "food_contact_status",
+    "shelf_life",
+    "storage_conditions",
+    "weight_uniformity",
+    "total_weight_label",
+    "margin_percent",
+    "cover_notes",
+    "limits_override",
+    "snapshot_overrides",
+    "section_visibility",
+    "section_order",
+    "packaging_lid_id",
+    "packaging_container_id",
+    "packaging_label_id",
+    "packaging_antitemper_id",
+    # Prepared-by + director signatures ride along so the clone
+    # renders as director-approved out of the gate — the template's
+    # signatures represent the SKU-level sign-off, not a per-customer
+    # act, so re-signing per checkout would be theatre.
+    "prepared_by_user_id",
+    "prepared_by_signed_at",
+    "prepared_by_signature_image",
+    "director_user_id",
+    "director_signed_at",
+    "director_signature_image",
+)
+
+
+def _find_template_final_sheet(formulation: Formulation) -> SpecificationSheet | None:
+    """Latest FINAL sheet on any version of this formulation.
+
+    RTG SKUs are expected to have exactly one FINAL — the
+    ``create_sheet`` service enforces that singleton on the create
+    surface. We pick the newest anyway to cope with historical
+    data where an org may have >1 (e.g. dev seeds).
+    """
+
+    return (
+        SpecificationSheet.objects
+        .filter(
+            formulation_version__formulation_id=formulation.id,
+            document_kind=SpecificationDocumentKind.FINAL,
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+
+
+def _next_checkout_sheet_code(*, organization, base: str) -> str:
+    """Pick a per-org-unique ``-ORDER-<n>`` suffix on ``base``.
+
+    Mirrors the ``-FINAL`` sibling in the specifications service —
+    walk suffixes until a free slot appears. Blank base ⇒ blank
+    code, matches ``create_sheet`` fallback behaviour.
+    """
+
+    base = (base or "").strip()
+    if not base:
+        return ""
+    idx = 1
+    while True:
+        candidate = f"{base}-ORDER-{idx}"
+        if not SpecificationSheet.objects.filter(
+            organization=organization, code=candidate
+        ).exists():
+            return candidate
+        idx += 1
+
+
+def _clone_final_sheet_for_checkout(
+    *,
+    formulation: Formulation,
+    formulation_version: FormulationVersion,
+    proposal: Proposal,
+    actor,
+    payload: CheckoutInput,
+) -> SpecificationSheet | None:
+    """Fresh customer-specific FINAL sheet for a portal checkout.
+
+    Returns ``None`` when the SKU has no FINAL template yet — the
+    proposal is still created (sales will notice the missing sheet
+    on the row) rather than blocking the whole checkout on staff
+    misconfiguration.
+    """
+
+    template = _find_template_final_sheet(formulation)
+    if template is None:
+        return None
+
+    kwargs = {field: getattr(template, field) for field in _SHEET_CONTENT_FIELDS}
+    kwargs.update(
+        organization=formulation.organization,
+        formulation_version=formulation_version,
+        code=_next_checkout_sheet_code(
+            organization=formulation.organization,
+            base=(template.code or formulation.code or "").strip(),
+        ),
+        # Client identity from the checkout modal (mirrors the
+        # proposal header we already wrote above).
+        client_name=payload.name or proposal.customer_name,
+        client_email=proposal.customer_email,
+        client_company=payload.company or proposal.customer_company,
+        # Final price on the sheet mirrors the proposal-level unit
+        # price so a printed sheet matches the quote number.
+        final_price=proposal.unit_price,
+        document_kind=SpecificationDocumentKind.FINAL,
+        # APPROVED = signed by prep + director. Customer signature
+        # will flip it to ACCEPTED via the kiosk at Send time —
+        # blank customer_* signer fields on purpose.
+        status=SpecificationStatus.APPROVED,
+        created_by=actor,
+        updated_by=actor,
+    )
+    return SpecificationSheet.objects.create(**kwargs)
 
 
 def _resolve_actor(customer):
