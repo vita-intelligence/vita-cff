@@ -80,6 +80,20 @@ function RTGCatalogPanelInner({
       ? String(formulation.rtg_moq)
       : "",
   );
+  // Paid-sample pair — both nullable/empty means the SKU doesn't
+  // offer samples and the storefront shows "Sample not available".
+  // We keep the price as a string in local state so an author can
+  // clear it back to "" and hit save to retract the offer without a
+  // separate toggle.
+  const [samplePrice, setSamplePrice] = useState(
+    formulation.rtg_sample_price !== null &&
+      formulation.rtg_sample_price !== undefined
+      ? String(formulation.rtg_sample_price)
+      : "",
+  );
+  const [sampleDescription, setSampleDescription] = useState(
+    formulation.rtg_sample_description || "",
+  );
   // Legacy single-hero uploader has been replaced by the full
   // ``CatalogPhotoGallery`` (see below). We keep the underlying
   // ``rtg_hero_image`` value around only for backwards-compat display
@@ -110,6 +124,13 @@ function RTGCatalogPanelInner({
       // through spec-sheet approval — the server drops them from
       // this endpoint's payload, so we don't send them at all.
       form.append("rtg_moq", moq);
+      // Sample pair: send even when empty so the server can clear
+      // them (setting ``rtg_sample_price`` to blank retracts the
+      // offer). The server ``save_rtg_marketing`` service accepts a
+      // blank / null price as "no sample" and blanks the description
+      // in lockstep.
+      form.append("rtg_sample_price", samplePrice);
+      form.append("rtg_sample_description", sampleDescription);
       // Do NOT hand-set ``Content-Type: multipart/form-data`` —
       // axios will populate it including the ``boundary=…`` token
       // when it sees a ``FormData`` body.
@@ -318,6 +339,60 @@ function RTGCatalogPanelInner({
           />
           {fieldErrors.rtg_moq ? (
             <p className="mt-1 text-xs text-rose-700">{fieldErrors.rtg_moq}</p>
+          ) : null}
+        </div>
+
+        {/* Paid-sample pair — kept side-by-side with the price /
+            MOQ row so authors see the whole "what the customer
+            pays for" picture at once. Leave the price blank to
+            retract the sample offer (the storefront then shows
+            "Sample not available"). */}
+        <div>
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
+            Sample price (per unit)
+          </label>
+          <div className="flex items-center gap-2">
+            <span className="rounded-lg border border-ink-300 bg-ink-50 px-3 py-2 text-sm font-semibold text-ink-700">
+              {currency}
+            </span>
+            <input
+              type="number"
+              step="0.01"
+              min="0"
+              value={samplePrice}
+              onChange={(e) => setSamplePrice(e.currentTarget.value)}
+              disabled={disabled}
+              placeholder="Leave blank if no sample"
+              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
+            />
+          </div>
+          {fieldErrors.rtg_sample_price ? (
+            <p className="mt-1 text-xs text-rose-700">
+              {fieldErrors.rtg_sample_price}
+            </p>
+          ) : null}
+          <p className="mt-1 text-xs text-ink-600">
+            Blank = storefront hides the "Request sample" button and
+            shows "Sample not available".
+          </p>
+        </div>
+
+        <div className="md:col-span-2">
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-700">
+            Sample description
+          </label>
+          <textarea
+            rows={2}
+            value={sampleDescription}
+            onChange={(e) => setSampleDescription(e.currentTarget.value)}
+            disabled={disabled}
+            placeholder="e.g. 30-count trial bottle, ships within 5 working days."
+            className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
+          />
+          {fieldErrors.rtg_sample_description ? (
+            <p className="mt-1 text-xs text-rose-700">
+              {fieldErrors.rtg_sample_description}
+            </p>
           ) : null}
         </div>
 

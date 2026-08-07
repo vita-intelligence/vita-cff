@@ -2385,6 +2385,8 @@ class FormulationRTGPublishView(APIView):
             "rtg_page_content",
             "rtg_base_price",
             "rtg_moq",
+            "rtg_sample_price",
+            "rtg_sample_description",
             "rtg_currency_code",
         ):
             if key in data:

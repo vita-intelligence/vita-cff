@@ -72,13 +72,35 @@ export function PageBuilderClient({ orgId, formulation, canEdit }: Props) {
     router.refresh();
   }, [formulation.id, router]);
 
+  // Close-without-saving. Puck's own "Publish" flow already covers
+  // save+leave via ``handleAfterSave``; this button is the abandon
+  // path (mirrors the X on the template picker modal). No confirm
+  // dialog — Puck holds no unsaved-work signal we can inspect from
+  // here, and the alternative (always confirming) turned into an
+  // "are you sure? / yes / yes / yes" trap during testing.
+  const handleClose = useCallback(() => {
+    router.push(`/formulations/${formulation.id}`);
+  }, [formulation.id, router]);
+
   return (
     <div className="flex h-dvh flex-col">
-      {/* Slim top strip above the Puck canvas — holds the Apply
-          Template action. Only rendered when the caller can edit so
-          read-only viewers don't see a button that would 403. */}
-      {canEdit ? (
-        <div className="flex items-center justify-end gap-2 border-b border-ink-200 bg-ink-50 px-4 py-2">
+      {/* Slim top strip above the Puck canvas — Close (abandon)
+          on the left, Apply Template on the right. Close mirrors the
+          X on the template picker modal so authors have the same
+          escape hatch whether they're inside a picker or the editor
+          itself. Rendered for viewers too (with only the Close
+          control) so read-only visitors can leave the same way. */}
+      <div className="flex items-center justify-between gap-2 border-b border-ink-200 bg-ink-50 px-4 py-2">
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Close page editor without saving"
+          className="inline-flex items-center gap-1.5 rounded-lg bg-ink-0 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100"
+        >
+          <X className="h-3.5 w-3.5" />
+          Close
+        </button>
+        {canEdit ? (
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
@@ -87,8 +109,8 @@ export function PageBuilderClient({ orgId, formulation, canEdit }: Props) {
             <LayoutTemplate className="h-3.5 w-3.5" />
             Apply template
           </button>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       <div className="flex-1 overflow-hidden">
         <PageBuilderEditor

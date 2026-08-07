@@ -590,6 +590,15 @@ export interface FormulationDto {
   }[];
   readonly rtg_base_price: string | null;
   readonly rtg_moq: number | null;
+  /** Optional paid-sample price for the storefront's "Request
+   *  sample" CTA. ``null`` means the SKU doesn't currently offer
+   *  samples — the marketing site hides the button + surfaces
+   *  "Sample not available". Set via the RTG catalog panel. */
+  readonly rtg_sample_price: string | null;
+  /** Free-text sub-copy shown beside the sample price on the
+   *  product page ("30-count trial bottle, ships in 5 working
+   *  days" or similar). Empty string when unset. */
+  readonly rtg_sample_description: string;
   readonly rtg_packaging_options: readonly string[];
   readonly rtg_currency_code: string;
   /** How many packaging combos this formulation defines. Zero on

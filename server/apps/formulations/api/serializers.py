@@ -394,6 +394,8 @@ class FormulationReadSerializer(serializers.ModelSerializer):
             "rtg_hero_image",
             "rtg_base_price",
             "rtg_moq",
+            "rtg_sample_price",
+            "rtg_sample_description",
             "rtg_packaging_options",
             "rtg_currency_code",
             "packaging_combos_count",
