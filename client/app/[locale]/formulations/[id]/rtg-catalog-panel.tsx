@@ -15,9 +15,9 @@
  * publishing surface, and vice versa.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, LayoutTemplate, Save } from "lucide-react";
+import { AlertCircle, CheckCircle2, LayoutTemplate, Save } from "lucide-react";
 import { Link, useRouter } from "@/i18n/navigation";
 
 import { apiClient, normalizeApiError } from "@/lib/api";
@@ -104,11 +104,62 @@ function RTGCatalogPanelInner({
   // informational, so we don't need a local setter.
   const published = formulation.is_rtg_published;
   const [saving, setSaving] = useState(false);
-  const [banner, setBanner] = useState<string | null>(null);
+  // Split saved-vs-error banners so the ephemeral success confirmation
+  // can auto-dismiss without wiping a genuine error the author still
+  // needs to read.
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
+  // Snapshot of the last-persisted values so we can compute a dirty
+  // flag. Comparing against ``formulation`` directly doesn't work —
+  // the parent re-renders with a fresh formulation prop after our
+  // save, which would flag every input as "clean" the moment they
+  // typed. We snapshot on mount + after each successful save, so
+  // dirty === "current text differs from what the server has".
+  const [snapshot, setSnapshot] = useState({
+    displayName: formulation.rtg_display_name || "",
+    description: formulation.rtg_short_description || "",
+    moq:
+      formulation.rtg_moq !== null && formulation.rtg_moq !== undefined
+        ? String(formulation.rtg_moq)
+        : "",
+    samplePrice:
+      formulation.rtg_sample_price !== null &&
+      formulation.rtg_sample_price !== undefined
+        ? String(formulation.rtg_sample_price)
+        : "",
+    sampleDescription: formulation.rtg_sample_description || "",
+  });
+  const isDirty = useMemo(
+    () =>
+      displayName !== snapshot.displayName ||
+      description !== snapshot.description ||
+      moq !== snapshot.moq ||
+      samplePrice !== snapshot.samplePrice ||
+      sampleDescription !== snapshot.sampleDescription,
+    [
+      displayName,
+      description,
+      moq,
+      samplePrice,
+      sampleDescription,
+      snapshot,
+    ],
+  );
+
+  // Auto-dismiss the "Saved" confirmation after a short beat so the
+  // panel doesn't grow a stale green chip that lingers forever. Errors
+  // stay until the user hits save again.
+  useEffect(() => {
+    if (savedAt === null) return;
+    const id = window.setTimeout(() => setSavedAt(null), 3000);
+    return () => window.clearTimeout(id);
+  }, [savedAt]);
+
   const submit = useCallback(async () => {
-    setBanner(null);
+    setSaveError(null);
+    setSavedAt(null);
     setFieldErrors({});
     setSaving(true);
     try {
@@ -159,7 +210,16 @@ function RTGCatalogPanelInner({
       // component, so the header title / page heading pick up the
       // new ``rtg_display_name`` without a hard reload.
       router.refresh();
-      setBanner("Saved. Catalog listing updated with your latest copy.");
+      // Rebase the dirty-tracking snapshot so the fields the author
+      // just saved read as "clean" until they touch them again.
+      setSnapshot({
+        displayName,
+        description,
+        moq,
+        samplePrice,
+        sampleDescription,
+      });
+      setSavedAt(Date.now());
     } catch (error) {
       const api = normalizeApiError(error);
       const fields = (api.payload?.fields ?? null) as
@@ -172,7 +232,7 @@ function RTGCatalogPanelInner({
         }
         setFieldErrors(next);
       }
-      setBanner(
+      setSaveError(
         (api.payload?.detail as string | undefined) ||
           api.message ||
           "Failed to save the RTG marketing block.",
@@ -188,9 +248,14 @@ function RTGCatalogPanelInner({
     orgId,
     queryClient,
     router,
+    samplePrice,
+    sampleDescription,
   ]);
 
   const disabled = !canEdit || saving;
+  // Save button is inert when nothing has changed — clicking a "Save"
+  // that would no-op was the "save button acts weirdly" complaint.
+  const canSave = !disabled && isDirty;
 
   return (
     <section className="rounded-2xl border border-ink-200 bg-ink-0 p-6 shadow-sm">
@@ -216,9 +281,16 @@ function RTGCatalogPanelInner({
         ) : null}
       </header>
 
-      {banner ? (
-        <div className="mb-4 rounded-lg border border-ink-300 bg-ink-50 px-3 py-2 text-sm text-ink-800">
-          {banner}
+      {saveError ? (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-rose-300 bg-rose-50 px-3 py-2 text-sm text-rose-800">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{saveError}</span>
+        </div>
+      ) : null}
+      {savedAt !== null ? (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">
+          <CheckCircle2 className="h-4 w-4 shrink-0" />
+          <span>Saved. Catalog listing updated.</span>
         </div>
       ) : null}
 
@@ -414,14 +486,30 @@ function RTGCatalogPanelInner({
       </p>
 
       <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
+        {isDirty && !saving ? (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800">
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-600" />
+            Unsaved changes
+          </span>
+        ) : null}
+        {saving ? (
+          <span className="text-xs text-ink-500">Saving…</span>
+        ) : null}
         <button
           type="button"
           onClick={submit}
-          disabled={disabled}
+          disabled={!canSave}
+          title={
+            !canEdit
+              ? "Read-only"
+              : !isDirty
+                ? "No changes to save"
+                : "Save changes"
+          }
           className="inline-flex items-center gap-1.5 rounded-lg bg-ink-1000 px-4 py-2 text-sm font-semibold text-ink-0 hover:bg-ink-900 disabled:cursor-not-allowed disabled:opacity-40"
         >
           <Save className="h-4 w-4" />
-          Save changes
+          {saving ? "Saving…" : "Save changes"}
         </button>
       </div>
     </section>
