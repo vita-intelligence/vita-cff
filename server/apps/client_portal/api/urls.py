@@ -19,6 +19,7 @@ from .inbox_views import (
     PortalInboxUnreadCountView,
 )
 from .order_views import PortalOrderListCreateView
+from .checkout_views import PortalCheckoutView
 from .invite_views import (
     InviteActivateView,
     InvitePreviewView,
@@ -178,6 +179,10 @@ urlpatterns = [
         PortalInboxUnreadCountView.as_view(),
         name="inbox-unread-count",
     ),
+
+    # Storefront cart checkout — drains cart lines into a draft
+    # Proposal (products) + PENDING Payments (samples).
+    path("checkout/", PortalCheckoutView.as_view(), name="checkout"),
 
     # Profile / settings.
     path("profile/", ProfileView.as_view(), name="profile"),
