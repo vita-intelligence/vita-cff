@@ -103,46 +103,32 @@ export function PaymentsList({
   canRecord: boolean;
   canApprove: boolean;
 }) {
-  const [statusFilter, setStatusFilter] = useState<string>("");
-  const { data, isLoading } = usePayments(orgId, statusFilter || undefined);
+  // Pipeline layout: three side-by-side columns, each a live
+  // paginated list. Instead of one status dropdown, every stage
+  // is on screen simultaneously so finance never has to click a
+  // tab to find out a new order landed.
+  const pendingQ = usePayments(orgId, "pending");
+  const approvedQ = usePayments(orgId, "approved");
+  const voidedQ = usePayments(orgId, "voided");
 
-  // Debounced free-text search across formulation code/name and the
-  // customer's company/name/proposal code. Backend paginates so the
-  // queue scales to thousands of pending rows without choking either
-  // the network payload or the DOM.
-  const [searchInput, setSearchInput] = useState("");
-  const debouncedSearch = useDebounced(searchInput, 250);
-  const pending = usePendingPaymentProjects(orgId, debouncedSearch);
-  const allPendingItems = useMemo<ReadonlyArray<PendingProjectDto>>(
+  // Per-column search boxes — each one is a client-side filter
+  // over its own tab's data. Cheap because the backend queries
+  // return page-sized arrays already.
+  const [pendingColSearch, setPendingColSearch] = useState("");
+  const [approvedColSearch, setApprovedColSearch] = useState("");
+  const [voidedColSearch, setVoidedColSearch] = useState("");
+
+  // ONE debounced search feeds both awaiting queues (finals +
+  // deposits) inside the Needs-attention column. Old code kept two
+  // separate boxes; the pipeline layout groups them so one input
+  // is enough.
+  const debouncedNeedsSearch = useDebounced(pendingColSearch, 250);
+  const pending = usePendingPaymentProjects(orgId, debouncedNeedsSearch);
+  const pendingItems = useMemo<ReadonlyArray<PendingProjectDto>>(
     () => pending.data?.pages.flatMap((p) => p.items) ?? [],
     [pending.data],
   );
   const pendingTotal = pending.data?.pages[0]?.total ?? 0;
-
-  // Client-side age filter — same pattern as the projects-page filter
-  // chips. ``all`` is the default; the other three bucket the queue
-  // by how long the project has been waiting on a payment. Filter is
-  // applied on top of whatever the server returns, so search + age
-  // compose naturally.
-  type AgeBucket = "all" | "fresh" | "stale" | "ancient";
-  const [ageBucket, setAgeBucket] = useState<AgeBucket>("all");
-  const now = Date.now();
-  const pendingItems = useMemo(
-    () =>
-      allPendingItems.filter((p) => {
-        if (ageBucket === "all") return true;
-        const days = Math.max(
-          0,
-          Math.floor(
-            (now - new Date(p.label_design_created_at).getTime()) / 86_400_000,
-          ),
-        );
-        if (ageBucket === "fresh") return days < 7;
-        if (ageBucket === "stale") return days >= 7 && days < 30;
-        return days >= 30; // ancient
-      }),
-    [allPendingItems, ageBucket, now],
-  );
 
   const [showCreate, setShowCreate] = useState(false);
   // Project that pre-fills the record-payment dialog. ``null`` means
@@ -163,25 +149,52 @@ export function PaymentsList({
   const [depositDialog, setDepositDialog] =
     useState<AwaitingDepositDto | null>(null);
 
-  // Which sub-tab is active on the "Awaiting payment" section.
-  //   "finals"   — projects whose customer signed the FINAL spec and
-  //                are waiting on money before label design starts.
-  //                Query: ``pending-projects`` (LabelDesign at
-  //                PAYMENT_PENDING).
-  //   "deposits" — accepted proposals with a deposit % > 0 that don't
-  //                yet have an approved DEPOSIT payment. Query:
-  //                ``awaiting-deposits``.
-  const [awaitingTab, setAwaitingTab] = useState<"finals" | "deposits">(
-    "finals",
-  );
-  const [depositSearchInput, setDepositSearchInput] = useState("");
-  const debouncedDepositSearch = useDebounced(depositSearchInput, 250);
-  const awaitingDeposits = useAwaitingDeposits(orgId, debouncedDepositSearch);
+  // Awaiting deposits — shares the column-1 search box with
+  // awaiting finals. See ``debouncedNeedsSearch`` above.
+  const awaitingDeposits = useAwaitingDeposits(orgId, debouncedNeedsSearch);
   const depositItems = useMemo<ReadonlyArray<AwaitingDepositDto>>(
     () => awaitingDeposits.data?.pages.flatMap((p) => p.items) ?? [],
     [awaitingDeposits.data],
   );
   const depositsTotal = awaitingDeposits.data?.pages[0]?.total ?? 0;
+
+  // Client-side filter helper for the Approved / Voided columns.
+  // Server pagination returns page-sized arrays; a scan-per-card
+  // is cheap and lets each column search on the same bag of
+  // fields (project code, formulation name, proposal code,
+  // reference, invoice number, notes) without a new API round-trip.
+  const filterPayments = (
+    rows: ReadonlyArray<PaymentDto> | undefined,
+    q: string,
+  ): ReadonlyArray<PaymentDto> => {
+    if (!rows) return [];
+    const needle = q.trim().toLowerCase();
+    if (!needle) return rows;
+    return rows.filter((p) =>
+      (
+        (p.formulation_code || "") +
+        " " +
+        (p.formulation_name || "") +
+        " " +
+        (p.proposal_code || "") +
+        " " +
+        (p.external_reference || "") +
+        " " +
+        (p.invoice_number || "") +
+        " " +
+        (p.notes || "")
+      )
+        .toLowerCase()
+        .includes(needle),
+    );
+  };
+
+  const approvedRows = filterPayments(approvedQ.data, approvedColSearch);
+  const voidedRows = filterPayments(voidedQ.data, voidedColSearch);
+  const pendingPayRows = filterPayments(pendingQ.data, pendingColSearch);
+
+  const needsAttentionCount =
+    pendingTotal + depositsTotal + (pendingQ.data?.length ?? 0);
 
   return (
     <section className="mt-6 flex flex-col gap-4">
@@ -189,327 +202,290 @@ export function PaymentsList({
         <div>
           <h1 className="text-lg font-semibold text-ink-1000">Payments</h1>
           <p className="text-xs text-ink-500">
-            Record customer payments. Approving a payment unlocks the label
-            design workflow for that project.
+            Every stage on one screen. Needs attention on the left is
+            where new orders and awaited deposits land — approving a
+            payment there unlocks label design for that project.
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded border border-ink-200 px-2 py-1.5 text-xs"
+        {canRecord ? (
+          <button
+            type="button"
+            onClick={() => openDialogFor(null)}
+            className="inline-flex items-center gap-1 rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900"
           >
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="voided">Voided</option>
-          </select>
-          {canRecord ? (
-            <button
-              type="button"
-              onClick={() => openDialogFor(null)}
-              className="inline-flex items-center gap-1 rounded-md bg-ink-1000 px-3 py-1.5 text-xs font-semibold text-ink-0 hover:bg-ink-900"
-            >
-              <Plus className="h-3 w-3" /> Record payment
-            </button>
-          ) : null}
-        </div>
+            <Plus className="h-3 w-3" /> Record payment
+          </button>
+        ) : null}
       </header>
 
-      {/* Awaiting-payment queue. Two sub-tabs:
-           * Finals   — LabelDesign rows at PAYMENT_PENDING (customer
-                        signed the final spec, money not landed yet).
-           * Deposits — accepted proposals with deposit_percent > 0
-                        that don't yet have an approved DEPOSIT
-                        payment. */}
-      {pendingTotal > 0 ||
-      depositsTotal > 0 ||
-      debouncedSearch ||
-      debouncedDepositSearch ||
-      pending.isLoading ||
-      awaitingDeposits.isLoading ? (
-        <div className="rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+      {/* Pipeline board — three side-by-side columns, each an
+       *  independent live queue with its own search box. Grid on
+       *  large screens, horizontal-scroll strip on smaller ones so
+       *  the "everything at a glance" property survives narrow
+       *  viewports.
+       */}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {/* ---------- Column 1: NEEDS ATTENTION ---------- */}
+        <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
           <header className="border-b border-ink-100 p-4">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Receipt className="h-4 w-4 text-amber-700" />
                 <h2 className="text-sm font-semibold text-ink-1000">
-                  Awaiting payment
+                  Needs attention
                 </h2>
               </div>
-              <div className="flex items-center gap-1 rounded-full bg-ink-50 p-0.5 ring-1 ring-inset ring-ink-200">
-                {(
-                  [
-                    { key: "finals" as const, label: "Finals", count: pendingTotal },
-                    { key: "deposits" as const, label: "Deposits", count: depositsTotal },
-                  ]
-                ).map((tab) => (
-                  <button
-                    key={tab.key}
-                    type="button"
-                    onClick={() => setAwaitingTab(tab.key)}
-                    aria-pressed={awaitingTab === tab.key}
-                    className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-semibold transition-colors ${
-                      awaitingTab === tab.key
-                        ? "bg-ink-1000 text-ink-0"
-                        : "text-ink-600 hover:text-ink-1000"
-                    }`}
-                  >
-                    {tab.label}
-                    {tab.count > 0 ? (
-                      <span
-                        className={`rounded-full px-1.5 py-px text-[10px] font-semibold ${
-                          awaitingTab === tab.key
-                            ? "bg-ink-0/20 text-ink-0"
-                            : "bg-ink-200 text-ink-700"
-                        }`}
-                      >
-                        {tab.count}
-                      </span>
-                    ) : null}
-                  </button>
-                ))}
-              </div>
+              {needsAttentionCount > 0 ? (
+                <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                  {needsAttentionCount}
+                </span>
+              ) : null}
             </div>
             <p className="mt-1 text-[11px] text-ink-500">
-              {awaitingTab === "finals"
-                ? "Projects whose customer has signed the final spec and are waiting on you to confirm payment."
-                : "Signed proposals waiting on the deposit — record the payment here once it lands so scientists can start trial production."}
+              New portal orders, awaited deposits, and pending
+              payments — anything finance still owes an action on.
             </p>
-
-            {awaitingTab === "finals" ? (
-            <>
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="relative flex-1">
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-                  aria-hidden
-                />
-                <input
-                  type="search"
-                  value={searchInput}
-                  onChange={(e) => setSearchInput(e.target.value)}
-                  placeholder="Search project code, name, or customer…"
-                  className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
-                />
-                {pending.isFetching && pendingItems.length > 0 ? (
-                  <Loader2
-                    aria-hidden
-                    className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
-                  />
-                ) : searchInput ? (
-                  <button
-                    type="button"
-                    onClick={() => setSearchInput("")}
-                    aria-label="Clear search"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {(
-                [
-                  { key: "all", label: "All" },
-                  { key: "fresh", label: "Under 7 days" },
-                  { key: "stale", label: "7–30 days" },
-                  { key: "ancient", label: "Over 30 days" },
-                ] as const
-              ).map((chip) => (
+            <div className="relative mt-3">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+                aria-hidden
+              />
+              <input
+                type="search"
+                value={pendingColSearch}
+                onChange={(e) => setPendingColSearch(e.target.value)}
+                placeholder="Search…"
+                className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+              />
+              {pendingColSearch ? (
                 <button
-                  key={chip.key}
                   type="button"
-                  onClick={() => setAgeBucket(chip.key)}
-                  aria-pressed={ageBucket === chip.key}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 ring-inset transition-colors ${
-                    ageBucket === chip.key
-                      ? "bg-ink-1000 text-ink-0 ring-ink-1000"
-                      : "bg-ink-0 text-ink-700 ring-ink-200 hover:bg-ink-50"
-                  }`}
+                  onClick={() => setPendingColSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
                 >
-                  {chip.label}
+                  <X className="h-3.5 w-3.5" />
                 </button>
-              ))}
+              ) : null}
             </div>
-            </>
-            ) : (
-            <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-              <div className="relative flex-1">
-                <Search
-                  className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-                  aria-hidden
-                />
-                <input
-                  type="search"
-                  value={depositSearchInput}
-                  onChange={(e) => setDepositSearchInput(e.target.value)}
-                  placeholder="Search proposal, customer, or product…"
-                  className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
-                />
-                {awaitingDeposits.isFetching && depositItems.length > 0 ? (
-                  <Loader2
-                    aria-hidden
-                    className="absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-orange-500"
-                  />
-                ) : depositSearchInput ? (
-                  <button
-                    type="button"
-                    onClick={() => setDepositSearchInput("")}
-                    aria-label="Clear search"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
-                  >
-                    <X className="h-4 w-4" />
-                  </button>
-                ) : null}
-              </div>
-            </div>
-            )}
           </header>
 
-          {awaitingTab === "deposits" ? (
-            awaitingDeposits.isLoading && depositItems.length === 0 ? (
-              <p className="p-4 text-xs text-ink-500">
-                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-                Loading awaiting deposits…
-              </p>
-            ) : depositItems.length === 0 ? (
-              <p className="p-4 text-xs text-ink-500">
-                {debouncedDepositSearch
-                  ? `No proposals match "${debouncedDepositSearch}".`
-                  : "No proposals awaiting a deposit right now."}
-              </p>
-            ) : (
-              <>
-                <table className="w-full text-left text-xs">
-                  <thead className="bg-ink-50 text-[10px] uppercase tracking-wide text-ink-500">
-                    <tr>
-                      <th className="px-3 py-2">Proposal</th>
-                      <th className="px-3 py-2">Customer</th>
-                      <th className="px-3 py-2">Expected deposit</th>
-                      <th className="px-3 py-2">Signed</th>
-                      <th className="px-3 py-2 text-right"></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {depositItems.map((d) => (
-                      <DepositRow
-                        key={d.proposal_id}
-                        deposit={d}
-                        canRecord={canRecord}
-                        onRecord={() => setDepositDialog(d)}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-                {awaitingDeposits.hasNextPage ? (
-                  <div className="border-t border-ink-100 p-3 text-center">
+          <div className="flex-1 space-y-4 overflow-y-auto p-3">
+            {/* Deposits sub-section */}
+            {depositsTotal > 0 ? (
+              <section>
+                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                  Awaiting deposits · {depositsTotal}
+                </p>
+                <div className="space-y-2">
+                  {depositItems.map((d) => (
+                    <DepositCard
+                      key={d.proposal_id}
+                      deposit={d}
+                      canRecord={canRecord}
+                      onRecord={() => setDepositDialog(d)}
+                    />
+                  ))}
+                  {awaitingDeposits.hasNextPage ? (
                     <button
                       type="button"
                       onClick={() => awaitingDeposits.fetchNextPage()}
                       disabled={awaitingDeposits.isFetchingNextPage}
-                      className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold text-ink-700 ring-1 ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
+                      className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
                     >
-                      {awaitingDeposits.isFetchingNextPage ? (
-                        <>
-                          <Loader2 className="h-3 w-3 animate-spin" /> Loading…
-                        </>
-                      ) : (
-                        <>Load more</>
-                      )}
+                      {awaitingDeposits.isFetchingNextPage
+                        ? "Loading…"
+                        : "Load more"}
                     </button>
-                  </div>
-                ) : null}
-              </>
-            )
-          ) : pending.isLoading && pendingItems.length === 0 ? (
-            <p className="p-4 text-xs text-ink-500">
-              <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
-              Loading pending projects…
-            </p>
-          ) : pendingItems.length === 0 ? (
-            <p className="p-4 text-xs text-ink-500">
-              {debouncedSearch
-                ? `No projects match "${debouncedSearch}".`
-                : ageBucket !== "all"
-                  ? "No projects in this time bucket."
-                  : "No projects awaiting payment right now."}
-            </p>
-          ) : (
-            <>
-              <table className="w-full text-left text-xs">
-                <thead className="bg-ink-50 text-[10px] uppercase tracking-wide text-ink-500">
-                  <tr>
-                    <th className="px-3 py-2">Project</th>
-                    <th className="px-3 py-2">Customer</th>
-                    <th className="px-3 py-2">Waiting</th>
-                    <th className="px-3 py-2 text-right"></th>
-                  </tr>
-                </thead>
-                <tbody>
+                  ) : null}
+                </div>
+              </section>
+            ) : null}
+
+            {/* Awaiting finals sub-section */}
+            {pendingTotal > 0 ? (
+              <section>
+                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                  Awaiting finals · {pendingTotal}
+                </p>
+                <div className="space-y-2">
                   {pendingItems.map((p) => (
-                    <PendingRow
+                    <PendingCard
                       key={p.formulation_id}
                       project={p}
                       canRecord={canRecord}
                       onRecord={() => openDialogFor(p)}
                     />
                   ))}
-                </tbody>
-              </table>
-              {pending.hasNextPage ? (
-                <div className="border-t border-ink-100 p-3 text-center">
-                  <button
-                    type="button"
-                    onClick={() => pending.fetchNextPage()}
-                    disabled={pending.isFetchingNextPage}
-                    className="inline-flex items-center gap-1 rounded-md bg-ink-0 px-3 py-1.5 text-xs font-semibold text-ink-700 ring-1 ring-ink-200 hover:bg-ink-50 disabled:opacity-50"
-                  >
-                    {pending.isFetchingNextPage ? (
-                      <>
-                        <Loader2 className="h-3 w-3 animate-spin" /> Loading…
-                      </>
-                    ) : (
-                      <>Load more</>
-                    )}
-                  </button>
+                  {pending.hasNextPage ? (
+                    <button
+                      type="button"
+                      onClick={() => pending.fetchNextPage()}
+                      disabled={pending.isFetchingNextPage}
+                      className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+                    >
+                      {pending.isFetchingNextPage ? "Loading…" : "Load more"}
+                    </button>
+                  ) : null}
                 </div>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
+              </section>
+            ) : null}
 
-      {isLoading ? (
-        <p className="text-sm text-ink-500">Loading…</p>
-      ) : !data || data.length === 0 ? (
-        <p className="rounded-2xl bg-ink-0 p-6 text-center text-sm text-ink-500 ring-1 ring-ink-200">
-          No payments yet.
-        </p>
-      ) : (
-        <div className="overflow-hidden rounded-2xl bg-ink-0 ring-1 ring-ink-200">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-ink-50 text-[10px] uppercase tracking-wide text-ink-500">
-              <tr>
-                <th className="px-3 py-2">Project</th>
-                <th className="px-3 py-2">Amount</th>
-                <th className="px-3 py-2">Method</th>
-                <th className="px-3 py-2">Invoice</th>
-                <th className="px-3 py-2">Paid at</th>
-                <th className="px-3 py-2">Status</th>
-                <th className="px-3 py-2"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.map((p) => (
-                <PaymentRow key={p.id} payment={p} />
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            {/* Pending Payment rows sub-section */}
+            {pendingPayRows.length > 0 ? (
+              <section>
+                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
+                  Pending payments · {pendingPayRows.length}
+                </p>
+                <div className="space-y-2">
+                  {pendingPayRows.map((p) => (
+                    <PaymentCard key={p.id} payment={p} />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            {/* Empty state — only when EVERY sub-section is empty. */}
+            {pending.isLoading ||
+            awaitingDeposits.isLoading ||
+            pendingQ.isLoading ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                Loading…
+              </p>
+            ) : depositsTotal === 0 &&
+              pendingTotal === 0 &&
+              pendingPayRows.length === 0 ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                {pendingColSearch
+                  ? `Nothing matches "${pendingColSearch}".`
+                  : "Nothing waiting on you right now."}
+              </p>
+            ) : null}
+          </div>
+        </article>
+
+        {/* ---------- Column 2: APPROVED ---------- */}
+        <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+          <header className="border-b border-ink-100 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <Banknote className="h-4 w-4 text-emerald-700" />
+                <h2 className="text-sm font-semibold text-ink-1000">
+                  Approved
+                </h2>
+              </div>
+              {approvedQ.data ? (
+                <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold text-ink-700">
+                  {approvedQ.data.length}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-[11px] text-ink-500">
+              Confirmed and posted. Label design has been unlocked
+              for these projects.
+            </p>
+            <div className="relative mt-3">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+                aria-hidden
+              />
+              <input
+                type="search"
+                value={approvedColSearch}
+                onChange={(e) => setApprovedColSearch(e.target.value)}
+                placeholder="Search…"
+                className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+              />
+              {approvedColSearch ? (
+                <button
+                  type="button"
+                  onClick={() => setApprovedColSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </header>
+          <div className="flex-1 space-y-2 overflow-y-auto p-3">
+            {approvedQ.isLoading ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                Loading…
+              </p>
+            ) : approvedRows.length === 0 ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                {approvedColSearch
+                  ? `Nothing matches "${approvedColSearch}".`
+                  : "No approved payments yet."}
+              </p>
+            ) : (
+              approvedRows.map((p) => <PaymentCard key={p.id} payment={p} />)
+            )}
+          </div>
+        </article>
+
+        {/* ---------- Column 3: VOIDED ---------- */}
+        <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+          <header className="border-b border-ink-100 p-4">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <X className="h-4 w-4 text-rose-700" />
+                <h2 className="text-sm font-semibold text-ink-1000">Voided</h2>
+              </div>
+              {voidedQ.data ? (
+                <span className="rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-semibold text-ink-700">
+                  {voidedQ.data.length}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 text-[11px] text-ink-500">
+              Cancelled or reversed — kept here for the audit trail.
+            </p>
+            <div className="relative mt-3">
+              <Search
+                className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+                aria-hidden
+              />
+              <input
+                type="search"
+                value={voidedColSearch}
+                onChange={(e) => setVoidedColSearch(e.target.value)}
+                placeholder="Search…"
+                className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+              />
+              {voidedColSearch ? (
+                <button
+                  type="button"
+                  onClick={() => setVoidedColSearch("")}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
+            </div>
+          </header>
+          <div className="flex-1 space-y-2 overflow-y-auto p-3">
+            {voidedQ.isLoading ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+                Loading…
+              </p>
+            ) : voidedRows.length === 0 ? (
+              <p className="p-4 text-center text-xs text-ink-500">
+                {voidedColSearch
+                  ? `Nothing matches "${voidedColSearch}".`
+                  : "No voided payments."}
+              </p>
+            ) : (
+              voidedRows.map((p) => <PaymentCard key={p.id} payment={p} />)
+            )}
+          </div>
+        </article>
+      </div>
 
       {showCreate && canRecord ? (
         <RecordPaymentDialog
@@ -1326,5 +1302,162 @@ function FormRow({
       </span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+
+/* --------------------------------------------------------------
+ * Card components used by the pipeline layout. Each is the same
+ * data as its ``*Row`` sibling above but rendered as a compact
+ * vertical card so it fits the narrow column widths.
+ * -------------------------------------------------------------- */
+
+
+function PaymentCard({ payment }: { payment: PaymentDto }) {
+  return (
+    <Link
+      href={`/finance/payments/${payment.id}`}
+      className="block rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm hover:border-ink-200 hover:shadow"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-ink-1000">
+            {payment.kind === "deposit"
+              ? payment.proposal_code || "Deposit"
+              : payment.formulation_code || "Payment"}
+          </p>
+          <p className="truncate text-[11px] text-ink-500">
+            {payment.kind === "deposit"
+              ? "Deposit — bundle-level"
+              : payment.formulation_name}
+          </p>
+        </div>
+        <span
+          className={
+            "shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ring-1 ring-inset " +
+            (payment.kind === "deposit"
+              ? "bg-amber-100 text-amber-800 ring-amber-300"
+              : "bg-sky-100 text-sky-800 ring-sky-300")
+          }
+        >
+          {payment.kind === "deposit"
+            ? `Dep${payment.proposal_deposit_percent ? ` ${payment.proposal_deposit_percent}%` : ""}`
+            : "Final"}
+        </span>
+      </div>
+      <div className="mt-2 flex items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold tabular-nums text-ink-1000">
+          {payment.amount} {payment.currency}
+        </p>
+        <StatusBadge status={payment.status} />
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-[10px] text-ink-500">
+        <span className="capitalize">{payment.method.replace("_", " ")}</span>
+        <span>
+          {payment.paid_at
+            ? new Date(payment.paid_at).toLocaleDateString()
+            : "—"}
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+
+function PendingCard({
+  project,
+  canRecord,
+  onRecord,
+}: {
+  project: PendingProjectDto;
+  canRecord: boolean;
+  onRecord: () => void;
+}) {
+  const created = new Date(project.label_design_created_at);
+  const days = Math.max(
+    0,
+    Math.floor((Date.now() - created.getTime()) / 86_400_000),
+  );
+  return (
+    <div className="rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-ink-1000">
+            {project.formulation_code}
+          </p>
+          <p className="truncate text-[11px] text-ink-500">
+            {project.formulation_name}
+          </p>
+        </div>
+      </div>
+      {(project.customer_company || project.customer_name) ? (
+        <p className="mt-1 truncate text-[11px] text-ink-600">
+          {project.customer_company || project.customer_name}
+        </p>
+      ) : null}
+      <div className="mt-2 flex items-center justify-between gap-2">
+        <span className="text-[10px] text-ink-500">
+          {days === 0 ? "Today" : `${days}d waiting`}
+        </span>
+        {canRecord ? (
+          <button
+            type="button"
+            onClick={onRecord}
+            className="rounded-md bg-ink-1000 px-2 py-1 text-[10px] font-semibold text-ink-0 hover:bg-ink-900"
+          >
+            <Plus className="inline h-3 w-3" /> Record
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+
+function DepositCard({
+  deposit,
+  canRecord,
+  onRecord,
+}: {
+  deposit: AwaitingDepositDto;
+  canRecord: boolean;
+  onRecord: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-ink-1000">
+            {deposit.proposal_code || "Proposal"}
+          </p>
+          <p className="truncate text-[11px] text-ink-500">
+            {deposit.formulation_name}
+          </p>
+        </div>
+      </div>
+      {(deposit.customer_company || deposit.customer_name) ? (
+        <p className="mt-1 truncate text-[11px] text-ink-600">
+          {deposit.customer_company || deposit.customer_name}
+        </p>
+      ) : null}
+      <div className="mt-2 flex items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold tabular-nums text-ink-1000">
+          {deposit.deposit_amount ?? "—"}{" "}
+          <span className="text-[10px] text-ink-500">{deposit.currency}</span>
+        </p>
+        <span className="text-[10px] text-ink-500">
+          {deposit.deposit_percent}%
+        </span>
+      </div>
+      {canRecord ? (
+        <button
+          type="button"
+          onClick={onRecord}
+          className="mt-2 w-full rounded-md bg-ink-1000 px-2 py-1 text-[10px] font-semibold text-ink-0 hover:bg-ink-900"
+        >
+          <Plus className="inline h-3 w-3" /> Record deposit
+        </button>
+      ) : null}
+    </div>
   );
 }
