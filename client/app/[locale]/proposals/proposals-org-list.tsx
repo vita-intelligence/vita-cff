@@ -5,13 +5,14 @@ import {
   Loader2,
   Plus,
   PoundSterling,
+  Search,
   Trash2,
+  X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Link } from "@/i18n/navigation";
-import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useDeleteProposal,
@@ -184,63 +185,332 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         </p>
       ) : null}
 
-      {isLoading ? (
-        <p className="mt-6 text-sm text-ink-500">
+      {/* Pipeline board — four side-by-side stage columns visible
+       *  at once. The single infinite-scroll query fetches every
+       *  status the filter bar allows, and we split client-side
+       *  into buckets so no column can hide a new order. Each
+       *  column has its own local search that further narrows its
+       *  bucket without disturbing the others.
+       */}
+      <ProposalsPipeline
+        proposals={proposals}
+        isLoading={isLoading}
+        showEmpty={showEmpty}
+        appliedAnyActive={filters.appliedAnyActive}
+        hasNextPage={hasNextPage}
+        isFetchingNextPage={isFetchingNextPage}
+        sentinelRef={sentinelRef}
+        onDelete={handleDelete}
+        deletePending={deleteMutation.isPending}
+      />
+    </section>
+  );
+}
+
+
+// --------------------------------------------------------------
+// Pipeline board layout — 4 stage columns, each with own search.
+// --------------------------------------------------------------
+
+
+const PIPELINE_STAGES: ReadonlyArray<{
+  readonly key: string;
+  readonly label: string;
+  readonly statuses: ReadonlyArray<ProposalStatus>;
+  readonly attention: boolean;
+}> = [
+  {
+    key: "needs_attention",
+    label: "Needs attention",
+    statuses: ["draft", "in_review"],
+    attention: true,
+  },
+  {
+    key: "in_flight",
+    label: "In flight",
+    statuses: ["approved", "sent"],
+    attention: false,
+  },
+  {
+    key: "signed",
+    label: "Signed",
+    statuses: ["accepted"],
+    attention: false,
+  },
+  {
+    key: "rejected",
+    label: "Rejected",
+    statuses: ["rejected"],
+    attention: false,
+  },
+];
+
+
+function ProposalsPipeline({
+  proposals,
+  isLoading,
+  showEmpty,
+  appliedAnyActive,
+  hasNextPage,
+  isFetchingNextPage,
+  sentinelRef,
+  onDelete,
+  deletePending,
+}: {
+  proposals: readonly ProposalListItemDto[];
+  isLoading: boolean;
+  showEmpty: boolean;
+  appliedAnyActive: boolean;
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
+  sentinelRef: React.RefObject<HTMLLIElement | null>;
+  onDelete: (id: string) => void;
+  deletePending: boolean;
+}) {
+  const tProposals = useTranslations("proposals");
+  // Per-column search boxes. Kept as an object keyed by stage.key
+  // so we can late-bind lookups without a dozen useState calls.
+  const [searchByKey, setSearchByKey] = useState<Record<string, string>>({});
+
+  // Split the flat feed into stage buckets. ``useMemo`` keeps
+  // reference stability across parent re-renders — the ledger
+  // rows are pure and memoise off the bucket identity.
+  const buckets = useMemo(() => {
+    const map: Record<string, ProposalListItemDto[]> = {};
+    for (const stage of PIPELINE_STAGES) map[stage.key] = [];
+    for (const p of proposals) {
+      const stage = PIPELINE_STAGES.find((s) =>
+        s.statuses.includes(p.status as ProposalStatus),
+      );
+      if (stage) map[stage.key]!.push(p);
+    }
+    return map;
+  }, [proposals]);
+
+  if (isLoading) {
+    return (
+      <p className="mt-6 text-sm text-ink-500">{tProposals("list.loading")}</p>
+    );
+  }
+  if (showEmpty) {
+    return (
+      <div className="mt-6 rounded-xl bg-ink-50 px-4 py-8 text-center ring-1 ring-inset ring-ink-200">
+        <PoundSterling className="mx-auto h-6 w-6 text-ink-400" />
+        <p className="mt-2 text-sm text-ink-500">
+          {appliedAnyActive
+            ? tProposals("list.no_matches_filtered")
+            : tProposals("list.empty")}
+        </p>
+        {appliedAnyActive ? (
+          <p className="mt-1 text-xs text-ink-400">
+            {tProposals("list.no_matches_hint")}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="mt-4 grid gap-4 lg:grid-cols-4">
+        {PIPELINE_STAGES.map((stage) => {
+          const rows = buckets[stage.key] ?? [];
+          const q = (searchByKey[stage.key] ?? "").trim().toLowerCase();
+          const filtered = q
+            ? rows.filter((p) =>
+                (
+                  (p.code || "") +
+                  " " +
+                  (p.customer_company || "") +
+                  " " +
+                  (p.customer_name || "") +
+                  " " +
+                  (p.reference || "")
+                )
+                  .toLowerCase()
+                  .includes(q),
+              )
+            : rows;
+          return (
+            <article
+              key={stage.key}
+              className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200"
+            >
+              <header className="border-b border-ink-100 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-sm font-semibold text-ink-1000">
+                    {stage.label}
+                  </h2>
+                  {rows.length > 0 ? (
+                    <span
+                      className={
+                        "rounded-full px-2 py-0.5 text-[10px] font-semibold " +
+                        (stage.attention
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-ink-100 text-ink-700")
+                      }
+                    >
+                      {rows.length}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="relative mt-2.5">
+                  <Search
+                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+                    aria-hidden
+                  />
+                  <input
+                    type="search"
+                    value={searchByKey[stage.key] ?? ""}
+                    onChange={(e) =>
+                      setSearchByKey((prev) => ({
+                        ...prev,
+                        [stage.key]: e.target.value,
+                      }))
+                    }
+                    placeholder="Search…"
+                    className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+                  />
+                  {searchByKey[stage.key] ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSearchByKey((prev) => ({
+                          ...prev,
+                          [stage.key]: "",
+                        }))
+                      }
+                      aria-label="Clear search"
+                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  ) : null}
+                </div>
+              </header>
+              <div className="flex-1 space-y-2 overflow-y-auto p-3">
+                {filtered.length === 0 ? (
+                  <p className="p-4 text-center text-xs text-ink-500">
+                    {q
+                      ? `Nothing matches "${q}".`
+                      : stage.attention
+                        ? "Nothing waiting on you here."
+                        : "Empty."}
+                  </p>
+                ) : (
+                  filtered.map((proposal) => (
+                    <ProposalCard
+                      key={proposal.id}
+                      proposal={proposal}
+                      onDelete={onDelete}
+                      deletePending={deletePending}
+                    />
+                  ))
+                )}
+              </div>
+            </article>
+          );
+        })}
+      </div>
+
+      {/* Load-more sentinel lives outside the columns so the shared
+       *  cursor still advances regardless of which stage the user
+       *  is looking at. */}
+      {hasNextPage ? (
+        <ul className="mt-2">
+          <li ref={sentinelRef} aria-hidden className="h-1" />
+        </ul>
+      ) : null}
+      {isFetchingNextPage ? (
+        <p className="mt-2 inline-flex items-center gap-1 text-xs text-ink-500">
+          <Loader2 className="h-3 w-3 animate-spin" />
           {tProposals("list.loading")}
         </p>
-      ) : showEmpty ? (
-        <div className="mt-6 rounded-xl bg-ink-50 px-4 py-8 text-center ring-1 ring-inset ring-ink-200">
-          <PoundSterling className="mx-auto h-6 w-6 text-ink-400" />
-          <p className="mt-2 text-sm text-ink-500">
-            {filters.appliedAnyActive
-              ? tProposals("list.no_matches_filtered")
-              : tProposals("list.empty")}
-          </p>
-          {filters.appliedAnyActive ? (
-            <p className="mt-1 text-xs text-ink-400">
-              {tProposals("list.no_matches_hint")}
+      ) : null}
+    </>
+  );
+}
+
+
+// Compact card version of OrgProposalRow that fits a narrow column.
+function ProposalCard({
+  proposal,
+  onDelete,
+  deletePending,
+}: {
+  proposal: ProposalListItemDto;
+  onDelete: (id: string) => void;
+  deletePending: boolean;
+}) {
+  const tProposals = useTranslations("proposals");
+  const total = proposal.total_excl_vat ?? proposal.subtotal ?? null;
+  const canDelete =
+    proposal.status !== "approved" &&
+    proposal.status !== "sent" &&
+    proposal.status !== "accepted" &&
+    proposal.status !== "rejected";
+
+  return (
+    <div className="rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm hover:border-ink-200 hover:shadow">
+      <div className="flex items-start justify-between gap-2">
+        <Link
+          href={`/proposals/${proposal.id}`}
+          className="min-w-0 flex-1"
+        >
+          <div className="flex items-center gap-1.5">
+            <p className="truncate text-xs font-semibold text-ink-1000">
+              {proposal.code}
             </p>
-          ) : null}
-        </div>
-      ) : (
-        <>
-          <ul className="mt-4 divide-y divide-ink-100">
-            {proposals.map((proposal) => (
-              <OrgProposalRow
-                key={proposal.id}
-                proposal={proposal}
-                onDelete={handleDelete}
-                deletePending={deleteMutation.isPending}
-              />
-            ))}
-            {/* Sentinel — rendered only while another page is
-                available. IntersectionObserver above watches this
-                node and calls ``fetchNextPage`` when it enters the
-                viewport (with a 200px head-start), so the next page
-                lands before the user reaches the visible bottom. */}
-            {hasNextPage ? (
-              <li
-                ref={sentinelRef}
-                aria-hidden
-                className="h-1"
-              />
-            ) : null}
-          </ul>
-          <div className="mt-3 flex items-center justify-between text-xs text-ink-500">
-            <span>
-              {tProposals("list.row_count", { count: proposals.length })}
-              {hasNextPage ? ` · ${tProposals("list.scroll_hint")}` : ""}
-            </span>
-            {isFetchingNextPage ? (
-              <span className="inline-flex items-center gap-1 text-ink-500">
-                <Loader2 className="h-3 w-3 animate-spin" />
-                {tProposals("list.loading")}
-              </span>
-            ) : null}
+            {(proposal.template_type === "ready_to_go" ||
+              proposal.template_type === "custom") && (
+              <TemplateTypeChip type={proposal.template_type} />
+            )}
           </div>
-        </>
-      )}
-    </section>
+          <p className="mt-0.5 truncate text-[11px] text-ink-600">
+            {proposal.customer_company ||
+              proposal.customer_name ||
+              tProposals("list.no_customer")}
+          </p>
+        </Link>
+        <Link
+          href={`/proposals/${proposal.id}`}
+          className="text-ink-400 hover:text-ink-700"
+          aria-label={tProposals("list.open")}
+        >
+          <ExternalLink className="h-3.5 w-3.5" />
+        </Link>
+      </div>
+      <div className="mt-2 flex items-baseline justify-between gap-2 text-[10px] text-ink-500">
+        <span>
+          {total !== null ? (
+            <>
+              <PoundSterling className="mr-0.5 inline h-3 w-3" />
+              {total}
+            </>
+          ) : (
+            "—"
+          )}
+        </span>
+        <span>
+          {proposal.updated_at
+            ? new Date(proposal.updated_at).toLocaleDateString()
+            : ""}
+        </span>
+      </div>
+      {canDelete ? (
+        <div className="mt-1.5 flex justify-end">
+          <button
+            type="button"
+            onClick={() => onDelete(proposal.id)}
+            disabled={deletePending}
+            aria-label={tProposals("list.delete")}
+            className="rounded p-1 text-ink-400 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
