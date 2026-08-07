@@ -103,8 +103,45 @@ export function PaymentsList({
   canRecord: boolean;
   canApprove: boolean;
 }) {
-  const [statusFilter, setStatusFilter] = useState<string>("");
+  // Horizontal-tab primary filter. Defaults to ``pending`` because
+  // the whole reason to open this page is "who needs money moved
+  // today?" — the finance team should land on unactioned rows, not
+  // a global history. "all" is reachable via the last tab.
+  type PaymentTab = "pending" | "approved" | "voided" | "all";
+  const [tab, setTab] = useState<PaymentTab>("pending");
+  const statusFilter = tab === "all" ? "" : tab;
   const { data, isLoading } = usePayments(orgId, statusFilter || undefined);
+
+  // Per-tab free-text search — searches within whichever tab is
+  // active. State lives on the tab, not global, because switching
+  // tabs should feel like switching context (fresh search box),
+  // matching the mental model of "different queues, different
+  // filters" the user asked for.
+  const [tableSearchInput, setTableSearchInput] = useState("");
+  const debouncedTableSearch = useDebounced(tableSearchInput, 250);
+  useEffect(() => {
+    // Reset the row-table search box on every tab switch so the
+    // previous tab's query doesn't leak into the next one.
+    setTableSearchInput("");
+  }, [tab]);
+  const filteredTableRows = useMemo<ReadonlyArray<PaymentDto>>(() => {
+    if (!data) return [];
+    const q = debouncedTableSearch.trim().toLowerCase();
+    if (!q) return data;
+    return data.filter((p) => {
+      const bag = [
+        p.formulation_code || "",
+        p.formulation_name || "",
+        p.proposal_code || "",
+        p.external_reference || "",
+        p.invoice_number || "",
+        p.notes || "",
+      ]
+        .join(" ")
+        .toLowerCase();
+      return bag.includes(q);
+    });
+  }, [data, debouncedTableSearch]);
 
   // Debounced free-text search across formulation code/name and the
   // customer's company/name/proposal code. Backend paginates so the
@@ -183,6 +220,12 @@ export function PaymentsList({
   );
   const depositsTotal = awaitingDeposits.data?.pages[0]?.total ?? 0;
 
+  // Tab counts. ``pending`` intentionally sums the awaiting queue
+  // (finals + deposits) rather than the raw payments list so the
+  // badge answers "how many things are waiting on me" — the number
+  // finance actually cares about at a glance.
+  const pendingCount = pendingTotal + depositsTotal;
+
   return (
     <section className="mt-6 flex flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -194,16 +237,6 @@ export function PaymentsList({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="rounded border border-ink-200 px-2 py-1.5 text-xs"
-          >
-            <option value="">All statuses</option>
-            <option value="pending">Pending</option>
-            <option value="approved">Approved</option>
-            <option value="voided">Voided</option>
-          </select>
           {canRecord ? (
             <button
               type="button"
@@ -216,18 +249,92 @@ export function PaymentsList({
         </div>
       </header>
 
+      {/* Horizontal tab strip — the primary "what needs my
+       *  attention" navigation. Each tab hosts the queue + search +
+       *  filters for its own status. Default = Pending so finance
+       *  lands on the actionable rows.
+       */}
+      <div
+        role="tablist"
+        aria-label="Payment status"
+        className="flex flex-wrap items-center gap-1 rounded-full bg-ink-50 p-1 ring-1 ring-inset ring-ink-200"
+      >
+        {(
+          [
+            {
+              key: "pending" as const,
+              label: "Needs attention",
+              count: pendingCount,
+              badgeTone: "attention" as const,
+            },
+            {
+              key: "approved" as const,
+              label: "Approved",
+              count: data && tab === "approved" ? data.length : null,
+              badgeTone: "muted" as const,
+            },
+            {
+              key: "voided" as const,
+              label: "Voided",
+              count: data && tab === "voided" ? data.length : null,
+              badgeTone: "muted" as const,
+            },
+            {
+              key: "all" as const,
+              label: "All",
+              count: data && tab === "all" ? data.length : null,
+              badgeTone: "muted" as const,
+            },
+          ]
+        ).map((t) => {
+          const active = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              onClick={() => setTab(t.key)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+                active
+                  ? "bg-ink-1000 text-ink-0 shadow-sm"
+                  : "text-ink-700 hover:text-ink-1000"
+              }`}
+            >
+              {t.label}
+              {t.count !== null && t.count > 0 ? (
+                <span
+                  className={`inline-flex min-w-[1.25rem] items-center justify-center rounded-full px-1.5 py-px text-[10px] font-semibold ${
+                    active
+                      ? "bg-ink-0/20 text-ink-0"
+                      : t.badgeTone === "attention"
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-ink-200 text-ink-700"
+                  }`}
+                >
+                  {t.count}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Awaiting-payment queue. Two sub-tabs:
            * Finals   — LabelDesign rows at PAYMENT_PENDING (customer
                         signed the final spec, money not landed yet).
            * Deposits — accepted proposals with deposit_percent > 0
                         that don't yet have an approved DEPOSIT
-                        payment. */}
-      {pendingTotal > 0 ||
+                        payment.
+           * Rendered only inside the ``pending`` tab — Approved /
+           * Voided / All have no need for the actionable queue. */}
+      {tab === "pending" &&
+      (pendingTotal > 0 ||
       depositsTotal > 0 ||
       debouncedSearch ||
       debouncedDepositSearch ||
       pending.isLoading ||
-      awaitingDeposits.isLoading ? (
+      awaitingDeposits.isLoading) ? (
         <div className="rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
           <header className="border-b border-ink-100 p-4">
             <div className="flex items-center justify-between gap-2">
@@ -482,11 +589,51 @@ export function PaymentsList({
         </div>
       ) : null}
 
+      {/* Per-tab search over the raw payments table. Only rendered
+       *  outside the Pending tab because Pending has its own
+       *  bespoke "Awaiting payment" queue with its own search above.
+       */}
+      {tab !== "pending" && data && data.length > 0 ? (
+        <div className="relative">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+            aria-hidden
+          />
+          <input
+            type="search"
+            value={tableSearchInput}
+            onChange={(e) => setTableSearchInput(e.target.value)}
+            placeholder={`Search ${tab === "all" ? "all" : tab} payments…`}
+            className="h-10 w-full rounded-xl bg-ink-50 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+          />
+          {tableSearchInput ? (
+            <button
+              type="button"
+              onClick={() => setTableSearchInput("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       {isLoading ? (
         <p className="text-sm text-ink-500">Loading…</p>
       ) : !data || data.length === 0 ? (
         <p className="rounded-2xl bg-ink-0 p-6 text-center text-sm text-ink-500 ring-1 ring-ink-200">
-          No payments yet.
+          {tab === "pending"
+            ? "No pending payments right now."
+            : tab === "approved"
+              ? "No approved payments yet."
+              : tab === "voided"
+                ? "No voided payments."
+                : "No payments yet."}
+        </p>
+      ) : filteredTableRows.length === 0 ? (
+        <p className="rounded-2xl bg-ink-0 p-6 text-center text-sm text-ink-500 ring-1 ring-ink-200">
+          No payments match &ldquo;{debouncedTableSearch}&rdquo;.
         </p>
       ) : (
         <div className="overflow-hidden rounded-2xl bg-ink-0 ring-1 ring-ink-200">
@@ -503,7 +650,7 @@ export function PaymentsList({
               </tr>
             </thead>
             <tbody>
-              {data.map((p) => (
+              {filteredTableRows.map((p) => (
                 <PaymentRow key={p.id} payment={p} />
               ))}
             </tbody>

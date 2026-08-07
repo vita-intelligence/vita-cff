@@ -213,6 +213,17 @@ export function useProposalsFiltersState() {
     },
     [pending, writeApplied],
   );
+  // Same immediate-apply behaviour, but for the lifecycle-stage tab
+  // strip (Drafts / In flight / Signed / Rejected / All). Distinct
+  // from the multi-select ``setStatuses`` — that one still batches
+  // through Apply because it's a fine-grained filter inside a tab.
+  const setStatusesImmediate = useCallback(
+    (values: readonly ProposalStatus[]) => {
+      setPending((p) => ({ ...p, statuses: values }));
+      writeApplied({ ...pending, statuses: values });
+    },
+    [pending, writeApplied],
+  );
 
   const apply = useCallback(() => {
     const normalised: ProposalsFiltersState = {
@@ -254,6 +265,7 @@ export function useProposalsFiltersState() {
     setSearch,
     toggleStatus,
     setStatuses,
+    setStatusesImmediate,
     setSalesPersonId,
     setValidUntilFrom,
     setValidUntilTo,

@@ -42,6 +42,32 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
   const tErrors = useTranslations("errors");
 
   const filters = useProposalsFiltersState();
+
+  // Fresh-visit default: land the sales team on "Needs attention"
+  // (Draft + In review) when they open /proposals with no URL
+  // filters at all. Any explicit param — status, search, sales
+  // person, template type, date range — leaves the state alone.
+  // Runs at most once per mount so a manual "All" click after
+  // landing is respected.
+  const firstVisitDefaultAppliedRef = useRef(false);
+  useEffect(() => {
+    if (firstVisitDefaultAppliedRef.current) return;
+    firstVisitDefaultAppliedRef.current = true;
+    const a = filters.applied;
+    const urlIsPristine =
+      a.statuses.length === 0 &&
+      !a.search &&
+      !a.salesPersonId &&
+      !a.validUntilFrom &&
+      !a.validUntilTo &&
+      !a.templateType;
+    if (urlIsPristine) {
+      filters.setStatusesImmediate(["draft", "in_review"]);
+    }
+    // Intentionally empty deps: run once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Backend queries on ``applied`` only — the pending state stays
   // local to the bar until the user hits Apply.
   const applied = filters.applied;
@@ -155,12 +181,26 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         </Link>
       </header>
 
+      {/* Primary lifecycle-stage tab strip. Groups the six proposal
+          statuses into buckets that map to "what does this quote
+          need from me next" — Needs attention (Draft, In review) is
+          the default landing so a new portal order or an in-flight
+          revision floats to the top the moment sales opens the
+          page. Tab click applies immediately, same pattern as the
+          template-type strip below. */}
+      <div className="mt-4">
+        <StatusStageTabs
+          value={filters.applied.statuses}
+          onChange={filters.setStatusesImmediate}
+        />
+      </div>
+
       {/* Top-of-list tab strip splits manually authored proposals
           from the auto-drafted RTG orders coming out of the
           customer portal. Tab click applies immediately — the tab
           is a navigation pivot, not a filter, and shouldn't cost
           the operator an Apply gesture. */}
-      <div className="mt-4">
+      <div className="mt-3">
         <TemplateTypeTabs
           value={filters.applied.templateType}
           onChange={filters.setTemplateType}
@@ -241,6 +281,105 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         </>
       )}
     </section>
+  );
+}
+
+
+/**
+ * Lifecycle-stage tab strip. Applies IMMEDIATELY on click so it
+ * reads as navigation, not a filter tweak. Each tab maps to a
+ * canonical bucket of ``ProposalStatus`` values; ``All`` clears
+ * the status filter entirely so nothing hides.
+ *
+ * Deliberately ordered left-to-right by "how much of my time this
+ * needs today" — Needs attention first, then in-flight, then
+ * closed positive, then closed negative, then All.
+ */
+const STATUS_STAGES = [
+  {
+    key: "needs_attention",
+    label: "Needs attention",
+    statuses: ["draft", "in_review"] as const,
+    tone: "attention" as const,
+  },
+  {
+    key: "in_flight",
+    label: "In flight",
+    statuses: ["approved", "sent"] as const,
+    tone: "muted" as const,
+  },
+  {
+    key: "signed",
+    label: "Signed",
+    statuses: ["accepted"] as const,
+    tone: "muted" as const,
+  },
+  {
+    key: "rejected",
+    label: "Rejected",
+    statuses: ["rejected"] as const,
+    tone: "muted" as const,
+  },
+  {
+    key: "all",
+    label: "All",
+    statuses: [] as const,
+    tone: "muted" as const,
+  },
+] as const;
+
+
+function stageForStatuses(
+  applied: readonly ProposalStatus[],
+): (typeof STATUS_STAGES)[number]["key"] {
+  // Best-fit match — any stage whose canonical set equals the
+  // applied set gets selected. Falls back to "all" when the user
+  // has hand-picked a custom mix via the filter bar's multi-select
+  // (which is a valid state; the strip just goes to All so nothing
+  // looks lit up).
+  const sorted = [...applied].sort().join(",");
+  for (const stage of STATUS_STAGES) {
+    const stageSorted = [...stage.statuses].sort().join(",");
+    if (stageSorted === sorted) return stage.key;
+  }
+  return "all";
+}
+
+
+function StatusStageTabs({
+  value,
+  onChange,
+}: {
+  value: readonly ProposalStatus[];
+  onChange: (next: readonly ProposalStatus[]) => void;
+}) {
+  const activeKey = stageForStatuses(value);
+  return (
+    <div
+      role="tablist"
+      aria-label="Proposal stage"
+      className="flex flex-wrap items-center gap-1 rounded-full bg-ink-50 p-1 ring-1 ring-inset ring-ink-200"
+    >
+      {STATUS_STAGES.map((stage) => {
+        const active = stage.key === activeKey;
+        return (
+          <button
+            key={stage.key}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(stage.statuses)}
+            className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-xs font-semibold transition-colors ${
+              active
+                ? "bg-ink-1000 text-ink-0 shadow-sm"
+                : "text-ink-700 hover:text-ink-1000"
+            }`}
+          >
+            {stage.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
