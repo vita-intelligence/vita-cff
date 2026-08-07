@@ -20,6 +20,8 @@ from apps.product_validation.api.serializers import (
 )
 from apps.product_validation.services import (
     InvalidValidationTransition,
+    SamplesIncomplete,
+    TargetsIncomplete,
     TrialBatchNotInOrg,
     ValidationAlreadyExists,
     ValidationNotFound,
@@ -28,6 +30,8 @@ from apps.product_validation.services import (
     get_validation,
     get_validation_for_batch,
     list_validations,
+    render_validation_html,
+    render_validation_pdf,
     SignatureRequired,
     transition_status,
     update_validation,
@@ -217,7 +221,91 @@ class ValidationStatusView(APIView):
                 {"signature_image": ["signature_required"]},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except TargetsIncomplete as exc:
+            # 422 rather than 400 so the FE knows it's a semantic gate
+            # (missing fields), not a shape error. `missing_fields`
+            # carries the dot-paths so the wizard can navigate the
+            # scientist to the offending step and highlight the input.
+            return Response(
+                {
+                    "detail": "targets_incomplete",
+                    "code": "targets_incomplete",
+                    "missing_fields": exc.missing_fields,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+        except SamplesIncomplete as exc:
+            return Response(
+                {
+                    "detail": "samples_incomplete",
+                    "code": "samples_incomplete",
+                    "missing_fields": exc.missing_fields,
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
         return Response(ProductValidationReadSerializer(updated).data)
+
+
+class ValidationSheetHtmlView(APIView):
+    """``GET`` ``/api/organizations/<org>/product-validations/<id>/sheet.html/``.
+
+    Server-renders the WeasyPrint template as HTML so the FE can
+    iframe the document (browser preview, print). The auth cookie
+    on the request gates access — no public token here; the sheet is
+    tenant-internal.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str, validation_id: str) -> Response:
+        from django.http import HttpResponse
+
+        try:
+            validation = get_validation(
+                organization=self.organization,
+                validation_id=validation_id,
+            )
+        except ValidationNotFound as exc:
+            raise NotFound() from exc
+
+        html = render_validation_html(validation)
+        response = HttpResponse(html, content_type="text/html; charset=utf-8")
+        # `SAMEORIGIN` matches the spec-sheet iframe pattern so a
+        # same-origin FE can embed it while third-party sites can't.
+        response["X-Frame-Options"] = "SAMEORIGIN"
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class ValidationSheetPdfView(APIView):
+    """``GET`` ``/api/organizations/<org>/product-validations/<id>/sheet.pdf/``.
+
+    WeasyPrint-rendered PDF. Streams inline by default; add
+    ``?download=1`` to force ``Content-Disposition: attachment``.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.VIEW
+
+    def get(self, request: Request, org_id: str, validation_id: str) -> Response:
+        from django.http import HttpResponse
+
+        try:
+            validation = get_validation(
+                organization=self.organization,
+                validation_id=validation_id,
+            )
+        except ValidationNotFound as exc:
+            raise NotFound() from exc
+
+        pdf_bytes, filename = render_validation_pdf(validation)
+        disposition = "attachment" if request.query_params.get("download") else "inline"
+        response = HttpResponse(pdf_bytes, content_type="application/pdf")
+        response["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+        response["X-Frame-Options"] = "SAMEORIGIN"
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class ValidationForBatchView(APIView):

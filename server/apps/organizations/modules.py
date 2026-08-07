@@ -137,6 +137,13 @@ class FormulationsCapability:
     #: without every rank-and-file scientist reshaping the org's
     #: canonical routes.
     MANAGE_STAGE_TEMPLATES = "manage_stage_templates"
+    #: Create / edit / delete the org's reusable page-builder
+    #: templates used to seed the RTG product page editor. Scientists
+    #: with ``VIEW`` still see the templates in the "Apply template"
+    #: picker on the page editor toolbar — only editing the template
+    #: library itself is gated behind this cap. Mirrors the
+    #: MANAGE_STAGE_TEMPLATES model for symmetry.
+    MANAGE_PAGE_BUILDER_TEMPLATES = "manage_page_builder_templates"
 
 
 class ProposalsCapability:
@@ -395,6 +402,7 @@ MODULE_REGISTRY: dict[str, Module] = {
             FormulationsCapability.COMMENTS_WRITE,
             FormulationsCapability.COMMENTS_MODERATE,
             FormulationsCapability.MANAGE_STAGE_TEMPLATES,
+            FormulationsCapability.MANAGE_PAGE_BUILDER_TEMPLATES,
         ),
     ),
     RTG_CATALOG_MODULE: Module(

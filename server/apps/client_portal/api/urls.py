@@ -18,6 +18,7 @@ from .inbox_views import (
     PortalInboxListView,
     PortalInboxUnreadCountView,
 )
+from .order_views import PortalOrderListCreateView
 from .invite_views import (
     InviteActivateView,
     InvitePreviewView,
@@ -199,6 +200,14 @@ urlpatterns = [
         "profile/avatar/",
         AvatarView.as_view(),
         name="profile-avatar",
+    ),
+
+    # RTG customer orders (+ sample requests). Anchored on the
+    # signed-in ClientAccount; ownership is enforced server-side.
+    path(
+        "orders/",
+        PortalOrderListCreateView.as_view(),
+        name="order-list-create",
     ),
 
     path("proposals/", ProposalListView.as_view(), name="proposal-list"),

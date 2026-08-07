@@ -322,7 +322,11 @@ body {
 .rich-content.ProseMirror {
   outline: none;
   padding: 0.75rem 1rem;
-  min-height: 100%;
+  /* No ``min-height: 100%`` — that used to create a circular height
+   * cascade between the ProseMirror div and its parent EditorContent
+   * wrapper, and made long documents stop rendering past a certain
+   * scroll position. The scroll wrapper itself has ``flex-1``, so
+   * content grows naturally and scrolls cleanly. */
 }
 .rich-content.ProseMirror p.is-editor-empty:first-child::before {
   color: #999999;
@@ -340,9 +344,274 @@ body {
  * always see the feedback regardless of scroll position.
  */
 .page-builder-shell {
+  display: flex;
+  flex-direction: column;
   height: 100%;
   position: relative;
   width: 100%;
+}
+/* Canvas wrapper — flex-fills the shell so Puck's internal ``100dvh``
+ * gets rewritten to "the remaining height after the viewport toolbar". */
+.page-builder-canvas-wrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.page-builder-canvas-wrap > * {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+/* Puck ships ``._PuckLayout { height: 100dvh }`` which hardcodes the
+ * editor to the full viewport height. Inside our overlay the parent
+ * slot is smaller than the viewport (our metadata strip + toolbar
+ * eat ~90px at the top), so 100dvh overflows the modal — the left
+ * blocks palette, right fields panel, and canvas all extend past
+ * the bottom of the visible area. Constrain Puck to its actual
+ * parent so its internal sidebars can scroll where the user can
+ * reach them. */
+.page-builder-canvas-wrap > div:has(> [class^="_PuckLayout_"]),
+.page-builder-canvas-wrap [class^="_PuckLayout_"] {
+  height: 100% !important;
+  max-height: 100%;
+}
+/* Puck's block selection outline is drawn by absolutely-positioned
+ * children of each block. With iframe rendering disabled, those
+ * outlines can visually leak above the canvas viewport (into our
+ * modal header) whenever a tall block extends past the visible
+ * area. Clip HORIZONTALLY at the canvas panel (so outlines can't
+ * escape sideways) but keep vertical scroll working — Puck ships
+ * ``overflow: auto`` on the canvas so tall pages scroll; if we
+ * override to ``overflow: hidden`` on both axes the whole preview
+ * becomes unscrollable. */
+.page-builder-shell [class^="_PuckCanvas_"] {
+  overflow-x: hidden !important;
+  position: relative;
+}
+
+/* ------------------------------------------------------------------
+ * Viewport toolbar (mobile / tablet / desktop / full)
+ * ------------------------------------------------------------------
+ * Our custom replacement for Puck's iframe-only viewport switcher.
+ * The width caps below (data-viewport selectors) constrain
+ * ``.page-builder-root`` inside the Puck canvas, so a "mobile"
+ * preview actually narrows the render area — which in turn triggers
+ * the ``@container pb (...)`` rules below to apply mobile padding.
+ */
+.page-builder-vp-toolbar {
+  align-items: center;
+  background: #fafafa;
+  border-bottom: 1px solid #e5e5e5;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.375rem;
+  padding: 0.375rem 0.75rem;
+}
+.page-builder-vp-btn {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #525252;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 500;
+  gap: 0.375rem;
+  padding: 0.3125rem 0.625rem;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.page-builder-vp-btn:hover {
+  background: #f5f5f5;
+  color: #171717;
+}
+.page-builder-vp-btn[data-active] {
+  background: #171717;
+  border-color: #171717;
+  color: #ffffff;
+}
+.page-builder-vp-hint {
+  color: #737373;
+  font-size: 0.6875rem;
+  font-style: italic;
+  margin-left: 0.5rem;
+}
+
+/* Viewport width caps — applied to Puck's preview surface AND to
+ * our render root so the entire "page area" shrinks as one, not
+ * just the inner content. The Puck canvas panel (``_PuckCanvas``)
+ * stays full-width and provides the surrounding chrome; the
+ * preview shrinks + centers inside it like a device frame. */
+.page-builder-shell[data-viewport="mobile"] [class^="_PuckPreview_"],
+.page-builder-shell[data-viewport="mobile"] .page-builder-root {
+  max-width: 390px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.page-builder-shell[data-viewport="tablet"] [class^="_PuckPreview_"],
+.page-builder-shell[data-viewport="tablet"] .page-builder-root {
+  max-width: 768px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.page-builder-shell[data-viewport="desktop"] [class^="_PuckPreview_"],
+.page-builder-shell[data-viewport="desktop"] .page-builder-root {
+  max-width: 1280px;
+  margin-left: auto;
+  margin-right: auto;
+}
+/* Device-frame look: shadow + subtle border + white paper background
+ * on the preview, and a slightly darker canvas gutter around it so
+ * the eye sees "phone / tablet on desk". Only kicks in when a
+ * viewport is selected — Full stays flush like before. */
+.page-builder-shell[data-viewport="mobile"] [class^="_PuckCanvas_"],
+.page-builder-shell[data-viewport="tablet"] [class^="_PuckCanvas_"],
+.page-builder-shell[data-viewport="desktop"] [class^="_PuckCanvas_"] {
+  background: #f1f1f1 !important;
+}
+.page-builder-shell[data-viewport="mobile"] [class^="_PuckPreview_"],
+.page-builder-shell[data-viewport="tablet"] [class^="_PuckPreview_"],
+.page-builder-shell[data-viewport="desktop"] [class^="_PuckPreview_"] {
+  background: #ffffff;
+  border: 1px solid #e5e5e5;
+  border-radius: 6px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  /* Don't clip vertically — the surrounding canvas owns the scroll
+   * (see the ``_PuckCanvas`` rule above). Clip horizontally so the
+   * device-frame edges stay crisp even if a block accidentally
+   * overflows its column. */
+  overflow-x: hidden;
+}
+
+/* ------------------------------------------------------------------
+ * Responsive padding (container queries)
+ * ------------------------------------------------------------------
+ * Blocks emit CSS custom properties per breakpoint via
+ * ``paddingStyle()`` in ``config.tsx``. Container-query rules here
+ * resolve those vars so the effective padding changes when the
+ * preview element's width crosses tablet / desktop thresholds —
+ * without needing an iframe and without depending on the browser
+ * window size (which stays constant even in "mobile" preview).
+ *
+ * ``container-type: inline-size`` on ``.page-builder-root`` names
+ * it as the query root. When the viewport toggle narrows the root
+ * to 390px, only the mobile ``.pb-block`` rule applies. Widen back
+ * to full and tablet + desktop overrides kick in.
+ */
+.page-builder-root {
+  container-name: pb;
+  container-type: inline-size;
+}
+.pb-block {
+  padding-top: var(--pad-t-mobile, 0);
+  padding-right: var(--pad-r-mobile, 0);
+  padding-bottom: var(--pad-b-mobile, 0);
+  padding-left: var(--pad-l-mobile, 0);
+}
+@container pb (min-width: 640px) {
+  .pb-block {
+    padding-top: var(--pad-t-tablet, var(--pad-t-mobile, 0));
+    padding-right: var(--pad-r-tablet, var(--pad-r-mobile, 0));
+    padding-bottom: var(--pad-b-tablet, var(--pad-b-mobile, 0));
+    padding-left: var(--pad-l-tablet, var(--pad-l-mobile, 0));
+  }
+}
+@container pb (min-width: 1024px) {
+  .pb-block {
+    padding-top: var(--pad-t-desktop, var(--pad-t-tablet, var(--pad-t-mobile, 0)));
+    padding-right: var(--pad-r-desktop, var(--pad-r-tablet, var(--pad-r-mobile, 0)));
+    padding-bottom: var(--pad-b-desktop, var(--pad-b-tablet, var(--pad-b-mobile, 0)));
+    padding-left: var(--pad-l-desktop, var(--pad-l-tablet, var(--pad-l-mobile, 0)));
+  }
+}
+
+/* ------------------------------------------------------------------
+ * Responsive-padding field (in Puck's right sidebar)
+ * ------------------------------------------------------------------ */
+.pb-resp-pad {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.pb-resp-pad-tabs {
+  background: #f5f5f5;
+  border-radius: 6px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 2px;
+}
+.pb-resp-pad-tab {
+  align-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: #525252;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.75rem;
+  font-weight: 500;
+  gap: 0.25rem;
+  justify-content: center;
+  padding: 0.3125rem 0.5rem;
+  position: relative;
+  transition: background 120ms ease, color 120ms ease;
+}
+.pb-resp-pad-tab:hover {
+  color: #171717;
+}
+.pb-resp-pad-tab[data-active] {
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  color: #171717;
+}
+.pb-resp-pad-tab:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.pb-resp-pad-dot {
+  background: #c2410c;
+  border-radius: 50%;
+  height: 5px;
+  margin-left: 2px;
+  width: 5px;
+}
+.pb-resp-pad-hint {
+  color: #737373;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  margin: 0;
+}
+.pb-resp-pad-grid {
+  display: grid;
+  gap: 0.5rem 0.5rem;
+  grid-template-columns: 1fr 1fr;
+}
+.pb-resp-pad-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+}
+.pb-resp-pad-label {
+  color: #737373;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  text-transform: capitalize;
+}
+.pb-resp-pad-clear {
+  align-items: center;
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: #737373;
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 0.6875rem;
+  gap: 0.25rem;
+  padding: 0.1875rem 0;
+}
+.pb-resp-pad-clear:hover {
+  color: #c2410c;
 }
 .page-builder-toast {
   align-items: center;
@@ -472,22 +741,13 @@ body {
   background: #ffffff;
   border: 1px solid #e6e6e6;
   border-radius: 0.5rem;
-  max-height: 12rem;
-  overflow: hidden;
+  max-height: 24rem;
+  overflow-y: auto;
   padding: 0.75rem;
-  pointer-events: none;
   position: relative;
 }
-.pb-rich-field-preview::after {
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0) 0%, #ffffff 100%);
-  bottom: 0;
-  content: "";
-  height: 3rem;
-  left: 0;
-  pointer-events: none;
-  position: absolute;
-  right: 0;
-}
+/* Fade-out was here — dropped now that the preview scrolls, since
+   the gradient made authors think the content had been truncated. */
 
 /* Modal shell */
 .pb-rich-modal-backdrop {

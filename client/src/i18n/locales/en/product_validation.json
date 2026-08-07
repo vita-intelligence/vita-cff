@@ -4,6 +4,12 @@
   "untitled_batch": "Untitled batch",
   "back": "Back to batch",
   "save": "Save changes",
+  "unsaved_changes": "Unsaved changes",
+  "all_saved": "All changes saved",
+  "sheet_title": "Product Validation Sheet",
+  "sheet_print": "Print",
+  "sheet_download": "Download PDF",
+  "sheet_loading": "Loading validation sheet…",
   "pass": "Pass",
   "fail": "Fail",
   "pending": "Pending",
@@ -87,12 +93,25 @@
     "colour": "Colour",
     "taste": "Taste",
     "odour": "Odour",
-    "judgement": "Overall"
+    "judgement": "Overall",
+    "colour_placeholder": "Amber gel, translucent…",
+    "taste_placeholder": "Sweet, mild citrus…",
+    "odour_placeholder": "Neutral, faint vanilla…"
   },
   "checklist": {
     "title": "MRPeasy readiness",
     "raw_materials": "Raw materials created",
     "finished_product": "Finished product created",
     "boms_verified": "BOMs verified"
+  },
+  "wizard": {
+    "step_label": "Step {current} of {total}",
+    "set_targets_for": "Set targets — {section}",
+    "targets_help": "These are the pass/fail criteria for this batch. Define them before recording any samples so the outcome can't be gamed after the fact.",
+    "back": "Back",
+    "next": "Next",
+    "start_validation": "Start validation",
+    "missing_targets_hint": "Fill every target field on each step before starting the validation.",
+    "missing_samples_hint": "Record samples for weight + disintegration and fill the organoleptic actuals (colour / taste / odour + pass) before you can mark this validation as passed."
   }
 }

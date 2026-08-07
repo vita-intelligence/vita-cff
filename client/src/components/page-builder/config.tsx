@@ -26,6 +26,11 @@ import type { CSSProperties, ReactNode } from "react";
 import { ColorField } from "./color-field";
 import { NumberField } from "./number-field";
 import { RichTextField } from "./rich-text-field";
+import {
+  ResponsivePaddingField,
+  normalizeResponsivePadding,
+  type ResponsivePadding,
+} from "./responsive-padding-field";
 
 
 // Small helper: build a Puck ``custom`` field bound to our
@@ -93,24 +98,56 @@ function toPx(value: number | string | undefined | null): string | undefined {
   return `${n}px`;
 }
 
-function paddingStyle(padding: {
-  top?: number | string;
-  right?: number | string;
-  bottom?: number | string;
-  left?: number | string;
-}): CSSProperties {
-  return {
-    paddingTop: toPx(padding.top),
-    paddingRight: toPx(padding.right),
-    paddingBottom: toPx(padding.bottom),
-    paddingLeft: toPx(padding.left),
+// Emit padding as CSS custom properties keyed by breakpoint. The
+// rules in ``globals.css`` (search for ``.pb-block``) resolve those
+// vars inside ``@container`` queries, so a block set to 48px top
+// padding on desktop and 16px on mobile actually renders that way
+// when the viewport toggle constrains the preview width — no iframe
+// needed. Legacy flat padding values are lifted to ``mobile`` by
+// ``normalizeResponsivePadding``.
+function paddingStyle(
+  padding: unknown,
+): CSSProperties {
+  const norm = normalizeResponsivePadding(padding);
+  const style: Record<string, string> = {};
+  const write = (
+    bp: "mobile" | "tablet" | "desktop",
+    set: ResponsivePadding["mobile"] | undefined,
+  ) => {
+    if (!set) return;
+    (["top", "right", "bottom", "left"] as const).forEach((side) => {
+      const px = toPx(set[side]);
+      if (px !== undefined) {
+        style[`--pad-${side[0]}-${bp}`] = px;
+      }
+    });
   };
+  write("mobile", norm.mobile);
+  write("tablet", norm.tablet);
+  write("desktop", norm.desktop);
+  return style as CSSProperties;
 }
 
 
 // ---------------------------------------------------------------------------
 // Block components + configs
 // ---------------------------------------------------------------------------
+
+
+// Puck v0.22 delivers ``type: "slot"`` fields to the render function
+// as a React COMPONENT (a function), not a rendered React node.
+// ``renderSlot`` handles both shapes so components stay
+// forward/backward compatible: earlier Puck versions passed a
+// ``ReactNode`` directly, current Puck passes a component to invoke.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function renderSlot(value: any): ReactNode {
+  if (value == null) return null;
+  if (typeof value === "function") {
+    const SlotComponent = value;
+    return <SlotComponent />;
+  }
+  return value as ReactNode;
+}
 
 
 interface SectionProps {
@@ -124,7 +161,14 @@ interface SectionProps {
   textColor: string;
   maxWidth: number | string;
   align: "left" | "center" | "right";
-  children: ReactNode;
+  // Puck fills ``content`` from the ``type: "slot"`` field declared
+  // below. In v0.22 the value is a React component (a function) that
+  // must be invoked as ``<Content />`` — see ``renderSlot`` above.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  content?: any;
+  // Legacy — early prototypes referenced ``children``. Kept in the
+  // type so a stray older render call doesn't blow up.
+  children?: ReactNode;
 }
 
 function Section({
@@ -133,6 +177,7 @@ function Section({
   textColor,
   maxWidth,
   align,
+  content,
   children,
 }: SectionProps) {
   // ``maxWidth: 0`` = full width (no cap). Anything positive caps
@@ -147,13 +192,17 @@ function Section({
       }}
     >
       <div
+        className="pb-block"
         style={{
           ...paddingStyle(padding),
           margin: "0 auto",
           maxWidth: capped === "0px" ? undefined : capped,
         }}
       >
-        {children}
+        {/* ``content`` is Puck's slot fill (a component in v0.22),
+            ``children`` is the legacy React node. renderSlot handles
+            both shapes safely. */}
+        {content != null ? renderSlot(content) : children}
       </div>
     </section>
   );
@@ -182,7 +231,7 @@ function Heading({ text, level, align, color, padding }: HeadingProps) {
         ? "1.75rem"
         : "1.375rem";
   return (
-    <div style={paddingStyle(padding)}>
+    <div className="pb-block" style={paddingStyle(padding)}>
       <Tag
         style={{
           color: color || undefined,
@@ -229,7 +278,7 @@ function Paragraph({
     : '<p style="color:#999">Type here — click the toolbar in the sidebar to format.</p>';
   return (
     <div
-      className="rich-content"
+      className="rich-content pb-block"
       style={{
         ...paddingStyle(padding),
         color: color || undefined,
@@ -274,14 +323,14 @@ function ImageBlock({
     return (
       <div
         style={{ ...paddingStyle(padding), ...alignStyle }}
-        className="text-sm text-neutral-400"
+        className="pb-block text-sm text-neutral-400"
       >
         [Image placeholder — paste an image URL in the sidebar]
       </div>
     );
   }
   return (
-    <div style={{ ...paddingStyle(padding), ...alignStyle }}>
+    <div className="pb-block" style={{ ...paddingStyle(padding), ...alignStyle }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={src}
@@ -316,14 +365,14 @@ function Video({ url, padding }: VideoProps) {
     return (
       <div
         style={paddingStyle(padding)}
-        className="text-sm text-neutral-400"
+        className="pb-block text-sm text-neutral-400"
       >
         [Video placeholder — paste a YouTube watch URL in the sidebar]
       </div>
     );
   }
   return (
-    <div style={paddingStyle(padding)}>
+    <div className="pb-block" style={paddingStyle(padding)}>
       <div
         style={{
           aspectRatio: "16 / 9",
@@ -422,7 +471,7 @@ function ButtonBlock({
             color: "#ffffff",
           };
   return (
-    <div style={{ ...paddingStyle(padding), ...alignStyle }}>
+    <div className="pb-block" style={{ ...paddingStyle(padding), ...alignStyle }}>
       <a
         href={href || "#"}
         style={{
@@ -454,7 +503,7 @@ interface DividerProps {
 
 function Divider({ color, thickness, padding }: DividerProps) {
   return (
-    <div style={paddingStyle(padding)}>
+    <div className="pb-block" style={paddingStyle(padding)}>
       <hr
         style={{
           background: color || "#e6e6e6",
@@ -486,9 +535,14 @@ interface ColumnsProps {
     bottom: number | string;
     left: number | string;
   };
-  left: ReactNode;
-  middle: ReactNode;
-  right: ReactNode;
+  // Puck v0.22 delivers slot fields as components — accept anything
+  // and let ``renderSlot`` decide how to render.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  left: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  middle: any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  right: any;
 }
 
 function Columns({
@@ -509,9 +563,9 @@ function Columns({
         gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
       }}
     >
-      <div>{left}</div>
-      <div>{middle}</div>
-      {cols === 3 ? <div>{right}</div> : null}
+      <div>{renderSlot(left)}</div>
+      <div>{renderSlot(middle)}</div>
+      {cols === 3 ? <div>{renderSlot(right)}</div> : null}
     </div>
   );
 }
@@ -522,18 +576,25 @@ function Columns({
 // ---------------------------------------------------------------------------
 
 
-// Padding object field reused by every block. Four number inputs
-// so authors can type any value in pixels — free typing via the
-// custom ``pxField`` so ``0`` can be cleared like any other text.
+// Padding field — responsive (mobile / tablet / desktop tabs).
+// Value shape is normalized on read so existing flat-shape blocks
+// keep working; see ``responsive-padding-field.tsx``. The block
+// render function turns the value into CSS custom properties that
+// ``globals.css`` resolves via ``@container`` queries, so a mobile
+// vs desktop padding difference actually shows in the preview when
+// the viewport toggle constrains the canvas width.
 const paddingField = {
-  type: "object" as const,
-  label: "Padding (px)",
-  objectFields: {
-    top: pxField("Top"),
-    right: pxField("Right"),
-    bottom: pxField("Bottom"),
-    left: pxField("Left"),
-  },
+  type: "custom" as const,
+  label: "Padding (per breakpoint, px)",
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  render: ((props: any) => (
+    <ResponsivePaddingField
+      value={props.value}
+      onChange={props.onChange}
+      readOnly={props.readOnly}
+    />
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  )) as any,
 };
 
 
@@ -594,6 +655,10 @@ export const pageBuilderConfig: Config<any> = {
         textColor: colorField("Text color"),
         maxWidth: pxField("Max width (px, 0 = full)"),
         align: alignField,
+        // Drop zone — authors drag Headings / Paragraphs / Columns /
+        // etc. into the section. Puck renders the fill through the
+        // ``content`` render prop above.
+        content: { type: "slot", label: "Section content" },
       },
       defaultProps: {
         padding: { top: 48, right: 24, bottom: 48, left: 24 },

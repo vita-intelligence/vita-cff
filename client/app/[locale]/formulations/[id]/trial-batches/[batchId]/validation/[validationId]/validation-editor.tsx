@@ -12,12 +12,14 @@ import {
 import { useTranslations } from "next-intl";
 import {
   useCallback,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
 
+import { PassedValidationSheet } from "./passed-validation-sheet";
 import { SignatureDialog } from "@/components/ui/signature-dialog";
 import { Link, useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
@@ -141,16 +143,6 @@ export function ValidationEditor({
   );
   const [orgNotes, setOrgNotes] = useState(validation.organoleptic_test.notes);
 
-  const [checklistRaw, setChecklistRaw] = useState(
-    validation.mrpeasy_checklist.raw_materials_created,
-  );
-  const [checklistFinished, setChecklistFinished] = useState(
-    validation.mrpeasy_checklist.finished_product_created,
-  );
-  const [checklistBoms, setChecklistBoms] = useState(
-    validation.mrpeasy_checklist.boms_verified,
-  );
-
   const [notes, setNotes] = useState(validation.notes);
 
   const isBusy = updateMutation.isPending || transitionMutation.isPending;
@@ -185,11 +177,6 @@ export function ValidationEditor({
           },
           passed: orgPassed,
           notes: orgNotes,
-        },
-        mrpeasy_checklist: {
-          raw_materials_created: checklistRaw,
-          finished_product_created: checklistFinished,
-          boms_verified: checklistBoms,
         },
         notes,
       });
@@ -239,6 +226,177 @@ export function ValidationEditor({
   };
 
   const allowedNext = ALLOWED_VALIDATION_TRANSITIONS[validation.status] ?? [];
+
+  // While the validation is still in draft AND the operator can edit,
+  // render the targets wizard (3 steps for weight / disintegration /
+  // organoleptic spec fields). Once in_progress it flips to the full
+  // section-based editor so the scientist can record samples against
+  // the targets they set. Read-only viewers always see the section
+  // layout — the wizard is an editing affordance, not a viewer.
+  const isDraftWizard = validation.status === "draft" && canWrite;
+
+  // Once passed, the validation is a compliance artefact — render
+  // the WeasyPrint sheet in place of the editor so QA sees the
+  // final document form. The editor stays reachable via a rewind to
+  // in_progress (allowed transition).
+  const isPassedSheet = validation.status === "passed";
+
+  // Client-side mirror of the BE `_missing_target_fields` gate. Used
+  // by the wizard to disable the "Start validation" button and by the
+  // step tracker to show which step is still incomplete.
+  const missingTargets = collectMissingTargets({
+    weightTarget,
+    weightTolerance,
+    disintegrationLimit,
+    disintegrationTemp,
+    orgTargetColour,
+    orgTargetTaste,
+    orgTargetOdour,
+  });
+
+  // Draft is "dirty" when any local field differs from the last
+  // server snapshot. Powers the Save button's disabled state — no
+  // point offering to save something that's already saved.
+  const isDirty = useMemo(
+    () =>
+      draftDiffersFromServer({
+        server: validation,
+        weightTarget,
+        weightTolerance,
+        weightSamples,
+        weightNotes,
+        disintegrationLimit,
+        disintegrationTemp,
+        disintegrationSamples,
+        disintegrationNotes,
+        orgTargetColour,
+        orgTargetTaste,
+        orgTargetOdour,
+        orgActualColour,
+        orgActualTaste,
+        orgActualOdour,
+        orgPassed,
+        orgNotes,
+        notes,
+      }),
+    [
+      validation,
+      weightTarget,
+      weightTolerance,
+      weightSamples,
+      weightNotes,
+      disintegrationLimit,
+      disintegrationTemp,
+      disintegrationSamples,
+      disintegrationNotes,
+      orgTargetColour,
+      orgTargetTaste,
+      orgTargetOdour,
+      orgActualColour,
+      orgActualTaste,
+      orgActualOdour,
+      orgPassed,
+      orgNotes,
+      notes,
+    ],
+  );
+
+  // Live-recompute stats from the current draft state so the
+  // operator sees mean/std-dev/allowed-range/pass update the moment
+  // they type a sample — not only after Save. Server stats
+  // (`statsQuery`) are kept as a fallback for fields we don't
+  // compute locally.
+  const liveStats = useMemo(
+    () =>
+      computeLiveStats({
+        server: stats,
+        weightTarget,
+        weightTolerance,
+        weightSamples,
+        disintegrationLimit,
+        disintegrationSamples,
+        orgTargetColour,
+        orgTargetTaste,
+        orgTargetOdour,
+        orgActualColour,
+        orgActualTaste,
+        orgActualOdour,
+        orgPassed,
+      }),
+    [
+      stats,
+      weightTarget,
+      weightTolerance,
+      weightSamples,
+      disintegrationLimit,
+      disintegrationSamples,
+      orgTargetColour,
+      orgTargetTaste,
+      orgTargetOdour,
+      orgActualColour,
+      orgActualTaste,
+      orgActualOdour,
+      orgPassed,
+    ],
+  );
+
+  // Client-side mirror of the BE `_missing_sample_fields` gate. Used
+  // to disable the "Advance to passed" button while any section still
+  // lacks samples / actual readings. `failed` deliberately skips this
+  // check server-side, so we don't apply it to that button either.
+  const missingSamples = collectMissingSamples({
+    weightSamples,
+    disintegrationSamples,
+    orgActualColour,
+    orgActualTaste,
+    orgActualOdour,
+    orgPassed,
+  });
+
+  const startValidation = async () => {
+    // Persist the targets first so the BE has the latest values when
+    // it re-runs the gate. If save fails, don't attempt the transition
+    // — handleSave already surfaced the error.
+    setError(null);
+    try {
+      await updateMutation.mutateAsync({
+        weight_test: {
+          target_mg: parseNumberOrNull(weightTarget),
+          tolerance_pct: parseNumberOrZero(weightTolerance),
+          samples: entriesToSamples(weightSamples),
+          notes: weightNotes,
+        },
+        disintegration_test: {
+          limit_minutes: parseNumberOrNull(disintegrationLimit),
+          temperature_c: parseNumberOrNull(disintegrationTemp),
+          samples: entriesToSamples(disintegrationSamples),
+          notes: disintegrationNotes,
+        },
+        organoleptic_test: {
+          target: {
+            colour: orgTargetColour,
+            taste: orgTargetTaste,
+            odour: orgTargetOdour,
+          },
+          actual: {
+            colour: orgActualColour,
+            taste: orgActualTaste,
+            odour: orgActualOdour,
+          },
+          passed: orgPassed,
+          notes: orgNotes,
+        },
+        notes,
+      });
+    } catch (err) {
+      setError(extractApiErrorMessage(err, tErrors));
+      return;
+    }
+    // Now trigger the draft → in_progress transition. That opens the
+    // scientist signature dialog (see SIGNATURE_TRANSITIONS); the BE
+    // enforces the same missing-targets gate as a defense-in-depth.
+    await handleTransition("in_progress");
+  };
 
   return (
     <div className="mt-8 flex flex-col gap-6">
@@ -290,7 +448,7 @@ export function ValidationEditor({
         <div className="flex flex-wrap items-center gap-2">
           <StatusChip
             status={validation.status}
-            overall={stats.overall_passed}
+            overall={liveStats.overall_passed}
             tV={tV}
           />
           <Link
@@ -303,22 +461,41 @@ export function ValidationEditor({
         </div>
       </header>
 
-      {canWrite && allowedNext.length > 0 ? (
+      {canWrite && allowedNext.length > 0 && !isDraftWizard ? (
         <section className="flex flex-wrap items-center gap-2">
-          {allowedNext.map((next) => (
+          {allowedNext.map((next) => {
+            // Mirror BE gate: passing the validation while any
+            // section still lacks samples / actual readings would let
+            // the RD manager sign off on empty test data. Failing is
+            // still allowed early — bad weight doesn't force you to
+            // record disintegration + organoleptic first.
+            const blockedByMissingSamples =
+              next === "passed" && missingSamples.length > 0;
+            return (
             <Button
               key={next}
               type="button"
               variant="outline"
               size="sm"
               className="rounded-lg bg-ink-0 px-3 py-2 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-              isDisabled={isBusy}
+              isDisabled={isBusy || blockedByMissingSamples}
               onClick={() => handleTransition(next)}
             >
               {tV("advance_to")} {tV(`status.${next}` as "status.draft")}
             </Button>
-          ))}
+            );
+          })}
         </section>
+      ) : null}
+
+      {/* Missing samples hint when in_progress + user tried to pass */}
+      {canWrite &&
+      validation.status === "in_progress" &&
+      missingSamples.length > 0 ? (
+        <p className="flex items-start gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-900 ring-1 ring-inset ring-amber-500/30">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{tV("wizard.missing_samples_hint")}</span>
+        </p>
       ) : null}
 
       {error ? (
@@ -348,8 +525,39 @@ export function ValidationEditor({
         />
       </section>
 
+      {isDraftWizard && (
+        <TargetsWizardPanel
+          weightTarget={weightTarget}
+          weightTolerance={weightTolerance}
+          onWeightTargetChange={setWeightTarget}
+          onWeightToleranceChange={setWeightTolerance}
+          disintegrationLimit={disintegrationLimit}
+          disintegrationTemp={disintegrationTemp}
+          onDisintegrationLimitChange={setDisintegrationLimit}
+          onDisintegrationTempChange={setDisintegrationTemp}
+          orgTargetColour={orgTargetColour}
+          orgTargetTaste={orgTargetTaste}
+          orgTargetOdour={orgTargetOdour}
+          onOrgTargetColourChange={setOrgTargetColour}
+          onOrgTargetTasteChange={setOrgTargetTaste}
+          onOrgTargetOdourChange={setOrgTargetOdour}
+          missingFields={missingTargets}
+          isBusy={isBusy}
+          onStartValidation={startValidation}
+        />
+      )}
+
+      {isPassedSheet && (
+        <PassedValidationSheet
+          orgId={orgId}
+          validationId={validation.id}
+        />
+      )}
+
       {/* Weight test */}
-      <TestSection title={tV("weight.title")} passed={stats.weight.passed}>
+      {!isDraftWizard && !isPassedSheet && (
+      <>
+      <TestSection title={tV("weight.title")} passed={liveStats.weight.passed}>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <TextField
             label={tV("weight.target")}
@@ -370,9 +578,9 @@ export function ValidationEditor({
           <ReadOnlyField
             label={tV("weight.allowed_range")}
             value={
-              stats.weight.min_allowed_mg != null &&
-              stats.weight.max_allowed_mg != null
-                ? `${formatNumber(stats.weight.min_allowed_mg, 2)} – ${formatNumber(stats.weight.max_allowed_mg, 2)} mg`
+              liveStats.weight.min_allowed_mg != null &&
+              liveStats.weight.max_allowed_mg != null
+                ? `${formatNumber(liveStats.weight.min_allowed_mg, 2)} – ${formatNumber(liveStats.weight.max_allowed_mg, 2)} mg`
                 : "—"
             }
           />
@@ -390,19 +598,19 @@ export function ValidationEditor({
           removeLabel={tV("samples.remove")}
         />
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatCard label={tV("weight.n")} value={String(stats.weight.samples.length)} />
+          <StatCard label={tV("weight.n")} value={String(liveStats.weight.samples.length)} />
           <StatCard
             label={tV("weight.mean")}
-            value={stats.weight.mean != null ? `${formatNumber(stats.weight.mean, 2)} mg` : "—"}
+            value={liveStats.weight.mean != null ? `${formatNumber(liveStats.weight.mean, 2)} mg` : "—"}
           />
           <StatCard
             label={tV("weight.stdev")}
-            value={stats.weight.stdev != null ? `${formatNumber(stats.weight.stdev, 2)} mg` : "—"}
+            value={liveStats.weight.stdev != null ? `${formatNumber(liveStats.weight.stdev, 2)} mg` : "—"}
           />
           <StatCard
             label={tV("weight.out_of_range")}
             value={String(
-              stats.weight.per_sample_passed.filter((p) => !p).length,
+              liveStats.weight.per_sample_passed.filter((p) => !p).length,
             )}
           />
         </div>
@@ -417,7 +625,7 @@ export function ValidationEditor({
       {/* Disintegration test */}
       <TestSection
         title={tV("disintegration.title")}
-        passed={stats.disintegration.passed}
+        passed={liveStats.disintegration.passed}
       >
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           <TextField
@@ -439,8 +647,8 @@ export function ValidationEditor({
           <ReadOnlyField
             label={tV("disintegration.worst")}
             value={
-              stats.disintegration.worst_minutes != null
-                ? `${formatNumber(stats.disintegration.worst_minutes, 1)} ${tV("disintegration.minutes")}`
+              liveStats.disintegration.worst_minutes != null
+                ? `${formatNumber(liveStats.disintegration.worst_minutes, 1)} ${tV("disintegration.minutes")}`
                 : "—"
             }
           />
@@ -468,7 +676,7 @@ export function ValidationEditor({
       {/* Organoleptic test */}
       <TestSection
         title={tV("organoleptic.title")}
-        passed={stats.organoleptic.passed}
+        passed={liveStats.organoleptic.passed}
       >
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="flex flex-col gap-3">
@@ -539,33 +747,6 @@ export function ValidationEditor({
         />
       </TestSection>
 
-      {/* MRPeasy checklist */}
-      <TestSection
-        title={tV("checklist.title")}
-        passed={stats.checklist.passed}
-      >
-        <div className="flex flex-col gap-2 text-sm text-ink-1000">
-          <CheckboxRow
-            label={tV("checklist.raw_materials")}
-            checked={checklistRaw}
-            onChange={setChecklistRaw}
-            disabled={isReadOnly}
-          />
-          <CheckboxRow
-            label={tV("checklist.finished_product")}
-            checked={checklistFinished}
-            onChange={setChecklistFinished}
-            disabled={isReadOnly}
-          />
-          <CheckboxRow
-            label={tV("checklist.boms_verified")}
-            checked={checklistBoms}
-            onChange={setChecklistBoms}
-            disabled={isReadOnly}
-          />
-        </div>
-      </TestSection>
-
       {/* Overall notes */}
       <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
         <h2 className="text-sm font-medium text-ink-700">
@@ -582,20 +763,586 @@ export function ValidationEditor({
 
       {canWrite ? (
         <div className="sticky bottom-4 flex flex-wrap items-center justify-end gap-3 rounded-2xl bg-ink-0 px-4 py-3 shadow-md ring-1 ring-ink-200">
+          {isDirty ? (
+            <span className="mr-auto text-xs font-medium text-amber-700">
+              {tV("unsaved_changes")}
+            </span>
+          ) : (
+            <span className="mr-auto text-xs text-ink-500">
+              {tV("all_saved")}
+            </span>
+          )}
           <Button
             type="button"
             variant="primary"
             size="md"
-            className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
-            isDisabled={isBusy}
+            className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600 disabled:bg-ink-200 disabled:text-ink-500"
+            isDisabled={isBusy || !isDirty}
             onClick={handleSave}
           >
             {tV("save")}
           </Button>
         </div>
       ) : null}
+      </>
+      )}
     </div>
   );
+}
+
+
+// ---------------------------------------------------------------------------
+// Targets wizard — draft-mode-only
+// ---------------------------------------------------------------------------
+
+interface TargetsWizardPanelProps {
+  weightTarget: string;
+  weightTolerance: string;
+  onWeightTargetChange: (v: string) => void;
+  onWeightToleranceChange: (v: string) => void;
+  disintegrationLimit: string;
+  disintegrationTemp: string;
+  onDisintegrationLimitChange: (v: string) => void;
+  onDisintegrationTempChange: (v: string) => void;
+  orgTargetColour: string;
+  orgTargetTaste: string;
+  orgTargetOdour: string;
+  onOrgTargetColourChange: (v: string) => void;
+  onOrgTargetTasteChange: (v: string) => void;
+  onOrgTargetOdourChange: (v: string) => void;
+  missingFields: readonly string[];
+  isBusy: boolean;
+  onStartValidation: () => Promise<void> | void;
+}
+
+/**
+ * Three-step wizard rendered while the validation is in ``draft`` and
+ * the operator can edit. Walks the scientist through defining the
+ * pass/fail criteria (weight target/tolerance, disintegration limit/
+ * temperature, organoleptic descriptors) before any samples are
+ * recorded. The final step's "Start validation" fires the
+ * draft → in_progress transition, which prompts for the scientist's
+ * signature and syncs the state to PSP.
+ *
+ * The BE (`transition_status`) enforces the same missing-targets
+ * gate so a bug in the wizard can't ship a half-defined validation
+ * into `in_progress`.
+ */
+function TargetsWizardPanel(props: TargetsWizardPanelProps) {
+  const tV = useTranslations("product_validation");
+  const [step, setStep] = useState(0);
+
+  const stepDefs = [
+    {
+      key: "weight" as const,
+      title: tV("weight.title"),
+      fields: ["weight.target_mg", "weight.tolerance_pct"] as const,
+    },
+    {
+      key: "disintegration" as const,
+      title: tV("disintegration.title"),
+      fields: [
+        "disintegration.limit_minutes",
+        "disintegration.temperature_c",
+      ] as const,
+    },
+    {
+      key: "organoleptic" as const,
+      title: tV("organoleptic.title"),
+      fields: [
+        "organoleptic.target.colour",
+        "organoleptic.target.taste",
+        "organoleptic.target.odour",
+      ] as const,
+    },
+  ];
+
+  const currentStep = stepDefs[step] ?? stepDefs[0]!;
+  const isLastStep = step === stepDefs.length - 1;
+  const missingSet = new Set(props.missingFields);
+  const stepIsIncomplete = currentStep.fields.some((f) => missingSet.has(f));
+  const allTargetsFilled = props.missingFields.length === 0;
+
+  const handleNext = () => {
+    if (isLastStep) return;
+    setStep((s) => Math.min(s + 1, stepDefs.length - 1));
+  };
+  const handleBack = () => setStep((s) => Math.max(s - 1, 0));
+
+  return (
+    <section className="rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200">
+      {/* Step tracker */}
+      <ol className="flex flex-wrap items-center gap-2 text-xs font-medium text-ink-500">
+        {stepDefs.map((def, i) => {
+          const isCurrent = i === step;
+          const isDone = i < step;
+          const stepMissing = def.fields.some((f) => missingSet.has(f));
+          return (
+            <li key={def.key} className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setStep(i)}
+                className={
+                  "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 " +
+                  (isCurrent
+                    ? "bg-orange-500 text-ink-0"
+                    : isDone
+                      ? "bg-ink-100 text-ink-800"
+                      : "bg-ink-50 text-ink-500 hover:bg-ink-100")
+                }
+              >
+                <span
+                  className={
+                    "grid h-4 w-4 place-items-center rounded-full text-[10px] font-semibold " +
+                    (isCurrent
+                      ? "bg-ink-0/20 text-ink-0"
+                      : "bg-ink-0 text-ink-800 ring-1 ring-ink-200")
+                  }
+                >
+                  {i + 1}
+                </span>
+                <span>{def.title}</span>
+                {!stepMissing && !isCurrent ? (
+                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                ) : null}
+              </button>
+              {i < stepDefs.length - 1 ? (
+                <span aria-hidden className="h-px w-6 bg-ink-200" />
+              ) : null}
+            </li>
+          );
+        })}
+      </ol>
+
+      {/* Step header */}
+      <div className="mt-6 border-b border-ink-100 pb-3">
+        <p className="text-xs font-medium uppercase tracking-wide text-ink-500">
+          {tV("wizard.step_label", { current: step + 1, total: stepDefs.length })}
+        </p>
+        <h2 className="mt-1 text-lg font-semibold tracking-tight text-ink-1000">
+          {tV("wizard.set_targets_for", { section: currentStep.title })}
+        </h2>
+        <p className="mt-1 text-sm text-ink-500">
+          {tV("wizard.targets_help")}
+        </p>
+      </div>
+
+      {/* Step content */}
+      <div className="mt-5">
+        {currentStep.key === "weight" ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <TextField
+              label={tV("weight.target")}
+              value={props.weightTarget}
+              onChange={props.onWeightTargetChange}
+              placeholder="1270"
+              suffix="mg"
+            />
+            <TextField
+              label={tV("weight.tolerance")}
+              value={props.weightTolerance}
+              onChange={props.onWeightToleranceChange}
+              placeholder="10"
+              suffix="%"
+            />
+          </div>
+        ) : null}
+
+        {currentStep.key === "disintegration" ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <TextField
+              label={tV("disintegration.limit")}
+              value={props.disintegrationLimit}
+              onChange={props.onDisintegrationLimitChange}
+              placeholder="60"
+              suffix={tV("disintegration.minutes")}
+            />
+            <TextField
+              label={tV("disintegration.temperature")}
+              value={props.disintegrationTemp}
+              onChange={props.onDisintegrationTempChange}
+              placeholder="37"
+              suffix="°C"
+            />
+          </div>
+        ) : null}
+
+        {currentStep.key === "organoleptic" ? (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+            <TextField
+              label={tV("organoleptic.colour")}
+              value={props.orgTargetColour}
+              onChange={props.onOrgTargetColourChange}
+              placeholder={tV("organoleptic.colour_placeholder")}
+            />
+            <TextField
+              label={tV("organoleptic.taste")}
+              value={props.orgTargetTaste}
+              onChange={props.onOrgTargetTasteChange}
+              placeholder={tV("organoleptic.taste_placeholder")}
+            />
+            <TextField
+              label={tV("organoleptic.odour")}
+              value={props.orgTargetOdour}
+              onChange={props.onOrgTargetOdourChange}
+              placeholder={tV("organoleptic.odour_placeholder")}
+            />
+          </div>
+        ) : null}
+      </div>
+
+      {/* Footer */}
+      <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-ink-100 pt-4">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="rounded-lg px-3 py-2 text-sm font-medium text-ink-700 hover:bg-ink-50"
+          isDisabled={step === 0 || props.isBusy}
+          onClick={handleBack}
+        >
+          {tV("wizard.back")}
+        </Button>
+
+        {!isLastStep ? (
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            className="rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600"
+            isDisabled={props.isBusy || stepIsIncomplete}
+            onClick={handleNext}
+          >
+            {tV("wizard.next")}
+          </Button>
+        ) : (
+          <Button
+            type="button"
+            variant="primary"
+            size="md"
+            className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 font-medium text-ink-0 hover:bg-orange-600 disabled:bg-ink-200 disabled:text-ink-500"
+            isDisabled={props.isBusy || !allTargetsFilled}
+            onClick={() => {
+              void props.onStartValidation();
+            }}
+          >
+            <PlayCircle className="h-4 w-4" />
+            {tV("wizard.start_validation")}
+          </Button>
+        )}
+      </div>
+
+      {!allTargetsFilled ? (
+        <p className="mt-3 flex items-start gap-2 rounded-lg bg-ink-50 px-3 py-2 text-xs text-ink-600">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span>{tV("wizard.missing_targets_hint")}</span>
+        </p>
+      ) : null}
+    </section>
+  );
+}
+
+/**
+ * Compare the local draft state to the server snapshot. Returns true
+ * when any field differs — used to toggle the Save button. Uses the
+ * same normalisation as the save payload so a "1270" typed by the
+ * scientist matches ``target_mg: 1270`` from the server (not "1270" vs
+ * "1270.0" spurious).
+ */
+function draftDiffersFromServer(input: {
+  server: ProductValidationDto;
+  weightTarget: string;
+  weightTolerance: string;
+  weightSamples: readonly SampleEntry[];
+  weightNotes: string;
+  disintegrationLimit: string;
+  disintegrationTemp: string;
+  disintegrationSamples: readonly SampleEntry[];
+  disintegrationNotes: string;
+  orgTargetColour: string;
+  orgTargetTaste: string;
+  orgTargetOdour: string;
+  orgActualColour: string;
+  orgActualTaste: string;
+  orgActualOdour: string;
+  orgPassed: boolean | null;
+  orgNotes: string;
+  notes: string;
+}): boolean {
+  const numberOrNull = (raw: string): number | null => {
+    const trimmed = (raw ?? "").trim();
+    if (trimmed === "") return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  };
+  const numberOrZero = (raw: string): number => numberOrNull(raw) ?? 0;
+  const sameSamples = (
+    entries: readonly SampleEntry[],
+    server: readonly number[],
+  ): boolean => {
+    const local = entries
+      .map((e) => numberOrNull(e.raw))
+      .filter((n): n is number => n != null);
+    if (local.length !== server.length) return false;
+    for (let i = 0; i < local.length; i++) {
+      if (local[i] !== server[i]) return false;
+    }
+    return true;
+  };
+
+  const s = input.server;
+
+  if (numberOrNull(input.weightTarget) !== s.weight_test.target_mg) return true;
+  if (numberOrZero(input.weightTolerance) !== s.weight_test.tolerance_pct)
+    return true;
+  if (!sameSamples(input.weightSamples, s.weight_test.samples)) return true;
+  if ((input.weightNotes ?? "") !== (s.weight_test.notes ?? "")) return true;
+
+  if (numberOrNull(input.disintegrationLimit) !== s.disintegration_test.limit_minutes)
+    return true;
+  if (numberOrNull(input.disintegrationTemp) !== s.disintegration_test.temperature_c)
+    return true;
+  if (!sameSamples(input.disintegrationSamples, s.disintegration_test.samples))
+    return true;
+  if ((input.disintegrationNotes ?? "") !== (s.disintegration_test.notes ?? ""))
+    return true;
+
+  const org = s.organoleptic_test;
+  if ((input.orgTargetColour ?? "") !== (org.target.colour ?? "")) return true;
+  if ((input.orgTargetTaste ?? "") !== (org.target.taste ?? "")) return true;
+  if ((input.orgTargetOdour ?? "") !== (org.target.odour ?? "")) return true;
+  if ((input.orgActualColour ?? "") !== (org.actual.colour ?? "")) return true;
+  if ((input.orgActualTaste ?? "") !== (org.actual.taste ?? "")) return true;
+  if ((input.orgActualOdour ?? "") !== (org.actual.odour ?? "")) return true;
+  if (input.orgPassed !== org.passed) return true;
+  if ((input.orgNotes ?? "") !== (org.notes ?? "")) return true;
+
+  if ((input.notes ?? "") !== (s.notes ?? "")) return true;
+
+  return false;
+}
+
+
+/**
+ * Live client-side recompute of the ValidationStats payload from the
+ * current draft state — mean/std-dev/allowed-range/per-sample-passed
+ * etc. update the moment the scientist types a sample instead of
+ * only after Save. Mirrors the compute logic in
+ * ``apps/product_validation/services.py`` so the two views agree.
+ *
+ * When a field is unparseable in the local draft (e.g. mid-typing),
+ * we fall back to the last-known server value so the UI doesn't
+ * flash to "—".
+ */
+function computeLiveStats(input: {
+  server: ValidationStatsDto;
+  weightTarget: string;
+  weightTolerance: string;
+  weightSamples: readonly SampleEntry[];
+  disintegrationLimit: string;
+  disintegrationSamples: readonly SampleEntry[];
+  orgTargetColour: string;
+  orgTargetTaste: string;
+  orgTargetOdour: string;
+  orgActualColour: string;
+  orgActualTaste: string;
+  orgActualOdour: string;
+  orgPassed: boolean | null;
+}): ValidationStatsDto {
+  const parseNum = (raw: string): number | null => {
+    if (raw == null || raw.trim() === "") return null;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : null;
+  };
+  const samplesFromEntries = (entries: readonly SampleEntry[]): number[] =>
+    entries
+      .map((e) => parseNum(e.raw))
+      .filter((n): n is number => n != null);
+
+  const weightSamplesNum = samplesFromEntries(input.weightSamples);
+  const target = parseNum(input.weightTarget);
+  const tol = parseNum(input.weightTolerance);
+  const min =
+    target != null && tol != null ? target * (1 - tol / 100) : null;
+  const max =
+    target != null && tol != null ? target * (1 + tol / 100) : null;
+  const perSamplePassed =
+    min != null && max != null
+      ? weightSamplesNum.map((s) => s >= min && s <= max)
+      : weightSamplesNum.map(() => true);
+  const mean =
+    weightSamplesNum.length > 0
+      ? weightSamplesNum.reduce((a, b) => a + b, 0) / weightSamplesNum.length
+      : null;
+  const stdev =
+    weightSamplesNum.length >= 2 && mean != null
+      ? Math.sqrt(
+          weightSamplesNum.reduce((a, b) => a + (b - mean) ** 2, 0) /
+            (weightSamplesNum.length - 1),
+        )
+      : weightSamplesNum.length === 1
+        ? 0
+        : null;
+  const weightPassed: boolean | null =
+    weightSamplesNum.length === 0 || min == null || max == null
+      ? null
+      : perSamplePassed.every((p) => p);
+
+  // Disintegration passes when every sample is <= limit. Worst =
+  // slowest sample (highest minutes).
+  const disintegrationSamplesNum = samplesFromEntries(
+    input.disintegrationSamples,
+  );
+  const limit = parseNum(input.disintegrationLimit);
+  const disPerSamplePassed =
+    limit != null
+      ? disintegrationSamplesNum.map((s) => s <= limit)
+      : disintegrationSamplesNum.map(() => true);
+  const worst =
+    disintegrationSamplesNum.length > 0
+      ? Math.max(...disintegrationSamplesNum)
+      : null;
+  const disPassed: boolean | null =
+    disintegrationSamplesNum.length === 0 || limit == null
+      ? null
+      : disPerSamplePassed.every((p) => p);
+
+  // Organoleptic passes when scientist explicitly toggles pass AND
+  // all three actual descriptors are filled.
+  const orgActualFilled =
+    input.orgActualColour.trim() !== "" &&
+    input.orgActualTaste.trim() !== "" &&
+    input.orgActualOdour.trim() !== "";
+  const orgPassed: boolean | null =
+    input.orgPassed == null
+      ? null
+      : input.orgPassed === true
+        ? orgActualFilled
+        : false;
+
+  // Overall — matches BE fold: any section explicitly false ⇒ false;
+  // all sections explicitly true ⇒ true; otherwise null (in progress).
+  const outcomes = [weightPassed, disPassed, orgPassed];
+  const resolved = outcomes.filter((o): o is boolean => o != null);
+  const overallPassed: boolean | null =
+    resolved.length === 0
+      ? null
+      : resolved.some((o) => o === false)
+        ? false
+        : resolved.every((o) => o === true)
+          ? true
+          : null;
+
+  return {
+    ...input.server,
+    weight: {
+      ...input.server.weight,
+      target_mg: target,
+      tolerance_pct: tol ?? input.server.weight.tolerance_pct,
+      min_allowed_mg: min,
+      max_allowed_mg: max,
+      samples: weightSamplesNum,
+      per_sample_passed: perSamplePassed,
+      mean,
+      stdev,
+      passed: weightPassed,
+    },
+    disintegration: {
+      ...input.server.disintegration,
+      limit_minutes: limit,
+      samples: disintegrationSamplesNum,
+      per_sample_passed: disPerSamplePassed,
+      worst_minutes: worst,
+      passed: disPassed,
+    },
+    organoleptic: {
+      ...input.server.organoleptic,
+      target: {
+        colour: input.orgTargetColour,
+        taste: input.orgTargetTaste,
+        odour: input.orgTargetOdour,
+      },
+      actual: {
+        colour: input.orgActualColour,
+        taste: input.orgActualTaste,
+        odour: input.orgActualOdour,
+      },
+      passed: orgPassed,
+    },
+    overall_passed: overallPassed,
+  };
+}
+
+
+/**
+ * Client-side mirror of the BE `_missing_sample_fields` gate. Returns
+ * dot-paths of sample/actual fields still blank so the "Advance to
+ * passed" transition button can be disabled with a hint.
+ *
+ * The BE deliberately does NOT apply this to `failed` — bad early
+ * data doesn't force you to record every downstream sample first.
+ */
+function collectMissingSamples(input: {
+  weightSamples: readonly SampleEntry[];
+  disintegrationSamples: readonly SampleEntry[];
+  orgActualColour: string;
+  orgActualTaste: string;
+  orgActualOdour: string;
+  orgPassed: boolean | null;
+}): string[] {
+  const missing: string[] = [];
+  const stringBlank = (v: string) => v == null || v.trim() === "";
+  const hasSample = (entries: readonly SampleEntry[]) =>
+    entries.some((e) => e.raw.trim() !== "" && !Number.isNaN(Number(e.raw)));
+
+  if (!hasSample(input.weightSamples)) missing.push("weight.samples");
+  if (!hasSample(input.disintegrationSamples))
+    missing.push("disintegration.samples");
+  if (stringBlank(input.orgActualColour))
+    missing.push("organoleptic.actual.colour");
+  if (stringBlank(input.orgActualTaste))
+    missing.push("organoleptic.actual.taste");
+  if (stringBlank(input.orgActualOdour))
+    missing.push("organoleptic.actual.odour");
+  if (input.orgPassed === null) missing.push("organoleptic.passed");
+
+  return missing;
+}
+
+
+/**
+ * Client-side mirror of the BE `_missing_target_fields` gate. Returns
+ * dot-paths of target fields still blank so the wizard can dim the
+ * "Start validation" button + highlight the offending step.
+ */
+function collectMissingTargets(input: {
+  weightTarget: string;
+  weightTolerance: string;
+  disintegrationLimit: string;
+  disintegrationTemp: string;
+  orgTargetColour: string;
+  orgTargetTaste: string;
+  orgTargetOdour: string;
+}): string[] {
+  const missing: string[] = [];
+  const numericBlank = (v: string) =>
+    v == null || v.trim() === "" || Number.isNaN(Number(v));
+  const stringBlank = (v: string) => v == null || v.trim() === "";
+
+  if (numericBlank(input.weightTarget)) missing.push("weight.target_mg");
+  if (numericBlank(input.weightTolerance)) missing.push("weight.tolerance_pct");
+  if (numericBlank(input.disintegrationLimit))
+    missing.push("disintegration.limit_minutes");
+  if (numericBlank(input.disintegrationTemp))
+    missing.push("disintegration.temperature_c");
+  if (stringBlank(input.orgTargetColour))
+    missing.push("organoleptic.target.colour");
+  if (stringBlank(input.orgTargetTaste))
+    missing.push("organoleptic.target.taste");
+  if (stringBlank(input.orgTargetOdour))
+    missing.push("organoleptic.target.odour");
+
+  return missing;
 }
 
 
@@ -1042,32 +1789,6 @@ function StatCard({ label, value }: { label: string; value: string }) {
 }
 
 
-function CheckboxRow({
-  label,
-  checked,
-  onChange,
-  disabled,
-}: {
-  label: string;
-  checked: boolean;
-  onChange: (next: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className="flex items-center gap-2">
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 cursor-pointer rounded accent-orange-500 disabled:opacity-60"
-      />
-      <span>{label}</span>
-    </label>
-  );
-}
-
-
 function TriStateToggle({
   value,
   onChange,
@@ -1208,10 +1929,11 @@ function formatNumber(value: number, decimals: number): string {
   if (!Number.isFinite(value)) return String(value);
   const fixed = value.toFixed(decimals);
   const [whole, fraction] = fixed.split(".");
-  const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  if (!fraction) return grouped;
+  // No thousands separator — "." is the decimal mark; adding "," as
+  // grouping made "1,143" look like a decimal in a "," decimal locale.
+  if (!fraction) return whole!;
   const trimmed = fraction.replace(/0+$/, "");
-  return trimmed ? `${grouped}.${trimmed}` : grouped;
+  return trimmed ? `${whole}.${trimmed}` : whole!;
 }
 
 

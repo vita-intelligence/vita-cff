@@ -6,6 +6,8 @@ from apps.product_validation.api.views import (
     ValidationDetailView,
     ValidationForBatchView,
     ValidationListCreateView,
+    ValidationSheetHtmlView,
+    ValidationSheetPdfView,
     ValidationStatsView,
     ValidationStatusView,
 )
@@ -37,5 +39,15 @@ urlpatterns = [
         "organizations/<uuid:org_id>/trial-batches/<uuid:batch_id>/validation/",
         ValidationForBatchView.as_view(),
         name="validation-for-batch",
+    ),
+    path(
+        "organizations/<uuid:org_id>/product-validations/<uuid:validation_id>/sheet.html/",
+        ValidationSheetHtmlView.as_view(),
+        name="validation-sheet-html",
+    ),
+    path(
+        "organizations/<uuid:org_id>/product-validations/<uuid:validation_id>/sheet.pdf/",
+        ValidationSheetPdfView.as_view(),
+        name="validation-sheet-pdf",
     ),
 ]

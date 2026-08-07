@@ -1,0 +1,74 @@
+import { getTranslations, setRequestLocale } from "next-intl/server";
+
+import { ProtectedHeader } from "@/components/layout/protected-header";
+import { hasFlatCapability } from "@/lib/auth/capabilities";
+import {
+  getActiveOrganizationServer,
+  getCurrentUserServer,
+} from "@/lib/auth/server";
+import { redirectToLogin } from "@/lib/auth/redirects";
+import { redirect } from "@/i18n/navigation";
+
+import { SettingsShell } from "../settings-shell";
+import { computeAllowedSettingsTabs } from "../_shared/allowed-tabs";
+import { APP_VERSION } from "@/config/version";
+import { PageBuilderTemplatesTab } from "./page-builder-templates-tab";
+
+
+/**
+ * ``/settings/page-builder-templates`` — reshape rights on the RTG
+ * page-builder template library.
+ *
+ * Gate: :attr:`FormulationsCapability.MANAGE_PAGE_BUILDER_TEMPLATES`.
+ * Scientists with plain ``VIEW`` can still APPLY a template from the
+ * RTG page editor toolbar — this tab is only for editing the library
+ * itself. The backend enforces the same split.
+ */
+export default async function SettingsPageBuilderTemplatesPage({
+  params,
+}: {
+  params: Promise<{ locale: string }>;
+}) {
+  const { locale } = await params;
+  setRequestLocale(locale);
+
+  const user = await getCurrentUserServer();
+  if (!user) {
+    await redirectToLogin(locale);
+  }
+  const currentUser = user!;
+
+  const organization = await getActiveOrganizationServer();
+  if (
+    !hasFlatCapability(
+      organization,
+      "formulations",
+      "manage_page_builder_templates",
+    )
+  ) {
+    redirect({ href: "/settings", locale });
+  }
+
+  const allowedTabs = computeAllowedSettingsTabs(organization);
+  const tCommon = await getTranslations("common");
+
+  return (
+    <main className="min-h-dvh bg-ink-0 text-ink-1000">
+      <div className="mx-auto flex min-h-dvh max-w-5xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
+        <ProtectedHeader user={currentUser} />
+
+        <SettingsShell
+          activeTab="page-builder-templates"
+          allowedTabs={allowedTabs}
+        >
+          <PageBuilderTemplatesTab orgId={organization!.id} />
+        </SettingsShell>
+
+        <footer className="mt-auto flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
+          <span>v{APP_VERSION}</span>
+          <span>{tCommon("brand")}</span>
+        </footer>
+      </div>
+    </main>
+  );
+}

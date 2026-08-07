@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Product Validation Sheet — {{ formulation.name }}</title>
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 18mm 16mm 22mm;
+      @top-left {
+        content: "{{ sheet.code|default:'—' }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8.5pt;
+        color: #111;
+      }
+      @top-right {
+        content: "{{ report_date }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8.5pt;
+        color: #111;
+      }
+      @bottom-center {
+        content: "{{ organization_name }}";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8pt;
+        color: #111;
+      }
+      @bottom-right {
+        content: "Confidential Document";
+        font-family: Arial, "Helvetica Neue", sans-serif;
+        font-size: 8pt;
+        color: #111;
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: Arial, "Helvetica Neue", sans-serif;
+      font-size: 10pt;
+      line-height: 1.3;
+      color: #000;
+    }
+
+    h1.sheet-title {
+      text-align: center;
+      font-size: 14pt;
+      font-weight: 700;
+      margin: 0 0 2mm;
+    }
+    p.subtitle {
+      text-align: center;
+      font-size: 10pt;
+      margin: 0 0 8mm;
+    }
+    h2.section-title {
+      font-size: 10pt;
+      font-weight: 700;
+      text-decoration: underline;
+      margin: 5mm 0 2mm;
+    }
+
+    table.spec {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 3mm;
+      table-layout: fixed;
+    }
+    table.spec td, table.spec th {
+      border: 0.7pt solid #000;
+      padding: 1.2mm 2mm;
+      font-size: 9.5pt;
+      vertical-align: middle;
+    }
+    table.spec td.label,
+    table.spec th.label {
+      background: #ffc000;
+      font-weight: 700;
+      width: 44%;
+      white-space: nowrap;
+    }
+    table.spec td.value { text-align: center; }
+
+    table.data {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 3mm;
+    }
+    table.data th, table.data td {
+      border: 0.7pt solid #000;
+      padding: 1.2mm 2mm;
+      font-size: 9.5pt;
+      vertical-align: middle;
+    }
+    table.data thead th {
+      background: #ffc000;
+      font-weight: 700;
+      text-align: left;
+    }
+    table.data td.center { text-align: center; }
+
+    .verdict {
+      display: inline-block;
+      padding: 0.6mm 2mm;
+      font-weight: 700;
+      font-size: 9pt;
+      border: 0.7pt solid #000;
+    }
+    .verdict.pass { background: #c6efce; }
+    .verdict.fail { background: #ffc7ce; }
+    .verdict.pending { background: #fff2cc; }
+
+    .signatures h2.section-title { margin-bottom: 3mm; }
+    .sign-row {
+      display: flex;
+      gap: 6mm;
+      margin-bottom: 5mm;
+    }
+    .sign-row .cell {
+      flex: 1;
+      border: 0.7pt solid #000;
+      padding: 3mm;
+      min-height: 26mm;
+    }
+    .sign-row .role {
+      font-weight: 700;
+      font-size: 9.5pt;
+    }
+    .sign-row .signer {
+      font-size: 9pt;
+      margin-top: 1mm;
+    }
+    .sign-row .signed-at {
+      font-size: 8.5pt;
+      color: #555;
+      margin-top: 0.5mm;
+    }
+    .sign-row .signature-img {
+      margin-top: 2mm;
+      max-height: 14mm;
+      max-width: 100%;
+    }
+
+    .history-table td { vertical-align: top; }
+    .history-table .status-cell { white-space: nowrap; }
+
+    .footer-note {
+      margin-top: 6mm;
+      font-size: 8.5pt;
+      color: #444;
+      font-style: italic;
+    }
+  </style>
+</head>
+<body>
+  <h1 class="sheet-title">Product Validation Sheet</h1>
+  <p class="subtitle">
+    {{ formulation.name }} · v{{ formulation.version_number }}
+    {% if trial_batch.label %} · {{ trial_batch.label }}{% endif %}
+  </p>
+
+  <h2 class="section-title">Overview</h2>
+  <table class="spec">
+    <tr><td class="label">Formulation</td><td>{{ formulation.name }}</td></tr>
+    <tr><td class="label">Version</td><td>v{{ formulation.version_number }}</td></tr>
+    <tr><td class="label">Trial batch</td><td>{{ trial_batch.label|default:"—" }}</td></tr>
+    <tr>
+      <td class="label">Overall verdict</td>
+      <td>
+        {% if overall_passed is True %}
+          <span class="verdict pass">PASSED</span>
+        {% elif overall_passed is False %}
+          <span class="verdict fail">FAILED</span>
+        {% else %}
+          <span class="verdict pending">PENDING</span>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+
+  <h2 class="section-title">Weight test</h2>
+  <table class="spec">
+    <tr><td class="label">Target</td><td class="value">{{ weight.target_mg|default:"—" }} mg</td></tr>
+    <tr><td class="label">Tolerance</td><td class="value">{{ weight.tolerance_pct }}%</td></tr>
+    <tr><td class="label">Allowed range</td><td class="value">{{ weight.range_display }}</td></tr>
+    <tr><td class="label">Samples (n)</td><td class="value">{{ weight.samples|length }}</td></tr>
+    <tr><td class="label">Mean</td><td class="value">{{ weight.mean_display }}</td></tr>
+    <tr><td class="label">Std dev</td><td class="value">{{ weight.stdev_display }}</td></tr>
+    <tr><td class="label">Out of range</td><td class="value">{{ weight.out_of_range_count }}</td></tr>
+    <tr>
+      <td class="label">Verdict</td>
+      <td class="value">
+        {% if weight.passed is True %}<span class="verdict pass">PASS</span>
+        {% elif weight.passed is False %}<span class="verdict fail">FAIL</span>
+        {% else %}<span class="verdict pending">PENDING</span>{% endif %}
+      </td>
+    </tr>
+  </table>
+  {% if weight.sample_rows %}
+  <table class="data">
+    <thead>
+      <tr><th style="width:15mm">#</th><th>Sample (mg)</th><th style="width:22mm" class="center">In range?</th></tr>
+    </thead>
+    <tbody>
+      {% for row in weight.sample_rows %}
+      <tr>
+        <td class="center">{{ row.index }}</td>
+        <td class="center">{{ row.value }}</td>
+        <td class="center">{% if row.passed %}✓{% else %}✗{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if weight.notes %}<p><strong>Notes:</strong> {{ weight.notes }}</p>{% endif %}
+
+  <h2 class="section-title">Disintegration test</h2>
+  <table class="spec">
+    <tr><td class="label">Limit</td><td class="value">{{ disintegration.limit_minutes|default:"—" }} min</td></tr>
+    <tr><td class="label">Temperature</td><td class="value">{{ disintegration.temperature_c|default:"—" }} °C</td></tr>
+    <tr><td class="label">Samples (n)</td><td class="value">{{ disintegration.samples|length }}</td></tr>
+    <tr><td class="label">Worst case</td><td class="value">{{ disintegration.worst_display }}</td></tr>
+    <tr>
+      <td class="label">Verdict</td>
+      <td class="value">
+        {% if disintegration.passed is True %}<span class="verdict pass">PASS</span>
+        {% elif disintegration.passed is False %}<span class="verdict fail">FAIL</span>
+        {% else %}<span class="verdict pending">PENDING</span>{% endif %}
+      </td>
+    </tr>
+  </table>
+  {% if disintegration.sample_rows %}
+  <table class="data">
+    <thead>
+      <tr><th style="width:15mm">#</th><th>Sample (min)</th><th style="width:22mm" class="center">Within limit?</th></tr>
+    </thead>
+    <tbody>
+      {% for row in disintegration.sample_rows %}
+      <tr>
+        <td class="center">{{ row.index }}</td>
+        <td class="center">{{ row.value }}</td>
+        <td class="center">{% if row.passed %}✓{% else %}✗{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if disintegration.notes %}<p><strong>Notes:</strong> {{ disintegration.notes }}</p>{% endif %}
+
+  <h2 class="section-title">Organoleptic test</h2>
+  <table class="data">
+    <thead>
+      <tr>
+        <th style="width:22mm">Attribute</th>
+        <th>Target</th>
+        <th>Actual</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Colour</td>
+        <td>{{ organoleptic.target.colour|default:"—" }}</td>
+        <td>{{ organoleptic.actual.colour|default:"—" }}</td>
+      </tr>
+      <tr>
+        <td>Taste</td>
+        <td>{{ organoleptic.target.taste|default:"—" }}</td>
+        <td>{{ organoleptic.actual.taste|default:"—" }}</td>
+      </tr>
+      <tr>
+        <td>Odour</td>
+        <td>{{ organoleptic.target.odour|default:"—" }}</td>
+        <td>{{ organoleptic.actual.odour|default:"—" }}</td>
+      </tr>
+    </tbody>
+  </table>
+  <table class="spec">
+    <tr>
+      <td class="label">Verdict</td>
+      <td class="value">
+        {% if organoleptic.passed is True %}<span class="verdict pass">PASS</span>
+        {% elif organoleptic.passed is False %}<span class="verdict fail">FAIL</span>
+        {% else %}<span class="verdict pending">PENDING</span>{% endif %}
+      </td>
+    </tr>
+  </table>
+  {% if organoleptic.notes %}<p><strong>Notes:</strong> {{ organoleptic.notes }}</p>{% endif %}
+
+  {% if overall_notes %}
+  <h2 class="section-title">Overall notes</h2>
+  <p>{{ overall_notes|linebreaksbr }}</p>
+  {% endif %}
+
+  <div class="signatures">
+    <h2 class="section-title">Signatures</h2>
+    <div class="sign-row">
+      <div class="cell">
+        <div class="role">Scientist</div>
+        {% if scientist %}
+          <div class="signer">{{ scientist.name }}</div>
+          <div class="signed-at">{{ scientist.signed_at }}</div>
+          {% if scientist.signature_image %}
+            <img class="signature-img" src="{{ scientist.signature_image }}" alt="signature">
+          {% endif %}
+        {% else %}
+          <div class="signer" style="color:#888;">Not signed</div>
+        {% endif %}
+      </div>
+      <div class="cell">
+        <div class="role">R&amp;D Manager</div>
+        {% if rd_manager %}
+          <div class="signer">{{ rd_manager.name }}</div>
+          <div class="signed-at">{{ rd_manager.signed_at }}</div>
+          {% if rd_manager.signature_image %}
+            <img class="signature-img" src="{{ rd_manager.signature_image }}" alt="signature">
+          {% endif %}
+        {% else %}
+          <div class="signer" style="color:#888;">Not signed</div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <h2 class="section-title">Change history</h2>
+  {% if history %}
+  <table class="data history-table">
+    <thead>
+      <tr>
+        <th style="width:32mm">When</th>
+        <th style="width:38mm">Actor</th>
+        <th class="status-cell" style="width:44mm">Change</th>
+        <th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in history %}
+      <tr>
+        <td>{{ row.when }}</td>
+        <td>{{ row.actor_name }}</td>
+        <td class="status-cell">{{ row.summary }}</td>
+        <td>{{ row.notes|default:"—" }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="font-style:italic; color:#555;">No recorded changes.</p>
+  {% endif %}
+
+  <p class="footer-note">
+    This document is a compliance artefact — it captures the pass/fail
+    criteria, measured samples, sign-offs, and lifecycle history of
+    the trial batch's product validation. Digitally rendered from
+    the source-of-truth ProductValidation record.
+  </p>
+</body>
+</html>

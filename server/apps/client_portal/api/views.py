@@ -414,6 +414,7 @@ class PasswordResetRequestView(PortalPublicAPIView):
                 send_portal_password_reset_email(
                     to_email=issued.account.email,
                     plaintext_token=issued.plaintext_token,
+                    frontend=serializer.validated_data.get("frontend", "portal"),
                 )
             except Exception:  # noqa: BLE001 — log + degrade
                 logger.exception(

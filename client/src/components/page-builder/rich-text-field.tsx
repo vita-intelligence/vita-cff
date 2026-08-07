@@ -136,7 +136,12 @@ export function RichTextField({
                 onChange={setDraft}
                 disabled={readOnly}
                 placeholder="Type here — the toolbar has room to breathe now."
-                minHeight="60vh"
+                // No ``minHeight`` — the modal body already gives us
+                // ``height: 100%`` via ``.pb-rich-modal-body > *``.
+                // Passing a ``minHeight`` here would inline a
+                // ``min-height`` style that beats the flex sizing and
+                // makes the editor overflow the modal body when the
+                // viewport is short, breaking internal scroll.
               />
             </div>
           </div>

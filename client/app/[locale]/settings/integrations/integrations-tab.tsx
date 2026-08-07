@@ -25,6 +25,7 @@ import {
 } from "@/services/mrpeasy";
 import { PspCard } from "./psp-card";
 import { PspTokensCard } from "./psp-tokens-card";
+import { WebsiteTokensCard } from "./website-tokens-card";
 import {
   useClearWixCFFConfig,
   useSaveWixCFFConfig,
@@ -80,6 +81,10 @@ export function IntegrationsTab({
       {/* Reverse direction — PSP calls NPD. Mint tokens here that PSP
           admins paste into their own R&D integration settings card. */}
       <PspTokensCard organization={organization} />
+      {/* Marketing website (supplementmanufacture.co.uk) calls NPD
+          to read the published RTG catalogue. Mint tokens here + paste
+          into the site's ``NPD_WEBSITE_TOKEN`` env var. */}
+      <WebsiteTokensCard organization={organization} />
       <MrpeasyCard orgId={organization.id} />
       <WixCFFCard orgId={organization.id} />
     </section>

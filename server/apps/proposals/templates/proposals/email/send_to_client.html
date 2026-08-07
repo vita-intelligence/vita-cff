@@ -2,8 +2,8 @@
 {% load proposals_email_extras %}
 
 {% block subject %}{{ proposal.code }}{% endblock %}
-{% block preheader %}Your Vita Manufacture proposal {{ proposal.code }} is ready to review.{% endblock %}
-{% block brandmark %}VITA MANUFACTURE &middot; {{ proposal.code }}{% endblock %}
+{% block preheader %}Your proposal {{ proposal.code }} is ready to review.{% endblock %}
+{% block brandmark %}PROPOSAL &middot; {{ proposal.code }}{% endblock %}
 {% block heading %}Your proposal is ready{% endblock %}
 
 {% block intro %}
@@ -34,4 +34,4 @@ Kind regards,<br /><b style="color:#1a1a1a;">{{ sales_person_name }}</b>{% if sa
 {% endif %}
 {% endblock %}
 
-{% block footer %}Vita Manufacture &middot; sent because you have a live proposal with us.{% endblock %}
+{% block footer %}Sent because you have a live proposal with us.{% endblock %}

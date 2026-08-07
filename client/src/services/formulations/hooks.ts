@@ -39,14 +39,24 @@ import {
   linkCustomerToProject,
   unlinkCFFFromProject,
   unlinkCustomerFromProject,
+  applyPageBuilderTemplate,
   applyStageTemplate,
+  createPageBuilderTemplate,
   createStageTemplate,
+  deletePageBuilderTemplate,
   deleteStageTemplate,
+  fetchPageBuilderTemplate,
+  fetchPageBuilderTemplates,
   fetchStageTemplates,
+  updatePageBuilderTemplate,
   updateStageTemplate,
+  type ApplyPageBuilderTemplateResponseDto,
   type ApplyStageTemplateResponseDto,
+  type PageBuilderTemplateDto,
+  type PageBuilderTemplateListResponseDto,
   type StageTemplateDto,
   type StageTemplateListResponseDto,
+  type UpsertPageBuilderTemplateRequestDto,
   type UpsertStageTemplateRequestDto,
   pullPspBomIntoFormulation,
   type PullPspBomResponseDto,
@@ -188,6 +198,15 @@ export const formulationsQueryKeys = {
     ] as const,
   stageTemplates: (orgId: string) =>
     [...formulationsQueryKeys.all, orgId, "stage-templates"] as const,
+  pageBuilderTemplates: (orgId: string) =>
+    [...formulationsQueryKeys.all, orgId, "page-builder-templates"] as const,
+  pageBuilderTemplate: (orgId: string, templateId: string) =>
+    [
+      ...formulationsQueryKeys.all,
+      orgId,
+      "page-builder-templates",
+      templateId,
+    ] as const,
 } as const;
 
 export function useFormulations(
@@ -1399,6 +1418,143 @@ export function useDeleteStageTemplate(
     onSuccess: () => {
       queryClient.invalidateQueries({
         queryKey: formulationsQueryKeys.stageTemplates(orgId),
+      });
+    },
+  });
+}
+
+
+// ---- Page-builder templates ---------------------------------------
+
+/** List all templates for the org — drives the settings tab + the
+ *  RTG editor's "Apply template" picker. */
+export function usePageBuilderTemplates(
+  orgId: string,
+  args: { enabled?: boolean } = {},
+): UseQueryResult<PageBuilderTemplateListResponseDto, ApiError> {
+  const { enabled = true } = args;
+  return useQuery<PageBuilderTemplateListResponseDto, ApiError>({
+    queryKey: formulationsQueryKeys.pageBuilderTemplates(orgId),
+    queryFn: () => fetchPageBuilderTemplates(orgId),
+    enabled: Boolean(orgId) && enabled,
+    staleTime: 10 * 60 * 1000,
+  });
+}
+
+
+/** Fetch one template's full content — used by the editor route
+ *  when opening a template for edit. */
+export function usePageBuilderTemplate(
+  orgId: string,
+  templateId: string | null,
+): UseQueryResult<PageBuilderTemplateDto, ApiError> {
+  return useQuery<PageBuilderTemplateDto, ApiError>({
+    queryKey: formulationsQueryKeys.pageBuilderTemplate(
+      orgId,
+      templateId ?? "",
+    ),
+    queryFn: () => fetchPageBuilderTemplate(orgId, templateId as string),
+    enabled: Boolean(orgId) && Boolean(templateId),
+    staleTime: 60 * 1000,
+  });
+}
+
+
+export function useCreatePageBuilderTemplate(
+  orgId: string,
+): UseMutationResult<
+  PageBuilderTemplateDto,
+  ApiError,
+  UpsertPageBuilderTemplateRequestDto
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    PageBuilderTemplateDto,
+    ApiError,
+    UpsertPageBuilderTemplateRequestDto
+  >({
+    mutationFn: (payload) => createPageBuilderTemplate(orgId, payload),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.pageBuilderTemplates(orgId),
+      });
+    },
+  });
+}
+
+
+export function useUpdatePageBuilderTemplate(
+  orgId: string,
+): UseMutationResult<
+  PageBuilderTemplateDto,
+  ApiError,
+  {
+    templateId: string;
+    patch: Partial<UpsertPageBuilderTemplateRequestDto>;
+  }
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    PageBuilderTemplateDto,
+    ApiError,
+    {
+      templateId: string;
+      patch: Partial<UpsertPageBuilderTemplateRequestDto>;
+    }
+  >({
+    mutationFn: ({ templateId, patch }) =>
+      updatePageBuilderTemplate(orgId, templateId, patch),
+    onSuccess: (updated) => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.pageBuilderTemplates(orgId),
+      });
+      queryClient.setQueryData(
+        formulationsQueryKeys.pageBuilderTemplate(orgId, updated.id),
+        updated,
+      );
+    },
+  });
+}
+
+
+export function useDeletePageBuilderTemplate(
+  orgId: string,
+): UseMutationResult<void, ApiError, string> {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (templateId: string) =>
+      deletePageBuilderTemplate(orgId, templateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.pageBuilderTemplates(orgId),
+      });
+    },
+  });
+}
+
+
+/** Overwrite a formulation's rtg_page_content with a template. On
+ *  success, invalidate the formulation detail so the page-builder
+ *  editor re-mounts with the new seed content. */
+export function useApplyPageBuilderTemplate(
+  orgId: string,
+  formulationId: string,
+): UseMutationResult<
+  ApplyPageBuilderTemplateResponseDto,
+  ApiError,
+  string
+> {
+  const queryClient = useQueryClient();
+  return useMutation<
+    ApplyPageBuilderTemplateResponseDto,
+    ApiError,
+    string
+  >({
+    mutationFn: (templateId) =>
+      applyPageBuilderTemplate(orgId, formulationId, templateId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: formulationsQueryKeys.detail(orgId, formulationId),
       });
     },
   });

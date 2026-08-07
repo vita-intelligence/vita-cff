@@ -202,7 +202,7 @@ def send_proposal_activation_code_email(
         )
         return
 
-    subject = f"Your Vita Manufacture verification code · {code}"
+    subject = f"Your verification code · {code}"
     intro_html = (
         f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
         f"<p style=\"margin-top:12px;margin-bottom:0;\">Your 6-digit "
@@ -244,13 +244,13 @@ def send_portal_registration_code_email(
         )
         return
 
-    subject = f"Your Vita Manufacture portal code · {code}"
+    subject = f"Your customer portal code · {code}"
     intro_html = (
         f"<p style=\"margin-top:0;margin-bottom:0;\">{_greeting(customer_company)}</p>"
         "<p style=\"margin-top:12px;margin-bottom:0;\">Thanks for signing "
-        "up to the Vita Manufacture customer portal. Your 6-digit "
-        "confirmation code is below — enter it on the registration page "
-        "to finish setting up your account.</p>"
+        "up to the customer portal. Your 6-digit confirmation code is "
+        "below — enter it on the registration page to finish setting up "
+        "your account.</p>"
     )
     html, text = render_email(
         subject=subject,
@@ -271,28 +271,51 @@ def send_portal_password_reset_email(
     *,
     to_email: str,
     plaintext_token: str,
+    frontend: str = "portal",
 ) -> None:
     """Send the forgot-password reset link.
 
-    Aimed at ``<APP_BASE_URL>/portal/reset/<token>``. Mirror of the
-    staff side (:mod:`apps.accounts.email`) but branded for the
-    customer surface.
+    ``frontend`` picks which UI hosts the reset page. Two whitelisted
+    values so a hand-crafted request can't inject an arbitrary
+    redirect:
+
+    * ``"portal"`` (default) — legacy customer portal at
+      ``<APP_BASE_URL>/portal/reset/<token>``.
+    * ``"website"`` — marketing site at
+      ``<WEBSITE_BASE_URL>/auth/reset-password?token=<token>``.
+      Falls back to the portal URL if ``WEBSITE_BASE_URL`` is unset
+      so a mis-config never emails a broken link.
     """
 
     if not to_email:
         return
 
-    base = _app_base_url() or "https://npd.vitaintelligent.com"
-    reset_url = f"{base}/portal/reset/{plaintext_token}"
-    subject = "Vita NPD — reset your portal password"
+    if frontend == "website":
+        website_base = (
+            getattr(settings, "WEBSITE_BASE_URL", "") or ""
+        ).rstrip("/")
+        if website_base:
+            reset_url = (
+                f"{website_base}/en-GB/auth/reset-password?token={plaintext_token}"
+            )
+        else:
+            # Fallback — keep the email deliverable even when the
+            # marketing site's base URL hasn't been wired up on this
+            # deployment yet.
+            base = _app_base_url() or "https://npd.vitaintelligent.com"
+            reset_url = f"{base}/portal/reset/{plaintext_token}"
+    else:
+        base = _app_base_url() or "https://npd.vitaintelligent.com"
+        reset_url = f"{base}/portal/reset/{plaintext_token}"
+    subject = "Reset your customer portal password"
     intro_html = (
         "<p style=\"margin-top:0;margin-bottom:0;\">Use the button below "
-        "to set a new password for your Vita portal account. The link "
-        "expires in 30 minutes.</p>"
+        "to set a new password for your customer portal account. The "
+        "link expires in 30 minutes.</p>"
     )
     html, text = render_email(
         subject=subject,
-        preheader="Reset your Vita portal password — link valid for 30 min.",
+        preheader="Reset your customer portal password — link valid for 30 min.",
         heading="Reset your password",
         intro_html=intro_html,
         cta=EmailCTA(label="Reset password", url=reset_url),

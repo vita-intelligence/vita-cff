@@ -176,20 +176,60 @@ def _hash_code(plaintext: str) -> str:
 
 
 def _resolve_single_active_org() -> Organization:
-    """Return the one ``is_active=True`` :class:`Organization`.
+    """Return the :class:`Organization` that should own a new self-
+    registered customer from the portal.
 
-    Production runs a single tenant (``Vita Manufacture Limited``)
-    and self-registration is only meaningful in that single-tenant
-    shape. The guard rejects both "no active org" and "multiple
-    active orgs" so a misconfiguration surfaces here rather than
-    routing a customer to a random tenant.
+    Resolution order:
 
-    Two queries (``.first()`` + ``.count()``) instead of a single
-    one because the count short-circuits the second hit when zero
-    rows exist — and the per-request overhead is one cheap index
-    scan against a tiny table.
+    1. ``settings.PORTAL_DEFAULT_ORG_ID`` — a specific tenant UUID.
+       Preferred because it's immune to renames. Must resolve to an
+       ``is_active=True`` row.
+    2. ``settings.PORTAL_DEFAULT_ORG_NAME`` — human-readable fallback,
+       matched case-insensitively. Same active-row requirement.
+    3. Auto-pick the single active org when exactly one exists.
+       Production is single-tenant (``Vita Manufacture Limited``) so
+       this is the everyday path.
+
+    Both env-configured paths raise ``NoActiveOrganization`` when
+    the pointer doesn't hit an active row — that's a misconfiguration
+    we want to surface loudly rather than silently falling back to
+    the auto-pick (which might route the customer to the wrong
+    tenant when dev DBs carry multiple active rows).
     """
 
+    from django.conf import settings
+
+    # (1) UUID pointer — most specific, immune to renames.
+    configured_id = getattr(settings, "PORTAL_DEFAULT_ORG_ID", None)
+    if configured_id:
+        org = Organization.objects.filter(
+            pk=configured_id,
+            is_active=True,
+        ).first()
+        if org is None:
+            raise NoActiveOrganization(
+                f"PORTAL_DEFAULT_ORG_ID={configured_id} does not "
+                "match an active organization row.",
+            )
+        return org
+
+    # (2) Name pointer — case-insensitive match on
+    #     ``Organization.name``. Handy in dev where UUIDs shift per
+    #     seeded DB but org names stay stable.
+    configured_name = getattr(settings, "PORTAL_DEFAULT_ORG_NAME", None)
+    if configured_name:
+        org = Organization.objects.filter(
+            name__iexact=configured_name,
+            is_active=True,
+        ).first()
+        if org is None:
+            raise NoActiveOrganization(
+                f"PORTAL_DEFAULT_ORG_NAME='{configured_name}' does not "
+                "match an active organization row.",
+            )
+        return org
+
+    # (3) No env pointer — enforce single-tenant shape.
     active = Organization.objects.filter(is_active=True)
     count = active.count()
     if count == 0:
@@ -200,7 +240,8 @@ def _resolve_single_active_org() -> Organization:
     if count > 1:
         raise MultipleActiveOrganizations(
             "Self-registration requires exactly one active organization; "
-            f"{count} are active.",
+            f"{count} are active. Set PORTAL_DEFAULT_ORG_ID or "
+            "PORTAL_DEFAULT_ORG_NAME to pin the target tenant.",
         )
     org = active.first()
     assert org is not None  # narrowed by the count check above

@@ -1,4 +1,4 @@
-Vita Manufacture · Final · Production authorisation
+Final · Production authorisation
 
 Hi{% if customer_name %} {{ customer_name }}{% endif %},
 
@@ -12,8 +12,8 @@ Review and sign here:
 {{ kiosk_url }}
 
 What happens after you sign: we start production planning and move you
-straight into label design — find the next steps in your Vita portal
-under Labels.
+straight into label design — find the next steps in your portal under
+Labels.
 
 {% if sales_person_name %}Kind regards,
 {{ sales_person_name }}{% if sales_person_email %}

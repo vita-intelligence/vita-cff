@@ -51,5 +51,18 @@ export function computeAllowedSettingsTabs(
   ) {
     tabs.push("stage-templates");
   }
+  // Page-builder template library — same rationale as stage
+  // templates: reshape rights sit with the permission admin; every
+  // scientist with EDIT can apply templates via the RTG editor
+  // toolbar without needing this cap.
+  if (
+    hasFlatCapability(
+      primaryOrg,
+      "formulations",
+      "manage_page_builder_templates",
+    )
+  ) {
+    tabs.push("page-builder-templates");
+  }
   return tabs;
 }

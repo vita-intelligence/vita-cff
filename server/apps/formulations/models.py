@@ -747,6 +747,50 @@ class Formulation(models.Model):
             "never drifts against a later catalog re-price."
         ),
     )
+    rtg_slug = models.SlugField(
+        _("RTG slug"),
+        max_length=180,
+        unique=True,
+        null=True,
+        blank=True,
+        help_text=_(
+            "URL-safe identifier for the marketing site's product "
+            "detail page (``/products/ready-to-go/<slug>``). Auto-"
+            "generated from ``rtg_display_name`` on first publish. "
+            "Once assigned it never rotates automatically — a rename "
+            "keeps the slug so external links + SEO don't rot. Staff "
+            "can override it manually if a URL must change; the "
+            "``unique`` constraint prevents collisions. Nullable so "
+            "unpublished / non-RTG formulations don't collide on an "
+            "empty-string default."
+        ),
+    )
+    rtg_sample_price = models.DecimalField(
+        _("RTG sample price"),
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text=_(
+            "Per-sample cost shown next to the base price on the "
+            "storefront. Charged separately from ``rtg_base_price`` — "
+            "sampling is a distinct transaction that lets a customer "
+            "evaluate the product before committing to an MOQ order. "
+            "Currency inherits ``rtg_currency_code``."
+        ),
+    )
+    rtg_sample_description = models.TextField(
+        _("RTG sample description"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Plain-text description of what the customer receives in a "
+            "sample — e.g. '3 sealed units in a labelled kit, no "
+            "outer packaging'. Rendered next to the sample price on "
+            "the product detail page so buyers know exactly what to "
+            "expect before requesting."
+        ),
+    )
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1997,6 +2041,107 @@ class FormulationStageTemplate(models.Model):
         return f"{self.name} ({self.organization_id})"
 
 
+class PageBuilderTemplate(models.Model):
+    """Per-organization reusable Puck page for the RTG product editor.
+
+    Staff creates a library of ready-to-drop page shapes (e.g.
+    'Supplement launch page', 'Beauty product page', 'Long-form
+    ingredient story'), and applies one when starting a new RTG
+    product's marketing page. The template's ``content`` JSON is a
+    Puck document — the same shape stored in
+    ``Formulation.rtg_page_content`` — so the apply flow is a
+    straight assignment with no field translation.
+
+    ``is_default`` marks the template surfaced in the picker with a
+    "recommended" chip. Enforced unique-per-org via a partial
+    constraint; toggling default on one row clears it on any prior
+    default (the service layer handles the swap atomically).
+
+    Only editable behind :attr:`FormulationsCapability.MANAGE_PAGE_BUILDER_TEMPLATES`.
+    Anyone with :attr:`FormulationsCapability.VIEW` can list + apply
+    templates via the RTG editor toolbar — only the library itself is
+    gated so a scientist can pick a template without holding admin
+    rights on the template store.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="page_builder_templates",
+    )
+    name = models.CharField(
+        _("template name"),
+        max_length=200,
+    )
+    description = models.TextField(
+        _("description"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Short summary shown under the template name in the "
+            "picker (e.g. 'Supplement long-form product page with "
+            "ingredient breakdown + trust rail')."
+        ),
+    )
+    #: Puck document JSON — mirrors the shape stored on
+    #: ``Formulation.rtg_page_content``. Applying the template is a
+    #: straight assignment onto that field.
+    content: models.JSONField = models.JSONField(
+        _("content"),
+        default=dict,
+        blank=True,
+    )
+    #: One-per-org "default" marker. The picker chip / new-page seed
+    #: use this. Uniqueness enforced by ``page_builder_template_single_default``
+    #: below — the service layer atomically clears any prior default
+    #: before setting a new one.
+    is_default = models.BooleanField(
+        _("is default"),
+        default=False,
+    )
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("page-builder template")
+        verbose_name_plural = _("page-builder templates")
+        ordering = ("-is_default", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("organization", "name"),
+                name="page_builder_template_unique_name_per_org",
+            ),
+            #: Only one default per organization. Partial unique index
+            #: on ``is_default=True`` — Postgres treats FALSE rows as
+            #: not participating so multiple non-default rows are fine.
+            models.UniqueConstraint(
+                fields=("organization",),
+                condition=models.Q(is_default=True),
+                name="page_builder_template_single_default",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.organization_id})"
+
+
 class PackagingCombo(models.Model):
     """A customer-selectable packaging bundle on an RTG formulation.
 
@@ -2134,3 +2279,184 @@ class PackagingComboItem(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"{self.item_id} × {self.quantity}"
+
+
+class CustomerOrder(models.Model):
+    """A customer-initiated order (or paid sample request) for one
+    published RTG SKU.
+
+    Created from the marketing site's product detail page after the
+    customer signs into the portal + confirms quantity / packaging /
+    delivery details. Sits in ``kind=order`` for a full production
+    order or ``kind=sample`` for a paid pre-purchase sample.
+
+    Deliberately independent of ``Proposal``/``CFF`` — those model
+    the R&D + quote journey for CUSTOM formulations. RTG orders skip
+    that entirely: the recipe is already frozen (via the final spec
+    sheet gate on ``publish_to_rtg_catalog``), so the "order" is
+    just "ship me N units at the published price."
+
+    Snapshot fields (``unit_price``, ``currency_code``, ``moq``) copy
+    from the ``Formulation`` at order time. Later re-pricing doesn't
+    retroactively change what the customer agreed to buy.
+    """
+
+    class Kind(models.TextChoices):
+        ORDER = "order", _("Order")
+        SAMPLE = "sample", _("Sample")
+
+    class Status(models.TextChoices):
+        # Customer-created; staff hasn't reviewed it yet.
+        NEW = "new", _("New")
+        # Staff has acknowledged + confirmed pricing/stock/lead time.
+        CONFIRMED = "confirmed", _("Confirmed")
+        # Manufacturing / picking / sample-packing underway.
+        IN_PRODUCTION = "in_production", _("In production")
+        # Handed to the courier.
+        SHIPPED = "shipped", _("Shipped")
+        # Customer withdrew or staff refused (out of scope, out of
+        # stock, credit hold, etc.). Terminal.
+        CANCELLED = "cancelled", _("Cancelled")
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="customer_orders",
+    )
+    customer = models.ForeignKey(
+        "customers.Customer",
+        on_delete=models.PROTECT,
+        related_name="customer_orders",
+        help_text=_(
+            "The CRM row for the buyer. PROTECT because customer "
+            "deletion should not silently orphan an order in the "
+            "middle of the production chain."
+        ),
+    )
+    formulation = models.ForeignKey(
+        Formulation,
+        on_delete=models.PROTECT,
+        related_name="customer_orders",
+        help_text=_(
+            "The published RTG SKU being ordered. PROTECT so a "
+            "catalog rework can't nuke an in-flight order — staff "
+            "must unpublish + reconcile explicitly."
+        ),
+    )
+    packaging_combo = models.ForeignKey(
+        PackagingCombo,
+        on_delete=models.PROTECT,
+        related_name="customer_orders",
+        null=True,
+        blank=True,
+        help_text=_(
+            "Which packaging combo the customer selected on the "
+            "storefront. NULL for samples (fixed sample kit) or for "
+            "SKUs published before the combo picker landed."
+        ),
+    )
+
+    kind = models.CharField(
+        _("kind"),
+        max_length=16,
+        choices=Kind.choices,
+        default=Kind.ORDER,
+        db_index=True,
+    )
+    status = models.CharField(
+        _("status"),
+        max_length=24,
+        choices=Status.choices,
+        default=Status.NEW,
+        db_index=True,
+    )
+
+    quantity = models.PositiveIntegerField(
+        _("quantity"),
+        default=1,
+        help_text=_(
+            "Number of units. For ``kind=order`` must be ≥ the "
+            "snapshotted ``moq``; the service layer enforces this. "
+            "For ``kind=sample`` the value is 1 — the sample cost "
+            "already covers whatever kit staff defines."
+        ),
+    )
+    unit_price = models.DecimalField(
+        _("unit price"),
+        max_digits=12,
+        decimal_places=2,
+        help_text=_(
+            "Snapshotted per-unit price at order time. For samples "
+            "this is the sample_price from the RTG. Locked in — "
+            "future catalogue re-pricing doesn't affect this order."
+        ),
+    )
+    currency_code = models.CharField(
+        _("currency code"),
+        max_length=3,
+        default="GBP",
+        help_text=_("ISO 4217. Snapshotted from the RTG at order time."),
+    )
+    moq_snapshot = models.PositiveIntegerField(
+        _("MOQ snapshot"),
+        null=True,
+        blank=True,
+        help_text=_(
+            "The Formulation's MOQ at the moment this order was "
+            "placed. Kept for audit — later MOQ changes don't affect "
+            "already-placed orders."
+        ),
+    )
+
+    delivery_address = models.TextField(
+        _("delivery address"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Free-text ship-to address. Kept as a single blob rather "
+            "than structured fields until we have a real logistics "
+            "layer — every downstream consumer just needs to render "
+            "or print it."
+        ),
+    )
+    notes = models.TextField(
+        _("customer notes"),
+        blank=True,
+        default="",
+        help_text=_(
+            "Anything the customer wants staff to see: special "
+            "delivery windows, expected launch date, label-approval "
+            "sequencing. Not visible to production ops until staff "
+            "reviews the order."
+        ),
+    )
+
+    created_by_account = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        related_name="+",
+        null=True,
+        blank=True,
+        help_text=_(
+            "The portal login that submitted the order. Nullable so "
+            "an account deactivation doesn't cascade-delete the "
+            "history — the ``customer`` FK still anchors ownership."
+        ),
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("customer order")
+        verbose_name_plural = _("customer orders")
+        ordering = ("-created_at",)
+        indexes = [
+            models.Index(fields=("organization", "-created_at")),
+            models.Index(fields=("customer", "-created_at")),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"{self.kind}:{self.formulation_id} × {self.quantity}"

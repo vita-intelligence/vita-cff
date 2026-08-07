@@ -6780,6 +6780,12 @@ def publish_to_rtg_catalog(
         # ``False`` is Django's "clear this file" sentinel on
         # ``ImageField``; anything else lands as the new upload.
         formulation.rtg_hero_image = hero
+    # Assign a URL slug on first publish. Only fires when the slug is
+    # still NULL — once assigned the value never rotates automatically,
+    # so a later rename doesn't rot external links / SEO. Staff can
+    # override via ``save_rtg_marketing`` if a URL must genuinely change.
+    if not formulation.rtg_slug:
+        formulation.rtg_slug = _generate_unique_rtg_slug(formulation)
     formulation.updated_by = actor
     formulation.save()
     record_audit(
@@ -6791,6 +6797,38 @@ def publish_to_rtg_catalog(
         after=snapshot(formulation),
     )
     return formulation
+
+
+def _generate_unique_rtg_slug(formulation: Formulation) -> str:
+    """Return a URL-safe slug for ``formulation`` that no other row
+    currently owns. Seeds from ``rtg_display_name`` (or ``code`` as a
+    fallback) and appends ``-2``, ``-3``, ... until a collision-free
+    value lands.
+
+    Never queries for the ID exclusion in the WHERE — the loop
+    fetches a fresh ``.exists()`` per candidate, which is O(k) with
+    k the number of collisions. Even in an adversarial dev DB, k
+    stays tiny in practice.
+    """
+    from django.utils.text import slugify
+
+    seed = (
+        formulation.rtg_display_name
+        or formulation.code
+        or str(formulation.id)[:8]
+    )
+    base = slugify(seed) or f"rtg-{str(formulation.id)[:8]}"
+    candidate = base
+    counter = 2
+    while (
+        Formulation.objects
+        .filter(rtg_slug=candidate)
+        .exclude(pk=formulation.pk)
+        .exists()
+    ):
+        candidate = f"{base}-{counter}"
+        counter += 1
+    return candidate
 
 
 @transaction.atomic
@@ -6906,6 +6944,52 @@ def save_rtg_marketing(
             .strip()
             .upper()[:3]
         )
+    # Sample fields (both optional): a paid sample price + a plain-text
+    # description of what the customer receives. Staff can leave the
+    # price blank if they don't offer samples on this SKU; the FE
+    # hides the sample CTA when it's null.
+    if "rtg_sample_price" in marketing_fields:
+        raw_price = marketing_fields.get("rtg_sample_price")
+        if raw_price in (None, ""):
+            formulation.rtg_sample_price = None
+        else:
+            try:
+                formulation.rtg_sample_price = Decimal(str(raw_price))
+            except (InvalidOperation, TypeError, ValueError):
+                # Loose-draft mode — keep the previous value on parse
+                # failure rather than blowing away good data. Publish
+                # step re-validates strictly if the sample is required.
+                pass
+    if "rtg_sample_description" in marketing_fields:
+        formulation.rtg_sample_description = str(
+            marketing_fields.get("rtg_sample_description") or ""
+        ).strip()
+    # Slug — staff-editable, but we validate + dedupe. Empty input
+    # clears back to NULL (i.e. the product loses its stable URL until
+    # the next publish auto-generates a new one).
+    if "rtg_slug" in marketing_fields:
+        from django.utils.text import slugify
+
+        raw_slug = marketing_fields.get("rtg_slug")
+        cleaned = slugify(str(raw_slug or "")).strip()[:180]
+        if not cleaned:
+            formulation.rtg_slug = None
+        else:
+            # Dedupe against every OTHER row — if the staff picked a
+            # slug that already belongs to another SKU, suffix -2/-3
+            # rather than 500'ing. The panel gets to show the final
+            # value on refresh.
+            candidate = cleaned
+            counter = 2
+            while (
+                Formulation.objects
+                .filter(rtg_slug=candidate)
+                .exclude(pk=formulation.pk)
+                .exists()
+            ):
+                candidate = f"{cleaned}-{counter}"
+                counter += 1
+            formulation.rtg_slug = candidate
     hero = marketing_fields.get("rtg_hero_image")
     if hero is not None:
         formulation.rtg_hero_image = hero

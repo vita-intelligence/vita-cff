@@ -2534,3 +2534,286 @@ class FormulationCreateFinalSpecView(APIView):
         overview = compute_project_overview(formulation)
         return Response(asdict(overview), status=status.HTTP_200_OK)
 
+
+# ---------------------------------------------------------------------------
+# Page-builder templates — org-owned library of Puck pages that seed
+# the RTG product editor via the "Apply template" button.
+# ---------------------------------------------------------------------------
+
+
+def _page_builder_template_payload(row: Any) -> dict[str, Any]:
+    """Wire shape for a page-builder template. Shared across list +
+    detail + create + update responses so every consumer sees the
+    same fields."""
+
+    return {
+        "id": str(row.id),
+        "name": row.name,
+        "description": row.description,
+        "is_default": bool(row.is_default),
+        "content": row.content or {},
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def _normalise_page_builder_content(raw: Any) -> dict[str, Any]:
+    """A Puck document is a plain JSON dict — accept whatever the
+    editor sends and only guard the top-level shape. Deep validation
+    would bind us to the Puck version, which drifts; keeping this
+    loose lets the FE + Puck upgrade in lockstep without a schema
+    migration here.
+    """
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("content must be an object")
+    return raw
+
+
+class PageBuilderTemplateListView(APIView):
+    """``GET`` list + ``POST`` create for the org's page-builder
+    templates.
+
+    ``GET`` is open to anyone with ``VIEW`` so scientists see the
+    picker in the RTG editor's "Apply template" menu. ``POST``
+    requires ``MANAGE_PAGE_BUILDER_TEMPLATES`` — reshape rights sit
+    with the workspace admin, mirroring the stage-template split.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        self.required_capability = (
+            FormulationsCapability.MANAGE_PAGE_BUILDER_TEMPLATES
+            if request.method == "POST"
+            else FormulationsCapability.VIEW
+        )
+        super().initial(request, *args, **kwargs)
+
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.formulations.models import PageBuilderTemplate
+
+        rows = PageBuilderTemplate.objects.filter(
+            organization=self.organization
+        ).order_by("-is_default", "name")
+        return Response(
+            {"items": [_page_builder_template_payload(row) for row in rows]},
+            status=status.HTTP_200_OK,
+        )
+
+    def post(self, request: Request, org_id: str) -> Response:
+        from apps.formulations.models import PageBuilderTemplate
+
+        raw = request.data if isinstance(request.data, dict) else {}
+        name = str(raw.get("name") or "").strip()
+        if not name:
+            return Response(
+                {"error": "invalid_payload", "detail": "name is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            content = _normalise_page_builder_content(raw.get("content"))
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_content", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if PageBuilderTemplate.objects.filter(
+            organization=self.organization, name=name
+        ).exists():
+            return Response(
+                {
+                    "error": "duplicate_name",
+                    "detail": "A template with this name already exists.",
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        # If flagged default, atomically clear any prior default so
+        # the partial-unique index doesn't trip.
+        is_default = bool(raw.get("is_default", False))
+        if is_default:
+            PageBuilderTemplate.objects.filter(
+                organization=self.organization, is_default=True
+            ).update(is_default=False)
+
+        template = PageBuilderTemplate.objects.create(
+            organization=self.organization,
+            name=name[:200],
+            description=str(raw.get("description") or "")[:2000],
+            content=content,
+            is_default=is_default,
+            created_by=request.user,
+            updated_by=request.user,
+        )
+        return Response(
+            _page_builder_template_payload(template),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class PageBuilderTemplateDetailView(APIView):
+    """``GET`` / ``PATCH`` / ``DELETE`` for a single template.
+
+    ``GET`` is open to ``VIEW`` (scientists fetch the full content
+    when they hit Apply). Everything else requires
+    ``MANAGE_PAGE_BUILDER_TEMPLATES``.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        self.required_capability = (
+            FormulationsCapability.VIEW
+            if request.method == "GET"
+            else FormulationsCapability.MANAGE_PAGE_BUILDER_TEMPLATES
+        )
+        super().initial(request, *args, **kwargs)
+
+    def _get(self, template_id: str) -> Any:
+        from apps.formulations.models import PageBuilderTemplate
+
+        row = PageBuilderTemplate.objects.filter(
+            organization=self.organization, id=template_id
+        ).first()
+        if row is None:
+            raise NotFound()
+        return row
+
+    def get(
+        self, request: Request, org_id: str, template_id: str
+    ) -> Response:
+        row = self._get(template_id)
+        return Response(
+            _page_builder_template_payload(row), status=status.HTTP_200_OK
+        )
+
+    def patch(
+        self, request: Request, org_id: str, template_id: str
+    ) -> Response:
+        from apps.formulations.models import PageBuilderTemplate
+
+        row = self._get(template_id)
+        raw = request.data if isinstance(request.data, dict) else {}
+
+        if "name" in raw:
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                return Response(
+                    {
+                        "error": "invalid_payload",
+                        "detail": "name cannot be blank",
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if (
+                PageBuilderTemplate.objects.filter(
+                    organization=self.organization, name=name
+                )
+                .exclude(id=row.id)
+                .exists()
+            ):
+                return Response(
+                    {
+                        "error": "duplicate_name",
+                        "detail": (
+                            "Another template with this name already exists."
+                        ),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+            row.name = name[:200]
+
+        if "description" in raw:
+            row.description = str(raw.get("description") or "")[:2000]
+
+        if "content" in raw:
+            try:
+                row.content = _normalise_page_builder_content(
+                    raw.get("content")
+                )
+            except ValueError as exc:
+                return Response(
+                    {"error": "invalid_content", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        if "is_default" in raw and bool(raw.get("is_default")) and not row.is_default:
+            # Atomically clear any current default before flipping
+            # this row on, so the partial-unique index accepts the
+            # update.
+            PageBuilderTemplate.objects.filter(
+                organization=self.organization, is_default=True
+            ).exclude(id=row.id).update(is_default=False)
+            row.is_default = True
+        elif "is_default" in raw and not bool(raw.get("is_default")):
+            row.is_default = False
+
+        row.updated_by = request.user
+        row.save()
+        return Response(
+            _page_builder_template_payload(row), status=status.HTTP_200_OK
+        )
+
+    def delete(
+        self, request: Request, org_id: str, template_id: str
+    ) -> Response:
+        row = self._get(template_id)
+        row.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class FormulationApplyPageBuilderTemplateView(APIView):
+    """``POST`` ``/.../formulations/<id>/apply-page-template/`` —
+    overwrite the formulation's ``rtg_page_content`` with the chosen
+    template's content. Idempotent — call it again with a different
+    template to swap. The response echoes the updated content so the
+    FE can refresh its Puck editor state in place.
+
+    Any staffer with ``EDIT`` can apply; owning the template library
+    (``MANAGE_PAGE_BUILDER_TEMPLATES``) is not required.
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, formulation_id: str
+    ) -> Response:
+        from apps.formulations.models import PageBuilderTemplate
+
+        try:
+            formulation = get_formulation(
+                organization=self.organization, formulation_id=formulation_id
+            )
+        except FormulationNotFound as exc:
+            raise NotFound() from exc
+
+        raw = request.data if isinstance(request.data, dict) else {}
+        template_id = str(raw.get("template_id") or "").strip()
+        if not template_id:
+            return Response(
+                {"error": "invalid_payload", "detail": "template_id required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        template = PageBuilderTemplate.objects.filter(
+            organization=self.organization, id=template_id
+        ).first()
+        if template is None:
+            raise NotFound()
+
+        formulation.rtg_page_content = template.content or {}
+        formulation.save(update_fields=["rtg_page_content"])
+        return Response(
+            {
+                "formulation_id": str(formulation.id),
+                "rtg_page_content": formulation.rtg_page_content,
+                "applied_template": _page_builder_template_payload(template),
+            },
+            status=status.HTTP_200_OK,
+        )
+

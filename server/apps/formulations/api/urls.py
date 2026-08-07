@@ -20,6 +20,7 @@ from apps.formulations.api.certificate_views import (
 )
 from apps.formulations.api.packaging_combo_views import PackagingCombosView
 from apps.formulations.api.views import (
+    FormulationApplyPageBuilderTemplateView,
     FormulationApplyStageTemplateView,
     FormulationApprovedVersionView,
     FormulationCFFCandidatesView,
@@ -43,6 +44,8 @@ from apps.formulations.api.views import (
     FormulationRoutingCostsView,
     FormulationVersionListView,
     FormulationWizardRoutingView,
+    PageBuilderTemplateDetailView,
+    PageBuilderTemplateListView,
     RtgCatalogCountsView,
     StageTemplateDetailView,
     StageTemplateListView,
@@ -163,6 +166,24 @@ urlpatterns = [
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/apply-stage-template/",
         FormulationApplyStageTemplateView.as_view(),
         name="formulation-apply-stage-template",
+    ),
+    # Page-builder templates — org-owned reusable Puck pages. List
+    # drives the "Apply template" picker on the RTG page-builder
+    # toolbar; apply overwrites the formulation's rtg_page_content.
+    path(
+        "organizations/<uuid:org_id>/page-builder-templates/",
+        PageBuilderTemplateListView.as_view(),
+        name="page-builder-template-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/page-builder-templates/<uuid:template_id>/",
+        PageBuilderTemplateDetailView.as_view(),
+        name="page-builder-template-detail",
+    ),
+    path(
+        "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/apply-page-template/",
+        FormulationApplyPageBuilderTemplateView.as_view(),
+        name="formulation-apply-page-template",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/sales-person/",

@@ -24,7 +24,7 @@
  * tags to ``_RTG_LONG_DESCRIPTION_TAGS`` server-side too.
  */
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditor, EditorContent, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Image from "@tiptap/extension-image";
@@ -92,7 +92,13 @@ export function RichTextEditor({
   onChange,
   placeholder = "Start writing…",
   disabled = false,
-  minHeight = "18rem",
+  // No default — leaving it ``undefined`` skips the inline
+  // ``min-height`` style, which is what lets a fixed-height parent
+  // (e.g. our modal that puts ``height: 100%`` on the child) drive
+  // the sizing without a competing inline min-height overriding
+  // ``min-h-0``. Standalone callers that want a starting height
+  // should pass an explicit ``minHeight``.
+  minHeight,
   softCharLimit = 8000,
 }: Props) {
   const editor = useEditor({
@@ -196,12 +202,33 @@ export function RichTextEditor({
   }
 
   return (
-    <div className="flex flex-col rounded-lg border border-ink-300 bg-white shadow-sm">
+    // Layout:
+    //   - Outer: ``flex h-full min-h-0 flex-col`` so the editor fills
+    //     whatever slot the parent gives it and flex children can
+    //     shrink. ``overflow-hidden`` keeps our own layout tidy.
+    //   - Middle scroll wrapper: ``flex-1 min-h-0 overflow-y-auto``
+    //     so a huge paste scrolls internally. ``min-h-0`` is critical
+    //     — without it the flex-1 default ``min-height: auto`` refuses
+    //     to shrink below the content's intrinsic height, pushing the
+    //     scroll wrapper past the modal viewport (the classic "I only
+    //     see the end of what I pasted" bug).
+    //   - ``minHeight`` (inline) applies ONLY when the caller passes
+    //     it — standalone use needs a starting height. When wrapped
+    //     in a fixed-height parent (e.g. our modal that sets
+    //     ``> * { height: 100% }`` on the child), the caller passes
+    //     no ``minHeight`` and the outer just fills the slot.
+    <div
+      className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border border-ink-300 bg-white shadow-sm"
+      style={minHeight ? { minHeight } : undefined}
+    >
       <Toolbar editor={editor} disabled={disabled} />
-      <div
-        className="overflow-y-auto"
-        style={{ minHeight, maxHeight: "32rem" }}
-      >
+      {/* Scroll surface — kept deliberately plain: a single block
+          box with ``overflow-y-auto`` and ``flex-1 min-h-0`` for
+          proper flex shrinking. ``EditorContent`` renders its own
+          div containing the ProseMirror node; letting both be
+          content-driven (no ``min-height: 100%`` cascades) is what
+          finally makes long documents scroll cleanly end-to-end. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <EditorContent editor={editor} />
       </div>
       <Footer editor={editor} softLimit={softCharLimit} />
@@ -216,6 +243,37 @@ export function RichTextEditor({
 
 
 function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
+  // Table-picker popover state — clicking the toolbar's Table button
+  // opens a small hover grid where the operator drags over cells to
+  // pick rows × cols (Google-Docs style). Closes on outside click.
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [tablePickerSize, setTablePickerSize] = useState<{
+    rows: number;
+    cols: number;
+  }>({ rows: 0, cols: 0 });
+  const tablePickerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!tablePickerOpen) return;
+    const onClick = (e: MouseEvent) => {
+      if (
+        tablePickerRef.current &&
+        !tablePickerRef.current.contains(e.target as Node)
+      ) {
+        setTablePickerOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTablePickerOpen(false);
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [tablePickerOpen]);
+
+
   const promptLink = useCallback(() => {
     const existing = editor.getAttributes("link").href as string | undefined;
     const url = window.prompt("Link URL", existing || "https://");
@@ -271,13 +329,24 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
     editor.chain().focus().toggleHighlight({ color: value }).run();
   }, [editor]);
 
-  const insertTable = useCallback(() => {
-    editor
-      .chain()
-      .focus()
-      .insertTable({ rows: 3, cols: 3, withHeaderRow: true })
-      .run();
-  }, [editor]);
+  const insertTableWithSize = useCallback(
+    (rows: number, cols: number) => {
+      // Clamp so a stray keystroke on the number inputs can't create
+      // a 999×999 nightmare table.
+      const safeRows = Math.max(1, Math.min(20, Math.floor(rows)));
+      const safeCols = Math.max(1, Math.min(10, Math.floor(cols)));
+      editor
+        .chain()
+        .focus()
+        .insertTable({
+          rows: safeRows,
+          cols: safeCols,
+          withHeaderRow: true,
+        })
+        .run();
+    },
+    [editor],
+  );
 
   const inTable = editor.isActive("table");
 
@@ -493,14 +562,121 @@ function Toolbar({ editor, disabled }: { editor: Editor; disabled: boolean }) {
       >
         <YoutubeIcon className="h-3.5 w-3.5" />
       </ToolbarButton>
-      <ToolbarButton
-        title="Insert table (3 × 3 with header row)"
-        active={inTable}
-        disabled={disabled}
-        onClick={insertTable}
-      >
-        <TableIcon className="h-3.5 w-3.5" />
-      </ToolbarButton>
+      {/* Insert-table button opens a size picker (drag over the grid
+          to pick rows × cols, or use the number inputs below). Click
+          outside or Esc closes without inserting. */}
+      <div className="relative">
+        <ToolbarButton
+          title="Insert table"
+          active={inTable}
+          disabled={disabled}
+          onClick={() => {
+            setTablePickerSize({ rows: 0, cols: 0 });
+            setTablePickerOpen((o) => !o);
+          }}
+        >
+          <TableIcon className="h-3.5 w-3.5" />
+        </ToolbarButton>
+        {tablePickerOpen ? (
+          <div
+            ref={tablePickerRef}
+            className="absolute top-full left-0 z-20 mt-1 rounded-lg border border-ink-200 bg-white p-3 shadow-lg"
+            onMouseLeave={() =>
+              setTablePickerSize({ rows: 0, cols: 0 })
+            }
+          >
+            <p className="mb-2 text-[11px] font-semibold text-ink-700">
+              Insert table
+              {tablePickerSize.rows > 0 && tablePickerSize.cols > 0
+                ? ` — ${tablePickerSize.rows} × ${tablePickerSize.cols}`
+                : ""}
+            </p>
+            {/* Hover grid — 8 rows × 10 cols max via cell hover. */}
+            <div
+              className="grid gap-0.5"
+              style={{
+                gridTemplateColumns: "repeat(10, 1.1rem)",
+                gridTemplateRows: "repeat(8, 1.1rem)",
+              }}
+            >
+              {Array.from({ length: 8 * 10 }).map((_, i) => {
+                const r = Math.floor(i / 10) + 1;
+                const c = (i % 10) + 1;
+                const active =
+                  r <= tablePickerSize.rows && c <= tablePickerSize.cols;
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onMouseEnter={() =>
+                      setTablePickerSize({ rows: r, cols: c })
+                    }
+                    onClick={() => {
+                      insertTableWithSize(r, c);
+                      setTablePickerOpen(false);
+                    }}
+                    className={
+                      active
+                        ? "rounded-sm border border-orange-500 bg-orange-100"
+                        : "rounded-sm border border-ink-200 bg-ink-50 hover:border-orange-300"
+                    }
+                    aria-label={`Insert ${r} by ${c} table`}
+                  />
+                );
+              })}
+            </div>
+            {/* Direct-input fallback for larger tables (up to 20×10)
+                or for keyboard-first authors. */}
+            <div className="mt-3 flex items-center gap-2">
+              <label className="flex items-center gap-1 text-[11px] text-ink-700">
+                Rows
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={tablePickerSize.rows || 3}
+                  onChange={(e) =>
+                    setTablePickerSize((s) => ({
+                      ...s,
+                      rows: Number(e.target.value) || 1,
+                    }))
+                  }
+                  className="w-14 rounded border border-ink-200 px-1.5 py-0.5 text-xs outline-none focus:border-orange-400"
+                />
+              </label>
+              <label className="flex items-center gap-1 text-[11px] text-ink-700">
+                Cols
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={tablePickerSize.cols || 3}
+                  onChange={(e) =>
+                    setTablePickerSize((s) => ({
+                      ...s,
+                      cols: Number(e.target.value) || 1,
+                    }))
+                  }
+                  className="w-14 rounded border border-ink-200 px-1.5 py-0.5 text-xs outline-none focus:border-orange-400"
+                />
+              </label>
+              <button
+                type="button"
+                onClick={() => {
+                  insertTableWithSize(
+                    tablePickerSize.rows || 3,
+                    tablePickerSize.cols || 3,
+                  );
+                  setTablePickerOpen(false);
+                }}
+                className="ml-auto rounded bg-orange-500 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-orange-600"
+              >
+                Insert
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
 
       {/* Contextual table controls — only surface when the caret sits
           inside a table so the toolbar isn't cluttered otherwise. */}

@@ -5,13 +5,13 @@
 
 {% block preheader %}Payment received for {{ project_name|default:project_code }}. Label design starts now.{% endblock %}
 
-{% block brandmark %}VITA MANUFACTURE &middot; PAYMENT RECEIVED{% endblock %}
+{% block brandmark %}PAYMENT RECEIVED{% endblock %}
 
 {% block heading %}Thanks{% if customer_name %}, {{ customer_name }}{% endif %} — your payment is confirmed.{% endblock %}
 
 {% block intro %}
 <p style="margin-top:0;margin-bottom:12px;">We&rsquo;ve received your payment for <b>{{ project_name|default:project_code }}</b>{% if amount %} ({{ amount_label }}){% endif %}.</p>
-<p style="margin-top:0;margin-bottom:0;">That unlocks the next step: <b>label design</b>. Head into your portal and choose whether Vita designs the label for you or whether you&rsquo;d like to design it yourself.</p>
+<p style="margin-top:0;margin-bottom:0;">That unlocks the next step: <b>label design</b>. Head into your portal and choose whether we design the label for you or whether you&rsquo;d like to design it yourself.</p>
 {% endblock %}
 
 {% block cta_block %}
@@ -58,4 +58,4 @@ Kind regards,<br /><b style="color:#1a1a1a;">{{ sales_person_name }}</b>{% if sa
 {% endif %}
 {% endblock %}
 
-{% block footer %}Vita Manufacture &middot; sent because we received your payment for {{ project_code }}.{% endblock %}
+{% block footer %}Sent because we received your payment for {{ project_code }}.{% endblock %}

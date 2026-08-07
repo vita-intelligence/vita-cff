@@ -580,6 +580,11 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     """
 
     id = serializers.UUIDField()
+    # URL-safe identifier the marketing site uses for the product
+    # detail page (``/products/ready-to-go/<slug>``). Nullable —
+    # unpublished / freshly-migrated rows may not have one yet, but
+    # every published RTG that comes through this endpoint will.
+    slug = serializers.CharField(source="rtg_slug", allow_null=True)
     # ``name`` is the customer-facing label: the marketing display
     # name if staff set one, otherwise the formulation's internal
     # name. Portal callers get one field to render — the fallback
@@ -608,6 +613,19 @@ class PortalRTGCatalogItemSerializer(serializers.Serializer):
     )
     currency_code = serializers.CharField(source="rtg_currency_code")
     moq = serializers.IntegerField(source="rtg_moq")
+    # Optional paid sample. ``sample_price = null`` means the SKU
+    # doesn't offer samples right now; the FE hides the sample CTA.
+    # Currency mirrors ``currency_code`` (samples are billed on the
+    # same tender as the main order).
+    sample_price = serializers.DecimalField(
+        source="rtg_sample_price",
+        max_digits=10,
+        decimal_places=2,
+        allow_null=True,
+    )
+    sample_description = serializers.CharField(
+        source="rtg_sample_description", allow_blank=True, default="",
+    )
     packaging_options = serializers.ListField(
         source="rtg_packaging_options",
         child=serializers.CharField(),

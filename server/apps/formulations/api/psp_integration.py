@@ -19,6 +19,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
+from apps.product_validation.models import ProductValidation
+from apps.product_validation.services import render_validation_html
 from apps.psp.token_services import verify_psp_access_token
 from apps.specifications.models import SpecificationSheet
 from apps.specifications.services import render_html
@@ -234,5 +236,59 @@ class LatestSpecSheetHtmlView(APIView):
         # serve the HTML from its own origin, so from the browser's
         # perspective this response is same-origin). Belt-and-braces
         # in case a caller ever embeds direct.
+        response["X-Frame-Options"] = "SAMEORIGIN"
+        return response
+
+
+class LatestValidationSheetHtmlView(APIView):
+    """``GET /api/psp-integration/validations/latest.html?trial_batch=…``.
+
+    PSP mirror of :class:`LatestSpecSheetHtmlView` — returns the
+    :class:`ProductValidation` sheet for a given ``trial_batch`` UUID
+    (PSP has the trial batch id on the MO, which is the natural key).
+    Returned as text/html for PSP to iframe on its Output QC / MO run
+    pages alongside the spec sheet.
+
+    Preference order for picking a validation:
+    1. Latest ``passed`` — that's the compliance artefact QA cares
+       about most.
+    2. Latest ``failed`` — surfaces the fail so QA can see why.
+    3. Otherwise nothing (404) — an in-progress/draft validation isn't
+       meaningful to embed on the PSP QC page yet.
+
+    Bearer chain matches :class:`InDevelopmentFormulationsView`.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def get(self, request: Request) -> HttpResponse:
+        token = _resolve_token(request)
+
+        raw_uuid = (request.query_params.get("trial_batch") or "").strip()
+        if not raw_uuid:
+            raise NotFound("trial_batch_required")
+
+        validations = ProductValidation.objects.filter(trial_batch_id=raw_uuid)
+        if token is not None:
+            validations = validations.filter(organization=token.organization)
+
+        passed = (
+            validations.filter(status="passed")
+            .order_by("-updated_at")
+            .first()
+        )
+        failed = (
+            validations.filter(status="failed")
+            .order_by("-updated_at")
+            .first()
+        )
+        chosen = passed or failed
+        if chosen is None:
+            raise NotFound("no_validation")
+
+        html = render_validation_html(chosen)
+        response = HttpResponse(html, content_type="text/html; charset=utf-8")
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response["X-Frame-Options"] = "SAMEORIGIN"
         return response

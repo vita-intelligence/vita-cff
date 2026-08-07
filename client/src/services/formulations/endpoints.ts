@@ -58,6 +58,12 @@ export const formulationsEndpoints = {
     `/api/organizations/${orgId}/formulation-stage-templates/${templateId}/`,
   applyStageTemplate: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/apply-stage-template/`,
+  pageBuilderTemplates: (orgId: string) =>
+    `/api/organizations/${orgId}/page-builder-templates/`,
+  pageBuilderTemplateDetail: (orgId: string, templateId: string) =>
+    `/api/organizations/${orgId}/page-builder-templates/${templateId}/`,
+  applyPageBuilderTemplate: (orgId: string, formulationId: string) =>
+    `/api/organizations/${orgId}/formulations/${formulationId}/apply-page-template/`,
   wizardRouting: (orgId: string, formulationId: string) =>
     `/api/organizations/${orgId}/formulations/${formulationId}/wizard-routing/`,
   photos: (orgId: string, formulationId: string) =>

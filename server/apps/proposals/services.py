@@ -1996,11 +1996,11 @@ def _render_and_send_proposal_email(
         if sales_person_email:
             plain_lines.append(sales_person_email)
         plain_lines.append("")
-    plain_lines.append(f"— Vita Manufacture · {proposal.code}")
+    plain_lines.append(f"— Proposal · {proposal.code}")
     plain_body = "\n".join(plain_lines)
 
     final_subject = (subject or "").strip() or (
-        f"Your proposal from Vita Manufacture — {proposal.code}"
+        f"Your proposal — {proposal.code}"
     )
 
     # ``Reply-To`` points at the sales person, not at the

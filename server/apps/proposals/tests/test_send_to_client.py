@@ -275,7 +275,7 @@ class TestSendProposalToClient:
 
         assert len(mailoutbox) == 1
         assert mailoutbox[0].subject == (
-            f"Your proposal from Vita Manufacture — {proposal.code}"
+            f"Your proposal — {proposal.code}"
         )
 
 

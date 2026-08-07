@@ -12,6 +12,7 @@ from django.urls import path
 from apps.formulations.api.psp_integration import (
     InDevelopmentFormulationsView,
     LatestSpecSheetHtmlView,
+    LatestValidationSheetHtmlView,
 )
 
 
@@ -28,5 +29,10 @@ urlpatterns = [
         "specifications/latest.html",
         LatestSpecSheetHtmlView.as_view(),
         name="specifications-latest-html",
+    ),
+    path(
+        "validations/latest.html",
+        LatestValidationSheetHtmlView.as_view(),
+        name="validations-latest-html",
     ),
 ]

@@ -65,6 +65,10 @@ urlpatterns = [
         include("apps.label_design.api.urls", namespace="label_design"),
     ),
     path("api/", include("apps.psp.api.urls", namespace="psp")),
+    # Website (marketing site) integration — token-mint settings +
+    # public catalogue reads. Mounted at ``/api/`` so URL names
+    # match the app's ``website:...`` namespace.
+    path("api/", include("apps.website.api.urls", namespace="website")),
     # Reverse integration surface — PSP presents a shared bearer
     # token here to read NPD state (e.g. the R&D in-development
     # project list that PSP's kanban renders as its leftmost column).

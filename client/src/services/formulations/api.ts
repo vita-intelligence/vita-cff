@@ -697,6 +697,104 @@ export async function applyStageTemplate(
 }
 
 
+// ---- Page-builder templates ---------------------------------------
+
+// A Puck document is an opaque JSON blob to us — leave it as
+// ``unknown`` so the settings editor + apply flow don't accidentally
+// couple to Puck's internal shape (which shifts across versions).
+export type PageBuilderTemplateContent = Record<string, unknown>;
+
+export interface PageBuilderTemplateDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string;
+  readonly is_default: boolean;
+  readonly content: PageBuilderTemplateContent;
+  readonly created_at: string;
+  readonly updated_at: string;
+}
+
+export interface PageBuilderTemplateListResponseDto {
+  readonly items: readonly PageBuilderTemplateDto[];
+}
+
+export interface UpsertPageBuilderTemplateRequestDto {
+  readonly name: string;
+  readonly description?: string;
+  readonly is_default?: boolean;
+  readonly content?: PageBuilderTemplateContent;
+}
+
+export interface ApplyPageBuilderTemplateResponseDto {
+  readonly formulation_id: string;
+  readonly rtg_page_content: PageBuilderTemplateContent;
+  readonly applied_template: PageBuilderTemplateDto;
+}
+
+export async function fetchPageBuilderTemplates(
+  orgId: string,
+): Promise<PageBuilderTemplateListResponseDto> {
+  const { data } = await apiClient.get<PageBuilderTemplateListResponseDto>(
+    formulationsEndpoints.pageBuilderTemplates(orgId),
+  );
+  return data;
+}
+
+export async function fetchPageBuilderTemplate(
+  orgId: string,
+  templateId: string,
+): Promise<PageBuilderTemplateDto> {
+  const { data } = await apiClient.get<PageBuilderTemplateDto>(
+    formulationsEndpoints.pageBuilderTemplateDetail(orgId, templateId),
+  );
+  return data;
+}
+
+export async function createPageBuilderTemplate(
+  orgId: string,
+  payload: UpsertPageBuilderTemplateRequestDto,
+): Promise<PageBuilderTemplateDto> {
+  const { data } = await apiClient.post<PageBuilderTemplateDto>(
+    formulationsEndpoints.pageBuilderTemplates(orgId),
+    payload,
+  );
+  return data;
+}
+
+export async function updatePageBuilderTemplate(
+  orgId: string,
+  templateId: string,
+  patch: Partial<UpsertPageBuilderTemplateRequestDto>,
+): Promise<PageBuilderTemplateDto> {
+  const { data } = await apiClient.patch<PageBuilderTemplateDto>(
+    formulationsEndpoints.pageBuilderTemplateDetail(orgId, templateId),
+    patch,
+  );
+  return data;
+}
+
+export async function deletePageBuilderTemplate(
+  orgId: string,
+  templateId: string,
+): Promise<void> {
+  await apiClient.delete(
+    formulationsEndpoints.pageBuilderTemplateDetail(orgId, templateId),
+  );
+}
+
+export async function applyPageBuilderTemplate(
+  orgId: string,
+  formulationId: string,
+  templateId: string,
+): Promise<ApplyPageBuilderTemplateResponseDto> {
+  const { data } = await apiClient.post<ApplyPageBuilderTemplateResponseDto>(
+    formulationsEndpoints.applyPageBuilderTemplate(orgId, formulationId),
+    { template_id: templateId },
+  );
+  return data;
+}
+
+
 // ---- Photos + files ------------------------------------------------
 
 export type FormulationPhotoPurpose = "internal" | "catalog";

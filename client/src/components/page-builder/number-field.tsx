@@ -26,6 +26,10 @@ interface NumberFieldProps {
   //: soft clamp on blur (we don't hard-block typing so the user
   //: can still delete every character to clear the field).
   readonly min?: number;
+  //: Placeholder shown when the field is empty. Used by the
+  //: responsive-padding field to hint at inherited breakpoint
+  //: values (e.g. "leave blank to inherit '16' from Mobile").
+  readonly placeholder?: string;
 }
 
 
@@ -34,6 +38,7 @@ export function NumberField({
   onChange,
   readOnly,
   min,
+  placeholder,
 }: NumberFieldProps) {
   const asString =
     typeof value === "number"
@@ -86,6 +91,7 @@ export function NumberField({
       inputMode="numeric"
       value={text}
       readOnly={readOnly}
+      placeholder={placeholder}
       onChange={(e) => handleChange(e.currentTarget.value)}
       onBlur={handleBlur}
       className="pb-number-field"

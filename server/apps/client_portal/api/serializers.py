@@ -100,6 +100,15 @@ class RegistrationConfirmRequestSerializer(serializers.Serializer):
 
 class PasswordResetRequestSerializer(serializers.Serializer):
     email = serializers.EmailField()
+    #: Which frontend hosts the reset UI. Drives which base URL the
+    #: reset email points at — either the legacy portal (default) or
+    #: the marketing website. Whitelisted server-side so a hand-crafted
+    #: body can't inject an arbitrary redirect.
+    frontend = serializers.ChoiceField(
+        choices=(("portal", "portal"), ("website", "website")),
+        default="portal",
+        required=False,
+    )
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):

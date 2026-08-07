@@ -5,8 +5,16 @@ from datetime import timedelta
 from pathlib import Path
 
 import dj_database_url
+from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from the server directory if present. ``override=False`` so
+# variables already set in the parent shell (e.g. via docker-compose,
+# systemd unit, or CI env-block) still win — the file is a fallback for
+# local dev, not an authoritative source in prod. No-op when the file
+# is missing.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -119,6 +127,12 @@ LOCAL_APPS = [
     # (formulation builder, proposal price hint) land in follow-up
     # PRs.
     "apps.psp",
+    # Website (marketing site) integration. Bearer-token surface for
+    # the Next.js marketing site to pull the published RTG catalogue
+    # server-side. Owner-only mint / revoke through
+    # ``/settings/integrations``; token verification lives in
+    # ``apps.website.token_services``.
+    "apps.website",
 ]
 
 INSTALLED_APPS = DJANGO_APPS + THIRD_PARTY_APPS + LOCAL_APPS
@@ -251,6 +265,18 @@ AUTH_COOKIE_REFRESH_NAME = "vita_refresh"
 # into staff app + previewing the portal in another tab).
 PORTAL_AUTH_COOKIE_ACCESS_NAME = "vita_portal_access"
 PORTAL_AUTH_COOKIE_REFRESH_NAME = "vita_portal_refresh"
+
+# Portal self-registration tenant target. Production is single-tenant
+# (one active ``Organization`` row) so the resolver falls through to
+# the "exactly one active org" auto-pick. Dev environments frequently
+# carry multiple test tenants — set one of these env vars to tell
+# self-registration which one owns new customers:
+#   PORTAL_DEFAULT_ORG_ID   : preferred, immune to renames (UUID)
+#   PORTAL_DEFAULT_ORG_NAME : fallback, matches on name
+# The resolver in ``apps.client_portal.registration_services`` reads
+# these when a customer signs up via /portal on the website.
+PORTAL_DEFAULT_ORG_ID = os.environ.get("PORTAL_DEFAULT_ORG_ID") or None
+PORTAL_DEFAULT_ORG_NAME = os.environ.get("PORTAL_DEFAULT_ORG_NAME") or None
 AUTH_COOKIE_DOMAIN: str | None = os.environ.get("AUTH_COOKIE_DOMAIN") or None
 AUTH_COOKIE_PATH = "/"
 AUTH_COOKIE_SECURE = _env_bool("AUTH_COOKIE_SECURE", default=not DEBUG)
