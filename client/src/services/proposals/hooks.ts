@@ -186,12 +186,20 @@ export const proposalsQueryKeys = {
  */
 export function useInfiniteProposals(
   orgId: string,
-  args: ProposalsListArgs & { readonly pageSize?: number } = {},
+  args: ProposalsListArgs & {
+    readonly pageSize?: number;
+    /** Override the default ``Boolean(orgId)`` gate — callers that
+     *  fan out one query per pipeline column pass ``false`` on
+     *  columns whose stage doesn't intersect the active status
+     *  filter so the query never fires for a bucket that must be
+     *  empty. */
+    readonly enabled?: boolean;
+  } = {},
 ): UseInfiniteQueryResult<
   InfiniteData<PaginatedProposalsDto, string | null>,
   ApiError
 > {
-  const { pageSize, ...filters } = args;
+  const { pageSize, enabled, ...filters } = args;
   return useInfiniteQuery<
     PaginatedProposalsDto,
     ApiError,
@@ -209,7 +217,7 @@ export function useInfiniteProposals(
     initialPageParam: null as string | null,
     getNextPageParam: (last) => last.next,
     getPreviousPageParam: (first) => first.previous,
-    enabled: Boolean(orgId),
+    enabled: Boolean(orgId) && (enabled ?? true),
   });
 }
 

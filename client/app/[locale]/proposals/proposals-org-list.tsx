@@ -10,13 +10,16 @@ import {
   X,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import type { UseInfiniteQueryResult, InfiniteData } from "@tanstack/react-query";
 
 import { Link } from "@/i18n/navigation";
+import type { ApiError } from "@/lib/api";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
   useDeleteProposal,
   useInfiniteProposals,
+  type PaginatedProposalsDto,
   type ProposalListItemDto,
   type ProposalStatus,
 } from "@/services/proposals";
@@ -24,6 +27,7 @@ import {
 import {
   ProposalsFilterBar,
   useProposalsFiltersState,
+  type ProposalsFiltersState,
   type ProposalsTemplateType,
 } from "./proposals-filter-bar";
 
@@ -46,33 +50,40 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
   // Backend queries on ``applied`` only — the pending state stays
   // local to the bar until the user hits Apply.
   const applied = filters.applied;
-  const {
-    data,
-    fetchNextPage,
-    hasNextPage,
-    isFetching,
-    isFetchingNextPage,
-    isLoading,
-  } = useInfiniteProposals(orgId, {
-    statuses: applied.statuses,
-    search: applied.search || undefined,
-    salesPersonId: applied.salesPersonId || undefined,
-    validUntilFrom: applied.validUntilFrom || undefined,
-    validUntilTo: applied.validUntilTo || undefined,
-    templateType: applied.templateType || undefined,
-  });
+
+  // Pipeline columns each fire their own paginated query so a big
+  // "Signed" archive can't starve the small "Needs attention" list
+  // (previously all four columns shared one cursor and the smaller
+  // buckets refused to fill until later pages arrived). Hooks must
+  // be unrolled — PIPELINE_STAGES is a fixed constant so the count
+  // stays the same across renders.
+  const needsAttentionQ = useStageInfiniteQuery(
+    orgId,
+    applied,
+    PIPELINE_STAGES[0]!,
+  );
+  const inFlightQ = useStageInfiniteQuery(
+    orgId,
+    applied,
+    PIPELINE_STAGES[1]!,
+  );
+  const signedQ = useStageInfiniteQuery(
+    orgId,
+    applied,
+    PIPELINE_STAGES[2]!,
+  );
+  const rejectedQ = useStageInfiniteQuery(
+    orgId,
+    applied,
+    PIPELINE_STAGES[3]!,
+  );
+  const stageQueries = useMemo(
+    () => [needsAttentionQ, inFlightQ, signedQ, rejectedQ] as const,
+    [needsAttentionQ, inFlightQ, signedQ, rejectedQ],
+  );
+
   const deleteMutation = useDeleteProposal(orgId);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  // Flatten the cursor pages into a single roster. ``useMemo`` keeps
-  // the array reference stable across re-renders that didn't touch
-  // the data — the row components are otherwise free to re-render
-  // on every parent paint, which is wasted work when only the
-  // filter bar's pending state changed.
-  const proposals: readonly ProposalListItemDto[] = useMemo(
-    () => data?.pages.flatMap((page) => page.results) ?? [],
-    [data],
-  );
 
   const handleDelete = useCallback(
     async (proposalId: string) => {
@@ -87,50 +98,7 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
     [deleteMutation, tErrors, tProposals],
   );
 
-  // IntersectionObserver-driven infinite scroll. A sentinel ``<li>``
-  // rendered just past the last row triggers ``fetchNextPage`` when
-  // it enters the viewport — the standard pagination pattern,
-  // without the layout fragility a window virtualiser would add for
-  // what is realistically a few-hundred-row list. The real perf win
-  // is server-side (pagination + dropped ``lines`` array); on the
-  // client, plain DOM rows perform fine until the page count is in
-  // the thousands, at which point swapping in a virtualiser is a
-  // localised change.
-  const sentinelRef = useRef<HTMLLIElement | null>(null);
-  useEffect(() => {
-    const node = sentinelRef.current;
-    if (!node) return;
-    if (!hasNextPage) return;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (
-            entry.isIntersecting &&
-            hasNextPage &&
-            !isFetchingNextPage &&
-            !isFetching
-          ) {
-            void fetchNextPage();
-            // One trigger per observe cycle — the next page's render
-            // re-mounts the sentinel below the new tail, which then
-            // arms a fresh observation. Avoids back-to-back fires
-            // while React is still committing the new rows.
-            break;
-          }
-        }
-      },
-      // ``rootMargin: 200px`` so the load fires while the sentinel
-      // is still ~200px below the viewport edge — the next page lands
-      // on screen before the user actually reaches the bottom, so
-      // scrolling feels continuous rather than stutter-loading at
-      // each cursor boundary.
-      { rootMargin: "200px" },
-    );
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [hasNextPage, isFetchingNextPage, isFetching, fetchNextPage]);
-
-  const showEmpty = !isLoading && proposals.length === 0;
+  const anyFetching = stageQueries.some((q) => q.isFetching);
 
   return (
     <section className="mt-6 rounded-2xl bg-ink-0 p-6 shadow-sm ring-1 ring-ink-200 md:p-8">
@@ -172,7 +140,7 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         <ProposalsFilterBar
           orgId={orgId}
           filters={filters}
-          isFetching={isFetching}
+          isFetching={anyFetching}
         />
       </div>
 
@@ -185,26 +153,55 @@ export function ProposalsOrgList({ orgId }: { orgId: string }) {
         </p>
       ) : null}
 
-      {/* Pipeline board — four side-by-side stage columns visible
-       *  at once. The single infinite-scroll query fetches every
-       *  status the filter bar allows, and we split client-side
-       *  into buckets so no column can hide a new order. Each
-       *  column has its own local search that further narrows its
-       *  bucket without disturbing the others.
+      {/* Pipeline board — four side-by-side stage columns, each
+       *  with its own paginated query and its own "Load more"
+       *  button. Per-column search stays client-side (filters the
+       *  bucket that's already loaded); the shared filter bar
+       *  above narrows every column's server request.
        */}
       <ProposalsPipeline
-        proposals={proposals}
-        isLoading={isLoading}
-        showEmpty={showEmpty}
+        stageQueries={stageQueries}
         appliedAnyActive={filters.appliedAnyActive}
-        hasNextPage={hasNextPage}
-        isFetchingNextPage={isFetchingNextPage}
-        sentinelRef={sentinelRef}
         onDelete={handleDelete}
         deletePending={deleteMutation.isPending}
       />
     </section>
   );
+}
+
+
+type StageInfiniteQuery = UseInfiniteQueryResult<
+  InfiniteData<PaginatedProposalsDto, string | null>,
+  ApiError
+>;
+
+
+function useStageInfiniteQuery(
+  orgId: string,
+  applied: ProposalsFiltersState,
+  stage: (typeof PIPELINE_STAGES)[number],
+): StageInfiniteQuery {
+  // Effective per-column statuses = intersection of the stage's
+  // fixed statuses and the user's status filter (or the stage's
+  // own list when no filter is applied). An empty intersection
+  // means the filter has ruled every status in this column out,
+  // so we disable the query rather than fetch a bucket we already
+  // know will be empty.
+  const stageStatuses = stage.statuses;
+  const effective = useMemo<readonly ProposalStatus[]>(() => {
+    if (applied.statuses.length === 0) return stageStatuses;
+    return stageStatuses.filter((s) => applied.statuses.includes(s));
+  }, [applied.statuses, stageStatuses]);
+
+  return useInfiniteProposals(orgId, {
+    statuses: effective,
+    search: applied.search || undefined,
+    salesPersonId: applied.salesPersonId || undefined,
+    validUntilFrom: applied.validUntilFrom || undefined,
+    validUntilTo: applied.validUntilTo || undefined,
+    templateType: applied.templateType || undefined,
+    enabled: effective.length > 0,
+  });
 }
 
 
@@ -247,47 +244,27 @@ const PIPELINE_STAGES: ReadonlyArray<{
 
 
 function ProposalsPipeline({
-  proposals,
-  isLoading,
-  showEmpty,
+  stageQueries,
   appliedAnyActive,
-  hasNextPage,
-  isFetchingNextPage,
-  sentinelRef,
   onDelete,
   deletePending,
 }: {
-  proposals: readonly ProposalListItemDto[];
-  isLoading: boolean;
-  showEmpty: boolean;
+  stageQueries: ReadonlyArray<StageInfiniteQuery>;
   appliedAnyActive: boolean;
-  hasNextPage: boolean;
-  isFetchingNextPage: boolean;
-  sentinelRef: React.RefObject<HTMLLIElement | null>;
   onDelete: (id: string) => void;
   deletePending: boolean;
 }) {
   const tProposals = useTranslations("proposals");
-  // Per-column search boxes. Kept as an object keyed by stage.key
-  // so we can late-bind lookups without a dozen useState calls.
   const [searchByKey, setSearchByKey] = useState<Record<string, string>>({});
 
-  // Split the flat feed into stage buckets. ``useMemo`` keeps
-  // reference stability across parent re-renders — the ledger
-  // rows are pure and memoise off the bucket identity.
-  const buckets = useMemo(() => {
-    const map: Record<string, ProposalListItemDto[]> = {};
-    for (const stage of PIPELINE_STAGES) map[stage.key] = [];
-    for (const p of proposals) {
-      const stage = PIPELINE_STAGES.find((s) =>
-        s.statuses.includes(p.status as ProposalStatus),
-      );
-      if (stage) map[stage.key]!.push(p);
-    }
-    return map;
-  }, [proposals]);
+  const allLoading = stageQueries.every((q) => q.isLoading);
+  const showEmpty =
+    !allLoading &&
+    stageQueries.every(
+      (q) => (q.data?.pages.flatMap((p) => p.results) ?? []).length === 0,
+    );
 
-  if (isLoading) {
+  if (allLoading) {
     return (
       <p className="mt-6 text-sm text-ink-500">{tProposals("list.loading")}</p>
     );
@@ -311,128 +288,154 @@ function ProposalsPipeline({
   }
 
   return (
-    <>
-      <div className="mt-4 grid gap-4 lg:grid-cols-4">
-        {PIPELINE_STAGES.map((stage) => {
-          const rows = buckets[stage.key] ?? [];
-          const q = (searchByKey[stage.key] ?? "").trim().toLowerCase();
-          const filtered = q
-            ? rows.filter((p) =>
-                (
-                  (p.code || "") +
-                  " " +
-                  (p.customer_company || "") +
-                  " " +
-                  (p.customer_name || "") +
-                  " " +
-                  (p.reference || "")
-                )
-                  .toLowerCase()
-                  .includes(q),
-              )
-            : rows;
-          return (
-            <article
-              key={stage.key}
-              className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200"
-            >
-              <header className="border-b border-ink-100 p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <h2 className="text-sm font-semibold text-ink-1000">
-                    {stage.label}
-                  </h2>
-                  {rows.length > 0 ? (
-                    <span
-                      className={
-                        "rounded-full px-2 py-0.5 text-[10px] font-semibold " +
-                        (stage.attention
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-ink-100 text-ink-700")
-                      }
-                    >
-                      {rows.length}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="relative mt-2.5">
-                  <Search
-                    className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-                    aria-hidden
-                  />
-                  <input
-                    type="search"
-                    value={searchByKey[stage.key] ?? ""}
-                    onChange={(e) =>
-                      setSearchByKey((prev) => ({
-                        ...prev,
-                        [stage.key]: e.target.value,
-                      }))
-                    }
-                    placeholder="Search…"
-                    className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
-                  />
-                  {searchByKey[stage.key] ? (
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setSearchByKey((prev) => ({
-                          ...prev,
-                          [stage.key]: "",
-                        }))
-                      }
-                      aria-label="Clear search"
-                      className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  ) : null}
-                </div>
-              </header>
-              <div className="flex-1 space-y-2 overflow-y-auto p-3">
-                {filtered.length === 0 ? (
-                  <p className="p-4 text-center text-xs text-ink-500">
-                    {q
-                      ? `Nothing matches "${q}".`
-                      : stage.attention
-                        ? "Nothing waiting on you here."
-                        : "Empty."}
-                  </p>
-                ) : (
-                  filtered.map((proposal) => (
-                    <ProposalCard
-                      key={proposal.id}
-                      proposal={proposal}
-                      onDelete={onDelete}
-                      deletePending={deletePending}
-                    />
-                  ))
-                )}
-              </div>
-            </article>
-          );
-        })}
-      </div>
-
-      {/* Load-more sentinel lives outside the columns so the shared
-       *  cursor still advances regardless of which stage the user
-       *  is looking at. */}
-      {hasNextPage ? (
-        <ul className="mt-2">
-          <li ref={sentinelRef} aria-hidden className="h-1" />
-        </ul>
-      ) : null}
-      {isFetchingNextPage ? (
-        <p className="mt-2 inline-flex items-center gap-1 text-xs text-ink-500">
-          <Loader2 className="h-3 w-3 animate-spin" />
-          {tProposals("list.loading")}
-        </p>
-      ) : null}
-    </>
+    <div className="mt-4 grid gap-4 lg:grid-cols-4">
+      {PIPELINE_STAGES.map((stage, idx) => {
+        const query = stageQueries[idx]!;
+        return (
+          <ProposalsPipelineColumn
+            key={stage.key}
+            stage={stage}
+            query={query}
+            search={searchByKey[stage.key] ?? ""}
+            onSearchChange={(next) =>
+              setSearchByKey((prev) => ({ ...prev, [stage.key]: next }))
+            }
+            onDelete={onDelete}
+            deletePending={deletePending}
+          />
+        );
+      })}
+    </div>
   );
 }
 
 
-// Compact card version of OrgProposalRow that fits a narrow column.
+function ProposalsPipelineColumn({
+  stage,
+  query,
+  search,
+  onSearchChange,
+  onDelete,
+  deletePending,
+}: {
+  stage: (typeof PIPELINE_STAGES)[number];
+  query: StageInfiniteQuery;
+  search: string;
+  onSearchChange: (next: string) => void;
+  onDelete: (id: string) => void;
+  deletePending: boolean;
+}) {
+  const rows = useMemo<readonly ProposalListItemDto[]>(
+    () => query.data?.pages.flatMap((p) => p.results) ?? [],
+    [query.data],
+  );
+  const needle = search.trim().toLowerCase();
+  const filtered = needle
+    ? rows.filter((p) =>
+        (
+          (p.code || "") +
+          " " +
+          (p.customer_company || "") +
+          " " +
+          (p.customer_name || "") +
+          " " +
+          (p.reference || "")
+        )
+          .toLowerCase()
+          .includes(needle),
+      )
+    : rows;
+
+  return (
+    <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+      <header className="border-b border-ink-100 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-sm font-semibold text-ink-1000">{stage.label}</h2>
+          {rows.length > 0 ? (
+            <span
+              className={
+                "rounded-full px-2 py-0.5 text-[10px] font-semibold " +
+                (stage.attention
+                  ? "bg-amber-100 text-amber-800"
+                  : "bg-ink-100 text-ink-700")
+              }
+            >
+              {rows.length}
+              {query.hasNextPage ? "+" : ""}
+            </span>
+          ) : null}
+        </div>
+        <div className="relative mt-2.5">
+          <Search
+            className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+            aria-hidden
+          />
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder="Search…"
+            className="h-9 w-full rounded-lg bg-ink-50 pl-9 pr-9 text-xs text-ink-1000 ring-1 ring-inset ring-transparent placeholder:text-ink-400 focus:bg-ink-0 focus:outline-none focus:ring-orange-400"
+          />
+          {search ? (
+            <button
+              type="button"
+              onClick={() => onSearchChange("")}
+              aria-label="Clear search"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
+      </header>
+      <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        {query.isLoading ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+            Loading…
+          </p>
+        ) : filtered.length === 0 ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            {needle
+              ? `Nothing matches "${needle}".`
+              : stage.attention
+                ? "Nothing waiting on you here."
+                : "Empty."}
+          </p>
+        ) : (
+          <>
+            {filtered.map((proposal) => (
+              <ProposalCard
+                key={proposal.id}
+                proposal={proposal}
+                onDelete={onDelete}
+                deletePending={deletePending}
+              />
+            ))}
+            {/* Per-column load-more — no cross-column starvation.
+             *  Hidden while a client-side search is narrowing the
+             *  visible set: "Load more" would fetch more rows the
+             *  filter would immediately hide, which reads as a
+             *  broken button. */}
+            {query.hasNextPage && !needle ? (
+              <button
+                type="button"
+                onClick={() => query.fetchNextPage()}
+                disabled={query.isFetchingNextPage}
+                className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+              >
+                {query.isFetchingNextPage ? "Loading…" : "Load more"}
+              </button>
+            ) : null}
+          </>
+        )}
+      </div>
+    </article>
+  );
+}
+
+
 function ProposalCard({
   proposal,
   onDelete,
@@ -583,117 +586,3 @@ function TemplateTypeChip({
 }
 
 
-function OrgProposalRow({
-  proposal,
-  onDelete,
-  deletePending,
-}: {
-  proposal: ProposalListItemDto;
-  onDelete: (id: string) => void;
-  deletePending: boolean;
-}) {
-  const tProposals = useTranslations("proposals");
-  const total = proposal.total_excl_vat ?? proposal.subtotal ?? null;
-  // Once the director has approved a proposal the trash button
-  // disappears: an approved record carries internal signatures that
-  // would orphan on delete, and ``sent`` / ``accepted`` / ``rejected``
-  // are part of the audit trail. The backend mirrors this lock via
-  // :class:`ProposalNotMutable` so a crafted DELETE can't bypass.
-  const isTerminal =
-    proposal.status === "approved" ||
-    proposal.status === "sent" ||
-    proposal.status === "accepted" ||
-    proposal.status === "rejected";
-  return (
-    <li className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div className="flex min-w-0 flex-col gap-0.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={`/proposals/${proposal.id}`}
-            className="text-sm font-medium text-ink-1000 hover:text-orange-700"
-          >
-            {proposal.code} ·{" "}
-            {proposal.customer_company ||
-              proposal.customer_name ||
-              tProposals("list.no_customer")}
-          </Link>
-          {/* Type chip is coloured so it's unmissable inside the
-              "All" tab; RTG in blue, Custom in muted grey. Matches
-              the same two-tone convention used on the CFF inbox
-              and RTG catalog cards. */}
-          {(proposal.template_type === "ready_to_go" ||
-            proposal.template_type === "custom") && (
-            <TemplateTypeChip type={proposal.template_type} />
-          )}
-        </div>
-        <span className="text-xs text-ink-500">
-          {/* Project (formulation) name surfaces the recipe the
-              proposal is quoting against. Listed first so a scientist
-              scanning the page can match a proposal to "what is this
-              actually selling" without clicking through. Falls back
-              gracefully if the formulation link is missing on a
-              legacy row. */}
-          {proposal.formulation_name ? (
-            <>
-              <span className="font-medium text-ink-700">
-                {proposal.formulation_name}
-              </span>
-              {" · "}
-            </>
-          ) : null}
-          {tProposals(
-            `template_type.${proposal.template_type}` as "template_type.custom",
-          )}
-          {" · "}
-          {proposal.lines_count}{" "}
-          {tProposals("list.products_count", {
-            count: proposal.lines_count,
-          })}
-          {total !== null ? ` · ${total} ${proposal.currency}` : ""}
-        </span>
-      </div>
-      <div className="flex items-center gap-2">
-        <StatusChip status={proposal.status} />
-        <Link
-          href={`/proposals/${proposal.id}`}
-          prefetch={false}
-          className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-ink-0 px-3 text-sm font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-        >
-          <ExternalLink className="h-3.5 w-3.5 text-ink-400" />
-          {tProposals("list.view")}
-        </Link>
-        {isTerminal ? null : (
-          <button
-            type="button"
-            aria-label={tProposals("list.delete")}
-            onClick={() => onDelete(proposal.id)}
-            disabled={deletePending}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-ink-500 transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-50"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
-        )}
-      </div>
-    </li>
-  );
-}
-
-
-function StatusChip({ status }: { status: ProposalStatus }) {
-  const tProposals = useTranslations("proposals");
-  const variants: Record<ProposalStatus, string> = {
-    draft: "bg-ink-100 text-ink-700 ring-ink-200",
-    in_review: "bg-warning/10 text-warning ring-warning/20",
-    approved: "bg-orange-500/10 text-orange-700 ring-orange-500/30",
-    sent: "bg-orange-500/10 text-orange-700 ring-orange-500/30",
-    accepted: "bg-success/10 text-success ring-success/30",
-    rejected: "bg-danger/10 text-danger ring-danger/30",
-  };
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide ring-1 ring-inset ${variants[status]}`}
-    >
-      {tProposals(`status.${status}` as "status.draft")}
-    </span>
-  );
-}

@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Banknote,
+  ChevronDown,
+  ChevronRight,
   Loader2,
   Paperclip,
   Plus,
@@ -196,6 +198,16 @@ export function PaymentsList({
   const needsAttentionCount =
     pendingTotal + depositsTotal + (pendingQ.data?.length ?? 0);
 
+  // Per-sub-section collapse toggles inside the Needs-attention column.
+  // Session-local — a fresh page load starts everything expanded so an
+  // operator returning to the queue sees the full state at a glance.
+  // Handover flagged this as a scale mitigation: once the queue grows
+  // past ~30 rows per lane, dragging the interesting lane back to the
+  // top matters more than seeing every lane at once.
+  const [depositsCollapsed, setDepositsCollapsed] = useState(false);
+  const [finalsCollapsed, setFinalsCollapsed] = useState(false);
+  const [pendingCollapsed, setPendingCollapsed] = useState(false);
+
   return (
     <section className="mt-6 flex flex-col gap-4">
       <header className="flex flex-wrap items-center justify-between gap-3">
@@ -274,74 +286,89 @@ export function PaymentsList({
             {/* Deposits sub-section */}
             {depositsTotal > 0 ? (
               <section>
-                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                  Awaiting deposits · {depositsTotal}
-                </p>
-                <div className="space-y-2">
-                  {depositItems.map((d) => (
-                    <DepositCard
-                      key={d.proposal_id}
-                      deposit={d}
-                      canRecord={canRecord}
-                      onRecord={() => setDepositDialog(d)}
-                    />
-                  ))}
-                  {awaitingDeposits.hasNextPage ? (
-                    <button
-                      type="button"
-                      onClick={() => awaitingDeposits.fetchNextPage()}
-                      disabled={awaitingDeposits.isFetchingNextPage}
-                      className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
-                    >
-                      {awaitingDeposits.isFetchingNextPage
-                        ? "Loading…"
-                        : "Load more"}
-                    </button>
-                  ) : null}
-                </div>
+                <SubSectionHeader
+                  label="Awaiting deposits"
+                  count={depositsTotal}
+                  collapsed={depositsCollapsed}
+                  onToggle={() => setDepositsCollapsed((v) => !v)}
+                />
+                {!depositsCollapsed ? (
+                  <div className="space-y-2">
+                    {depositItems.map((d) => (
+                      <DepositCard
+                        key={d.proposal_id}
+                        deposit={d}
+                        canRecord={canRecord}
+                        onRecord={() => setDepositDialog(d)}
+                      />
+                    ))}
+                    {awaitingDeposits.hasNextPage ? (
+                      <button
+                        type="button"
+                        onClick={() => awaitingDeposits.fetchNextPage()}
+                        disabled={awaitingDeposits.isFetchingNextPage}
+                        className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+                      >
+                        {awaitingDeposits.isFetchingNextPage
+                          ? "Loading…"
+                          : "Load more"}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
             {/* Awaiting finals sub-section */}
             {pendingTotal > 0 ? (
               <section>
-                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                  Awaiting finals · {pendingTotal}
-                </p>
-                <div className="space-y-2">
-                  {pendingItems.map((p) => (
-                    <PendingCard
-                      key={p.formulation_id}
-                      project={p}
-                      canRecord={canRecord}
-                      onRecord={() => openDialogFor(p)}
-                    />
-                  ))}
-                  {pending.hasNextPage ? (
-                    <button
-                      type="button"
-                      onClick={() => pending.fetchNextPage()}
-                      disabled={pending.isFetchingNextPage}
-                      className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
-                    >
-                      {pending.isFetchingNextPage ? "Loading…" : "Load more"}
-                    </button>
-                  ) : null}
-                </div>
+                <SubSectionHeader
+                  label="Awaiting finals"
+                  count={pendingTotal}
+                  collapsed={finalsCollapsed}
+                  onToggle={() => setFinalsCollapsed((v) => !v)}
+                />
+                {!finalsCollapsed ? (
+                  <div className="space-y-2">
+                    {pendingItems.map((p) => (
+                      <PendingCard
+                        key={p.formulation_id}
+                        project={p}
+                        canRecord={canRecord}
+                        onRecord={() => openDialogFor(p)}
+                      />
+                    ))}
+                    {pending.hasNextPage ? (
+                      <button
+                        type="button"
+                        onClick={() => pending.fetchNextPage()}
+                        disabled={pending.isFetchingNextPage}
+                        className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+                      >
+                        {pending.isFetchingNextPage ? "Loading…" : "Load more"}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
             {/* Pending Payment rows sub-section */}
             {pendingPayRows.length > 0 ? (
               <section>
-                <p className="mb-1.5 px-1 text-[10px] font-semibold uppercase tracking-wide text-ink-500">
-                  Pending payments · {pendingPayRows.length}
-                </p>
-                <div className="space-y-2">
-                  {pendingPayRows.map((p) => (
-                    <PaymentCard key={p.id} payment={p} />
-                  ))}
-                </div>
+                <SubSectionHeader
+                  label="Pending payments"
+                  count={pendingPayRows.length}
+                  collapsed={pendingCollapsed}
+                  onToggle={() => setPendingCollapsed((v) => !v)}
+                />
+                {!pendingCollapsed ? (
+                  <div className="space-y-2">
+                    {pendingPayRows.map((p) => (
+                      <PaymentCard key={p.id} payment={p} />
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ) : null}
 
@@ -1302,6 +1329,37 @@ function FormRow({
       </span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+
+function SubSectionHeader({
+  label,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  label: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className="mb-1.5 flex w-full items-center gap-1 rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-500 hover:bg-ink-50 hover:text-ink-700"
+    >
+      {collapsed ? (
+        <ChevronRight className="h-3 w-3" aria-hidden />
+      ) : (
+        <ChevronDown className="h-3 w-3" aria-hidden />
+      )}
+      <span>
+        {label} · {count}
+      </span>
+    </button>
   );
 }
 
