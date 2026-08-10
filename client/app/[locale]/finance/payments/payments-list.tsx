@@ -1314,6 +1314,7 @@ function FormRow({
 
 
 function PaymentCard({ payment }: { payment: PaymentDto }) {
+  const customerLabel = payment.customer_company || payment.customer_name;
   return (
     <Link
       href={`/finance/payments/${payment.id}`}
@@ -1345,6 +1346,11 @@ function PaymentCard({ payment }: { payment: PaymentDto }) {
             : "Final"}
         </span>
       </div>
+      {customerLabel ? (
+        <p className="mt-1 truncate text-[11px] text-ink-600">
+          {customerLabel}
+        </p>
+      ) : null}
       <div className="mt-2 flex items-baseline justify-between gap-2">
         <p className="text-sm font-semibold tabular-nums text-ink-1000">
           {payment.amount} {payment.currency}

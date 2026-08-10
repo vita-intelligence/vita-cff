@@ -60,6 +60,7 @@ class PaymentListCreateView(APIView):
             Payment.objects.filter(organization=self.organization)
             .select_related(
                 "formulation",
+                "customer",
                 "recorded_by",
                 "approved_by",
                 "assigned_finance_officer",
@@ -189,6 +190,7 @@ class PaymentDetailView(APIView):
             )
             .select_related(
                 "formulation",
+                "customer",
                 "recorded_by",
                 "approved_by",
                 "assigned_finance_officer",
@@ -254,7 +256,7 @@ class PaymentApproveView(APIView):
                 organization=self.organization,
                 id=kwargs["payment_id"],
             )
-            .select_related("formulation", "label_design")
+            .select_related("formulation", "customer", "label_design")
             .first()
         )
         if payment is None:
@@ -343,6 +345,7 @@ class PaymentVoidView(APIView):
         payment = (
             Payment.objects.select_related(
                 "formulation",
+                "customer",
                 "label_design",
                 "recorded_by",
                 "approved_by",

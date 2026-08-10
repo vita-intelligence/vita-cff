@@ -55,6 +55,18 @@ class PaymentReadSerializer(serializers.ModelSerializer):
         read_only=True,
         default=None,
     )
+    #: Denormalized customer identity. ``customer`` is the FK id;
+    #: the three ``customer_*`` mirrors let the finance queue render
+    #: "who ordered this" without walking the join client-side.
+    customer_company = serializers.CharField(
+        source="customer.company", read_only=True, default=""
+    )
+    customer_name = serializers.CharField(
+        source="customer.name", read_only=True, default=""
+    )
+    customer_email = serializers.CharField(
+        source="customer.email", read_only=True, default=""
+    )
     recorded_by_email = serializers.CharField(
         source="recorded_by.email", read_only=True, default=""
     )
@@ -77,6 +89,10 @@ class PaymentReadSerializer(serializers.ModelSerializer):
             "proposal",
             "proposal_code",
             "proposal_deposit_percent",
+            "customer",
+            "customer_company",
+            "customer_name",
+            "customer_email",
             "label_design",
             "amount",
             "currency",

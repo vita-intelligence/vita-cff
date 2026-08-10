@@ -48,6 +48,14 @@ export interface PaymentDto {
   readonly proposal: string | null;
   readonly proposal_code: string;
   readonly proposal_deposit_percent: string | null;
+  /** Denormalized customer identity. ``customer`` is the FK id or
+   *  ``null`` for legacy imported rows that pre-date the storefront
+   *  checkout wiring; the three mirrors carry the address-book fields
+   *  the card renders (falls back to an empty string when unlinked). */
+  readonly customer: string | null;
+  readonly customer_company: string;
+  readonly customer_name: string;
+  readonly customer_email: string;
   readonly label_design: string | null;
   readonly amount: string;
   readonly currency: string;

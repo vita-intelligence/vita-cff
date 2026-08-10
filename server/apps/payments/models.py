@@ -103,6 +103,23 @@ class Payment(models.Model):
             "audit trail)."
         ),
     )
+    customer = models.ForeignKey(
+        "customers.Customer",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="payments",
+        help_text=_(
+            "Address-book customer the payment is billed to. "
+            "Denormalized alongside the formulation / proposal FKs so "
+            "the finance queue can surface 'who ordered this' without "
+            "walking two joins per row. Backfilled from "
+            "``formulation.customer`` (FINAL) / ``proposal.customer`` "
+            "(DEPOSIT) at migration time; new rows get it set at "
+            "``record_payment`` time. SET_NULL keeps the audit trail "
+            "intact when a customer row is archived."
+        ),
+    )
 
     amount = models.DecimalField(_("amount"), max_digits=12, decimal_places=2)
     currency = models.CharField(_("currency"), max_length=3, default="GBP")

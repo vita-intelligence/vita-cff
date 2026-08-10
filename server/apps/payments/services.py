@@ -54,6 +54,7 @@ def record_payment(
     invoice_number: str = "",
     notes: str = "",
     label_design: LabelDesign | None = None,
+    customer=None,
 ) -> Payment:
     """Persist a new payment in ``PENDING`` status.
 
@@ -68,6 +69,11 @@ def record_payment(
 
     A mismatched combination raises :class:`PaymentKindConflict` so
     an accidentally-swapped payload never lands a half-wired row.
+
+    ``customer`` is optional — when the caller doesn't pass one, we
+    resolve it from the linked formulation / proposal so the finance
+    queue's "who ordered this" column stays populated without every
+    caller having to plumb the FK through.
     """
 
     if kind == PaymentKind.DEPOSIT:
@@ -82,12 +88,19 @@ def record_payment(
         if label_design is None:
             label_design = LabelDesign.objects.filter(formulation=formulation).first()
 
+    if customer is None:
+        if formulation is not None:
+            customer = getattr(formulation, "customer", None)
+        elif proposal is not None:
+            customer = getattr(proposal, "customer", None)
+
     payment = Payment.objects.create(
         organization=organization,
         kind=kind,
         formulation=formulation,
         proposal=proposal,
         label_design=label_design,
+        customer=customer,
         amount=amount,
         currency=currency,
         method=method,
@@ -376,6 +389,7 @@ def ensure_pending_deposit_payment(*, proposal, actor=None) -> Payment | None:
         organization=proposal.organization,
         kind=PaymentKind.DEPOSIT,
         proposal=proposal,
+        customer=getattr(proposal, "customer", None),
         amount=expected_amount,
         currency=getattr(proposal, "currency", "GBP"),
         method=PaymentMethod.BANK_TRANSFER,

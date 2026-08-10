@@ -263,6 +263,11 @@ def _create_sample_payment(*, customer, line: CheckoutLineInput):
         # advance payments — not what a sample kit needs.
         kind=PaymentKind.FINAL,
         formulation=formulation,
+        # Storefront RTG SKUs aren't linked to a specific customer,
+        # so ``record_payment``'s default resolver would leave the
+        # column blank on sample rows. Pass the checkout account's
+        # customer explicitly so finance sees the buyer on the card.
+        customer=customer,
         # Placeholder method — finance flips this to the actual
         # method (Stripe, card link, cash on delivery) when they
         # process the transfer. Bank transfer is the shop's default

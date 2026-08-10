@@ -492,8 +492,8 @@ function ProposalCard({
           )}
         </span>
         <span>
-          {proposal.updated_at
-            ? new Date(proposal.updated_at).toLocaleDateString()
+          {proposal.created_at
+            ? new Date(proposal.created_at).toLocaleDateString()
             : ""}
         </span>
       </div>
