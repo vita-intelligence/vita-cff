@@ -79,6 +79,7 @@ from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.cff_submissions.models import CFFSubmission, CFFSubmissionKind
 from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import (
     customer_ids_for_account,
@@ -158,7 +159,8 @@ class PortalActivityView(PortalAPIView):
         limit = _parse_limit(request)
         cursor = _decode_cursor(request.query_params.get("cursor"))
 
-        customer_ids = customer_ids_for_account(request.user)
+        account = request.user
+        customer_ids = customer_ids_for_account(account)
         if not customer_ids:
             return Response(
                 {
@@ -174,7 +176,7 @@ class PortalActivityView(PortalAPIView):
         # shows a "(0)" on that tab instead of a stale "42". Counts
         # deliberately ignore the cursor — "3 of your samples" means
         # 3 in total, not 3 remaining on the current page.
-        counts = _compute_counts(customer_ids, search)
+        counts = _compute_counts(customer_ids, account, search)
 
         # Over-fetch by one per kind so we can tell whether the
         # merged page has more rows behind it without a second
@@ -183,6 +185,12 @@ class PortalActivityView(PortalAPIView):
 
         items: list[dict] = []
         if kind in ("all", "project"):
+            # CFF submissions the customer has raised but that triage
+            # hasn't converted into a real Formulation yet. Once a
+            # project is linked the row surfaces via the Formulation
+            # bucket below, so we skip already-linked CFFs to avoid
+            # showing the same brief twice under different statuses.
+            items.extend(_collect_cffs(account, search, cap, cursor))
             items.extend(_collect_projects(customer_ids, search, cap, cursor))
         if kind in ("all", "rtg"):
             items.extend(_collect_rtg(customer_ids, search, cap, cursor))
@@ -233,12 +241,16 @@ def _parse_limit(request: Request) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _compute_counts(customer_ids: list, search: str) -> dict[str, int]:
+def _compute_counts(customer_ids: list, account, search: str) -> dict[str, int]:
     project_qs = _projects_queryset(customer_ids, search)
+    cff_qs = _cff_queryset(account, search)
     rtg_qs = _rtg_queryset(customer_ids, search)
     sample_qs = _samples_queryset(customer_ids, search)
 
-    project_count = project_qs.count()
+    # CFFs count towards the "project" (Custom formulations) tab —
+    # a customer thinks of "the brief I submitted" and "the project
+    # it turns into" as the same thing at different stages.
+    project_count = project_qs.count() + cff_qs.count()
     rtg_count = rtg_qs.count()
     sample_count = sample_qs.count()
 
@@ -318,6 +330,133 @@ def _collect_projects(
             }
         )
     return items
+
+
+# ---------------------------------------------------------------------------
+# Pending CFF submissions (bespoke briefs awaiting triage)
+# ---------------------------------------------------------------------------
+
+
+def _cff_cursor_filter(cursor: tuple[Any, str] | None) -> Q:
+    """Same keyset shape as :func:`_cursor_filter` but keyed on
+    ``wix_created_date`` — CFFSubmission carries no ``updated_at``
+    column of its own. Portal rows stamp ``wix_created_date=now()``
+    at creation so the ordering is monotonic per customer regardless
+    of provenance."""
+
+    if cursor is None:
+        return Q()
+    ts, item_id = cursor
+    return Q(wix_created_date__lt=ts) | Q(wix_created_date=ts, id__lt=item_id)
+
+
+def _cff_queryset(account, search: str) -> QuerySet:
+    """CFFSubmissions owned by the caller, still pending triage.
+
+    Ownership: the ``submitted_by_client_account`` FK OR the
+    denormalised ``submitter_email`` (case-insensitive) — a portal
+    account created after a Wix submission can still claim its own
+    email-matched rows without a manual link step.
+
+    Filters out ready-to-go CFFs (those already carry a drafted
+    Proposal that shows up under the RTG tab) and any custom CFF
+    that triage has already linked to a Formulation (the linked
+    project shows up under the projects query, so surfacing the
+    CFF here too would duplicate the same brief).
+    """
+
+    email = (getattr(account, "email", "") or "").strip()
+    ownership = Q(submitted_by_client_account_id=account.pk)
+    if email:
+        ownership |= Q(submitter_email__iexact=email)
+
+    qs = CFFSubmission.objects.filter(
+        ownership,
+        submission_kind=CFFSubmissionKind.CUSTOM,
+        projects__isnull=True,
+    ).distinct()
+    if search:
+        qs = qs.filter(
+            Q(submitter_name__icontains=search)
+            | Q(submitter_email__icontains=search)
+        )
+    return qs
+
+
+def _collect_cffs(
+    account,
+    search: str,
+    cap: int,
+    cursor: tuple[Any, str] | None,
+) -> list[dict]:
+    rows = list(
+        _cff_queryset(account, search)
+        .filter(_cff_cursor_filter(cursor))
+        .order_by("-wix_created_date", "-id")[:cap]
+    )
+    items: list[dict] = []
+    for row in rows:
+        # ``raw_payload`` carries the wizard's answers keyed by slug.
+        # We fish a best-effort title out of the product-format /
+        # market-segment / actives text so the card reads better
+        # than "Submitted brief" alone. Falls back gracefully — the
+        # payload shape is intentionally not schema-locked so
+        # importer drift doesn't 500 the feed.
+        title = _cff_title(row)
+        subtitle = "Submitted brief · awaiting triage"
+        # ``wix_updated_date`` may be null on portal rows that
+        # haven't been touched since creation; fall through to
+        # ``wix_created_date`` so the sort/cursor timestamp is
+        # always populated.
+        ts = row.wix_updated_date or row.wix_created_date
+        items.append(
+            {
+                "kind": "project",
+                "id": str(row.id),
+                "code": "",
+                "title": title,
+                "subtitle": subtitle,
+                "status_key": "under_review",
+                "status_label": "Under review",
+                "status_tone": "in_progress",
+                # No dedicated per-CFF detail page on the marketing
+                # site yet — link back to the hub for now. Swap for
+                # /portal/requests/<id> when the detail view lands.
+                "href": "/portal",
+                "amount": None,
+                "currency": "",
+                "quantity": None,
+                "updated_at": ts,
+                "needs_attention": False,
+            }
+        )
+    return items
+
+
+def _cff_title(row: CFFSubmission) -> str:
+    """Best-effort human title for a pending CFF row.
+
+    Walks ``raw_payload["submissions"]`` for the slug-prefixed keys
+    the wizard writes — the marketing-site wizard mirrors the NPD
+    portal's payload shape so both provenances read cleanly. Falls
+    back through submitter name → generic label."""
+
+    payload = row.raw_payload or {}
+    submissions = payload.get("submissions") if isinstance(payload, dict) else None
+    if isinstance(submissions, dict):
+        for key, value in submissions.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+            k = key.lower()
+            # Product name > market segment > format is the priority
+            # order the customer would recognise first.
+            if k.startswith("actives_requirements") or k.startswith("dose"):
+                return f"Custom brief · {value.strip()[:80]}"
+            if k.startswith("market_segment"):
+                return f"Custom brief · {value.strip()[:80]}"
+    if row.submitter_name:
+        return f"Custom brief · {row.submitter_name}"
+    return "Custom brief · submitted"
 
 
 # ---------------------------------------------------------------------------
