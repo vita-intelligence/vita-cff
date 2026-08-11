@@ -839,7 +839,20 @@ class PortalProductDetailView(PortalAPIView):
                     "code": formulation.code,
                     "name": formulation.name,
                     "project_status": formulation.project_status,
+                    "created_at": _iso(formulation.created_at),
+                    "updated_at": _iso(formulation.updated_at),
                 },
+                # Surface the latest customer-side rejection reason
+                # (proposal declined via kiosk) or the void reason on
+                # any voided payment. Null when nothing bad happened —
+                # the FE just skips the banner in that case. Both
+                # sources are already captured in the domain; this
+                # block is a compact aggregator so the FE doesn't have
+                # to know which surface to peek at.
+                "cancellation": _build_cancellation(
+                    proposals=proposals,
+                    formulation_id=formulation_id,
+                ),
                 "pipeline": _build_pipeline(
                     formulation=formulation,
                     proposals=proposals,
@@ -866,5 +879,84 @@ class PortalProductDetailView(PortalAPIView):
                     sheets=sheets,
                     label_design=label_design,
                 ),
+                # Chat anchor — the primary proposal id lets the FE
+                # bind its chat panel to /api/portal/proposals/<id>/
+                # proposal-messages/ without a second round-trip. Null
+                # on projects that don't have a proposal yet (chat
+                # isn't available until sales sends one).
+                "primary_proposal": _primary_proposal_ref(proposals),
             }
         )
+
+
+def _primary_proposal_ref(proposals: list[Proposal]) -> dict | None:
+    """The proposal chat should attach to. Prefer the latest sent
+    proposal (that's what "this deal" usually means), fall back to
+    the latest draft — the customer can still open a conversation
+    while the quote is being finalised."""
+
+    if not proposals:
+        return None
+    # ``proposals`` came in newest-first (proposals_covering_formulation
+    # orders by -updated_at). Prefer sent / accepted first, else the
+    # freshest of any status.
+    live = next((p for p in proposals if p.status in ("sent", "accepted")), None)
+    p = live or proposals[0]
+    return {"id": str(p.id), "code": p.code, "status": p.status}
+
+
+def _build_cancellation(
+    *,
+    proposals: list[Proposal],
+    formulation_id,
+) -> dict | None:
+    """Compact "why did this stop moving" block for the FE banner.
+
+    Sources, priority order:
+      1. Customer-declined proposal (``customer_rejected_at`` set) —
+         the reason is the customer's own words from the kiosk decline
+         modal.
+      2. Voided payment on this formulation — reason lives in the
+         payment's notes, appended by ``void_payment`` under a
+         ``--- voided ---`` marker.
+
+    Returns ``None`` when neither condition holds so the FE can
+    ``!== null`` gate the banner cheaply.
+    """
+
+    rejected = next(
+        (
+            p
+            for p in proposals
+            if getattr(p, "customer_rejected_at", None) is not None
+        ),
+        None,
+    )
+    if rejected is not None:
+        return {
+            "source": "proposal_declined",
+            "reason": (rejected.customer_rejection_reason or "").strip(),
+            "at": _iso(rejected.customer_rejected_at),
+            "reference_code": rejected.code,
+        }
+    voided = (
+        Payment.objects.filter(
+            formulation_id=formulation_id, status=PaymentStatus.VOIDED
+        )
+        .order_by("-updated_at")
+        .first()
+    )
+    if voided is not None:
+        # Notes on a voided payment carry the void reason appended
+        # after a "--- voided ---" marker (see void_payment). Split
+        # so the banner shows just the reason, not the payment's
+        # pre-existing notes body.
+        raw = voided.notes or ""
+        reason = raw.split("--- voided ---", 1)[-1].strip() if raw else ""
+        return {
+            "source": "payment_voided",
+            "reason": reason,
+            "at": _iso(voided.updated_at),
+            "reference_code": str(voided.id),
+        }
+    return None
