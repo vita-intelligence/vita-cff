@@ -1,47 +1,57 @@
 "use client";
 
 /**
- * R&D Samples fulfilment queue.
+ * R&D Samples fulfilment queue — 3-column pipeline board.
  *
- * Reads ``GET /api/organizations/<org>/samples/pending/`` and
- * renders one card per unfulfilled sample payment. Clicking Create
- * trial batch opens a compact modal that collects only the fields
- * a scientist HAS to touch (batch size + packaging combo + label +
- * notes); the formulation version + kind=sample + source_payment
- * are auto-attached from the payment context.
+ * Column layout mirrors ``/finance/payments`` and ``/proposals``
+ * so operators moving between stages don't have to relearn the
+ * shape:
  *
- * State approach: `useQuery` for the list, `useMutation` for the
- * create. On mutation success we invalidate the list — the newly-
- * fulfilled payment drops off the queue because the endpoint
- * excludes any payment that already has a linked TrialBatch.
+ *   New          — approved sample Payment, no TrialBatch yet.
+ *                  Card CTA opens the "Create trial batch" modal.
+ *   In progress  — batch spawned, PSP MO chain hasn't reported
+ *                  ``psp_all_stages_completed=True`` yet. Card
+ *                  links out to the trial-batch detail page.
+ *   Finished     — batch done. Card links to the completed batch
+ *                  so you can pull the BOM / QC results.
+ *
+ * Each column runs its own ``useInfiniteQuery`` against
+ * ``GET /api/organizations/<org>/samples/pending/?bucket=…`` with
+ * a keyset cursor on ``(approved_at, id)`` — page cost stays
+ * ``O(log N + limit)`` regardless of how many rows the org owns.
+ * The "millions of records" case pages just as fast on row 999k
+ * as on row 20.
  */
 
 import {
+  useInfiniteQuery,
   useMutation,
-  useQuery,
   useQueryClient,
-  type UseMutationResult,
+  type UseInfiniteQueryResult,
+  type InfiniteData,
 } from "@tanstack/react-query";
 import {
   ArrowRight,
   Beaker,
+  CheckCircle2,
+  ExternalLink,
   Loader2,
   Package,
   Search,
-  ShoppingBag,
   Sparkles,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { apiClient } from "@/lib/api";
-import { createTrialBatch } from "@/services/trial_batches";
-import type { TrialBatchDto } from "@/services/trial_batches";
 import { rootQueryKey } from "@/lib/query";
+import { createTrialBatch } from "@/services/trial_batches";
 
 // ---------------------------------------------------------------------------
-// Wire types — mirror apps.trial_batches.api.samples_views.PendingSamplePaymentsView
+// Wire types — mirror apps.trial_batches.api.samples_views
 // ---------------------------------------------------------------------------
+
+type Bucket = "new" | "in_progress" | "finished";
 
 interface ComboRef {
   readonly id: string;
@@ -76,65 +86,156 @@ interface PaymentRef {
   readonly notes: string;
 }
 
-interface PendingSampleItem {
+interface TrialBatchRef {
+  readonly id: string;
+  readonly label: string;
+  readonly batch_size_units: number;
+  readonly psp_all_stages_completed: boolean;
+  readonly packaging_combo_id: string | null;
+  readonly created_at: string | null;
+  readonly updated_at: string | null;
+  readonly formulation_id: string | null;
+}
+
+interface SampleItem {
   readonly payment: PaymentRef;
   readonly customer: CustomerRef | null;
   readonly formulation: FormulationRef | null;
+  readonly trial_batch: TrialBatchRef | null;
 }
 
-interface PendingSamplesResponse {
-  readonly items: readonly PendingSampleItem[];
+interface SamplesPage {
+  readonly items: readonly SampleItem[];
+  readonly next_cursor: string | null;
+  readonly counts: Record<Bucket, number>;
 }
 
 // ---------------------------------------------------------------------------
-// Query
+// Query helpers
 // ---------------------------------------------------------------------------
 
-const samplesQueryKey = (orgId: string) =>
-  [...rootQueryKey, "samples", "pending", orgId] as const;
+const PAGE_SIZE = 20;
 
-async function fetchPendingSamples(orgId: string): Promise<PendingSamplesResponse> {
-  const { data } = await apiClient.get<PendingSamplesResponse>(
-    `/api/organizations/${orgId}/samples/pending/`,
+const samplesQueryKey = (orgId: string, bucket: Bucket, search: string) =>
+  [...rootQueryKey, "samples", orgId, bucket, search] as const;
+
+async function fetchSamples(args: {
+  orgId: string;
+  bucket: Bucket;
+  search: string;
+  cursor: string | null;
+}): Promise<SamplesPage> {
+  const params = new URLSearchParams();
+  params.set("bucket", args.bucket);
+  params.set("limit", String(PAGE_SIZE));
+  if (args.cursor) params.set("cursor", args.cursor);
+  if (args.search) params.set("q", args.search);
+  const { data } = await apiClient.get<SamplesPage>(
+    `/api/organizations/${args.orgId}/samples/pending/?${params.toString()}`,
   );
   return data;
+}
+
+// Each column runs one of these — bucket-scoped infinite query
+// with keyset cursor. Debounced search is passed in from the
+// parent so every column filters against the same query string.
+function useSamplesBucket(args: {
+  orgId: string;
+  bucket: Bucket;
+  search: string;
+}): UseInfiniteQueryResult<InfiniteData<SamplesPage, string | null>, Error> {
+  return useInfiniteQuery<
+    SamplesPage,
+    Error,
+    InfiniteData<SamplesPage, string | null>,
+    readonly unknown[],
+    string | null
+  >({
+    queryKey: samplesQueryKey(args.orgId, args.bucket, args.search),
+    queryFn: ({ pageParam }) =>
+      fetchSamples({
+        orgId: args.orgId,
+        bucket: args.bucket,
+        search: args.search,
+        cursor: pageParam ?? null,
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => last.next_cursor,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Page shell
 // ---------------------------------------------------------------------------
 
-export function SamplesQueue({ orgId }: { orgId: string }) {
-  const query = useQuery({
-    queryKey: samplesQueryKey(orgId),
-    queryFn: () => fetchPendingSamples(orgId),
-  });
-  const [search, setSearch] = useState("");
-  const [selected, setSelected] = useState<PendingSampleItem | null>(null);
+const BUCKETS: ReadonlyArray<{
+  key: Bucket;
+  label: string;
+  hint: string;
+  accent: string;
+  headerIcon: React.ComponentType<{ className?: string }>;
+}> = [
+  {
+    key: "new",
+    label: "New",
+    hint: "Approved payments waiting on a trial batch.",
+    accent: "bg-amber-100 text-amber-800",
+    headerIcon: Beaker,
+  },
+  {
+    key: "in_progress",
+    label: "In progress",
+    hint: "Trial batch spawned; PSP still cooking.",
+    accent: "bg-sky-100 text-sky-800",
+    headerIcon: Loader2,
+  },
+  {
+    key: "finished",
+    label: "Finished",
+    hint: "PSP completed — kit is ready to ship.",
+    accent: "bg-emerald-100 text-emerald-800",
+    headerIcon: CheckCircle2,
+  },
+];
 
-  // Memo-wrap the fallback so ``items`` keeps a stable identity
-  // when the query data hasn't landed yet — otherwise the ``??
-  // []`` fresh array would invalidate the filter memo on every
-  // render and re-run the search unnecessarily.
-  const items = useMemo(() => query.data?.items ?? [], [query.data]);
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((row) => {
-      const bits = [
-        row.formulation?.code ?? "",
-        row.formulation?.name ?? "",
-        row.formulation?.display_name ?? "",
-        row.customer?.company ?? "",
-        row.customer?.name ?? "",
-        row.customer?.email ?? "",
-        row.payment.reference,
-      ]
-        .join(" ")
-        .toLowerCase();
-      return bits.includes(q);
-    });
-  }, [items, search]);
+export function SamplesQueue({ orgId }: { orgId: string }) {
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [selected, setSelected] = useState<SampleItem | null>(null);
+
+  // Debounce the search so every keystroke doesn't fire 3 fetches
+  // (one per column).
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 250);
+    return () => clearTimeout(t);
+  }, [searchInput]);
+
+  const newQ = useSamplesBucket({ orgId, bucket: "new", search: debouncedSearch });
+  const wipQ = useSamplesBucket({ orgId, bucket: "in_progress", search: debouncedSearch });
+  const doneQ = useSamplesBucket({ orgId, bucket: "finished", search: debouncedSearch });
+  const queries: Record<Bucket, ReturnType<typeof useSamplesBucket>> = {
+    new: newQ,
+    in_progress: wipQ,
+    finished: doneQ,
+  };
+
+  // Counts come from whichever column responds first — every
+  // bucket endpoint returns the SAME ``counts`` block so this is
+  // stable regardless of which one lands.
+  const counts: Record<Bucket, number> = useMemo(() => {
+    const anyPage =
+      newQ.data?.pages[0] ??
+      wipQ.data?.pages[0] ??
+      doneQ.data?.pages[0] ??
+      null;
+    return (
+      anyPage?.counts ?? {
+        new: 0,
+        in_progress: 0,
+        finished: 0,
+      }
+    );
+  }, [newQ.data, wipQ.data, doneQ.data]);
 
   return (
     <section className="mt-6 flex flex-col gap-6">
@@ -144,54 +245,25 @@ export function SamplesQueue({ orgId }: { orgId: string }) {
             Samples
           </h1>
           <p className="mt-0.5 text-sm text-ink-500">
-            Approved sample requests waiting on a trial batch. Turn each one
-            into a sample-kind batch and the customer moves off the queue.
+            Sample requests move left-to-right: fresh payment →
+            trial batch spawned → PSP MO chain complete.
           </p>
         </div>
-        <span className="rounded-full bg-ink-100 px-2.5 py-1 text-xs font-semibold text-ink-700">
-          {items.length} pending
-        </span>
+        <SearchBar value={searchInput} onChange={setSearchInput} />
       </header>
 
-      <SearchBar value={search} onChange={setSearch} />
-
-      {query.isLoading ? (
-        <StateCard>
-          <span className="inline-flex items-center gap-2 text-sm text-ink-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading pending samples…
-          </span>
-        </StateCard>
-      ) : query.isError ? (
-        <StateCard tone="danger">
-          Couldn&rsquo;t load the queue right now. Refresh the page — if this
-          persists let engineering know.
-        </StateCard>
-      ) : items.length === 0 ? (
-        <StateCard>
-          <div className="flex flex-col items-center gap-2 text-center">
-            <ShoppingBag className="h-6 w-6 text-ink-400" aria-hidden />
-            <p className="text-sm text-ink-600">
-              Nothing waiting — every sample payment on file has a trial
-              batch. New requests will land here as finance approves them.
-            </p>
-          </div>
-        </StateCard>
-      ) : filtered.length === 0 ? (
-        <StateCard>
-          <div className="flex flex-col items-center gap-2 text-center">
-            <Search className="h-6 w-6 text-ink-400" aria-hidden />
-            <p className="text-sm text-ink-600">Nothing matches your search.</p>
-          </div>
-        </StateCard>
-      ) : (
-        <ul className="flex flex-col gap-3">
-          {filtered.map((row) => (
-            <li key={row.payment.id}>
-              <SampleRow row={row} onCreate={() => setSelected(row)} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <div className="grid gap-4 lg:grid-cols-3">
+        {BUCKETS.map((cfg) => (
+          <BucketColumn
+            key={cfg.key}
+            cfg={cfg}
+            query={queries[cfg.key]}
+            count={counts[cfg.key] ?? 0}
+            hasSearch={debouncedSearch.length > 0}
+            onOpenNew={cfg.key === "new" ? setSelected : undefined}
+          />
+        ))}
+      </div>
 
       {selected ? (
         <CreateBatchModal
@@ -205,15 +277,103 @@ export function SamplesQueue({ orgId }: { orgId: string }) {
 }
 
 // ---------------------------------------------------------------------------
-// Row
+// Column
 // ---------------------------------------------------------------------------
 
-function SampleRow({
-  row,
-  onCreate,
+function BucketColumn({
+  cfg,
+  query,
+  count,
+  hasSearch,
+  onOpenNew,
 }: {
-  row: PendingSampleItem;
-  onCreate: () => void;
+  cfg: (typeof BUCKETS)[number];
+  query: ReturnType<typeof useSamplesBucket>;
+  count: number;
+  hasSearch: boolean;
+  onOpenNew?: (item: SampleItem) => void;
+}) {
+  const rows = useMemo<readonly SampleItem[]>(
+    () => query.data?.pages.flatMap((p) => p.items) ?? [],
+    [query.data],
+  );
+  const Icon = cfg.headerIcon;
+
+  return (
+    <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+      <header className="border-b border-ink-100 p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Icon
+              className={`h-4 w-4 ${cfg.key === "in_progress" ? "text-sky-700" : cfg.key === "finished" ? "text-emerald-700" : "text-amber-700"}`}
+              aria-hidden
+            />
+            <h2 className="text-sm font-semibold text-ink-1000">{cfg.label}</h2>
+          </div>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${cfg.accent}`}>
+            {count}
+          </span>
+        </div>
+        <p className="mt-1 text-[11px] text-ink-500">{cfg.hint}</p>
+      </header>
+
+      <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        {query.isLoading ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" /> Loading…
+          </p>
+        ) : query.isError ? (
+          <p className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
+            Couldn&rsquo;t load this column. Refresh to try again.
+          </p>
+        ) : rows.length === 0 ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            {hasSearch
+              ? "Nothing matches your search here."
+              : cfg.key === "new"
+                ? "All caught up — no unfulfilled sample payments."
+                : cfg.key === "in_progress"
+                  ? "No trial batches in flight."
+                  : "No completed sample batches yet."}
+          </p>
+        ) : (
+          rows.map((row) => (
+            <SampleCard
+              key={row.payment.id}
+              row={row}
+              bucket={cfg.key}
+              onOpenNew={onOpenNew}
+            />
+          ))
+        )}
+
+        {query.hasNextPage && !hasSearch ? (
+          <button
+            type="button"
+            onClick={() => query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+            className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+          >
+            {query.isFetchingNextPage ? "Loading…" : "Load more"}
+          </button>
+        ) : null}
+      </div>
+    </article>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Card
+// ---------------------------------------------------------------------------
+
+function SampleCard({
+  row,
+  bucket,
+  onOpenNew,
+}: {
+  row: SampleItem;
+  bucket: Bucket;
+  onOpenNew?: (item: SampleItem) => void;
 }) {
   const title =
     row.formulation?.display_name ||
@@ -225,49 +385,101 @@ function SampleRow({
     row.customer?.company || row.customer?.name || row.customer?.email || "Unknown customer";
   const amount = row.payment.amount
     ? formatMoney(row.payment.amount, row.payment.currency)
-    : "—";
+    : null;
+
   return (
-    <article className="flex flex-wrap items-center gap-4 rounded-2xl border border-ink-200 bg-ink-0 p-4 shadow-sm shadow-black/[0.02] transition-colors hover:border-ink-300 sm:p-5">
-      <span className="flex size-11 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-600">
-        <Beaker className="size-4" aria-hidden />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-semibold text-ink-1000 sm:text-base">
-          {title}
-          {code && code !== title ? (
-            <span className="ml-2 font-mono text-xs text-ink-500">({code})</span>
-          ) : null}
-        </p>
-        <p className="mt-0.5 flex items-center gap-2 text-xs text-ink-500">
-          <span className="truncate">{customerLabel}</span>
-          {row.customer?.email ? (
-            <>
-              <span>·</span>
-              <span className="truncate">{row.customer.email}</span>
-            </>
-          ) : null}
-          <span>·</span>
-          <span>Approved {formatDate(row.payment.approved_at ?? row.payment.paid_at)}</span>
-        </p>
+    <div className="rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-ink-1000">
+            {title}
+            {code && code !== title ? (
+              <span className="ml-1 font-mono text-[10px] text-ink-500">({code})</span>
+            ) : null}
+          </p>
+          <p className="mt-0.5 truncate text-[11px] text-ink-600">{customerLabel}</p>
+        </div>
+        {amount ? (
+          <p className="shrink-0 text-xs font-semibold tabular-nums text-ink-1000">
+            {amount}
+          </p>
+        ) : null}
       </div>
-      <div className="flex items-center gap-3">
-        <p className="text-right text-sm font-semibold tabular-nums text-ink-1000">
-          {amount}
-        </p>
-        <button
-          type="button"
-          onClick={onCreate}
-          className="inline-flex items-center gap-1.5 rounded-full bg-ink-1000 px-3.5 py-1.5 text-xs font-semibold text-ink-0 transition-colors hover:bg-ink-900"
-        >
-          <Sparkles className="size-3.5" /> Create trial batch
-        </button>
+      <p className="mt-1.5 text-[10px] text-ink-500">
+        {bucket === "new"
+          ? `Approved ${formatDate(row.payment.approved_at ?? row.payment.paid_at)}`
+          : row.trial_batch
+            ? `Batch ${row.trial_batch.label || "unnamed"} · ${row.trial_batch.batch_size_units} units`
+            : "Batch pending"}
+      </p>
+      <div className="mt-2 flex items-center justify-end gap-2">
+        {bucket === "new" ? (
+          <button
+            type="button"
+            onClick={() => onOpenNew?.(row)}
+            className="inline-flex items-center gap-1 rounded-full bg-ink-1000 px-3 py-1 text-[10px] font-semibold text-ink-0 hover:bg-ink-900"
+          >
+            <Sparkles className="h-3 w-3" /> Create trial batch
+          </button>
+        ) : row.trial_batch?.formulation_id ? (
+          // Plain anchor because next-intl's typed Link needs a
+          // static ``params`` shape only for routes registered in
+          // its pathname enum. Trial-batch detail lives outside
+          // that surface; localised prefix is provided by the
+          // browser's current URL.
+          <a
+            href={`/formulations/${row.trial_batch.formulation_id}/trial-batches/${row.trial_batch.id}`}
+            className="inline-flex items-center gap-1 rounded-full border border-ink-200 px-3 py-1 text-[10px] font-semibold text-ink-700 hover:bg-ink-50"
+          >
+            {bucket === "finished" ? "View batch" : "Open batch"}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : null}
       </div>
-    </article>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Modal
+// Search bar
+// ---------------------------------------------------------------------------
+
+function SearchBar({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  return (
+    <div className="relative w-full max-w-md">
+      <Search
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
+        aria-hidden
+      />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search by product, customer, or email…"
+        className="h-10 w-full rounded-full border border-ink-200 bg-ink-0 pl-9 pr-9 text-sm text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
+      />
+      {value ? (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Clear search"
+          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Create-batch modal
 // ---------------------------------------------------------------------------
 
 function CreateBatchModal({
@@ -276,7 +488,7 @@ function CreateBatchModal({
   onClose,
 }: {
   orgId: string;
-  item: PendingSampleItem;
+  item: SampleItem;
   onClose: () => void;
 }) {
   const queryClient = useQueryClient();
@@ -294,8 +506,6 @@ function CreateBatchModal({
       : "",
   );
 
-  // Escape + body scroll lock, matching the marketing portal's
-  // modal ergonomic so muscle memory carries over.
   useEffect(() => {
     const prev = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -309,14 +519,10 @@ function CreateBatchModal({
     };
   }, [onClose]);
 
-  const mutation: UseMutationResult<
-    TrialBatchDto,
-    unknown,
-    void
-  > = useMutation({
+  const mutation = useMutation({
     mutationFn: async () => {
       if (!formulation?.approved_version_id) {
-        throw new Error("Missing formulation version");
+        throw new Error("This RTG doesn't have an approved version yet.");
       }
       const size = Number.parseInt(batchSize, 10);
       if (!Number.isFinite(size) || size <= 0) {
@@ -333,7 +539,14 @@ function CreateBatchModal({
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: samplesQueryKey(orgId) });
+      // Invalidate every samples-page query — the fulfilled
+      // payment moves out of ``new`` into ``in_progress`` and
+      // both columns need to re-fetch. The bucket-agnostic
+      // prefix drops the search + bucket qualifier so a fresh
+      // query in another search state picks up the change too.
+      queryClient.invalidateQueries({
+        queryKey: [...rootQueryKey, "samples", orgId],
+      });
       onClose();
     },
   });
@@ -351,9 +564,7 @@ function CreateBatchModal({
     batchSize.trim().length > 0 &&
     !mutation.isPending;
 
-  const errorMessage = mutation.isError
-    ? extractErrorMessage(mutation.error)
-    : null;
+  const errorMessage = mutation.isError ? extractErrorMessage(mutation.error) : null;
 
   return (
     <div
@@ -471,7 +682,10 @@ function CreateBatchModal({
           </Field>
 
           {errorMessage ? (
-            <p role="alert" className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
+            <p
+              role="alert"
+              className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger"
+            >
               {errorMessage}
             </p>
           ) : null}
@@ -508,60 +722,8 @@ function CreateBatchModal({
 }
 
 // ---------------------------------------------------------------------------
-// Search + shared bits
+// Shared bits
 // ---------------------------------------------------------------------------
-
-function SearchBar({
-  value,
-  onChange,
-}: {
-  value: string;
-  onChange: (next: string) => void;
-}) {
-  return (
-    <div className="relative w-full max-w-md">
-      <Search
-        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-400"
-        aria-hidden
-      />
-      <input
-        type="search"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Search by product, customer, or email…"
-        className="h-10 w-full rounded-full border border-ink-200 bg-ink-0 pl-9 pr-9 text-sm text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
-      />
-      {value ? (
-        <button
-          type="button"
-          onClick={() => onChange("")}
-          aria-label="Clear search"
-          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function StateCard({
-  children,
-  tone = "muted",
-}: {
-  children: React.ReactNode;
-  tone?: "muted" | "danger";
-}) {
-  const toneCls =
-    tone === "danger"
-      ? "border-danger/40 bg-danger/5 text-danger"
-      : "border-ink-200 bg-ink-50 text-ink-600";
-  return (
-    <div className={`rounded-2xl border ${toneCls} p-6 text-sm`}>
-      {children}
-    </div>
-  );
-}
 
 function Field({
   label,
@@ -581,10 +743,6 @@ function Field({
     </label>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Formatting + error extraction
-// ---------------------------------------------------------------------------
 
 function formatMoney(amount: string, currency: string): string {
   const n = Number(amount);
@@ -627,8 +785,6 @@ function extractErrorMessage(err: unknown): string {
         if (typeof val === "string") return `${firstKey}: ${val}`;
       }
     }
-    const detail = (err as { message?: string }).message;
-    if (detail) return detail;
   }
   return "Couldn't create the trial batch. Try again in a moment.";
 }
