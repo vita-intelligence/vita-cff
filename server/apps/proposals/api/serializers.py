@@ -158,6 +158,7 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "formulation_version",
             "formulation_id",
             "formulation_name",
+            "formulation_code",
             "formulation_display_name",
             "formulation_version_number",
             "specification_sheet_id",
