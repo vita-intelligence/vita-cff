@@ -12,6 +12,10 @@ routes:
   with the same ``render_context`` shape the proposal-detail
   endpoint embeds, plus a thin ``proposal`` reference so the
   spec page can show "back to PROP-0123".
+* ``GET /api/portal/specs/<sheet_id>/pdf/`` — server-rendered
+  HTML preview the web-site portal iframes on its spec viewer.
+  ``xframe_options_sameorigin`` opens the frame gate the same
+  way ``ProposalPdfView`` does.
 
 Ownership is enforced via the same ``ProposalLine`` join the
 messaging endpoint uses, so the access rules are consistent
@@ -22,6 +26,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from django.http import HttpResponse
+from django.utils.decorators import method_decorator
+from django.views.decorators.clickjacking import xframe_options_sameorigin
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -405,3 +412,80 @@ class SpecSignView(PortalAPIView):
                 ),
             },
         )
+
+
+@method_decorator(xframe_options_sameorigin, name="dispatch")
+class SpecPdfView(PortalAPIView):
+    """``GET /api/portal/specs/<sheet_id>/pdf/``.
+
+    Renders the spec sheet as HTML for the in-portal preview
+    iframe. Mirrors :class:`apps.client_portal.api.views
+    .ProposalPdfView` — same three-pass ownership walk as
+    :class:`SpecDetailView` (line / legacy 1-to-1 / shared
+    formulation version), same ``xframe_options_sameorigin``
+    decorator so the same-origin iframe embed on the web-site
+    portal actually paints.
+
+    Kept as HTML (not PDF bytes) so the FE gets an iframe-friendly
+    document and the customer's download button can hit the
+    dedicated PDF endpoint separately.
+    """
+
+    def get(self, request: Request, sheet_id: str) -> HttpResponse:
+        from apps.proposals.models import Proposal, ProposalLine
+        from apps.specifications.models import SpecificationSheet
+        from apps.specifications.services import render_html as spec_render_html
+
+        # Three-pass ownership lookup — same shape as SpecDetailView.
+        # Kept inline (rather than extracted) because SpecDetailView
+        # returns a Response + records a PortalEvent side-effect;
+        # deduplicating without dragging the whole method surface
+        # into a helper isn't worth the churn right now.
+        owner_ids = customer_ids_for_account(request.user)
+        sheet: SpecificationSheet | None = None
+
+        line = (
+            ProposalLine.objects.select_related(
+                "proposal", "specification_sheet"
+            )
+            .filter(
+                specification_sheet_id=sheet_id,
+                proposal__customer_id__in=owner_ids,
+            )
+            .order_by("-proposal__updated_at")
+            .first()
+        )
+        if line is not None:
+            sheet = line.specification_sheet
+        if sheet is None:
+            legacy = (
+                Proposal.objects.select_related("specification_sheet")
+                .filter(
+                    specification_sheet_id=sheet_id,
+                    customer_id__in=owner_ids,
+                )
+                .first()
+            )
+            if legacy is not None and legacy.specification_sheet is not None:
+                sheet = legacy.specification_sheet
+        if sheet is None:
+            shared_version_sheet = (
+                SpecificationSheet.objects.select_related(
+                    "formulation_version__formulation"
+                )
+                .filter(
+                    id=sheet_id,
+                    formulation_version__formulation_id__in=(
+                        Proposal.objects.filter(
+                            customer_id__in=owner_ids
+                        ).values("formulation_version__formulation_id")
+                    ),
+                )
+                .first()
+            )
+            if shared_version_sheet is not None:
+                sheet = shared_version_sheet
+        if sheet is None:
+            raise NotFound("Specification not found.")
+
+        return HttpResponse(spec_render_html(sheet))

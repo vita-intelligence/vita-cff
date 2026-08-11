@@ -42,6 +42,7 @@ from .messaging_views import (
 from .specs_views import (
     SpecDetailView,
     SpecListView,
+    SpecPdfView,
     SpecSignView,
 )
 from .profile_views import (
@@ -290,6 +291,13 @@ urlpatterns = [
         "specs/<uuid:sheet_id>/",
         SpecDetailView.as_view(),
         name="spec-detail",
+    ),
+    # Rendered HTML preview — mirrors ProposalPdfView. The web-site
+    # portal iframes this for its /portal/specs/<id> viewer.
+    path(
+        "specs/<uuid:sheet_id>/pdf/",
+        SpecPdfView.as_view(),
+        name="spec-pdf",
     ),
     # Standalone sign endpoint — works for proposal-bundled drafts
     # AND for post-trial FINAL specs (which aren't bundled into the
