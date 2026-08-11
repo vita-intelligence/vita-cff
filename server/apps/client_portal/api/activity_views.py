@@ -4,27 +4,22 @@
 customer-facing thing the caller has in flight, normalized into a
 single card shape. Powers the marketing-site portal hub (the
 ``/portal`` landing page on the web-site repo) which lists
-Custom projects, RTG proposals, and paid sample requests side-by-
-side under one filter/search/pagination surface.
+Custom formulations, RTG proposals, and paid sample requests
+side-by-side under one filter/search/pagination surface.
 
 Contract (query params):
 
 * ``kind`` — ``all|project|rtg|sample``, default ``all``.
 * ``q`` — free-text search, matches code / title (case-insensitive).
 * ``limit`` — page size, default 20, max 100.
-* ``offset`` — page start, default 0. Hard cap ``offset + limit <=
-  500`` — beyond that the FE should push the user to filter/search
-  instead of paging, since the per-kind fetch cost grows linearly
-  and a scan-then-merge past 500 rows is a footgun.
+* ``cursor`` — opaque base64 payload returned in the previous
+  page's ``next_cursor``. Omit / empty on the first page.
 
-Response shape:
-
-.. code-block:: json
+Response shape::
 
    {
      "items": [ { … normalized item … } ],
-     "next_offset": 20 | null,
-     "total": 42,
+     "next_cursor": "<base64>" | null,
      "counts": {"all": 42, "project": 5, "rtg": 30, "sample": 7}
    }
 
@@ -48,12 +43,21 @@ Where each item is::
       "needs_attention": true | false
     }
 
-Aggregation strategy: fetch up to ``offset + limit`` rows of each
-kind (capped at 500 across the request), merge in Python, sort by
-``updated_at`` desc, slice. This is fine for hundreds of items per
-kind — a customer with tens of thousands of RTG orders will need
-either cursor pagination or a materialised activity table; both
-are follow-ups called out in the module docstring on purpose.
+Pagination strategy — **keyset (aka cursor) over ``(updated_at,
+id)``**. Each per-kind fetch runs::
+
+    qs.filter(Q(updated_at__lt=ts) | Q(updated_at=ts, id__lt=id))
+      .order_by("-updated_at", "-id")[:limit + 1]
+
+so the SQL cost stays ``O(log N + limit)`` regardless of dataset
+size — a customer with a million RTG orders pages just as fast on
+row 999,000 as on row 20. The FE walks ``next_cursor`` opaquely;
+no client-visible offset arithmetic to blow up.
+
+The merge itself is unchanged: fetch ``limit + 1`` per kind, sort
+in Python by ``(updated_at, id)`` desc, slice to ``limit`` items,
+compute the next cursor from the last surviving item. Overhead is
+bounded at ``O(kinds * limit)`` per page.
 
 Ownership traversal reuses :func:`client_portal.queries
 .customer_ids_for_account` so duplicate ``Customer`` rows sharing
@@ -63,10 +67,14 @@ an email all contribute to the same feed (matches the dashboard's
 
 from __future__ import annotations
 
+import base64
+import json
 from decimal import Decimal
-from typing import Any, Iterable
+from typing import Any
+from uuid import UUID
 
-from django.db.models import Q
+from django.db.models import Q, QuerySet
+from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -84,11 +92,61 @@ from apps.proposals.models import Proposal, ProposalStatus, ProposalTemplateType
 
 DEFAULT_LIMIT = 20
 MAX_LIMIT = 100
-#: Hard ceiling on offset+limit so the merge-in-python step doesn't
-#: fan out unbounded on customers with tens of thousands of rows.
-#: Past this ceiling the FE surfaces a "narrow with filters/search"
-#: hint instead of continuing to page.
-PAGE_HARD_CAP = 500
+
+
+# ---------------------------------------------------------------------------
+# Cursor encoding
+# ---------------------------------------------------------------------------
+
+
+def _encode_cursor(updated_at, item_id: str) -> str:
+    """Opaque base64 payload — clients don't parse it, they just
+    hand the previous ``next_cursor`` back verbatim on the next
+    request. Base64 keeps it URL-safe without a bespoke escape."""
+
+    payload = json.dumps(
+        {"ts": updated_at.isoformat(), "id": str(item_id)},
+        separators=(",", ":"),
+    )
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def _decode_cursor(raw: str | None) -> tuple[Any, str] | None:
+    """Return ``(datetime, id_str)`` or ``None`` for a malformed /
+    missing cursor. A malformed cursor silently degrades to "start
+    from page 1" rather than 400ing — a stale link should still
+    load something usable for the customer."""
+
+    if not raw:
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")))
+    except Exception:  # noqa: BLE001
+        return None
+    ts_raw = payload.get("ts")
+    id_raw = payload.get("id")
+    if not ts_raw or not id_raw:
+        return None
+    ts = parse_datetime(ts_raw)
+    if ts is None:
+        return None
+    return ts, str(id_raw)
+
+
+def _cursor_filter(cursor: tuple[Any, str] | None) -> Q:
+    """Compile the cursor into a Django Q. Keyset comparison
+    ``(updated_at, id) < (cursor_ts, cursor_id)`` under
+    ``ORDER BY -updated_at, -id``."""
+
+    if cursor is None:
+        return Q()
+    ts, item_id = cursor
+    return Q(updated_at__lt=ts) | Q(updated_at=ts, id__lt=item_id)
+
+
+# ---------------------------------------------------------------------------
+# View
+# ---------------------------------------------------------------------------
 
 
 class PortalActivityView(PortalAPIView):
@@ -97,56 +155,56 @@ class PortalActivityView(PortalAPIView):
     def get(self, request: Request) -> Response:
         kind = _normalize_kind(request.query_params.get("kind"))
         search = (request.query_params.get("q") or "").strip()
-        limit, offset, ceiling_error = _parse_paging(request)
-        if ceiling_error is not None:
-            return ceiling_error
+        limit = _parse_limit(request)
+        cursor = _decode_cursor(request.query_params.get("cursor"))
 
         customer_ids = customer_ids_for_account(request.user)
         if not customer_ids:
             return Response(
                 {
                     "items": [],
-                    "next_offset": None,
-                    "total": 0,
+                    "next_cursor": None,
                     "counts": {"all": 0, "project": 0, "rtg": 0, "sample": 0},
                 }
             )
 
         # Per-kind counts drive the tab badges. Cheap COUNT queries
-        # even at scale; whether the current search / active kind is
-        # applied is a UX call — we scope counts to ``q`` so a search
-        # that empties a bucket shows a "(0)" on that tab instead of
-        # a stale "42".
+        # even at scale (the SELECT hits the (updated_at) index). We
+        # scope counts to ``q`` so a search that empties a bucket
+        # shows a "(0)" on that tab instead of a stale "42". Counts
+        # deliberately ignore the cursor — "3 of your samples" means
+        # 3 in total, not 3 remaining on the current page.
         counts = _compute_counts(customer_ids, search)
 
-        # Cap the per-kind fetch so a customer with millions of RTG
-        # rows doesn't stream them all into memory on page 1. We
-        # over-fetch by ``limit`` per kind so the merged order is
-        # stable across pages (the last item on page N is greater
-        # than the first item on page N+1 after sort).
-        per_kind_cap = min(offset + limit, PAGE_HARD_CAP)
+        # Over-fetch by one per kind so we can tell whether the
+        # merged page has more rows behind it without a second
+        # count query. The extras get sliced off after the merge.
+        cap = limit + 1
 
         items: list[dict] = []
         if kind in ("all", "project"):
-            items.extend(_collect_projects(customer_ids, search, per_kind_cap))
+            items.extend(_collect_projects(customer_ids, search, cap, cursor))
         if kind in ("all", "rtg"):
-            items.extend(_collect_rtg(customer_ids, search, per_kind_cap))
+            items.extend(_collect_rtg(customer_ids, search, cap, cursor))
         if kind in ("all", "sample"):
-            items.extend(_collect_samples(customer_ids, search, per_kind_cap))
+            items.extend(_collect_samples(customer_ids, search, cap, cursor))
 
         items.sort(key=_sort_key, reverse=True)
-        total = len(items)
-        page = items[offset : offset + limit]
-        next_offset = (
-            offset + limit if (offset + limit) < total and offset + limit < PAGE_HARD_CAP
-            else None
-        )
+        page = items[:limit]
+        # If the merged list holds strictly more than ``limit`` we
+        # know there's a next page. The next cursor is the LAST
+        # item on the current page — that becomes the exclusive
+        # upper bound for the next fetch. No cursor means we've
+        # walked to the end.
+        next_cursor: str | None = None
+        if page and len(items) > limit:
+            last = page[-1]
+            next_cursor = _encode_cursor(last["updated_at"], last["id"])
 
         return Response(
             {
                 "items": [_serialize_item(item) for item in page],
-                "next_offset": next_offset,
-                "total": total,
+                "next_cursor": next_cursor,
                 "counts": counts,
             }
         )
@@ -158,51 +216,16 @@ class PortalActivityView(PortalAPIView):
 
 
 def _normalize_kind(raw: str | None) -> str:
-    """Coerce ``kind`` query param to a known value; unknowns fall
-    through to ``all`` rather than 400 so a stale FE build doesn't
-    hard-fail on a typo."""
-
     value = (raw or "all").lower().strip()
     return value if value in ("all", "project", "rtg", "sample") else "all"
 
 
-def _parse_paging(request: Request) -> tuple[int, int, Response | None]:
-    """Read + validate ``limit`` / ``offset``.
-
-    Returns ``(limit, offset, error_response_or_None)``. A non-None
-    error is a fully-formed 400 the view can return unchanged.
-    """
-
+def _parse_limit(request: Request) -> int:
     try:
-        limit = int(request.query_params.get("limit") or DEFAULT_LIMIT)
+        value = int(request.query_params.get("limit") or DEFAULT_LIMIT)
     except (TypeError, ValueError):
-        limit = DEFAULT_LIMIT
-    limit = max(1, min(MAX_LIMIT, limit))
-
-    try:
-        offset = int(request.query_params.get("offset") or 0)
-    except (TypeError, ValueError):
-        offset = 0
-    offset = max(0, offset)
-
-    if offset + limit > PAGE_HARD_CAP:
-        return (
-            limit,
-            offset,
-            Response(
-                {
-                    "detail": "offset_out_of_range",
-                    "message": (
-                        "Please refine with a filter or search — this feed "
-                        "only pages the first "
-                        f"{PAGE_HARD_CAP} items."
-                    ),
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            ),
-        )
-
-    return limit, offset, None
+        value = DEFAULT_LIMIT
+    return max(1, min(MAX_LIMIT, value))
 
 
 # ---------------------------------------------------------------------------
@@ -211,10 +234,6 @@ def _parse_paging(request: Request) -> tuple[int, int, Response | None]:
 
 
 def _compute_counts(customer_ids: list, search: str) -> dict[str, int]:
-    """Cheap per-kind COUNT queries for the tab strip. Scoped by
-    ``search`` so an empty search shows the true total per kind
-    but a narrowing query updates the badges too."""
-
     project_qs = _projects_queryset(customer_ids, search)
     rtg_qs = _rtg_queryset(customer_ids, search)
     sample_qs = _samples_queryset(customer_ids, search)
@@ -232,7 +251,7 @@ def _compute_counts(customer_ids: list, search: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# Custom project rows
+# Custom formulation rows
 # ---------------------------------------------------------------------------
 
 
@@ -251,23 +270,30 @@ _PROJECT_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
 }
 
 
-def _projects_queryset(customer_ids: list, search: str):
-    """Custom Formulations visible to the customer."""
-
+def _projects_queryset(customer_ids: list, search: str) -> QuerySet:
     formulation_ids = formulation_ids_for_customer(customer_ids)
     if not formulation_ids:
         return Formulation.objects.none()
     qs = Formulation.objects.filter(
         id__in=formulation_ids,
         project_type="custom",
-    ).select_related()
+    )
     if search:
         qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
     return qs
 
 
-def _collect_projects(customer_ids: list, search: str, cap: int) -> list[dict]:
-    rows = list(_projects_queryset(customer_ids, search).order_by("-updated_at")[:cap])
+def _collect_projects(
+    customer_ids: list,
+    search: str,
+    cap: int,
+    cursor: tuple[Any, str] | None,
+) -> list[dict]:
+    rows = list(
+        _projects_queryset(customer_ids, search)
+        .filter(_cursor_filter(cursor))
+        .order_by("-updated_at", "-id")[:cap]
+    )
     items: list[dict] = []
     for row in rows:
         status_label, tone, needs = _PROJECT_STATUS_MAP.get(
@@ -278,7 +304,7 @@ def _collect_projects(customer_ids: list, search: str, cap: int) -> list[dict]:
                 "kind": "project",
                 "id": str(row.id),
                 "code": row.code or "",
-                "title": row.name or row.code or "Untitled project",
+                "title": row.name or row.code or "Untitled formulation",
                 "subtitle": "Custom formulation",
                 "status_key": row.project_status,
                 "status_label": status_label,
@@ -299,11 +325,6 @@ def _collect_projects(customer_ids: list, search: str, cap: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-#: RTG proposal status → (label, tone, needs_attention). Only
-#: proposals in ``sent`` demand a signature from the customer — the
-#: rest are informational from the customer's angle. ``draft`` reads
-#: as "we're drafting your quote" because portal-created quotes stay
-#: in DRAFT until sales hits Send.
 _RTG_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
     ProposalStatus.DRAFT: ("We're drafting your quote", "in_progress", False),
     ProposalStatus.IN_REVIEW: ("Under review", "in_progress", False),
@@ -314,7 +335,7 @@ _RTG_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
 }
 
 
-def _rtg_queryset(customer_ids: list, search: str):
+def _rtg_queryset(customer_ids: list, search: str) -> QuerySet:
     qs = Proposal.objects.filter(
         customer_id__in=customer_ids,
         template_type=ProposalTemplateType.READY_TO_GO,
@@ -329,8 +350,17 @@ def _rtg_queryset(customer_ids: list, search: str):
     return qs
 
 
-def _collect_rtg(customer_ids: list, search: str, cap: int) -> list[dict]:
-    rows = list(_rtg_queryset(customer_ids, search).order_by("-updated_at")[:cap])
+def _collect_rtg(
+    customer_ids: list,
+    search: str,
+    cap: int,
+    cursor: tuple[Any, str] | None,
+) -> list[dict]:
+    rows = list(
+        _rtg_queryset(customer_ids, search)
+        .filter(_cursor_filter(cursor))
+        .order_by("-updated_at", "-id")[:cap]
+    )
     items: list[dict] = []
     for row in rows:
         formulation = getattr(row.formulation_version, "formulation", None)
@@ -360,8 +390,6 @@ def _collect_rtg(customer_ids: list, search: str, cap: int) -> list[dict]:
 
 
 def _rtg_subtitle(proposal: Proposal, formulation: Any) -> str:
-    """One-liner under the RTG title — qty + code for scan."""
-
     parts: list[str] = []
     if proposal.quantity:
         parts.append(f"{proposal.quantity:,} units")
@@ -388,9 +416,6 @@ def _rtg_total(proposal: Proposal) -> Decimal | None:
 # ---------------------------------------------------------------------------
 
 
-#: Sample payment status → (label, tone, needs_attention). Samples
-#: are always customer-initiated so "needs_attention" is finance-
-#: side; from the customer's angle every state is informational.
 _SAMPLE_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
     PaymentStatus.PENDING: ("Awaiting confirmation", "in_progress", False),
     PaymentStatus.APPROVED: ("Confirmed — kit shipping soon", "success", False),
@@ -398,15 +423,15 @@ _SAMPLE_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
 }
 
 
-def _samples_queryset(customer_ids: list, search: str):
+def _samples_queryset(customer_ids: list, search: str) -> QuerySet:
     """Payments the customer sees as sample-kit orders.
 
     Storefront sample checkouts (see :func:`apps.client_portal
     .checkout_services._create_sample_payment`) create Payment rows
     with ``kind=FINAL`` against an RTG-tagged formulation. That
-    combination is the semantic signal — Custom projects' FINAL
-    payments run against ``project_type=custom`` formulations, so
-    the RTG filter cleanly separates the two flows without a
+    combination is the semantic signal — Custom formulations'
+    FINAL payments run against ``project_type=custom`` formulations,
+    so the RTG filter cleanly separates the two flows without a
     ``source`` column.
     """
 
@@ -425,8 +450,17 @@ def _samples_queryset(customer_ids: list, search: str):
     return qs
 
 
-def _collect_samples(customer_ids: list, search: str, cap: int) -> list[dict]:
-    rows = list(_samples_queryset(customer_ids, search).order_by("-updated_at")[:cap])
+def _collect_samples(
+    customer_ids: list,
+    search: str,
+    cap: int,
+    cursor: tuple[Any, str] | None,
+) -> list[dict]:
+    rows = list(
+        _samples_queryset(customer_ids, search)
+        .filter(_cursor_filter(cursor))
+        .order_by("-updated_at", "-id")[:cap]
+    )
     items: list[dict] = []
     for row in rows:
         formulation = row.formulation
@@ -461,10 +495,6 @@ def _collect_samples(customer_ids: list, search: str, cap: int) -> list[dict]:
 
 
 def _formulation_display_name(formulation: Any) -> str:
-    """Storefront-facing name — prefer ``rtg_display_name`` on RTG
-    rows so the customer sees "Ultimate Fat Burner Drink" instead of
-    the internal SKU code."""
-
     if formulation is None:
         return ""
     if (
@@ -485,17 +515,17 @@ def _decimal_str(value: Any) -> str | None:
 
 
 def _sort_key(item: dict) -> Any:
-    """Merged sort — newest updated first, needs-attention as
-    tie-breaker so the "Awaiting signature" row edges out the same-
-    timestamp informational row on page 1."""
+    """Merged sort key: (updated_at desc, id desc). Matches each
+    per-kind ``order_by`` so the merge preserves the DB's ordering.
+    ``id`` is coerced to string so heterogeneous UUID vs int ids
+    (Formulation vs Payment) compare stably; we're only using it
+    as a tiebreaker within the same timestamp so the string order
+    is fine."""
 
-    ts = item.get("updated_at")
-    return (ts, 1 if item.get("needs_attention") else 0)
+    return (item.get("updated_at"), str(item.get("id", "")))
 
 
 def _serialize_item(item: dict) -> dict:
-    """Convert internal item dict → wire dict (ISO datetimes)."""
-
     out = dict(item)
     ts = out.get("updated_at")
     if ts is not None and hasattr(ts, "isoformat"):
