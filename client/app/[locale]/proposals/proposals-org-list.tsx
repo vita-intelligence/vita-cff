@@ -478,7 +478,7 @@ function ProposalCard({
         <Link
           href={`/proposals/${proposal.id}`}
           className="text-ink-400 hover:text-ink-700"
-          aria-label={tProposals("list.open")}
+          aria-label={tProposals("list.view")}
         >
           <ExternalLink className="h-3.5 w-3.5" />
         </Link>

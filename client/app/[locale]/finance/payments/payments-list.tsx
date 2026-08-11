@@ -1373,6 +1373,23 @@ function SubSectionHeader({
 
 function PaymentCard({ payment }: { payment: PaymentDto }) {
   const customerLabel = payment.customer_company || payment.customer_name;
+  // Title uses the display name when we have one — an RTG SKU like
+  // "Vitamin C 1000mg" reads better than the internal code "RTG00001".
+  // Falls back to the code so a name-less formulation still shows
+  // something meaningful. Subtitle carries the code as a lookup key,
+  // but only when it isn't already the title (RTG rows whose name
+  // equals the code otherwise render the same string twice).
+  const productTitle =
+    payment.kind === "deposit"
+      ? payment.proposal_code || "Deposit"
+      : payment.formulation_name || payment.formulation_code || "Payment";
+  const productSubtitle =
+    payment.kind === "deposit"
+      ? "Deposit — bundle-level"
+      : payment.formulation_code &&
+          payment.formulation_code !== productTitle
+        ? payment.formulation_code
+        : "";
   return (
     <Link
       href={`/finance/payments/${payment.id}`}
@@ -1381,15 +1398,13 @@ function PaymentCard({ payment }: { payment: PaymentDto }) {
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-xs font-semibold text-ink-1000">
-            {payment.kind === "deposit"
-              ? payment.proposal_code || "Deposit"
-              : payment.formulation_code || "Payment"}
+            {productTitle}
           </p>
-          <p className="truncate text-[11px] text-ink-500">
-            {payment.kind === "deposit"
-              ? "Deposit — bundle-level"
-              : payment.formulation_name}
-          </p>
+          {productSubtitle ? (
+            <p className="truncate text-[11px] text-ink-500">
+              {productSubtitle}
+            </p>
+          ) : null}
         </div>
         <span
           className={
