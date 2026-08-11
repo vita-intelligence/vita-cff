@@ -42,6 +42,12 @@ class PaymentReadSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation.name", read_only=True, default=""
     )
+    #: ``custom`` or ``ready_to_go`` — lets the finance card render
+    #: RTG rows with the code parenthesised (``Vitamin C (RTG00001)``)
+    #: while custom projects keep the plain name.
+    formulation_project_type = serializers.CharField(
+        source="formulation.project_type", read_only=True, default=""
+    )
     #: Populated on DEPOSIT payments only — walks up to the accepted
     #: proposal so the finance list can render "PROP-0009 · 50%
     #: deposit" alongside the amount.
@@ -86,6 +92,7 @@ class PaymentReadSerializer(serializers.ModelSerializer):
             "formulation",
             "formulation_code",
             "formulation_name",
+            "formulation_project_type",
             "proposal",
             "proposal_code",
             "proposal_deposit_percent",

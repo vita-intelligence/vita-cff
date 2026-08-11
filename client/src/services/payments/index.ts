@@ -44,6 +44,10 @@ export interface PaymentDto {
   readonly formulation: string | null;
   readonly formulation_code: string;
   readonly formulation_name: string;
+  /** ``custom`` or ``ready_to_go`` — drives whether the finance card
+   *  parenthesises the code alongside the display name. Empty string
+   *  when the payment isn't linked to a formulation (deposits). */
+  readonly formulation_project_type: "" | "custom" | "ready_to_go";
   /** Set on ``deposit`` payments only. */
   readonly proposal: string | null;
   readonly proposal_code: string;

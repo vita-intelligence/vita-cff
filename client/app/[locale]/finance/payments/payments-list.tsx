@@ -1373,23 +1373,37 @@ function SubSectionHeader({
 
 function PaymentCard({ payment }: { payment: PaymentDto }) {
   const customerLabel = payment.customer_company || payment.customer_name;
-  // Title uses the display name when we have one — an RTG SKU like
-  // "Vitamin C 1000mg" reads better than the internal code "RTG00001".
-  // Falls back to the code so a name-less formulation still shows
-  // something meaningful. Subtitle carries the code as a lookup key,
-  // but only when it isn't already the title (RTG rows whose name
-  // equals the code otherwise render the same string twice).
-  const productTitle =
-    payment.kind === "deposit"
-      ? payment.proposal_code || "Deposit"
-      : payment.formulation_name || payment.formulation_code || "Payment";
-  const productSubtitle =
-    payment.kind === "deposit"
-      ? "Deposit — bundle-level"
-      : payment.formulation_code &&
-          payment.formulation_code !== productTitle
-        ? payment.formulation_code
-        : "";
+  // Title format:
+  //  - deposit rows: proposal code (they don't have a display name)
+  //  - RTG rows:     "Display Name (RTG00001)" so the shop-facing name
+  //                  reads first and the internal code stays visible
+  //                  as a lookup reference — collapses to just the
+  //                  code when name == code (badly-seeded RTG SKUs)
+  //  - custom rows:  display name (fall back to the code when name is
+  //                  blank); code moves to the subtitle for reference
+  const productTitle = (() => {
+    if (payment.kind === "deposit") {
+      return payment.proposal_code || "Deposit";
+    }
+    const name = payment.formulation_name;
+    const code = payment.formulation_code;
+    if (payment.formulation_project_type === "ready_to_go") {
+      if (name && code && name !== code) return `${name} (${code})`;
+      return name || code || "Payment";
+    }
+    return name || code || "Payment";
+  })();
+  // Subtitle carries the code as a lookup key for custom rows so a
+  // scientist scanning the queue can still pattern-match on the
+  // internal ID. Hidden on RTG (code is already in the title) and
+  // when it would duplicate the title.
+  const productSubtitle = (() => {
+    if (payment.kind === "deposit") return "Deposit — bundle-level";
+    if (payment.formulation_project_type === "ready_to_go") return "";
+    const code = payment.formulation_code;
+    if (code && code !== productTitle) return code;
+    return "";
+  })();
   return (
     <Link
       href={`/finance/payments/${payment.id}`}
