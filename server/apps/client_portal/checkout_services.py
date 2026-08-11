@@ -393,12 +393,18 @@ _SHEET_CONTENT_FIELDS: tuple[str, ...] = (
 
 
 def _find_template_final_sheet(formulation: Formulation) -> SpecificationSheet | None:
-    """Latest FINAL sheet on any version of this formulation.
+    """Latest untainted FINAL sheet on any version of this formulation.
 
-    RTG SKUs are expected to have exactly one FINAL — the
+    RTG SKUs are expected to have exactly one FINAL template — the
     ``create_sheet`` service enforces that singleton on the create
-    surface. We pick the newest anyway to cope with historical
-    data where an org may have >1 (e.g. dev seeds).
+    surface. Per-order clones also carry ``document_kind=FINAL`` so
+    a naive ``order_by(-updated_at).first()`` would pick the most
+    recent clone and start suffixing ``-ORDER-1-ORDER-1-...`` on the
+    already-cloned code. The distinguishing signal is ``client_name``:
+    templates are unbound to any customer (blank), clones inherit the
+    checkout modal's customer identity. Filtering to blank client
+    names restores the "one template per SKU" invariant regardless
+    of how many orders have been placed.
     """
 
     return (
@@ -406,6 +412,7 @@ def _find_template_final_sheet(formulation: Formulation) -> SpecificationSheet |
         .filter(
             formulation_version__formulation_id=formulation.id,
             document_kind=SpecificationDocumentKind.FINAL,
+            client_name="",
         )
         .order_by("-updated_at")
         .first()
@@ -485,6 +492,18 @@ def _clone_final_sheet_for_checkout(
         updated_by=actor,
     )
     if combo is not None:
+        # Wipe any packaging FKs inherited from the template BEFORE
+        # applying the combo. Template RTG sheets sometimes carry
+        # stray packaging picks from dev seeds — without this reset,
+        # a pouch combo (container + label only) would silently keep
+        # the template's bottle-lid and render "Lid: Closure Miron"
+        # alongside "Pouch: Stand-Up 110x190" on the customer's spec.
+        kwargs.update(
+            packaging_lid_id=None,
+            packaging_container_id=None,
+            packaging_label_id=None,
+            packaging_antitemper_id=None,
+        )
         kwargs.update(_packaging_slots_from_combo(combo))
     return SpecificationSheet.objects.create(**kwargs)
 

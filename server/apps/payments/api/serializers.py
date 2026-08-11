@@ -48,6 +48,24 @@ class PaymentReadSerializer(serializers.ModelSerializer):
     formulation_project_type = serializers.CharField(
         source="formulation.project_type", read_only=True, default=""
     )
+    #: Storefront-facing name for RTG SKUs (``rtg_display_name``, e.g.
+    #: "Ultimate Fat Burner Drink") — falls back to the internal
+    #: formulation name for Custom projects or RTG rows that haven't
+    #: been given a marketing name yet. The finance card renders this
+    #: as the primary label so an operator sees the product the
+    #: customer picked, not the internal code.
+    formulation_display_name = serializers.SerializerMethodField()
+
+    def get_formulation_display_name(self, obj) -> str:
+        formulation = getattr(obj, "formulation", None)
+        if formulation is None:
+            return ""
+        if (
+            getattr(formulation, "project_type", "") == "ready_to_go"
+            and (formulation.rtg_display_name or "").strip()
+        ):
+            return formulation.rtg_display_name.strip()
+        return formulation.name or ""
     #: Populated on DEPOSIT payments only — walks up to the accepted
     #: proposal so the finance list can render "PROP-0009 · 50%
     #: deposit" alongside the amount.
@@ -93,6 +111,7 @@ class PaymentReadSerializer(serializers.ModelSerializer):
             "formulation_code",
             "formulation_name",
             "formulation_project_type",
+            "formulation_display_name",
             "proposal",
             "proposal_code",
             "proposal_deposit_percent",

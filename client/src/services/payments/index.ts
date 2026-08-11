@@ -48,6 +48,11 @@ export interface PaymentDto {
    *  parenthesises the code alongside the display name. Empty string
    *  when the payment isn't linked to a formulation (deposits). */
   readonly formulation_project_type: "" | "custom" | "ready_to_go";
+  /** Storefront-facing product name for RTG SKUs (rtg_display_name,
+   *  e.g. "Ultimate Fat Burner Drink"), falling back to the internal
+   *  formulation.name for Custom projects. Empty string when the
+   *  payment isn't linked to a formulation. */
+  readonly formulation_display_name: string;
   /** Set on ``deposit`` payments only. */
   readonly proposal: string | null;
   readonly proposal_code: string;

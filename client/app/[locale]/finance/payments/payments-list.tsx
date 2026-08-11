@@ -1385,13 +1385,17 @@ function PaymentCard({ payment }: { payment: PaymentDto }) {
     if (payment.kind === "deposit") {
       return payment.proposal_code || "Deposit";
     }
-    const name = payment.formulation_name;
+    // Prefer the storefront-facing ``rtg_display_name`` for RTG rows
+    // (e.g. "Ultimate Fat Burner Drink") and fall back to the plain
+    // formulation.name for custom projects or unnamed RTG SKUs.
+    const display =
+      payment.formulation_display_name || payment.formulation_name;
     const code = payment.formulation_code;
     if (payment.formulation_project_type === "ready_to_go") {
-      if (name && code && name !== code) return `${name} (${code})`;
-      return name || code || "Payment";
+      if (display && code && display !== code) return `${display} (${code})`;
+      return display || code || "Payment";
     }
-    return name || code || "Payment";
+    return display || code || "Payment";
   })();
   // Subtitle carries the code as a lookup key for custom rows so a
   // scientist scanning the queue can still pattern-match on the

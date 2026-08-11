@@ -112,6 +112,18 @@ class ProposalReadSerializer(serializers.ModelSerializer):
     formulation_name = serializers.CharField(
         source="formulation_version.formulation.name", read_only=True
     )
+    #: Internal formulation code (``RTG00001`` for RTG, ``MA22222``
+    #: etc. for Custom). Kept alongside the display name so the
+    #: pipeline card can render "Ultimate Fat Burner Drink (RTG00001)"
+    #: without pattern-matching on the SKU prefix.
+    formulation_code = serializers.CharField(
+        source="formulation_version.formulation.code", read_only=True
+    )
+    #: Storefront-facing name (``rtg_display_name``) for RTG SKUs,
+    #: falling back to the internal ``formulation.name`` for Custom
+    #: projects or unnamed RTG rows. Pipeline cards render this so
+    #: sales sees "Ultimate Fat Burner Drink" instead of "RTG00001".
+    formulation_display_name = serializers.SerializerMethodField()
     formulation_version_number = serializers.IntegerField(
         source="formulation_version.version_number", read_only=True
     )
@@ -146,6 +158,7 @@ class ProposalReadSerializer(serializers.ModelSerializer):
             "formulation_version",
             "formulation_id",
             "formulation_name",
+            "formulation_display_name",
             "formulation_version_number",
             "specification_sheet_id",
             "customer_id",
@@ -229,6 +242,19 @@ class ProposalReadSerializer(serializers.ModelSerializer):
         if user is None:
             return ""
         return (user.get_full_name() or user.email or "").strip()
+
+    def get_formulation_display_name(self, obj: Proposal) -> str:
+        formulation = getattr(
+            getattr(obj, "formulation_version", None), "formulation", None
+        )
+        if formulation is None:
+            return ""
+        if (
+            getattr(formulation, "project_type", "") == "ready_to_go"
+            and (getattr(formulation, "rtg_display_name", "") or "").strip()
+        ):
+            return formulation.rtg_display_name.strip()
+        return formulation.name or ""
 
     def _effective_user(self, obj: Proposal):
         if obj.sales_person_id:

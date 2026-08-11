@@ -67,6 +67,15 @@ export interface ProposalDto {
   readonly formulation_version: string;
   readonly formulation_id: string;
   readonly formulation_name: string;
+  /** Internal formulation code (``RTG00001``, ``MA22222`` etc.) —
+   *  parenthesised alongside the display name on RTG cards so the
+   *  reader can pattern-match on the SKU without opening the detail. */
+  readonly formulation_code: string;
+  /** Storefront-facing name (``rtg_display_name``) for RTG SKUs,
+   *  falling back to ``formulation_name`` for Custom projects. The
+   *  pipeline cards render this so sales sees "Ultimate Fat Burner
+   *  Drink" instead of "RTG00001". */
+  readonly formulation_display_name: string;
   readonly formulation_version_number: number;
   readonly specification_sheet_id: string | null;
   //: FK to the linked ``Customer`` record (addressbook entry). ``null``

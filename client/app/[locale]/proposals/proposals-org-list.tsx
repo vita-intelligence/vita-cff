@@ -453,16 +453,27 @@ function ProposalCard({
     proposal.status !== "accepted" &&
     proposal.status !== "rejected";
   // Product line under the customer: for one-line proposals the
-  // formulation name is enough; multi-line quotes append "+N more"
-  // so it reads at a glance without needing to open the detail page.
-  // Anchored on ``formulation_name`` (populated on RTG cart splits
-  // and manual proposals alike) — omitted entirely when the linked
-  // formulation is nameless so the card doesn't drop a bare "—".
+  // formulation name is enough; multi-line quotes append "+N more".
+  // Prefer ``formulation_display_name`` (RTG storefront name, e.g.
+  // "Ultimate Fat Burner Drink") and fall back to the internal
+  // ``formulation_name``. RTG rows also carry ``formulation_code``
+  // parenthesised so the reader can pattern-match on RTG00001
+  // without opening the detail. Omitted entirely when the linked
+  // formulation is nameless.
   const productLine = (() => {
-    const name = (proposal.formulation_name || "").trim();
-    if (!name) return "";
+    const display = (
+      proposal.formulation_display_name ||
+      proposal.formulation_name ||
+      ""
+    ).trim();
+    if (!display) return "";
+    let base = display;
+    if (proposal.template_type === "ready_to_go") {
+      const code = (proposal.formulation_code || "").trim();
+      if (code && code !== display) base = `${display} (${code})`;
+    }
     const extras = Math.max(0, proposal.lines_count - 1);
-    return extras > 0 ? `${name} +${extras} more` : name;
+    return extras > 0 ? `${base} +${extras} more` : base;
   })();
 
   return (
