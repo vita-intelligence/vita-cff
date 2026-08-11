@@ -4,10 +4,13 @@ Called from ``POST /api/portal/checkout/`` when a marketing-site
 customer clicks *Place order* on ``/cart``. Splits the cart by
 line kind:
 
-* ``product`` lines → merged into ONE draft :class:`Proposal` with
-  ``template_type=READY_TO_GO``. Each line becomes a
-  :class:`ProposalLine` with the customer's picked packaging combo
-  attached. Status stays ``DRAFT`` — sales owns Send.
+* ``product`` lines → each gets its OWN draft :class:`Proposal`
+  with ``template_type=READY_TO_GO`` and a per-order clone of the
+  formulation's FINAL spec sheet. One line per proposal so a
+  customer picking two combos of the same SKU produces two
+  independent quotes (different packaging → different signed
+  spec + different deposit gate). Status stays ``DRAFT`` — sales
+  owns Send.
 
 * ``sample`` lines → each gets an individual PENDING
   :class:`Payment` attached to the sample's formulation. Finance
@@ -15,14 +18,14 @@ line kind:
   external reference + amount confirmation before approving.
 
 Customer-detail overrides captured on the checkout modal are
-written to the *proposal* only — the customer's saved settings are
-NOT PATCHed silently. Changing saved defaults still goes through
-``/portal/settings``.
+written to each *proposal* only — the customer's saved settings
+are NOT PATCHed silently. Changing saved defaults still goes
+through ``/portal/settings``.
 
 Mirrors the pattern of
 :func:`apps.cff_submissions.services.create_portal_rtg_submission`
 (which handles single-line RTG portal submits) but scales to the
-multi-line cart case.
+multi-line cart case by fanning out to one Proposal per line.
 """
 
 from __future__ import annotations
@@ -50,12 +53,16 @@ from apps.proposals.models import (
     ProposalStatus,
     ProposalTemplateType,
 )
-from apps.proposals.services import _generate_unique_code
+from apps.proposals.services import (
+    _generate_unique_code,
+    compute_material_cost_per_pack,
+)
 from apps.specifications.models import (
     SpecificationDocumentKind,
     SpecificationSheet,
     SpecificationStatus,
 )
+from apps.specifications.services import PACKAGING_SLOT_TYPES
 
 
 CartKind = Literal["product", "sample"]
@@ -94,7 +101,11 @@ class CheckoutInput:
 
 @dataclass(frozen=True)
 class CheckoutResult:
-    proposal_id: str | None
+    #: One proposal per product cart line. Empty when the checkout was
+    #: samples-only. Order matches the incoming ``payload.lines`` order
+    #: so a FE deep-link like ``/portal/orders/#PROP-0010`` can walk the
+    #: list in the same sequence the customer saw at cart time.
+    proposal_ids: list[str] = field(default_factory=list)
     payment_ids: list[str] = field(default_factory=list)
 
 
@@ -104,7 +115,13 @@ def place_portal_checkout(
     account: ClientAccount,
     payload: CheckoutInput,
 ) -> CheckoutResult:
-    """Route each line to its correct destination."""
+    """Route each line to its correct destination.
+
+    Product lines fan out to one Proposal per line so a customer
+    ordering the same SKU in two different packaging combos gets
+    two independent quotes (each with its own signed spec sheet
+    and deposit gate). Sample lines each get one PENDING payment.
+    """
 
     customer = account.customer
     if customer is None:
@@ -122,53 +139,66 @@ def place_portal_checkout(
     product_lines = [l for l in payload.lines if l.kind == "product"]
     sample_lines = [l for l in payload.lines if l.kind == "sample"]
 
-    proposal_id: str | None = None
-    if product_lines:
-        proposal = _create_batch_proposal(
+    proposal_ids: list[str] = []
+    for line in product_lines:
+        proposal = _create_line_proposal(
             customer=customer,
-            product_lines=product_lines,
+            line=line,
             payload=payload,
         )
-        proposal_id = str(proposal.pk)
+        proposal_ids.append(str(proposal.pk))
 
     payment_ids: list[str] = []
     for line in sample_lines:
         payment = _create_sample_payment(customer=customer, line=line)
         payment_ids.append(str(payment.pk))
 
-    return CheckoutResult(proposal_id=proposal_id, payment_ids=payment_ids)
+    return CheckoutResult(proposal_ids=proposal_ids, payment_ids=payment_ids)
 
 
 # ---------------------------------------------------------------------------
-# Product path — one Proposal per checkout, N ProposalLines with combos
+# Product path — one Proposal per cart line, each with its own spec clone
 # ---------------------------------------------------------------------------
 
 
-def _create_batch_proposal(
+def _create_line_proposal(
     *,
     customer,
-    product_lines: list[CheckoutLineInput],
+    line: CheckoutLineInput,
     payload: CheckoutInput,
 ) -> Proposal:
-    """One draft RTG :class:`Proposal` with N :class:`ProposalLine` rows.
+    """One draft RTG :class:`Proposal` for a single cart line.
 
-    The proposal-level ``formulation_version`` FK is required, so we
-    pin it to the first product's version. Per-line versions still
-    carry their own linkage on each ``ProposalLine.formulation_version``
-    so multi-SKU quotes render correctly.
+    Each cart line gets its own quote so a customer picking two
+    packaging combos of the same SKU ends up with two independent
+    proposals — separate signed spec sheets, separate deposit gates,
+    separate accept flows. Merging them into a bundled proposal
+    would force the customer to accept-or-reject both packagings
+    together and would push the picked combo onto a single spec
+    sheet slot (which can only carry one combination).
     """
 
-    # Anchor formulation = first product. Everything on the Proposal
-    # header inherits from this (currency, version). Individual lines
-    # carry their own version + combo below.
-    first_line = product_lines[0]
-    first_formulation = _resolve_formulation(first_line.formulation_id)
-    first_version = _resolve_version(first_formulation)
+    formulation = _resolve_formulation(line.formulation_id)
+    version = _resolve_version(formulation)
+    combo = (
+        _resolve_combo(line.packaging_combo_id)
+        if line.packaging_combo_id
+        else None
+    )
     proposal_actor = _resolve_actor(customer)
+
+    # Roll the raw-material cost up so the ProposalLine (and the
+    # proposal header) carries a real per-pack cost. Without this
+    # the finance edit table renders blank UNIT COST / MARGIN %
+    # columns even though the data exists on the version snapshot.
+    material_cost = compute_material_cost_per_pack(version)
+    material_cost_positive = (
+        material_cost if material_cost and material_cost > 0 else None
+    )
 
     proposal = Proposal.objects.create(
         organization=customer.organization,
-        formulation_version=first_version,
+        formulation_version=version,
         customer=customer,
         code=_generate_unique_code(customer.organization),
         template_type=ProposalTemplateType.READY_TO_GO,
@@ -184,12 +214,13 @@ def _create_batch_proposal(
         delivery_address=payload.delivery_address,
         dear_name=payload.name or (customer.name or ""),
         reference="",  # populated below once code exists on the row
-        currency=(first_line.currency_code or "GBP").upper()[:3],
-        quantity=max(1, sum(l.quantity for l in product_lines)),
-        unit_price=first_line.unit_price,
+        currency=(line.currency_code or "GBP").upper()[:3],
+        quantity=max(1, line.quantity),
+        unit_price=line.unit_price,
+        material_cost_per_pack=material_cost_positive,
         cover_notes=(
-            "Auto-drafted from the storefront cart. Review the lines "
-            "and packaging combos below before hitting Send."
+            "Auto-drafted from the storefront cart. Review the line "
+            "and packaging combo below before hitting Send."
         ),
         created_by=proposal_actor,
         updated_by=proposal_actor,
@@ -197,50 +228,37 @@ def _create_batch_proposal(
     proposal.reference = proposal.code
     proposal.save(update_fields=["reference"])
 
-    # Attach a per-order clone of the formulation's FINAL sheet.
-    # Every checkout needs its own sheet copy because
+    # Attach a per-order clone of the formulation's FINAL sheet with
+    # the customer's chosen combo baked into its packaging slots.
     # ``Proposal.specification_sheet`` is OneToOne — sharing the
     # template with two customers would race on customer-accept.
     # The clone inherits the pre-signed template's approved status
     # (prep + director signatures) so sales / the kiosk can render
     # both docs together at Send time.
     cloned_sheet = _clone_final_sheet_for_checkout(
-        formulation=first_formulation,
-        formulation_version=first_version,
+        formulation=formulation,
+        formulation_version=version,
         proposal=proposal,
         actor=proposal_actor,
         payload=payload,
+        combo=combo,
     )
     if cloned_sheet is not None:
         proposal.specification_sheet = cloned_sheet
         proposal.save(update_fields=["specification_sheet"])
 
-    for idx, line in enumerate(product_lines):
-        formulation = (
-            first_formulation
-            if idx == 0
-            else _resolve_formulation(line.formulation_id)
-        )
-        version = (
-            first_version
-            if idx == 0
-            else _resolve_version(formulation)
-        )
-        combo = (
-            _resolve_combo(line.packaging_combo_id)
-            if line.packaging_combo_id
-            else None
-        )
-        ProposalLine.objects.create(
-            proposal=proposal,
-            formulation_version=version,
-            product_code=formulation.code or "",
-            description=_line_description(formulation, combo),
-            quantity=max(1, line.quantity),
-            unit_price=line.unit_price,
-            display_order=idx,
-            selected_packaging_combo=combo,
-        )
+    ProposalLine.objects.create(
+        proposal=proposal,
+        formulation_version=version,
+        specification_sheet=cloned_sheet,
+        product_code=formulation.code or "",
+        description=_line_description(formulation, combo),
+        quantity=max(1, line.quantity),
+        unit_cost=material_cost_positive,
+        unit_price=line.unit_price,
+        display_order=0,
+        selected_packaging_combo=combo,
+    )
     return proposal
 
 
@@ -422,8 +440,15 @@ def _clone_final_sheet_for_checkout(
     proposal: Proposal,
     actor,
     payload: CheckoutInput,
+    combo: PackagingCombo | None = None,
 ) -> SpecificationSheet | None:
     """Fresh customer-specific FINAL sheet for a portal checkout.
+
+    When ``combo`` is passed we resolve its items into the sheet's
+    four packaging slots (lid / container / label / antitemper) so
+    the rendered sheet shows the concrete packaging the customer
+    picked instead of the "chosen per order — see proposal"
+    placeholder RTG templates carry.
 
     Returns ``None`` when the SKU has no FINAL template yet — the
     proposal is still created (sales will notice the missing sheet
@@ -459,7 +484,67 @@ def _clone_final_sheet_for_checkout(
         created_by=actor,
         updated_by=actor,
     )
+    if combo is not None:
+        kwargs.update(_packaging_slots_from_combo(combo))
     return SpecificationSheet.objects.create(**kwargs)
+
+
+# Keywords that map an item's ``name`` into a packaging slot when
+# the item's ``attributes.packaging_type`` isn't set. Same shape as
+# the regenerate-sheet resolver in ``specifications.services`` — kept
+# in sync deliberately so a combo item and a manual packaging line
+# resolve to the same slot.
+_PACKAGING_KEYWORD_SLOTS: tuple[tuple[str, str], ...] = (
+    ("lid", "packaging_lid"),
+    ("cap", "packaging_lid"),
+    ("closure", "packaging_lid"),
+    ("bottle", "packaging_container"),
+    ("pouch", "packaging_container"),
+    ("tub", "packaging_container"),
+    ("jar", "packaging_container"),
+    ("container", "packaging_container"),
+    ("carton", "packaging_container"),
+    ("label", "packaging_label"),
+    ("sleeve", "packaging_label"),
+    ("wrap", "packaging_label"),
+    ("tamper", "packaging_antitemper"),
+    ("seal", "packaging_antitemper"),
+    ("shrink", "packaging_antitemper"),
+    ("band", "packaging_antitemper"),
+)
+
+
+def _packaging_slots_from_combo(combo: PackagingCombo) -> dict:
+    """Map a combo's items into ``packaging_*_id`` FK kwargs.
+
+    Prefers the item's ``attributes.packaging_type`` (canonical) and
+    falls back to a keyword match on the item name so a combo whose
+    items were seeded without the attribute still resolves. First
+    item wins per slot — combos should have at most one item per
+    slot, but a badly-authored combo won't overwrite an earlier
+    slot silently.
+    """
+
+    slot_for_type = {ptype: slot for slot, ptype in PACKAGING_SLOT_TYPES.items()}
+    resolved: dict[str, int] = {}
+    for row in combo.items.select_related("item").order_by("sort_order", "id"):
+        item = row.item
+        if item is None:
+            continue
+        attrs = item.attributes or {}
+        slot: str | None = None
+        packaging_type = attrs.get("packaging_type")
+        if packaging_type:
+            slot = slot_for_type.get(packaging_type)
+        if slot is None:
+            lower_name = (item.name or "").lower()
+            for keyword, slot_candidate in _PACKAGING_KEYWORD_SLOTS:
+                if keyword in lower_name:
+                    slot = slot_candidate
+                    break
+        if slot and slot not in resolved:
+            resolved[slot] = item.pk
+    return {f"{slot}_id": item_id for slot, item_id in resolved.items()}
 
 
 def _resolve_actor(customer):

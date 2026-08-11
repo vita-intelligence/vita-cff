@@ -109,7 +109,19 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
         formulation = obj.formulation_version.formulation
         if getattr(formulation, "project_type", "") != "ready_to_go":
             return False
-        return formulation.packaging_combos.exists()
+        if not formulation.packaging_combos.exists():
+            return False
+        # A per-order clone gets its packaging FKs stamped by the
+        # storefront checkout (see checkout_services). Once any slot
+        # is populated the placeholder gives way to the concrete
+        # packaging table on this specific sheet. Template RTG sheets
+        # keep all four slots blank and still render the placeholder.
+        return (
+            obj.packaging_lid_id is None
+            and obj.packaging_container_id is None
+            and obj.packaging_label_id is None
+            and obj.packaging_antitemper_id is None
+        )
 
     def get_packaging_details(self, obj) -> dict:
         return {

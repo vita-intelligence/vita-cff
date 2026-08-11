@@ -452,6 +452,18 @@ function ProposalCard({
     proposal.status !== "sent" &&
     proposal.status !== "accepted" &&
     proposal.status !== "rejected";
+  // Product line under the customer: for one-line proposals the
+  // formulation name is enough; multi-line quotes append "+N more"
+  // so it reads at a glance without needing to open the detail page.
+  // Anchored on ``formulation_name`` (populated on RTG cart splits
+  // and manual proposals alike) — omitted entirely when the linked
+  // formulation is nameless so the card doesn't drop a bare "—".
+  const productLine = (() => {
+    const name = (proposal.formulation_name || "").trim();
+    if (!name) return "";
+    const extras = Math.max(0, proposal.lines_count - 1);
+    return extras > 0 ? `${name} +${extras} more` : name;
+  })();
 
   return (
     <div className="rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm hover:border-ink-200 hover:shadow">
@@ -469,6 +481,11 @@ function ProposalCard({
               <TemplateTypeChip type={proposal.template_type} />
             )}
           </div>
+          {productLine ? (
+            <p className="mt-0.5 truncate text-[11px] font-medium text-ink-700">
+              {productLine}
+            </p>
+          ) : null}
           <p className="mt-0.5 truncate text-[11px] text-ink-600">
             {proposal.customer_company ||
               proposal.customer_name ||

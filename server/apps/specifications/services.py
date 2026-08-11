@@ -4622,10 +4622,14 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
         "history": history,
         "packaging": {
             # Phase 3: True when the source formulation is RTG AND has
-            # packaging combos. Signals the render path to show the
-            # "chosen per order — see proposal" placeholder rather than
-            # the four FK slot rows (which are intentionally empty on
-            # RTG SKUs since customers pick a combo per order).
+            # packaging combos AND the sheet's own packaging slots are
+            # all blank. Storefront checkout now clones the FINAL sheet
+            # with the customer's chosen combo baked into the four FKs
+            # (see :func:`apps.client_portal.checkout_services`
+            # ._clone_final_sheet_for_checkout) — those per-order clones
+            # must render the concrete packaging table, not the "chosen
+            # per order — see proposal" placeholder that RTG template
+            # sheets still carry.
             "customer_choice": (
                 getattr(
                     sheet.formulation_version.formulation,
@@ -4634,6 +4638,10 @@ def render_context(sheet: SpecificationSheet) -> dict[str, Any]:
                 )
                 == "ready_to_go"
                 and sheet.formulation_version.formulation.packaging_combos.exists()
+                and sheet.packaging_lid_id is None
+                and sheet.packaging_container_id is None
+                and sheet.packaging_label_id is None
+                and sheet.packaging_antitemper_id is None
             ),
             "lid_description": _packaging_label(sheet.packaging_lid),
             "bottle_pouch_tub": _packaging_label(sheet.packaging_container),

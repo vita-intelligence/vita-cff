@@ -2,16 +2,18 @@
 
 ``POST /api/portal/checkout/`` accepts the cart lines + customer-
 detail overrides captured in the storefront's checkout modal.
-Product lines merge into one draft :class:`Proposal`; sample lines
-each drop a PENDING :class:`Payment` in the finance queue.
+Product lines each become their own draft :class:`Proposal` (one
+per cart line so a customer picking two combos of the same SKU
+gets two independent quotes); sample lines each drop a PENDING
+:class:`Payment` in the finance queue.
 
 Success payload:
 
 .. code-block:: json
 
    {
-     "proposal_id": "…" | null,   // null when checkout was samples-only
-     "payment_ids": ["…", "…"]     // one id per sample line
+     "proposal_ids": ["…", "…"],  // one id per product line
+     "payment_ids":  ["…", "…"]   // one id per sample line
    }
 
 Errors surface as ``{"detail": "<code>", "message": "<human>"}``
@@ -146,7 +148,7 @@ class PortalCheckoutView(PortalAPIView):
         #    the caller expects the shape of a real result.
         if _honeypot_tripped(data):
             return Response(
-                {"proposal_id": None, "payment_ids": []},
+                {"proposal_ids": [], "payment_ids": []},
                 status=status.HTTP_201_CREATED,
             )
 
@@ -221,7 +223,7 @@ class PortalCheckoutView(PortalAPIView):
             )
 
         body = {
-            "proposal_id": result.proposal_id,
+            "proposal_ids": result.proposal_ids,
             "payment_ids": result.payment_ids,
         }
         # Only cache actual writes so a stale response never blocks
