@@ -187,13 +187,21 @@ def _create_line_proposal(
     )
     proposal_actor = _resolve_actor(customer)
 
-    # Roll the raw-material cost up so the ProposalLine (and the
-    # proposal header) carries a real per-pack cost. Without this
-    # the finance edit table renders blank UNIT COST / MARGIN %
-    # columns even though the data exists on the version snapshot.
-    material_cost = compute_material_cost_per_pack(version)
+    # Cost + margin resolution mirrors ``apps.proposals.services
+    # .create_proposal``: prefer the director-signed spec sheet's
+    # numbers (that's the "single source of truth" the sales team
+    # agreed on) and fall back to the raw-material roll-up when the
+    # spec has none. Without this the finance edit table renders
+    # blank UNIT COST / MARGIN % on every storefront quote because
+    # the raw materials on most RTG SKUs aren't costed line-by-line
+    # in the ingredient catalogue.
+    template_sheet = _find_template_final_sheet(formulation)
+    material_cost = _resolve_material_cost(version, template_sheet)
     material_cost_positive = (
         material_cost if material_cost and material_cost > 0 else None
+    )
+    margin_percent = (
+        template_sheet.margin_percent if template_sheet is not None else None
     )
 
     proposal = Proposal.objects.create(
@@ -218,6 +226,7 @@ def _create_line_proposal(
         quantity=max(1, line.quantity),
         unit_price=line.unit_price,
         material_cost_per_pack=material_cost_positive,
+        margin_percent=margin_percent,
         cover_notes=(
             "Auto-drafted from the storefront cart. Review the line "
             "and packaging combo below before hitting Send."
@@ -242,6 +251,7 @@ def _create_line_proposal(
         actor=proposal_actor,
         payload=payload,
         combo=combo,
+        template=template_sheet,
     )
     if cloned_sheet is not None:
         proposal.specification_sheet = cloned_sheet
@@ -260,6 +270,35 @@ def _create_line_proposal(
         selected_packaging_combo=combo,
     )
     return proposal
+
+
+def _resolve_material_cost(
+    version: FormulationVersion,
+    sheet: SpecificationSheet | None,
+) -> Decimal:
+    """Prefer the spec sheet's signed cost, fall back to the raw-
+    material roll-up.
+
+    Spec sheets carry an explicit ``unit_cost`` the director enters
+    (or derived at signing time via ``final_price × (1 − margin/100)``
+    for legacy sheets that only stored the price). That number is
+    the "single source of truth" the sales team agreed on and is
+    the one that actually feeds the customer's quote — the raw-
+    material roll-up is only useful as a fallback for SKUs where
+    the director hasn't yet signed a costed spec.
+    """
+
+    if sheet is not None:
+        if sheet.unit_cost is not None:
+            return Decimal(sheet.unit_cost)
+        margin = sheet.margin_percent
+        final_price = sheet.final_price
+        if final_price is not None and margin is not None:
+            margin_dec = Decimal(margin)
+            if margin_dec < Decimal("100"):
+                factor = (Decimal("100") - margin_dec) / Decimal("100")
+                return (Decimal(final_price) * factor).quantize(Decimal("0.0001"))
+    return compute_material_cost_per_pack(version)
 
 
 # ---------------------------------------------------------------------------
@@ -448,6 +487,7 @@ def _clone_final_sheet_for_checkout(
     actor,
     payload: CheckoutInput,
     combo: PackagingCombo | None = None,
+    template: SpecificationSheet | None = None,
 ) -> SpecificationSheet | None:
     """Fresh customer-specific FINAL sheet for a portal checkout.
 
@@ -457,13 +497,18 @@ def _clone_final_sheet_for_checkout(
     picked instead of the "chosen per order — see proposal"
     placeholder RTG templates carry.
 
+    ``template`` is optional — callers that already looked the
+    template up (e.g. for cost resolution) pass it in to avoid a
+    second query. When absent we look it up here.
+
     Returns ``None`` when the SKU has no FINAL template yet — the
     proposal is still created (sales will notice the missing sheet
     on the row) rather than blocking the whole checkout on staff
     misconfiguration.
     """
 
-    template = _find_template_final_sheet(formulation)
+    if template is None:
+        template = _find_template_final_sheet(formulation)
     if template is None:
         return None
 
