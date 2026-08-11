@@ -144,6 +144,11 @@ export interface CreateTrialBatchRequestDto {
   readonly packaging_combo_id?: string | null;
   readonly label?: string;
   readonly notes?: string;
+  /** Optional. Set when the batch is created from the R&D Samples
+   *  fulfilment queue so the queue can filter the payment out on
+   *  the next fetch. Cross-org / missing payment silently drops
+   *  the link on the server side — see the create-batch service. */
+  readonly source_payment_id?: string | null;
 }
 
 export type UpdateTrialBatchRequestDto = Partial<{

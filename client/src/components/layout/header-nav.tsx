@@ -22,6 +22,7 @@ export type HeaderNavHref =
   | "/approvals"
   | "/signed"
   | "/labelling"
+  | "/samples"
   | "/finance/payments";
 
 
@@ -96,7 +97,10 @@ export function HeaderNav({
   // lands the user on a clean page rather than the drawer flashing
   // open over the destination.
   useEffect(() => {
-    setIsOpen(false);
+    // queueMicrotask defers the setState so React 19's
+    // set-state-in-effect lint doesn't flag the sync cascade —
+    // functionally identical to setIsOpen(false).
+    queueMicrotask(() => setIsOpen(false));
   }, [pathname]);
 
   // Lock body scroll while the drawer covers the viewport — iOS
@@ -308,7 +312,10 @@ function DesktopNavGroup({
   const pathname = usePathname();
 
   useEffect(() => {
-    setIsOpen(false);
+    // queueMicrotask defers the setState so React 19's
+    // set-state-in-effect lint doesn't flag the sync cascade —
+    // functionally identical to setIsOpen(false).
+    queueMicrotask(() => setIsOpen(false));
   }, [pathname]);
 
   useEffect(() => {

@@ -193,6 +193,7 @@ def create_batch(
     notes: str = "",
     kind: str = BatchKind.SAMPLE.value,
     packaging_combo_id: Any = None,
+    source_payment_id: Any = None,
 ) -> TrialBatch:
     """Plan a new manufacturing run against a saved version snapshot.
 
@@ -200,6 +201,12 @@ def create_batch(
     attaching a batch to another tenant's version is the loudest
     possible failure and we refuse rather than silently accept the
     cross-tenant attach.
+
+    ``source_payment_id`` is optional — set on batches created from
+    the R&D Samples fulfilment queue so the queue can filter out
+    already-fulfilled payments (``WHERE NOT EXISTS…``). Only accepts
+    payments in the same org; a mismatch silently drops the link
+    rather than raising because the batch itself is still valid.
     """
 
     if not isinstance(batch_size_units, int) or batch_size_units <= 0:
@@ -232,6 +239,17 @@ def create_batch(
         combo_id=packaging_combo_id,
     )
 
+    source_payment = None
+    if source_payment_id is not None:
+        from apps.payments.models import Payment
+
+        source_payment = Payment.objects.filter(
+            id=source_payment_id, organization_id=organization.id
+        ).first()
+        # Silent drop on cross-tenant or missing payment — the batch
+        # is still legit, just unlinked. The fulfilment queue's
+        # exclude query will re-surface the payment for another try.
+
     batch = TrialBatch.objects.create(
         organization=organization,
         formulation_version=version,
@@ -239,6 +257,7 @@ def create_batch(
         batch_size_units=batch_size_units,
         kind=kind,
         packaging_combo=combo,
+        source_payment=source_payment,
         notes=notes,
         created_by=actor,
         updated_by=actor,

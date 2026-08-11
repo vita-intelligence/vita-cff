@@ -132,6 +132,32 @@ class TrialBatch(models.Model):
         ),
     )
 
+    #: The customer-sample Payment this batch is fulfilling, if any.
+    #: Populated when a scientist creates the batch from the R&D
+    #: Samples page (:module:`apps.trial_batches.api.samples_views`)
+    #: so the fulfilment queue can filter it out — "which sample
+    #: requests have I not yet turned into a batch?" is a
+    #: ``Payment WHERE NOT EXISTS (…source_payment=payment.id)``
+    #: query rather than fuzzy matching on customer + formulation.
+    #:
+    #: SET_NULL on payment delete so voiding / rewriting a Payment
+    #: row doesn't cascade the batch away — the fulfilled work
+    #: survives with a null pointer, and the audit trail already
+    #: records who / when the batch was created.
+    source_payment = models.ForeignKey(
+        "payments.Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="fulfilled_by_trial_batches",
+        help_text=_(
+            "Sample Payment this batch fulfils. NULL for batches "
+            "started from the per-project trial-batches tab (no "
+            "payment context); populated when the batch is created "
+            "from the R&D Samples fulfilment queue."
+        ),
+    )
+
     #: PSP Manufacturing Order uuid this batch spawned. Nullable —
     #: blank until the scientist clicks "Create MO on PSP". Populated
     #: on that action + used as the idempotency handle for retry-safe

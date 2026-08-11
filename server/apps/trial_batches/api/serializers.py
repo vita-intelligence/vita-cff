@@ -81,6 +81,13 @@ class TrialBatchCreateSerializer(serializers.Serializer):
     notes = serializers.CharField(
         required=False, allow_blank=True, default=""
     )
+    #: Optional. Set when the batch is created from the R&D Samples
+    #: fulfilment queue so the queue can filter the payment out on
+    #: the next fetch. Cross-org / missing payment silently drops
+    #: the link — see ``create_batch`` for the reasoning.
+    source_payment_id = serializers.UUIDField(
+        required=False, allow_null=True
+    )
 
 
 class TrialBatchUpdateSerializer(serializers.Serializer):

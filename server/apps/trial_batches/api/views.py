@@ -82,6 +82,7 @@ class TrialBatchListCreateView(APIView):
                 packaging_combo_id=data.get("packaging_combo_id"),
                 label=data.get("label", ""),
                 notes=data.get("notes", ""),
+                source_payment_id=data.get("source_payment_id"),
             )
         except FormulationVersionNotInOrg:
             return Response(

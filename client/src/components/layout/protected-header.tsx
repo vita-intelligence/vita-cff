@@ -32,6 +32,7 @@ export type ProtectedNavKey =
   | "approvals"
   | "signed"
   | "labelling"
+  | "samples"
   | "finance";
 
 interface ProtectedHeaderProps {
@@ -203,6 +204,18 @@ export async function ProtectedHeader({
       key: "labelling",
       href: "/labelling",
       label: "Labelling",
+    });
+  }
+  // Samples — R&D fulfilment queue for approved sample Payments.
+  // Gated by ``formulations.edit`` because clicking a row spawns a
+  // TrialBatch, which is a project-edit action. Anything narrower
+  // would leave the page unusable for the same operators who create
+  // trial batches from the per-project tab.
+  if (canSeeFormulations) {
+    rndItems.push({
+      key: "samples",
+      href: "/samples",
+      label: "Samples",
     });
   }
   // Finance lives in its own group (not under R&D) because payment
