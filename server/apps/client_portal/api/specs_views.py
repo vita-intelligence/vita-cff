@@ -64,6 +64,17 @@ def _serialise_spec(sheet, proposal) -> dict[str, Any]:
         "code": sheet.code or "",
         "document_kind": sheet.document_kind,
         "status": sheet.status,
+        # ``formulation_id`` lets the marketing-site portal render a
+        # "back to project" link on the spec viewer — the parent
+        # project detail lives at /portal/projects/<formulation_id>.
+        # Empty string when the spec has no version bond (shouldn't
+        # happen in practice; kept defensive so a corrupt row can't
+        # break the response).
+        "formulation_id": (
+            str(sheet.formulation_version.formulation_id)
+            if sheet.formulation_version_id
+            else ""
+        ),
         "formulation_name": (
             sheet.formulation_version.formulation.name
             if sheet.formulation_version_id
