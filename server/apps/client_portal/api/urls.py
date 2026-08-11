@@ -71,6 +71,7 @@ from .views import (
     ProposalSignView,
 )
 from .dashboard_views import PortalDashboardView
+from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
 from .template_views import PortalLabelDesignTemplateLibraryView
 from .label_design_views import (
@@ -161,6 +162,12 @@ urlpatterns = [
     # Aggregator: actions queue + product list for the new portal
     # home (action-oriented) and the new ``/portal/products`` view.
     path("dashboard/", PortalDashboardView.as_view(), name="dashboard"),
+    # Unified activity feed — the marketing-site portal hub's
+    # projects + RTG orders + samples list. Cursor-free offset
+    # paging with a 500-row hard cap; kind / q / limit / offset
+    # query params. Merges per-kind fetches server-side so the FE
+    # only ever sees one homogeneous list.
+    path("activity/", PortalActivityView.as_view(), name="activity"),
     # Per-project pipeline detail — the "follow my product through
     # its journey" view. Returns pipeline stages + documents + an
     # activity timeline for one formulation the customer owns.
