@@ -11,9 +11,8 @@ agreed in your proposal{% if proposal_code %} {{ proposal_code }}{% endif %}.
 Review and sign here:
 {{ kiosk_url }}
 
-What happens after you sign: we start production planning and move you
-straight into label design — find the next steps in your portal under
-Labels.
+After you sign, we start production planning. Anything that needs
+you shows up in your portal — no need to guess what comes next.
 
 {% if sales_person_name %}Kind regards,
 {{ sales_person_name }}{% if sales_person_email %}

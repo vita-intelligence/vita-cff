@@ -3,7 +3,7 @@
 
 {% block subject %}Payment received — {{ project_name|default:project_code }}{% endblock %}
 
-{% block preheader %}Payment received for {{ project_name|default:project_code }}. Label design starts now.{% endblock %}
+{% block preheader %}Payment received for {{ project_name|default:project_code }}. Your portal has the latest.{% endblock %}
 
 {% block brandmark %}PAYMENT RECEIVED{% endblock %}
 
@@ -11,7 +11,7 @@
 
 {% block intro %}
 <p style="margin-top:0;margin-bottom:12px;">We&rsquo;ve received your payment for <b>{{ project_name|default:project_code }}</b>{% if amount %} ({{ amount_label }}){% endif %}.</p>
-<p style="margin-top:0;margin-bottom:0;">That unlocks the next step: <b>label design</b>. Head into your portal and choose whether we design the label for you or whether you&rsquo;d like to design it yourself.</p>
+<p style="margin-top:0;margin-bottom:0;">Your portal is the source of truth for what happens next &mdash; head in and we&rsquo;ll walk you through anything that&rsquo;s waiting on you.</p>
 {% endblock %}
 
 {% block cta_block %}

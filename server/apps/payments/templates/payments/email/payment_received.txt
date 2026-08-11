@@ -4,9 +4,8 @@ Hi{% if customer_name %} {{ customer_name }}{% endif %},
 
 We’ve received your payment for {{ project_name|default:project_code }}{% if amount %} ({{ amount_label }}){% endif %}.
 
-That unlocks the next step: label design. Head into your portal and
-choose whether we design the label for you or whether you’d like to
-design it yourself.
+Your portal is the source of truth for what happens next — head
+in and we’ll walk you through anything that’s waiting on you.
 
 Continue in portal:
 {{ portal_url }}
