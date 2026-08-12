@@ -25,7 +25,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ChevronLeft, ChevronRight, Send } from "lucide-react";
+import {
+  AlertCircle,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Send,
+} from "lucide-react";
 
 import {
   Card,
@@ -107,16 +114,97 @@ const NUTRITIONAL_REQS = [
 ] as const;
 const TARGET_SEX = ["Male", "Female", "Both", "Others"] as const;
 const TARGET_AGE = ["Under 18", "18-65 Years", "65+ Years"] as const;
-const PACKAGE_TYPES = [
-  "Bottle 30ct",
-  "Bottle 60ct",
-  "Bottle 120ct",
-  "Pouch",
-  "Sachet",
-  "Tube",
-  "Blister",
-  "Other",
+/**
+ * Primary-package taxonomy for the CFF wizard.
+ *
+ * Grouped by presentation family so the customer scans by intent
+ * (solid-dose bottle, liquid dropper, jar for powders, etc.)
+ * rather than searching a flat list.
+ *
+ * Historical values ("Bottle 30ct", "Bottle 60ct", "Bottle 120ct",
+ * "Pouch", "Sachet", "Tube", "Blister") are preserved verbatim as
+ * the first entries in their group so any in-flight draft with
+ * one of them selected still resolves to a menu row on rehydrate.
+ * New entries use the "<Family> · <capacity>" cadence for
+ * consistency.
+ *
+ * ``PACKAGE_TYPES`` (flat) is kept for validation — the wizard
+ * accepts either an exact match or the ``Other`` escape hatch.
+ */
+const PACKAGE_TYPE_GROUPS = [
+  {
+    label: "Bottles — solid dose",
+    items: [
+      "Bottle 30ct",
+      "Bottle 60ct",
+      "Bottle 90ct",
+      "Bottle 120ct",
+      "Bottle · 180 count",
+      "Bottle · 240 count",
+    ],
+  },
+  {
+    label: "Bottles — liquid",
+    items: [
+      "Bottle · 30 ml (dropper)",
+      "Bottle · 60 ml (dropper)",
+      "Bottle · 100 ml",
+      "Bottle · 250 ml",
+      "Bottle · 500 ml",
+      "Bottle · 1 L",
+    ],
+  },
+  {
+    label: "Jars — powder & gummies",
+    items: [
+      "Jar · 200 g",
+      "Jar · 400 g",
+      "Jar · 500 g",
+      "Jar · 1 kg",
+    ],
+  },
+  {
+    label: "Single-dose",
+    items: [
+      "Sachet",
+      "Stick pack",
+      "Ampoule",
+      "Vial",
+    ],
+  },
+  {
+    label: "Pouches",
+    items: [
+      "Pouch",
+      "Pouch · single-serve",
+      "Pouch · resealable multi-serve",
+    ],
+  },
+  {
+    label: "Blister",
+    items: [
+      "Blister",
+      "Blister · 10 count",
+      "Blister · 30 count",
+    ],
+  },
+  {
+    label: "Topical",
+    items: [
+      "Tube",
+      "Tube · squeeze",
+      "Spray bottle",
+      "Roll-on",
+      "Airless pump bottle",
+    ],
+  },
+  {
+    label: "Other",
+    items: ["Other"],
+  },
 ] as const;
+
+const PACKAGE_TYPES = PACKAGE_TYPE_GROUPS.flatMap((g) => g.items);
 
 
 const TOTAL_STEPS = 7;
@@ -886,34 +974,241 @@ function Step4({ state, errors, setField }: StepProps) {
 }
 
 
+/**
+ * Custom dropdown for the Primary package type field.
+ *
+ * Built inline instead of using a native ``<select>`` for three
+ * reasons that the native control couldn't cover:
+ *
+ * 1. **Grouped options** — native ``<optgroup>`` styling is
+ *    inconsistent across browsers and can't match the neobrutalist
+ *    look the portal wizard runs. A rendered list gives us
+ *    predictable typography per row + per-group header.
+ * 2. **Selected-row visual cue** — a checkmark on the picked row
+ *    reads faster than the browser's default highlight, especially
+ *    when the customer scrolls back into the menu after landing
+ *    on it via draft restore.
+ * 3. **Keyboard parity** — Arrow up/down, Home/End, Enter/Space
+ *    to select, Escape to close. Type-ahead search bumps focus
+ *    to the first row whose label starts with the typed letter,
+ *    same feel as a native ``<select>`` on desktop.
+ *
+ * The panel is absolutely-positioned below the trigger and uses
+ * click-outside detection to close so the wizard's overall focus
+ * flow doesn't get disturbed.
+ */
+function PackageTypePicker({
+  value,
+  onChange,
+  error,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  error?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  // Which flat-index is currently under the keyboard focus ring.
+  // Reset to the selected row on open so the initial arrow-down /
+  // arrow-up moves from where the customer left off, not from the
+  // top. -1 means "no highlight yet".
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const typeaheadRef = useRef<{ buffer: string; timer: number | null }>({
+    buffer: "",
+    timer: null,
+  });
+
+  // Flat list keeps keyboard navigation trivial — the grouping is
+  // presentational only. ``PACKAGE_TYPES`` was defined above as
+  // ``PACKAGE_TYPE_GROUPS.flatMap(...)`` so the two orderings can't
+  // diverge.
+  const flat = PACKAGE_TYPES;
+  const currentIdx = flat.findIndex((t) => t === value);
+
+  // Reset the highlight when the panel opens so arrow-down / up
+  // starts from the currently-selected row (or the first one if
+  // nothing is selected yet).
+  useEffect(() => {
+    if (open) setActiveIdx(currentIdx >= 0 ? currentIdx : 0);
+  }, [open, currentIdx]);
+
+  // Close on outside click. Bound only while open to keep the
+  // event listener count sane.
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (
+        panelRef.current &&
+        !panelRef.current.contains(t) &&
+        triggerRef.current &&
+        !triggerRef.current.contains(t)
+      ) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const commit = (idx: number) => {
+    const picked = flat[idx];
+    if (picked === undefined) return;
+    onChange(picked);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const onTriggerKey = (e: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (e.key === "ArrowDown" || e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setOpen(true);
+    }
+  };
+
+  const onPanelKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.min(flat.length - 1, i + 1));
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIdx((i) => Math.max(0, i - 1));
+      return;
+    }
+    if (e.key === "Home") {
+      e.preventDefault();
+      setActiveIdx(0);
+      return;
+    }
+    if (e.key === "End") {
+      e.preventDefault();
+      setActiveIdx(flat.length - 1);
+      return;
+    }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (activeIdx >= 0) commit(activeIdx);
+      return;
+    }
+    // Type-ahead — accumulate letters within a 500ms window and
+    // jump to the first row whose label case-insensitively starts
+    // with the buffer. Same feel as a native ``<select>``.
+    if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      const state = typeaheadRef.current;
+      state.buffer += e.key.toLowerCase();
+      if (state.timer !== null) window.clearTimeout(state.timer);
+      state.timer = window.setTimeout(() => {
+        state.buffer = "";
+        state.timer = null;
+      }, 500);
+      const match = flat.findIndex((label) =>
+        label.toLowerCase().startsWith(state.buffer),
+      );
+      if (match >= 0) setActiveIdx(match);
+    }
+  };
+
+  return (
+    <div className="block">
+      <span
+        id="primary_package_type_label"
+        className="mb-2 block text-xs font-bold uppercase tracking-widest"
+      >
+        Primary package type
+      </span>
+      <div className="relative">
+        <button
+          ref={triggerRef}
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-labelledby="primary_package_type_label"
+          onClick={() => setOpen((v) => !v)}
+          onKeyDown={onTriggerKey}
+          className="flex w-full items-center justify-between border-2 border-black bg-white px-4 py-3 text-left font-medium text-base text-black focus:outline-none focus:shadow-[4px_4px_0_#000] focus:-translate-x-[1px] focus:-translate-y-[1px] transition-transform duration-100"
+        >
+          <span className={value ? "" : "text-black/50"}>
+            {value || "Select a package…"}
+          </span>
+          <ChevronDown
+            className={`h-4 w-4 shrink-0 transition-transform ${
+              open ? "rotate-180" : ""
+            }`}
+          />
+        </button>
+
+        {open ? (
+          <div
+            ref={panelRef}
+            role="listbox"
+            aria-labelledby="primary_package_type_label"
+            tabIndex={-1}
+            onKeyDown={onPanelKey}
+            className="absolute left-0 right-0 top-full z-30 mt-1.5 max-h-72 overflow-auto border-2 border-black bg-white shadow-[6px_6px_0_#000] focus:outline-none"
+          >
+            {PACKAGE_TYPE_GROUPS.map((group) => (
+              <div key={group.label}>
+                <p className="sticky top-0 border-b border-black/10 bg-neutral-50 px-4 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-black/60">
+                  {group.label}
+                </p>
+                {group.items.map((label) => {
+                  const idx = flat.indexOf(label);
+                  const active = idx === activeIdx;
+                  const selected = label === value;
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      role="option"
+                      aria-selected={selected}
+                      onMouseEnter={() => setActiveIdx(idx)}
+                      onClick={() => commit(idx)}
+                      className={`flex w-full items-center justify-between gap-2 px-4 py-2 text-left text-sm font-medium ${
+                        active
+                          ? "bg-yellow-200 text-black"
+                          : "bg-white text-black hover:bg-neutral-100"
+                      }`}
+                    >
+                      <span>{label}</span>
+                      {selected ? (
+                        <Check className="h-4 w-4 shrink-0" aria-hidden />
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      {error ? (
+        <span className="mt-1.5 block text-[11px] font-bold uppercase tracking-wide text-red-700">
+          {error}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+
 function Step5({ state, errors, setField }: StepProps) {
   return (
     <div className="flex flex-col gap-4">
       <H2>Packaging</H2>
-      <label htmlFor="primary_package_type" className="block">
-        <span className="mb-2 block text-xs font-bold uppercase tracking-widest">
-          Primary package type
-        </span>
-        <select
-          id="primary_package_type"
-          name="primary_package_type"
-          value={state.primary_package_type}
-          onChange={(e) => setField("primary_package_type", e.target.value)}
-          className="w-full border-2 border-black bg-white px-4 py-3 font-medium text-base text-black focus:outline-none focus:shadow-[4px_4px_0_#000] focus:-translate-x-[1px] focus:-translate-y-[1px] transition-transform duration-100"
-        >
-          <option value="">Select a package…</option>
-          {PACKAGE_TYPES.map((t) => (
-            <option key={t} value={t}>
-              {t}
-            </option>
-          ))}
-        </select>
-        {errors.primary_package_type ? (
-          <span className="mt-1.5 block text-[11px] font-bold uppercase tracking-wide text-red-700">
-            {errors.primary_package_type}
-          </span>
-        ) : null}
-      </label>
+      <PackageTypePicker
+        value={state.primary_package_type}
+        onChange={(next) => setField("primary_package_type", next)}
+        error={errors.primary_package_type}
+      />
       <PortalInput
         name="quantity_to_be_quoted"
         label="Quantity to be quoted"
