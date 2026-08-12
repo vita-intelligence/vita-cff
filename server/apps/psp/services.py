@@ -2440,6 +2440,59 @@ def sync_customer_order_to_psp(
         return None
 
 
+def maybe_resync_customer_address_to_psp(*, customer: Any) -> int:
+    """Re-fire the sample-CO sync for every open sample payment tied
+    to ``customer`` so PSP picks up a fresh ``delivery_address`` /
+    contact update from the customer's portal profile edit.
+
+    Called from the portal Settings save path. Silently degrades:
+
+    * No customer → 0.
+    * No matching payments → 0.
+    * PSP integration off / unreachable → each per-payment sync bails
+      internally; caller sees a 0-or-partial count with no exception.
+
+    Returns the number of payments we attempted to resync (useful
+    for logging). Sample payments are the only channel today because
+    every portal-driven order lands as a ``FINAL`` payment on an
+    RTG formulation — commercial custom-project COs come from the
+    internal team, not the portal, so a portal profile edit never
+    needs to touch them.
+    """
+
+    if customer is None:
+        return 0
+
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+
+    # Pending + approved covers the "still shipping" window. Voided
+    # payments don't move goods; their CO is a tombstone and the
+    # shipping team wouldn't be prepping paperwork against them.
+    open_statuses = (PaymentStatus.PENDING, PaymentStatus.APPROVED)
+    qs = Payment.objects.filter(
+        customer=customer,
+        kind=PaymentKind.FINAL,
+        status__in=open_statuses,
+    ).select_related("formulation")
+
+    resynced = 0
+    for payment in qs.iterator():
+        try:
+            maybe_resync_sample_payment_to_psp(payment=payment)
+            resynced += 1
+        except Exception:
+            # ``maybe_resync_sample_payment_to_psp`` already swallows
+            # its own errors, but belt-and-braces so one bad payment
+            # can't block a bulk profile save from processing the rest.
+            logger.exception(
+                "maybe_resync_customer_address_to_psp: unexpected failure "
+                "on payment %s",
+                payment.pk,
+            )
+    return resynced
+
+
 def maybe_resync_sample_payment_to_psp(*, payment: Any) -> None:
     """Best-effort re-sync of a sample payment's CO on PSP so the
     invoice card reflects the current payment state (files, status,

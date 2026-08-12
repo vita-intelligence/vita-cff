@@ -131,6 +131,13 @@ def update_customer_profile(
         pk=account.customer_id,
     )
 
+    # Track whether the shipping-relevant fields changed. If they did,
+    # we push a fresh CO sync to PSP after the commit so the shipment
+    # form's prefill sees the update without waiting for the next
+    # payment/proposal event to naturally re-sync.
+    address_before = (customer.delivery_address or "").strip()
+    name_before = (customer.name or "").strip()
+
     if name is not None:
         customer.name = name.strip()
     if company is not None:
@@ -148,6 +155,20 @@ def update_customer_profile(
     # can introduce a polymorphic ``updated_by`` if we want to
     # attribute portal-side edits.
     customer.save()
+
+    address_after = (customer.delivery_address or "").strip()
+    name_after = (customer.name or "").strip()
+    if address_after != address_before or name_after != name_before:
+        # Defer the PSP push to after commit so a failed sync can't
+        # roll back the profile save the customer sees as successful.
+        # ``on_commit`` is a no-op inside tests that don't wrap the
+        # test in a transaction — still safe.
+        from apps.psp.services import maybe_resync_customer_address_to_psp
+
+        transaction.on_commit(
+            lambda: maybe_resync_customer_address_to_psp(customer=customer)
+        )
+
     account.refresh_from_db(fields=["email"])
     return get_customer_profile(account=account)
 
