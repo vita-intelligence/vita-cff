@@ -2218,6 +2218,7 @@ def _customer_identity(customer: Any) -> dict:
             "customer_uuid": "",
             "customer_display_name": "",
             "customer_contact_name": "",
+            "customer_delivery_address": "",
         }
     # Prefer the company name (that's what appears on invoices and the
     # kanban); fall back to the contact person when the client is a
@@ -2225,10 +2226,17 @@ def _customer_identity(customer: Any) -> dict:
     company = (getattr(customer, "company", "") or "").strip()
     contact_name = (getattr(customer, "name", "") or "").strip()
     display = company or contact_name
+    # Portal-profile delivery address is our single source of truth
+    # for where a customer's goods ship. PSP mirrors it onto the
+    # linked CustomerOrder so the shipment form's paperwork step
+    # prefills without the coordinator retyping data the customer
+    # already saved on /portal/settings.
+    delivery_address = (getattr(customer, "delivery_address", "") or "").strip()
     return {
         "customer_uuid": str(getattr(customer, "id", "") or ""),
         "customer_display_name": display,
         "customer_contact_name": contact_name,
+        "customer_delivery_address": delivery_address,
     }
 
 
