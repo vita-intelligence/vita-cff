@@ -74,7 +74,10 @@ from .views import (
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
-from .sample_detail_views import PortalSampleDetailView
+from .sample_detail_views import (
+    PortalSampleDetailView,
+    PortalSampleReleaseDocumentView,
+)
 from .template_views import PortalLabelDesignTemplateLibraryView
 from .label_design_views import (
     PortalLabelDesignApproveView,
@@ -186,6 +189,17 @@ urlpatterns = [
         "samples/<uuid:payment_id>/",
         PortalSampleDetailView.as_view(),
         name="sample-detail",
+    ),
+
+    # Proxy-download for one Final Release document. Ownership is
+    # enforced the same way as the sample-detail view (payment
+    # customer must be in the account's Customer id union). Bytes
+    # stream from PSP; NPD passes through with Content-Type +
+    # Content-Disposition intact.
+    path(
+        "samples/<uuid:payment_id>/release-documents/<uuid:file_uuid>/",
+        PortalSampleReleaseDocumentView.as_view(),
+        name="sample-release-document",
     ),
 
     # Inbox / bell — every thread the client account can see plus

@@ -835,6 +835,73 @@ class PspClient:
         raw = response.get("invoices")
         return raw if isinstance(raw, list) else []
 
+    def list_customer_order_release_documents(self, co_uuid: Any) -> list[dict]:
+        """GET ``/api/integration/customer-orders/:uuid/release-documents``.
+
+        Returns metadata for every Final Product Release file on the
+        CO's root MO — powers the customer portal's Release documents
+        card. Silent-degrade returns ``[]`` on any failure so the
+        portal renders nothing instead of blocking the page.
+
+        Shape: ``[{uuid, kind, filename, mime, byte_size, uploaded_at}, ...]``.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        if not cleaned:
+            return []
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/release-documents"
+        )
+        if not isinstance(response, dict):
+            return []
+        raw = response.get("documents")
+        return raw if isinstance(raw, list) else []
+
+    def fetch_customer_order_release_document(
+        self, co_uuid: Any, file_uuid: Any
+    ) -> tuple[bytes, str, str] | None:
+        """GET ``/api/integration/customer-orders/:uuid/release-documents/:file_uuid``.
+
+        Streams raw bytes for proxy-download from the portal. Returns
+        ``(bytes, mime, filename)`` on 200 or ``None`` on any non-2xx
+        / transport failure. Filename is parsed from
+        ``Content-Disposition`` so the portal can suggest the right
+        save-as name.
+
+        Uses stdlib ``urllib`` to match the rest of :class:`PspClient`.
+        Content-Type from PSP flows through as-is (e.g.
+        ``application/pdf``) so the portal can render inline.
+        """
+
+        cleaned_co = str(co_uuid or "").strip()
+        cleaned_file = str(file_uuid or "").strip()
+        if not cleaned_co or not cleaned_file:
+            return None
+
+        base = self._config.base_url.rstrip("/")
+        url = (
+            f"{base}/api/integration/customer-orders/"
+            f"{cleaned_co}/release-documents/{cleaned_file}"
+        )
+        headers = {
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+        }
+        req = Request(url, method="GET", headers=headers)
+        try:
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                bytes_body = resp.read()
+                mime = resp.headers.get(
+                    "Content-Type", "application/octet-stream"
+                )
+                filename = _parse_filename_from_content_disposition(
+                    resp.headers.get("Content-Disposition", "")
+                )
+        except (HTTPError, URLError):
+            return None
+
+        return bytes_body, mime, filename
+
     def get_customer_order_snapshot(self, co_uuid: Any) -> dict | None:
         """GET ``/api/integration/customer-orders/:uuid/snapshot``.
 
@@ -4661,6 +4728,101 @@ def list_psp_invoices_for_payment(*, payment: Any) -> list[dict]:
         return client.list_customer_order_invoices(co_uuid)
     except PspError:
         return []
+
+
+def list_psp_release_documents_for_payment(*, payment: Any) -> list[dict]:
+    """List Final Product Release documents attached to the PSP CO that
+    mirrors this NPD Payment.
+
+    Same CO-uuid resolution as :func:`list_psp_invoices_for_payment` —
+    sample-payment CO uuid = payment.id, custom-formulation CO uuid =
+    formulation.id. Silent-degrade returns ``[]`` on any failure
+    (PSP off, unreachable, unknown CO, release ceremony not done
+    yet). Powers the "Release documents" card on the customer portal
+    sample detail page.
+
+    Shape: ``[{uuid, kind, filename, mime, byte_size, uploaded_at}, ...]``.
+    """
+
+    if payment is None:
+        return []
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return []
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return []
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return []
+    client = _client_factory(config)
+    try:
+        return client.list_customer_order_release_documents(co_uuid)
+    except PspError:
+        return []
+
+
+def fetch_psp_release_document_for_payment(
+    *, payment: Any, file_uuid: Any
+) -> tuple[bytes, str, str] | None:
+    """Proxy-download one Final Release document. Returns
+    ``(bytes, mime, filename)`` or ``None`` on any failure.
+
+    The portal proxy calls this to stream the file to the customer —
+    file bytes stay on PSP (source of truth), NPD is a pass-through
+    with the customer's ownership check bolted on at the portal-view
+    layer above this call.
+    """
+
+    if payment is None:
+        return None
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return None
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.fetch_customer_order_release_document(co_uuid, file_uuid)
+    except PspError:
+        return None
+
+
+# Minimal RFC-6266 filename parser — pulls the filename out of a
+# Content-Disposition header. Falls back to "release-document" when
+# missing. Handles the two forms PSP emits:
+#   * ``inline; filename="coa-batch-42.pdf"``  (ASCII)
+#   * ``inline; filename*=UTF-8''coa-%20%E2%98%83.pdf`` (RFC-5987)
+def _parse_filename_from_content_disposition(header: str) -> str:
+    import re
+    import urllib.parse as _urllib_parse
+
+    if not header:
+        return "release-document"
+
+    # RFC-5987 extended form wins when both are present.
+    star = re.search(r"filename\*\s*=\s*[^']*'[^']*'([^;]+)", header)
+    if star:
+        try:
+            return _urllib_parse.unquote(star.group(1)).strip()
+        except Exception:
+            pass
+
+    plain = re.search(r'filename\s*=\s*"?([^";]+)"?', header)
+    if plain:
+        return plain.group(1).strip()
+
+    return "release-document"
 
 
 def _resolve_co_uuid_for_payment(payment: Any) -> str | None:
