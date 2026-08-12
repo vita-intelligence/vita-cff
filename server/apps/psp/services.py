@@ -2544,6 +2544,17 @@ def sync_sample_customer_order_to_psp(
     payload = {
         "npd_sample_payment_uuid": str(source_payment.id),
         "item_uuid": str(item_uuid),
+        # Formulation id — pipe it through so PSP can persist it on
+        # the sample CO. Without this, any MO the PSP operator
+        # creates from the wizard's "Create MO for line" button lands
+        # without an NPD formulation link, breaking the R&D
+        # validation flow (which needs a formulation to validate
+        # against) and NPD's trial-batch page (which shows "MO
+        # connected but no chain" when it can't find the MO via the
+        # linkage). The scientist's "Create MO on PSP" button
+        # already sends this per-MO — we're just closing the same
+        # gap on the sample-CO-first path.
+        "npd_formulation_uuid": str(formulation.id),
         # Match the sample quantity to the batch size — PSP's CO line
         # is a display / audit surface (not the production spec), so
         # over/under vs actual production is acceptable.
