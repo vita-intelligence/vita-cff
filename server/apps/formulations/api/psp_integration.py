@@ -19,11 +19,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
+from apps.payments.models import Payment
 from apps.product_validation.models import ProductValidation
 from apps.product_validation.services import render_validation_html
 from apps.psp.token_services import verify_psp_access_token
 from apps.specifications.models import SpecificationSheet
 from apps.specifications.services import render_html
+from apps.trial_batches.models import TrialBatch
 
 
 def _extract_bearer(request: Request) -> str | None:
@@ -292,3 +294,110 @@ class LatestValidationSheetHtmlView(APIView):
         response["Cache-Control"] = "no-store, no-cache, must-revalidate"
         response["X-Frame-Options"] = "SAMEORIGIN"
         return response
+
+
+class PinManufacturingOrderOnTrialBatchView(APIView):
+    """``POST /api/psp-integration/trial-batches/pin-mo/``.
+
+    Called by PSP when its wizard's ``Create MO for line`` fires on a
+    sample CO — PSP creates the MO locally and then pings NPD back so
+    the corresponding ``TrialBatch.psp_manufacturing_order_uuid`` gets
+    pinned. Without this, NPD's trial-batch page shows "No stage chain
+    yet — the MO was created but hasn't booked a BOM" for any MO born
+    from the PSP wizard button instead of the scientist's own
+    "Create MO on PSP" button (which already pins by nature of being
+    the caller — it receives the MO uuid in its own response).
+
+    Request body (JSON):
+
+    .. code-block:: json
+
+        {
+          "npd_sample_payment_uuid": "<payment uuid = sample CO uuid on PSP>",
+          "psp_manufacturing_order_uuid": "<PSP MO uuid to pin>"
+        }
+
+    Behaviour:
+
+    * Look up the ``TrialBatch`` where ``source_payment_id`` matches
+      the incoming payment uuid.
+    * If found → set ``psp_manufacturing_order_uuid`` (idempotent —
+      re-pinning the same uuid is a no-op).
+    * If not found (NPD hasn't spawned a trial batch yet) → return
+      404 quietly so PSP's caller can silent-degrade. NPD will
+      surface the MO once the trial batch is created and the
+      scientist opens it.
+
+    Auth: same bearer-token flow as the other endpoints in this
+    module.
+    """
+
+    permission_classes = (AllowAny,)
+    authentication_classes: tuple = ()
+
+    def post(self, request: Request) -> Response:
+        _resolve_token(request)
+
+        payment_id = (request.data.get("npd_sample_payment_uuid") or "").strip()
+        mo_uuid = (
+            request.data.get("psp_manufacturing_order_uuid") or ""
+        ).strip()
+
+        if not payment_id or not mo_uuid:
+            return Response(
+                {
+                    "detail": "npd_sample_payment_uuid and "
+                    "psp_manufacturing_order_uuid are required."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Resolve the payment first so we can hop to its trial batch.
+        # Missing payment → 404 (silent-degrade on PSP side).
+        payment = (
+            Payment.objects.filter(id=payment_id).only("id").first()
+        )
+        if payment is None:
+            return Response(
+                {"detail": "payment_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        trial_batch = (
+            TrialBatch.objects.filter(source_payment_id=payment.id)
+            .order_by("-created_at")
+            .first()
+        )
+        if trial_batch is None:
+            # Sample fulfilment queue hasn't spawned a trial batch yet
+            # for this payment. Nothing to pin. PSP's caller treats
+            # this as a soft failure and moves on.
+            return Response(
+                {"detail": "trial_batch_not_found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Idempotent — re-pinning the same uuid is a no-op. If a
+        # different uuid was previously pinned (rare: MO cancelled +
+        # recreated), overwrite so NPD reflects the current live MO.
+        if str(trial_batch.psp_manufacturing_order_uuid) == mo_uuid:
+            return Response(
+                {
+                    "trial_batch_id": str(trial_batch.id),
+                    "psp_manufacturing_order_uuid": mo_uuid,
+                    "already_pinned": True,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        trial_batch.psp_manufacturing_order_uuid = mo_uuid
+        trial_batch.save(update_fields=["psp_manufacturing_order_uuid"])
+
+        return Response(
+            {
+                "trial_batch_id": str(trial_batch.id),
+                "psp_manufacturing_order_uuid": mo_uuid,
+                "already_pinned": False,
+            },
+            status=status.HTTP_200_OK,
+        )
