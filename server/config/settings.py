@@ -311,6 +311,13 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    # Misclick guard — must be AFTER AuthenticationMiddleware so the
+    # fingerprint can include the user id (not just the IP). Catches
+    # double-clicks on POST/PUT/PATCH by replaying the first
+    # response for 10 s. Mirror of PSP's ``MisclickGuard`` plug so
+    # behaviour is symmetric across the two services. See
+    # ``config.middleware`` for the reasoning.
+    "config.middleware.MisclickGuardMiddleware",
 ]
 
 # Django's default is ``DENY`` which blocks ALL ``<iframe>`` /
