@@ -9,7 +9,22 @@
     "unassigned": "Unassigned",
     "assigned": "Assigned",
     "rejected": "Rejected",
-    "search_placeholder": "Search by email, company, market…"
+    "search_placeholder": "Search by email, company, market…",
+    "search_clear": "Clear search"
+  },
+  "buckets": {
+    "unassigned_label": "New",
+    "unassigned_hint": "Awaiting triage — untouched submissions.",
+    "assigned_label": "Assigned",
+    "assigned_hint": "Attached to a project or drafted proposal.",
+    "rejected_label": "Rejected",
+    "rejected_hint": "Declined — kept for the audit trail."
+  },
+  "empty": {
+    "unassigned": "Inbox zero — nothing waiting on triage.",
+    "assigned": "No CFFs assigned yet.",
+    "rejected": "No rejected CFFs.",
+    "search": "No submissions match your search."
   },
   "sync": {
     "cadence": "Submissions sync from Wix every {cadence}.",

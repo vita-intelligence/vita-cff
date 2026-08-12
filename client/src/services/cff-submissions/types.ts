@@ -126,6 +126,15 @@ export interface PaginatedCFFSubmissionsDto {
   readonly previous: string | null;
   readonly results: ReadonlyArray<CFFSubmissionDto>;
   readonly sync?: CFFSyncStatusDto;
+  /** Per-state totals for the pipeline board's tab badges. Same
+   *  block on every column's response so any query landing
+   *  first refreshes every badge. Scoped by the current
+   *  ``search`` param so a narrowing query updates counts too. */
+  readonly counts?: {
+    readonly unassigned: number;
+    readonly assigned: number;
+    readonly rejected: number;
+  };
 }
 
 

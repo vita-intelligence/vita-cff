@@ -48,6 +48,12 @@ export interface TrialBatchDto {
     | "passed"
     | "failed"
     | null;
+  /** ``true`` when *another* batch of the same formulation version
+   *  already has a ``passed`` validation. Drives the sample-batch
+   *  gate: once the version is proven, customer-sample runs inherit
+   *  the proof and don't need re-validation, so the FE hides the
+   *  "Start validation" CTA on sample batches with this flag set. */
+  readonly formulation_validated: boolean;
   readonly created_by_name: string;
   readonly created_at: string;
   readonly updated_at: string;

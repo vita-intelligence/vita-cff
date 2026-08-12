@@ -617,7 +617,14 @@ def _collect_samples(
                 "status_key": row.status,
                 "status_label": status_label,
                 "status_tone": tone,
-                "href": f"/portal/orders/{row.id}",
+                # Deep-link to the sample detail route so the customer
+                # can follow their order through the production pipeline
+                # (Ordered → Payment confirmed → Preparing → In production
+                # → Ready). The portal FE's activity feed only makes a row
+                # clickable when the href sits under a known detail
+                # namespace — /portal/samples/<uuid> is that namespace
+                # for sample-kit orders.
+                "href": f"/portal/samples/{row.id}",
                 "amount": _decimal_str(row.amount),
                 "currency": row.currency or "GBP",
                 "quantity": 1,

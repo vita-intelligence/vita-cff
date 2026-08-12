@@ -494,15 +494,35 @@ def _build_bom_entry(
     column is pre-computed at render time so the UI is dumb.
     """
 
+    # Base per-unit precision is 4 decimals mg (matches
+    # ``FormulationIngredient.label_claim_mg`` storage). Derived
+    # values inherit the source precision at the mg level, but the
+    # /1000 and /1_000_000 conversions to g/kg shift the decimal
+    # point left — a legitimate 6 mg/batch becomes 0.006 g and
+    # 0.000006 kg, both of which used to quantize to 0.0000 (g) /
+    # 0.000006 (kg) but with more precision headroom we now keep
+    # trace ingredients readable on the BOM table.
+    #
+    # Precision choices (well beyond real-world recipe scales, so
+    # future-proof for exotic actives):
+    #
+    #   g_per_pack / g_per_batch  → 7 decimals (0.1 ng)
+    #   kg_per_batch              → 10 decimals (0.1 μg)
+    #
+    # The FE's ``formatNumber`` helper then trims trailing zeros
+    # for display, so a 6 g/batch line still renders "6" not
+    # "6.0000000".
     mg_per_pack = mg_per_unit * Decimal(units_per_pack)
-    g_per_pack = (mg_per_pack / Decimal(1000)).quantize(Decimal("0.0001"))
+    g_per_pack = (mg_per_pack / Decimal(1000)).quantize(Decimal("0.0000001"))
 
     mg_per_batch = (mg_per_unit * Decimal(total_units_in_batch)).quantize(
         Decimal("0.0001")
     )
-    g_per_batch = (mg_per_batch / Decimal(1000)).quantize(Decimal("0.0001"))
+    g_per_batch = (mg_per_batch / Decimal(1000)).quantize(
+        Decimal("0.0000001")
+    )
     kg_per_batch = (mg_per_batch / Decimal(1_000_000)).quantize(
-        Decimal("0.000001")
+        Decimal("0.0000000001")
     )
     uom = _CATEGORY_UOM.get(category, "weight")
     return BOMEntry(
@@ -699,15 +719,19 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
     total_mg_per_batch = sum(
         (entry.mg_per_batch for entry in weight_entries), Decimal("0")
     )
+    # Totals use the same generous per-decimal precision as the
+    # per-line rows (see ``_scale_bom_row``) so a batch dominated by
+    # trace ingredients keeps sub-nanogram totals rather than
+    # collapsing to 0.0000 g / 0.000000 kg.
     result.total_mg_per_unit = total_mg_per_unit.quantize(Decimal("0.0001"))
-    result.total_g_per_pack = total_g_per_pack.quantize(Decimal("0.0001"))
+    result.total_g_per_pack = total_g_per_pack.quantize(Decimal("0.0000001"))
     result.total_mg_per_batch = total_mg_per_batch.quantize(Decimal("0.0001"))
     result.total_g_per_batch = (total_mg_per_batch / Decimal(1000)).quantize(
-        Decimal("0.0001")
+        Decimal("0.0000001")
     )
     result.total_kg_per_batch = (
         total_mg_per_batch / Decimal(1_000_000)
-    ).quantize(Decimal("0.000001"))
+    ).quantize(Decimal("0.0000000001"))
     result.total_count_per_batch = sum(
         (entry.count_per_batch for entry in count_entries), 0
     )

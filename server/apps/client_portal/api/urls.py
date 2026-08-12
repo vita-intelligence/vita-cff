@@ -74,6 +74,7 @@ from .views import (
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
+from .sample_detail_views import PortalSampleDetailView
 from .template_views import PortalLabelDesignTemplateLibraryView
 from .label_design_views import (
     PortalLabelDesignApproveView,
@@ -176,6 +177,15 @@ urlpatterns = [
         "products/<uuid:formulation_id>/",
         PortalProductDetailView.as_view(),
         name="product-detail",
+    ),
+    # Per-sample pipeline detail — the "where is my sample right now?"
+    # view. Returns pipeline stages driven by the payment lifecycle
+    # (ordered → payment confirmed) chained onto PSP MO status
+    # (preparing → in production → ready) via the integration.
+    path(
+        "samples/<uuid:payment_id>/",
+        PortalSampleDetailView.as_view(),
+        name="sample-detail",
     ),
 
     # Inbox / bell — every thread the client account can see plus

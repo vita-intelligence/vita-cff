@@ -108,6 +108,12 @@ class PaymentInvoicesView(APIView):
             byte_size=upload.size or 0,
             uploaded_by=request.user,
         )
+        # Sample payments — push the new file into PSP's CO detail
+        # card so the invoice section stays in sync without waiting
+        # for the next Create-MO click. Silent-degrade, no-op for
+        # non-sample payments.
+        from apps.psp.services import maybe_resync_sample_payment_to_psp
+        maybe_resync_sample_payment_to_psp(payment=payment)
         return Response({"file": _payload(row)}, status=status.HTTP_201_CREATED)
 
 
@@ -137,4 +143,9 @@ class PaymentInvoiceDetailView(APIView):
             raise NotFound()
         row.file.delete(save=False)
         row.delete()
+        # Sample payments — drop the file from the PSP mirror too so
+        # the CO detail card doesn't keep showing a filename whose
+        # bytes are gone. Silent-degrade, no-op for non-samples.
+        from apps.psp.services import maybe_resync_sample_payment_to_psp
+        maybe_resync_sample_payment_to_psp(payment=payment)
         return Response(status=status.HTTP_204_NO_CONTENT)

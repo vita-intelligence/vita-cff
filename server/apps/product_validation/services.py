@@ -57,6 +57,19 @@ class ValidationAlreadyExists(Exception):
     code = "validation_already_exists"
 
 
+class SampleFormulationAlreadyValidated(Exception):
+    """A sample batch can't get its own validation once the
+    formulation is already validated on another batch.
+
+    The compliance rule is: validation happens on a trial batch;
+    subsequent customer-sample runs of the same product inherit the
+    proof. Re-validating on every sample is paperwork with no audit
+    value and creates conflicting QC records for one product.
+    """
+
+    code = "sample_formulation_already_validated"
+
+
 class InvalidValidationTransition(Exception):
     code = "invalid_validation_transition"
 
@@ -747,6 +760,26 @@ def create_validation(
     ).first()
     if existing is not None:
         raise ValidationAlreadyExists()
+
+    # Sample-batch gate: once any batch of this formulation has a
+    # passed validation, subsequent samples can't spawn their own
+    # QC record. Trial batches skip this gate — validation is what
+    # trial batches exist for. Scoped to the formulation (across
+    # versions) so a version bump doesn't silently reopen the door.
+    if batch.kind == "sample":
+        already_validated = (
+            ProductValidation.objects.filter(
+                organization=organization,
+                trial_batch__formulation_version__formulation_id=(
+                    batch.formulation_version.formulation_id
+                ),
+                status=ValidationStatus.PASSED,
+            )
+            .exclude(trial_batch_id=batch.id)
+            .exists()
+        )
+        if already_validated:
+            raise SampleFormulationAlreadyValidated()
 
     blanks = empty_tests()
     validation = ProductValidation.objects.create(
