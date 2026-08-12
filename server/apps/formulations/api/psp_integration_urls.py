@@ -13,6 +13,7 @@ from apps.formulations.api.psp_integration import (
     InDevelopmentFormulationsView,
     LatestSpecSheetHtmlView,
     LatestValidationSheetHtmlView,
+    PinManufacturingOrderOnTrialBatchView,
 )
 
 
@@ -34,5 +35,15 @@ urlpatterns = [
         "validations/latest.html",
         LatestValidationSheetHtmlView.as_view(),
         name="validations-latest-html",
+    ),
+    # PSP wizard callback — pins the newly-created MO uuid onto the
+    # sample fulfilment's TrialBatch so NPD's trial-batch page shows
+    # the stage chain instead of "MO connected but no chain yet".
+    # Called by PSP's ``create_mo_for_line`` when the CO has an
+    # ``npd_payment_id`` (i.e. sample flow born from an NPD payment).
+    path(
+        "trial-batches/pin-mo/",
+        PinManufacturingOrderOnTrialBatchView.as_view(),
+        name="trial-batches-pin-mo",
     ),
 ]
