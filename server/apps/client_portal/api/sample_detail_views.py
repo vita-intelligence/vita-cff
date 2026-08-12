@@ -581,6 +581,18 @@ class PortalSampleDetailView(PortalAPIView):
             else None
         )
 
+        # Final Product Release documents attached to PSP's root MO.
+        # Empty until the release ceremony completes on PSP; on
+        # completion the customer sees CoA, BMR, micro report, label
+        # proof + retain-sample record. Silent-degrade posture — a
+        # PSP outage or unresolved CO returns [] rather than blocking
+        # the whole detail page.
+        release_documents = (
+            _release_documents_or_empty(payment)
+            if payment.status == PaymentStatus.APPROVED
+            else []
+        )
+
         return Response(
             {
                 "sample": {
@@ -604,5 +616,76 @@ class PortalSampleDetailView(PortalAPIView):
                     mo_chain=mo_chain,
                     snapshot=snapshot,
                 ),
+                "release_documents": release_documents,
             }
         )
+
+
+def _release_documents_or_empty(payment: Payment) -> list[dict]:
+    """Fetch Final Release doc metadata from PSP for this payment's CO.
+
+    Silent-degrade contract mirrors ``_mo_chain_or_none`` /
+    ``_co_snapshot_or_none``: PSP off / unreachable / no CO / release
+    ceremony not done → ``[]``. The portal FE renders the section only
+    when the list is non-empty."""
+
+    from apps.psp.services import list_psp_release_documents_for_payment
+
+    try:
+        rows = list_psp_release_documents_for_payment(payment=payment)
+    except Exception:
+        return []
+
+    return rows if isinstance(rows, list) else []
+
+
+class PortalSampleReleaseDocumentView(PortalAPIView):
+    """``GET /api/portal/samples/<payment_id>/release-documents/<file_uuid>/``
+    — proxy-download one Final Release document for a customer.
+
+    Ownership: same check as :class:`PortalSampleDetailView` — the
+    payment must be a sample kit (kind=FINAL + RTG formulation) that
+    belongs to one of the account's Customer ids. File bytes come
+    from PSP (source of truth); NPD is a pass-through with the
+    ownership guard bolted on here so a leaked file uuid can't be
+    downloaded by an unrelated account.
+
+    Content-Type + Content-Disposition flow through from PSP so PDFs
+    render inline in the portal iframe and non-PDFs download normally.
+    """
+
+    def get(self, request: Request, payment_id, file_uuid) -> Response:
+        from apps.client_portal.queries import customer_ids_for_account
+        from apps.psp.services import fetch_psp_release_document_for_payment
+        from django.http import HttpResponse
+
+        customer_ids = customer_ids_for_account(request.user)
+        payment = get_object_or_404(
+            Payment.objects.select_related("formulation", "organization"),
+            id=payment_id,
+            kind=PaymentKind.FINAL,
+            formulation__project_type="ready_to_go",
+            customer_id__in=customer_ids,
+        )
+
+        result = fetch_psp_release_document_for_payment(
+            payment=payment, file_uuid=file_uuid
+        )
+        if result is None:
+            raise NotFound("release_document_not_found")
+
+        body, mime, filename = result
+
+        # Inline for PDFs (portal iframe preview), download for
+        # everything else. Filename passes through so the browser
+        # save-as suggestion matches what PSP recorded.
+        disposition = (
+            "inline" if (mime or "").lower().startswith("application/pdf")
+            else "attachment"
+        )
+        response = HttpResponse(body, content_type=mime)
+        response["Content-Disposition"] = (
+            f'{disposition}; filename="{filename}"'
+        )
+        response["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return response
