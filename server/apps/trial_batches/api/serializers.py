@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.product_validation.models import ProductValidation, ValidationStatus
 from apps.trial_batches.models import BatchKind, TrialBatch
 
 
@@ -27,6 +28,16 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     #: so the FE can render a chip without a second fetch. Empty
     #: string when no combo is set (sample "no packaging" or trial).
     packaging_combo_name = serializers.SerializerMethodField()
+    #: ``True`` when *another* batch of the same formulation (any
+    #: version) already has a ``passed`` validation. The FE uses this
+    #: to hide the "Start validation" CTA on sample batches — once
+    #: the product is proven, subsequent customer-sample runs inherit
+    #: the proof and don't need re-validation. Scoped to formulation,
+    #: not version, so a version bump on the same product doesn't
+    #: silently unlock re-validation on samples. Deliberately
+    #: excludes ``self`` because a batch that's already validated
+    #: renders "Open validation" via its own ``validation_status``.
+    formulation_validated = serializers.SerializerMethodField()
 
     def get_created_by_name(self, obj) -> str:
         user = obj.created_by
@@ -39,6 +50,14 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     def get_packaging_combo_name(self, obj) -> str:
         combo = obj.packaging_combo
         return combo.name if combo is not None else ""
+
+    def get_formulation_validated(self, obj) -> bool:
+        return ProductValidation.objects.filter(
+            trial_batch__formulation_version__formulation_id=(
+                obj.formulation_version.formulation_id
+            ),
+            status=ValidationStatus.PASSED,
+        ).exclude(trial_batch_id=obj.id).exists()
 
     class Meta:
         model = TrialBatch
@@ -56,6 +75,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "formulation_version_number",
             "psp_manufacturing_order_uuid",
             "validation_status",
+            "formulation_validated",
             "created_by_name",
             "created_at",
             "updated_at",

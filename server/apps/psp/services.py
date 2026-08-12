@@ -481,6 +481,7 @@ class PspClient:
         due_date: Any = None,
         notes: str = "",
         packaging_combo_items: Any = None,
+        npd_sample_payment_uuid: Any = None,
     ) -> dict:
         """POST ``/api/integration/manufacturing-orders``.
 
@@ -535,6 +536,14 @@ class PspClient:
         # here.
         if packaging_combo_items is not None:
             body["packaging_combo_items"] = packaging_combo_items
+        # Sample fulfilment link. When set, PSP resolves the sample
+        # CO (uuid = this value) + its line and pins the MO's
+        # ``customer_order_line_id``. That's what lands the MO on the
+        # /projects kanban attached to the correct customer. Absent on
+        # trial-kind MOs and manually-created samples (no source
+        # payment) — MO still lands, just orphaned from a project.
+        if npd_sample_payment_uuid:
+            body["npd_sample_payment_uuid"] = str(npd_sample_payment_uuid).strip()
 
         response = self._request(
             "api/integration/manufacturing-orders",
@@ -796,6 +805,95 @@ class PspClient:
 
         response = self._request(
             "api/integration/customer-orders/sync",
+            method="POST",
+            body=payload,
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
+    def list_customer_order_invoices(self, co_uuid: Any) -> list[dict]:
+        """GET ``/api/integration/customer-orders/:uuid/invoices``.
+
+        Returns the list of ``CustomerInvoice`` records attached to a
+        CO on PSP. Powers NPD's finance-payment detail page so the
+        accountant sees invoices without switching apps.
+
+        Silent-degrade: returns ``[]`` on any transport failure /
+        404 — the caller renders "no invoices yet" and the finance
+        user can still record their payment.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        if not cleaned:
+            return []
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/invoices"
+        )
+        if not isinstance(response, dict):
+            return []
+        raw = response.get("invoices")
+        return raw if isinstance(raw, list) else []
+
+    def get_customer_order_snapshot(self, co_uuid: Any) -> dict | None:
+        """GET ``/api/integration/customer-orders/:uuid/snapshot``.
+
+        Returns PSP's :func:`OrderWizard.snapshot` projected to the
+        customer-safe fields — just the phase key + coarse counts.
+        Deliberately excludes PSP's ``phase.label`` /
+        ``next_action.title`` / ``next_action.detail`` /
+        ``blockers`` because those are written for operators
+        ("Open MO MO00051 to finish bookings") and shouldn't
+        reach a customer surface. The NPD side does its own copy
+        lookup keyed on ``phase.key``.
+
+        Shape:
+
+            {"snapshot": {
+                "phase": {"key", "index", "total", "is_terminal"},
+                "mo_count", "mos_in_production"
+            }}
+
+        Returns ``None`` on 404 (unknown CO uuid on PSP) or on any
+        transport failure — the portal treats absent snapshot as
+        "PSP hasn't seen this order yet" and falls back to the MO-
+        chain-only pipeline path.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/snapshot"
+        )
+        if not isinstance(response, dict):
+            return None
+        return response
+
+    def sync_sample_customer_order(self, payload: dict) -> dict | None:
+        """Push a sample-fulfilment payload to PSP so a CO is created
+        (or refreshed) for a customer sample run.
+
+        Sibling of :meth:`sync_customer_order`, keyed on
+        ``npd_sample_payment_uuid`` instead of ``npd_formulation_uuid``.
+        One CO per customer-sample pair — that's the identity model
+        that solves the RTG shared-catalog problem (a single RTG
+        formulation is ordered by many customers, so the formulation
+        uuid can't be the CO uuid).
+
+        On PSP, the same ``resolve_customer`` helper the commercial
+        sync uses runs the dedupe: existing PSP customer wins via
+        ``npd_source_uuid``, name-match soft-dedupes and back-fills
+        the identity, and a new customer is only created when
+        nothing matches.
+
+        Returns PSP's response body on success. Bubbles PspError on
+        transport failure — callers should catch + log-and-continue
+        so a flaky PSP never blocks a scientist's Create MO click.
+        """
+
+        response = self._request(
+            "api/integration/customer-orders/sync-sample",
             method="POST",
             body=payload,
         )
@@ -2263,6 +2361,226 @@ def sync_customer_order_to_psp(
             "PSP sync_customer_order failed for org %s formulation %s",
             organization.pk,
             formulation.pk,
+        )
+        return None
+
+
+def maybe_resync_sample_payment_to_psp(*, payment: Any) -> None:
+    """Best-effort re-sync of a sample payment's CO on PSP so the
+    invoice card reflects the current payment state (files, status,
+    invoice number, etc).
+
+    Called from every payment lifecycle event that changes visible
+    invoice data: approve, void, file upload, file delete. Bails
+    silently when:
+
+    * Payment isn't a sample (custom projects don't use this card yet).
+    * No trial batch exists yet — nothing on PSP to update.
+    * PSP integration off / unreachable — the change lands on the
+      next natural sync (e.g. next Create MO click).
+
+    Callers should treat this as fire-and-forget — no exception ever
+    bubbles up.
+    """
+
+    from apps.payments.constants import PaymentKind
+    from apps.formulations.models import ProjectType
+    from apps.trial_batches.models import TrialBatch
+
+    try:
+        if payment is None or getattr(payment, "kind", None) != PaymentKind.FINAL:
+            return
+        formulation = getattr(payment, "formulation", None)
+        if formulation is None:
+            return
+        if getattr(formulation, "project_type", None) != ProjectType.READY_TO_GO:
+            # Custom-formulation payments don't use the sample-CO
+            # path (their CO is keyed on formulation, not payment).
+            return
+        trial_batch = (
+            TrialBatch.objects.filter(source_payment_id=payment.id)
+            .select_related("formulation_version__formulation", "source_payment__customer")
+            .order_by("-created_at")
+            .first()
+        )
+        if trial_batch is None:
+            # Payment approved but scientist hasn't created the MO
+            # yet — nothing on PSP to update. Next Create MO click
+            # will pick up the fresh payment state.
+            return
+        sync_sample_customer_order_to_psp(trial_batch=trial_batch)
+    except Exception:
+        logger.exception(
+            "maybe_resync_sample_payment_to_psp: unexpected failure for "
+            "payment %s (silent-degraded)",
+            getattr(payment, "id", None),
+        )
+
+
+def _sample_payment_payload(payment: Any) -> dict:
+    """Build the ``payment`` block shipped to PSP inside the sample
+    sync payload.
+
+    Includes the payment metadata (amount, invoice number, paid
+    date, status) and the list of attached ``PaymentFile`` rows so
+    PSP's CO detail card can render "N invoice files" without a
+    second round-trip. File bytes stay on NPD — PSP receives only
+    metadata (uuid, filename, mime, byte_size, uploaded_at).
+    """
+
+    if payment is None:
+        return {}
+
+    # ``paid_at`` is required on Payment (see models.py). ``approved_at``
+    # is nullable until finance signs off. Prefer approved for the
+    # "when did money land" story since it's the more meaningful
+    # timestamp for a customer-facing invoice card.
+    paid_at = getattr(payment, "approved_at", None) or getattr(payment, "paid_at", None)
+
+    files = []
+    file_qs = getattr(payment, "invoices", None)
+    if file_qs is not None:
+        # ``invoices`` is a reverse-FK manager; iterating hits the DB
+        # exactly once. Payments typically carry 0-3 files.
+        for pf in file_qs.all():
+            files.append(
+                {
+                    "uuid": str(pf.id),
+                    "filename": pf.filename or "",
+                    "mime": pf.mime or "",
+                    "byte_size": int(pf.byte_size or 0),
+                    "uploaded_at": pf.uploaded_at.isoformat()
+                    if pf.uploaded_at
+                    else "",
+                }
+            )
+
+    amount = getattr(payment, "amount", None)
+    return {
+        "id": str(payment.id),
+        "amount": format(amount, "f") if amount is not None else None,
+        "currency": getattr(payment, "currency", "") or "",
+        "invoice_number": getattr(payment, "invoice_number", "") or "",
+        "paid_at": paid_at.isoformat() if paid_at else None,
+        "status": getattr(payment, "status", "") or "",
+        "files": files,
+    }
+
+
+def sync_sample_customer_order_to_psp(
+    *,
+    trial_batch: Any,
+) -> dict | None:
+    """Push a sample-fulfilment CO sync to PSP for a sample trial batch.
+
+    Called from :func:`create_psp_manufacturing_order_for_trial_batch`
+    before the MO create — PSP needs the sample CO (with the correct
+    customer resolved via its dedupe logic) to exist first so the MO
+    can link back to it via ``customer_order_line_id``.
+
+    Identity: ``npd_sample_payment_uuid = trial_batch.source_payment.id``.
+    That gives one CO per customer-sample pair even when the underlying
+    formulation is shared across many customers (RTG catalog case).
+
+    Silent-degradation contract, same as
+    :func:`sync_customer_order_to_psp`:
+
+    * PSP integration off / decryption failed → ``None``, no log.
+    * PSP unreachable / rate-limited / auth failed → warn + ``None``.
+    * Missing source payment → ``None`` (no customer identity to send).
+
+    Returns PSP's response body on success — the caller pins the
+    returned CO's uuid on the MO payload as ``npd_sample_payment_uuid``
+    so the receiving controller can locate the CO's line.
+    """
+
+    if trial_batch is None:
+        return None
+
+    source_payment = getattr(trial_batch, "source_payment", None)
+    if source_payment is None:
+        # No source payment → sample not from the fulfilment queue
+        # (scientist created it manually). Nothing to sync — the MO
+        # can still be pushed, it just won't get a customer link.
+        return None
+
+    formulation_version = getattr(trial_batch, "formulation_version", None)
+    formulation = (
+        getattr(formulation_version, "formulation", None)
+        if formulation_version is not None
+        else None
+    )
+    if formulation is None:
+        return None
+
+    organization = getattr(formulation, "organization", None)
+    if organization is None:
+        return None
+    if not is_psp_live(organization):
+        return None
+
+    item_uuid = getattr(formulation, "psp_finished_product_uuid", None)
+    if not item_uuid:
+        # Without the PSP item uuid the CO can't get a line and the
+        # follow-up MO push will fail its own gate too. Bail early
+        # with a warning rather than half-provisioning.
+        logger.warning(
+            "sync_sample_customer_order_to_psp: formulation %s has no "
+            "psp_finished_product_uuid; skipping sample CO sync",
+            formulation.pk,
+        )
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        logger.exception(
+            "PSP config decryption failed for org %s", organization.pk
+        )
+        return None
+
+    label = (getattr(trial_batch, "label", "") or "").strip()
+
+    payload = {
+        "npd_sample_payment_uuid": str(source_payment.id),
+        "item_uuid": str(item_uuid),
+        # Match the sample quantity to the batch size — PSP's CO line
+        # is a display / audit surface (not the production spec), so
+        # over/under vs actual production is acceptable.
+        "quantity": str(getattr(trial_batch, "batch_size_units", 1) or 1),
+        "sample_label": label,
+        "formulation_name": (getattr(formulation, "name", "") or "").strip(),
+        "formulation_code": (getattr(formulation, "code", "") or "").strip(),
+        # Reuse the commercial-sync helpers so a customer already
+        # synced via a Custom project stays deduped on the PSP side.
+        **_customer_identity(getattr(source_payment, "customer", None)),
+        # Same R&D team + deep-link payload the commercial sync uses
+        # so /projects can render the same "R&D lead" / "Sales" chips
+        # on a sample CO.
+        "lead_scientist_name": _person_display_name(
+            getattr(formulation, "lead_scientist", None)
+        ),
+        "sales_person_name": _person_display_name(
+            getattr(formulation, "sales_person", None)
+        ),
+        "app_url": _formulation_app_url(organization, formulation),
+        # NPD payment mirror — PSP's CO detail invoice card renders
+        # this instead of the default "Generate invoice" prompt.
+        # Sample orders don't produce PSP-side invoices (finance
+        # already processed the payment on NPD).
+        "payment": _sample_payment_payload(source_payment),
+    }
+
+    try:
+        client = _client_factory(config)
+        return client.sync_sample_customer_order(payload)
+    except PspError:
+        logger.exception(
+            "PSP sync_sample_customer_order failed for org %s "
+            "trial_batch %s payment %s",
+            organization.pk,
+            trial_batch.pk,
+            source_payment.pk,
         )
         return None
 
@@ -4147,6 +4465,27 @@ def create_psp_manufacturing_order_for_trial_batch(
     # packaging isn't silently re-inserted.
     packaging_overlay = _build_packaging_overlay(trial_batch, kind)
 
+    # Sample-fulfilment CO sync: for sample-kind batches with a
+    # source payment (came from the R&D /samples fulfilment queue),
+    # push a per-customer CO to PSP FIRST so the MO create can
+    # link back to it. Uses the sample payment uuid as identity so
+    # each customer gets their own CO even when the underlying RTG
+    # formulation is shared. Failure here is soft — the MO still
+    # gets pushed, it just won't land on /projects attached to a
+    # customer (the scientist can retry Create MO after fixing the
+    # PSP connectivity issue).
+    npd_sample_payment_uuid: str | None = None
+    source_payment_id = getattr(trial_batch, "source_payment_id", None)
+    if kind == "sample" and source_payment_id is not None:
+        sync_sample_customer_order_to_psp(trial_batch=trial_batch)
+        # We stamp the uuid on the payload regardless of the sync's
+        # return value — the sync is idempotent + silent-degrade, so
+        # if it succeeded PSP has the CO ready; if it soft-failed the
+        # MO create will surface ``sample_co_not_found`` (400) and the
+        # scientist retries. That's a better UX than silently pushing
+        # the MO orphaned.
+        npd_sample_payment_uuid = str(source_payment_id)
+
     client = _client_factory(config)
     try:
         mo = client.create_manufacturing_order(
@@ -4163,6 +4502,7 @@ def create_psp_manufacturing_order_for_trial_batch(
             due_date=due_date,
             notes=notes or "",
             packaging_combo_items=packaging_overlay,
+            npd_sample_payment_uuid=npd_sample_payment_uuid,
         )
     except PspUnreachable as exc:
         # PSP-side validation errors come through as PspUnreachable
@@ -4190,6 +4530,18 @@ def create_psp_manufacturing_order_for_trial_batch(
                 "PSP couldn't find the target warehouse. Update "
                 "`psp_warehouse_uuid` on /settings/integrations.",
                 psp_error="warehouse_not_found",
+                detail=message,
+            ) from exc
+        if '"sample_co_not_found"' in message:
+            # Sample-CO sync soft-failed earlier (PSP unreachable /
+            # rate-limited at that step) so PSP couldn't find the CO
+            # this MO wants to link to. Actionable: retry Create MO;
+            # the sync fires again on the second attempt.
+            raise PspCreateManufacturingOrderFailed(
+                "PSP couldn't find the sample customer order. This "
+                "usually means the sample-CO sync soft-failed on the "
+                "first attempt — retry Create MO and it should land.",
+                psp_error="sample_co_not_found",
                 detail=message,
             ) from exc
         raise
@@ -4259,6 +4611,102 @@ def get_psp_manufacturing_order_chain(
         return None
     client = _client_factory(config)
     return client.get_manufacturing_order_chain(mo_uuid)
+
+
+def list_psp_invoices_for_payment(*, payment: Any) -> list[dict]:
+    """List PSP CustomerInvoices attached to the CO that mirrors this
+    NPD Payment.
+
+    CO-uuid resolution (matches the sync-side conventions):
+
+    * Sample payment (``kind=final`` + RTG formulation) → PSP CO uuid
+      == ``payment.id`` (planted by ``NpdSync.upsert_sample_from_npd``).
+    * Custom-formulation payment (``kind=final`` + custom
+      formulation) → PSP CO uuid == ``formulation.id`` (planted by
+      ``NpdSync.upsert_from_npd``).
+    * Deposit payment → not supported yet (proposal-level, walks
+      through multiple COs); returns ``[]``.
+
+    Silent-degrade — returns ``[]`` if PSP integration is off, the
+    payment doesn't have a resolvable CO, or PSP is unreachable.
+    """
+
+    if payment is None:
+        return []
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return []
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return []
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return []
+    client = _client_factory(config)
+    try:
+        return client.list_customer_order_invoices(co_uuid)
+    except PspError:
+        return []
+
+
+def _resolve_co_uuid_for_payment(payment: Any) -> str | None:
+    """Map an NPD Payment to the PSP CO uuid we planted at sync time.
+
+    Sample payments (RTG + kind=final) → CO uuid == payment.id.
+    Custom-formulation payments → CO uuid == formulation.id.
+    Anything else (deposit / no formulation) → None.
+    """
+
+    from apps.payments.constants import PaymentKind
+    from apps.formulations.models import ProjectType
+
+    if getattr(payment, "kind", None) != PaymentKind.FINAL:
+        return None
+
+    formulation = getattr(payment, "formulation", None)
+    if formulation is None:
+        return None
+
+    project_type = getattr(formulation, "project_type", None)
+    if project_type == ProjectType.READY_TO_GO:
+        # Sample fulfilment path: the CO's uuid was planted from the
+        # payment id at sync time so it's unique per customer-sample
+        # pair. Custom formulations plant it from formulation.id.
+        return str(payment.id)
+    return str(formulation.id)
+
+
+def get_psp_customer_order_snapshot(
+    *,
+    organization: Any,
+    co_uuid: Any,
+) -> dict | None:
+    """Fetch PSP's OrderWizard snapshot for a customer order (uuid).
+
+    Powers the portal sample-detail page — the returned ``phase`` +
+    ``next_action`` are what let the customer see "Sourcing your
+    ingredients — waiting on 3 items" instead of a generic
+    "In production". Silent-degrade to ``None`` if the integration
+    isn't live, the token can't be decrypted, or PSP is unreachable /
+    doesn't know this uuid. The portal falls back to the payment-
+    lifecycle-only pipeline in that case so the customer still sees
+    something meaningful.
+    """
+
+    if not is_psp_live(organization):
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.get_customer_order_snapshot(co_uuid)
+    except PspError:
+        return None
 
 
 def get_psp_manufacturing_order_bookings(

@@ -12,6 +12,7 @@ from apps.payments.api.views import (
     PaymentAssignFinanceOfficerView,
     PaymentDetailView,
     PaymentListCreateView,
+    PaymentPspInvoicesView,
     PaymentVoidView,
     PendingPaymentProjectsView,
 )
@@ -63,6 +64,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/invoices/",
         PaymentInvoicesView.as_view(),
         name="payment-invoices",
+    ),
+    # Read-only mirror of PSP CustomerInvoices for the CO this payment
+    # is linked to — surfaces "already invoiced on PSP" data on the
+    # finance detail page so the accountant doesn't switch apps.
+    path(
+        "organizations/<uuid:org_id>/payments/<uuid:payment_id>/psp-invoices/",
+        PaymentPspInvoicesView.as_view(),
+        name="payment-psp-invoices",
     ),
     path(
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/invoices/<uuid:file_id>/",

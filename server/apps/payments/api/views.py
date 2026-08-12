@@ -241,6 +241,47 @@ class PaymentDetailView(APIView):
         return Response(PaymentReadSerializer(payment).data)
 
 
+class PaymentPspInvoicesView(APIView):
+    """``GET /api/organizations/<org>/payments/<id>/psp-invoices/``.
+
+    Lists CustomerInvoices raised on PSP for the CO that mirrors
+    this payment. Read-only, silent-degrade: unknown formulation,
+    PSP integration off, or transport failure all return
+    ``{"invoices": [], "supported": true/false}`` so the FE
+    always renders "no PSP invoices yet" instead of an error.
+
+    ``supported`` tells the FE whether the invoice-mirror path
+    applies at all — false on deposit payments (no direct CO
+    mapping) so the FE can hide the card entirely.
+    """
+
+    permission_classes = [HasFinancePermission]
+    required_capability = FinanceCapability.VIEW
+
+    def get(self, request: Request, org_id, payment_id) -> Response:
+        payment = (
+            Payment.objects.filter(
+                organization=self.organization, id=payment_id
+            )
+            .select_related("formulation", "organization")
+            .first()
+        )
+        if payment is None:
+            raise NotFound()
+
+        # Local imports — keeps the PSP client out of the hot import
+        # graph for the rest of the payments API.
+        from apps.payments.constants import PaymentKind
+        from apps.psp.services import list_psp_invoices_for_payment
+
+        # ``supported`` = "we know how to map this Payment kind to a
+        # PSP CO uuid". Currently true for kind=FINAL only (deposit
+        # payments span multiple COs via the proposal, unsupported).
+        supported = payment.kind == PaymentKind.FINAL
+        invoices = list_psp_invoices_for_payment(payment=payment) if supported else []
+        return Response({"invoices": invoices, "supported": supported})
+
+
 class PaymentApproveView(APIView):
     """``POST /api/organizations/<org>/payments/<id>/approve/`` —
     flip a PENDING payment to APPROVED. Side-effect: drives the

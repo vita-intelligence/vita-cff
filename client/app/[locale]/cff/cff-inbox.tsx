@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   Ban,
+  Check,
   ChevronRight,
   Inbox,
   Loader2,
@@ -12,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { useFormatter, useNow, useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { CFFAssignModal } from "@/components/cff/cff-assign-modal";
 import { LinkIconSlot } from "@/components/loading/link-pending-spinner";
@@ -27,23 +28,32 @@ import {
 } from "@/services/cff-submissions";
 
 
-type Filter = "all" | "unassigned" | "assigned" | "rejected";
+type Bucket = "unassigned" | "assigned" | "rejected";
 
 
 /**
- * Client-side body of the CFF page.
+ * Client-side body of the CFF page — 3-column pipeline board.
  *
- * Three states overlaid on one list:
+ * Same shape as ``/finance/payments`` / ``/proposals`` / ``/samples``
+ * so operators moving between triage surfaces don't have to
+ * relearn the layout. CFFs move left-to-right as decisions land:
  *
- * 1. ``all`` — every CFF in the org, newest first.
- * 2. ``unassigned`` — the triage queue (default view).
- * 3. ``assigned`` — historical record of routed CFFs.
+ *   New       — untouched triage queue (not assigned, not rejected).
+ *   Assigned  — attached to at least one project (or, for RTG rows,
+ *               carrying a drafted proposal — the auto-drafted
+ *               quote IS the attachment).
+ *   Rejected  — declined via the reject action. Card carries the
+ *               reason inline so the operator can see at a glance
+ *               why we said no.
  *
- * Search runs a substring match against the raw Wix payload on
- * the server side (``raw_payload__icontains``). Field labels are
- * fetched once on mount and reused across rows so the detail
- * modal can render "Email" instead of ``email_fc7d`` without
- * fanning out one round-trip per submission.
+ * Each column runs its own ``useInfiniteCFFSubmissions`` AND owns
+ * its own search input — searching in "New" narrows the New column
+ * without touching Assigned or Rejected, so a triager can hunt one
+ * lane without losing the counts / rows in the others. Cursor
+ * pagination on the backend (existing ``CFFCursorPagination``)
+ * means the "millions of rows" case pages just as fast on row 999k
+ * as on row 20. Counts are read from each column's own response so
+ * the count badge stays in lock-step with that column's search.
  */
 export function CFFInbox({
   orgId,
@@ -54,8 +64,6 @@ export function CFFInbox({
 }) {
   const t = useTranslations("cff");
 
-  const [filter, setFilter] = useState<Filter>("unassigned");
-  const [search, setSearch] = useState("");
   // Detail view now lives on a dedicated route — the inbox no
   // longer mounts the floating-window modal. Assign / Create-
   // project actions stay inline as modals because they're
@@ -65,75 +73,25 @@ export function CFFInbox({
   const [openCreate, setOpenCreate] = useState<CFFSubmissionDto | null>(null);
   const [openReject, setOpenReject] = useState<CFFSubmissionDto | null>(null);
 
-  const listQuery = useInfiniteCFFSubmissions({
-    orgId,
-    state: filter,
-    search: search.trim() || undefined,
-  });
-
-  const rows = useMemo(() => {
-    const pages = listQuery.data?.pages ?? [];
-    return pages.flatMap((page) => page.results);
-  }, [listQuery.data]);
-
   return (
     <>
       <section className="mt-6 flex flex-col gap-4">
         <SyncStatusBanner orgId={orgId} t={t} />
-        <FilterBar
-          filter={filter}
-          search={search}
-          onFilter={setFilter}
-          onSearch={setSearch}
-          isFetching={
-            listQuery.isFetching && !listQuery.isFetchingNextPage
-          }
-          t={t}
-        />
 
-        {listQuery.isPending ? (
-          <Skeleton label={t("list.loading")} />
-        ) : listQuery.isError ? (
-          <ErrorState message={t("errors.wix_cff_unknown_error")} />
-        ) : rows.length === 0 ? (
-          <EmptyState searching={Boolean(search.trim())} t={t} />
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {rows.map((row) => (
-              <CFFRow
-                key={row.id}
-                row={row}
-                orgId={orgId}
-                onAssign={
-                  canAssign ? () => setOpenAssign(row) : undefined
-                }
-                onCreateProject={
-                  canAssign ? () => setOpenCreate(row) : undefined
-                }
-                onReject={
-                  canAssign ? () => setOpenReject(row) : undefined
-                }
-                t={t}
-              />
-            ))}
-          </ul>
-        )}
-
-        {listQuery.hasNextPage ? (
-          <div className="flex justify-center">
-            <button
-              type="button"
-              onClick={() => void listQuery.fetchNextPage()}
-              disabled={listQuery.isFetchingNextPage}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-ink-50 px-4 py-2 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100 disabled:opacity-60"
-            >
-              {listQuery.isFetchingNextPage ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : null}
-              {t("list.load_more")}
-            </button>
-          </div>
-        ) : null}
+        <div className="grid gap-4 lg:grid-cols-3">
+          {CFF_BUCKETS.map((cfg) => (
+            <CFFBucketColumn
+              key={cfg.key}
+              cfg={cfg}
+              orgId={orgId}
+              canAssign={canAssign}
+              onAssign={setOpenAssign}
+              onCreateProject={setOpenCreate}
+              onReject={setOpenReject}
+              t={t}
+            />
+          ))}
+        </div>
       </section>
 
       {openAssign ? (
@@ -161,6 +119,194 @@ export function CFFInbox({
         />
       ) : null}
     </>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// Column
+// ---------------------------------------------------------------------------
+
+
+const CFF_BUCKETS: ReadonlyArray<{
+  key: Bucket;
+  labelKey: "unassigned_label" | "assigned_label" | "rejected_label";
+  hintKey: "unassigned_hint" | "assigned_hint" | "rejected_hint";
+  emptyKey: "unassigned" | "assigned" | "rejected";
+  accent: string;
+  headerIcon: React.ComponentType<{ className?: string }>;
+  headerIconTone: string;
+}> = [
+  {
+    key: "unassigned",
+    labelKey: "unassigned_label",
+    hintKey: "unassigned_hint",
+    emptyKey: "unassigned",
+    accent: "bg-amber-100 text-amber-800",
+    headerIcon: Inbox,
+    headerIconTone: "text-amber-700",
+  },
+  {
+    key: "assigned",
+    labelKey: "assigned_label",
+    hintKey: "assigned_hint",
+    emptyKey: "assigned",
+    accent: "bg-sky-100 text-sky-800",
+    headerIcon: Check,
+    headerIconTone: "text-sky-700",
+  },
+  {
+    key: "rejected",
+    labelKey: "rejected_label",
+    hintKey: "rejected_hint",
+    emptyKey: "rejected",
+    accent: "bg-rose-100 text-rose-800",
+    headerIcon: Ban,
+    headerIconTone: "text-rose-700",
+  },
+];
+
+
+function CFFBucketColumn({
+  cfg,
+  orgId,
+  canAssign,
+  onAssign,
+  onCreateProject,
+  onReject,
+  t,
+}: {
+  cfg: (typeof CFF_BUCKETS)[number];
+  orgId: string;
+  canAssign: boolean;
+  onAssign: (row: CFFSubmissionDto) => void;
+  onCreateProject: (row: CFFSubmissionDto) => void;
+  onReject: (row: CFFSubmissionDto) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+
+  // Debounce per-column so a fast typer only pays for one fetch
+  // per pause, not one per keystroke. Independent from sibling
+  // columns — each column owns its own search state.
+  useEffect(() => {
+    const handle = setTimeout(
+      () => setDebouncedSearch(searchInput.trim()),
+      250,
+    );
+    return () => clearTimeout(handle);
+  }, [searchInput]);
+
+  const query = useInfiniteCFFSubmissions({
+    orgId,
+    state: cfg.key,
+    search: debouncedSearch || undefined,
+  });
+
+  const rows = useMemo<readonly CFFSubmissionDto[]>(
+    () => query.data?.pages.flatMap((p) => p.results) ?? [],
+    [query.data],
+  );
+
+  // Count comes from this column's own response so it stays scoped
+  // to this column's search — narrowing "New" doesn't change the
+  // badge on "Rejected".
+  const count = query.data?.pages[0]?.counts?.[cfg.key] ?? 0;
+
+  const hasSearch = debouncedSearch.length > 0;
+  const Icon = cfg.headerIcon;
+
+  return (
+    <article className="flex min-h-[24rem] flex-col rounded-2xl bg-ink-0 shadow-sm ring-1 ring-ink-200">
+      <header className="space-y-3 border-b border-ink-100 p-4">
+        <div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Icon className={`h-4 w-4 ${cfg.headerIconTone}`} aria-hidden />
+              <h2 className="text-sm font-semibold text-ink-1000">
+                {t(`buckets.${cfg.labelKey}`)}
+              </h2>
+            </div>
+            <span
+              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${cfg.accent}`}
+            >
+              {count}
+            </span>
+          </div>
+          <p className="mt-1 text-[11px] text-ink-500">
+            {t(`buckets.${cfg.hintKey}`)}
+          </p>
+        </div>
+
+        <div className="relative">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-400"
+            aria-hidden
+          />
+          <input
+            type="search"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder={t("filter.search_placeholder")}
+            className="h-8 w-full rounded-full border border-ink-200 bg-ink-0 pl-8 pr-8 text-[11px] text-ink-1000 outline-none focus:border-ink-400 focus:ring-2 focus:ring-ink-200"
+          />
+          {searchInput ? (
+            <button
+              type="button"
+              onClick={() => setSearchInput("")}
+              aria-label={t("filter.search_clear")}
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-full p-1 text-ink-500 hover:bg-ink-100 hover:text-ink-1000"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          ) : null}
+        </div>
+      </header>
+
+      <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        {query.isPending ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+            {t("list.loading")}
+          </p>
+        ) : query.isError ? (
+          <p className="rounded-lg border border-danger/30 bg-danger/5 p-3 text-xs text-danger">
+            {t("errors.wix_cff_unknown_error")}
+          </p>
+        ) : rows.length === 0 ? (
+          <p className="p-4 text-center text-xs text-ink-500">
+            {hasSearch ? t("empty.search") : t(`empty.${cfg.emptyKey}`)}
+          </p>
+        ) : (
+          rows.map((row) => (
+            <CFFRow
+              key={row.id}
+              row={row}
+              orgId={orgId}
+              onAssign={canAssign ? () => onAssign(row) : undefined}
+              onCreateProject={canAssign ? () => onCreateProject(row) : undefined}
+              onReject={canAssign ? () => onReject(row) : undefined}
+              t={t}
+            />
+          ))
+        )}
+
+        {query.hasNextPage ? (
+          <button
+            type="button"
+            onClick={() => void query.fetchNextPage()}
+            disabled={query.isFetchingNextPage}
+            className="w-full rounded-lg px-3 py-1.5 text-[11px] font-semibold text-ink-600 hover:bg-ink-50 disabled:opacity-50"
+          >
+            {query.isFetchingNextPage ? (
+              <Loader2 className="mr-1 inline h-3 w-3 animate-spin" />
+            ) : null}
+            {t("list.load_more")}
+          </button>
+        ) : null}
+      </div>
+    </article>
   );
 }
 
@@ -243,87 +389,6 @@ function formatCadence(seconds: number | null): string {
 
 
 // ---------------------------------------------------------------------------
-// Filter bar
-// ---------------------------------------------------------------------------
-
-
-function FilterBar({
-  filter,
-  search,
-  onFilter,
-  onSearch,
-  isFetching,
-  t,
-}: {
-  filter: Filter;
-  search: string;
-  onFilter: (v: Filter) => void;
-  onSearch: (v: string) => void;
-  /** ``true`` while the list query is in flight (and not just
-   *  loading the next infinite page). Drives the in-input
-   *  spinner so the user gets a cue while the typed query is
-   *  resolving against the server. */
-  isFetching: boolean;
-  t: ReturnType<typeof useTranslations>;
-}) {
-  return (
-    <div className="flex flex-wrap items-center gap-3">
-      <div
-        role="tablist"
-        className="inline-flex rounded-full bg-ink-50 p-1 ring-1 ring-inset ring-ink-200"
-      >
-        {(["unassigned", "all", "assigned", "rejected"] as const).map((value) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={filter === value}
-            onClick={() => onFilter(value)}
-            className={
-              "rounded-full px-3 py-1 text-xs font-medium transition-colors " +
-              (filter === value
-                ? "bg-white text-ink-1000 shadow-sm"
-                : "text-ink-600 hover:text-ink-800")
-            }
-          >
-            {t(`filter.${value}`)}
-          </button>
-        ))}
-      </div>
-
-      <label className="relative flex-1 min-w-[200px]">
-        <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-ink-500" />
-        <input
-          value={search}
-          onChange={(e) => onSearch(e.target.value)}
-          placeholder={t("filter.search_placeholder")}
-          className="w-full rounded-lg bg-white py-2 pl-9 pr-9 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
-        />
-        {/* Right-edge slot — spinner takes priority over the
-            clear ``X`` so a slow connection gets a clear "still
-            working" signal. */}
-        {isFetching ? (
-          <Loader2
-            aria-hidden
-            className="absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 animate-spin text-orange-500"
-          />
-        ) : search ? (
-          <button
-            type="button"
-            onClick={() => onSearch("")}
-            className="absolute right-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-ink-500 hover:bg-ink-50"
-            aria-label="Clear search"
-          >
-            <X className="h-3.5 w-3.5" />
-          </button>
-        ) : null}
-      </label>
-    </div>
-  );
-}
-
-
-// ---------------------------------------------------------------------------
 // One row
 // ---------------------------------------------------------------------------
 
@@ -354,190 +419,169 @@ function CFFRow({
   const previewFields = extractPreview(row.raw_payload);
   const customerName = previewFields.name || previewFields.email || "—";
 
+  const receivedIso = new Date(
+    row.wix_created_date || row.imported_at,
+  ).toISOString();
+  const receivedRel = format.relativeTime(
+    new Date(row.wix_created_date || row.imported_at),
+    now,
+  );
+
   return (
-    <li>
-      <article className="group flex flex-col gap-3 rounded-2xl bg-white p-4 ring-1 ring-ink-200 transition-shadow hover:shadow-sm sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="truncate text-sm font-semibold text-ink-1000">
-              {customerName}
-            </p>
-            <StatusChip
-              status={
-                row.wix_status ||
-                (row.provenance === "portal" ? "PORTAL" : "UNKNOWN")
-              }
-              t={t}
-            />
-            <AssignmentBadge row={row} t={t} />
-          </div>
+    <article className="flex flex-col gap-2 rounded-xl border border-ink-100 bg-ink-0 p-3 shadow-sm">
+      {/* Header — customer + status chip. Title truncates so long
+          names don't push the chip off; chip is ``shrink-0`` so it
+          never gets compressed to unreadable width. */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="truncate text-xs font-semibold text-ink-1000">
+            {customerName}
+          </p>
           {previewFields.company ? (
-            <p className="text-xs text-ink-600">{previewFields.company}</p>
+            <p className="mt-0.5 truncate text-[11px] text-ink-600">
+              {previewFields.company}
+            </p>
           ) : null}
           {previewFields.email && previewFields.email !== customerName ? (
-            <p className="text-xs text-ink-500">{previewFields.email}</p>
-          ) : null}
-          {/* Received-when line pairs a relative timestamp with the
-              exact wall clock + short submission id. When the same
-              customer spams the form (or legitimately re-submits
-              with tweaks), every row looks identical without these
-              — the operator has no anchor to tell which reject they
-              already fired, and rejections read as no-ops. The full
-              ISO in `title` covers audit / timezone edge cases. */}
-          <p
-            className="text-[11px] text-ink-500"
-            title={new Date(
-              row.wix_created_date || row.imported_at,
-            ).toISOString()}
-          >
-            {t("list.received", {
-              when: format.relativeTime(
-                // Portal rows have no ``wix_created_date`` — fall back
-                // to ``imported_at`` (set on both paths) so the
-                // relative "received X ago" label still renders.
-                new Date(row.wix_created_date || row.imported_at),
-                now,
-              ),
-            })}{" "}
-            <span className="text-ink-400">
-              ·{" "}
-              {format.dateTime(
-                new Date(row.wix_created_date || row.imported_at),
-                { dateStyle: "short", timeStyle: "short" },
-              )}
-            </span>
-            <span className="ml-1.5 font-mono text-[10px] text-ink-400">
-              #{row.id.slice(0, 8)}
-            </span>
-          </p>
-          {/* Rejected rows carry their reason inline so the operator
-              browsing the Rejected tab can see at a glance why we
-              said no without opening the detail page. */}
-          {row.is_rejected && row.rejection_reason ? (
-            <p className="mt-1 rounded-lg bg-rose-50 px-3 py-1.5 text-[11px] text-rose-900 ring-1 ring-inset ring-rose-200">
-              <span className="font-semibold">
-                {t("reject.reason_label")}:
-              </span>{" "}
-              <span className="whitespace-pre-wrap">
-                {row.rejection_reason}
-              </span>
-              {row.rejected_by ? (
-                <span className="ml-1 text-rose-700">
-                  — {row.rejected_by.full_name}
-                </span>
-              ) : null}
+            <p className="truncate text-[11px] text-ink-500">
+              {previewFields.email}
             </p>
           ) : null}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {/* Triage actions stay visible regardless of how many
-              projects the CFF is already linked to. ``Create project``
-              spins up a fresh workspace and appends the link;
-              ``Attach to existing`` opens the picker so the operator
-              can wire the CFF into another in-flight project. The
-              "send back to triage" path lives inside the assign
-              modal so a stray click on the row doesn't drop links.
-
-              Rejected rows swap the triage buttons for a single
-              "Send back to triage" button so mistakes can be undone.
-              Reject is hidden once the CFF is assigned — you'd have
-              to unassign first, matching the backend guard. */}
-          {row.is_rejected ? (
-            <button
-              type="button"
-              disabled={unrejectMutation.isPending}
-              onClick={() =>
-                unrejectMutation.mutate({ submissionId: row.id })
-              }
-              className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50 disabled:opacity-60"
-            >
-              {unrejectMutation.isPending ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <RotateCcw className="h-3 w-3" />
-              )}
-              {t("reject.undo")}
-            </button>
-          ) : row.submission_kind === "ready_to_go" &&
-            row.drafted_proposal_id ? (
-            // RTG rows never take the project attachment path — the
-            // auto-drafted proposal IS the deliverable, and the
-            // triage step is "sanity-check + Send" on the quote.
-            // Swap the project-focused buttons for a deep-link into
-            // the proposal so the operator lands on the artefact
-            // that actually needs their attention. Reject stays
-            // available so an operator can still stop a bad RTG
-            // order before it goes out.
-            <>
-              <Link
-                href={`/proposals/${row.drafted_proposal_id}`}
-                prefetch={false}
-                className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
-              >
-                {t("rtg_actions.view_proposal")}
-              </Link>
-              {onReject ? (
-                <button
-                  type="button"
-                  onClick={onReject}
-                  className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
-                >
-                  <Ban className="h-3 w-3" />
-                  {t("reject.open")}
-                </button>
-              ) : null}
-            </>
-          ) : (
-            <>
-              {onAssign ? (
-                <button
-                  type="button"
-                  onClick={onAssign}
-                  className="rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
-                >
-                  {t("assign.open")}
-                </button>
-              ) : null}
-              {onCreateProject ? (
-                <button
-                  type="button"
-                  onClick={onCreateProject}
-                  className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-600"
-                >
-                  {t("create_project.open")}
-                </button>
-              ) : null}
-              {onReject && !row.is_assigned ? (
-                <button
-                  type="button"
-                  onClick={onReject}
-                  className="inline-flex items-center gap-1 rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-rose-700 ring-1 ring-inset ring-rose-200 hover:bg-rose-50"
-                >
-                  <Ban className="h-3 w-3" />
-                  {t("reject.open")}
-                </button>
-              ) : null}
-            </>
-          )}
-          {/* Detail view lives on its own route. Spec / project
-              detail still use the floating modal for quick-view,
-              but the CFF surface always navigates to the dedicated
-              page so the chat dock + comment history have a stable
-              URL to deep-link to from the inbox bell. */}
-          <Link
-            href={`/cff/${row.id}`}
-            prefetch={false}
-            className="inline-flex items-center gap-1 rounded-lg bg-ink-50 px-3 py-1.5 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-100"
-          >
-            {t("list.open")}
-            <LinkIconSlot
-              idleIcon={<ChevronRight className="h-3 w-3" />}
-              spinnerSizeClassName="h-3 w-3"
-            />
-          </Link>
+        <div className="shrink-0">
+          <StatusChip
+            status={
+              row.wix_status ||
+              (row.provenance === "portal" ? "PORTAL" : "UNKNOWN")
+            }
+            t={t}
+          />
         </div>
-      </article>
-    </li>
+      </div>
+
+      {/* Assignment badge on its own line so it can wrap gracefully
+          without fighting the header for width. */}
+      <div className="min-w-0">
+        <AssignmentBadge row={row} t={t} />
+      </div>
+
+      {/* Received-when line — relative + short id. Full ISO in
+          ``title`` for audit / timezone edge cases. */}
+      <p
+        className="truncate text-[10px] text-ink-500"
+        title={receivedIso}
+      >
+        {t("list.received", { when: receivedRel })}
+        <span className="ml-1.5 font-mono text-ink-400">
+          #{row.id.slice(0, 8)}
+        </span>
+      </p>
+
+      {/* Rejected rows carry their reason inline so the operator
+          browsing the Rejected tab can see at a glance why we said
+          no without opening the detail page. */}
+      {row.is_rejected && row.rejection_reason ? (
+        <p className="rounded-lg bg-rose-50 px-2 py-1 text-[10px] text-rose-900 ring-1 ring-inset ring-rose-200">
+          <span className="font-semibold">{t("reject.reason_label")}:</span>{" "}
+          <span className="whitespace-pre-wrap">{row.rejection_reason}</span>
+          {row.rejected_by ? (
+            <span className="ml-1 text-rose-700">
+              — {row.rejected_by.full_name}
+            </span>
+          ) : null}
+        </p>
+      ) : null}
+
+      {/* Actions row — bottom-anchored, wraps if too wide for the
+          column. Buttons stay compact so common cases fit on one
+          line even in narrow columns. */}
+      <div className="mt-1 flex flex-wrap items-center justify-end gap-1.5">
+        {row.is_rejected ? (
+          <button
+            type="button"
+            disabled={unrejectMutation.isPending}
+            onClick={() =>
+              unrejectMutation.mutate({ submissionId: row.id })
+            }
+            className="inline-flex items-center gap-1 rounded-full border border-ink-200 px-2.5 py-1 text-[10px] font-semibold text-ink-700 hover:bg-ink-50 disabled:opacity-60"
+          >
+            {unrejectMutation.isPending ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <RotateCcw className="h-3 w-3" />
+            )}
+            {t("reject.undo")}
+          </button>
+        ) : row.submission_kind === "ready_to_go" &&
+          row.drafted_proposal_id ? (
+          // RTG rows never take the project attachment path — the
+          // auto-drafted proposal IS the deliverable. Deep-link
+          // into the quote so the operator lands on the artefact
+          // that actually needs their attention.
+          <>
+            {onReject ? (
+              <button
+                type="button"
+                onClick={onReject}
+                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-2.5 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
+              >
+                <Ban className="h-3 w-3" />
+                {t("reject.open")}
+              </button>
+            ) : null}
+            <Link
+              href={`/proposals/${row.drafted_proposal_id}`}
+              prefetch={false}
+              className="inline-flex items-center gap-1 rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-orange-600"
+            >
+              {t("rtg_actions.view_proposal")}
+            </Link>
+          </>
+        ) : (
+          <>
+            {onReject && !row.is_assigned ? (
+              <button
+                type="button"
+                onClick={onReject}
+                className="inline-flex items-center gap-1 rounded-full border border-rose-200 px-2.5 py-1 text-[10px] font-semibold text-rose-700 hover:bg-rose-50"
+              >
+                <Ban className="h-3 w-3" />
+                {t("reject.open")}
+              </button>
+            ) : null}
+            {onAssign ? (
+              <button
+                type="button"
+                onClick={onAssign}
+                className="inline-flex items-center rounded-full border border-ink-200 px-2.5 py-1 text-[10px] font-semibold text-ink-700 hover:bg-ink-50"
+              >
+                {t("assign.open")}
+              </button>
+            ) : null}
+            {onCreateProject ? (
+              <button
+                type="button"
+                onClick={onCreateProject}
+                className="inline-flex items-center rounded-full bg-orange-500 px-2.5 py-1 text-[10px] font-semibold text-white hover:bg-orange-600"
+              >
+                {t("create_project.open")}
+              </button>
+            ) : null}
+          </>
+        )}
+        <Link
+          href={`/cff/${row.id}`}
+          prefetch={false}
+          className="inline-flex items-center gap-1 rounded-full bg-ink-1000 px-2.5 py-1 text-[10px] font-semibold text-ink-0 hover:bg-ink-900"
+        >
+          {t("list.open")}
+          <LinkIconSlot
+            idleIcon={<ChevronRight className="h-3 w-3" />}
+            spinnerSizeClassName="h-3 w-3"
+          />
+        </Link>
+      </div>
+    </article>
   );
 }
 
@@ -697,7 +741,7 @@ function StatusChip({
           : "bg-warning/10 text-warning ring-warning/20";
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tone}`}
+      className={`inline-flex items-center whitespace-nowrap rounded-full px-2 py-0.5 text-[10px] font-medium ring-1 ring-inset ${tone}`}
     >
       {t(`status.${key as "CONFIRMED"}`)}
     </span>
@@ -717,9 +761,9 @@ function AssignmentBadge({
   // have to walk the ``assignments`` array on every row.
   if (!row.is_assigned) {
     return (
-      <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
-        <AlertTriangle className="mr-1 h-2.5 w-2.5" />
-        {t("badge.unassigned")}
+      <span className="inline-flex max-w-full items-center gap-1 truncate rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-800 ring-1 ring-inset ring-amber-200">
+        <AlertTriangle className="h-2.5 w-2.5 shrink-0" />
+        <span className="truncate">{t("badge.unassigned")}</span>
       </span>
     );
   }
@@ -733,10 +777,12 @@ function AssignmentBadge({
     row.drafted_proposal_code
   ) {
     return (
-      <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
-        {t("badge.drafted_as", {
-          proposal: row.drafted_proposal_code,
-        })}
+      <span className="inline-flex max-w-full items-center truncate rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+        <span className="truncate">
+          {t("badge.drafted_as", {
+            proposal: row.drafted_proposal_code,
+          })}
+        </span>
       </span>
     );
   }
@@ -752,58 +798,19 @@ function AssignmentBadge({
   if (single) {
     const project = single.project;
     return (
-      <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
-        {t("badge.assigned_to", {
-          project: project.code || project.name,
-        })}
+      <span className="inline-flex max-w-full items-center truncate rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
+        <span className="truncate">
+          {t("badge.assigned_to", {
+            project: project.code || project.name,
+          })}
+        </span>
       </span>
     );
   }
   return (
-    <span className="inline-flex items-center rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
+    <span className="inline-flex max-w-full items-center whitespace-nowrap rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-medium text-blue-800 ring-1 ring-inset ring-blue-200">
       {t("badge.assigned_to_n", { count: row.assignments.length })}
     </span>
-  );
-}
-
-
-// ---------------------------------------------------------------------------
-// Empty / loading / error states
-// ---------------------------------------------------------------------------
-
-
-function Skeleton({ label }: { label: string }) {
-  return (
-    <div className="flex items-center justify-center rounded-2xl bg-ink-50 p-12 text-sm text-ink-600">
-      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-      {label}
-    </div>
-  );
-}
-
-
-function EmptyState({
-  searching,
-  t,
-}: {
-  searching: boolean;
-  t: ReturnType<typeof useTranslations>;
-}) {
-  return (
-    <div className="flex flex-col items-center justify-center gap-2 rounded-2xl bg-ink-50 p-12 text-center text-sm text-ink-600">
-      <Inbox className="h-6 w-6 text-ink-400" />
-      <p>{searching ? t("list.empty_search") : t("list.empty")}</p>
-    </div>
-  );
-}
-
-
-function ErrorState({ message }: { message: string }) {
-  return (
-    <div className="flex items-start gap-2 rounded-2xl bg-danger/10 p-4 text-sm text-danger ring-1 ring-inset ring-danger/20">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-      <p>{message}</p>
-    </div>
   );
 }
 

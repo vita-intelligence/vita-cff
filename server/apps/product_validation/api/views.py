@@ -20,6 +20,7 @@ from apps.product_validation.api.serializers import (
 )
 from apps.product_validation.services import (
     InvalidValidationTransition,
+    SampleFormulationAlreadyValidated,
     SamplesIncomplete,
     TargetsIncomplete,
     TrialBatchNotInOrg,
@@ -88,6 +89,15 @@ class ValidationListCreateView(APIView):
             return Response(
                 {"trial_batch_id": ["validation_already_exists"]},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+        except SampleFormulationAlreadyValidated:
+            # 409 rather than 400 — the request is well-formed, it's
+            # the current state of the product that refuses the write.
+            # Matches the pattern used for other compliance-driven
+            # refusals (already-validated delete guard, etc.).
+            return Response(
+                {"trial_batch_id": ["sample_formulation_already_validated"]},
+                status=status.HTTP_409_CONFLICT,
             )
         return Response(
             ProductValidationReadSerializer(validation).data,

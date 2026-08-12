@@ -208,6 +208,20 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
     transaction.on_commit(_fire_email)
 
+    # Sample payments — push the fresh payment state to PSP so the
+    # CO detail's NPD-payment card reflects the approval + any
+    # attached invoice files. Silent-degrade, no-op for non-sample
+    # payments. Fires on commit so a rollback doesn't leave PSP
+    # thinking we approved when we didn't.
+    def _resync_sample() -> None:
+        from apps.psp.services import maybe_resync_sample_payment_to_psp
+
+        fresh = Payment.objects.filter(pk=payment_pk).first()
+        if fresh is not None:
+            maybe_resync_sample_payment_to_psp(payment=fresh)
+
+    transaction.on_commit(_resync_sample)
+
     return payment
 
 
@@ -236,6 +250,22 @@ def void_payment(*, payment: Payment, actor: Any, notes: str = "") -> Payment:
         before={"status": previous},
         after={"status": PaymentStatus.VOIDED, "notes": notes},
     )
+
+    # Sample payments — push the voided state to PSP so the CO
+    # detail card can render "Voided" instead of showing a paid
+    # invoice for an order that isn't happening. Same silent-degrade
+    # posture as the approve path.
+    payment_pk = payment.pk
+
+    def _resync_sample_on_void() -> None:
+        from apps.psp.services import maybe_resync_sample_payment_to_psp
+
+        fresh = Payment.objects.filter(pk=payment_pk).first()
+        if fresh is not None:
+            maybe_resync_sample_payment_to_psp(payment=fresh)
+
+    transaction.on_commit(_resync_sample_on_void)
+
     return payment
 
 

@@ -271,6 +271,8 @@ export function TrialBatchDetail({
             orgId={orgId}
             formulationId={formulationId}
             batchId={initialBatch.id}
+            kind={batch.kind}
+            formulationValidated={batch.formulation_validated}
             linkedPspMoUuid={batch.psp_manufacturing_order_uuid}
           />
           {pspIsLive ? (
@@ -821,12 +823,46 @@ function formatNumber(raw: string, maxDecimals: number): string {
   if (!raw) return "—";
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed)) return raw;
-  const fixed = parsed.toFixed(maxDecimals);
-  const [whole, fraction] = fixed.split(".");
+
+  // Sub-precision rescue: a genuine non-zero (e.g. 0.00000005 g of
+  // an ultra-trace active) that rounds to "0" at ``maxDecimals`` on
+  // a BOM cell reads as an empty line. Expand precision via
+  // ``toPrecision(2)`` so the operator sees the trace amount
+  // instead of a data-integrity trap. See ``formatCompanyNumber``
+  // in the PSP repo for the same pattern (both surfaces render the
+  // same recipes).
+  const rendered = renderDecimal(parsed, maxDecimals);
+  const [whole, fraction] = rendered.split(".");
   const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   if (!fraction) return grouped;
   const trimmed = fraction.replace(/0+$/, "");
   return trimmed ? `${grouped}.${trimmed}` : grouped;
+}
+
+/** ``toFixed(maxDecimals)`` normally; but if the result rounds a
+ *  non-zero input to "0", swap in a ``toPrecision(2)`` string with
+ *  scientific notation expanded to plain decimals. */
+function renderDecimal(n: number, maxDecimals: number): string {
+  const fixed = n.toFixed(maxDecimals);
+  const parsed = Number.parseFloat(fixed);
+  if (parsed === 0 && n !== 0) {
+    const precise = n.toPrecision(2);
+    if (Number.parseFloat(precise) === 0) return String(n);
+    // Expand ``5.0e-8`` → ``0.00000005`` so BOM cells don't render
+    // exponents (operator-hostile in a batching sheet).
+    const num = Number.parseFloat(precise);
+    if (!Number.isFinite(num)) return precise;
+    if (Math.abs(num) >= 1e-6) return num.toString();
+    const sign = num < 0 ? "-" : "";
+    const abs = Math.abs(num);
+    const expStr = abs.toExponential();
+    const digits = expStr.replace(/e[+-]?\d+$/, "").replace(".", "");
+    const exp = Number.parseInt(expStr.match(/e([+-]?\d+)$/)?.[1] ?? "0", 10);
+    if (exp >= 0) return sign + digits;
+    const zeros = "0".repeat(Math.max(0, -exp - 1));
+    return `${sign}0.${zeros}${digits.replace(/0+$/, "")}`;
+  }
+  return fixed;
 }
 
 

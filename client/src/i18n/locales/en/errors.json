@@ -84,6 +84,7 @@
     "invalid_dcp_carrier_item": "Pick DCP carrier items tagged with use_as = 'Bulking Agent'.",
     "ai_draft_oversize": "The AI couldn't fit the formulation in the chosen dosage form. Simplify the brief or pick a larger capsule / tablet size.",
     "formulation_has_dependencies": "This project still has trial batches attached. Delete the batches (and any linked QC validations) first, then try again.",
+    "sample_formulation_already_validated": "This product has already been validated on another batch. Sample runs inherit that validation — you don't need to (and can't) create a new QC record here.",
     "invalid_status_transition": "This document can't move to that state from where it is now. Refresh and try again.",
     "invalid_proposal_transition": "This proposal can't move to that state from where it is now. Refresh and try again.",
     "proposal_not_mutable": "This proposal has been approved and can no longer be edited or deleted.",

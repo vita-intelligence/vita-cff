@@ -24,7 +24,8 @@
   },
   "link": {
     "start": "Start validation",
-    "open": "Open validation"
+    "open": "Open validation",
+    "formulation_validated": "Formulation validated"
   },
   "signature": {
     "scientist": "Scientist sign-off",

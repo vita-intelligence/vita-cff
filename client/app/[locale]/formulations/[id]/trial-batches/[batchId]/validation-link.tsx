@@ -13,7 +13,10 @@ import {
   useCreateValidation,
   useValidationForBatch,
 } from "@/services/product_validation";
-import { useTrialBatchPspMoChain } from "@/services/trial_batches";
+import {
+  useTrialBatchPspMoChain,
+  type BatchKind,
+} from "@/services/trial_batches";
 
 
 /**
@@ -24,23 +27,42 @@ import { useTrialBatchPspMoChain } from "@/services/trial_batches";
  * page; when one does, it's a plain link so the user can peek at
  * the draft status from the URL (shareable to the R&D manager).
  *
- * Gating rule: when the trial batch has a linked PSP MO chain,
- * "Start validation" stays disabled until every MO in the chain
- * (finished-product parent + every semi-finished child) hits
+ * Gating rule (MO chain): when the trial batch has a linked PSP MO
+ * chain, "Start validation" stays disabled until every MO in the
+ * chain (finished-product parent + every semi-finished child) hits
  * ``status = completed``. You can't validate a product that hasn't
  * actually been produced yet. If no PSP MO is linked (legacy trial
  * batches or ones the scientist chose not to push), the CTA is
  * unrestricted — same as before.
+ *
+ * Gating rule (sample kind + formulation validated): sample batches
+ * for a formulation version that another batch has already validated
+ * hide the "Start" CTA entirely — customer-sample runs inherit the
+ * proof from the trial batch, so re-validating on every sample is
+ * paperwork with no compliance value. Trial batches always show the
+ * CTA (validation happens on trials, not samples). If a sample batch
+ * has its own validation record on it, the "Open" link still renders
+ * — that's data we don't want to hide behind the kind gate.
  */
 export function ValidationLink({
   orgId,
   formulationId,
   batchId,
+  kind,
+  formulationValidated = false,
   linkedPspMoUuid = null,
 }: {
   orgId: string;
   formulationId: string;
   batchId: string;
+  /** ``"trial"`` or ``"sample"``. Sample batches hide the Start CTA
+   *  when the formulation version is already validated — see the
+   *  gating rule in the docstring above. */
+  kind: BatchKind;
+  /** ``true`` when *another* batch of the same formulation version
+   *  has a passed validation. Comes from the batch read serializer;
+   *  only load-bearing when ``kind === "sample"``. */
+  formulationValidated?: boolean;
   /** PSP MO uuid from ``TrialBatch.psp_manufacturing_order_uuid``.
    *  When set, gates the Start button on the chain being fully
    *  completed. When null, no gate. */
@@ -99,6 +121,19 @@ export function ValidationLink({
         />
         {tV("link.open")}
       </Link>
+    );
+  }
+
+  // Sample batch for a formulation version that another batch has
+  // already validated → hide the Start CTA. Show a subtle chip so
+  // the operator understands why the button is missing (rather than
+  // wondering if the page is broken). Trial batches skip this gate.
+  if (kind === "sample" && formulationValidated) {
+    return (
+      <span className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-50 px-3 py-2 text-sm font-medium text-emerald-800 ring-1 ring-inset ring-emerald-200">
+        <ShieldCheck className="h-4 w-4" />
+        {tV("link.formulation_validated")}
+      </span>
     );
   }
 

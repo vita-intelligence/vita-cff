@@ -119,9 +119,39 @@ const paymentsEndpoints = {
     `/api/organizations/${orgId}/payments/${paymentId}/invoices/`,
   invoice: (orgId: string, paymentId: string, fileId: string) =>
     `/api/organizations/${orgId}/payments/${paymentId}/invoices/${fileId}/`,
+  pspInvoices: (orgId: string, paymentId: string) =>
+    `/api/organizations/${orgId}/payments/${paymentId}/psp-invoices/`,
   awaitingDeposits: (orgId: string) =>
     `/api/organizations/${orgId}/payments/awaiting-deposits/`,
 };
+
+/** One PSP-side ``CustomerInvoice`` mirrored onto the finance detail
+ *  page. Amounts arrive as strings so JS number imprecision never
+ *  touches money display. Draft invoices are surfaced too (with
+ *  their status chip) so the finance user sees the full picture. */
+export interface PspInvoiceDto {
+  readonly uuid: string;
+  readonly kind: string;
+  readonly status: string;
+  readonly currency_code: string;
+  readonly subtotal: string;
+  readonly tax_amount: string;
+  readonly grand_total: string;
+  readonly invoice_date: string | null;
+  readonly due_date: string | null;
+  readonly sent_at: string | null;
+  readonly cancelled_at: string | null;
+  readonly inserted_at: string;
+}
+
+export interface PspInvoicesResponse {
+  readonly invoices: ReadonlyArray<PspInvoiceDto>;
+  /** ``false`` when the payment kind doesn't map to a PSP CO uuid
+   *  (currently: deposit payments). FE hides the card entirely in
+   *  that case rather than showing "no invoices" which reads as an
+   *  operator problem. */
+  readonly supported: boolean;
+}
 
 
 export interface AwaitingDepositDto {
@@ -253,6 +283,17 @@ export async function fetchPayment(
 }
 
 
+export async function fetchPspInvoicesForPayment(
+  orgId: string,
+  paymentId: string,
+): Promise<PspInvoicesResponse> {
+  const { data } = await apiClient.get<PspInvoicesResponse>(
+    paymentsEndpoints.pspInvoices(orgId, paymentId),
+  );
+  return data;
+}
+
+
 export interface PaymentEditBody {
   readonly amount?: string;
   readonly currency?: string;
@@ -332,6 +373,14 @@ export const paymentsQueryKeys = {
     [...rootQueryKey, "payments", orgId, status ?? "all"] as const,
   detail: (orgId: string, paymentId: string) =>
     [...rootQueryKey, "payments", orgId, "detail", paymentId] as const,
+  pspInvoices: (orgId: string, paymentId: string) =>
+    [
+      ...rootQueryKey,
+      "payments",
+      orgId,
+      "psp-invoices",
+      paymentId,
+    ] as const,
   pendingProjects: (orgId: string, search: string) =>
     [
       ...rootQueryKey,
@@ -373,6 +422,22 @@ export function usePayment(
   return useQuery({
     queryKey: paymentsQueryKeys.detail(orgId, paymentId),
     queryFn: () => fetchPayment(orgId, paymentId),
+    enabled: Boolean(orgId && paymentId),
+  });
+}
+
+
+/** PSP-side CustomerInvoices for the CO this payment mirrors.
+ *  Silent-degrade on the backend so a PSP outage returns
+ *  ``{invoices: [], supported: true}`` instead of an error.
+ *  ``supported: false`` (deposit payments) → FE hides the card. */
+export function usePspInvoicesForPayment(
+  orgId: string,
+  paymentId: string,
+): UseQueryResult<PspInvoicesResponse> {
+  return useQuery({
+    queryKey: paymentsQueryKeys.pspInvoices(orgId, paymentId),
+    queryFn: () => fetchPspInvoicesForPayment(orgId, paymentId),
     enabled: Boolean(orgId && paymentId),
   });
 }

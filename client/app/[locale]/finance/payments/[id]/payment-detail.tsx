@@ -40,11 +40,13 @@ import {
   useDeletePaymentInvoice,
   usePatchPayment,
   usePayment,
+  usePspInvoicesForPayment,
   useUploadPaymentInvoice,
   useVoidPayment,
   type PaymentDto,
   type PaymentInvoiceDto,
   type PaymentStatus,
+  type PspInvoiceDto,
 } from "@/services/payments";
 
 
@@ -190,6 +192,14 @@ function Grid({
   canAssignOfficer: boolean;
 }) {
   const [editing, setEditing] = useState(false);
+  // PSP invoice mirror — lifted here so we can hide the manual
+  // "Attach invoice" reminder card when PSP already has invoices
+  // (the reminder is meaningless when the real invoice exists).
+  // Silent-degrades to ``supported: true, invoices: []`` on any
+  // failure so the manual card stays as fallback.
+  const pspInvoices = usePspInvoicesForPayment(orgId, payment.id);
+  const pspHasInvoices = (pspInvoices.data?.invoices.length ?? 0) > 0;
+
   if (editing) {
     return (
       <EditForm
@@ -300,14 +310,26 @@ function Grid({
         )}
       </Card>
 
+      {/* PSP invoices come first — they're the source of truth for
+          what got billed. When PSP has them, the manual "attach an
+          invoice PDF" reminder below is suppressed (would be noise).
+          Manual attachments only re-appear as a fallback when PSP
+          has nothing (integration off / no invoice raised yet) OR
+          when historic manual files exist. */}
       <div className="lg:col-span-3">
-        <InvoiceFilesCard
-          orgId={orgId}
-          paymentId={payment.id}
-          invoices={payment.invoices}
-          canEdit={canEdit}
-        />
+        <PspInvoicesCard orgId={orgId} paymentId={payment.id} />
       </div>
+
+      {(!pspHasInvoices || payment.invoices.length > 0) && (
+        <div className="lg:col-span-3">
+          <InvoiceFilesCard
+            orgId={orgId}
+            paymentId={payment.id}
+            invoices={payment.invoices}
+            canEdit={canEdit}
+          />
+        </div>
+      )}
 
       <Card title="Notes" className="lg:col-span-3">
         {payment.notes ? (
@@ -754,6 +776,129 @@ function InvoiceFilesCard({
       ) : null}
     </Card>
   );
+}
+
+
+/** PSP-side CustomerInvoices for the CO this payment mirrors.
+ *  Purely read-only — surfaces the "already invoiced on PSP" state
+ *  so the accountant doesn't have to switch to PSP to answer
+ *  "has an invoice been raised against this order?". Hidden
+ *  entirely on payment kinds that don't map to a PSP CO (deposits
+ *  today) via the backend's ``supported: false`` signal. */
+function PspInvoicesCard({
+  orgId,
+  paymentId,
+}: {
+  orgId: string;
+  paymentId: string;
+}) {
+  const query = usePspInvoicesForPayment(orgId, paymentId);
+
+  // Hide the card on unsupported payment kinds (deposit) — no CO
+  // to mirror, so the card would always read "no invoices" which
+  // looks like an operator problem it isn't.
+  if (query.data && !query.data.supported) return null;
+
+  const invoices = query.data?.invoices ?? [];
+
+  return (
+    <Card title="Invoices on PSP">
+      {query.isLoading ? (
+        <p className="inline-flex items-center gap-2 text-sm text-ink-500">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          Fetching from PSP…
+        </p>
+      ) : invoices.length === 0 ? (
+        <p className="text-sm italic text-ink-500">
+          No invoice raised on PSP for this order yet. Invoices generated
+          on PSP will show here automatically.
+        </p>
+      ) : (
+        <ul className="divide-y divide-ink-100">
+          {invoices.map((inv) => (
+            <PspInvoiceRow key={inv.uuid} invoice={inv} />
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+
+function PspInvoiceRow({ invoice }: { invoice: PspInvoiceDto }) {
+  const tone = _PSP_INVOICE_STATUS_TONE[invoice.status] ?? _PSP_INVOICE_STATUS_TONE.default;
+  const total = _formatPspMoney(invoice.grand_total, invoice.currency_code);
+  const dateLabel = invoice.invoice_date
+    ? new Date(invoice.invoice_date).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : "Draft";
+
+  return (
+    <li className="flex items-center gap-3 py-3">
+      <span className="grid size-9 shrink-0 place-items-center rounded-full bg-blue-50 text-blue-700">
+        <FileText className="h-4 w-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-semibold text-ink-1000">{total}</p>
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ring-1 ring-inset ${tone}`}
+          >
+            {invoice.status.replace(/_/g, " ")}
+          </span>
+          {invoice.kind !== "invoice" ? (
+            <span className="inline-flex rounded-full bg-ink-100 px-2 py-0.5 text-[10px] font-medium text-ink-700">
+              {invoice.kind.replace(/_/g, " ")}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-0.5 text-[11px] text-ink-500">
+          {dateLabel}
+          {invoice.due_date ? (
+            <>
+              {" · Due "}
+              {new Date(invoice.due_date).toLocaleDateString("en-GB", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </>
+          ) : null}
+        </p>
+      </div>
+    </li>
+  );
+}
+
+
+// Status → chip tone. Mirrors PSP's own invoice status palette so
+// an operator crossing between apps sees the same colours.
+const _PSP_INVOICE_STATUS_TONE: Record<string, string> = {
+  draft: "bg-ink-100 text-ink-700 ring-ink-200",
+  sent: "bg-sky-50 text-sky-800 ring-sky-200",
+  paid: "bg-emerald-50 text-emerald-800 ring-emerald-200",
+  cancelled: "bg-rose-50 text-rose-800 ring-rose-200",
+  default: "bg-ink-100 text-ink-700 ring-ink-200",
+};
+
+
+// Currency-code + amount formatter. PSP ships amounts as decimal
+// strings (never touched by JS math); we render them verbatim to
+// avoid precision drift, prefixed with the currency's symbol where
+// we have a mapping.
+const _PSP_CURRENCY_SYMBOLS: Record<string, string> = {
+  GBP: "£",
+  EUR: "€",
+  USD: "$",
+};
+
+
+function _formatPspMoney(amount: string, currency: string): string {
+  const sym = _PSP_CURRENCY_SYMBOLS[currency] || currency;
+  return `${sym} ${amount}`;
 }
 
 

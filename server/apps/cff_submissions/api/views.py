@@ -156,6 +156,16 @@ class CFFListView(APIView):
         # :class:`CFFSyncStatusView` so the client can ``setQueryData``
         # the syncStatus cache directly from this payload.
         response.data["sync"] = _build_sync_payload(self.organization)
+        # Per-state totals so the pipeline board's tab badges can
+        # render without a second round-trip. Each column will
+        # fire its own state-filtered query for the actual rows;
+        # this block lets every response answer "how many total in
+        # each bucket?" so any column's fetch keeps every badge
+        # in step. Scoped by the current ``search`` param so a
+        # narrowing search updates the badges too.
+        response.data["counts"] = _compute_state_counts(
+            self.organization, request
+        )
         return response
 
     def _filter(self, queryset, request: Request):
@@ -619,6 +629,46 @@ class CFFSyncStatusView(APIView):
             _build_sync_payload(self.organization),
             status=status.HTTP_200_OK,
         )
+
+
+def _compute_state_counts(organization: Any, request: Request) -> dict[str, int]:
+    """Return ``{unassigned, assigned, rejected}`` totals for the
+    pipeline tab badges.
+
+    Same ``search`` filter the list view applies so a narrowing
+    query updates the badges alongside the visible rows. Each
+    branch is an index-hitting COUNT — three cheap queries per
+    inbox render, not one for every card.
+    """
+
+    base = CFFSubmission.objects.filter(organization=organization)
+    search = (request.query_params.get("search") or "").strip()
+    if search:
+        base = base.filter(raw_payload__icontains=search)
+
+    # Mirror the branching logic in ``CFFListView._filter`` so a
+    # tab click on the FE lands on the same rows the badge
+    # promised. RTG submissions with an auto-drafted proposal
+    # count as ``assigned``; anything with an ``assignments`` link
+    # or a ``drafted_proposal`` counts as assigned.
+    unassigned = base.filter(
+        assignments__isnull=True,
+        rejected_at__isnull=True,
+        drafted_proposal__isnull=True,
+    ).count()
+    assigned = (
+        base.filter(
+            Q(assignments__isnull=False) | Q(drafted_proposal__isnull=False)
+        )
+        .distinct()
+        .count()
+    )
+    rejected = base.filter(rejected_at__isnull=False).count()
+    return {
+        "unassigned": unassigned,
+        "assigned": assigned,
+        "rejected": rejected,
+    }
 
 
 def _build_sync_payload(organization: Any) -> dict[str, Any]:
