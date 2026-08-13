@@ -69,6 +69,7 @@
     "psp_unreachable": "Couldn't reach PSP. Check the base URL and your network.",
     "psp_rate_limited": "PSP rate limit reached. Wait a moment and try again.",
     "psp_mirror_item_not_found": "PSP returned no row for the picked item. Refresh the picker and try again.",
+    "psp_create_manufacturing_order_failed": "PSP couldn't create the manufacturing order. Check the PSP backend logs for the exact reason — usually a missing item mapping, an unmet BOM/routing prerequisite, or a validation constraint on the batch.",
     "mrpeasy_invalid_config": "MRPEasy config is missing a required field. Re-enter the key + secret and save.",
     "dynamics_auth_failed": "Azure AD rejected the credentials. Double-check the tenant ID, client ID, and secret.",
     "dynamics_unreachable": "Couldn't reach the Dataverse endpoint. Verify the Dataverse URL and your network.",
