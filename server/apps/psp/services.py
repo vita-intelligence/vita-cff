@@ -926,6 +926,40 @@ class PspClient:
         dispatch = response.get("dispatch")
         return dispatch if isinstance(dispatch, dict) else None
 
+    def confirm_customer_order_delivery(
+        self, co_uuid: Any, *, recipient_signatory: str, delivery_notes: str = ""
+    ) -> dict | None:
+        """POST ``/api/integration/customer-orders/:uuid/dispatch/confirm-delivery``.
+
+        Customer-driven POD. Body:
+
+            {"recipient_signatory": "Alex Baker",
+             "delivery_notes": "Arrived intact"}
+
+        Returns PSP's ``{"dispatch": {status, delivered_at, ...}}``
+        response body on success, or ``None`` on any failure (already
+        delivered, invalid state, transport). Callers should re-read
+        the sample detail after a success so the FE Dispatch card
+        picks up the new ``delivered`` state.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        signatory = (recipient_signatory or "").strip()
+        if not cleaned or not signatory:
+            return None
+
+        payload: dict[str, str] = {"recipient_signatory": signatory}
+        notes = (delivery_notes or "").strip()
+        if notes:
+            payload["delivery_notes"] = notes
+
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/dispatch/confirm-delivery",
+            method="POST",
+            body=payload,
+        )
+        return response if isinstance(response, dict) else None
+
     def fetch_customer_order_dispatch_photo(
         self, co_uuid: Any, file_uuid: Any
     ) -> tuple[bytes, str, str] | None:
@@ -4952,6 +4986,45 @@ def get_psp_dispatch_for_payment(*, payment: Any) -> dict | None:
     client = _client_factory(config)
     try:
         return client.get_customer_order_dispatch(co_uuid)
+    except PspError:
+        return None
+
+
+def confirm_psp_dispatch_delivery_for_payment(
+    *, payment: Any, recipient_signatory: str, delivery_notes: str = ""
+) -> dict | None:
+    """Customer-driven POD. Forwards to PSP's
+    ``confirm_delivery`` integration endpoint for this payment's CO.
+
+    Returns PSP's response dict on success or ``None`` on any
+    failure — the caller (portal view) turns that into a 502
+    response so the customer sees a clear "couldn't reach fulfilment"
+    message rather than a silent no-op. Ownership is enforced one
+    layer up at the portal view (payment must belong to the account's
+    Customer id union).
+    """
+
+    if payment is None:
+        return None
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return None
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.confirm_customer_order_delivery(
+            co_uuid,
+            recipient_signatory=recipient_signatory,
+            delivery_notes=delivery_notes,
+        )
     except PspError:
         return None
 
