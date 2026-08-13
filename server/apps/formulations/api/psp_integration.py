@@ -286,6 +286,41 @@ class LatestValidationSheetHtmlView(APIView):
             .first()
         )
         chosen = passed or failed
+
+        # Formulation-level fallback. A sample MO ships against a
+        # freshly-spawned sample TrialBatch that has no validation of
+        # its own — but the underlying formulation was already
+        # validated on a PREVIOUS trial batch (that's what let it be
+        # sold as a sample in the first place). Fall through to the
+        # latest ``passed`` validation on ANY trial batch of the same
+        # formulation so the PSP run page shows the compliance
+        # artefact instead of a "no validation" stub.
+        #
+        # Only ``passed`` at this stage — a stale ``failed`` from a
+        # prior batch isn't the compliance evidence PSP needs, and
+        # showing it would misrepresent the current formulation as
+        # unfit for a sample run. If nothing passed exists at all the
+        # 404 path still fires below.
+        if chosen is None:
+            from apps.trial_batches.models import TrialBatch
+
+            formulation_id = (
+                TrialBatch.objects
+                .filter(pk=raw_uuid)
+                .values_list("formulation_version__formulation_id", flat=True)
+                .first()
+            )
+            if formulation_id:
+                fallback_qs = ProductValidation.objects.filter(
+                    trial_batch__formulation_version__formulation_id=formulation_id,
+                    status="passed",
+                )
+                if token is not None:
+                    fallback_qs = fallback_qs.filter(
+                        organization=token.organization
+                    )
+                chosen = fallback_qs.order_by("-updated_at").first()
+
         if chosen is None:
             raise NotFound("no_validation")
 
