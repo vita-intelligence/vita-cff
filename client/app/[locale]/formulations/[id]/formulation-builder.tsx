@@ -6143,22 +6143,137 @@ export function FormulationBuilder({
             value={metadata.serving_size}
             onChange={(v) => setMetadata({ ...metadata, serving_size: v })}
             disabled={!canWrite}
-            hint={tFormulations(
-              `fields.serving_size_hint_${metadata.dosage_form}` as
+            hint={(() => {
+              // Static hint per dosage form — same pattern as
+              // servings_per_pack. Missing key silently falls back
+              // to the default so a new dosage form doesn't crash.
+              const baseKey = `fields.serving_size_hint_${metadata.dosage_form}` as
                 | "fields.serving_size_hint_capsule"
                 | "fields.serving_size_hint_tablet"
                 | "fields.serving_size_hint_gummy"
                 | "fields.serving_size_hint_powder"
                 | "fields.serving_size_hint_liquid"
-                | "fields.serving_size_hint_default",
-            )}
+                | "fields.serving_size_hint_default";
+              let base: string;
+              try {
+                base = tFormulations(baseKey);
+              } catch {
+                base = tFormulations("fields.serving_size_hint_default");
+              }
+
+              // Echoing the raw number with its unit label kills the
+              // "60 what?" foot-gun scientists hit when the field is
+              // just a bare number. Only appears when the value is a
+              // positive number (skips empty / zero inputs).
+              // Singular / plural pair per form so "= 1 capsule per
+              // serving" reads correctly (not "= 1 capsules").
+              const n = Number(metadata.serving_size);
+              if (!Number.isFinite(n) || n <= 0) return base;
+              const form = metadata.dosage_form;
+              // Powder is scoops; other counted forms follow their
+              // form's noun. Liquid stays in mL. Anything unknown
+              // (other_solid, future forms) skips the echo.
+              const suffixForm =
+                form === "capsule" ||
+                form === "tablet" ||
+                form === "gummy" ||
+                form === "powder" ||
+                form === "liquid"
+                  ? form
+                  : null;
+              if (!suffixForm) return base;
+              const suffixKey = (n === 1
+                ? `fields.serving_size_computed_${suffixForm}_one`
+                : `fields.serving_size_computed_${suffixForm}_other`) as
+                | "fields.serving_size_computed_capsule_one"
+                | "fields.serving_size_computed_capsule_other"
+                | "fields.serving_size_computed_tablet_one"
+                | "fields.serving_size_computed_tablet_other"
+                | "fields.serving_size_computed_gummy_one"
+                | "fields.serving_size_computed_gummy_other"
+                | "fields.serving_size_computed_powder_one"
+                | "fields.serving_size_computed_powder_other"
+                | "fields.serving_size_computed_liquid_one"
+                | "fields.serving_size_computed_liquid_other";
+              let suffix: string | null = null;
+              try {
+                suffix = tFormulations(suffixKey, {
+                  n: String(Number.isInteger(n) ? n : n),
+                });
+              } catch {
+                suffix = null;
+              }
+              return suffix ? `${base} ${suffix}` : base;
+            })()}
           />
           <NumberField
             label={tFormulations("fields.servings_per_pack")}
             value={metadata.servings_per_pack}
             onChange={(v) => setMetadata({ ...metadata, servings_per_pack: v })}
             disabled={!canWrite}
-            hint={tFormulations("fields.servings_per_pack_hint")}
+            hint={(() => {
+              // Base hint: dosage-form-specific copy so "60" gets a
+              // unit context (capsules / gummies / mL / g per pack)
+              // instead of the ambiguous "60 servings" that let
+              // scientists set nonsense values via random clicks.
+              // Falls back to the generic hint for legacy /
+              // other-solid forms.
+              const baseHintKey = `fields.servings_per_pack_hint_${metadata.dosage_form}` as
+                | "fields.servings_per_pack_hint_capsule"
+                | "fields.servings_per_pack_hint_tablet"
+                | "fields.servings_per_pack_hint_gummy"
+                | "fields.servings_per_pack_hint_powder"
+                | "fields.servings_per_pack_hint_liquid"
+                | "fields.servings_per_pack_hint_other_solid";
+              let baseHint: string;
+              try {
+                baseHint = tFormulations(baseHintKey);
+              } catch {
+                baseHint = tFormulations("fields.servings_per_pack_hint");
+              }
+
+              // Live-computed pack total per dosage form:
+              //   capsule / tablet / gummy: spp × units_per_serving
+              //                            = total counts per pack
+              //   liquid:   spp × serving_size (mL) = mL per bottle
+              //   powder:   spp × target_fill_weight_mg / 1000
+              //                            = g per tub (i18n label is
+              //                              already " g per tub")
+              // Skips when either input is missing / zero — no point
+              // showing a hint that reads "= 0 mL per bottle".
+              const spp = Number(metadata.servings_per_pack);
+              const rawPerServing =
+                metadata.dosage_form === "powder"
+                  ? Number(metadata.target_fill_weight_mg) / 1000
+                  : Number(metadata.serving_size);
+              const total =
+                Number.isFinite(spp) &&
+                spp > 0 &&
+                Number.isFinite(rawPerServing) &&
+                rawPerServing > 0
+                  ? spp * rawPerServing
+                  : null;
+              const computedKey =
+                total !== null
+                  ? (`fields.servings_per_pack_computed_${metadata.dosage_form}` as
+                      | "fields.servings_per_pack_computed_capsule"
+                      | "fields.servings_per_pack_computed_tablet"
+                      | "fields.servings_per_pack_computed_gummy"
+                      | "fields.servings_per_pack_computed_powder"
+                      | "fields.servings_per_pack_computed_liquid")
+                  : null;
+              let computed: string | null = null;
+              if (computedKey && total !== null) {
+                try {
+                  computed = tFormulations(computedKey, {
+                    total: String(Number.isInteger(total) ? total : total.toFixed(2)),
+                  });
+                } catch {
+                  computed = null;
+                }
+              }
+              return computed ? `${baseHint} ${computed}` : baseHint;
+            })()}
           />
           <TextField
             label={tFormulations("fields.appearance")}

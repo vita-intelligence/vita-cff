@@ -192,6 +192,29 @@ class PspNotConfigured(Exception):
     code = "psp_not_configured"
 
 
+class PspSampleCoSyncMissingItem(PspError):
+    """A sample trial batch tried to sync its customer-order to PSP
+    but the parent formulation isn't linked to a PSP finished-product
+    item yet (``Formulation.psp_finished_product_uuid IS NULL``).
+
+    Loud fail rather than silent-degrade: the MO create that follows
+    would also error (``sample_co_not_found`` from PSP) but with a
+    generic "sync the sample CO first" message that doesn't point
+    at the real cause. Raising here lets the API layer surface a
+    scientist-actionable "link the formulation to a PSP finished
+    product first" hint on the trial-batch page.
+    """
+
+    code = "psp_sample_co_sync_missing_item"
+
+    def __init__(self, *, formulation_pk: Any) -> None:
+        self.formulation_pk = formulation_pk
+        super().__init__(
+            f"Formulation {formulation_pk} has no psp_finished_product_uuid — "
+            f"link it to a PSP finished product before spawning a sample MO."
+        )
+
+
 class PspPackagingComboItemsNotMirrored(PspError):
     """Trial batch's packaging combo has one or more items that
     haven't been mirrored to PSP. The MO create would silently
@@ -2775,15 +2798,20 @@ def sync_sample_customer_order_to_psp(
 
     item_uuid = getattr(formulation, "psp_finished_product_uuid", None)
     if not item_uuid:
-        # Without the PSP item uuid the CO can't get a line and the
-        # follow-up MO push will fail its own gate too. Bail early
-        # with a warning rather than half-provisioning.
+        # Loud fail — the follow-up MO push would silently error with
+        # ``sample_co_not_found`` (misleading; the CO simply doesn't
+        # exist yet because the sync silently returned None). Raising
+        # a typed exception lets the API layer surface a scientist-
+        # actionable "link the formulation to a PSP finished product
+        # first" hint. The caller ``create_psp_manufacturing_order_for_trial_batch``
+        # doesn't catch this — it propagates through the API's
+        # PspError handler and lands on the scientist's toast.
         logger.warning(
             "sync_sample_customer_order_to_psp: formulation %s has no "
-            "psp_finished_product_uuid; skipping sample CO sync",
+            "psp_finished_product_uuid; raising for API layer to surface",
             formulation.pk,
         )
-        return None
+        raise PspSampleCoSyncMissingItem(formulation_pk=formulation.pk)
 
     try:
         config = get_psp_config(organization=organization)
@@ -3850,6 +3878,48 @@ def _stage_servings(stage: Any) -> Decimal:
     return value if value > 0 else Decimal("1")
 
 
+def _finished_stage_servings(formulation: Any) -> Decimal:
+    """Servings-per-output-unit for the FINISHED stage — always the
+    formulation's ``servings_per_pack``.
+
+    This helper enforces the contract that "1 finished stock unit on
+    PSP == 1 pack (bottle / pouch / jar) on NPD." A finished stage's
+    ``servings_per_output_unit`` field is redundant with
+    ``servings_per_pack`` — they describe the same physical
+    quantity ("how many servings inside one shippable pack"). The
+    stage field was a per-stage-configurable escape hatch that
+    scientists never touch, so it usually defaults to 1 → PSP thinks
+    the MO produces N capsules instead of N packs and every
+    downstream number looks 60× too big.
+
+    By always deriving from ``servings_per_pack`` at push-time we:
+    * make ``mo.quantity`` land on PSP as an honest pack count
+      (15 for a 15-bottle sample, 0.01667 for a 1-capsule trial);
+    * make BOM lines scale per-pack (60 caps × 30 mg = 1800 mg
+      5-HTP per bottle);
+    * eliminate the "must set SPOU manually on the finished stage"
+      foot-gun forever.
+
+    Semi-finished stages keep their own ``_stage_servings`` — the
+    yield ratio there is a legitimate per-stage decision (a bulk-
+    powder intermediate at 1 kg → N bottles depending on fill).
+
+    Fallback to 1 for truly-flat formulations (bulk products with no
+    pack concept). ``servings_per_pack = None`` shouldn't happen in
+    practice for RTG products, but the fallback keeps the divisor
+    safe on legacy rows.
+    """
+
+    raw = getattr(formulation, "servings_per_pack", None)
+    if raw is None:
+        return Decimal("1")
+    try:
+        value = Decimal(str(raw))
+    except (InvalidOperation, TypeError, ValueError):
+        return Decimal("1")
+    return value if value > 0 else Decimal("1")
+
+
 def _push_staged_cascade(
     *,
     client: PspClient,
@@ -3951,7 +4021,18 @@ def _push_staged_cascade(
         # The override is what makes NPD's stage card display and
         # PSP's per-stage BOM show the same list — otherwise the
         # FE synthesizes excipients that never reach PSP.
-        stage_servings = _stage_servings(stage)
+        #
+        # SPOU selection: finished stages are always keyed off
+        # ``formulation.servings_per_pack`` (the "1 pack = 1 finished
+        # stock unit" contract). Semi-finished stages use their own
+        # per-stage yield ratio. Reading the finished stage's stored
+        # SPOU used to leak the field's default of 1 into PSP,
+        # producing per-capsule BOM scale instead of per-pack.
+        stage_servings = (
+            _finished_stage_servings(formulation)
+            if is_finished
+            else _stage_servings(stage)
+        )
         override = None
         if stage_bom_overrides is not None:
             override = stage_bom_overrides.get(str(stage.id))
@@ -4483,24 +4564,31 @@ class PspCreateFinishedProductFailed(Exception):
 
 def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
     """Translate a trial batch's planned scale into PSP's
-    ``mo.quantity`` — expressed in the finished-product's stock unit.
+    ``mo.quantity`` — always expressed in PACKS (finished stock units).
 
-    Two conversions stack:
+    Contract:
 
-    1. The trial batch stores ``batch_size_units`` in one of two
-       flavours (``BatchKind``):
-       * ``sample`` — user typed a pack count. Total-servings intent
-         is ``batch_size_units × formulation.servings_per_pack``.
-       * ``trial`` — user typed the raw servings count. Intent is
-         ``batch_size_units`` as-is (bench-scale unit count).
-    2. PSP's BOM lines are per-1-stock-unit-of-finished. If the
-       finished stage sets ``servings_per_output_unit = N``, then one
-       stock unit already bundles N servings, so ``mo.quantity =
-       target_servings / N``.
+    * ``sample`` kind — ``batch_size_units`` is already in packs.
+      User types "15" → PSP MO produces 15 packs. Direct passthrough.
+    * ``trial`` kind — ``batch_size_units`` is in individual servings
+      (capsules / gummies / doses). User types "1" → PSP MO produces
+      ``1 / servings_per_pack`` packs = fractional pack for bench-
+      scale runs. Matches the operator's mental model: a 1-capsule
+      trial for a 60-cap bottle produces 0.01667 packs; a 1-capsule
+      trial for a 10-cap bottle produces 0.1 packs.
 
-    Rounding: caller quantises to 6 dp. Zero / null anywhere
-    collapses to ``batch_size_units`` (the raw number) so the trial
-    still MOs rather than 400-ing on missing config.
+    Both branches route through the same divisor
+    (``_finished_stage_servings``) which is ALWAYS the formulation's
+    ``servings_per_pack`` — the finished stage's stored SPOU is
+    ignored because it's redundant with ``servings_per_pack`` and
+    defaults to 1 (the historical foot-gun that produced
+    ``mo.quantity = 900`` for a 15-bottle MO).
+
+    Cases collapse to:
+
+    * sample: ``batch_size × servings_per_pack ÷ servings_per_pack
+              = batch_size`` (exact packs)
+    * trial:  ``batch_size ÷ servings_per_pack`` (fractional packs)
     """
 
     batch_size_raw = getattr(trial_batch, "batch_size_units", None)
@@ -4518,40 +4606,29 @@ def _derive_psp_mo_quantity(trial_batch: Any) -> Decimal:
             "trial_batch.batch_size_units must be positive"
         )
 
-    # Step 1: convert to target servings.
-    kind = getattr(trial_batch, "kind", None) or "sample"
     formulation = trial_batch.formulation_version.formulation
-    servings_per_pack = getattr(formulation, "servings_per_pack", None)
+    servings_per_pack = _finished_stage_servings(formulation)
+
+    kind = getattr(trial_batch, "kind", None) or "sample"
     if kind == "sample":
-        multiplier = Decimal(str(servings_per_pack or 1))
-        if multiplier <= 0:
-            multiplier = Decimal("1")
-        target_servings = batch_size * multiplier
-    else:  # "trial" — batch_size is already in individual servings
+        # ``batch_size`` already in packs. target_servings is only
+        # computed for symmetry with the ``trial`` branch — the
+        # division below collapses it back to ``batch_size``.
+        target_servings = batch_size * servings_per_pack
+    else:  # "trial" — batch_size is in individual servings
         target_servings = batch_size
 
-    # Step 2: divide by servings-per-stock-unit (per finished stage).
-    finished_stage = (
-        formulation.stages.filter(psp_item_type="finished_product")
-        .order_by("-sort_order")
-        .first()
-    )
-    if finished_stage is None:
-        divisor = Decimal("1")
-    else:
-        try:
-            divisor = Decimal(
-                str(finished_stage.servings_per_output_unit or 1)
-            )
-        except (InvalidOperation, TypeError, ValueError):
-            divisor = Decimal("1")
-        if divisor <= 0:
-            divisor = Decimal("1")
-
-    return target_servings / divisor
+    return target_servings / servings_per_pack
 
 
-def _build_packaging_overlay(trial_batch: Any, kind: str) -> Any:
+def _build_packaging_overlay(
+    trial_batch: Any,
+    kind: str,
+    *,
+    organization: Any,
+    actor: Any,
+    client: Any,
+) -> Any:
     """Translate ``TrialBatch.packaging_combo`` into the payload PSP
     expects on the MO create endpoint.
 
@@ -4560,18 +4637,22 @@ def _build_packaging_overlay(trial_batch: Any, kind: str) -> Any:
 
     * ``None`` — no overlay. Trial-kind batches always hit this branch
       (bench-scale, packaging not applicable) so the MO consumes the
-      finished item's default packaging BOM lines. Also the fallback
-      for sample batches where a combo was picked but every item is
-      un-mirrored (extremely unusual — if PSP hasn't seen any of
-      the items we can't overlay, so we defer to default packaging).
+      finished item's default packaging BOM lines.
     * ``[]`` — sample with no combo. Overlay is active + empty; PSP
       skips packaging-typed BOM lines and books nothing in their
       place (loose bulk output — same as trial batches produced
       before the sample split).
-    * populated list — combo picked, at least one item mirrored to
-      PSP. Each row is ``{"item_uuid": <psp uuid>, "quantity": str}``.
-      Items missing ``psp_source_uuid`` are dropped from the list
-      (silent skip; audit lives on the NPD combo row).
+    * populated list — combo picked. Each row is
+      ``{"item_uuid": <psp uuid>, "quantity": str}``.
+
+    Unmirrored items (NPD-native rows imported before PSP was
+    connected, or created directly in NPD's local catalogue) are
+    reverse-mirrored on the fly via :func:`ensure_psp_item` — a
+    push-create against PSP that returns the freshly-minted PSP uuid
+    and pins it on the local row. This keeps legacy combos flowing
+    through the overlay as if they'd always been PSP-native, so the
+    scientist doesn't have to re-key each packaging item on PSP
+    before a sample MO can run.
     """
     if kind == "trial":
         return None
@@ -4580,33 +4661,98 @@ def _build_packaging_overlay(trial_batch: Any, kind: str) -> Any:
     if combo is None:
         return []
 
+    # Contract shift: overlay ``quantity`` is now the ABSOLUTE TOTAL
+    # for the whole MO — not a per-mo-unit multiplier.
+    #
+    # Previous design multiplied per-unit qty × mo.quantity on PSP,
+    # which forced repeating-decimal drift for count items (a "1 pouch
+    # per pack" combo on 900 capsules with 60/pack computed as
+    # 0.0166666667 × 900 = 15.00000003 — an unbookable phantom
+    # shortage). Sending the total straight — and ceiling for count
+    # items — kills the drift AND matches the physical reality: you
+    # can't book 15.03 bottles.
+    #
+    # Total math:
+    #   total_packs = ceil(mo.quantity_in_stock_units / stock_units_per_pack)
+    #                   for sample batches, batch_size_units is already
+    #                   in packs so total_packs = batch_size_units.
+    #   row_total   = per_pack_qty × total_packs
+    #                   ceil-ed to whole units when the item's stock UoM
+    #                   is a count (packaging, pcs, each). Decimal
+    #                   items (rare in packaging combos — a bulk
+    #                   silica gel by weight, say) keep exact math.
+    from decimal import Decimal, InvalidOperation, ROUND_CEILING
+
+    # Sample batches: batch_size_units IS the pack count. Trial
+    # batches don't hit this branch (kind == "trial" returned above),
+    # but if the enum ever grows we fall back to 1 pack so any
+    # divergent behaviour is loud not silent.
+    try:
+        total_packs = Decimal(str(getattr(trial_batch, "batch_size_units", 1) or 1))
+    except (InvalidOperation, TypeError, ValueError):
+        total_packs = Decimal("1")
+    if total_packs <= 0:
+        total_packs = Decimal("1")
+
     payload: list[dict[str, Any]] = []
-    missing: list[str] = []
+    unresolved: list[str] = []
     for row in combo.items.select_related("item").all():
         item = row.item
         psp_uuid = getattr(item, "psp_source_uuid", None) if item else None
+        if not psp_uuid and item is not None:
+            # Reverse-mirror on demand — pushes the local packaging /
+            # raw-material row to PSP, pins the returned uuid on
+            # ``item.psp_source_uuid``, and returns it. Any failure
+            # (PSP unreachable, name conflict fallback couldn't
+            # resolve, etc.) returns ``None`` and the row surfaces as
+            # unresolved below — no silent drop.
+            psp_uuid = ensure_psp_item(
+                organization=organization, actor=actor, item=item, client=client
+            )
         if not psp_uuid:
-            # The catalogue item was never mirrored to PSP. Refuse
-            # loudly rather than silently drop the row — a sample
-            # meant to ship in pouches that runs without pouches is
-            # a compliance failure and a very confusing UX. Collect
-            # every missing item into one error so the scientist
-            # fixes them in a single trip to Settings → Items.
-            missing.append(
+            unresolved.append(
                 (item.name if item and item.name else "(unnamed item)")
             )
             continue
+
+        try:
+            per_pack_qty = Decimal(str(row.quantity or 0))
+        except (InvalidOperation, TypeError, ValueError):
+            per_pack_qty = Decimal("0")
+
+        raw_total = per_pack_qty * total_packs
+
+        # Count items get ceil-rounded to whole units — you can't book
+        # half a pouch. Detection heuristic: the local item's ``unit``
+        # is count-like (pcs / each / dozen / empty) OR the parent
+        # combo item is packaging (the overwhelmingly common case).
+        # If we ever add liquid packaging (e.g. a shrink-wrap volume
+        # in mL), the else branch preserves the exact decimal.
+        unit_symbol = str(getattr(item, "unit", "") or "").strip().lower()
+        count_like = unit_symbol in ("", "pcs", "each", "ea", "dozen", "pack")
+
+        if count_like:
+            row_total = raw_total.to_integral_value(rounding=ROUND_CEILING)
+        else:
+            row_total = raw_total
+
         payload.append(
             {
                 "item_uuid": str(psp_uuid),
-                "quantity": str(row.quantity),
+                "quantity": str(row_total),
             }
         )
 
-    if missing:
+    if unresolved:
+        # Reverse-mirror couldn't pin a PSP uuid on one or more items —
+        # keep the loud fail so the scientist knows the sample isn't
+        # about to ship without packaging. This branch only fires on
+        # true edge cases now (PSP outage during MO create, or an item
+        # that's malformed enough that PSP refuses even the reverse-
+        # mirror), so the message stays as-is.
         raise PspPackagingComboItemsNotMirrored(
             combo_name=combo.name or "(unnamed combo)",
-            missing_item_names=missing,
+            missing_item_names=unresolved,
         )
 
     return payload
@@ -4734,14 +4880,20 @@ def create_psp_manufacturing_order_for_trial_batch(
     #                                        quantity}``, resolved to
     #                                        PSP's mirrored item uuid
     #
-    # A combo whose item is missing ``psp_source_uuid`` (never
-    # mirrored to PSP) now raises ``PspPackagingComboItemsNotMirrored``
-    # rather than silently dropping. Previous behaviour left the
-    # scientist unaware that their sample was about to ship without
-    # packaging — a compliance failure surfaced only at customer
-    # complaint time. Loud fail forces a Settings → Items sync
-    # before the batch runs.
-    packaging_overlay = _build_packaging_overlay(trial_batch, kind)
+    # Client is built up-front so ``_build_packaging_overlay`` can
+    # reverse-mirror unmirrored combo items through the same
+    # connection instead of spinning up its own. Reverse-mirror
+    # is the swap for the previous "raise on missing psp_source_uuid"
+    # behaviour — legacy combos with NPD-native items now flow
+    # through as if they'd always been PSP-native.
+    client = _client_factory(config)
+    packaging_overlay = _build_packaging_overlay(
+        trial_batch,
+        kind,
+        organization=organization,
+        actor=actor,
+        client=client,
+    )
 
     # Sample-fulfilment CO sync: for sample-kind batches with a
     # source payment (came from the R&D /samples fulfilment queue),
@@ -4764,7 +4916,6 @@ def create_psp_manufacturing_order_for_trial_batch(
         # the MO orphaned.
         npd_sample_payment_uuid = str(source_payment_id)
 
-    client = _client_factory(config)
     try:
         mo = client.create_manufacturing_order(
             item_uuid=resolved_item_uuid,
@@ -5294,6 +5445,190 @@ def create_psp_finished_product(
         },
     )
     return response
+
+
+#: Local catalogue slug → PSP ``item_type`` mapping for the reverse-
+#: mirror path. Only slugs that map to a PSP-side type are eligible;
+#: custom org catalogues stay local (there's no PSP twin to push to).
+_PSP_ITEM_TYPE_FOR_SLUG: dict[str, str] = {
+    "raw_materials": "raw_material",
+    "packaging": "packaging",
+    "consumables": "consumable",
+}
+
+
+def ensure_psp_item(
+    *,
+    organization: Any,
+    actor: Any,
+    item: Any,
+    client: Any | None = None,
+) -> str | None:
+    """Guarantee the local ``catalogues.Item`` has a corresponding row
+    on PSP + return that PSP uuid.
+
+    Fast path: if ``item.psp_source_uuid`` is already set, return it
+    without a round-trip. Otherwise push-create the item on PSP via
+    ``POST /api/integration/items`` (idempotent by
+    ``external_sku=NPD-<prefix>-<local uuid>``), pin the returned
+    uuid on ``item.psp_source_uuid``, and return it.
+
+    Reverse-mirror is the opposite direction of :func:`mirror_psp_item`
+    (which pulls PSP → local). It's the escape hatch for legacy NPD-
+    native items — rows imported before PSP was connected, or created
+    directly against NPD's local catalogue — so downstream flows
+    (packaging overlay, formulation sync, MO create) can find a PSP
+    uuid on every referenced item without asking the operator to
+    re-key each one on PSP by hand.
+
+    Compliance note: PSP-side compliance sub-tables (allergens,
+    certificates, storage tags) stay operator-owned. Reverse-mirror
+    seeds the base row only. Operators hydrate the sub-tables on
+    PSP after the row lands.
+
+    Returns the PSP uuid on success, or ``None`` on soft failure
+    (unknown catalogue slug, PSP unreachable, create rejected). The
+    caller decides how to react — the packaging overlay path treats
+    ``None`` as unresolved and surfaces a loud fail.
+    """
+
+    from django.db import transaction
+
+    from apps.audit.services import record as record_audit
+    from apps.catalogues.models import PSP_MIRROR_SLUG
+
+    if item is None:
+        return None
+
+    existing = getattr(item, "psp_source_uuid", None)
+    if existing:
+        return str(existing)
+
+    if not is_psp_live(organization):
+        return None
+
+    # Resolve the PSP item_type from the item's catalogue slug. A
+    # psp_mirror row without a psp_source_uuid is a bug (mirror path
+    # should have pinned one), but treat it as a raw material to keep
+    # the fallback benign. Unknown slugs (custom org catalogues) skip
+    # — there's no meaningful PSP twin for a bespoke catalogue.
+    catalogue = getattr(item, "catalogue", None)
+    slug = getattr(catalogue, "slug", None) if catalogue else None
+    if slug == PSP_MIRROR_SLUG:
+        item_type = "raw_material"
+    else:
+        item_type = _PSP_ITEM_TYPE_FOR_SLUG.get(str(slug or ""))
+    if not item_type:
+        return None
+
+    # External sku carries the "NPD-owned" ownership signal PSP looks
+    # for on the safe-delete path. Format mirrors the stage-item
+    # convention (``NPD-STAGE-…``) so the pattern is consistent across
+    # every reverse-mirrored row on PSP.
+    prefix_by_type = {
+        "raw_material": "RM",
+        "packaging": "PKG",
+        "consumable": "CONS",
+    }
+    external_sku = f"NPD-{prefix_by_type[item_type]}-{item.id}"
+
+    if client is None:
+        try:
+            config = get_psp_config(organization=organization)
+        except PspError:
+            return None
+        client = _client_factory(config)
+
+    # Resolve the item's stock UoM against PSP's registry. Without
+    # this the reverse-mirrored row lands on PSP with ``stock_uom_id
+    # = NULL`` — every downstream surface that reads the item (parts
+    # table, BOM push, cost calculator) then falls back to "unknown
+    # unit" and renders quantities with a "?" marker.
+    #
+    # Silent-degrade on lookup failure: an unknown unit symbol (or a
+    # PSP unit catalog we can't reach) returns ``None`` and we push
+    # the item without a UoM — operators can set it on PSP's item
+    # form after. Better a bare row than a hard fail here.
+    stock_uom_uuid: str | None = None
+    try:
+        symbol = _unit_symbol_for(item)
+        # Fallback: packaging / consumable items on NPD often ship
+        # without an explicit unit (a bottle is "a bottle", not a
+        # weight). Default those to ``pcs`` — PSP's count-base UoM —
+        # so the reverse-mirrored row lands with a usable unit
+        # rather than the "?" fallback. Raw materials get no
+        # fallback because guessing mg / g / mL for an ingredient
+        # would silently misconvert every downstream BOM math.
+        if not symbol and item_type in ("packaging", "consumable"):
+            symbol = "pcs"
+        if symbol:
+            stock_uom_uuid = _psp_uom_uuid_for(client, organization, symbol)
+    except PspError:
+        stock_uom_uuid = None
+
+    # Barcode (typically packaging + some raw materials carry one).
+    # Pulled off ``item.attributes`` when the NPD-side attribute
+    # definition wired one up; empty otherwise.
+    barcode_raw = ""
+    attrs = getattr(item, "attributes", None) or {}
+    if isinstance(attrs, dict):
+        for key in ("barcode", "gtin", "ean", "upc"):
+            v = attrs.get(key)
+            if isinstance(v, str) and v.strip():
+                barcode_raw = v.strip()
+                break
+
+    try:
+        # Free-form ``attributes`` are deliberately dropped on the
+        # reverse-mirror. NPD's ``Item.attributes`` bag isn't
+        # constrained; PSP's items table validates every attribute
+        # key against its ``attribute_definitions`` table and 422s
+        # on unknown keys. Ops-defined packaging attributes
+        # (``dimension``, ``material``, ``resealable``) rarely map
+        # one-for-one across systems. Base row + UoM + barcode seed
+        # cleanly; operators hydrate PSP-side attributes / allergens
+        # / certificates / storage tags after.
+        response = client.create_item(
+            name=(item.name or "").strip() or f"NPD item {item.id}",
+            item_type=item_type,
+            external_sku=external_sku,
+            description=(getattr(item, "description", "") or "").strip(),
+            stock_uom_uuid=stock_uom_uuid,
+            barcode=barcode_raw,
+        )
+    except PspError:
+        return None
+
+    if not isinstance(response, dict):
+        return None
+    psp_uuid = response.get("uuid")
+    if not psp_uuid:
+        return None
+    psp_uuid = str(psp_uuid)
+
+    with transaction.atomic():
+        # Pin the returned uuid on the local row so subsequent flows
+        # (formulation sync, another combo overlay) skip the reverse-
+        # mirror round-trip on the fast path. ``updated_by`` records
+        # the actor that triggered the mirror.
+        item.psp_source_uuid = psp_uuid
+        if actor is not None and hasattr(item, "updated_by"):
+            item.updated_by = actor
+        item.save(update_fields=["psp_source_uuid", "updated_by", "updated_at"])
+        record_audit(
+            organization=organization,
+            actor=actor,
+            action="catalogue_item.psp_reverse_mirror",
+            target=item,
+            after={
+                "psp_source_uuid": psp_uuid,
+                "external_sku": external_sku,
+                "item_type": item_type,
+                "created": bool(response.get("created")),
+            },
+        )
+
+    return psp_uuid
 
 
 def mirror_psp_item(

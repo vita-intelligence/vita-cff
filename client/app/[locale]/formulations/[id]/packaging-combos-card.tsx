@@ -36,6 +36,8 @@ import {
   type PackagingComboDto,
   type PackagingComboInput,
 } from "@/services/formulations";
+import { useOrganization } from "@/services/organizations";
+import { usePspItems, useMirrorPspItem } from "@/services/psp";
 
 
 interface Props {
@@ -284,12 +286,29 @@ function ComboEditor({
     })) ?? [],
   );
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [options, setOptions] = useState<PackagingItemOption[]>([]);
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [nextUrl, setNextUrl] = useState<string | null>(null);
   const [validation, setValidation] = useState<string | null>(null);
+  const [mirrorError, setMirrorError] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   const sentinelRef = useRef<HTMLLIElement | null>(null);
+
+  // PSP as source of truth: when the integration is live, the picker
+  // pulls packaging items from PSP instead of NPD's local catalog.
+  // Combos on live-PSP orgs then only ever reference mirrored items,
+  // so the packaging overlay push (which needs a psp_source_uuid on
+  // every combo item) can't silently skip rows.
+  const organization = useOrganization(orgId);
+  const pspLive = Boolean(organization?.psp_live);
+
+  const pspItemsQuery = usePspItems(orgId, {
+    enabled: pspLive,
+    search: debouncedSearch || undefined,
+    itemTypes: ["packaging"],
+  });
+  const mirrorPsp = useMirrorPspItem(orgId);
 
   // Body-scroll lock. Without this, the page behind the modal
   // scrolls when the user rolls the trackpad over the backdrop —
@@ -319,15 +338,22 @@ function ComboEditor({
     [],
   );
 
-  // First-page fetch on open + on every search change. Debounced
-  // 250 ms so keystrokes don't hammer the API. Resets pagination
-  // state so a stale ``nextUrl`` from the previous query can't
-  // fetch page 2 of the wrong query.
+  // Debounce the search box so keystrokes don't hammer either
+  // fetcher. 250 ms matches the local-picker cadence.
   useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 250);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Local (NPD-native) picker: cursor-paginated fetch against the
+  // packaging catalogue. Skipped when PSP is live — those orgs read
+  // from the PSP items query below.
+  useEffect(() => {
+    if (pspLive) return;
     const gen = searchGenRef.current + 1;
     searchGenRef.current = gen;
 
-    const t = setTimeout(async () => {
+    (async () => {
       setLoadingOptions(true);
       try {
         const params = new URLSearchParams();
@@ -336,7 +362,7 @@ function ComboEditor({
         // real. 50 is a good tradeoff for the modal viewport.
         params.set("page_size", "50");
         params.set("ordering", "name");
-        if (search.trim()) params.set("search", search.trim());
+        if (debouncedSearch) params.set("search", debouncedSearch);
         const { data } = await apiClient.get<{
           results: PackagingItemOption[];
           next: string | null;
@@ -353,9 +379,28 @@ function ComboEditor({
       } finally {
         if (searchGenRef.current === gen) setLoadingOptions(false);
       }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [orgId, search, mapResults]);
+    })();
+  }, [orgId, debouncedSearch, mapResults, pspLive]);
+
+  // PSP picker: projection of the query result. PSP's list endpoint
+  // caps server-side so no cursor / next-page dance — matches the
+  // formulation builder's PSP path.
+  useEffect(() => {
+    if (!pspLive) return;
+    const rows = pspItemsQuery.data?.items ?? [];
+    // Prefix the id so ``handlePick`` can tell PSP rows from local
+    // rows without inspecting a second field. Same trick the
+    // formulation builder uses.
+    setOptions(
+      rows.map((r) => ({
+        id: `psp:${r.uuid}`,
+        name: r.name,
+        code: r.code || r.external_sku || "",
+      })),
+    );
+    setNextUrl(null);
+    setLoadingOptions(pspItemsQuery.isFetching);
+  }, [pspLive, pspItemsQuery.data, pspItemsQuery.isFetching]);
 
   // Fetch the next page. Cursor URL comes from the backend (DRF
   // cursor pagination emits absolute URLs) so we don't have to
@@ -383,8 +428,11 @@ function ComboEditor({
 
   // Sentinel-driven auto-load. ``rootMargin`` = 120px so the next
   // page starts loading before the user actually hits the bottom
-  // (avoids the "wait for content" pause on scroll).
+  // (avoids the "wait for content" pause on scroll). Only fires on
+  // the local (NPD-native) picker — PSP's list endpoint caps
+  // server-side so no next-page dance.
   useEffect(() => {
+    if (pspLive) return;
     const sentinel = sentinelRef.current;
     const root = listRef.current;
     if (!sentinel || !root || !nextUrl) return;
@@ -398,11 +446,59 @@ function ComboEditor({
     );
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [fetchNext, nextUrl, options.length]);
+  }, [pspLive, fetchNext, nextUrl, options.length]);
 
   const pickedIds = useMemo(
     () => new Set(items.map((i) => i.item_id)),
     [items],
+  );
+
+  // Add one picked packaging item to the combo. PSP-sourced rows
+  // (id prefixed ``psp:``) round-trip through the mirror endpoint
+  // first so the combo stores a LOCAL Item id (what the backend
+  // expects) but the mirror row is seeded with the PSP identity —
+  // guaranteeing the combo overlay push later finds a
+  // psp_source_uuid on every item. Local rows insert directly.
+  const handlePick = useCallback(
+    (opt: PackagingItemOption) => {
+      if (mirrorPsp.isPending) return;
+      if (!opt.id.startsWith("psp:")) {
+        setItems((prev) => [
+          ...prev,
+          {
+            item_id: opt.id,
+            item_name: opt.name,
+            item_code: opt.code,
+            quantity: 1,
+          },
+        ]);
+        return;
+      }
+      const pspUuid = opt.id.slice("psp:".length);
+      setMirrorError(null);
+      mirrorPsp.mutate(pspUuid, {
+        onSuccess: (dto) => {
+          setItems((prev) => [
+            ...prev,
+            {
+              item_id: dto.id,
+              item_name: dto.name,
+              item_code: dto.internal_code || opt.code,
+              quantity: 1,
+            },
+          ]);
+        },
+        onError: (err) => {
+          const api = normalizeApiError(err);
+          setMirrorError(
+            (api.payload?.detail as string | undefined) ||
+              api.message ||
+              "Couldn't mirror this PSP item. Try again.",
+          );
+        },
+      });
+    },
+    [mirrorPsp],
   );
 
   const submit = () => {
@@ -563,7 +659,11 @@ function ComboEditor({
                 type="search"
                 value={search}
                 onChange={(e) => setSearch(e.currentTarget.value)}
-                placeholder="Search packaging catalog…"
+                placeholder={
+                  pspLive
+                    ? "Search PSP packaging items…"
+                    : "Search packaging catalog…"
+                }
                 className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm"
               />
               <div
@@ -582,23 +682,24 @@ function ComboEditor({
                 ) : (
                   <ul>
                     {options.map((opt) => {
-                      const already = pickedIds.has(opt.id);
+                      // For PSP-sourced rows the picker id carries a
+                      // ``psp:`` prefix; ``pickedIds`` stores LOCAL
+                      // ids on already-added rows. Dedupe by the
+                      // stable identifier — the trailing PSP uuid —
+                      // so a re-pick of the same PSP item after the
+                      // first mirror still greys out correctly.
+                      const stableId = opt.id.startsWith("psp:")
+                        ? opt.id.slice("psp:".length)
+                        : opt.id;
+                      const already =
+                        pickedIds.has(opt.id) || pickedIds.has(stableId);
+                      const isPspRow = opt.id.startsWith("psp:");
                       return (
                         <li key={opt.id}>
                           <button
                             type="button"
-                            disabled={already}
-                            onClick={() =>
-                              setItems((prev) => [
-                                ...prev,
-                                {
-                                  item_id: opt.id,
-                                  item_name: opt.name,
-                                  item_code: opt.code,
-                                  quantity: 1,
-                                },
-                              ])
-                            }
+                            disabled={already || (isPspRow && mirrorPsp.isPending)}
+                            onClick={() => handlePick(opt)}
                             className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <span className="flex-1 truncate">{opt.name}</span>
@@ -611,6 +712,8 @@ function ComboEditor({
                               <span className="text-[10px] text-ink-500">
                                 Added
                               </span>
+                            ) : isPspRow && mirrorPsp.isPending ? (
+                              <Loader2 className="h-3 w-3 animate-spin text-ink-500" />
                             ) : (
                               <Plus className="h-3 w-3 text-ink-500" />
                             )}
@@ -646,6 +749,11 @@ function ComboEditor({
           {validation ? (
             <p className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
               {validation}
+            </p>
+          ) : null}
+          {mirrorError ? (
+            <p className="rounded-lg bg-danger/10 px-3 py-2 text-xs font-medium text-danger">
+              {mirrorError}
             </p>
           ) : null}
         </div>
