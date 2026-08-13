@@ -279,6 +279,7 @@ class TrialBatchCreatePspMoView(APIView):
             PspNotConfigured,
             PspPackagingComboItemsNotMirrored,
             PspRateLimited,
+            PspSampleCoSyncMissingItem,
             PspTrialBatchItemMissing,
             PspTrialBatchWarehouseMissing,
             PspUnreachable,
@@ -327,6 +328,18 @@ class TrialBatchCreatePspMoView(APIView):
                     "combo_name": exc.combo_name,
                     "missing_item_names": exc.missing_item_names,
                 },
+                status=status.HTTP_409_CONFLICT,
+            )
+        except PspSampleCoSyncMissingItem as exc:
+            # Root cause the scientist can actually fix: the
+            # formulation has no psp_finished_product_uuid, so the
+            # sample CO can't be created on PSP + the follow-up MO
+            # can't attach a customer_order_line_id. Surfaces on
+            # NPD's toast with i18n key
+            # ``psp_sample_co_sync_missing_item`` — point them at
+            # "link this formulation to a PSP finished product first".
+            return Response(
+                {"error": exc.code, "detail": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
         except PspDecryptionFailed as exc:
