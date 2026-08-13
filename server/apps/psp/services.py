@@ -253,10 +253,56 @@ class PspDecryptionFailed(Exception):
 
 
 #: Hard ceiling on a single PSP round-trip. The picker fires inline
-#: during a modal open — anything longer than 4 seconds stalls the
-#: operator more than the "no PSP match" fallback would. Matches the
+#: during a modal open — anything longer than 2 seconds stalls the
+#: operator more than the "no PSP match" fallback would. Tightened
+#: from 4 s → 2 s because a slow PSP that pins Django workers for
+#: 4 s each cascades into pool saturation under load. Matches the
 #: MRPEasy ceiling for consistency.
-_PSP_TIMEOUT_SECONDS = 4.0
+_PSP_TIMEOUT_SECONDS = 2.0
+
+#: Circuit-breaker window. When PSP times out N times in a row the
+#: client trips open and returns cached "unreachable" for the next
+#: ``_PSP_CB_COOLDOWN_SECONDS`` seconds without ever hitting the
+#: network — protects Django workers from queueing behind a slow
+#: PSP while it recovers. Cleared by the first successful call.
+_PSP_CB_THRESHOLD = 3
+_PSP_CB_COOLDOWN_SECONDS = 30
+
+
+class _PspCircuitBreaker:
+    """Process-local circuit breaker for the PSP HTTP client.
+
+    Not distributed (each Daphne worker keeps its own state); good
+    enough for the failure shape we're guarding against — a PSP
+    outage will trip the breaker on every worker within seconds
+    after they each observe their first N failures. Redis-backed
+    coordination is the natural next step if we ever run more than
+    a few workers, but the in-process variant already prevents the
+    request-worker-pool-saturation failure mode.
+    """
+
+    def __init__(self) -> None:
+        self._consecutive_failures = 0
+        self._open_until: float = 0.0
+
+    def is_open(self) -> bool:
+        import time
+
+        return time.monotonic() < self._open_until
+
+    def record_success(self) -> None:
+        self._consecutive_failures = 0
+        self._open_until = 0.0
+
+    def record_failure(self) -> None:
+        import time
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _PSP_CB_THRESHOLD:
+            self._open_until = time.monotonic() + _PSP_CB_COOLDOWN_SECONDS
+
+
+_PSP_BREAKER = _PspCircuitBreaker()
 
 
 class PspClient:
@@ -309,10 +355,22 @@ class PspClient:
             headers["Content-Type"] = "application/json"
             data = json.dumps(body).encode("utf-8")
         req = Request(url, method=method, headers=headers, data=data)
+
+        # Fast-fail while the breaker is open. Skips the 2 s block on
+        # every worker for the cooldown window when PSP is down.
+        if _PSP_BREAKER.is_open():
+            raise PspUnreachable(
+                "PSP circuit breaker is open — recent calls timed out. "
+                "Retrying automatically in a few seconds."
+            )
+
         try:
             with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
                 raw = resp.read()
         except HTTPError as exc:
+            # 4xx responses are still "PSP is up" — don't trip the
+            # breaker on validation errors / rate-limits. Only pool-
+            # saturating shapes (timeouts, connection errors) do.
             if exc.code in (401, 403):
                 raise PspAuthFailed(
                     f"PSP rejected the credentials (HTTP {exc.code})."
@@ -327,11 +385,8 @@ class PspClient:
                 # re-raise (single-item lookup wants to distinguish).
                 # Return None; callers that want the exception can
                 # wrap with :meth:`get_item`.
+                _PSP_BREAKER.record_success()
                 return None
-            # Read the response body so validation errors from PSP
-            # (typically 4xx with an ``{error, detail}`` JSON body)
-            # actually surface in NPD logs. Without this, downstream
-            # PspUnreachable messages are useless "HTTP 422" strings.
             body_snippet = ""
             try:
                 body_snippet = (exc.read() or b"").decode("utf-8", errors="replace")[:500]
@@ -342,9 +397,17 @@ class PspClient:
                 + (f" Body: {body_snippet}" if body_snippet else "")
             ) from exc
         except URLError as exc:
+            _PSP_BREAKER.record_failure()
             raise PspUnreachable(
                 f"Couldn't reach PSP: {exc.reason}"
             ) from exc
+        except (TimeoutError, OSError) as exc:
+            _PSP_BREAKER.record_failure()
+            raise PspUnreachable(
+                f"PSP timed out after {_PSP_TIMEOUT_SECONDS} s: {exc}"
+            ) from exc
+
+        _PSP_BREAKER.record_success()
         if not raw:
             return None
         try:
