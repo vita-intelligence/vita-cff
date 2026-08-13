@@ -78,6 +78,35 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 SECURE_REFERRER_POLICY = "same-origin"
 
 
+# Production-signal safety net for ``DEBUG=True``. The default is True
+# so local dev works out of the box (``runserver`` needs it), but a
+# forgotten ``DJANGO_DEBUG=false`` on a prod deploy is a live incident:
+# stack traces + SQL query previews leak to every 500 response, and
+# the browsable DRF API is exposed to authenticated users. This check
+# raises loud on any deploy that carries production signals
+# (non-local ALLOWED_HOSTS, real SECRET_KEY, SSL redirect enabled)
+# while ``DEBUG`` is still True — so the boot fails instead of the
+# app silently running unsafe.
+_LOCAL_HOST_ALLOWLIST = {"localhost", "127.0.0.1", "192.168.1.170", "0.0.0.0", "::1"}
+if DEBUG:
+    # SECRET_KEY isn't a prod signal — devs legitimately test with
+    # real keys — so we key off configuration a dev machine never
+    # sets: a real hostname in ALLOWED_HOSTS OR the SSL redirect
+    # switch on.
+    _has_non_local_host = any(
+        host and host not in _LOCAL_HOST_ALLOWLIST for host in ALLOWED_HOSTS
+    )
+    if _has_non_local_host or SECURE_SSL_REDIRECT:
+        raise RuntimeError(
+            "DEBUG=True detected together with production signals ("
+            f"non-local ALLOWED_HOSTS={_has_non_local_host}, "
+            f"SECURE_SSL_REDIRECT={SECURE_SSL_REDIRECT}). "
+            "Set DJANGO_DEBUG=false — otherwise every unhandled "
+            "exception leaks stack traces + SQL previews to the "
+            "browser and the DRF browsable API is exposed."
+        )
+
+
 # Applications
 DJANGO_APPS = [
     # ``daphne`` takes the slot before ``django.contrib.staticfiles`` per

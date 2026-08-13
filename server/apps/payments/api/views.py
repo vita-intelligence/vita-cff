@@ -65,6 +65,14 @@ class PaymentListCreateView(APIView):
                 "approved_by",
                 "assigned_finance_officer",
             )
+            # Prefetch the reverse relations the serializer walks per
+            # row — ``PaymentReadSerializer`` reads ``.lines.all()`` and
+            # ``.invoices.all()`` on every payment to compute aggregates
+            # (total lines, invoice fan-out). Without these two prefetches
+            # the list view is O(N) queries per page — a 200-payment
+            # page is 400+ extra queries, which is the exact anti-pattern
+            # that stalls the finance dashboard at 10× load.
+            .prefetch_related("lines", "invoices")
             .order_by("-paid_at")
         )
         status_filter = request.query_params.get("status")
