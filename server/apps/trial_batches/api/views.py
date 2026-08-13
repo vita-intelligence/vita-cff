@@ -277,6 +277,7 @@ class TrialBatchCreatePspMoView(APIView):
             PspDecryptionFailed,
             PspError,
             PspNotConfigured,
+            PspPackagingComboItemsNotMirrored,
             PspRateLimited,
             PspTrialBatchItemMissing,
             PspTrialBatchWarehouseMissing,
@@ -311,6 +312,21 @@ class TrialBatchCreatePspMoView(APIView):
         except PspTrialBatchItemMissing as exc:
             return Response(
                 {"error": exc.code, "detail": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except PspPackagingComboItemsNotMirrored as exc:
+            # Loud fail so the scientist doesn't accidentally ship a
+            # sample without packaging. Payload carries the offending
+            # combo + item names so the FE can render an actionable
+            # "sync these items in PSP settings" hint instead of a
+            # generic 422.
+            return Response(
+                {
+                    "error": exc.code,
+                    "detail": str(exc),
+                    "combo_name": exc.combo_name,
+                    "missing_item_names": exc.missing_item_names,
+                },
                 status=status.HTTP_409_CONFLICT,
             )
         except PspDecryptionFailed as exc:

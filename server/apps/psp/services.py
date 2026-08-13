@@ -192,6 +192,31 @@ class PspNotConfigured(Exception):
     code = "psp_not_configured"
 
 
+class PspPackagingComboItemsNotMirrored(PspError):
+    """Trial batch's packaging combo has one or more items that
+    haven't been mirrored to PSP. The MO create would silently
+    strip them from the BOM overlay and the batch would run
+    without packaging — a compliance failure we refuse rather
+    than allow.
+
+    Attach the offending item names + combo name so the API layer
+    can point the scientist straight at what to fix in Settings →
+    Items (mirror the pouch / bottle / cap from PSP's catalog).
+    """
+
+    code = "psp_packaging_combo_items_not_mirrored"
+
+    def __init__(self, *, combo_name: str, missing_item_names: list[str]) -> None:
+        self.combo_name = combo_name
+        self.missing_item_names = missing_item_names
+        joined = ", ".join(missing_item_names) or "(unknown)"
+        super().__init__(
+            f"Packaging combo {combo_name!r} contains items not mirrored "
+            f"to PSP: {joined}. Sync them from PSP's item catalog before "
+            f"running this MO."
+        )
+
+
 class PspDecryptionFailed(Exception):
     """Stored ciphertext could not be decrypted (typically because
     the shared secret key was rotated without re-encrypting)."""
@@ -4556,20 +4581,32 @@ def _build_packaging_overlay(trial_batch: Any, kind: str) -> Any:
         return []
 
     payload: list[dict[str, Any]] = []
+    missing: list[str] = []
     for row in combo.items.select_related("item").all():
         item = row.item
         psp_uuid = getattr(item, "psp_source_uuid", None) if item else None
         if not psp_uuid:
-            # The catalogue item was never mirrored to PSP. Skipping
-            # is preferable to a hard 400 — the scientist can still
-            # schedule the batch, and the combo row on the NPD side
-            # remains the record of intent.
+            # The catalogue item was never mirrored to PSP. Refuse
+            # loudly rather than silently drop the row — a sample
+            # meant to ship in pouches that runs without pouches is
+            # a compliance failure and a very confusing UX. Collect
+            # every missing item into one error so the scientist
+            # fixes them in a single trip to Settings → Items.
+            missing.append(
+                (item.name if item and item.name else "(unnamed item)")
+            )
             continue
         payload.append(
             {
                 "item_uuid": str(psp_uuid),
                 "quantity": str(row.quantity),
             }
+        )
+
+    if missing:
+        raise PspPackagingComboItemsNotMirrored(
+            combo_name=combo.name or "(unnamed combo)",
+            missing_item_names=missing,
         )
 
     return payload
@@ -4698,11 +4735,12 @@ def create_psp_manufacturing_order_for_trial_batch(
     #                                        PSP's mirrored item uuid
     #
     # A combo whose item is missing ``psp_source_uuid`` (never
-    # mirrored to PSP) is dropped from the payload with a warning —
-    # the alternative is a hard 400 on MO create, which would leave
-    # the scientist unable to schedule a batch while a stale mirror
-    # gets fixed. The overlay stays active either way so the default
-    # packaging isn't silently re-inserted.
+    # mirrored to PSP) now raises ``PspPackagingComboItemsNotMirrored``
+    # rather than silently dropping. Previous behaviour left the
+    # scientist unaware that their sample was about to ship without
+    # packaging — a compliance failure surfaced only at customer
+    # complaint time. Loud fail forces a Settings → Items sync
+    # before the batch runs.
     packaging_overlay = _build_packaging_overlay(trial_batch, kind)
 
     # Sample-fulfilment CO sync: for sample-kind batches with a
