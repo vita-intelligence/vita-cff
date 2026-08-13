@@ -2643,6 +2643,32 @@ export function FormulationBuilder({
     return map;
   }, [formulation.stages]);
 
+  // Semi-finished stage SPOU foot-gun (H1). ``_stage_servings`` on
+  // the Python side silently defaults an unset ``servings_per_output_unit``
+  // to 1 — so a Blend stage that actually outputs 1 kg containing
+  // 2000 servings will produce a BOM 2000× too small if the scientist
+  // never touched the field. Non-blocking warning: flag every semi-
+  // finished stage still at ≤ 1 while the finished pack legitimately
+  // holds > 1 serving.
+  const semiSpouWarnings = useMemo(() => {
+    const targetServings = Number(metadata.servings_per_pack) || 0;
+    if (targetServings <= 1) return [];
+    const rows: { id: string; label: string; current: string }[] = [];
+    for (const stage of formulation.stages) {
+      if (stage.psp_item_type !== "semi_finished") continue;
+      const raw = Number.parseFloat(stage.servings_per_output_unit ?? "1");
+      const current = Number.isFinite(raw) && raw > 0 ? raw : 1;
+      if (current <= 1) {
+        rows.push({
+          id: stage.id,
+          label: stage.name || `Stage ${stage.sort_order + 1}`,
+          current: (stage.servings_per_output_unit ?? "1").trim() || "1",
+        });
+      }
+    }
+    return rows;
+  }, [formulation.stages, metadata.servings_per_pack]);
+
   // Terminal (largest sort_order) stage id — the anchor for lines
   // without an explicit assignment. Matches how the PSP push cascade
   // folds null-stage lines into the terminal BOM.
@@ -6203,7 +6229,45 @@ export function FormulationBuilder({
               } catch {
                 suffix = null;
               }
-              return suffix ? `${base} ${suffix}` : base;
+              // H2 mirror: show the pack total from the serving_size
+              // field too. A scientist editing serving_size (or
+              // servings_per_pack) can misread the fields as duplicates
+              // (e.g. "60 caps per bottle" typed as spp=60, size=3 →
+              // 180 total). Mirroring the computed total from
+              // ``servings_per_pack_computed_*`` here means either
+              // surface shows the concrete pack outcome.
+              const spp = Number(metadata.servings_per_pack);
+              const packRaw =
+                metadata.dosage_form === "powder"
+                  ? Number(metadata.target_fill_weight_mg) / 1000
+                  : n;
+              const packTotal =
+                Number.isFinite(spp) && spp > 0 && packRaw > 0
+                  ? spp * packRaw
+                  : null;
+              let packSuffix: string | null = null;
+              if (packTotal !== null) {
+                const packKey =
+                  `fields.servings_per_pack_computed_${suffixForm}` as
+                    | "fields.servings_per_pack_computed_capsule"
+                    | "fields.servings_per_pack_computed_tablet"
+                    | "fields.servings_per_pack_computed_gummy"
+                    | "fields.servings_per_pack_computed_powder"
+                    | "fields.servings_per_pack_computed_liquid";
+                try {
+                  packSuffix = tFormulations(packKey, {
+                    total: String(
+                      Number.isInteger(packTotal)
+                        ? packTotal
+                        : packTotal.toFixed(2),
+                    ),
+                  });
+                } catch {
+                  packSuffix = null;
+                }
+              }
+              const parts = [base, suffix, packSuffix].filter(Boolean);
+              return parts.join(" ");
             })()}
           />
           <NumberField
@@ -6388,6 +6452,39 @@ export function FormulationBuilder({
           activeTab === "stages" ? "flex flex-col gap-10" : "hidden"
         }
       >
+      {semiSpouWarnings.length > 0 && (
+        <div
+          className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900"
+          role="alert"
+        >
+          <p className="font-semibold">
+            {semiSpouWarnings.length === 1
+              ? "One semi-finished stage still has servings per output unit = 1"
+              : `${semiSpouWarnings.length} semi-finished stages still have servings per output unit = 1`}
+          </p>
+          <p className="mt-1 leading-snug">
+            Your finished pack contains{" "}
+            <strong>{metadata.servings_per_pack}</strong>{" "}
+            servings. If a stage&rsquo;s output is not literally 1 unit per
+            pack, downstream POs will demand up to{" "}
+            <strong>{metadata.servings_per_pack}&times; less</strong> raw
+            material than the recipe needs. Open each stage and set
+            &ldquo;servings per output unit&rdquo; to the number of finished
+            servings that fit in 1 unit of the stage&rsquo;s output (e.g.{" "}
+            <em>2000</em> if 1&nbsp;kg of blend contains 2000 servings).
+          </p>
+          <ul className="mt-2 list-disc pl-6">
+            {semiSpouWarnings.map((w) => (
+              <li key={w.id}>
+                <span className="font-medium">{w.label}</span>{" "}
+                <span className="text-amber-700">
+                  (currently {w.current})
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <StageStrip
         pspBaseUrl={organization?.psp_base_url ?? null}
         pspFinishedProductUuid={formulation.psp_finished_product_uuid ?? null}
