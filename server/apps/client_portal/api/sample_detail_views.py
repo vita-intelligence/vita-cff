@@ -719,6 +719,69 @@ class PortalSampleReleaseDocumentView(PortalAPIView):
         return response
 
 
+class PortalSampleDispatchConfirmView(PortalAPIView):
+    """``POST /api/portal/samples/<payment_id>/dispatch/confirm-delivery/``
+    — customer confirms receipt of their sample.
+
+    Body: ``{"recipient_signatory": "Alex Baker",
+              "delivery_notes": "Arrived intact" }``
+
+    Ownership: same account → customer id union guard as the sample
+    detail view. The confirmation flows through NPD → PSP; on the
+    PSP side ``delivered_by_id`` stays nil (portal customers aren't
+    PSP users) and ``recipient_signatory`` carries the identity.
+
+    Responses:
+      * 200 — ``{"dispatch": {...updated snapshot}}``
+      * 400 — missing signatory
+      * 404 — no picked-up shipment / unknown CO
+      * 409 — already delivered (idempotency guard)
+      * 502 — PSP unreachable / off
+    """
+
+    def post(self, request: Request, payment_id) -> Response:
+        from apps.client_portal.queries import customer_ids_for_account
+        from apps.psp.services import (
+            confirm_psp_dispatch_delivery_for_payment,
+        )
+
+        customer_ids = customer_ids_for_account(request.user)
+        payment = get_object_or_404(
+            Payment.objects.select_related(
+                "formulation", "organization", "customer"
+            ),
+            id=payment_id,
+            kind=PaymentKind.FINAL,
+            formulation__project_type="ready_to_go",
+            customer_id__in=customer_ids,
+        )
+
+        signatory = (request.data.get("recipient_signatory") or "").strip()
+        if not signatory:
+            # Fall back to the customer's saved profile name — the
+            # portal UI pre-fills the modal with this but we
+            # double-check server-side so a stripped payload can't
+            # slip through.
+            signatory = (getattr(payment.customer, "name", "") or "").strip()
+        if not signatory:
+            return Response(
+                {"detail": "recipient_signatory_required"}, status=400
+            )
+
+        notes = (request.data.get("delivery_notes") or "").strip()
+
+        result = confirm_psp_dispatch_delivery_for_payment(
+            payment=payment,
+            recipient_signatory=signatory,
+            delivery_notes=notes,
+        )
+        if result is None:
+            return Response(
+                {"detail": "confirmation_failed"}, status=502
+            )
+        return Response(result, status=200)
+
+
 class PortalSampleDispatchPhotoView(PortalAPIView):
     """``GET /api/portal/samples/<payment_id>/dispatch/photos/<file_uuid>/``
     — proxy-download one truck-arrival photo for a customer.

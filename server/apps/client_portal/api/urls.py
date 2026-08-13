@@ -76,6 +76,7 @@ from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
 from .sample_detail_views import (
     PortalSampleDetailView,
+    PortalSampleDispatchConfirmView,
     PortalSampleDispatchPhotoView,
     PortalSampleReleaseDocumentView,
 )
@@ -210,6 +211,15 @@ urlpatterns = [
         "samples/<uuid:payment_id>/dispatch/photos/<uuid:file_uuid>/",
         PortalSampleDispatchPhotoView.as_view(),
         name="sample-dispatch-photo",
+    ),
+
+    # Customer-driven POD confirmation. Flips the CO's shipment
+    # from ``picked_up`` to ``delivered`` with the customer's own
+    # signatory + notes. Staff can still confirm from PSP.
+    path(
+        "samples/<uuid:payment_id>/dispatch/confirm-delivery/",
+        PortalSampleDispatchConfirmView.as_view(),
+        name="sample-dispatch-confirm-delivery",
     ),
 
     # Inbox / bell — every thread the client account can see plus
