@@ -125,6 +125,22 @@ def record_payment(
             "status": payment.status,
         },
     )
+
+    # Finance team notification — fires only for sample payments
+    # (kind=FINAL + RTG formulation), the ``staff_notifications``
+    # module gates on that. Best-effort delivery; on_commit so an
+    # SMTP failure never rolls back the record itself.
+    payment_pk = payment.pk
+
+    def _fire_finance_notification() -> None:
+        from apps.payments.staff_notifications import (
+            notify_finance_new_sample_payment,
+        )
+
+        notify_finance_new_sample_payment(payment_id=payment_pk)
+
+    transaction.on_commit(_fire_finance_notification)
+
     return payment
 
 
@@ -221,6 +237,18 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
             maybe_resync_sample_payment_to_psp(payment=fresh)
 
     transaction.on_commit(_resync_sample)
+
+    # Scientist notification — approval is when the sample is
+    # actually unlocked for the scientist to spin up a trial batch.
+    # Gated on sample-payment kind inside the notification module.
+    def _fire_scientist_notification() -> None:
+        from apps.payments.staff_notifications import (
+            notify_scientists_sample_ready,
+        )
+
+        notify_scientists_sample_ready(payment_id=payment_pk)
+
+    transaction.on_commit(_fire_scientist_notification)
 
     return payment
 

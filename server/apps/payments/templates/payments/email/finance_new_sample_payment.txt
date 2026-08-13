@@ -1,0 +1,14 @@
+New sample payment awaiting approval
+
+A new sample payment has landed and is waiting for the finance
+team to approve it before production can start.
+
+Project: {{ project_name }}{% if project_code %} · {{ project_code }}{% endif %}
+{% if customer_name %}Customer: {{ customer_name }}
+{% endif %}{% if amount %}Amount: {{ amount }}
+{% endif %}
+Open the finance queue to review and approve:
+{{ portal_url }}
+
+You're receiving this because your Vita membership carries the
+finance role (or you're the workspace owner).

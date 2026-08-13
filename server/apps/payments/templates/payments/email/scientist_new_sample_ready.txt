@@ -1,0 +1,14 @@
+New sample ready for a trial batch
+
+Finance just approved a customer sample order. The sample is
+now unlocked and waiting for a scientist to spin up a trial
+batch on NPD.
+
+Project: {{ project_name }}{% if project_code %} · {{ project_code }}{% endif %}
+{% if customer_name %}Customer: {{ customer_name }}
+{% endif %}
+Open the samples queue to pick it up:
+{{ portal_url }}
+
+You're receiving this because your Vita membership carries the
+scientist role (or you're the workspace owner).
