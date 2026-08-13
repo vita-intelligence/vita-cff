@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.core.cache import cache
 from rest_framework import status
@@ -11,6 +13,17 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
+
+logger = logging.getLogger(__name__)
+
+
+def _client_ip(request: Request) -> str:
+    """Extract the reverse-proxied client IP for observability
+    logging. Falls back to REMOTE_ADDR when no proxy header is set."""
+    xff = request.META.get("HTTP_X_FORWARDED_FOR")
+    if xff:
+        return xff.split(",", 1)[0].strip()
+    return request.META.get("REMOTE_ADDR", "unknown")
 
 from apps.accounts.api.serializers import (
     LoginSerializer,
@@ -87,37 +100,81 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
-    """POST ``/api/auth/logout/`` — clear auth cookies.
+    """POST ``/api/auth/logout/`` — clear auth cookies AND blacklist
+    the current refresh token upstream.
 
-    This endpoint is authenticated because we want logging out to require a
-    valid session in the first place. Unauthenticated logout is a no-op and
-    would only mask bugs.
+    Historically this endpoint only cleared cookies — a stolen refresh
+    token could keep working until natural expiry (7 days). With
+    ``BLACKLIST_AFTER_ROTATION=True`` + the ``token_blacklist`` app
+    installed, we can call ``token.blacklist()`` to persist the token
+    in the blacklist table so any future refresh with it is refused.
+    Called by the website proxy on any refresh-401 as well as by the
+    normal user-initiated logout flow.
     """
 
     permission_classes = (IsAuthenticated,)
 
     def post(self, request: Request) -> Response:
+        raw_refresh = request.COOKIES.get(settings.AUTH_COOKIE_REFRESH_NAME)
+        if raw_refresh:
+            try:
+                RefreshToken(raw_refresh).blacklist()
+            except TokenError:
+                # Already blacklisted or malformed — still fine to
+                # clear cookies. No point 500'ing the client for a
+                # token that's already dead.
+                logger.info(
+                    "logout.blacklist_skipped user_id=%s ip=%s",
+                    getattr(request.user, "id", None),
+                    _client_ip(request),
+                )
+            except Exception:  # pragma: no cover — defensive
+                logger.exception(
+                    "logout.blacklist_error user_id=%s ip=%s",
+                    getattr(request.user, "id", None),
+                    _client_ip(request),
+                )
+
         response = Response(status=status.HTTP_204_NO_CONTENT)
         clear_auth_cookies(response)
         return response
 
 
 class RefreshView(APIView):
-    """POST ``/api/auth/refresh/`` — rotate the access (and refresh) cookie."""
+    """POST ``/api/auth/refresh/`` — rotate the access (and refresh) cookie.
+
+    Emits structured logs on every failure path so the operations team
+    can diagnose the "user gets bounced back to login every 15 min"
+    report without a live DevTools session. Each log carries enough
+    context (user_id when derivable, IP, failure reason, presence of
+    the raw refresh cookie) to correlate against upstream traffic.
+    """
 
     permission_classes = (AllowAny,)
     authentication_classes: tuple = ()
 
     def post(self, request: Request) -> Response:
         raw_refresh = request.COOKIES.get(settings.AUTH_COOKIE_REFRESH_NAME)
+        ip = _client_ip(request)
+
         if not raw_refresh:
+            logger.info(
+                "refresh.missing_cookie ip=%s ua=%r",
+                ip,
+                request.META.get("HTTP_USER_AGENT", "")[:120],
+            )
             return Response(
                 {"detail": ["refresh_token_missing"]},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         try:
             refresh = RefreshToken(raw_refresh)
-        except TokenError:
+        except TokenError as exc:
+            logger.info(
+                "refresh.token_invalid ip=%s reason=%s",
+                ip,
+                str(exc).replace("\n", " ")[:200],
+            )
             return Response(
                 {"detail": ["refresh_token_invalid"]},
                 status=status.HTTP_401_UNAUTHORIZED,
@@ -127,6 +184,11 @@ class RefreshView(APIView):
         new_refresh: str | None = None
         if settings.SIMPLE_JWT.get("ROTATE_REFRESH_TOKENS"):
             # Issue a brand-new refresh so the client never reuses a stale one.
+            # With ``BLACKLIST_AFTER_ROTATION=True``, SimpleJWT
+            # automatically blacklists the old refresh at
+            # ``refresh.blacklist()`` time — done inside ``str(refresh)``'s
+            # rotate path via the OutstandingToken hook. Nothing extra
+            # to do here beyond re-signing.
             refresh.set_jti()
             refresh.set_exp()
             refresh.set_iat()

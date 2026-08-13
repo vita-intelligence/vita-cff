@@ -128,6 +128,12 @@ THIRD_PARTY_APPS = [
     "corsheaders",
     "rest_framework",
     "rest_framework_simplejwt",
+    # Persistent blacklist for rotated / logged-out refresh tokens. Ships
+    # its own migration (``token_blacklist_*``) that must run once; from
+    # then on ``BLACKLIST_AFTER_ROTATION=True`` will refuse to accept a
+    # rotated-away refresh token and ``LogoutView`` can call
+    # ``token.blacklist()`` so a stolen cookie can't outlive the session.
+    "rest_framework_simplejwt.token_blacklist",
     "storages",
 ]
 
@@ -272,7 +278,12 @@ SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=60),
     "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
     "ROTATE_REFRESH_TOKENS": True,
-    "BLACKLIST_AFTER_ROTATION": False,
+    # Blacklist rotated refresh tokens so a stolen cookie stops working
+    # the moment the legitimate client next refreshes. Requires the
+    # ``rest_framework_simplejwt.token_blacklist`` app in
+    # ``INSTALLED_APPS`` (already added above) — the ``blacklist`` +
+    # ``blacklisted_token`` tables land on the next migration run.
+    "BLACKLIST_AFTER_ROTATION": True,
     "ALGORITHM": "HS256",
     "SIGNING_KEY": SECRET_KEY,
     "AUTH_HEADER_TYPES": ("Bearer",),
