@@ -76,6 +76,7 @@ from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
 from .sample_detail_views import (
     PortalSampleDetailView,
+    PortalSampleDispatchPhotoView,
     PortalSampleReleaseDocumentView,
 )
 from .template_views import PortalLabelDesignTemplateLibraryView
@@ -200,6 +201,15 @@ urlpatterns = [
         "samples/<uuid:payment_id>/release-documents/<uuid:file_uuid>/",
         PortalSampleReleaseDocumentView.as_view(),
         name="sample-release-document",
+    ),
+
+    # Proxy-download for one truck-arrival dispatch photo. Same
+    # ownership check + pass-through pattern as the release-document
+    # proxy above.
+    path(
+        "samples/<uuid:payment_id>/dispatch/photos/<uuid:file_uuid>/",
+        PortalSampleDispatchPhotoView.as_view(),
+        name="sample-dispatch-photo",
     ),
 
     # Inbox / bell — every thread the client account can see plus
