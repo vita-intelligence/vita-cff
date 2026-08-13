@@ -902,6 +902,73 @@ class PspClient:
 
         return bytes_body, mime, filename
 
+    def get_customer_order_dispatch(self, co_uuid: Any) -> dict | None:
+        """GET ``/api/integration/customer-orders/:uuid/dispatch``.
+
+        Returns the dispatch-confirmation snapshot (carrier, vehicle,
+        driver, checklist, photos) for the CO's root-MO produced lot,
+        or ``None`` on any failure / unknown CO. Powers the "Dispatch"
+        card on the customer portal's sample detail page.
+
+        The endpoint returns ``{"dispatch": null}`` when the shipment
+        hasn't been ``picked_up`` yet — we surface that as ``None``
+        too so the caller has one "nothing to show" branch.
+        """
+
+        cleaned = str(co_uuid or "").strip()
+        if not cleaned:
+            return None
+        response = self._request(
+            f"api/integration/customer-orders/{cleaned}/dispatch"
+        )
+        if not isinstance(response, dict):
+            return None
+        dispatch = response.get("dispatch")
+        return dispatch if isinstance(dispatch, dict) else None
+
+    def fetch_customer_order_dispatch_photo(
+        self, co_uuid: Any, file_uuid: Any
+    ) -> tuple[bytes, str, str] | None:
+        """GET ``/api/integration/customer-orders/:uuid/dispatch/photos/:file_uuid``.
+
+        Streams raw bytes for proxy-download from the portal. Returns
+        ``(bytes, mime, filename)`` on 200 or ``None`` on any non-2xx
+        / transport failure. Photos are typically ``image/jpeg`` or
+        ``image/png``; the portal renders them inline in the dispatch
+        card thumbnails.
+
+        Uses stdlib ``urllib`` to match :meth:`fetch_customer_order_release_document`.
+        """
+
+        cleaned_co = str(co_uuid or "").strip()
+        cleaned_file = str(file_uuid or "").strip()
+        if not cleaned_co or not cleaned_file:
+            return None
+
+        base = self._config.base_url.rstrip("/")
+        url = (
+            f"{base}/api/integration/customer-orders/"
+            f"{cleaned_co}/dispatch/photos/{cleaned_file}"
+        )
+        headers = {
+            "X-Integration-Token": self._auth_header,
+            "User-Agent": "VitaNPD/1.0",
+        }
+        req = Request(url, method="GET", headers=headers)
+        try:
+            with urlopen(req, timeout=_PSP_TIMEOUT_SECONDS) as resp:
+                bytes_body = resp.read()
+                mime = resp.headers.get(
+                    "Content-Type", "application/octet-stream"
+                )
+                filename = _parse_filename_from_content_disposition(
+                    resp.headers.get("Content-Disposition", "")
+                ) or "dispatch-photo"
+        except (HTTPError, URLError):
+            return None
+
+        return bytes_body, mime, filename
+
     def get_customer_order_snapshot(self, co_uuid: Any) -> dict | None:
         """GET ``/api/integration/customer-orders/:uuid/snapshot``.
 
@@ -4855,6 +4922,66 @@ def fetch_psp_release_document_for_payment(
     client = _client_factory(config)
     try:
         return client.fetch_customer_order_release_document(co_uuid, file_uuid)
+    except PspError:
+        return None
+
+
+def get_psp_dispatch_for_payment(*, payment: Any) -> dict | None:
+    """Fetch the PSP dispatch-confirmation snapshot for the CO that
+    mirrors this NPD Payment. Returns ``None`` on any failure or
+    when the shipment hasn't been ``picked_up`` yet — the portal
+    hides the card in that case rather than showing a placeholder.
+
+    Same CO-uuid resolution as :func:`list_psp_release_documents_for_payment`.
+    """
+
+    if payment is None:
+        return None
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return None
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.get_customer_order_dispatch(co_uuid)
+    except PspError:
+        return None
+
+
+def fetch_psp_dispatch_photo_for_payment(
+    *, payment: Any, file_uuid: Any
+) -> tuple[bytes, str, str] | None:
+    """Proxy-download one dispatch photo. Returns ``(bytes, mime,
+    filename)`` or ``None`` on any failure. File bytes stay on PSP;
+    NPD is a pass-through with the customer's ownership check bolted
+    on at the portal-view layer above this call.
+    """
+
+    if payment is None:
+        return None
+    organization = getattr(payment, "organization", None)
+    if organization is None or not is_psp_live(organization):
+        return None
+
+    co_uuid = _resolve_co_uuid_for_payment(payment)
+    if not co_uuid:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.fetch_customer_order_dispatch_photo(co_uuid, file_uuid)
     except PspError:
         return None
 

@@ -593,6 +593,17 @@ class PortalSampleDetailView(PortalAPIView):
             else []
         )
 
+        # Dispatch-confirmation snapshot — what the coordinator filled
+        # + what the operator captured at truck arrival. ``None`` until
+        # PSP has a picked_up shipment; the FE hides the card for that
+        # case. Same APPROVED gate as release_documents so unpaid
+        # samples don't leak downstream operational data.
+        dispatch = (
+            _dispatch_or_none(payment)
+            if payment.status == PaymentStatus.APPROVED
+            else None
+        )
+
         return Response(
             {
                 "sample": {
@@ -617,8 +628,25 @@ class PortalSampleDetailView(PortalAPIView):
                     snapshot=snapshot,
                 ),
                 "release_documents": release_documents,
+                "dispatch": dispatch,
             }
         )
+
+
+def _dispatch_or_none(payment: Payment) -> dict | None:
+    """Fetch the PSP dispatch snapshot for this payment's CO.
+
+    Silent-degrade contract: PSP off / unreachable / no CO / no
+    ``picked_up`` shipment yet → ``None``. The portal FE renders the
+    Dispatch card only when the value is a non-null dict.
+    """
+
+    from apps.psp.services import get_psp_dispatch_for_payment
+
+    try:
+        return get_psp_dispatch_for_payment(payment=payment)
+    except Exception:
+        return None
 
 
 def _release_documents_or_empty(payment: Payment) -> list[dict]:
@@ -688,4 +716,50 @@ class PortalSampleReleaseDocumentView(PortalAPIView):
             f'{disposition}; filename="{filename}"'
         )
         response["Cache-Control"] = "no-store, no-cache, must-revalidate"
+        return response
+
+
+class PortalSampleDispatchPhotoView(PortalAPIView):
+    """``GET /api/portal/samples/<payment_id>/dispatch/photos/<file_uuid>/``
+    — proxy-download one truck-arrival photo for a customer.
+
+    Ownership: identical check to :class:`PortalSampleReleaseDocumentView`
+    (payment must be an RTG sample kit owned by one of the account's
+    Customer ids). Bytes flow through from PSP; the guard here stops
+    a leaked file uuid from downloading for an unrelated account.
+
+    Photos are always image/* — always render inline in the portal
+    dispatch card thumbnails / lightbox.
+    """
+
+    def get(self, request: Request, payment_id, file_uuid) -> Response:
+        from apps.client_portal.queries import customer_ids_for_account
+        from apps.psp.services import fetch_psp_dispatch_photo_for_payment
+        from django.http import HttpResponse
+
+        customer_ids = customer_ids_for_account(request.user)
+        payment = get_object_or_404(
+            Payment.objects.select_related("formulation", "organization"),
+            id=payment_id,
+            kind=PaymentKind.FINAL,
+            formulation__project_type="ready_to_go",
+            customer_id__in=customer_ids,
+        )
+
+        result = fetch_psp_dispatch_photo_for_payment(
+            payment=payment, file_uuid=file_uuid
+        )
+        if result is None:
+            raise NotFound("dispatch_photo_not_found")
+
+        body, mime, filename = result
+
+        response = HttpResponse(body, content_type=mime)
+        response["Content-Disposition"] = (
+            f'inline; filename="{filename}"'
+        )
+        # Photos are content-addressed by file uuid (re-upload → new
+        # uuid → new URL). Same immutable cache policy as release
+        # documents so opening + closing the card doesn't re-round-trip.
+        response["Cache-Control"] = "private, max-age=86400, immutable"
         return response
