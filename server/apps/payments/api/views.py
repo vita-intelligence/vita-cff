@@ -15,6 +15,7 @@ from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
 from apps.organizations.modules import FinanceCapability
 from apps.payments.api.permissions import HasFinancePermission
+from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.audit.services import record as record_audit
 from apps.payments.api.serializers import (
     AssignPaymentFinanceOfficerSerializer,
@@ -246,6 +247,10 @@ class PaymentDetailView(APIView):
             before={k: str(v) for k, v in before.items()},
             after={k: str(getattr(payment, k)) for k in serializer.validated_data},
         )
+        # Live push — amount / method / invoice-number edits should
+        # ripple to every open finance tab, not just the tab that made
+        # the edit.
+        schedule_payment_changed_broadcast(payment, "updated")
         return Response(PaymentReadSerializer(payment).data)
 
 
@@ -379,6 +384,11 @@ class PaymentAssignFinanceOfficerView(APIView):
                 )
             },
         )
+        # Live push — assigning changes which finance officer's
+        # ``scope=mine`` bucket the row belongs to, so every open tab
+        # (including the newly-assigned officer's) needs to invalidate
+        # to move the card into the right lane.
+        schedule_payment_changed_broadcast(payment, "assigned")
         return Response(PaymentReadSerializer(payment).data)
 
 
