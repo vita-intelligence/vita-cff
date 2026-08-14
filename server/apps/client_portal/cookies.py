@@ -88,11 +88,19 @@ def issue_portal_refresh_token(account) -> RefreshToken:
     that need the string form use :func:`tokens_for_client`; callers
     that need the token instance (e.g. the portal ``RefreshView``
     that also reads ``.access_token``) use this one directly.
+
+    The ``str()`` cast on the id is load-bearing when the account's
+    PK is a ``UUID`` (which it is on this schema): SimpleJWT's
+    base ``Token.for_user`` does the same cast (``user_id = str(user_id)``)
+    before writing the claim, and JSON serialisation of the payload
+    can't handle a raw :class:`uuid.UUID` — bypassing the cast
+    reproduces the "``Object of type UUID is not JSON serializable``"
+    500 in ``json.encoder.default``.
     """
 
     refresh = RefreshToken()
-    refresh[jwt_settings.USER_ID_CLAIM] = getattr(
-        account, jwt_settings.USER_ID_FIELD
+    refresh[jwt_settings.USER_ID_CLAIM] = str(
+        getattr(account, jwt_settings.USER_ID_FIELD)
     )
     return refresh
 
