@@ -73,7 +73,8 @@ type IncomingMessage =
 
 
 class OrgFeedSocket {
-  private readonly orgId: string;
+  private readonly path: string;
+  private readonly logTag: string;
   private handlers: OrgFeedHandlers;
   private ws: WebSocket | null = null;
   private refcount = 0;
@@ -81,8 +82,9 @@ class OrgFeedSocket {
   private reconnectTimer: number | null = null;
   private stopped = false;
 
-  constructor(orgId: string, handlers: OrgFeedHandlers) {
-    this.orgId = orgId;
+  constructor(path: string, logTag: string, handlers: OrgFeedHandlers) {
+    this.path = path;
+    this.logTag = logTag;
     this.handlers = handlers;
   }
 
@@ -111,24 +113,23 @@ class OrgFeedSocket {
   private open(): void {
     if (typeof window === "undefined") return;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const path = `/ws/org/${this.orgId}/feed/`;
     const envOrigin =
       process.env.NEXT_PUBLIC_WS_ORIGIN?.trim() || "";
     let url: string;
     if (envOrigin) {
-      url = `${envOrigin.replace(/\/$/, "")}${path}`;
+      url = `${envOrigin.replace(/\/$/, "")}${this.path}`;
     } else if (process.env.NODE_ENV !== "production") {
       const host = window.location.hostname;
-      url = `${proto}://${host}:8000${path}`;
+      url = `${proto}://${host}:8000${this.path}`;
     } else {
-      url = `${proto}://${window.location.host}${path}`;
+      url = `${proto}://${window.location.host}${this.path}`;
     }
 
     let socket: WebSocket;
     try {
       socket = new WebSocket(url);
     } catch (err) {
-      console.warn("[org-feed] failed to construct WebSocket", err);
+      console.warn(`[${this.logTag}] failed to construct WebSocket`, err);
       this.scheduleReconnect();
       return;
     }
@@ -160,7 +161,7 @@ class OrgFeedSocket {
       if (this.stopped) return;
       if (TERMINAL_CODES.has(e.code)) {
         console.warn(
-          "[org-feed] WS closed with terminal code",
+          `[${this.logTag}] WS closed with terminal code`,
           e.code,
           e.reason,
         );
@@ -221,7 +222,10 @@ function isEntityChangedPayload(
 
 
 // ---------------------------------------------------------------------------
-// Registry — one socket per orgId, ref-counted across hook mounts
+// Registry — one socket per (key), ref-counted across hook mounts.
+// Keys are ``org:<uuid>`` for staff feeds and the literal ``portal`` for
+// the customer portal (there is only one portal socket per tab, no per-
+// org dimension because the portal account already implies its org).
 // ---------------------------------------------------------------------------
 
 
@@ -234,14 +238,16 @@ export interface OrgFeedHandle {
 }
 
 
-export function openOrgFeedSocket(
-  orgId: string,
+function openLiveFeedSocket(
+  key: string,
+  path: string,
+  logTag: string,
   handlers: OrgFeedHandlers,
 ): OrgFeedHandle {
-  let bound = activeSockets.get(orgId);
+  let bound = activeSockets.get(key);
   if (bound === undefined) {
-    bound = new OrgFeedSocket(orgId, handlers);
-    activeSockets.set(orgId, bound);
+    bound = new OrgFeedSocket(path, logTag, handlers);
+    activeSockets.set(key, bound);
   } else {
     bound.setHandlers(handlers);
   }
@@ -251,9 +257,41 @@ export function openOrgFeedSocket(
     release: () => {
       socket.release();
       if (socket.refcountForCleanup === 0) {
-        activeSockets.delete(orgId);
+        activeSockets.delete(key);
       }
     },
     setHandlers: (h) => socket.setHandlers(h),
   };
+}
+
+
+/** Staff org feed — ``ws/org/<uuid>/feed/``. Auth via
+ *  ``vita_access`` cookie; consumer joins the ``org.feed.<uuid>``
+ *  Channels group. */
+export function openOrgFeedSocket(
+  orgId: string,
+  handlers: OrgFeedHandlers,
+): OrgFeedHandle {
+  return openLiveFeedSocket(
+    `org:${orgId}`,
+    `/ws/org/${orgId}/feed/`,
+    "org-feed",
+    handlers,
+  );
+}
+
+
+/** Customer portal feed — ``ws/portal/feed/``. Auth via
+ *  ``vita_portal_access`` cookie; consumer resolves the account's
+ *  org and joins the same ``org.feed.<uuid>`` group the staff
+ *  consumer joins so both sides see the same broadcasts. */
+export function openPortalFeedSocket(
+  handlers: OrgFeedHandlers,
+): OrgFeedHandle {
+  return openLiveFeedSocket(
+    "portal",
+    "/ws/portal/feed/",
+    "portal-feed",
+    handlers,
+  );
 }
