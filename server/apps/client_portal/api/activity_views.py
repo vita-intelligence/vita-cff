@@ -80,15 +80,22 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.cff_submissions.models import CFFSubmission, CFFSubmissionKind
+from apps.client_portal.api.project_stage import (
+    STAGE_LABELS,
+    STAGE_TONES,
+    resolve_stage,
+)
 from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import (
     customer_ids_for_account,
     formulation_ids_for_customer,
 )
-from apps.formulations.models import Formulation, ProjectStatus
+from apps.formulations.models import Formulation
+from apps.label_design.models import LabelDesign
 from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
 from apps.proposals.models import Proposal, ProposalStatus, ProposalTemplateType
+from apps.specifications.models import SpecificationSheet
 
 
 DEFAULT_LIMIT = 20
@@ -267,19 +274,17 @@ def _compute_counts(customer_ids: list, account, search: str) -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-#: Human-readable status labels + tones for Formulation.project_status.
-#: The dashboard endpoint has its own richer stage resolver (walks
-#: proposal / spec / label state) — for the activity feed we settle
-#: for the top-level project_status. Detail navigation to the project
-#: page carries the full story.
-_PROJECT_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
-    # status_key: (label, tone, needs_attention)
-    ProjectStatus.CONCEPT: ("Concept", "in_progress", False),
-    ProjectStatus.IN_DEVELOPMENT: ("In development", "in_progress", False),
-    ProjectStatus.PILOT: ("Pilot batches", "in_progress", False),
-    ProjectStatus.APPROVED: ("Approved", "success", False),
-    ProjectStatus.DISCONTINUED: ("Discontinued", "muted", False),
-}
+# Status derivation for custom-formulation cards was retired here —
+# the naive ``Formulation.project_status`` map (concept /
+# in_development / pilot / approved / discontinued) collapsed every
+# stage of the customer's lifecycle to one of five words and left
+# the card reading "In development" for weeks even after the
+# customer had been asked to sign a proposal or approve a label.
+# The NPD portal's dashboard endpoint already walked
+# proposal / spec / label state to compute a rich stage; that walk
+# now lives in :mod:`apps.client_portal.api.project_stage` and is
+# reused by :func:`_collect_projects` below. Same stage keys, same
+# labels, same tones — the two portals speak one language.
 
 
 def _projects_queryset(customer_ids: list, search: str) -> QuerySet:
@@ -306,19 +311,84 @@ def _collect_projects(
         .filter(_cursor_filter(cursor))
         .order_by("-updated_at", "-id")[:cap]
     )
+    if not rows:
+        return []
+
+    # Batch-load the three lifecycle signals ``resolve_stage`` needs
+    # (proposals + spec sheets + label design) for every formulation
+    # on this page in ONE query each — mirrors the ``_build_products``
+    # pattern in dashboard_views.py so the activity feed doesn't
+    # devolve into N+3 queries per row at scale.
+    formulation_ids = [row.id for row in rows]
+
+    from apps.client_portal.queries import customer_proposals_for_formulations
+
+    proposals_by_form: dict = {}
+    for p in customer_proposals_for_formulations(
+        customer_ids=customer_ids, formulation_ids=formulation_ids
+    ):
+        # Anchor project — pin the proposal here.
+        if p.formulation_version is not None:
+            proposals_by_form.setdefault(
+                p.formulation_version.formulation_id, []
+            ).append(p)
+        # Line-derived projects — pin the same proposal to each other
+        # project it touches. Dedup-aware so an anchor project doesn't
+        # get pinned twice when a line happens to repeat the anchor.
+        seen = {
+            p.formulation_version.formulation_id
+            if p.formulation_version
+            else None
+        }
+        for line in p.lines.all():
+            sheet = line.specification_sheet
+            if sheet is None or sheet.formulation_version is None:
+                continue
+            fid = sheet.formulation_version.formulation_id
+            if fid in seen:
+                continue
+            seen.add(fid)
+            proposals_by_form.setdefault(fid, []).append(p)
+
+    sheets_by_form: dict = {}
+    for s in (
+        SpecificationSheet.objects.filter(
+            formulation_version__formulation_id__in=formulation_ids,
+        )
+        .select_related("formulation_version")
+        .order_by("-updated_at")
+    ):
+        sheets_by_form.setdefault(
+            s.formulation_version.formulation_id, []
+        ).append(s)
+
+    labels_by_form: dict = {}
+    for ld in LabelDesign.objects.filter(formulation_id__in=formulation_ids):
+        labels_by_form[ld.formulation_id] = ld
+
     items: list[dict] = []
     for row in rows:
-        status_label, tone, needs = _PROJECT_STATUS_MAP.get(
-            row.project_status, ("In progress", "in_progress", False),
+        stage_key, _action_url = resolve_stage(
+            formulation=row,
+            proposals=proposals_by_form.get(row.id, []),
+            sheets=sheets_by_form.get(row.id, []),
+            label_design=labels_by_form.get(row.id),
         )
+        status_label = STAGE_LABELS.get(stage_key, STAGE_LABELS["unknown"])
+        tone, needs = STAGE_TONES.get(stage_key, ("in_progress", False))
         items.append(
             {
                 "kind": "project",
                 "id": str(row.id),
+                # The card's ``code`` follows the project's ``code``
+                # so a CFF that was triaged into project "MA22222"
+                # now renders as ``MA22222`` instead of the old
+                # brief title — matches the operator's stated
+                # mental model ("the CFF became a project called X").
                 "code": row.code or "",
                 "title": row.name or row.code or "Untitled formulation",
                 "subtitle": "Custom formulation",
-                "status_key": row.project_status,
+                "status_key": stage_key,
                 "status_label": status_label,
                 "status_tone": tone,
                 "href": f"/portal/projects/{row.id}",
