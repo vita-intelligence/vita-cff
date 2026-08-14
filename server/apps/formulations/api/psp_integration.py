@@ -268,58 +268,80 @@ class LatestValidationSheetHtmlView(APIView):
         token = _resolve_token(request)
 
         raw_uuid = (request.query_params.get("trial_batch") or "").strip()
-        if not raw_uuid:
-            raise NotFound("trial_batch_required")
+        # ``formulation`` is the pure-formulation fallback: sample MOs
+        # spawned from an already-approved RTG have NO
+        # ``npd_trial_batch_uuid`` on the PSP side (the RTG's
+        # canonical trial batch belongs to a different sample
+        # payment) so PSP can't pass a ``trial_batch`` at all. Passing
+        # the formulation instead lets NPD resolve "latest passed on
+        # ANY trial batch of this formulation" — the compliance
+        # artefact QA wants embedded on the QC page.
+        raw_formulation = (request.query_params.get("formulation") or "").strip()
 
-        validations = ProductValidation.objects.filter(trial_batch_id=raw_uuid)
-        if token is not None:
-            validations = validations.filter(organization=token.organization)
+        if not raw_uuid and not raw_formulation:
+            raise NotFound("trial_batch_or_formulation_required")
 
-        passed = (
-            validations.filter(status="passed")
-            .order_by("-updated_at")
-            .first()
-        )
-        failed = (
-            validations.filter(status="failed")
-            .order_by("-updated_at")
-            .first()
-        )
-        chosen = passed or failed
+        chosen = None
 
-        # Formulation-level fallback. A sample MO ships against a
-        # freshly-spawned sample TrialBatch that has no validation of
-        # its own — but the underlying formulation was already
-        # validated on a PREVIOUS trial batch (that's what let it be
-        # sold as a sample in the first place). Fall through to the
-        # latest ``passed`` validation on ANY trial batch of the same
-        # formulation so the PSP run page shows the compliance
-        # artefact instead of a "no validation" stub.
-        #
-        # Only ``passed`` at this stage — a stale ``failed`` from a
-        # prior batch isn't the compliance evidence PSP needs, and
-        # showing it would misrepresent the current formulation as
-        # unfit for a sample run. If nothing passed exists at all the
-        # 404 path still fires below.
-        if chosen is None:
-            from apps.trial_batches.models import TrialBatch
+        if raw_uuid:
+            validations = ProductValidation.objects.filter(trial_batch_id=raw_uuid)
+            if token is not None:
+                validations = validations.filter(organization=token.organization)
 
-            formulation_id = (
-                TrialBatch.objects
-                .filter(pk=raw_uuid)
-                .values_list("formulation_version__formulation_id", flat=True)
+            passed = (
+                validations.filter(status="passed")
+                .order_by("-updated_at")
                 .first()
             )
-            if formulation_id:
-                fallback_qs = ProductValidation.objects.filter(
-                    trial_batch__formulation_version__formulation_id=formulation_id,
-                    status="passed",
+            failed = (
+                validations.filter(status="failed")
+                .order_by("-updated_at")
+                .first()
+            )
+            chosen = passed or failed
+
+            # Formulation-level fallback from a trial-batch lookup —
+            # unchanged from the prior behaviour: an in-progress /
+            # draft trial batch owned by the same formulation still
+            # gets the formulation's canonical passed validation
+            # (which is what let this formulation be sampleable in
+            # the first place).
+            if chosen is None:
+                from apps.trial_batches.models import TrialBatch
+
+                formulation_id = (
+                    TrialBatch.objects
+                    .filter(pk=raw_uuid)
+                    .values_list("formulation_version__formulation_id", flat=True)
+                    .first()
                 )
-                if token is not None:
-                    fallback_qs = fallback_qs.filter(
-                        organization=token.organization
+                if formulation_id:
+                    fallback_qs = ProductValidation.objects.filter(
+                        trial_batch__formulation_version__formulation_id=formulation_id,
+                        status="passed",
                     )
-                chosen = fallback_qs.order_by("-updated_at").first()
+                    if token is not None:
+                        fallback_qs = fallback_qs.filter(
+                            organization=token.organization
+                        )
+                    chosen = fallback_qs.order_by("-updated_at").first()
+
+        # Pure-formulation path — used by PSP when the MO has no
+        # ``npd_trial_batch_uuid`` (typical for sample MOs of already-
+        # approved RTG products). Only ``passed`` at this stage: a
+        # stale ``failed`` from a prior batch isn't the compliance
+        # evidence PSP needs, and showing it would misrepresent the
+        # current formulation as unfit.
+        if chosen is None and raw_formulation:
+            fallback_qs = ProductValidation.objects.filter(
+                trial_batch__formulation_version__formulation_id=raw_formulation,
+                status="passed",
+            )
+            if token is not None:
+                fallback_qs = fallback_qs.filter(
+                    organization=token.organization
+                )
+            chosen = fallback_qs.order_by("-updated_at").first()
 
         if chosen is None:
             raise NotFound("no_validation")
