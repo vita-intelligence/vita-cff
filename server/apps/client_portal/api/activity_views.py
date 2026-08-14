@@ -555,11 +555,91 @@ def _rtg_total(proposal: Proposal) -> Decimal | None:
 # ---------------------------------------------------------------------------
 
 
+# Fallback status map, used only when we don't have a PSP snapshot
+# for the sample (payment still pending, PSP off, sync not yet
+# reached). Once the payment is confirmed and PSP has a CO, we
+# derive from ``_PSP_PHASE_TO_ACTIVITY_STATUS`` below so the portal
+# reflects actual production progress instead of freezing at
+# "Confirmed — kit shipping soon" forever.
 _SAMPLE_STATUS_MAP: dict[str, tuple[str, str, bool]] = {
     PaymentStatus.PENDING: ("Awaiting confirmation", "in_progress", False),
     PaymentStatus.APPROVED: ("Confirmed — kit shipping soon", "success", False),
     PaymentStatus.VOIDED: ("Cancelled", "danger", False),
 }
+
+# PSP OrderWizard phase → activity-feed ``(label, tone,
+# needs_attention)``. Matches the copy on
+# :file:`apps/client_portal/api/sample_detail_views.py` so the
+# activity feed and the sample-detail page speak the same language.
+# ``dispatched`` / ``delivered`` land as ``success``; every mid-
+# production state stays ``in_progress`` so the tone doesn't
+# prematurely turn green.
+_PSP_PHASE_TO_ACTIVITY_STATUS: dict[str, tuple[str, str, bool]] = {
+    "setup": ("Setting up your order", "in_progress", False),
+    "approval": ("Awaiting internal approval", "in_progress", False),
+    "production_planning": ("Being scheduled", "in_progress", False),
+    "awaiting_ingredients": ("Sourcing ingredients", "in_progress", False),
+    "in_production": ("In production", "in_progress", False),
+    "closeout": ("Wrapping up production", "in_progress", False),
+    "final_release": ("Final quality release", "in_progress", False),
+    "awaiting_routing": ("Preparing shipment", "in_progress", False),
+    "ready_to_dispatch": ("Ready to ship", "in_progress", False),
+    "awaiting_pickup": ("Awaiting courier", "in_progress", False),
+    "dispatched": ("On the way", "success", False),
+    "delivered": ("Delivered", "success", False),
+}
+
+
+def _sample_status_from_psp(payment) -> tuple[str, str, str, bool] | None:
+    """``(status_key, status_label, tone, needs_attention)`` derived
+    from PSP's OrderWizard snapshot for this sample payment's CO, or
+    ``None`` when we should fall back to :data:`_SAMPLE_STATUS_MAP`.
+
+    Fallback triggers: payment isn't APPROVED yet (nothing on PSP to
+    snapshot); PSP unreachable / decrypt failure (silent-degrade
+    contract); CO hasn't synced yet (rare — retry cycle covers it);
+    snapshot phase key isn't in our mapping (unknown phase, don't
+    render a wrong label).
+
+    Cost: one HTTP round-trip to PSP per sample. The activity feed
+    is bounded by ``cap`` (default 20) so this adds ~20 calls per
+    page load. A follow-up should batch or denormalise
+    ``current_phase`` onto the Payment row via PSP webhooks.
+    """
+
+    if payment.status != PaymentStatus.APPROVED:
+        return None
+
+    from apps.psp.services import get_psp_customer_order_snapshot
+
+    try:
+        payload = get_psp_customer_order_snapshot(
+            organization=payment.organization, co_uuid=payment.id
+        )
+    except Exception:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    snapshot = payload.get("snapshot")
+    if not isinstance(snapshot, dict):
+        return None
+
+    phase = snapshot.get("phase")
+    if not isinstance(phase, dict):
+        return None
+
+    phase_key = phase.get("key")
+    if not isinstance(phase_key, str):
+        return None
+
+    mapped = _PSP_PHASE_TO_ACTIVITY_STATUS.get(phase_key)
+    if mapped is None:
+        return None
+
+    label, tone, needs = mapped
+    return (phase_key, label, tone, needs)
 
 
 def _samples_queryset(customer_ids: list, search: str) -> QuerySet:
@@ -604,9 +684,21 @@ def _collect_samples(
     for row in rows:
         formulation = row.formulation
         title = _formulation_display_name(formulation) or "Sample kit"
-        status_label, tone, needs = _SAMPLE_STATUS_MAP.get(
-            row.status, ("Processing", "in_progress", False),
-        )
+
+        # Prefer the PSP-derived status once the payment is confirmed
+        # AND PSP has a snapshot to hand back. Falls back to the
+        # payment-status map when PSP is off, the CO hasn't synced,
+        # or the phase key is unknown — keeps the card populated
+        # without leaking a wrong status.
+        psp_status = _sample_status_from_psp(row)
+        if psp_status is not None:
+            status_key, status_label, tone, needs = psp_status
+        else:
+            status_key = row.status
+            status_label, tone, needs = _SAMPLE_STATUS_MAP.get(
+                row.status, ("Processing", "in_progress", False),
+            )
+
         items.append(
             {
                 "kind": "sample",
@@ -614,7 +706,7 @@ def _collect_samples(
                 "code": getattr(formulation, "code", "") or "",
                 "title": f"Sample · {title}",
                 "subtitle": "Paid sample request",
-                "status_key": row.status,
+                "status_key": status_key,
                 "status_label": status_label,
                 "status_tone": tone,
                 # Deep-link to the sample detail route so the customer
