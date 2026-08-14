@@ -102,11 +102,19 @@ def customer_ids_for_account(account) -> list:
 def formulation_ids_for_customer(customer_ids: Iterable[UUID]) -> set:
     """Return every formulation id the customer rows can see.
 
-    Union of:
+    Union of THREE ownership paths:
 
-    1. ``Proposal.formulation_version.formulation_id`` — the anchor
+    1. ``Formulation.customer_id`` — the direct FK a triager sets
+       via :func:`apps.formulations.services.link_customer` (fires
+       automatically now from :func:`apps.cff_submissions.services.
+       create_project_from_cff` — see PR #234). This path covers
+       fresh projects created off a CFF that don't yet carry a
+       Proposal; without it the portal misses every project until
+       sales drafts its first proposal, which reads to the customer
+       as "my brief vanished after triage".
+    2. ``Proposal.formulation_version.formulation_id`` — the anchor
        project on each proposal owned by any of ``customer_ids``.
-    2. ``ProposalLine.specification_sheet.formulation_version.
+    3. ``ProposalLine.specification_sheet.formulation_version.
        formulation_id`` — every project pulled in via a proposal
        line. Captures multi-project bundles where the proposal is
        anchored on one project but covers others through its
@@ -120,6 +128,15 @@ def formulation_ids_for_customer(customer_ids: Iterable[UUID]) -> set:
     if not ids_list:
         return set()
 
+    # Local import — the Formulation model can't be resolved at
+    # module import time without pulling the apps.formulations
+    # package into the client_portal boot graph.
+    from apps.formulations.models import Formulation
+
+    direct_ids = Formulation.objects.filter(
+        customer_id__in=ids_list,
+    ).values_list("id", flat=True)
+
     anchor_ids = Proposal.objects.filter(
         customer_id__in=ids_list,
     ).values_list("formulation_version__formulation_id", flat=True)
@@ -132,6 +149,9 @@ def formulation_ids_for_customer(customer_ids: Iterable[UUID]) -> set:
     )
 
     ids: set = set()
+    for fid in direct_ids:
+        if fid is not None:
+            ids.add(fid)
     for fid in anchor_ids:
         if fid is not None:
             ids.add(fid)
