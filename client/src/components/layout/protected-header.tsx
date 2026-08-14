@@ -6,6 +6,7 @@ import {
   type HeaderNavItem,
 } from "@/components/layout/header-nav";
 import { HeaderSideIcons } from "@/components/layout/header-side-icons";
+import { OrgFeedSubscriber } from "@/components/layout/org-feed-subscriber";
 import { OrgSwitcher } from "@/components/layout/org-switcher";
 import { UserMenu } from "@/components/layout/user-menu";
 import { MessengerBell } from "@/components/messenger";
@@ -319,6 +320,15 @@ export async function ProtectedHeader({
       className="-mt-6 mb-6 w-[100vw] border-b border-ink-200 bg-white md:-mt-12 md:mb-8"
       style={{ marginLeft: "calc(50% - 50vw)" }}
     >
+      {/*
+        Live-feed subscription for the active org. Every staff page
+        renders ProtectedHeader, so mounting the subscriber here
+        gives every page a subscription without per-page wiring.
+        The socket is ref-counted in the shared registry so pages
+        that also call useOrgFeed / usePaymentsLive directly share
+        one underlying connection.
+      */}
+      {primaryOrg ? <OrgFeedSubscriber orgId={primaryOrg.id} /> : null}
       <div className="mx-auto flex w-full max-w-[1600px] items-center justify-between gap-3 px-4 py-3 sm:px-6 md:px-10 md:py-4">
         <div className="flex items-center gap-3 md:gap-6">
           <span className="text-sm font-semibold tracking-tight text-ink-1000">

@@ -1,24 +1,25 @@
 /**
- * WebSocket client for the finance payments live feed.
+ * WebSocket client for the org-scoped live feed.
  *
- * One socket per (browser tab, organisation). Mirrors the inbox
- * client in :file:`services/inbox/ws-client.ts`:
+ * One socket per (browser tab, organisation). Every high-value
+ * staff-facing list — CFF, projects, proposals, samples, trial
+ * batches, label designs, specifications, payments — shares this
+ * transport. Adding a new entity kind is (a) a broadcast call site
+ * on the backend + (b) one mapping row in
+ * :file:`use-org-feed.ts` — no new socket, no new URL.
  *
- *  * ref-counted acquire / release so mounting the same feed hook in
- *    two components on the page does not open two sockets;
- *  * exponential backoff with jitter on non-terminal closes;
+ * Shape mirrors :file:`services/inbox/ws-client.ts`:
+ *  * ref-counted acquire / release so mounting the hook on two
+ *    components on one page does not open two sockets;
+ *  * exponential backoff + jitter on non-terminal closes;
  *  * terminal close codes short-circuit reconnect so a
- *    ``forbidden`` / ``bad target`` does not spin forever.
- *
- * The feed is server-push only. Clients send ``ping`` opportunistically
- * so proxies that swallow idle TCP get an application-layer heartbeat;
- * everything else the server sends is a ``payment.changed`` envelope,
- * which the FE hook translates into a TanStack Query invalidation.
+ *    ``forbidden`` / ``bad target`` / ``inactive`` does not spin
+ *    forever.
  */
 
 
-// Matches the close codes in ``apps/payments/consumers.py`` (same set
-// the comments + inbox consumers use — one shared FE guard).
+// Terminal close codes — same set as the comments + inbox consumers
+// (see :mod:`apps.comments.consumers`).
 const CLOSE_UNAUTHENTICATED = 4401;
 const CLOSE_FORBIDDEN = 4403;
 const CLOSE_BAD_TARGET = 4404;
@@ -32,48 +33,55 @@ const TERMINAL_CODES = new Set<number>([
 ]);
 
 
-export interface PaymentChangedPayload {
-  readonly payment_id: string;
-  readonly action:
-    | "created"
-    | "updated"
-    | "approved"
-    | "voided"
-    | "assigned"
-    | "invoice_attached";
-  readonly status: "pending" | "approved" | "voided";
-  readonly kind: "final" | "deposit";
+/** Entities the backend broadcasts today. Keep in sync with
+ *  ``EntityKind`` in :mod:`apps.organizations.live` and the routing
+ *  table in :file:`use-org-feed.ts`. */
+export type OrgFeedEntity =
+  | "payment"
+  | "cff_submission"
+  | "formulation"
+  | "proposal"
+  | "trial_batch"
+  | "label_design"
+  | "specification";
+
+
+export interface EntityChangedPayload {
+  readonly entity: OrgFeedEntity | (string & {});
+  readonly entity_id: string;
+  readonly action: string;
+  // Optional entity-specific extras — e.g. Payment carries
+  // ``status`` + ``kind`` for cheap column routing. Unknown extras
+  // are ignored by the FE.
+  readonly [key: string]: unknown;
 }
 
 
-export interface PaymentsSocketHandlers {
-  /** Fired for every ``payment.changed`` envelope pushed by the
-   *  server. Typically wired to a TanStack Query invalidation of the
-   *  three list caches for the org. */
-  readonly onPaymentChanged?: (payload: PaymentChangedPayload) => void;
-  /** Fired on socket open — the hook uses this to force a reconcile
-   *  invalidate on reconnect so any events fired during a
+export interface OrgFeedHandlers {
+  readonly onEntityChanged?: (payload: EntityChangedPayload) => void;
+  /** Fires on socket open — hooks use this to force a reconcile
+   *  invalidation on reconnect so any events pushed during a
    *  disconnected interval are picked up. */
   readonly onConnect?: () => void;
 }
 
 
 type IncomingMessage =
-  | { type: "payment.changed"; payload: PaymentChangedPayload }
+  | { type: "entity.changed"; payload: EntityChangedPayload }
   | { type: "pong" }
   | { type: string; [key: string]: unknown };
 
 
-class PaymentsSocket {
+class OrgFeedSocket {
   private readonly orgId: string;
-  private handlers: PaymentsSocketHandlers;
+  private handlers: OrgFeedHandlers;
   private ws: WebSocket | null = null;
   private refcount = 0;
   private retryCount = 0;
   private reconnectTimer: number | null = null;
   private stopped = false;
 
-  constructor(orgId: string, handlers: PaymentsSocketHandlers) {
+  constructor(orgId: string, handlers: OrgFeedHandlers) {
     this.orgId = orgId;
     this.handlers = handlers;
   }
@@ -92,7 +100,7 @@ class PaymentsSocket {
     }
   }
 
-  setHandlers(handlers: PaymentsSocketHandlers): void {
+  setHandlers(handlers: OrgFeedHandlers): void {
     this.handlers = handlers;
   }
 
@@ -103,9 +111,7 @@ class PaymentsSocket {
   private open(): void {
     if (typeof window === "undefined") return;
     const proto = window.location.protocol === "https:" ? "wss" : "ws";
-    const path = `/ws/org/${this.orgId}/payments/`;
-    // Dev does not proxy WS through Next; connect directly to the
-    // backend port. Prod terminates HTTP + WS on the same host.
+    const path = `/ws/org/${this.orgId}/feed/`;
     const envOrigin =
       process.env.NEXT_PUBLIC_WS_ORIGIN?.trim() || "";
     let url: string;
@@ -122,7 +128,7 @@ class PaymentsSocket {
     try {
       socket = new WebSocket(url);
     } catch (err) {
-      console.warn("[payments] failed to construct WebSocket", err);
+      console.warn("[org-feed] failed to construct WebSocket", err);
       this.scheduleReconnect();
       return;
     }
@@ -142,10 +148,10 @@ class PaymentsSocket {
       }
       if (parsed === null || typeof parsed !== "object") return;
       if (
-        parsed.type === "payment.changed" &&
-        isPaymentChangedPayload(parsed.payload)
+        parsed.type === "entity.changed" &&
+        isEntityChangedPayload(parsed.payload)
       ) {
-        this.handlers.onPaymentChanged?.(parsed.payload);
+        this.handlers.onEntityChanged?.(parsed.payload);
       }
     });
 
@@ -154,7 +160,7 @@ class PaymentsSocket {
       if (this.stopped) return;
       if (TERMINAL_CODES.has(e.code)) {
         console.warn(
-          "[payments] WS closed with terminal code",
+          "[org-feed] WS closed with terminal code",
           e.code,
           e.reason,
         );
@@ -201,16 +207,15 @@ class PaymentsSocket {
 }
 
 
-function isPaymentChangedPayload(
+function isEntityChangedPayload(
   payload: unknown,
-): payload is PaymentChangedPayload {
+): payload is EntityChangedPayload {
   if (typeof payload !== "object" || payload === null) return false;
   const v = payload as Record<string, unknown>;
   return (
-    typeof v.payment_id === "string" &&
-    typeof v.action === "string" &&
-    typeof v.status === "string" &&
-    typeof v.kind === "string"
+    typeof v.entity === "string" &&
+    typeof v.entity_id === "string" &&
+    typeof v.action === "string"
   );
 }
 
@@ -220,22 +225,22 @@ function isPaymentChangedPayload(
 // ---------------------------------------------------------------------------
 
 
-const activeSockets = new Map<string, PaymentsSocket>();
+const activeSockets = new Map<string, OrgFeedSocket>();
 
 
-export interface PaymentsSocketHandle {
+export interface OrgFeedHandle {
   readonly release: () => void;
-  readonly setHandlers: (handlers: PaymentsSocketHandlers) => void;
+  readonly setHandlers: (handlers: OrgFeedHandlers) => void;
 }
 
 
-export function openPaymentsSocket(
+export function openOrgFeedSocket(
   orgId: string,
-  handlers: PaymentsSocketHandlers,
-): PaymentsSocketHandle {
+  handlers: OrgFeedHandlers,
+): OrgFeedHandle {
   let bound = activeSockets.get(orgId);
   if (bound === undefined) {
-    bound = new PaymentsSocket(orgId, handlers);
+    bound = new OrgFeedSocket(orgId, handlers);
     activeSockets.set(orgId, bound);
   } else {
     bound.setHandlers(handlers);
