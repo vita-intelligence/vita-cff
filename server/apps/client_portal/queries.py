@@ -188,12 +188,42 @@ def proposals_covering_formulation(
 def customer_owns_formulation(
     *, customer_ids: Iterable[UUID], formulation_id,
 ) -> bool:
-    """Cheap ownership check — do any of the customer rows have at
-    least one proposal covering this formulation (anchor or via lines)?
+    """Does any of the customer rows own this formulation via ANY path?
+
+    Unions the same three ownership paths as
+    :func:`formulation_ids_for_customer`:
+
+    1. ``Formulation.customer_id`` — the direct FK :func:`apps.
+       formulations.services.link_customer` sets (fires automatically
+       from CFF triage in :func:`apps.cff_submissions.services.
+       create_project_from_cff` — see PR #234). Covers fresh projects
+       created off a CFF that don't yet carry a Proposal.
+    2. ``Proposal.formulation_version.formulation_id`` — the anchor
+       project on each proposal owned by the customer.
+    3. ``ProposalLine.specification_sheet.formulation_version.
+       formulation_id`` — every project pulled in via a proposal line
+       (multi-project bundles).
+
+    Before this walk, ownership was proposal-only — the list
+    endpoint would happily surface a direct-linked project (via
+    :func:`formulation_ids_for_customer`) while the detail endpoint
+    404'd on the same project because it hadn't been quoted yet.
+    The customer clicked their card and got "Project not found".
     """
 
+    cids = list(customer_ids)
+    if not cids:
+        return False
+
+    from apps.formulations.models import Formulation
+
+    if Formulation.objects.filter(
+        id=formulation_id, customer_id__in=cids,
+    ).exists():
+        return True
+
     return proposals_covering_formulation(
-        customer_ids=customer_ids, formulation_id=formulation_id,
+        customer_ids=cids, formulation_id=formulation_id,
     ).exists()
 
 
