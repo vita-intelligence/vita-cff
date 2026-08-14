@@ -1224,6 +1224,25 @@ def create_portal_submission(
         ),
         submitted_by_client_account=client_account,
     )
+
+    # Scientist notification. Deferred to on_commit so a broken SMTP
+    # relay never rolls back a legitimate CFF write — same posture
+    # the payments-side ``notify_scientists_sample_ready`` follows.
+    # Wix / web-site submissions have their own intake pipeline and
+    # don't fire this today; the portal path is where a scientist
+    # needs a direct heads-up because the CFF landed without an
+    # operator-driven import step to trigger the triage inbox.
+    submission_pk = submission.pk
+
+    def _fire_scientist_notification() -> None:
+        from apps.cff_submissions.staff_notifications import (
+            notify_scientists_new_portal_cff,
+        )
+
+        notify_scientists_new_portal_cff(submission_id=submission_pk)
+
+    transaction.on_commit(_fire_scientist_notification)
+
     return submission
 
 
@@ -1240,7 +1259,9 @@ class CreateFromCFFResult:
     ``cff`` to refresh the inbox view, and the two ``sales_person``
     fields to render an outcome-specific toast (auto-assigned to X,
     or "no team member matched the customer's account-manager
-    email Y — assign manually" if the match failed).
+    email Y — assign manually" if the match failed). The
+    ``customer`` fields mirror that shape so the UI can render a
+    matching outcome toast for the customer link.
     """
 
     project: Formulation
@@ -1252,6 +1273,19 @@ class CreateFromCFFResult:
     #: chase the customer for a corrected email or just assign by
     #: hand.
     cff_sales_person_email_hint: str | None
+    #: Customer auto-linked to the project. ``None`` when no
+    #: matching Customer row exists in this org — the triager can
+    #: then create one via the Customers page and hit the manual
+    #: link-customer endpoint. Portal-authenticated CFFs always hit
+    #: the fast path (``client_account.customer``); Wix / web-site
+    #: submissions fall through to an email-based lookup.
+    auto_linked_customer_id: str | None
+    auto_linked_customer_name: str | None
+    #: The submitter email pulled off the CFF (either portal-tracked
+    #: ``submitter_email`` or the client_account's email). Surfaced
+    #: even when the lookup found nothing so the FE can say "no
+    #: matching customer for ``x@y.com`` — create one to link".
+    cff_customer_email_hint: str | None
 
 
 def _extract_sales_person_email(submission: CFFSubmission) -> str | None:
@@ -1296,6 +1330,65 @@ def _resolve_sales_person(
         .first()
     )
     return membership.user if membership else None
+
+
+def _resolve_customer_for_submission(submission: CFFSubmission) -> tuple[Any | None, str | None]:
+    """``(customer_or_none, submitter_email_hint)`` for auto-linking
+    on :func:`create_project_from_cff`.
+
+    Two lookup paths, in order of certainty:
+
+    1. **Portal-authenticated CFF** — ``submitted_by_client_account``
+       is set at :func:`create_portal_submission` time, and the
+       account is 1:1 with a :class:`Customer` today. Direct FK, no
+       ambiguity.
+
+    2. **Wix / web-site submission** — no client_account. Fall back
+       to a case-insensitive email match on
+       ``Customer.email`` within the same organization. Skips if no
+       row matches so the triager surfaces the "no matching customer"
+       hint from the returned email.
+
+    Deliberately does NOT auto-create a Customer for path 2 — the
+    Customers page is where identity gets minted (with contact rows,
+    invoice address, etc). Auto-creating a minimal row here would
+    fragment the address book and hide the human governance step.
+    """
+
+    # Path 1 — portal
+    account = getattr(submission, "submitted_by_client_account", None)
+    if account is not None:
+        customer = getattr(account, "customer", None)
+        # Ownership sanity — a portal account whose customer somehow
+        # lives in another org (data drift; shouldn't happen) is
+        # NOT linked here. The org boundary is the only defence we
+        # can enforce mechanically.
+        if customer is not None and getattr(customer, "organization_id", None) == submission.organization_id:
+            hint = (
+                getattr(customer, "email", "")
+                or getattr(account, "email", "")
+                or submission.submitter_email
+                or ""
+            ).strip() or None
+            return (customer, hint)
+
+    # Path 2 — email-based lookup for Wix / web-site submissions.
+    email = (submission.submitter_email or "").strip()
+    if not email:
+        return (None, None)
+
+    from apps.customers.models import Customer
+
+    match = (
+        Customer.objects
+        .filter(
+            organization=submission.organization,
+            email__iexact=email,
+        )
+        .only("id", "name", "company", "email")
+        .first()
+    )
+    return (match, email)
 
 
 @transaction.atomic
@@ -1346,6 +1439,7 @@ def create_project_from_cff(
         SalesPersonNotMember,
         assign_sales_person,
         create_formulation,
+        link_customer,
     )
 
     # Only pass through fields the operator actually filled in;
@@ -1385,6 +1479,22 @@ def create_project_from_cff(
     assign_to_project(submission=submission, project=project, actor=actor)
     submission.refresh_from_db()
 
+    # Auto-link the customer. Portal-authenticated CFFs hit the fast
+    # path (client_account.customer FK); Wix / web-site submissions
+    # fall through to an email lookup. Silent-degrade on no-match:
+    # returned as ``auto_linked_customer_id=None`` + ``cff_customer_
+    # email_hint=<email>`` so the FE toast can nudge the triager to
+    # create the Customer manually. Mirrors the sales-person shape.
+    resolved_customer, customer_email_hint = _resolve_customer_for_submission(
+        submission,
+    )
+    if resolved_customer is not None:
+        link_customer(
+            formulation=project,
+            customer=resolved_customer,
+            actor=actor,
+        )
+
     sales_email = _extract_sales_person_email(submission)
     resolved_user = None
     if sales_email and can_assign_sales_person:
@@ -1415,6 +1525,15 @@ def create_project_from_cff(
             resolved_user.email if resolved_user else None
         ),
         cff_sales_person_email_hint=sales_email,
+        auto_linked_customer_id=(
+            str(resolved_customer.id) if resolved_customer else None
+        ),
+        auto_linked_customer_name=(
+            (getattr(resolved_customer, "company", "") or "").strip()
+            or (getattr(resolved_customer, "name", "") or "").strip()
+            or None
+        ) if resolved_customer else None,
+        cff_customer_email_hint=customer_email_hint,
     )
 
 

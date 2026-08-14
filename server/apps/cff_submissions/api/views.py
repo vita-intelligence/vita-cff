@@ -600,6 +600,22 @@ class CFFCreateProjectView(APIView):
                 ),
                 "cff_sales_person_email_hint": result.cff_sales_person_email_hint,
                 "can_assign_sales_person": can_assign_sales,
+                # Auto-linked customer — same shape as the sales-person
+                # block. Present when the resolver found a matching
+                # Customer row (portal path uses client_account.customer;
+                # Wix / web-site path does a case-insensitive email
+                # lookup within the org). Null when nothing matched —
+                # FE toast reads the ``cff_customer_email_hint`` to
+                # nudge the triager to create the Customer manually.
+                "auto_linked_customer": (
+                    {
+                        "id": result.auto_linked_customer_id,
+                        "name": result.auto_linked_customer_name,
+                    }
+                    if result.auto_linked_customer_id
+                    else None
+                ),
+                "cff_customer_email_hint": result.cff_customer_email_hint,
             },
             status=status.HTTP_201_CREATED,
         )

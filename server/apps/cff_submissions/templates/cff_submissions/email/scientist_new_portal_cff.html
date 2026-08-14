@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>New Custom Formulation Form from the portal</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f5f7fb;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f7fb;padding:24px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:12px;border:1px solid #e2e8f0;overflow:hidden;">
+            <tr>
+              <td style="padding:24px 28px 8px 28px;">
+                <p style="margin:0;font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:#4f46e5;font-weight:700;">CFF triage</p>
+                <h1 style="margin:6px 0 0 0;font-size:20px;color:#0f172a;">New Custom Formulation Form from the portal</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 28px 4px 28px;font-size:14px;line-height:1.5;color:#334155;">
+                {{ submitter_display }} just filled out a Custom Formulation Form on the customer portal. It's landed on the CFF triage inbox and is ready for a scientist to review + convert into a project.
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 28px 8px 28px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc;">
+                  <tr>
+                    <td style="padding:12px 16px;">
+                      <p style="margin:0;font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:#64748b;font-weight:700;">Submitter</p>
+                      <p style="margin:2px 0 0 0;font-size:14px;color:#0f172a;font-weight:600;">
+                        {{ submitter_display }}{% if submitter_email %} <span style="color:#64748b;font-weight:400;">· {{ submitter_email }}</span>{% endif %}
+                      </p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 28px 24px 28px;" align="left">
+                <a href="{{ cff_url }}" style="display:inline-block;background:#4f46e5;color:#ffffff;text-decoration:none;font-size:14px;font-weight:600;padding:10px 18px;border-radius:8px;">
+                  Open the CFF
+                </a>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 28px 20px 28px;font-size:11px;line-height:1.5;color:#94a3b8;">
+                You're receiving this because your Vita membership carries the scientist role (or you're the workspace owner).
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
