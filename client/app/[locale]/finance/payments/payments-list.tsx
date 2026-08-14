@@ -20,6 +20,7 @@ import {
   uploadPaymentInvoice,
   useAwaitingDeposits,
   usePayments,
+  usePaymentsLive,
   usePendingPaymentProjects,
   useRecordPayment,
   type AwaitingDepositDto,
@@ -105,6 +106,16 @@ export function PaymentsList({
   canRecord: boolean;
   canApprove: boolean;
 }) {
+  // Live push — every open finance tab invalidates its payments
+  // caches on ``payment.changed`` events from the backend so a
+  // storefront checkout (localhost:3000) lights up here (:3001)
+  // within a second, without the user reloading. See
+  // ``usePaymentsLive`` for the full rationale (the
+  // ``refetchOnWindowFocus: false`` + 60s ``staleTime`` in the
+  // shared TanStack Query client would otherwise leave this page
+  // stale for up to a minute).
+  usePaymentsLive(orgId);
+
   // Pipeline layout: three side-by-side columns, each a live
   // paginated list. Instead of one status dropdown, every stage
   // is on screen simultaneously so finance never has to click a

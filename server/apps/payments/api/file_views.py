@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from apps.organizations.modules import FinanceCapability
 from apps.payments.api.permissions import HasFinancePermission
 from apps.payments.api.serializers import PaymentFileReadSerializer
+from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.payments.models import Payment, PaymentFile
 
 
@@ -114,6 +115,10 @@ class PaymentInvoicesView(APIView):
         # non-sample payments.
         from apps.psp.services import maybe_resync_sample_payment_to_psp
         maybe_resync_sample_payment_to_psp(payment=payment)
+        # Live push — the invoice-count paperclip on the payment card
+        # bumps without a reload. Same channel the record/approve/void
+        # paths use so the FE hook doesn't need to distinguish.
+        schedule_payment_changed_broadcast(payment, "invoice_attached")
         return Response({"file": _payload(row)}, status=status.HTTP_201_CREATED)
 
 
@@ -148,4 +153,7 @@ class PaymentInvoiceDetailView(APIView):
         # bytes are gone. Silent-degrade, no-op for non-samples.
         from apps.psp.services import maybe_resync_sample_payment_to_psp
         maybe_resync_sample_payment_to_psp(payment=payment)
+        # Same live push as attach — the paperclip / count updates
+        # on every open finance tab.
+        schedule_payment_changed_broadcast(payment, "invoice_attached")
         return Response(status=status.HTTP_204_NO_CONTENT)

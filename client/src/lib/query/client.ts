@@ -18,9 +18,23 @@ function makeQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 60 * 1000,
+        // Realtime-first posture: the primary freshness driver is the
+        // org-scoped WebSocket feed (see :file:`services/payments`
+        // — first tenant; the pattern generalises to CFF, projects,
+        // proposals, samples, trial batches, label designs). These
+        // defaults are the belt-and-braces fallback for any query
+        // that isn't yet wired to the feed OR the window where a tab
+        // is disconnected from the WS. Was ``staleTime: 60_000`` +
+        // ``refetchOnWindowFocus: false`` — that combination held a
+        // sample-order payment invisible on ``/finance/payments/``
+        // for up to a minute after the customer clicked "Place
+        // order" on the storefront (different app, no cache
+        // overlap). 5 seconds is short enough that a tab that
+        // missed a WS push (proxy hiccup, sleep/resume) still
+        // reconciles in a way the operator perceives as "instant".
+        staleTime: 5 * 1000,
         gcTime: 5 * 60 * 1000,
-        refetchOnWindowFocus: false,
+        refetchOnWindowFocus: true,
         retry: (failureCount, error) => {
           // Don't retry client-side validation or auth failures.
           if (error instanceof ApiError) {

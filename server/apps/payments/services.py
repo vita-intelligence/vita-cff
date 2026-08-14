@@ -23,6 +23,7 @@ from apps.audit.services import record as record_audit
 from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
 from apps.label_design.services import transition_status as label_design_transition
+from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
 from apps.payments.models import Payment
 
@@ -141,6 +142,15 @@ def record_payment(
 
     transaction.on_commit(_fire_finance_notification)
 
+    # Live push to every open ``/finance/payments/`` tab on this org.
+    # The FE hook invalidates the payments query cache on receive so
+    # the new PENDING row lands in the "Needs attention" column
+    # without a page reload — matters most for the storefront-checkout
+    # path, which is a completely different app (localhost:3000) and
+    # therefore has no way to invalidate the staff app's TanStack
+    # Query cache directly.
+    schedule_payment_changed_broadcast(payment, "created")
+
     return payment
 
 
@@ -250,6 +260,10 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
 
     transaction.on_commit(_fire_scientist_notification)
 
+    # Live push — moves the row from the Needs-attention column into
+    # Approved on every open finance tab.
+    schedule_payment_changed_broadcast(payment, "approved")
+
     return payment
 
 
@@ -293,6 +307,11 @@ def void_payment(*, payment: Payment, actor: Any, notes: str = "") -> Payment:
             maybe_resync_sample_payment_to_psp(payment=fresh)
 
     transaction.on_commit(_resync_sample_on_void)
+
+    # Live push — moves the row from wherever it was into Voided on
+    # every open finance tab. Voided is column 3 on the pipeline
+    # board.
+    schedule_payment_changed_broadcast(payment, "voided")
 
     return payment
 
@@ -443,7 +462,7 @@ def ensure_pending_deposit_payment(*, proposal, actor=None) -> Payment | None:
     total = Decimal(total)
     percent = Decimal(proposal.deposit_percent or 0)
     expected_amount = (total * percent / Decimal("100")).quantize(Decimal("0.01"))
-    return Payment.objects.create(
+    payment = Payment.objects.create(
         organization=proposal.organization,
         kind=PaymentKind.DEPOSIT,
         proposal=proposal,
@@ -462,3 +481,9 @@ def ensure_pending_deposit_payment(*, proposal, actor=None) -> Payment | None:
             f"({percent}% deposit)."
         ),
     )
+    # Same live push as :func:`record_payment` — deposit rows created
+    # off the kiosk-accept path need to appear on the finance queue
+    # without a reload, same as sample rows created off the storefront
+    # checkout.
+    schedule_payment_changed_broadcast(payment, "created")
+    return payment

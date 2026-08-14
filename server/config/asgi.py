@@ -36,13 +36,20 @@ django_asgi_app = get_asgi_application()
 # registry is ready when the routing module reaches for model classes.
 from apps.comments.middleware import CookieJWTAuthMiddleware  # noqa: E402
 from apps.comments.routing import websocket_urlpatterns as comments_ws_urls  # noqa: E402
+from apps.payments.routing import websocket_urlpatterns as payments_ws_urls  # noqa: E402
 
 
+# Concatenate the per-app URL pattern lists into one router. The
+# comments app was the first tenant; the payments live feed joins the
+# same middleware + URLRouter here so a single ``vita_access`` cookie
+# resolves ``scope["user"]`` for both surfaces. New consumer packs
+# should extend this list rather than introducing another router per
+# app.
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
         "websocket": CookieJWTAuthMiddleware(
-            URLRouter(comments_ws_urls),
+            URLRouter([*comments_ws_urls, *payments_ws_urls]),
         ),
     }
 )
