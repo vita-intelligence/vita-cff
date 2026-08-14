@@ -359,11 +359,20 @@ class RefreshView(PortalPublicAPIView):
             rotation_enabled = False
 
         if rotation_enabled:
-            try:
-                refresh.blacklist()  # type: ignore[attr-defined]
-            except Exception:  # noqa: BLE001 — blacklist is optional
-                pass
-            new_refresh = RefreshToken.for_user(account)
+            # Skip ``refresh.blacklist()`` for portal tokens: with
+            # the ``token_blacklist`` app installed, ``blacklist()``
+            # calls ``OutstandingToken.objects.get_or_create(...,
+            # defaults={"user_id": self.payload["user_id"]})``. The
+            # ``user`` column is a FK to ``AUTH_USER_MODEL`` (staff
+            # User table); a ClientAccount pk trips the FK integrity
+            # constraint and would 500 the refresh. Portal tokens
+            # are a separate identity space that doesn't participate
+            # in the blacklist mechanism — see ``apps.client_portal.
+            # cookies.issue_portal_refresh_token`` for the mint-side
+            # counterpart.
+            from apps.client_portal.cookies import issue_portal_refresh_token
+
+            new_refresh = issue_portal_refresh_token(account)
             access = str(new_refresh.access_token)
             new_refresh_str = str(new_refresh)
         else:
