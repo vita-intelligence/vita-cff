@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import {
   useInfiniteQuery,
   useMutation,
@@ -9,12 +8,10 @@ import {
 } from "@tanstack/react-query";
 
 import { apiClient } from "@/lib/api";
+import { useOrgFeed } from "@/lib/live/use-org-feed";
 import { rootQueryKey } from "@/lib/query";
 
 import { labelDesignKeys } from "@/services/label-design";
-
-import { openPaymentsSocket } from "./ws-client";
-import type { PaymentChangedPayload } from "./ws-client";
 
 
 export type PaymentStatus = "pending" | "approved" | "voided";
@@ -619,52 +616,16 @@ export function useDeletePaymentInvoice(orgId: string, paymentId: string) {
 
 
 /**
- * Live-feed subscription for the finance ``/finance/payments/`` page.
+ * Live-feed subscription — thin wrapper over :func:`useOrgFeed`.
  *
- * Opens a single WebSocket per (tab, org) and invalidates every
- * payments query key for the org whenever the server pushes a
- * ``payment.changed`` envelope. Covers the six action codes the
- * backend emits (``created`` / ``updated`` / ``approved`` / ``voided``
- * / ``assigned`` / ``invoice_attached``) — the FE treats them
- * uniformly and lets TanStack Query refetch just the caches that
- * are currently mounted.
- *
- * Why we need this over a plain poll: the ``TanStack Query`` client
- * (see :file:`src/lib/query/client.ts`) is configured with
- * ``refetchOnWindowFocus: false`` and ``staleTime: 60_000``, so a
- * finance tab that is already open would stay stale for up to a
- * minute after a storefront checkout on ``localhost:3000`` created a
- * PENDING payment. The storefront lives in a completely different
- * Next app and cannot invalidate this app's cache directly; the
- * WebSocket push is the missing link.
- *
- * Also invalidates on socket open — covers the case where the FE
- * missed events during a disconnect window (initial mount, tab
- * suspended, WS proxy hiccup).
+ * The generic org feed handles every entity kind (payments, CFF,
+ * projects, proposals, trial batches, label designs, specifications)
+ * on one WebSocket per (tab, org). Kept as a payments-flavoured
+ * export purely so existing call sites don't have to change and so
+ * pages that only care about payments don't have to reach into the
+ * ``lib/live`` module — reads more naturally next to the other
+ * ``services/payments`` hooks.
  */
 export function usePaymentsLive(orgId: string): void {
-  const qc = useQueryClient();
-  useEffect(() => {
-    if (!orgId) return undefined;
-    const invalidateAll = () => {
-      // One coarse-grained invalidation instead of matching per-action
-      // to specific keys. The payments board never has more than the
-      // three column caches + the two Needs-attention subqueries
-      // mounted at once, so a "refetch everything payments-shaped for
-      // this org" costs 5 requests at most and keeps the FE logic
-      // dead-simple (no need to encode which action moves which row
-      // to which column).
-      qc.invalidateQueries({
-        queryKey: [...rootQueryKey, "payments", orgId],
-      });
-    };
-    const handlers = {
-      onConnect: invalidateAll,
-      onPaymentChanged: (_payload: PaymentChangedPayload) => invalidateAll(),
-    };
-    const handle = openPaymentsSocket(orgId, handlers);
-    return () => {
-      handle.release();
-    };
-  }, [qc, orgId]);
+  useOrgFeed(orgId);
 }
