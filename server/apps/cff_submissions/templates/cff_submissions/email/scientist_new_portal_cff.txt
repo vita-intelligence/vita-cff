@@ -1,0 +1,13 @@
+New Custom Formulation Form from the portal
+
+{{ submitter_display }} just filled out a Custom Formulation Form
+on the customer portal. It's landed on the CFF triage inbox and is
+ready for a scientist to review + convert into a project.
+
+Submitter: {{ submitter_display }}{% if submitter_email %} · {{ submitter_email }}{% endif %}
+
+Open the CFF to review the brief:
+{{ cff_url }}
+
+You're receiving this because your Vita membership carries the
+scientist role (or you're the workspace owner).
