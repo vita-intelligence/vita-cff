@@ -34,6 +34,7 @@ django_asgi_app = get_asgi_application()
 
 # Deferred imports — must follow ``get_asgi_application()`` so the app
 # registry is ready when the routing module reaches for model classes.
+from apps.client_portal.routing import websocket_urlpatterns as portal_feed_ws_urls  # noqa: E402
 from apps.comments.middleware import CookieJWTAuthMiddleware  # noqa: E402
 from apps.comments.routing import websocket_urlpatterns as comments_ws_urls  # noqa: E402
 from apps.organizations.routing import websocket_urlpatterns as org_feed_ws_urls  # noqa: E402
@@ -41,17 +42,19 @@ from apps.organizations.routing import websocket_urlpatterns as org_feed_ws_urls
 
 # Concatenate the per-app URL pattern lists into one router. The
 # comments app was the first WS tenant; the org-scoped live feed
-# (:mod:`apps.organizations.consumers`) joins the same middleware +
-# URLRouter here so a single ``vita_access`` cookie resolves
-# ``scope["user"]`` for both surfaces. The org feed replaces the
-# short-lived payments-specific consumer — all entity broadcasts
-# (payment / cff / project / proposal / trial batch / label design /
-# specification) now share one channel per org.
+# (:mod:`apps.organizations.consumers`) and the customer-portal
+# feed (:mod:`apps.client_portal.consumers`) join the same middleware
+# + URLRouter here. Staff routes gate on ``scope["user"]``, portal
+# routes gate on ``scope["client_account"]`` — both slots are set by
+# ``CookieJWTAuthMiddleware`` from the two distinct JWT cookies
+# (``vita_access`` for staff, ``vita_portal_access`` for portal).
 application = ProtocolTypeRouter(
     {
         "http": django_asgi_app,
         "websocket": CookieJWTAuthMiddleware(
-            URLRouter([*comments_ws_urls, *org_feed_ws_urls]),
+            URLRouter(
+                [*comments_ws_urls, *org_feed_ws_urls, *portal_feed_ws_urls]
+            ),
         ),
     }
 )

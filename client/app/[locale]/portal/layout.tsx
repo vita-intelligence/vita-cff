@@ -1,6 +1,8 @@
 import { setRequestLocale } from "next-intl/server";
 import type { ReactNode } from "react";
 
+import { PortalFeedSubscriber } from "@/components/layout/portal-feed-subscriber";
+
 
 /**
  * Portal layout — completely decoupled from staff chrome.
@@ -28,5 +30,19 @@ export default async function PortalLayout({
 }) {
   const { locale } = await params;
   setRequestLocale(locale);
-  return <>{children}</>;
+  return (
+    <>
+      {/*
+        Live-feed subscription for the portal session. Mirror of
+        the staff-side OrgFeedSubscriber slotted in ProtectedHeader.
+        Mounted at layout level so every portal page inherits the
+        subscription without per-page wiring — staff mutations on
+        the customer's proposals / specs / label designs / payments
+        reach the tab live. The socket is a client component under
+        this server-component layout; that boundary is fine.
+      */}
+      <PortalFeedSubscriber />
+      {children}
+    </>
+  );
 }
