@@ -66,14 +66,21 @@ class PaymentListCreateView(APIView):
                 "approved_by",
                 "assigned_finance_officer",
             )
-            # Prefetch the reverse relations the serializer walks per
-            # row — ``PaymentReadSerializer`` reads ``.lines.all()`` and
-            # ``.invoices.all()`` on every payment to compute aggregates
-            # (total lines, invoice fan-out). Without these two prefetches
-            # the list view is O(N) queries per page — a 200-payment
-            # page is 400+ extra queries, which is the exact anti-pattern
-            # that stalls the finance dashboard at 10× load.
-            .prefetch_related("lines", "invoices")
+            # Prefetch the invoice fan-out the serializer walks per
+            # row — ``PaymentReadSerializer`` reads ``.invoices.all()``
+            # on every payment. Without this the list view is
+            # O(N) invoice queries per page.
+            #
+            # Note: an earlier iteration also prefetched ``"lines"`` on
+            # the assumption Payment had a reverse ``PaymentLine``
+            # relation. There is no such model / relation, so the
+            # prefetch crashed the whole endpoint with
+            # ``AttributeError: Cannot find 'lines' on Payment``. That
+            # made ``GET /api/organizations/<org>/payments/`` return
+            # 500 for every status column and the finance queue
+            # rendered permanently empty — see the "sample order
+            # placed but not visible on /finance/payments/" incident.
+            .prefetch_related("invoices")
             .order_by("-paid_at")
         )
         status_filter = request.query_params.get("status")
