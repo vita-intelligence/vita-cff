@@ -7,6 +7,7 @@ export {
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
+  refreshSpecificationPricing,
   regenerateSpecification,
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
@@ -14,6 +15,7 @@ export {
   setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
+  type RefreshPricingResponseDto,
   type RegenerateSpecificationRequestDto,
 } from "./api";
 export {
@@ -22,6 +24,7 @@ export {
   useDeleteSpecification,
   useInfiniteSpecifications,
   usePackagingOptions,
+  useRefreshSpecificationPricing,
   useRegenerateSpecification,
   useRenderedSpecification,
   useRevokeSpecificationPublicLink,

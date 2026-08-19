@@ -1,13 +1,14 @@
 "use client";
 
 import { Button, Modal } from "@heroui/react";
-import { FileText } from "lucide-react";
+import { FileText, RefreshCw } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useEffect, useState, type FormEvent } from "react";
 
 import { useRouter } from "@/i18n/navigation";
 import { extractApiErrorMessage } from "@/lib/errors/translate";
 import {
+  useRefreshSpecificationPricing,
   useUpdateSpecification,
   type SpecificationSheetDto,
   type UpdateSpecificationRequestDto,
@@ -45,6 +46,43 @@ export function EditDetailsButton({
   const [error, setError] = useState<string | null>(null);
 
   const mutation = useUpdateSpecification(orgId, sheet.id);
+  const refreshPricing = useRefreshSpecificationPricing(orgId, sheet.id);
+  const [refreshStatus, setRefreshStatus] = useState<
+    "idle" | "success" | "unavailable"
+  >("idle");
+
+  // Reset the transient refresh banner each time the modal reopens.
+  useEffect(() => {
+    if (!isOpen) setRefreshStatus("idle");
+  }, [isOpen]);
+
+  const handleRefreshPricing = async () => {
+    setError(null);
+    setRefreshStatus("idle");
+    try {
+      const result = await refreshPricing.mutateAsync();
+      // Mirror the freshly-recomputed cost into the local form so the
+      // "customer pays" line reads the new number without a modal
+      // close/re-open dance. Also touch ``margin_percent`` (unchanged
+      // value) to force the react-key on the input if HeroUI holds a
+      // stale internal value.
+      set(
+        "unit_cost",
+        result.sheet.unit_cost === null ||
+          result.sheet.unit_cost === undefined
+          ? null
+          : String(result.sheet.unit_cost),
+      );
+      setRefreshStatus(result.updated ? "success" : "unavailable");
+    } catch (err) {
+      setError(
+        extractApiErrorMessage(err, tErrors, {
+          fallback:
+            "Couldn't refresh pricing — try again in a moment.",
+        }),
+      );
+    }
+  };
 
   // Hydrate the form from the latest server truth whenever the modal
   // opens. Using the modal-open flag (rather than mounting fresh) so
@@ -145,21 +183,77 @@ export function EditDetailsButton({
                   <legend className="px-2 text-[11px] font-semibold uppercase tracking-wider text-ink-500">
                     {tSpecs("edit_details.group.commercial")}
                   </legend>
-                  <TextField
-                    label={tSpecs("edit_details.unit_cost")}
-                    value={
-                      form.unit_cost === null ||
-                      form.unit_cost === undefined
-                        ? ""
-                        : String(form.unit_cost)
-                    }
-                    onChange={(v) =>
-                      set("unit_cost", v === "" ? null : v)
-                    }
-                    placeholder="0.00"
-                    hint={tSpecs("edit_details.unit_cost_hint")}
-                    inputMode="decimal"
-                  />
+                  <div className="sm:col-span-2">
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <TextField
+                          label={tSpecs("edit_details.unit_cost")}
+                          value={
+                            form.unit_cost === null ||
+                            form.unit_cost === undefined
+                              ? ""
+                              : String(form.unit_cost)
+                          }
+                          onChange={(v) =>
+                            set("unit_cost", v === "" ? null : v)
+                          }
+                          placeholder="0.00"
+                          hint={tSpecs("edit_details.unit_cost_hint")}
+                          inputMode="decimal"
+                        />
+                      </div>
+                      {/* Refresh-pricing button. Rescues sheets that
+                          landed with empty pricing (typically because
+                          PSP was unreachable at spec-creation time).
+                          Recomputes from the pinned version's snapshot
+                          + live PSP prices without rebinding the
+                          version, so packaging / notes stay put. */}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="rounded-lg px-3 py-2 text-xs font-medium text-ink-700 ring-1 ring-inset ring-ink-200 hover:bg-ink-50"
+                        onClick={handleRefreshPricing}
+                        isDisabled={refreshPricing.isPending}
+                      >
+                        <RefreshCw
+                          className={`size-3.5 ${
+                            refreshPricing.isPending ? "animate-spin" : ""
+                          }`}
+                        />
+                        {refreshPricing.isPending
+                          ? "Refreshing…"
+                          : "Refresh from formula"}
+                      </Button>
+                    </div>
+                    {/* Contextual hints under the row — nudge scientists
+                        when pricing is missing, confirm on success,
+                        explain when PSP is still unreachable. */}
+                    {(form.unit_cost === null ||
+                      form.unit_cost === undefined ||
+                      String(form.unit_cost).trim() === "") &&
+                    refreshStatus === "idle" ? (
+                      <p className="mt-1 text-xs text-amber-700">
+                        This sheet has no cost yet. Click{" "}
+                        <strong>Refresh from formula</strong> to compute
+                        it from the pinned formulation + live PSP
+                        prices.
+                      </p>
+                    ) : null}
+                    {refreshStatus === "success" ? (
+                      <p className="mt-1 text-xs text-emerald-700">
+                        Pricing refreshed from the pinned formulation.
+                      </p>
+                    ) : null}
+                    {refreshStatus === "unavailable" ? (
+                      <p className="mt-1 text-xs text-amber-700">
+                        PSP couldn&apos;t price this version right now
+                        — either PSP is unreachable or none of the
+                        formulation&apos;s lines are priced yet. Try
+                        again in a moment.
+                      </p>
+                    ) : null}
+                  </div>
                   <TextField
                     label={tSpecs("edit_details.margin_percent")}
                     value={

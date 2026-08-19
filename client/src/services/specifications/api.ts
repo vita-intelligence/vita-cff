@@ -137,6 +137,32 @@ export async function regenerateSpecification(
   return data;
 }
 
+export interface RefreshPricingResponseDto {
+  readonly sheet: SpecificationSheetDto;
+  readonly updated: boolean;
+  //: ``null`` on success, ``"pricing_unavailable"`` when PSP was
+  //: unreachable or the version has no priceable lines. FE surfaces
+  //: this so the operator knows whether to retry once PSP is back or
+  //: fix the linked version.
+  readonly reason: string | null;
+}
+
+/**
+ * Recompute ``sheet.unit_cost`` from the pinned version's snapshot
+ * lines + live PSP prices, without rebinding the version. Rescue for
+ * sheets that landed with empty pricing (typically because PSP was
+ * unreachable at spec-creation time).
+ */
+export async function refreshSpecificationPricing(
+  orgId: string,
+  sheetId: string,
+): Promise<RefreshPricingResponseDto> {
+  const { data } = await apiClient.post<RefreshPricingResponseDto>(
+    specificationsEndpoints.refreshPricing(orgId, sheetId),
+  );
+  return data;
+}
+
 export interface FetchPackagingOptionsArgs {
   readonly slot: PackagingSlot;
   readonly search?: string;

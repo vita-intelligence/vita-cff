@@ -23,6 +23,7 @@ import {
   fetchRenderedSpecification,
   fetchSpecification,
   fetchSpecificationsPage,
+  refreshSpecificationPricing,
   regenerateSpecification,
   revokeSpecificationPublicLink,
   rotateSpecificationPublicLink,
@@ -30,6 +31,7 @@ import {
   setSpecificationVisibility,
   transitionSpecificationStatus,
   updateSpecification,
+  type RefreshPricingResponseDto,
   type RegenerateSpecificationRequestDto,
 } from "./api";
 import type {
@@ -225,6 +227,35 @@ export function useRegenerateSpecification(
       // ingredients declaration, weight) re-derives against the
       // newly-pinned FormulationVersion, so the render cache has
       // to go too.
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.render(orgId, sheetId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: specificationsQueryKeys.infiniteAll(orgId),
+      });
+    },
+  });
+}
+
+/**
+ * Recompute the sheet's ``unit_cost`` from the pinned version's
+ * snapshot lines + current PSP prices. Rescue mutation for sheets
+ * that landed with empty pricing (usually a PSP outage at create
+ * time). Doesn't rebind the version, so scientist-typed overrides
+ * on packaging / notes stay put.
+ */
+export function useRefreshSpecificationPricing(
+  orgId: string,
+  sheetId: string,
+): UseMutationResult<RefreshPricingResponseDto, ApiError, void> {
+  const queryClient = useQueryClient();
+  return useMutation<RefreshPricingResponseDto, ApiError, void>({
+    mutationFn: () => refreshSpecificationPricing(orgId, sheetId),
+    onSuccess: (result) => {
+      queryClient.setQueryData(
+        specificationsQueryKeys.detail(orgId, sheetId),
+        result.sheet,
+      );
       queryClient.invalidateQueries({
         queryKey: specificationsQueryKeys.render(orgId, sheetId),
       });
