@@ -396,7 +396,18 @@ def trial_batch_gate_status(formulation) -> dict[str, Any]:
       finance already materialised one), else null.
     """
 
-    proposal = _accepted_proposal_for_formulation(formulation)
+    # Widen from "accepted only" to "customer has signed" so the
+    # gate flips into deposit-tracking mode the moment the customer
+    # commits — not only after finance has finalized the proposal.
+    # Sample-selection confirm now auto-creates the Payment before
+    # finance touches anything (see
+    # ``ensure_bundled_deposit_payment_for_formulation``), so the
+    # gate needs to see that Payment even if the proposal is still
+    # at ``status = sent``.
+    proposal = (
+        _accepted_proposal_for_formulation(formulation)
+        or _signed_or_accepted_proposal_for_formulation(formulation)
+    )
     if proposal is None:
         return {
             "unlocked": True,
@@ -765,4 +776,158 @@ def confirm_sample_allocation(
             "confirmed_by_client_account_id": str(actor.id) if actor else None,
         },
     )
+
+    # Auto-generate the bundled deposit+samples Payment so finance
+    # has ONE ready-to-invoice row on their queue the moment the
+    # customer commits. Same "one row per commitment" contract the
+    # user asked for. Guarded inside the helper (short-circuits if
+    # no proposal to compute against, or if a Payment already
+    # exists for this proposal — safe on retry).
+    payment = ensure_bundled_deposit_payment_for_formulation(
+        formulation=formulation,
+    )
+    if payment is not None:
+        allocation.deposit_payment = payment
+        allocation.save(update_fields=["deposit_payment", "updated_at"])
+
     return allocation
+
+
+def _signed_or_accepted_proposal_for_formulation(formulation) -> Any | None:
+    """Find the customer-committed proposal — accepted OR sent-and-
+    signed — bundled onto this formulation.
+
+    Wider than :func:`_accepted_proposal_for_formulation`: the
+    proposal FSM keeps ``status = sent`` after the customer signs
+    (finance flips to ``accepted`` separately), so a customer who's
+    signed but whose deal hasn't been finance-accepted yet still
+    counts as "committed" for the sample-selection Payment-generation
+    flow. Without this widening the Payment could only be created
+    AFTER finance accepted the proposal, but the user's design has
+    the customer's sample-selection confirm as the trigger — before
+    finance touches anything.
+    """
+
+    from apps.proposals.models import ProposalLine, ProposalStatus
+    from django.db.models import Q
+
+    line = (
+        ProposalLine.objects.filter(
+            Q(proposal__status=ProposalStatus.ACCEPTED.value)
+            | Q(
+                proposal__status=ProposalStatus.SENT.value,
+                proposal__customer_signed_at__isnull=False,
+            ),
+            formulation_version__formulation=formulation,
+        )
+        .select_related("proposal")
+        .order_by("-proposal__updated_at")
+        .first()
+    )
+    return line.proposal if line else None
+
+
+@transaction.atomic
+def ensure_bundled_deposit_payment_for_formulation(
+    *, formulation, actor=None
+) -> Payment | None:
+    """Idempotently create a PENDING deposit Payment that bundles
+    the proposal-level deposit + the confirmed sample-extras cost
+    into a single line on the finance queue.
+
+    Called from :func:`confirm_sample_allocation` so finance sees
+    ONE row for the customer's total commitment (per the design:
+    "so they have to approve only one line on finance table").
+
+    Guards / no-ops:
+    * No customer-committed proposal (signed + sent OR accepted) →
+      returns None. Sample-selection confirm without a signed
+      proposal can't happen in the FE flow but we defend anyway.
+    * No ``deposit_percent > 0`` on the proposal → returns None
+      (the whole thing rides the final gate).
+    * An existing Payment (kind=DEPOSIT) already exists on this
+      proposal → returns None. Prevents dup on retry, on double-
+      confirm (which the FSM already blocks but belt-and-braces),
+      and on the kiosk-finalize path running after us.
+
+    ``amount = deposit_from_proposal + confirmed_extras_cost``.
+    Notes carry the itemised breakdown so finance sees the split
+    without having to reconstruct it from two models.
+    """
+
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        return None
+    if not deposit_required_for_proposal(proposal):
+        return None
+    existing = Payment.objects.filter(
+        proposal=proposal, kind=PaymentKind.DEPOSIT,
+    ).first()
+    if existing is not None:
+        return None
+
+    # Deposit portion — same formula as
+    # :func:`ensure_pending_deposit_payment` for consistency.
+    total_excl_vat = Decimal(str(getattr(proposal, "total_excl_vat", None) or 0))
+    percent = Decimal(str(proposal.deposit_percent or 0))
+    deposit_amount = (total_excl_vat * percent / Decimal("100")).quantize(
+        Decimal("0.01")
+    )
+
+    # Samples portion — from the confirmed allocation (may be zero
+    # if the customer stayed at the free allowance).
+    allocation = SampleAllocation.objects.filter(
+        formulation=formulation
+    ).first()
+    samples_amount = Decimal("0.00")
+    samples_qty = 0
+    if (
+        allocation is not None
+        and allocation.status == SampleAllocationStatus.CONFIRMED
+    ):
+        samples_amount = Decimal(str(allocation.total_extras_cost or 0))
+        samples_qty = allocation.quantity_ordered
+
+    total = (deposit_amount + samples_amount).quantize(Decimal("0.01"))
+    currency = (
+        getattr(proposal, "currency", None) or "GBP"
+    ).upper()[:3]
+
+    notes_parts = [
+        f"Auto-created on customer sample-selection confirm for "
+        f"{proposal.code}.",
+        f"Deposit ({percent}% of {total_excl_vat} {currency}) = "
+        f"{deposit_amount} {currency}.",
+    ]
+    if samples_amount > 0:
+        notes_parts.append(
+            f"Samples ({samples_qty} units, discount already applied) = "
+            f"{samples_amount} {currency}."
+        )
+    else:
+        notes_parts.append(
+            f"Samples ({samples_qty} units, all within free allowance) = "
+            f"0.00 {currency}."
+        )
+    notes_parts.append(f"Total to invoice: {total} {currency}.")
+
+    payment = Payment.objects.create(
+        organization=proposal.organization,
+        kind=PaymentKind.DEPOSIT,
+        proposal=proposal,
+        formulation=formulation,
+        customer=getattr(proposal, "customer", None),
+        amount=total,
+        currency=currency,
+        method=PaymentMethod.BANK_TRANSFER,
+        paid_at=timezone.now(),
+        recorded_by=(
+            actor
+            or getattr(proposal, "updated_by", None)
+            or getattr(proposal, "created_by", None)
+        ),
+        status=PaymentStatus.PENDING,
+        notes="\n".join(notes_parts),
+    )
+    schedule_payment_changed_broadcast(payment, "created")
+    return payment

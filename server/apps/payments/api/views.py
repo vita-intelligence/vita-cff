@@ -691,11 +691,21 @@ class AwaitingDepositsView(APIView):
             offset = 0
         offset = max(0, offset)
 
+        # "Already has a deposit row" = proposal has ANY Payment(kind=
+        # DEPOSIT), pending or approved. The sample-selection confirm
+        # flow now auto-generates the row (bundled deposit + samples
+        # total), so a pending one means the invoice is already on
+        # finance's Payments list and doesn't need to sit on the pre-
+        # Payment "Awaiting deposits" queue too — that'd double-count
+        # it in finance's mental workload.
         paid_proposal_ids = set(
             Payment.objects.filter(
                 organization=self.organization,
                 kind=PaymentKind.DEPOSIT,
-                status=PaymentStatus.APPROVED,
+                status__in=[
+                    PaymentStatus.APPROVED,
+                    PaymentStatus.PENDING,
+                ],
             ).values_list("proposal_id", flat=True)
         )
         # Formulations that have already moved past the deposit gate.
