@@ -696,39 +696,25 @@ def _build_next_action(
             "urgency": "high",
         }
 
-    # Sample selection — post-proposal-sign, pre-deposit. Checked
-    # BEFORE the proposal-review branch below because the proposal
-    # FSM keeps ``status = sent`` after ``customer_signed_at`` is
-    # set (a separate "finalize" step flips it to ``accepted``), so
-    # a signed proposal still matches ``_first_sent_proposal``. If
-    # we ran the review branch first we'd tell the customer to
-    # review a proposal they've already signed. The pipeline handles
-    # the same ordering by gating on ``signed_proposal is not None``
-    # for the sample stage's ``current`` state.
-    signed_proposal_for_samples = _first_signed_proposal(proposals)
-    if signed_proposal_for_samples is not None:
-        from apps.payments.models import (
-            SampleAllocation as _SampleAllocation,
-            SampleAllocationStatus as _SampleAllocationStatus,
-        )
-
-        allocation = _SampleAllocation.objects.filter(
-            formulation=formulation
-        ).first()
-        if (
-            allocation is None
-            or allocation.status != _SampleAllocationStatus.CONFIRMED
-        ):
-            return {
-                "label": "Choose how many samples you want",
-                "subtitle": (
-                    "Pick your trial-sample quantity — the free "
-                    "allowance is bundled with the deposit; extras "
-                    "get priced on the page."
-                ),
-                "url": f"/portal/projects/{formulation.id}",
-                "urgency": "high",
-            }
+    # Sample selection is intentionally NOT emitted as a
+    # ``next_action`` even though it's a customer-blocking stage —
+    # both portals mount a dedicated ``SampleSelectionCard`` on the
+    # base project page (renders inline when the pipeline flags the
+    # stage as ``current``). Emitting a next_action here too would
+    # stack a redundant "Needs your attention" banner on top of the
+    # card, and the two would say the same thing. Same rationale as
+    # the deposit-stage branch below. FE short-circuits render of
+    # NextActionCard / NoActionCard when ``current.key ==
+    # "sample_selection"`` so the sample card owns the moment.
+    #
+    # We DO still need to skip the proposal-review branch below when
+    # a signed proposal exists — the proposal FSM keeps
+    # ``status = sent`` after ``customer_signed_at`` is set, so a
+    # signed proposal still matches ``_first_sent_proposal``. Without
+    # this early return we'd tell the customer to review a proposal
+    # they've already signed.
+    if _first_signed_proposal(proposals) is not None:
+        return None
 
     # Proposal waiting for signature.
     sent_proposal = _first_sent_proposal(proposals)
