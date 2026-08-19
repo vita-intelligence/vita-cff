@@ -94,6 +94,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
     #: display since the project link is the single source of truth
     #: sales / R&D both edit against.
     linked_customer = serializers.SerializerMethodField()
+    linked_cff_quote_context = serializers.SerializerMethodField()
     #: True when the sheet's formulation is Ready-to-Go AND has one or
     #: more :class:`PackagingCombo` rows configured. Signals to the FE
     #: that the four ``packaging_*`` FK slots are intentionally empty
@@ -169,6 +170,89 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "name": (customer.name or "").strip(),
             "company": (customer.company or "").strip(),
             "email": (customer.email or "").strip(),
+        }
+
+    def get_linked_cff_quote_context(self, obj) -> dict | None:
+        """Quick-reference "what did the customer originally ask for?"
+        pulled from the earliest CFF submission that seeded this
+        project. Consumed by the proposal-creation modal to prefill
+        the quantity field so sales doesn't have to re-type a number
+        the customer already gave us on their portal CFF submission.
+
+        Walks:
+          formulation → CFFProjectAssignment (m2m through) →
+          submission.raw_payload["submissions"]["quantity_to_be_quoted"]
+
+        Returns ``None`` when:
+          * The project wasn't seeded from a CFF (staff-started
+            direct on NPD) — no assignment row exists.
+          * The CFF payload predates the quantity field (legacy Wix
+            forms without the ``quantity_to_be_quoted`` slug).
+          * The raw value doesn't parse as a positive integer
+            (blank / range / non-numeric — the customer typed
+            "TBC" or "10k-20k"). The modal falls back to its
+            hardcoded "1" default in that case; better than
+            prefilling something the operator has to correct.
+
+        Takes the EARLIEST CFF (by ``wix_created_date`` then
+        ``imported_at`` fallback) for multi-CFF projects — the first
+        submission is the anchor request; later CFFs are usually
+        merged-in duplicates or amendments the operator has already
+        reconciled.
+        """
+
+        from apps.cff_submissions.models import CFFProjectAssignment
+
+        assignment = (
+            CFFProjectAssignment.objects.filter(
+                project=obj.formulation_version.formulation
+            )
+            .select_related("submission")
+            .order_by(
+                # ``NULLS LAST`` isn't a Django-ORM keyword on every
+                # backend; sort by (has-date, date) so real timestamps
+                # win over legacy nulls without a backend-specific hack.
+                "submission__wix_created_date",
+                "submission__imported_at",
+            )
+            .first()
+        )
+        if assignment is None or assignment.submission is None:
+            return None
+
+        submissions = (
+            assignment.submission.raw_payload.get("submissions")
+            if isinstance(assignment.submission.raw_payload, dict)
+            else None
+        )
+        if not isinstance(submissions, dict):
+            return None
+
+        raw = submissions.get("quantity_to_be_quoted")
+        if raw in (None, ""):
+            return None
+
+        # Defensive parse — CFF ships this as a string ("10000"), but
+        # legacy Wix payloads have shipped raw ints too. Ranges /
+        # non-numeric text ("TBC", "10k") fall through to None so the
+        # modal doesn't prefill garbage.
+        try:
+            requested = int(str(raw).strip().replace(",", ""))
+        except (TypeError, ValueError):
+            return None
+        if requested <= 0:
+            return None
+
+        submitted_at = (
+            assignment.submission.wix_created_date
+            or assignment.submission.imported_at
+        )
+        return {
+            "requested_quantity": requested,
+            "submitted_at": (
+                submitted_at.isoformat() if submitted_at else None
+            ),
+            "source_kind": "cff_portal",
         }
 
     def get_review_slot_blocker(self, obj) -> dict | None:
@@ -259,6 +343,7 @@ class SpecificationSheetReadSerializer(serializers.ModelSerializer):
             "formulation_version_number",
             "linked_proposal",
             "linked_customer",
+            "linked_cff_quote_context",
             "review_slot_blocker",
             "created_at",
             "updated_at",

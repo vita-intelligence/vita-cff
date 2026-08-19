@@ -83,10 +83,20 @@ export function SpecCreateProposalModal({
   // Pre-seed the override inputs from the spec's signed pricing
   // when the modal opens, so the override panel (when revealed)
   // starts from the spec's values instead of an empty form.
-  // Quantity intentionally stays at "1" — order size is a per-
-  // proposal decision, not a spec-level constant.
+  // Quantity prefers the CFF-quoted quantity when the project was
+  // seeded from a portal CFF submission — the customer already
+  // typed "10,000 units" on their brief, retyping that here is
+  // busy-work AND a source of transcription errors. Falls back to
+  // "1" when no CFF context (staff-started project) or when the
+  // customer's CFF value didn't parse as a positive integer.
   useEffect(() => {
     if (!isOpen) return;
+    const cffQty = sheet.linked_cff_quote_context?.requested_quantity;
+    if (cffQty && Number.isFinite(cffQty) && cffQty > 0) {
+      setQuantity(String(cffQty));
+    } else {
+      setQuantity("1");
+    }
     setUnitCost(sheet.unit_cost ? String(sheet.unit_cost) : "");
     // Margin autopopulate: prefer the explicit ``margin_percent``
     // the scientist typed; fall back to deriving it from
@@ -117,6 +127,7 @@ export function SpecCreateProposalModal({
     sheet.unit_cost,
     sheet.margin_percent,
     sheet.final_price,
+    sheet.linked_cff_quote_context?.requested_quantity,
   ]);
 
   // Live derivation matches the spec approval modal's math:
@@ -343,6 +354,22 @@ export function SpecCreateProposalModal({
                       onChange={(e) => setQuantity(e.target.value)}
                       className="w-full rounded-lg bg-ink-0 px-3 py-2 text-sm text-ink-1000 ring-1 ring-inset ring-ink-200 outline-none focus:ring-2 focus:ring-orange-400"
                     />
+                    {/* Provenance hint — surfaces that the number came
+                        from the customer's CFF brief so the operator
+                        can trust it or override with intent. Only shown
+                        when the CFF value is still what's in the input
+                        (a manual edit clears the hint). */}
+                    {sheet.linked_cff_quote_context &&
+                    quantity ===
+                      String(
+                        sheet.linked_cff_quote_context.requested_quantity,
+                      ) ? (
+                      <span className="text-[10px] leading-snug text-ink-500">
+                        Prefilled from customer&rsquo;s CFF brief (
+                        {sheet.linked_cff_quote_context.requested_quantity.toLocaleString()}{" "}
+                        units).
+                      </span>
+                    ) : null}
                   </label>
 
                   <label className="flex flex-col gap-1.5">
