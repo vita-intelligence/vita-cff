@@ -138,35 +138,13 @@ def _build_pipeline(
         else "Started by Vita directly — no formal request submitted.",
     }
 
-    # ---- Stage 2: Proposal signed ---------------------------------------
-    signed_proposal = _first_signed_proposal(proposals)
-    sent_proposal = _first_sent_proposal(proposals)
-    if signed_proposal is not None:
-        proposal_stage = {
-            "key": "proposal",
-            "label": "Proposal signed",
-            "state": "done",
-            "completed_at": _iso(signed_proposal.customer_signed_at),
-            "detail": f"You signed proposal {signed_proposal.code}.",
-        }
-    elif sent_proposal is not None:
-        proposal_stage = {
-            "key": "proposal",
-            "label": "Proposal awaiting signature",
-            "state": "current",
-            "completed_at": None,
-            "detail": f"Proposal {sent_proposal.code} is ready for you to sign.",
-        }
-    else:
-        proposal_stage = {
-            "key": "proposal",
-            "label": "Proposal",
-            "state": "future",
-            "completed_at": None,
-            "detail": "Once we've prepared a quote, you'll sign it here.",
-        }
-
-    # ---- Stage 3: Draft spec signed -------------------------------------
+    # ---- Stage 2: Draft spec signed -------------------------------------
+    # Sits BEFORE proposal in the pipeline order — the customer commits
+    # to the recipe first (does the science work?), then to the
+    # commercial terms. That order also feeds the sequential
+    # sign-gate on proposal_stage below: proposal cannot show as
+    # "current" while a draft sits unsigned, so the customer never
+    # sees two "current" chips at once.
     draft_signed = _first_signed(_draft_specs(sheets))
     draft_sent = _first_sent_unsigned(_draft_specs(sheets))
     if draft_signed is not None:
@@ -175,7 +153,7 @@ def _build_pipeline(
             "label": "Draft specification signed",
             "state": "done",
             "completed_at": _iso(draft_signed.customer_signed_at),
-            "detail": "You approved the draft recipe — trial batch can begin.",
+            "detail": "You approved the draft recipe — the proposal is next.",
         }
     elif draft_sent is not None:
         draft_stage = {
@@ -194,6 +172,52 @@ def _build_pipeline(
             "state": "future",
             "completed_at": None,
             "detail": "Our scientists will draft the recipe and share it here.",
+        }
+
+    # ---- Stage 3: Proposal signed ---------------------------------------
+    # Sequential gate: while a draft spec is ``sent`` (customer-visible)
+    # but not signed, the proposal is treated as blocked — even if it
+    # itself is ``sent``. Without this, both draft_stage AND
+    # proposal_stage light up as "current" simultaneously, which is the
+    # source of the "two chips highlighted at once" bug. Business
+    # rule: sign the recipe first, then commit commercially.
+    signed_proposal = _first_signed_proposal(proposals)
+    sent_proposal = _first_sent_proposal(proposals)
+    draft_blocks_proposal = draft_sent is not None
+    if signed_proposal is not None:
+        proposal_stage = {
+            "key": "proposal",
+            "label": "Proposal signed",
+            "state": "done",
+            "completed_at": _iso(signed_proposal.customer_signed_at),
+            "detail": f"You signed proposal {signed_proposal.code}.",
+        }
+    elif sent_proposal is not None and not draft_blocks_proposal:
+        proposal_stage = {
+            "key": "proposal",
+            "label": "Proposal awaiting signature",
+            "state": "current",
+            "completed_at": None,
+            "detail": f"Proposal {sent_proposal.code} is ready for you to sign.",
+        }
+    elif sent_proposal is not None and draft_blocks_proposal:
+        proposal_stage = {
+            "key": "proposal",
+            "label": "Proposal",
+            "state": "future",
+            "completed_at": None,
+            "detail": (
+                f"Sign draft spec {draft_sent.code} first — the proposal "
+                "unlocks right after."
+            ),
+        }
+    else:
+        proposal_stage = {
+            "key": "proposal",
+            "label": "Proposal",
+            "state": "future",
+            "completed_at": None,
+            "detail": "Once we've prepared a quote, you'll sign it here.",
         }
 
     # ---- Stage 4.5: Deposit ---------------------------------------------
@@ -450,19 +474,31 @@ def _build_pipeline(
     }
 
     # Stage order — real business flow, not schema order:
-    #   proposal signed → draft spec signed → deposit paid → trial
-    #   batch → final spec signed → payment → label → production.
-    # Previously deposit sat between proposal and draft-spec, which
-    # read to customers as "pay before you've even seen the recipe"
-    # — swapped so the customer commits to (a) the price/terms via
-    # proposal, then (b) the recipe via draft spec, THEN (c) the
-    # deposit unlocks trial production. Same reorder for RTG (no
-    # trial + no final spec) so both project types read consistently.
+    #   draft spec signed (recipe committed) → proposal signed
+    #   (commercial committed) → deposit paid → trial batch → final
+    #   spec signed → payment → label → production.
+    #
+    # Two reorders landed here across time:
+    #   1. Deposit moved AFTER commitment — previously deposit sat
+    #      between proposal and draft-spec, reading to customers as
+    #      "pay before you've even seen the recipe".
+    #   2. Draft spec moved BEFORE proposal — customers were seeing
+    #      both proposal AND draft-spec chips as "current" at once,
+    #      because both status=sent+unsigned rows independently mapped
+    #      to "current". Sequential order (recipe first, then
+    #      commercial) means only one chip lights up at a time, and
+    #      matches the "science works?" → "am I buying it?" mental
+    #      model. proposal_stage above enforces this with a
+    #      ``draft_blocks_proposal`` gate that keeps proposal in
+    #      ``future`` while the draft sits unsigned.
+    #
+    # Same reorder for RTG (no trial + no final spec) so both project
+    # types read consistently.
     if formulation.project_type == ProjectType.READY_TO_GO.value:
         return [
             request_stage,
-            proposal_stage,
             draft_stage,
+            proposal_stage,
             deposit_stage,
             payment_stage,
             label_stage,
@@ -471,8 +507,8 @@ def _build_pipeline(
 
     return [
         request_stage,
-        proposal_stage,
         draft_stage,
+        proposal_stage,
         deposit_stage,
         trial_stage,
         final_stage,
