@@ -2860,6 +2860,12 @@ def capture_customer_signature_on_proposal(
             "sign_document_hash": proposal.customer_sign_document_hash,
         },
     )
+    # Push signed_at through to the PSP mirror so the kanban card
+    # moves from "Sent to client" to "Choose samples" the moment the
+    # signature lands. Previously the mirror only refreshed on
+    # sample-selection confirm, leaving the card sitting on the sign
+    # column until the customer picked their sample count.
+    _schedule_proposal_psp_merge(proposal)
     return proposal
 
 
