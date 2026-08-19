@@ -26,7 +26,7 @@
  * Save button hidden.
  */
 
-import { Loader2, Percent, Plus, Save, Trash2 } from "lucide-react";
+import { Check, CheckCircle2, Loader2, Percent, Plus, Save, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -180,6 +180,22 @@ export function SamplePricingTab({
       setError(err instanceof Error ? err.message : "Couldn't save.");
     }
   }
+
+  // Auto-dismiss the success banner after a few seconds so the UI
+  // cleans itself up — a persistent green banner reads as broken
+  // ("did it actually update?"). 4s is long enough to notice, short
+  // enough to fade before the operator's next edit.
+  useEffect(() => {
+    if (savedAt === null) return;
+    const timer = window.setTimeout(() => setSavedAt(null), 4000);
+    return () => window.clearTimeout(timer);
+  }, [savedAt]);
+
+  // Button label morphs to "Saved" for a moment after a successful
+  // save even if the operator hasn't started editing again — gives
+  // an unmissable click-response signal beyond the toast banner. The
+  // ``savedAt`` timer above resets it back to "Save changes".
+  const justSaved = savedAt !== null && !dirty;
 
   // Live worked example under the form so the admin can eyeball the
   // effect of their config before saving. Uses the SAME math as the
@@ -439,28 +455,70 @@ export function SamplePricingTab({
 
       {/* Save */}
       {canEdit ? (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            {saveMutation.isPending ? (
-              <span className="inline-flex items-center gap-2 text-xs text-ink-500">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Saving…
-              </span>
-            ) : savedAt && !dirty ? (
-              <span className="text-xs text-emerald-600">Saved.</span>
-            ) : null}
-            {error ? (
-              <span className="text-xs text-red-600">{error}</span>
-            ) : null}
+        <>
+          {/* Success banner — shows for 4s after a successful save.
+              Sits above the button row so the operator's eyes land
+              on it whether they were looking at the button or the
+              live-preview table when they clicked. Auto-dismisses
+              (see the timer in ``useEffect`` above) — a persistent
+              banner reads as broken. */}
+          {justSaved ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className="flex items-start gap-3 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"
+            >
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+              <div className="min-w-0">
+                <p className="font-semibold">Sample pricing updated.</p>
+                <p className="mt-0.5 text-xs text-emerald-800">
+                  New numbers take effect on the next customer who reaches
+                  the sample-selection stage.
+                </p>
+              </div>
+            </div>
+          ) : null}
+
+          {error ? (
+            <div
+              role="alert"
+              className="flex items-start gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900"
+            >
+              <span className="mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full bg-red-500" />
+              <p>{error}</p>
+            </div>
+          ) : null}
+
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            <button
+              type="button"
+              onClick={save}
+              disabled={
+                (!dirty && !justSaved) || saveMutation.isPending
+              }
+              className={
+                justSaved
+                  ? "inline-flex items-center gap-2 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed"
+                  : "inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
+              }
+              aria-busy={saveMutation.isPending || undefined}
+            >
+              {saveMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Saving…
+                </>
+              ) : justSaved ? (
+                <>
+                  <Check className="h-4 w-4" /> Saved
+                </>
+              ) : (
+                <>
+                  <Save className="h-4 w-4" /> Save changes
+                </>
+              )}
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={save}
-            disabled={!dirty || saveMutation.isPending}
-            className="inline-flex items-center gap-2 rounded-lg bg-orange-500 px-4 py-2 text-sm font-semibold text-white hover:bg-orange-600 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Save className="h-4 w-4" /> Save changes
-          </button>
-        </div>
+        </>
       ) : (
         <p className="text-xs text-ink-500">
           You have view-only access to this module. Ask an admin for
