@@ -74,6 +74,10 @@ from .views import (
 from .dashboard_views import PortalDashboardView
 from .activity_views import PortalActivityView
 from .product_detail_views import PortalProductDetailView
+from .sample_selection_views import (
+    PortalSampleSelectionConfirmView,
+    PortalSampleSelectionView,
+)
 from .sample_detail_views import (
     PortalSampleDetailView,
     PortalSampleDispatchConfirmView,
@@ -182,6 +186,21 @@ urlpatterns = [
         "products/<uuid:formulation_id>/",
         PortalProductDetailView.as_view(),
         name="product-detail",
+    ),
+    # Sample-selection stage (post-proposal, pre-deposit): read the
+    # org's pricing config + the customer's current allocation, then
+    # confirm the chosen quantity. See
+    # :mod:`apps.client_portal.api.sample_selection_views` for the
+    # ownership rules + FSM.
+    path(
+        "projects/<uuid:formulation_id>/sample-selection/",
+        PortalSampleSelectionView.as_view(),
+        name="sample-selection",
+    ),
+    path(
+        "projects/<uuid:formulation_id>/sample-selection/confirm/",
+        PortalSampleSelectionConfirmView.as_view(),
+        name="sample-selection-confirm",
     ),
     # Per-sample pipeline detail — the "where is my sample right now?"
     # view. Returns pipeline stages driven by the payment lifecycle

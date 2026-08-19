@@ -16,6 +16,8 @@ import {
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
 
+import { SampleSelectionCard } from "./sample-selection-card";
+
 
 type StageState = "done" | "current" | "future" | "skipped";
 
@@ -114,8 +116,16 @@ export default async function PortalProductDetailPage({
 
       {/* Universal next-step CTA. Always sits above the stepper so
           the customer never has to hunt for "where do I click next?".
-          Hidden when nothing is required from them. */}
-      {data.next_action ? (
+          Hidden when nothing is required from them.
+
+          Suppressed when the pipeline is on ``sample_selection``
+          because the SampleSelectionCard below owns the "needs your
+          attention" moment on that stage — the two banners saying
+          the same thing reads as broken. BE ``_build_next_action``
+          also suppresses the sample entry; this is the render-side
+          guard for the NoActionBanner "you're up to date" fallback
+          that would otherwise fire falsely. */}
+      {currentStage?.key === "sample_selection" ? null : data.next_action ? (
         <NextActionBanner action={data.next_action} />
       ) : (
         <NoActionBanner
@@ -123,6 +133,16 @@ export default async function PortalProductDetailPage({
           currentStageLabel={currentStage?.label}
         />
       )}
+
+      {/* Sample-selection card — client component, renders whenever
+          the pipeline flags ``sample_selection`` as ``current``.
+          Handles its own fetch + confirm + router.refresh(); this
+          server component just decides whether to mount it. */}
+      {data.pipeline.some(
+        (s) => s.key === "sample_selection" && s.state === "current",
+      ) ? (
+        <SampleSelectionCard projectId={id} />
+      ) : null}
 
       <section className="mt-10 mb-10">
         <Eyebrow>Your journey</Eyebrow>
