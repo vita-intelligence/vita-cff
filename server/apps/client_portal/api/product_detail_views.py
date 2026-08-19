@@ -299,7 +299,19 @@ def _build_pipeline(
             "completed_at": None,
             "detail": "Our team is investigating the failure and will be in touch.",
         }
-    elif in_progress_validation is not None or formulation.project_status == ProjectStatus.PILOT:
+    elif in_progress_validation is not None:
+        # Only light up "Trial batch in progress" when a real
+        # ``ProductValidation`` row is running. The old fallback on
+        # ``project_status == PILOT`` was too eager: signing the
+        # draft spec auto-advances the project to PILOT via
+        # ``_maybe_advance_project_status``, so trial would flash
+        # "in progress" the instant the spec was signed — before
+        # the proposal was signed, before the deposit landed, and
+        # before ops had scheduled anything. Two chips lit up
+        # (proposal ``current`` + trial ``current``) violated the
+        # one-current-at-a-time rule the pipeline is meant to
+        # convey. Trial stays ``future`` in the intermediate window
+        # and only lights up when work is actually happening.
         trial_stage = {
             "key": "trial",
             "label": "Trial batch in progress",
