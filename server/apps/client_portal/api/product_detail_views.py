@@ -631,7 +631,14 @@ def _build_next_action(
         return {
             "label": "Review your proposal",
             "subtitle": f"Open proposal {sent_proposal.code} to read it through — you sign on the next step.",
-            "url": f"/portal/proposals/{sent_proposal.id}/sign",
+            # Deep-link to the base proposal page — both portals
+            # handle signing inline (web-site scrolls to the acks +
+            # sign card; NPD opens the signature dialog from the
+            # "Continue to signing" affordance). The old ``/sign``
+            # suffix was an NPD-era standalone route; the web-site
+            # portal never had that page, so a proposal
+            # ``next_action`` click was 404-ing there.
+            "url": f"/portal/proposals/{sent_proposal.id}",
             "urgency": "high",
         }
 

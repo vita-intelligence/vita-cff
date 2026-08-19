@@ -180,7 +180,12 @@ def resolve_stage(
         (p for p in proposals if p.status == "sent"), None
     )
     if sent_proposal is not None:
-        return ("proposal_pending", f"/portal/proposals/{sent_proposal.id}/sign")
+        # Base proposal page — signing is inline on both portals
+        # now (web-site scrolls to acks + sign card, NPD opens the
+        # signature dialog). The ``/sign`` suffix was an NPD-era
+        # standalone route the web-site portal never implemented,
+        # so the deep-link 404'd there.
+        return ("proposal_pending", f"/portal/proposals/{sent_proposal.id}")
 
     return ("unknown", None)
 
