@@ -15,6 +15,7 @@ from apps.payments.api.views import (
     PaymentPspInvoicesView,
     PaymentVoidView,
     PendingPaymentProjectsView,
+    SamplePricingConfigView,
 )
 
 
@@ -77,5 +78,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/payments/<uuid:payment_id>/invoices/<uuid:file_id>/",
         PaymentInvoiceDetailView.as_view(),
         name="payment-invoice-detail",
+    ),
+    # Sample-pricing settings module — org-scoped config +
+    # discount-tier list that drives the customer's post-proposal
+    # sample-selection stage. Gated behind ``sample_pricing.view``
+    # (GET) / ``sample_pricing.edit`` (PUT).
+    path(
+        "organizations/<uuid:org_id>/sample-pricing/",
+        SamplePricingConfigView.as_view(),
+        name="sample-pricing-config",
     ),
 ]

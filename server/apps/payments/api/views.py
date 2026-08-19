@@ -13,8 +13,14 @@ from rest_framework.views import APIView
 from apps.formulations.models import Formulation
 from apps.label_design.constants import LabelDesignStatus
 from apps.label_design.models import LabelDesign
-from apps.organizations.modules import FinanceCapability
-from apps.payments.api.permissions import HasFinancePermission
+from apps.organizations.modules import (
+    FinanceCapability,
+    SamplePricingCapability,
+)
+from apps.payments.api.permissions import (
+    HasFinancePermission,
+    HasSamplePricingPermission,
+)
 from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.audit.services import record as record_audit
 from apps.payments.api.serializers import (
@@ -23,6 +29,8 @@ from apps.payments.api.serializers import (
     PaymentEditSerializer,
     PaymentReadSerializer,
     PaymentVoidSerializer,
+    SamplePricingConfigReadSerializer,
+    SamplePricingConfigWriteSerializer,
 )
 from apps.payments.constants import PaymentStatus
 from apps.payments.models import Payment
@@ -30,7 +38,9 @@ from apps.payments.services import (
     PaymentAlreadyApproved,
     PaymentAlreadyVoided,
     approve_payment,
+    get_or_create_sample_pricing_config,
     record_payment,
+    upsert_sample_pricing_config,
     void_payment,
 )
 from apps.proposals.models import Proposal
@@ -807,3 +817,43 @@ class AwaitingDepositsView(APIView):
                 "next_offset": next_offset if has_more else None,
             }
         )
+
+
+class SamplePricingConfigView(APIView):
+    """``GET / PUT /api/organizations/<org>/sample-pricing/``.
+
+    Read + wholesale-replace the org's sample pricing settings —
+    ``free_samples_included``, ``price_per_extra_sample``,
+    ``currency_code`` + the ordered discount tier list.
+
+    Method-specific caps:
+    * ``GET``  → ``sample_pricing.view``
+    * ``PUT``  → ``sample_pricing.edit``
+    """
+
+    permission_classes = [HasSamplePricingPermission]
+
+    def initial(self, request: Request, *args, **kwargs) -> None:  # type: ignore[override]
+        if request.method == "PUT":
+            self.required_capability = SamplePricingCapability.EDIT
+        else:
+            self.required_capability = SamplePricingCapability.VIEW
+        super().initial(request, *args, **kwargs)
+
+    def get(self, request: Request, **kwargs) -> Response:
+        config = get_or_create_sample_pricing_config(self.organization)
+        return Response(SamplePricingConfigReadSerializer(config).data)
+
+    def put(self, request: Request, **kwargs) -> Response:
+        payload = SamplePricingConfigWriteSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        config = upsert_sample_pricing_config(
+            organization=self.organization,
+            actor=request.user,
+            free_samples_included=payload.validated_data["free_samples_included"],
+            price_per_extra_sample=payload.validated_data["price_per_extra_sample"],
+            currency_code=payload.validated_data.get("currency_code", ""),
+            tiers=payload.validated_data.get("tiers", []),
+        )
+        config.refresh_from_db()
+        return Response(SamplePricingConfigReadSerializer(config).data)

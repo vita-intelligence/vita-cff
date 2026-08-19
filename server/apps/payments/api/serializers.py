@@ -7,7 +7,12 @@ from decimal import Decimal
 from rest_framework import serializers
 
 from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
-from apps.payments.models import Payment, PaymentFile
+from apps.payments.models import (
+    Payment,
+    PaymentFile,
+    SamplePricingConfig,
+    SamplePricingDiscountTier,
+)
 
 
 class PaymentFileReadSerializer(serializers.ModelSerializer):
@@ -220,4 +225,82 @@ class PaymentEditSerializer(serializers.Serializer):
     def validate_amount(self, value: Decimal) -> Decimal:
         if value <= 0:
             raise serializers.ValidationError("amount must be positive")
+        return value
+
+
+# ---------------------------------------------------------------------------
+# Sample pricing config + discount tiers
+# ---------------------------------------------------------------------------
+
+
+class SamplePricingDiscountTierReadSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SamplePricingDiscountTier
+        fields = (
+            "id",
+            "quantity_threshold",
+            "discount_percent",
+            "sort_order",
+        )
+        read_only_fields = fields
+
+
+class SamplePricingConfigReadSerializer(serializers.ModelSerializer):
+    """Read shape for the sample-pricing settings endpoint. Includes
+    the ordered tier list inline so the FE doesn't need a second
+    round-trip to render the settings form.
+    """
+
+    discount_tiers = SamplePricingDiscountTierReadSerializer(
+        many=True, read_only=True,
+    )
+
+    class Meta:
+        model = SamplePricingConfig
+        fields = (
+            "id",
+            "free_samples_included",
+            "price_per_extra_sample",
+            "currency_code",
+            "discount_tiers",
+            "updated_at",
+        )
+        read_only_fields = fields
+
+
+class SamplePricingDiscountTierWriteSerializer(serializers.Serializer):
+    quantity_threshold = serializers.IntegerField(min_value=1)
+    discount_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2, min_value=0, max_value=100,
+    )
+
+
+class SamplePricingConfigWriteSerializer(serializers.Serializer):
+    """Write payload for the settings PUT endpoint.
+
+    Wholesale replace — every ``tiers`` entry is upserted, anything
+    not in the payload is deleted. See ``upsert_sample_pricing_
+    config`` in the service layer for the details.
+    """
+
+    free_samples_included = serializers.IntegerField(min_value=0)
+    price_per_extra_sample = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=0,
+    )
+    currency_code = serializers.CharField(
+        allow_blank=True, max_length=3, required=False,
+    )
+    tiers = SamplePricingDiscountTierWriteSerializer(
+        many=True, required=False,
+    )
+
+    def validate_tiers(self, value):
+        seen: set[int] = set()
+        for tier in value or []:
+            threshold = tier["quantity_threshold"]
+            if threshold in seen:
+                raise serializers.ValidationError(
+                    f"duplicate quantity_threshold: {threshold}"
+                )
+            seen.add(threshold)
         return value

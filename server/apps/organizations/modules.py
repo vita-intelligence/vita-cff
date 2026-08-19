@@ -38,6 +38,7 @@ AUDIT_MODULE = "audit"
 CFF_SUBMISSIONS_MODULE = "cff_submissions"
 LABELLING_MODULE = "labelling"
 FINANCE_MODULE = "finance"
+SAMPLE_PRICING_MODULE = "sample_pricing"
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +308,30 @@ class RTGCatalogCapability:
     PUBLISH = "publish"
 
 
+class SamplePricingCapability:
+    """Capabilities for the org-level "sample pricing" settings module.
+
+    Drives the customer-portal sample-selection stage after proposal
+    sign — finance edits ``free_samples_included`` /
+    ``price_per_extra_sample`` + the quantity-threshold discount
+    tiers, and the portal's picker renders those knobs live. Kept
+    separate from :class:`FinanceCapability` because pricing setup is
+    a config-time act (rarely touched, sits with an ops / finance
+    lead) while recording + approving individual payments is a
+    day-to-day finance-team workflow — different frequencies, often
+    different people.
+
+    * :attr:`VIEW` — read the config + tiers. Held by finance so they
+      can eyeball what the customer will be charged before invoicing.
+    * :attr:`EDIT` — mutate the config + tiers. Held by ops leads /
+      finance heads. Editing here is a live change: the next customer
+      to hit sample selection sees the new numbers immediately.
+    """
+
+    VIEW = "view"
+    EDIT = "edit"
+
+
 class CFFSubmissionsCapability:
     """Capabilities for the CFF (Custom Formulation Request) intake.
 
@@ -495,6 +520,22 @@ MODULE_REGISTRY: dict[str, Module] = {
             FinanceCapability.RECORD_PAYMENT,
             FinanceCapability.APPROVE_PAYMENT,
             FinanceCapability.ASSIGN_OFFICER,
+        ),
+    ),
+    SAMPLE_PRICING_MODULE: Module(
+        key=SAMPLE_PRICING_MODULE,
+        name="Sample pricing",
+        description=(
+            "Free sample allowance + per-extra-sample price + "
+            "quantity-threshold discount tiers. Drives the customer "
+            "portal's post-proposal sample-selection stage: the "
+            "customer picks a quantity, the numbers here compute what "
+            "they owe on top of the deposit, and a single bundled "
+            "invoice lands on the finance queue for approval."
+        ),
+        capabilities=(
+            SamplePricingCapability.VIEW,
+            SamplePricingCapability.EDIT,
         ),
     ),
 }
