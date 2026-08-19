@@ -28,6 +28,10 @@ from __future__ import annotations
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.client_portal.api.project_stage import (
+    STAGE_LABELS as _STAGE_LABELS,
+    resolve_stage as _resolve_stage,
+)
 from apps.client_portal.api.views import PortalAPIView
 from apps.client_portal.queries import (
     customer_ids_for_account,
@@ -318,124 +322,13 @@ def _build_actions(customer_ids) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-_STAGE_LABELS: dict[str, str] = {
-    "proposal_pending": "Awaiting your proposal signature",
-    "draft_spec_pending": "Awaiting draft specification signature",
-    "in_development": "In development",
-    "pilot": "Trial batch phase",
-    "final_spec_pending": "Final specification ready to sign",
-    "approved_awaiting_payment": "Approved — awaiting payment",
-    "label_path_pending": "Label design — choose path",
-    "label_preferences_pending": "Label design — your brief needed",
-    "label_in_progress": "Label design — in progress",
-    "label_review": "Label design — internal review",
-    "label_customer_approval": "Label design — your approval needed",
-    "label_approved": "Label approved · ready for production",
-    "on_hold": "On hold",
-    "unknown": "In progress",
-    # Pre-project stages for un-converted CFFs surfaced on the
-    # products list so the customer sees "I submitted something" even
-    # before triage has spun up a Formulation. These stages don't
-    # exist on Formulation rows; they only appear on the CFF-side
-    # entries returned by ``_build_products``.
-    "cff_under_review": "Under review",
-    "cff_rejected": "Not proceeding",
-    # RTG orders — the short-lived state between "customer hit
-    # submit" and "staff hit Send". Shown as an amber "Awaiting
-    # proposal" chip so the customer knows the ball is in staff's
-    # court but there is a concrete next step landing shortly.
-    "cff_awaiting_proposal": "Awaiting proposal",
-}
-
-
-def _resolve_stage(
-    *,
-    formulation: Formulation,
-    proposals: list[Proposal],
-    sheets: list[SpecificationSheet],
-    label_design: LabelDesign | None,
-) -> tuple[str, str | None]:
-    """Pick the single most-current stage for a project.
-
-    Returns ``(stage_key, action_url_or_none)``. Walks the lifecycle
-    in reverse (label design → final spec → trial → proposal) so the
-    most advanced state wins — a project with a customer-signed
-    proposal AND a sent final spec reads as "final spec pending",
-    not "proposal pending".
-    """
-
-    if label_design is not None:
-        status = label_design.status
-        if status == LabelDesignStatus.LABEL_APPROVED:
-            return ("label_approved", None)
-        if status == LabelDesignStatus.CUSTOMER_APPROVAL:
-            return (
-                "label_customer_approval",
-                f"/portal/label-designs/{label_design.id}/approve",
-            )
-        if status in (
-            LabelDesignStatus.SCIENTIST_REVIEW,
-            LabelDesignStatus.DIRECTOR_REVIEW,
-        ):
-            return ("label_review", f"/portal/label-designs/{label_design.id}")
-        if status == LabelDesignStatus.DESIGN_IN_PROGRESS:
-            return ("label_in_progress", f"/portal/label-designs/{label_design.id}")
-        if status == LabelDesignStatus.DESIGN_PREFERENCES_PENDING:
-            return (
-                "label_preferences_pending",
-                f"/portal/label-designs/{label_design.id}/preferences",
-            )
-        if status == LabelDesignStatus.LABEL_PATH_PENDING:
-            return (
-                "label_path_pending",
-                f"/portal/label-designs/{label_design.id}/choose-path",
-            )
-        if status == LabelDesignStatus.PAYMENT_PENDING:
-            return ("approved_awaiting_payment", f"/portal/label-designs/{label_design.id}")
-        if status == LabelDesignStatus.ON_HOLD:
-            return ("on_hold", f"/portal/label-designs/{label_design.id}")
-
-    # No label design row yet. Walk the spec/project lifecycle.
-    sent_final = next(
-        (
-            s
-            for s in sheets
-            if s.document_kind == SpecificationDocumentKind.FINAL
-            and s.status == SpecificationStatus.SENT
-            and s.customer_signed_at is None
-        ),
-        None,
-    )
-    if sent_final is not None:
-        return ("final_spec_pending", f"/portal/specs/{sent_final.id}")
-
-    if formulation.project_status == ProjectStatus.PILOT:
-        return ("pilot", None)
-    if formulation.project_status == ProjectStatus.IN_DEVELOPMENT:
-        return ("in_development", None)
-
-    # Anything before in_development → there's still a proposal or
-    # draft spec waiting on the customer.
-    sent_draft = next(
-        (
-            s
-            for s in sheets
-            if s.document_kind == SpecificationDocumentKind.DRAFT
-            and s.status == SpecificationStatus.SENT
-            and s.customer_signed_at is None
-        ),
-        None,
-    )
-    if sent_draft is not None:
-        return ("draft_spec_pending", f"/portal/specs/{sent_draft.id}")
-
-    sent_proposal = next(
-        (p for p in proposals if p.status == "sent"), None
-    )
-    if sent_proposal is not None:
-        return ("proposal_pending", f"/portal/proposals/{sent_proposal.id}/sign")
-
-    return ("unknown", None)
+# ``_STAGE_LABELS`` and ``_resolve_stage`` moved to
+# :mod:`apps.client_portal.api.project_stage` so the web-site
+# activity feed (:mod:`apps.client_portal.api.activity_views`) can
+# reuse the same lifecycle walk + the same customer-facing labels.
+# Aliased above via ``import as _STAGE_LABELS`` /
+# ``resolve_stage as _resolve_stage`` to keep the call sites in this
+# file untouched during the extraction.
 
 
 def _build_products(customer_ids) -> list[dict]:
