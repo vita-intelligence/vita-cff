@@ -622,15 +622,70 @@ class ProposalSignView(PortalAPIView):
             _canonical_proposal_payload,
             _document_hash,
         )
+        from apps.proposals.models import ProposalLine
         from apps.proposals.services import (
             InvalidProposalTransition,
             ProposalAcknowledgementsRequired,
             SignatureRequired,
             capture_customer_signature_on_proposal,
         )
+        from apps.specifications.models import (
+            SpecificationDocumentKind,
+            SpecificationSheet,
+            SpecificationStatus,
+        )
         from config.signatures import SignatureImageInvalid
 
         proposal = _load_owned_proposal(request, proposal_id)
+
+        # Sequential sign gate — a customer cannot sign the proposal
+        # while any bundled draft spec is still ``sent`` + unsigned.
+        # Matches the pipeline chip logic in
+        # :func:`apps.client_portal.api.product_detail_views.
+        # _build_pipeline`, so the visible state and the enforced
+        # state can never disagree (previously the UI showed the
+        # draft as "current" but the customer could still hit the
+        # proposal-sign button and slip through).
+        #
+        # Bundled specs live on two paths — legacy 1:1
+        # ``Proposal.specification_sheet`` and per-line
+        # ``ProposalLine.specification_sheet``. We union both so an
+        # anchor-only proposal AND a multi-line proposal both gate
+        # correctly.
+        bundled_sheet_ids: set = set()
+        if getattr(proposal, "specification_sheet_id", None):
+            bundled_sheet_ids.add(proposal.specification_sheet_id)
+        bundled_sheet_ids |= set(
+            ProposalLine.objects.filter(
+                proposal_id=proposal.id, specification_sheet__isnull=False,
+            ).values_list("specification_sheet_id", flat=True)
+        )
+        if bundled_sheet_ids:
+            unsigned_draft = (
+                SpecificationSheet.objects.filter(
+                    id__in=bundled_sheet_ids,
+                    document_kind=SpecificationDocumentKind.DRAFT,
+                    status=SpecificationStatus.SENT,
+                    customer_signed_at__isnull=True,
+                )
+                .only("id", "code")
+                .first()
+            )
+            if unsigned_draft is not None:
+                return Response(
+                    {
+                        "code": "sign_spec_first",
+                        "detail": "sign_spec_first",
+                        "message": (
+                            f"Sign draft specification {unsigned_draft.code} "
+                            "before signing the proposal."
+                        ),
+                        "spec_id": str(unsigned_draft.id),
+                        "spec_code": unsigned_draft.code,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
         signer_name, signer_email, signer_company = _client_signer_fields(request)
 
         payload = request.data or {}
