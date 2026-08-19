@@ -1809,12 +1809,53 @@ def _render_public_proposal_payload(proposal) -> dict:
         else ""
     )
 
+    # When the proposal was actually SENT to the customer. Proposal
+    # has no dedicated ``sent_at`` column — the timestamp lives on
+    # the status transition row (``approved → sent``). Grab the
+    # latest one so a proposal that was rolled back into review and
+    # re-sent shows the most recent send date. Falls back to
+    # ``created_at`` for legacy proposals imported without a
+    # transition history (staff-created + directly-sent old rows).
+    from apps.proposals.models import (
+        ProposalStatus as _ProposalStatus,
+        ProposalStatusTransition as _ProposalStatusTransition,
+    )
+
+    sent_transition = (
+        _ProposalStatusTransition.objects.filter(
+            proposal=proposal, to_status=_ProposalStatus.SENT.value,
+        )
+        .order_by("-created_at")
+        .only("created_at")
+        .first()
+    )
+    sent_at_dt = (
+        sent_transition.created_at
+        if sent_transition is not None
+        else (proposal.created_at if proposal.status != "draft" else None)
+    )
+
     return {
         "id": str(proposal.id),
         "code": proposal.code,
         "status": proposal.status,
         "template_type": proposal.template_type,
         "formulation_id": formulation_id,
+        # Timestamps for the web-site portal's Summary sidebar
+        # ("Sent" / "Last update"). ``sent_at`` derives from the
+        # status transition row above; ``updated_at`` is the raw
+        # model column and captures the most recent touch on the
+        # proposal itself (signature capture, resend, etc.).
+        # ``created_at`` is emitted alongside for completeness even
+        # though the current UI doesn't render it — cheap add,
+        # future surfaces can use it without a payload bump.
+        "sent_at": sent_at_dt.isoformat() if sent_at_dt else None,
+        "created_at": (
+            proposal.created_at.isoformat() if proposal.created_at else None
+        ),
+        "updated_at": (
+            proposal.updated_at.isoformat() if proposal.updated_at else None
+        ),
         "sales_person_name": sales_person_name,
         "customer_company": proposal.customer_company,
         "customer_name": proposal.customer_name,
