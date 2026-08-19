@@ -790,7 +790,39 @@ def confirm_sample_allocation(
         allocation.deposit_payment = payment
         allocation.save(update_fields=["deposit_payment", "updated_at"])
 
+    # Push the sample-allocation state to PSP so the kanban board's
+    # ``:awaiting_sample_selection`` column updates without a manual
+    # sync. Hooked via the proposal-merge sync path since the
+    # allocation state ships on the per-line payload there.
+    _sync_formulation_proposal_to_psp(formulation)
+
     return allocation
+
+
+def _sync_formulation_proposal_to_psp(formulation) -> None:
+    """Kick a PSP sync for whichever proposal this formulation is
+    attached to. Deferred via ``transaction.on_commit`` so the
+    sample-allocation row is committed before PSP fetches — a race
+    would leave PSP staring at the old state. Silently no-ops when
+    no signed / accepted proposal is attached OR when PSP integration
+    isn't configured for the org.
+    """
+
+    from django.db import transaction as _transaction
+
+    proposal = _signed_or_accepted_proposal_for_formulation(formulation)
+    if proposal is None:
+        return
+
+    def _do_sync():
+        # Local import to dodge the payments → proposals → payments
+        # circular that the ``_schedule_proposal_psp_merge`` module
+        # already sits behind.
+        from apps.proposals.services import _schedule_proposal_psp_merge
+
+        _schedule_proposal_psp_merge(proposal)
+
+    _transaction.on_commit(_do_sync)
 
 
 def _signed_or_accepted_proposal_for_formulation(formulation) -> Any | None:
