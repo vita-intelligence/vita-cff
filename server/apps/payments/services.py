@@ -27,6 +27,8 @@ from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
 from apps.payments.models import (
     Payment,
+    SampleAllocation,
+    SampleAllocationStatus,
     SamplePricingConfig,
     SamplePricingDiscountTier,
 )
@@ -671,3 +673,96 @@ def compute_sample_extras_cost(
         "total": str(total),
         "tier_threshold": tier_threshold,
     }
+
+
+# ---------------------------------------------------------------------------
+# Sample allocation — customer's confirmed pick of trial-sample count
+# ---------------------------------------------------------------------------
+
+
+class SampleAllocationLocked(Exception):
+    """Raised when a caller tries to edit an already-confirmed
+    allocation. Signals the FE to refetch (state moved under it) —
+    ``409`` on the wire."""
+
+
+def get_or_create_sample_allocation(*, formulation) -> SampleAllocation:
+    """Idempotent fetch — creates a ``draft`` row at zero quantity
+    on first access so the portal picker always has an editable
+    target. Wholesale-scoped by the formulation's organization so
+    a cross-org accident can't attach to the wrong org's row."""
+
+    allocation, _ = SampleAllocation.objects.get_or_create(
+        formulation=formulation,
+        defaults={"organization": formulation.organization},
+    )
+    return allocation
+
+
+@transaction.atomic
+def confirm_sample_allocation(
+    *,
+    formulation,
+    actor,
+    quantity_ordered: int,
+) -> SampleAllocation:
+    """Lock the customer's choice + snapshot the pricing breakdown.
+
+    Rejects re-confirmation of an already-confirmed row — the
+    :class:`SampleAllocation` FSM is one-way (draft → confirmed) so
+    a customer changing their mind post-confirm has to go through a
+    staff-side rollback that isn't wired yet. FE surfaces the 409 as
+    "your choice is already locked in".
+
+    Snapshots the compute output onto the row so any subsequent
+    settings-page edit to :class:`SamplePricingConfig` doesn't
+    retroactively re-price the customer.
+    """
+
+    allocation = get_or_create_sample_allocation(formulation=formulation)
+    if allocation.status == SampleAllocationStatus.CONFIRMED:
+        raise SampleAllocationLocked()
+
+    config = get_or_create_sample_pricing_config(formulation.organization)
+    breakdown = compute_sample_extras_cost(
+        config=config, ordered_quantity=quantity_ordered,
+    )
+
+    allocation.status = SampleAllocationStatus.CONFIRMED
+    allocation.quantity_ordered = breakdown["ordered_quantity"]
+    allocation.free_samples_included_snapshot = breakdown[
+        "free_samples_included"
+    ]
+    allocation.extras_count = breakdown["extras_count"]
+    allocation.unit_price = Decimal(breakdown["unit_price"])
+    allocation.subtotal = Decimal(breakdown["subtotal"])
+    allocation.discount_percent = Decimal(breakdown["discount_percent"])
+    allocation.discount_amount = Decimal(breakdown["discount_amount"])
+    allocation.total_extras_cost = Decimal(breakdown["total"])
+    allocation.currency_code = (
+        config.currency_code or ""
+    ).strip().upper()[:3]
+    allocation.tier_threshold = breakdown["tier_threshold"]
+    allocation.confirmed_at = timezone.now()
+    # ``actor`` is the ClientAccount from the portal session — a
+    # separate model from platform User, so we can't put it on the
+    # audit's ``actor`` FK, but we CAN pin it on ``confirmed_by`` for
+    # the sample-allocation audit trail specifically.
+    allocation.confirmed_by = actor
+    allocation.save()
+
+    record_audit(
+        organization=formulation.organization,
+        actor=None,  # portal actor isn't a platform user
+        action="sample_allocation.confirm",
+        target=allocation,
+        after={
+            "formulation_id": str(formulation.id),
+            "quantity_ordered": allocation.quantity_ordered,
+            "extras_count": allocation.extras_count,
+            "total_extras_cost": str(allocation.total_extras_cost),
+            "currency_code": allocation.currency_code,
+            "confirmed_by_client_account_id": str(actor.id) if actor else None,
+        },
+    )
+    return allocation

@@ -16,6 +16,8 @@ import {
 } from "@/components/portal/brutalist";
 import { env } from "@/config/env";
 
+import { SampleSelectionCard } from "./sample-selection-card";
+
 
 type StageState = "done" | "current" | "future" | "skipped";
 
@@ -123,6 +125,16 @@ export default async function PortalProductDetailPage({
           currentStageLabel={currentStage?.label}
         />
       )}
+
+      {/* Sample-selection card — client component, renders whenever
+          the pipeline flags ``sample_selection`` as ``current``.
+          Handles its own fetch + confirm + router.refresh(); this
+          server component just decides whether to mount it. */}
+      {data.pipeline.some(
+        (s) => s.key === "sample_selection" && s.state === "current",
+      ) ? (
+        <SampleSelectionCard projectId={id} />
+      ) : null}
 
       <section className="mt-10 mb-10">
         <Eyebrow>Your journey</Eyebrow>

@@ -391,3 +391,147 @@ class SamplePricingDiscountTier(models.Model):
             f"SamplePricingDiscountTier(qty>={self.quantity_threshold} "
             f"→ {self.discount_percent}%)"
         )
+
+
+class SampleAllocationStatus(models.TextChoices):
+    """State machine for :class:`SampleAllocation`.
+
+    * ``DRAFT`` — the customer opened the picker but hasn't
+      confirmed a quantity yet. Not paid, not billed, no
+      downstream side-effect. Overwritten freely as the customer
+      changes their mind.
+    * ``CONFIRMED`` — the customer clicked Confirm; the
+      allocation is locked. In PR #3 this will auto-generate the
+      bundled deposit+samples Payment and gate the trial-batch
+      scheduler; in this PR (#2) it's the terminal state — the
+      pipeline chip flips to done and the customer can proceed.
+    """
+
+    DRAFT = "draft", _("Draft")
+    CONFIRMED = "confirmed", _("Confirmed")
+
+
+class SampleAllocation(models.Model):
+    """The customer's post-proposal choice of "how many trial samples
+    do I want" for a project.
+
+    One row per formulation (OneToOne). Snapshots the computed price
+    breakdown at confirm-time — ``quantity_ordered``,
+    ``extras_count``, ``unit_price``, ``discount_percent``,
+    ``total_extras_cost`` — so a mid-project change to the org's
+    :class:`SamplePricingConfig` never retroactively re-prices a
+    customer who already committed. Snapshotting matches how
+    :class:`Payment.currency` + ``proposal.deposit_percent`` are
+    treated on their respective rows.
+
+    Confirmed rows drive:
+
+      * PR #3 — bundled deposit+samples Payment auto-generation
+        (deposit_amount + this row's ``total_extras_cost`` = the
+        single line the finance team sees on their queue).
+      * PR #3 — trial-batch scheduler picks the ordered_quantity
+        instead of the pricing config's ``free_samples_included``
+        default.
+
+    The FSM in :class:`SampleAllocationStatus` intentionally keeps
+    ``DRAFT`` as a legit terminal state — the customer can open the
+    picker, poke around, close the tab, and come back later without
+    any side-effect on Finance / Ops.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    formulation = models.OneToOneField(
+        "formulations.Formulation",
+        on_delete=models.CASCADE,
+        related_name="sample_allocation",
+    )
+    organization = models.ForeignKey(
+        "organizations.Organization",
+        on_delete=models.PROTECT,
+        related_name="+",
+    )
+
+    status = models.CharField(
+        _("status"),
+        max_length=16,
+        choices=SampleAllocationStatus.choices,
+        default=SampleAllocationStatus.DRAFT,
+    )
+
+    #: The customer's chosen order size, including free samples.
+    quantity_ordered = models.PositiveIntegerField(
+        _("quantity ordered"), default=0,
+    )
+
+    # ---- Snapshotted breakdown (only meaningful once confirmed) ----
+    #
+    # These mirror the return of
+    # :func:`apps.payments.services.compute_sample_extras_cost`
+    # AT CONFIRM TIME so a subsequent settings-page edit never
+    # retroactively re-prices a locked allocation. FE / finance
+    # invoicing reads STRICTLY from here after confirmation.
+
+    free_samples_included_snapshot = models.PositiveIntegerField(
+        _("free samples included (snapshot)"), default=0,
+    )
+    extras_count = models.PositiveIntegerField(
+        _("extras count"), default=0,
+    )
+    unit_price = models.DecimalField(
+        _("unit price"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    subtotal = models.DecimalField(
+        _("subtotal"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    discount_percent = models.DecimalField(
+        _("discount percent"),
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+    )
+    discount_amount = models.DecimalField(
+        _("discount amount"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    total_extras_cost = models.DecimalField(
+        _("total extras cost"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+    currency_code = models.CharField(
+        _("currency code"), max_length=3, blank=True, default="",
+    )
+    tier_threshold = models.PositiveIntegerField(
+        _("winning tier threshold"), null=True, blank=True,
+    )
+
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    confirmed_by = models.ForeignKey(
+        "client_portal.ClientAccount",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("sample allocation")
+        verbose_name_plural = _("sample allocations")
+
+    def __str__(self) -> str:  # pragma: no cover
+        return (
+            f"SampleAllocation(formulation={self.formulation_id}, "
+            f"qty={self.quantity_ordered}, status={self.status})"
+        )

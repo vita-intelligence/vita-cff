@@ -220,18 +220,87 @@ def _build_pipeline(
             "detail": "Once we've prepared a quote, you'll sign it here.",
         }
 
+    # ---- Stage 3.5: Sample selection -----------------------------------
+    # Sits between proposal-signed and deposit-paid. The customer
+    # picks how many trial samples they want; the free allowance is
+    # bundled with the deposit, extras are priced per-unit against
+    # the org's SamplePricingConfig with tiered discounts. State:
+    #
+    #   * signed_proposal is None                 → future (waiting)
+    #   * allocation.status == CONFIRMED          → done
+    #   * signed_proposal exists, allocation draft → current
+    #
+    # The "current" state is what drives the picker card on both
+    # portals. This stage never gets ``skipped`` — every project has
+    # at LEAST the free-allowance decision to make, even if the
+    # customer doesn't want to buy any extras. That decision has to
+    # be actively confirmed so finance knows to invoice against the
+    # right sample count.
+    from apps.payments.models import (
+        SampleAllocation as _SampleAllocation,
+        SampleAllocationStatus as _SampleAllocationStatus,
+    )
+
+    sample_allocation = (
+        _SampleAllocation.objects.filter(formulation=formulation).first()
+    )
+    if signed_proposal is None:
+        sample_stage = {
+            "key": "sample_selection",
+            "label": "Sample selection",
+            "state": "future",
+            "completed_at": None,
+            "detail": (
+                "Once the proposal is signed, you'll choose how many "
+                "trial samples to receive."
+            ),
+        }
+    elif (
+        sample_allocation is not None
+        and sample_allocation.status == _SampleAllocationStatus.CONFIRMED
+    ):
+        qty = sample_allocation.quantity_ordered
+        sample_stage = {
+            "key": "sample_selection",
+            "label": "Sample selection confirmed",
+            "state": "done",
+            "completed_at": (
+                sample_allocation.confirmed_at.isoformat()
+                if sample_allocation.confirmed_at
+                else None
+            ),
+            "detail": (
+                f"You chose {qty} trial sample"
+                f"{'s' if qty != 1 else ''} — locked in and included on the "
+                "deposit invoice."
+            ),
+        }
+    else:
+        sample_stage = {
+            "key": "sample_selection",
+            "label": "Choose your samples",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                "Pick how many trial samples you want. The free allowance "
+                "is bundled with the deposit; extras get priced on this "
+                "page."
+            ),
+        }
+
     # ---- Stage 4.5: Deposit ---------------------------------------------
-    # Sits AFTER draft-spec sign in the pipeline order — the real flow
-    # is "sign proposal (locks price/terms) → sign draft spec (locks
-    # recipe) → pay deposit → trial batch (unlocked by deposit)". The
-    # deposit copy still references the accepted proposal because
-    # ``trial_batch_gate_status`` reads the accepted proposal's
-    # deposit_percent — the recipe sign is a UX ordering, not the
-    # gate's trigger. Skipped entirely when the accepted proposal was
-    # quoted with 0% deposit (full amount rides the final gate).
-    # ``trial_batch_gate_status`` is the single source of truth for the
-    # deposit state — same helper drives the scientist banner +
-    # trial-batch service refusal.
+    # Sits AFTER sample-selection AND draft-spec sign in the pipeline
+    # order — the real flow is "sign proposal (locks price/terms) →
+    # sign draft spec (locks recipe) → choose samples → pay deposit
+    # (which now bundles the sample cost) → trial batch (unlocked by
+    # deposit)". The deposit copy still references the accepted
+    # proposal because ``trial_batch_gate_status`` reads the accepted
+    # proposal's deposit_percent — the recipe sign is a UX ordering,
+    # not the gate's trigger. Skipped entirely when the accepted
+    # proposal was quoted with 0% deposit (full amount rides the
+    # final gate).  ``trial_batch_gate_status`` is the single source
+    # of truth for the deposit state — same helper drives the
+    # scientist banner + trial-batch service refusal.
     from apps.payments.services import trial_batch_gate_status
 
     deposit_gate = trial_batch_gate_status(formulation)
@@ -511,6 +580,7 @@ def _build_pipeline(
             request_stage,
             draft_stage,
             proposal_stage,
+            sample_stage,
             deposit_stage,
             payment_stage,
             label_stage,
@@ -521,6 +591,7 @@ def _build_pipeline(
         request_stage,
         draft_stage,
         proposal_stage,
+        sample_stage,
         deposit_stage,
         trial_stage,
         final_stage,
@@ -624,6 +695,40 @@ def _build_next_action(
             "url": f"/portal/specs/{draft_sent.id}",
             "urgency": "high",
         }
+
+    # Sample selection — post-proposal-sign, pre-deposit. Checked
+    # BEFORE the proposal-review branch below because the proposal
+    # FSM keeps ``status = sent`` after ``customer_signed_at`` is
+    # set (a separate "finalize" step flips it to ``accepted``), so
+    # a signed proposal still matches ``_first_sent_proposal``. If
+    # we ran the review branch first we'd tell the customer to
+    # review a proposal they've already signed. The pipeline handles
+    # the same ordering by gating on ``signed_proposal is not None``
+    # for the sample stage's ``current`` state.
+    signed_proposal_for_samples = _first_signed_proposal(proposals)
+    if signed_proposal_for_samples is not None:
+        from apps.payments.models import (
+            SampleAllocation as _SampleAllocation,
+            SampleAllocationStatus as _SampleAllocationStatus,
+        )
+
+        allocation = _SampleAllocation.objects.filter(
+            formulation=formulation
+        ).first()
+        if (
+            allocation is None
+            or allocation.status != _SampleAllocationStatus.CONFIRMED
+        ):
+            return {
+                "label": "Choose how many samples you want",
+                "subtitle": (
+                    "Pick your trial-sample quantity — the free "
+                    "allowance is bundled with the deposit; extras "
+                    "get priced on the page."
+                ),
+                "url": f"/portal/projects/{formulation.id}",
+                "urgency": "high",
+            }
 
     # Proposal waiting for signature.
     sent_proposal = _first_sent_proposal(proposals)
