@@ -196,14 +196,18 @@ def _build_pipeline(
             "detail": "Our scientists will draft the recipe and share it here.",
         }
 
-    # ---- Stage 3.5: Deposit ---------------------------------------------
-    # Fires between "proposal signed" and "trial batch" for Custom, and
-    # between "proposal signed" and "payment (final)" for RTG. Skipped
-    # entirely when the accepted proposal was quoted with 0% deposit
-    # (deposit_percent = 0 means the full amount rides the final gate
-    # instead). ``trial_batch_gate_status`` is the single source of
-    # truth for the deposit state — same helper drives the scientist
-    # banner + trial-batch service refusal.
+    # ---- Stage 4.5: Deposit ---------------------------------------------
+    # Sits AFTER draft-spec sign in the pipeline order — the real flow
+    # is "sign proposal (locks price/terms) → sign draft spec (locks
+    # recipe) → pay deposit → trial batch (unlocked by deposit)". The
+    # deposit copy still references the accepted proposal because
+    # ``trial_batch_gate_status`` reads the accepted proposal's
+    # deposit_percent — the recipe sign is a UX ordering, not the
+    # gate's trigger. Skipped entirely when the accepted proposal was
+    # quoted with 0% deposit (full amount rides the final gate).
+    # ``trial_batch_gate_status`` is the single source of truth for the
+    # deposit state — same helper drives the scientist banner +
+    # trial-batch service refusal.
     from apps.payments.services import trial_batch_gate_status
 
     deposit_gate = trial_batch_gate_status(formulation)
@@ -213,7 +217,7 @@ def _build_pipeline(
             "label": "Deposit",
             "state": "future",
             "completed_at": None,
-            "detail": "Once you sign the proposal, we'll send you the deposit invoice.",
+            "detail": "Once you sign the proposal + draft spec, we'll send you the deposit invoice.",
         }
     elif deposit_gate["reason"] == "no_deposit_required":
         deposit_stage = {
@@ -445,16 +449,21 @@ def _build_pipeline(
         ),
     }
 
-    # Ready-to-go projects manufacture an existing validated recipe —
-    # no lab development phase, so trial batch + final specification
-    # never happen. Emit 6 stages (7 with deposit) instead of 8 so the
-    # timeline reads honestly. Custom keeps the full 9.
+    # Stage order — real business flow, not schema order:
+    #   proposal signed → draft spec signed → deposit paid → trial
+    #   batch → final spec signed → payment → label → production.
+    # Previously deposit sat between proposal and draft-spec, which
+    # read to customers as "pay before you've even seen the recipe"
+    # — swapped so the customer commits to (a) the price/terms via
+    # proposal, then (b) the recipe via draft spec, THEN (c) the
+    # deposit unlocks trial production. Same reorder for RTG (no
+    # trial + no final spec) so both project types read consistently.
     if formulation.project_type == ProjectType.READY_TO_GO.value:
         return [
             request_stage,
             proposal_stage,
-            deposit_stage,
             draft_stage,
+            deposit_stage,
             payment_stage,
             label_stage,
             production_stage,
@@ -463,8 +472,8 @@ def _build_pipeline(
     return [
         request_stage,
         proposal_stage,
-        deposit_stage,
         draft_stage,
+        deposit_stage,
         trial_stage,
         final_stage,
         payment_stage,
