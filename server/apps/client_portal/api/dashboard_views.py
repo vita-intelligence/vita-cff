@@ -73,11 +73,18 @@ def _build_actions(customer_ids) -> list[dict]:
 
     actions: list[dict] = []
 
-    # 1) Proposals at ``status=sent`` — customer must sign or reject.
+    # 1) Proposals at ``status=sent`` AND unsigned — customer must
+    #    sign or reject. The proposal FSM keeps ``status=sent`` after
+    #    the customer signs (finance flips it to ``accepted``
+    #    separately), so a signed-but-not-finalized proposal still
+    #    matches ``status=sent``. Excluding
+    #    ``customer_signed_at__isnull=False`` keeps a signed proposal
+    #    from re-surfacing as an unsigned action item.
     sent_proposals = (
         Proposal.objects.filter(
             customer_id__in=customer_ids,
             status="sent",
+            customer_signed_at__isnull=True,
         )
         .select_related("formulation_version__formulation")
         .order_by("updated_at")
@@ -97,6 +104,55 @@ def _build_actions(customer_ids) -> list[dict]:
                 # ``product_detail_views._build_next_action`` and
                 # ``project_stage.resolve_stage``.
                 "url": f"/portal/proposals/{proposal.id}",
+                "product_code": formulation.code,
+                "product_name": formulation.name,
+                "reference_code": proposal.code,
+                "created_at": proposal.updated_at.isoformat(),
+            }
+        )
+
+    # 1a) Sample selection — proposal signed, allocation not
+    #     confirmed. Fires between sign and deposit; deep-links to
+    #     the base project page where both portals render the sample-
+    #     selection card inline.
+    from apps.payments.models import (
+        SampleAllocation as _SampleAllocation,
+        SampleAllocationStatus as _SampleAllocationStatus,
+    )
+
+    signed_unallocated_proposals = (
+        Proposal.objects.filter(
+            customer_id__in=customer_ids,
+            status="sent",
+            customer_signed_at__isnull=False,
+        )
+        .select_related("formulation_version__formulation")
+        .order_by("updated_at")
+    )
+    for proposal in signed_unallocated_proposals:
+        formulation = proposal.formulation_version.formulation
+        if formulation is None:
+            continue
+        allocation = _SampleAllocation.objects.filter(
+            formulation=formulation
+        ).first()
+        if (
+            allocation is not None
+            and allocation.status == _SampleAllocationStatus.CONFIRMED
+        ):
+            continue
+        actions.append(
+            {
+                "kind": "choose_samples",
+                "urgency": URGENCY_HIGH,
+                "title": "Choose how many samples you want",
+                "subtitle": (
+                    f"Pick your trial-sample quantity for "
+                    f"{formulation.name or 'your product'} — free "
+                    "allowance is bundled with the deposit; extras "
+                    "get priced on the page."
+                ),
+                "url": f"/portal/projects/{formulation.id}",
                 "product_code": formulation.code,
                 "product_name": formulation.name,
                 "reference_code": proposal.code,

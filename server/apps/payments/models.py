@@ -522,6 +522,20 @@ class SampleAllocation(models.Model):
         blank=True,
         related_name="+",
     )
+    #: The bundled deposit+samples ``Payment`` this allocation
+    #: auto-generated on confirm. Nullable because (a) legacy rows
+    #: pre-dating the auto-gen exist, (b) the generator no-ops when
+    #: no proposal or no deposit_percent applies. ``SET_NULL`` on
+    #: delete so voiding the Payment (e.g. finance sends the
+    #: customer a corrected invoice) doesn't cascade-nuke the
+    #: allocation row that records the customer's choice.
+    deposit_payment = models.ForeignKey(
+        "payments.Payment",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sample_allocation_source",
+    )
 
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)

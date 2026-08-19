@@ -3016,6 +3016,28 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
                     }
                 )
 
+        # Per-line sample allocation state — drives PSP's
+        # ``:awaiting_sample_selection`` kanban column. Value is
+        # the raw ``SampleAllocation.status`` (``draft`` /
+        # ``confirmed``) or ``None`` when the allocation row
+        # doesn't exist yet (customer hasn't opened the picker).
+        # PSP's ``derive_phase`` reads this to decide whether the
+        # post-sign CO sits in "Choose samples" or has advanced to
+        # "Awaiting R&D payment".
+        allocation_status: str | None = None
+        allocation_qty: int | None = None
+        try:
+            from apps.payments.models import SampleAllocation as _SA
+
+            _alloc = _SA.objects.filter(formulation=formulation).only(
+                "status", "quantity_ordered"
+            ).first()
+            if _alloc is not None:
+                allocation_status = _alloc.status
+                allocation_qty = _alloc.quantity_ordered
+        except Exception:  # noqa: BLE001 — never break sync on a lookup
+            pass
+
         line_payload.append(
             {
                 "npd_formulation_uuid": str(formulation.id),
@@ -3036,6 +3058,8 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
                 "packaging_combo_uuid": combo_uuid,
                 "packaging_combo_name": combo_name,
                 "packaging_combo_items": combo_items,
+                "npd_sample_allocation_status": allocation_status,
+                "npd_sample_allocation_quantity": allocation_qty,
             }
         )
 
@@ -3058,6 +3082,20 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         # wizard block from here (Awaiting approval → Ready to send
         # → Awaiting customer signature).
         "npd_proposal_status": getattr(proposal, "status", "") or "",
+        # Customer-side sign timestamp — populated by
+        # ``capture_customer_signature_on_proposal``. Drives PSP's
+        # split of the ``sent`` proposal_status into distinct kanban
+        # columns:
+        #   * ``sent`` + ``npd_customer_signed_at is null`` → "Sent
+        #     to client" (proposal in the customer's inbox, no
+        #     action yet).
+        #   * ``sent`` + ``npd_customer_signed_at`` populated →
+        #     progresses through "Choose samples" then "Awaiting R&D
+        #     payment" depending on the per-line
+        #     ``npd_sample_allocation_status``.
+        "npd_customer_signed_at": _iso_or_none(
+            getattr(proposal, "customer_signed_at", None)
+        ),
         # Latest-transition timestamps for the wizard phase gate.
         "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
         "npd_proposal_created_by_name": _person_display_name(

@@ -331,16 +331,41 @@ def _build_pipeline(
     else:  # deposit_pending
         percent = deposit_gate["deposit_percent"] or "0"
         proposal_code = deposit_gate["proposal_code"] or "the accepted proposal"
-        deposit_stage = {
-            "key": "deposit",
-            "label": "Deposit pending",
-            "state": "current",
-            "completed_at": None,
-            "detail": (
-                f"Your {percent}% deposit on {proposal_code} hasn't landed with "
-                "our finance team yet. Trial production begins the moment it clears."
-            ),
-        }
+        # Sequential-order gate — the deposit stage must stay
+        # ``future`` while sample-selection is still ``current``.
+        # Without this, both chips light up simultaneously the
+        # moment the customer signs the proposal (``trial_batch_
+        # gate_status`` sees the signed proposal + no approved
+        # deposit and returns ``deposit_pending``, while
+        # sample_selection is also ``current`` because no
+        # allocation is confirmed yet). Same "one chip lit at a
+        # time" rule as the earlier draft-vs-proposal fix.
+        sample_selection_still_current = (
+            sample_stage["state"] == "current"
+        )
+        if sample_selection_still_current:
+            deposit_stage = {
+                "key": "deposit",
+                "label": "Deposit",
+                "state": "future",
+                "completed_at": None,
+                "detail": (
+                    "Once you confirm your sample quantity, we'll "
+                    "send you the deposit invoice (bundled with any "
+                    "extras you chose)."
+                ),
+            }
+        else:
+            deposit_stage = {
+                "key": "deposit",
+                "label": "Deposit pending",
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    f"Your {percent}% deposit on {proposal_code} hasn't landed with "
+                    "our finance team yet. Trial production begins the moment it clears."
+                ),
+            }
 
     # ---- Stage 4: Trial batch -------------------------------------------
     passed_validation = next(
