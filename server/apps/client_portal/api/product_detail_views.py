@@ -595,7 +595,41 @@ def _build_documents(
     label_design: LabelDesign | None,
     label_designs_all: list[LabelDesign] | None = None,
 ) -> list[dict]:
-    """Every signed / submitted document on this project, newest-first."""
+    """Every signed / submitted document on this project, newest-first.
+
+    Spec-sheet visibility rule: a spec only appears when the customer
+    can actually open it. That means at least one of:
+
+    * The sheet is attached to a ``ProposalLine`` on a proposal the
+      customer owns AND that proposal has been ``sent`` /
+      ``accepted`` / ``declined`` (i.e. the customer has been shown
+      the deal). Draft / in-review proposals stay internal, so their
+      bundled specs stay internal.
+    * The legacy 1-to-1 ``Proposal.specification_sheet`` FK points at
+      the sheet on a proposal in one of those same statuses.
+    * ``customer_signed_at`` is populated (the customer has already
+      signed — belt-and-braces for the FINAL-spec-post-signature
+      case; keeps the paper trail on the portal even if the parent
+      proposal is later rolled back).
+
+    Without this gate, an ``approved`` spec (signed off internally,
+    not yet on a sent proposal) appeared in the docs list on the
+    project page but the ``SpecDetailView`` refused to render it
+    (its ownership walks through ``ProposalLine``), so clicking the
+    entry 404'd. Customers saw a link they couldn't open. This
+    matches the "block until proposal is sent" ask on the portal.
+    """
+
+    # ``proposals`` is already scoped to those the customer owns
+    # (via ``proposals_covering_formulation`` in the caller). Rebuild
+    # a set of ids we treat as "shown to customer" — sent / accepted
+    # / declined all count; draft / in_review stay internal.
+    _CUSTOMER_VISIBLE_PROPOSAL_STATUSES = ("sent", "accepted", "declined")
+    customer_visible_proposal_ids = {
+        p.id
+        for p in proposals
+        if p.status in _CUSTOMER_VISIBLE_PROPOSAL_STATUSES
+    }
 
     # A document is "the team has committed to it" once it leaves
     # the internal pipeline — i.e. anything past DRAFT / IN_REVIEW.
@@ -618,8 +652,39 @@ def _build_documents(
                 "url": f"/portal/proposals/{proposal.id}",
             }
         )
+
+    # Pre-compute the set of sheet ids reachable via a
+    # customer-visible proposal (line-attachment path OR legacy 1:1).
+    # A single query per path is cheaper than an N-per-sheet walk and
+    # matches the ownership resolution SpecDetailView / SpecPdfView
+    # perform at click time.
+    if customer_visible_proposal_ids:
+        from apps.proposals.models import Proposal as _Proposal
+        from apps.proposals.models import ProposalLine as _ProposalLine
+
+        line_sheet_ids: set = set(
+            _ProposalLine.objects.filter(
+                proposal_id__in=customer_visible_proposal_ids,
+                specification_sheet__isnull=False,
+            ).values_list("specification_sheet_id", flat=True)
+        )
+        legacy_sheet_ids: set = set(
+            _Proposal.objects.filter(
+                id__in=customer_visible_proposal_ids,
+                specification_sheet__isnull=False,
+            ).values_list("specification_sheet_id", flat=True)
+        )
+        customer_visible_sheet_ids = line_sheet_ids | legacy_sheet_ids
+    else:
+        customer_visible_sheet_ids = set()
+
     for sheet in sheets:
         if sheet.status in INTERNAL_ONLY_STATUSES:
+            continue
+        # Two doors: proposal-attachment OR already-signed (paper trail).
+        already_signed = sheet.customer_signed_at is not None
+        proposal_attached = sheet.id in customer_visible_sheet_ids
+        if not already_signed and not proposal_attached:
             continue
         kind_label = (
             "Final specification"
