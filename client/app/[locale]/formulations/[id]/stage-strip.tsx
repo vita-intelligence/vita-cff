@@ -327,7 +327,7 @@ function draftToInput(
  *  Returns ``null`` when the answer can't be derived (unknown UoM,
  *  missing Setup fields). Callers fall back to the raw draft value
  *  or 1 in that case. */
-function suggestServingsPerOutputUnit(args: {
+export function suggestServingsPerOutputUnit(args: {
   psp_item_type: "semi_finished" | "finished_product";
   stock_uom_symbol: string;
   dosage_form: string;
@@ -378,7 +378,7 @@ function suggestServingsPerOutputUnit(args: {
 
 /** Format a number for display in the "Auto: X" hint. Trims trailing
  *  zeroes so ``100.0000`` → ``100`` but ``0.5`` stays ``0.5``. */
-function formatSuggested(n: number): string {
+export function formatSuggested(n: number): string {
   const s = n.toFixed(4);
   return s.replace(/\.?0+$/, "") || "0";
 }
@@ -742,18 +742,37 @@ export function StageStrip({
     });
   }, [drafts, formulation.stages]);
 
-  // Auto-populate empty ``servings_per_output_unit`` fields from
-  // Setup + the picked stock UoM. Only fires on rows the scientist
-  // hasn't touched (draft field literally empty) so a manual
-  // override never gets clobbered. Runs whenever Setup values or
-  // the UoM catalog changes so a mid-session Setup edit (e.g. fill
-  // weight from 500 mg → 750 mg) reflows the suggestion.
+  // Auto-populate ``servings_per_output_unit`` from Setup + the
+  // picked stock UoM.
+  //
+  // Fires on rows the scientist hasn't touched — "not touched" means
+  // BOTH blank AND still on the model default ``1`` / ``1.0000``.
+  // Treating the raw default as "unset" is what retroactively fixes
+  // legacy stages (created before this effect existed) that stored
+  // ``1`` at seed time and never got updated — those stages show up
+  // on the SPOU warning banner in the parent builder even though the
+  // derivation would produce the right number (e.g. 120 for a
+  // Bottling stage that outputs 1 bottle of 120 servings). Without
+  // this widening, the scientist has to blank the field, wait for
+  // auto-populate, then save — a manual dance for what should be
+  // deterministic math.
+  //
+  // Runs whenever Setup values or the UoM catalog changes so a
+  // mid-session Setup edit (e.g. fill weight 500 mg → 750 mg) reflows
+  // the suggestion. A scientist who legitimately wants ``1`` on a
+  // stage where the suggestion is > 1 can still type it — the change
+  // sticks because the next re-render sees a non-default value and
+  // this effect stops touching it. (Not perfect, but the yield-loss
+  // override case is rare enough that a first-class override toggle
+  // isn't worth the UI surface yet.)
   useEffect(() => {
     if (uomOptions.length === 0) return;
     setDrafts((prev) => {
       let changed = false;
       const next = prev.map((d) => {
-        if ((d.servings_per_output_unit || "").trim() !== "") return d;
+        const raw = (d.servings_per_output_unit || "").trim();
+        const isModelDefault = raw === "" || raw === "1" || raw === "1.0000";
+        if (!isModelDefault) return d;
         const stockUom = uomOptions.find(
           (u) => u.uuid === d.psp_item_stock_uom_uuid,
         );
@@ -767,10 +786,15 @@ export function StageStrip({
           servings_per_pack: formulation.servings_per_pack,
         });
         if (suggested === null) return d;
+        const suggestedStr = formatSuggested(suggested);
+        // No-op guard — skip Encapsulation-style stages where the
+        // legitimate answer IS 1 and stored is already 1. Prevents a
+        // spurious dirty flip on every render.
+        if (suggestedStr === raw) return d;
         changed = true;
         return {
           ...d,
-          servings_per_output_unit: formatSuggested(suggested),
+          servings_per_output_unit: suggestedStr,
         };
       });
       return changed ? next : prev;

@@ -8,7 +8,7 @@ import { CountryMultiPicker } from "@/components/forms/country-multi-picker";
 import { DuplicateFormulationModal } from "./duplicate-formulation-modal";
 import { PackagingRoutingSection } from "./packaging-routing-section";
 import { StageBomsPreview } from "./stage-boms-preview";
-import { StageStrip } from "./stage-strip";
+import { StageStrip, suggestServingsPerOutputUnit } from "./stage-strip";
 import { useLocale, useTranslations } from "next-intl";
 import {
   Fragment,
@@ -2041,6 +2041,20 @@ export function FormulationBuilder({
   const approveMutation = useSetApprovedVersion(orgId, formulation.id);
   const versionsQuery = useFormulationVersions(orgId, formulation.id);
 
+  // PSP UoM catalog — resolves each stage's
+  // ``psp_item_stock_uom_uuid`` to its symbol (kg / g / L / ea / …)
+  // so ``semiSpouWarnings`` can call ``suggestServingsPerOutputUnit``
+  // per stage. Without this the warning banner can't tell whether a
+  // stored SPOU of 1 is legitimate (Encapsulation stage: 1 capsule
+  // literally IS 1 serving) or a bug (Blending stage: 1 kg should be
+  // 2000+ servings). Shared cache with the stage strip so we don't
+  // double-fetch.
+  const uomCatalogQuery = usePspUnitsOfMeasurement(orgId);
+  const uomOptions = useMemo(
+    () => uomCatalogQuery.data?.items ?? [],
+    [uomCatalogQuery.data],
+  );
+
   // Bubble-up dirty state + inline-save handle from the stage strip
   // so the top-of-page Save version / Save draft buttons react to
   // stage edits (rename, add / remove stage, workstation swap, PSP
@@ -2647,27 +2661,68 @@ export function FormulationBuilder({
   // the Python side silently defaults an unset ``servings_per_output_unit``
   // to 1 — so a Blend stage that actually outputs 1 kg containing
   // 2000 servings will produce a BOM 2000× too small if the scientist
-  // never touched the field. Non-blocking warning: flag every semi-
-  // finished stage still at ≤ 1 while the finished pack legitimately
-  // holds > 1 serving.
+  // never touched the field.
+  //
+  // Only flag stages where the STORED value is 1 AND the DERIVED
+  // suggestion is > 1. That means:
+  //   * Encapsulation stages where 1 capsule = 1 serving legitimately
+  //     stay at 1 — no false-positive warning.
+  //   * Finished-product stages are skipped entirely because
+  //     ``_finished_stage_servings(formulation)`` overrides the stored
+  //     SPOU at PSP push time using ``servings_per_pack``, so the
+  //     stored value on a finished stage is cosmetic — the warning
+  //     used to lie about a downstream break that couldn't happen.
+  //   * Stages whose UoM / Setup doesn't yet enable derivation
+  //     (``suggested === null``) still warn, since we can't tell.
   const semiSpouWarnings = useMemo(() => {
     const targetServings = Number(metadata.servings_per_pack) || 0;
     if (targetServings <= 1) return [];
+    // Terminal stage = highest sort_order. ``_push_staged_cascade``
+    // treats this stage as the finished product (either via explicit
+    // ``psp_item_type == "finished_product"`` OR via ``stages[-1]``
+    // fallback) and ``_finished_stage_servings`` overrides its stored
+    // SPOU with ``servings_per_pack`` at push time, so the stored
+    // value is cosmetic there — no warning warranted.
+    let terminalSort = -1;
+    for (const stage of formulation.stages) {
+      if (stage.sort_order > terminalSort) terminalSort = stage.sort_order;
+    }
     const rows: { id: string; label: string; current: string }[] = [];
     for (const stage of formulation.stages) {
+      if (stage.sort_order === terminalSort) continue;
       if (stage.psp_item_type !== "semi_finished") continue;
       const raw = Number.parseFloat(stage.servings_per_output_unit ?? "1");
       const current = Number.isFinite(raw) && raw > 0 ? raw : 1;
-      if (current <= 1) {
-        rows.push({
-          id: stage.id,
-          label: stage.name || `Stage ${stage.sort_order + 1}`,
-          current: (stage.servings_per_output_unit ?? "1").trim() || "1",
-        });
-      }
+      if (current > 1) continue;
+      const stockUom = uomOptions.find(
+        (u) => u.uuid === stage.psp_item_stock_uom_uuid,
+      );
+      const suggested = suggestServingsPerOutputUnit({
+        psp_item_type: stage.psp_item_type,
+        stock_uom_symbol: stockUom?.symbol ?? "",
+        dosage_form: metadata.dosage_form,
+        target_fill_weight_mg: metadata.target_fill_weight_mg ?? "",
+        water_volume_ml: metadata.water_volume_ml ?? "",
+        servings_per_pack: targetServings,
+      });
+      // Derivation says 1 is correct (Encapsulation-style: 1 capsule
+      // literally IS 1 serving) → not a bug, no warning.
+      if (suggested !== null && suggested <= 1) continue;
+      rows.push({
+        id: stage.id,
+        label: stage.name || `Stage ${stage.sort_order + 1}`,
+        current: (stage.servings_per_output_unit ?? "1").trim() || "1",
+      });
     }
     return rows;
-  }, [formulation.stages, metadata.servings_per_pack]);
+  }, [
+    formulation.stages,
+    metadata.servings_per_pack,
+    metadata.dosage_form,
+    metadata.target_fill_weight_mg,
+    metadata.water_volume_ml,
+    uomOptions,
+  ]);
 
   // Terminal (largest sort_order) stage id — the anchor for lines
   // without an explicit assignment. Matches how the PSP push cascade
