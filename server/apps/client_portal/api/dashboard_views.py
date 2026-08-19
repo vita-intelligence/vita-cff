@@ -92,7 +92,11 @@ def _build_actions(customer_ids) -> list[dict]:
                 "subtitle": (
                     f"Open proposal {proposal.code} for {formulation.name or 'your product'} — read it through, then sign when you're ready."
                 ),
-                "url": f"/portal/proposals/{proposal.id}/sign",
+                # Base proposal page — signing is inline on both
+                # portals now. See the same fix in
+                # ``product_detail_views._build_next_action`` and
+                # ``project_stage.resolve_stage``.
+                "url": f"/portal/proposals/{proposal.id}",
                 "product_code": formulation.code,
                 "product_name": formulation.name,
                 "reference_code": proposal.code,
