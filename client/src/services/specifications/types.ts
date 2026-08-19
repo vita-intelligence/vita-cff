@@ -134,6 +134,18 @@ export interface SpecificationSheetDto {
     readonly company: string;
     readonly email: string;
   } | null;
+  /** Quick-reference "what did the customer ask for?" pulled from the
+   *  earliest CFF submission that seeded this project. Consumed by the
+   *  proposal-creation modal to prefill the quantity field. ``null``
+   *  when the project wasn't seeded from a CFF, when the payload
+   *  predates the field, or when the raw value doesn't parse as a
+   *  positive integer (blank / range / non-numeric — the modal falls
+   *  back to its "1" default in that case). */
+  readonly linked_cff_quote_context: {
+    readonly requested_quantity: number;
+    readonly submitted_at: string | null;
+    readonly source_kind: "cff_portal";
+  } | null;
   /** Set on render payloads when a :class:`Proposal` is attached to
    *  the sheet. Drives the kiosk's bundled "Accept & Sign" flow. */
   readonly has_proposal?: boolean;
