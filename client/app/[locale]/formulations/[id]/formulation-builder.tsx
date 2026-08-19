@@ -3999,40 +3999,18 @@ export function FormulationBuilder({
         });
       }
     });
-    // Semi-consumption check — for every non-terminal stage that has
-    // a mirrored PSP semi item, verify that some line on a DOWNSTREAM
-    // stage points at that same PSP uuid. Otherwise the stage
-    // produces a semi (Alex Gummies Liquid Mix, etc.) that nothing
-    // downstream consumes: cooking output has to be routed into
-    // pouch filling (or whichever stage is next) or it's stranded.
+    // No orphan-semi check.
     //
-    // Skip stages whose ``psp_semi_finished_uuid`` is null — those
-    // haven't been pushed to PSP yet, so we can't identify their
-    // output. The check re-fires after the first Save version once
-    // the push cascade populates the uuid.
-    const stagesWithOrphanSemi: { id: string; name: string }[] = [];
-    orderedStages.forEach((stage, idx) => {
-      const isLast = idx === orderedStages.length - 1;
-      if (isLast) return;
-      const semiUuid = stage.psp_semi_finished_uuid;
-      if (!semiUuid) return;
-      const consumed = lines.some((line) => {
-        if (line.item_psp_source_uuid !== semiUuid) return false;
-        const effectiveStageId = stageForLine(line);
-        if (!effectiveStageId) return false;
-        const consumingStage = orderedStages.find(
-          (s) => s.id === effectiveStageId,
-        );
-        if (!consumingStage) return false;
-        return consumingStage.sort_order > stage.sort_order;
-      });
-      if (!consumed) {
-        stagesWithOrphanSemi.push({
-          id: stage.id,
-          name: stage.name || `Stage ${stage.sort_order + 1}`,
-        });
-      }
-    });
+    // ``_push_staged_cascade`` in :mod:`apps.psp.services` already
+    // prepends every downstream stage's BOM with a synthetic line for
+    // the previous stage's semi output (see ``previous_semi_uuid``
+    // handling around line 4129). The FE used to fire a "Route the
+    // semi" warning pushing scientists to manually add that exact
+    // line, which (a) demanded work the system did automatically and
+    // (b) risked a double-count on push (no BE dedup existed at the
+    // time). The warning is retired; the BE now dedups too as a
+    // belt-and-braces measure for advanced multi-branch flows where a
+    // scientist genuinely needs to hand-route a semi.
     // Setup spec-sheet minimums. Human-answer fields PSP treats as
     // optional but that a real spec sheet legally / procedurally can't
     // ship without. Mirrored server-side in ``_compute_stage_gates``
@@ -4115,7 +4093,6 @@ export function FormulationBuilder({
       orphanLineCount === 0 &&
       hasPackaging &&
       stagesWithBadType.length === 0 &&
-      stagesWithOrphanSemi.length === 0 &&
       missingSetup.length === 0;
     return {
       hasStages,
@@ -4124,7 +4101,6 @@ export function FormulationBuilder({
       emptyStages,
       orphanLineCount,
       stagesWithBadType,
-      stagesWithOrphanSemi,
       missingSetup,
       isComplete,
     };
@@ -5258,24 +5234,10 @@ export function FormulationBuilder({
                     </button>
                   </li>
                 ) : null}
-                {readinessSignals.stagesWithOrphanSemi.map((s) => (
-                  <li key={`orphan-semi-${s.id}`} className="flex items-center gap-2">
-                    <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
-                    <span>
-                      Stage <span className="font-semibold">{s.name}</span>{" "}
-                      produces a semi-finished output that no downstream
-                      stage consumes. Pick it as an ingredient on the
-                      next stage.
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("routing")}
-                      className="ml-1 rounded-md px-2 py-0.5 text-xs font-semibold text-amber-900 underline decoration-amber-500 underline-offset-2 hover:bg-amber-100"
-                    >
-                      Route the semi
-                    </button>
-                  </li>
-                ))}
+                {/* Orphan-semi warning retired — the PSP push cascade
+                    auto-injects each stage's prior-semi line. See the
+                    long comment inside ``readinessSignals`` for the
+                    full rationale. */}
                 {readinessSignals.stagesWithBadType.map((s) => (
                   <li key={s.id} className="flex items-center gap-2">
                     <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-amber-600" />
@@ -7400,6 +7362,33 @@ export function FormulationBuilder({
           formulation={formulation}
           canWrite={canWrite}
         />
+        {/* Explainer — scientists don't route stage outputs manually.
+            The BE prepends each downstream stage's BOM with a line
+            for the previous stage's semi output at push time. Without
+            this note, scientists (a) hunt for a "connect stages"
+            control that doesn't exist, or (b) manually pick a prior
+            semi from the picker and expect it to be the connection —
+            both waste time and the second one used to double-count. */}
+        {formulation.stages.length > 1 ? (
+          <div className="rounded-2xl bg-emerald-50 p-4 text-sm text-emerald-900 ring-1 ring-emerald-200">
+            <p className="font-semibold">
+              Stages flow automatically — each stage&rsquo;s output is
+              consumed by the next.
+            </p>
+            <p className="mt-1 text-emerald-900/80">
+              You only assign raw materials + excipients to a stage
+              here. When we push to PSP, every downstream stage&rsquo;s
+              BOM starts with a line for the previous stage&rsquo;s
+              output (e.g. Encapsulation consumes 0.5 g of blend per
+              capsule, Bottling consumes 120 capsules per bottle) —
+              qty is derived from each stage&rsquo;s{" "}
+              <span className="font-mono text-[12px]">
+                servings_per_output_unit
+              </span>
+              .
+            </p>
+          </div>
+        ) : null}
         <RoutingTabBody
           orgId={orgId}
           formulation={formulation}

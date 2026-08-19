@@ -4126,24 +4126,39 @@ def _push_staged_cascade(
         #         ÷ prior_stage.servings_per_output_unit
         # e.g. Bottle (60 servings/unit) consuming Blend (2000
         # servings/kg): 60 ÷ 2000 = 0.03 kg per bottle.
+        #
+        # Dedup guard — if the scientist has already added an explicit
+        # ingredient line for the prior semi (a legitimate move for
+        # multi-branch flows where auto-linear-chaining doesn't fit),
+        # their line's qty is authoritative. Skip the auto-inject
+        # rather than double-count. Without this guard, a scientist
+        # who ever manually picked the prior semi in the Routing tab
+        # picker would ship two lines for the same part_uuid to PSP,
+        # sum-doubling every downstream MO Parts row for that part.
         if previous_semi_uuid is not None:
-            if previous_servings > 0:
-                prior_qty = stage_servings / previous_servings
-            else:
-                prior_qty = Decimal("1")
-            prior_line: dict[str, Any] = {
-                "part_uuid": previous_semi_uuid,
-                "qty": str(prior_qty),
-                "sort_order": -1,
-            }
-            # Tag with the semi item's declared stock UoM so the parent
-            # MO Parts table renders "0.03 L" instead of "0.03 ?".
-            if previous_semi_stock_uom_uuid:
-                prior_line["uom_uuid"] = str(previous_semi_stock_uom_uuid)
-            bom_lines = [prior_line] + bom_lines
-            # Renumber sort_order so PSP's storage stays dense.
-            for i, row in enumerate(bom_lines):
-                row["sort_order"] = i
+            already_present = any(
+                str(line.get("part_uuid") or "") == str(previous_semi_uuid)
+                for line in bom_lines
+            )
+            if not already_present:
+                if previous_servings > 0:
+                    prior_qty = stage_servings / previous_servings
+                else:
+                    prior_qty = Decimal("1")
+                prior_line: dict[str, Any] = {
+                    "part_uuid": previous_semi_uuid,
+                    "qty": str(prior_qty),
+                    "sort_order": -1,
+                }
+                # Tag with the semi item's declared stock UoM so the
+                # parent MO Parts table renders "0.03 L" instead of
+                # "0.03 ?".
+                if previous_semi_stock_uom_uuid:
+                    prior_line["uom_uuid"] = str(previous_semi_stock_uom_uuid)
+                bom_lines = [prior_line] + bom_lines
+                # Renumber sort_order so PSP's storage stays dense.
+                for i, row in enumerate(bom_lines):
+                    row["sort_order"] = i
 
         # Skip stages with nothing to push — mostly relevant for
         # non-terminal stages that carry no lines yet (operator
