@@ -629,3 +629,100 @@ export function useDeletePaymentInvoice(orgId: string, paymentId: string) {
 export function usePaymentsLive(orgId: string): void {
   useOrgFeed(orgId);
 }
+
+
+// ---------------------------------------------------------------------------
+// Sample pricing — org-level settings module
+// ---------------------------------------------------------------------------
+
+/** One "buy N samples, get X% off" row on the config. Rendered as an
+ *  editable table row on the settings page + used by the portal
+ *  sample-selection picker (PR #3) to run the live discount math. */
+export interface SamplePricingDiscountTierDto {
+  readonly id?: string;
+  readonly quantity_threshold: number;
+  //: Percent as decimal string (matches how the BE returns Decimals).
+  readonly discount_percent: string;
+  readonly sort_order?: number;
+}
+
+
+export interface SamplePricingConfigDto {
+  readonly id: string;
+  readonly free_samples_included: number;
+  //: Per-unit price for anything beyond the free allowance. Decimal
+  //: string to dodge JS number precision on money.
+  readonly price_per_extra_sample: string;
+  //: ISO-4217 (3-char); empty string means "fall back to company
+  //: default at render time" — matches the codebase's "never
+  //: hardcode currency" rule.
+  readonly currency_code: string;
+  readonly discount_tiers: ReadonlyArray<SamplePricingDiscountTierDto>;
+  readonly updated_at: string;
+}
+
+
+export interface SamplePricingSaveBody {
+  readonly free_samples_included: number;
+  readonly price_per_extra_sample: string;
+  readonly currency_code: string;
+  readonly tiers: ReadonlyArray<{
+    readonly quantity_threshold: number;
+    readonly discount_percent: string;
+  }>;
+}
+
+
+const samplePricingEndpoint = (orgId: string) =>
+  `/api/organizations/${orgId}/sample-pricing/`;
+
+
+export async function fetchSamplePricingConfig(
+  orgId: string,
+): Promise<SamplePricingConfigDto> {
+  const { data } = await apiClient.get<SamplePricingConfigDto>(
+    samplePricingEndpoint(orgId),
+  );
+  return data;
+}
+
+
+export async function saveSamplePricingConfig(
+  orgId: string,
+  body: SamplePricingSaveBody,
+): Promise<SamplePricingConfigDto> {
+  const { data } = await apiClient.put<SamplePricingConfigDto>(
+    samplePricingEndpoint(orgId),
+    body,
+  );
+  return data;
+}
+
+
+export const samplePricingQueryKeys = {
+  config: (orgId: string) =>
+    [...rootQueryKey, "sample-pricing", orgId] as const,
+} as const;
+
+
+export function useSamplePricingConfig(
+  orgId: string,
+): UseQueryResult<SamplePricingConfigDto> {
+  return useQuery({
+    queryKey: samplePricingQueryKeys.config(orgId),
+    queryFn: () => fetchSamplePricingConfig(orgId),
+    enabled: Boolean(orgId),
+  });
+}
+
+
+export function useSaveSamplePricingConfig(orgId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: SamplePricingSaveBody) =>
+      saveSamplePricingConfig(orgId, body),
+    onSuccess: (fresh) => {
+      qc.setQueryData(samplePricingQueryKeys.config(orgId), fresh);
+    },
+  });
+}

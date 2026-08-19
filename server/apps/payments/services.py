@@ -25,7 +25,11 @@ from apps.label_design.models import LabelDesign
 from apps.label_design.services import transition_status as label_design_transition
 from apps.payments.broadcast import schedule_payment_changed_broadcast
 from apps.payments.constants import PaymentKind, PaymentMethod, PaymentStatus
-from apps.payments.models import Payment
+from apps.payments.models import (
+    Payment,
+    SamplePricingConfig,
+    SamplePricingDiscountTier,
+)
 
 
 class PaymentAlreadyApproved(Exception):
@@ -487,3 +491,183 @@ def ensure_pending_deposit_payment(*, proposal, actor=None) -> Payment | None:
     # checkout.
     schedule_payment_changed_broadcast(payment, "created")
     return payment
+
+
+# ---------------------------------------------------------------------------
+# Sample pricing — config + tiers + compute
+# ---------------------------------------------------------------------------
+
+
+def get_or_create_sample_pricing_config(organization) -> SamplePricingConfig:
+    """Return the org's :class:`SamplePricingConfig`, creating a
+    defaults row on first access.
+
+    Lazily created so finance never has to explicitly "set up" the
+    module to unblock a customer — the first portal call that needs
+    sample pricing will materialise the row with the model's defaults
+    (2 free / £0 per extra / no discount tiers). Idempotent per org
+    because of the ``OneToOne`` FK on :class:`SamplePricingConfig`.
+    """
+
+    config, _created = SamplePricingConfig.objects.get_or_create(
+        organization=organization,
+    )
+    return config
+
+
+@transaction.atomic
+def upsert_sample_pricing_config(
+    *,
+    organization,
+    actor: Any,
+    free_samples_included: int,
+    price_per_extra_sample: Decimal,
+    currency_code: str,
+    tiers: list[dict[str, Any]],
+) -> SamplePricingConfig:
+    """Wholesale-replace the org's sample pricing config + discount
+    tier list.
+
+    ``tiers`` is the full ordered list — every existing tier row is
+    deleted and each entry is re-created from the payload. Mirrors
+    the "wholesale replace on save" pattern the stage-templates and
+    formulation-stages editors use, so the settings UI can treat the
+    tier table as a plain array without tracking per-row diffs.
+
+    Guards:
+    * ``free_samples_included`` clamped to >= 0.
+    * ``price_per_extra_sample`` clamped to >= 0.
+    * Each tier: ``quantity_threshold`` > 0, ``discount_percent`` in
+      [0, 100]. Duplicates on ``quantity_threshold`` are rejected at
+      the DB layer via the unique constraint (serializer enforces the
+      friendlier error message).
+    """
+
+    config = get_or_create_sample_pricing_config(organization)
+    config.free_samples_included = max(0, int(free_samples_included))
+    config.price_per_extra_sample = max(
+        Decimal("0"), Decimal(str(price_per_extra_sample or 0))
+    )
+    config.currency_code = (currency_code or "").strip().upper()[:3]
+    config.updated_by = actor
+    config.save(
+        update_fields=[
+            "free_samples_included",
+            "price_per_extra_sample",
+            "currency_code",
+            "updated_by",
+            "updated_at",
+        ]
+    )
+
+    # Wholesale replace the tier list. The unique constraint on
+    # ``(config, quantity_threshold)`` catches duplicate rows the
+    # serializer's own validator missed (defence in depth).
+    SamplePricingDiscountTier.objects.filter(config=config).delete()
+    ordered = []
+    for idx, tier in enumerate(tiers or []):
+        threshold = int(tier.get("quantity_threshold") or 0)
+        if threshold <= 0:
+            continue
+        percent = Decimal(str(tier.get("discount_percent") or 0))
+        if percent < 0:
+            percent = Decimal("0")
+        if percent > 100:
+            percent = Decimal("100")
+        ordered.append(
+            SamplePricingDiscountTier(
+                config=config,
+                quantity_threshold=threshold,
+                discount_percent=percent,
+                sort_order=idx,
+            )
+        )
+    SamplePricingDiscountTier.objects.bulk_create(ordered)
+
+    record_audit(
+        organization=organization,
+        actor=actor,
+        action="sample_pricing.upsert",
+        target=config,
+        after={
+            "free_samples_included": config.free_samples_included,
+            "price_per_extra_sample": str(config.price_per_extra_sample),
+            "currency_code": config.currency_code,
+            "tier_count": len(ordered),
+        },
+    )
+    return config
+
+
+def compute_sample_extras_cost(
+    *,
+    config: SamplePricingConfig,
+    ordered_quantity: int,
+) -> dict[str, Any]:
+    """Compute the "extras" line-item finance charges alongside the
+    deposit for a given ``ordered_quantity``.
+
+    Returns a dict with the full breakdown so callers can BOTH persist
+    the numbers (SampleAllocation row in PR #3) AND surface them on
+    the portal picker (running-total renderer). Shape:
+
+    .. code-block:: python
+
+        {
+          "ordered_quantity": 10,
+          "free_samples_included": 2,
+          "extras_count": 8,
+          "unit_price": "250.00",
+          "subtotal": "2000.00",
+          "discount_percent": "15.00",  # tier or 0
+          "discount_amount": "300.00",
+          "total": "1700.00",
+          "tier_threshold": 10,          # or None if no tier hit
+        }
+
+    Discount tier selection: highest ``quantity_threshold`` whose
+    value is ``≤ ordered_quantity`` wins. Applies AT THE END to the
+    extras subtotal (matching what the user described — "if your
+    total is £1,000 and you have 10% discount, you pay £900"). Does
+    NOT touch the deposit portion of the bundled invoice; the deposit
+    amount rides on the accepted proposal's own ``deposit_percent``
+    and gets added on top by the invoice-generation service in
+    PR #4.
+    """
+
+    ordered_quantity = max(0, int(ordered_quantity or 0))
+    free = int(config.free_samples_included or 0)
+    extras = max(0, ordered_quantity - free)
+    unit_price = Decimal(str(config.price_per_extra_sample or 0))
+    subtotal = (unit_price * extras).quantize(Decimal("0.01"))
+
+    tier_threshold: int | None = None
+    discount_percent = Decimal("0")
+    if extras > 0:
+        winning = (
+            config.discount_tiers.filter(
+                quantity_threshold__lte=ordered_quantity,
+            )
+            .order_by("-quantity_threshold")
+            .first()
+        )
+        if winning is not None:
+            tier_threshold = winning.quantity_threshold
+            discount_percent = Decimal(str(winning.discount_percent or 0))
+
+    discount_amount = (
+        subtotal * discount_percent / Decimal("100")
+    ).quantize(Decimal("0.01"))
+    total = (subtotal - discount_amount).quantize(Decimal("0.01"))
+
+    return {
+        "ordered_quantity": ordered_quantity,
+        "free_samples_included": free,
+        "extras_count": extras,
+        "unit_price": str(unit_price.quantize(Decimal("0.01"))),
+        "subtotal": str(subtotal),
+        "discount_percent": str(discount_percent.quantize(Decimal("0.01"))),
+        "discount_amount": str(discount_amount),
+        "total": str(total),
+        "tier_threshold": tier_threshold,
+    }

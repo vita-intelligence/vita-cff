@@ -240,3 +240,154 @@ class PaymentFile(models.Model):
 
     def __str__(self) -> str:  # pragma: no cover
         return f"PaymentFile({self.filename})"
+
+
+# ---------------------------------------------------------------------------
+# Sample pricing — org-scoped configuration that drives the bundled
+# deposit+samples invoice generated on the customer's sample-selection
+# confirm. See ``apps.organizations.modules.SamplePricingCapability`` for
+# the read/edit gate + ``apps.payments.services`` for the price compute.
+# ---------------------------------------------------------------------------
+
+
+class SamplePricingConfig(models.Model):
+    """One row per organization — the pricing knobs finance owns for
+    the customer's post-proposal sample-selection stage.
+
+    The customer signs a proposal, then picks how many trial samples
+    they want. The first ``free_samples_included`` are bundled with
+    the deposit; anything above that is priced at
+    ``price_per_extra_sample`` and (optionally) discounted via one of
+    the :class:`SamplePricingDiscountTier` rows attached to this
+    config. The resulting extras-subtotal is added to the deposit
+    amount and a single bundled ``Payment(kind=DEPOSIT)`` row is
+    generated for the customer to pay — one line item on the finance
+    queue, not two.
+
+    Lazily created — the first time a portal surface asks for a
+    given org's sample pricing, we create defaults (2 free, £250
+    per extra, no discount tiers) so finance never has to explicitly
+    "set up" the module to unblock a customer.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.OneToOneField(
+        "organizations.Organization",
+        on_delete=models.CASCADE,
+        related_name="sample_pricing_config",
+    )
+
+    #: How many trial samples the deposit ALWAYS covers. Below this
+    #: threshold the customer sees "£0 extra". Above it, each
+    #: additional sample multiplies against
+    #: ``price_per_extra_sample`` before any discount tier applies.
+    #: Default 2 matches the historical Vita norm; every org edits.
+    free_samples_included = models.PositiveIntegerField(
+        _("free samples included"), default=2,
+    )
+
+    #: Per-unit price for anything beyond the free allowance, in the
+    #: org's chosen currency. Applied per extra sample BEFORE the
+    #: discount tier. e.g. free=2, price=250, tier at qty=10 is 15% →
+    #: 10 samples = 8 extras × £250 = £2,000 × (1 - 0.15) = £1,700.
+    price_per_extra_sample = models.DecimalField(
+        _("price per extra sample"),
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+    )
+
+    #: 3-char ISO 4217. Defaults blank so the FE / service falls back
+    #: to ``organization.company.currency_code`` (per the codebase's
+    #: monetary-field rule — the settings page reads the company's
+    #: currency, never hardcoded).
+    currency_code = models.CharField(
+        _("currency code"), max_length=3, blank=True, default="",
+    )
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+
+    class Meta:
+        verbose_name = _("sample pricing config")
+        verbose_name_plural = _("sample pricing configs")
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"SamplePricingConfig({self.organization_id})"
+
+
+class SamplePricingDiscountTier(models.Model):
+    """Editable list of "buy N samples, get X% off" rows attached to a
+    :class:`SamplePricingConfig`. Discount is applied at the end to the
+    extras subtotal (``extras_count × price_per_extra_sample``) — NOT
+    per-sample and NOT to the deposit portion of the bundled invoice.
+
+    Tier selection: highest ``quantity_threshold`` whose value is ``≤
+    ordered_quantity`` wins. e.g. tiers ``[5→5%, 10→15%]``:
+      * 5 samples → 5% tier
+      * 8 samples → 5% tier
+      * 10 samples → 15% tier
+      * 25 samples → 15% tier (no larger tier defined)
+
+    Tiers are org-scoped via the parent config's FK. Adding or
+    removing rows is idempotent — the settings surface performs a
+    wholesale replace of the tier list on save, mirroring the
+    stage-templates pattern.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    config = models.ForeignKey(
+        SamplePricingConfig,
+        on_delete=models.CASCADE,
+        related_name="discount_tiers",
+    )
+
+    #: Order-size at which the discount kicks in. Uniqueness enforced
+    #: at the ORM layer so finance can't fat-finger two rows for the
+    #: same threshold (would create ambiguity on tier resolution).
+    quantity_threshold = models.PositiveIntegerField(
+        _("quantity threshold"),
+    )
+
+    #: 0.00 .. 100.00. Stored to 2 decimal places — sub-percent tiers
+    #: aren't a real business need and would just muddle the settings
+    #: UI. Validated at serializer level (BE) + input constraint (FE).
+    discount_percent = models.DecimalField(
+        _("discount percent"),
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+    )
+
+    #: Display order in the settings UI. Not used by the compute path
+    #: (which sorts by ``quantity_threshold`` regardless) — kept as a
+    #: separate field so admin re-ordering doesn't shift the
+    #: threshold semantics.
+    sort_order = models.PositiveIntegerField(_("sort order"), default=0)
+
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = _("sample pricing discount tier")
+        verbose_name_plural = _("sample pricing discount tiers")
+        ordering = ("sort_order", "quantity_threshold")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("config", "quantity_threshold"),
+                name="uniq_sample_pricing_tier_threshold",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover
+        return (
+            f"SamplePricingDiscountTier(qty>={self.quantity_threshold} "
+            f"→ {self.discount_percent}%)"
+        )

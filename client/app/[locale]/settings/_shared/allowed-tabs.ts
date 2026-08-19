@@ -64,5 +64,12 @@ export function computeAllowedSettingsTabs(
   ) {
     tabs.push("page-builder-templates");
   }
+  // Sample pricing settings — drives the customer's post-proposal
+  // sample-selection stage on the portal. Anyone with ``view`` on
+  // the module sees the tab; the tab renders inputs read-only for
+  // view-only users and enables them when ``edit`` is also held.
+  if (hasFlatCapability(primaryOrg, "sample_pricing", "view")) {
+    tabs.push("sample-pricing");
+  }
   return tabs;
 }

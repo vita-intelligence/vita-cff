@@ -6,6 +6,7 @@ import {
   FlaskConical,
   Layers,
   LayoutTemplate,
+  Percent,
   Plug,
   ScrollText,
   User2,
@@ -25,7 +26,8 @@ export type SettingsTabKey =
   | "audit-log"
   | "labelling-templates"
   | "stage-templates"
-  | "page-builder-templates";
+  | "page-builder-templates"
+  | "sample-pricing";
 
 
 const ALL_TABS: readonly SettingsTabKey[] = [
@@ -37,6 +39,7 @@ const ALL_TABS: readonly SettingsTabKey[] = [
   "labelling-templates",
   "stage-templates",
   "page-builder-templates",
+  "sample-pricing",
 ] as const;
 
 
@@ -123,6 +126,12 @@ export function SettingsShell({
         label: "Page templates",
         href: "/settings/page-builder-templates",
         icon: <LayoutTemplate className="h-4 w-4" />,
+      },
+      {
+        key: "sample-pricing" as const,
+        label: "Sample pricing",
+        href: "/settings/sample-pricing",
+        icon: <Percent className="h-4 w-4" />,
       },
     ] as const
   ).filter((tab) => allowedTabs.includes(tab.key));
