@@ -1796,11 +1796,25 @@ def _render_public_proposal_payload(proposal) -> dict:
             sales_person_user.get_full_name() or sales_person_user.email or ""
         ).strip()
 
+    # Anchor formulation id — nullable on legacy rows without a
+    # formulation_version link. Consumed by the web-site portal's
+    # ``BackLink`` component so the "Back" affordance on the
+    # proposal viewer takes the customer to the parent project page
+    # (``/portal/projects/<formulation_id>``) instead of the portal
+    # root. Kiosk consumers ignore unknown keys, so this addition is
+    # backwards-compatible with the ``/p/proposal/<token>/`` flow.
+    formulation_id = (
+        str(proposal.formulation_version.formulation_id)
+        if proposal.formulation_version_id
+        else ""
+    )
+
     return {
         "id": str(proposal.id),
         "code": proposal.code,
         "status": proposal.status,
         "template_type": proposal.template_type,
+        "formulation_id": formulation_id,
         "sales_person_name": sales_person_name,
         "customer_company": proposal.customer_company,
         "customer_name": proposal.customer_name,
