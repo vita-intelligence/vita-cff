@@ -2695,13 +2695,19 @@ def accept_as_customer(
     hands the name / email / company strings to this service. Those
     strings stamp onto the sheet alongside the drawn signature.
 
-    When the sheet has an attached :class:`apps.proposals.models.Proposal`
-    that is also in ``sent`` status, the same signature is written
-    onto the proposal in the same transaction. Scientists almost never
-    want a customer to accept the spec without also accepting the
-    commercial offer, so we bundle them — the alternative (separate
-    signatures on two scrolling kiosk pages) was the first thing R&D
-    complained about when they reviewed the flow.
+    Historically, when the sheet had a bundled ``sent`` proposal the
+    same signature was written onto the proposal in the same
+    transaction — the kiosk showed both documents on one page so
+    "one tap" covering both matched the operator's expectation.
+
+    Portal now separates the two surfaces (``/portal/specs/[id]/sign``
+    and ``/portal/proposals/[id]/sign``), so bundling the writes
+    would sign a proposal the customer never explicitly acted on —
+    a compliance-visible signature attributed to a click the user
+    never made. The bundled cascade is removed from this service;
+    each document is signed by an explicit action on its own
+    surface. :func:`_sign_linked_proposal` is kept in the module for
+    legacy kiosk callers only (no live surface uses it today).
 
     Rejects:
     * Sheets whose status is not ``sent`` (any other state already
@@ -2762,16 +2768,12 @@ def accept_as_customer(
         },
     )
 
-    # Bundled proposal signature. Import locally to dodge the
-    # specifications → proposals → specifications circular import
-    # (Proposal.specification_sheet is an FK back here).
-    _sign_linked_proposal(
-        sheet=sheet,
-        name=name,
-        email=sheet.customer_email,
-        company=sheet.customer_company,
-        signature_image=normalised_image,
-    )
+    # Bundled proposal cascade retired — see the docstring above.
+    # The linked proposal now stays at ``sent`` after a spec sign;
+    # the customer signs it separately on
+    # ``POST /portal/proposals/<id>/sign/``. ``_sign_linked_proposal``
+    # is intentionally left in the module for any legacy kiosk
+    # caller that still expects the bundled cascade.
 
     # Customer signature is the project roadmap chip's only forward
     # trigger past ``in_development``. The target depends on both the
