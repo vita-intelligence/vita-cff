@@ -17,10 +17,13 @@ workflow:
 from __future__ import annotations
 
 import html
+import logging
 import re
 import uuid
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from django.db import transaction
 from django.db.models import QuerySet
@@ -848,7 +851,31 @@ def compute_unit_cost_for_version(
         config = get_psp_config(organization=organization)
         client = PspClient(config)
         price_items = client.suggest_costs(list(uuids_to_price))
-    except (PspError, Exception):  # noqa: BLE001 — surface as "no cost", not 500
+    except PspError as exc:
+        # PSP itself is unreachable / errored (network down, circuit
+        # breaker open, 5xx). Log LOUDLY so the empty-pricing bug is
+        # visible in server logs; the caller (spec create / refresh
+        # endpoint) can surface a hint to the scientist that pricing
+        # needs a manual retry once PSP is back. Previously this was
+        # silently caught alongside every other Exception — created
+        # spec sheets landed with ``unit_cost=None`` and nobody
+        # noticed until sales opened the approval modal expecting a
+        # number.
+        logger.warning(
+            "compute_unit_cost_for_version(%s): PSP unreachable, "
+            "spec sheet will land with empty unit_cost (%s). "
+            "Scientist can retry via the Refresh-pricing button once "
+            "PSP is back.",
+            version.id,
+            exc,
+        )
+        return None
+    except Exception:  # noqa: BLE001 — surface as "no cost", not 500
+        logger.exception(
+            "compute_unit_cost_for_version(%s): unexpected error, "
+            "returning None so the spec sheet still saves.",
+            version.id,
+        )
         return None
 
     price_by_uuid: dict[str, dict] = {
@@ -1222,6 +1249,63 @@ def regenerate_sheet(
         after=snapshot(sheet),
     )
     return sheet
+
+
+@transaction.atomic
+def refresh_sheet_pricing(
+    *,
+    sheet: SpecificationSheet,
+    actor: Any,
+) -> tuple[SpecificationSheet, bool]:
+    """Recompute ``sheet.unit_cost`` from the pinned
+    :class:`FormulationVersion`'s snapshot lines + live PSP prices,
+    without rebinding the version or touching other fields.
+
+    Why a dedicated action rather than "just re-open + regenerate":
+    ``regenerate_sheet`` re-pins the sheet to a NEW
+    ``FormulationVersion``, which cascades every derived section
+    (packaging auto-seed, weight label, actives table). That's the
+    right action after the scientist bumps the formulation. But when
+    the sheet was created against the right version AND everything's
+    still correct EXCEPT the price came in empty (a PSP outage at
+    create time — the case the empty-``unit_cost`` bug lives in),
+    the scientist just wants a targeted price rescue. Rebinding
+    would risk clobbering their manual packaging overrides for no
+    reason.
+
+    Returns ``(sheet, updated)`` — ``updated`` is ``True`` when the
+    recompute produced a non-None number and ``sheet.unit_cost`` was
+    written; ``False`` when PSP was still unreachable OR the version
+    has no priceable lines (the caller surfaces the reason to the FE
+    so the operator knows whether to retry later or fix the linked
+    version).
+
+    Refuses on non-mutable sheets (signed by customer / behind a
+    signed proposal) — pricing on those is a legal artefact and
+    shouldn't be recomputed silently.
+    """
+
+    _guard_editable(sheet)
+
+    before = snapshot(sheet)
+    recomputed = compute_unit_cost_for_version(sheet.formulation_version)
+    updated = False
+    if recomputed is not None:
+        sheet.unit_cost = recomputed
+        sheet.updated_by = actor
+        sheet.save(update_fields=["unit_cost", "updated_at", "updated_by"])
+        updated = True
+
+        record_audit(
+            organization=sheet.organization,
+            actor=actor,
+            action="spec_sheet.refresh_pricing",
+            target=sheet,
+            before=before,
+            after=snapshot(sheet),
+        )
+
+    return sheet, updated
 
 
 def delete_sheet(

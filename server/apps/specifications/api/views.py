@@ -56,6 +56,7 @@ from apps.specifications.services import (
     get_by_public_token,
     get_sheet,
     list_sheets,
+    refresh_sheet_pricing,
     regenerate_sheet,
     render_context,
     render_pdf,
@@ -534,6 +535,56 @@ class SpecificationRegenerateView(APIView):
             )
         return Response(
             SpecificationSheetReadSerializer(regenerated).data,
+            status=status.HTTP_200_OK,
+        )
+
+
+class SpecificationRefreshPricingView(APIView):
+    """``POST`` ``/.../specifications/<id>/refresh-pricing/``.
+
+    Recomputes the sheet's ``unit_cost`` against the pinned
+    :class:`FormulationVersion`'s snapshot lines + current PSP prices,
+    without rebinding the version. Rescue action for sheets that
+    landed with empty pricing (usually because PSP was unreachable at
+    create time — see the ``PspUnreachable`` branch in
+    ``compute_unit_cost_for_version``).
+
+    Response: ``{ "sheet": {...}, "updated": bool, "reason": str }``.
+    ``updated=False`` + reason ``"pricing_unavailable"`` when PSP is
+    still unreachable OR the version has no priceable lines — the
+    FE surfaces the reason so the operator knows whether to retry
+    once PSP is back or fix the linked version.
+    """
+
+    permission_classes = (HasSpecificationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def post(
+        self, request: Request, org_id: str, sheet_id: str
+    ) -> Response:
+        try:
+            sheet = get_sheet(
+                organization=self.organization, sheet_id=sheet_id
+            )
+        except SpecificationNotFound as exc:
+            raise NotFound() from exc
+
+        try:
+            sheet, updated = refresh_sheet_pricing(
+                sheet=sheet, actor=request.user
+            )
+        except SpecificationNotMutable:
+            return Response(
+                {"detail": ["specification_not_mutable"]},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        return Response(
+            {
+                "sheet": SpecificationSheetReadSerializer(sheet).data,
+                "updated": updated,
+                "reason": None if updated else "pricing_unavailable",
+            },
             status=status.HTTP_200_OK,
         )
 

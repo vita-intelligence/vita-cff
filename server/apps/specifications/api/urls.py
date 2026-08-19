@@ -13,6 +13,7 @@ from apps.specifications.api.views import (
     SpecificationPackagingView,
     SpecificationPdfView,
     SpecificationPublicLinkView,
+    SpecificationRefreshPricingView,
     SpecificationRegenerateView,
     SpecificationRenderView,
     SpecificationStatusView,
@@ -56,6 +57,11 @@ urlpatterns = [
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/public-link/",
         SpecificationPublicLinkView.as_view(),
         name="specification-public-link",
+    ),
+    path(
+        "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/refresh-pricing/",
+        SpecificationRefreshPricingView.as_view(),
+        name="specification-refresh-pricing",
     ),
     path(
         "organizations/<uuid:org_id>/specifications/<uuid:sheet_id>/regenerate/",
