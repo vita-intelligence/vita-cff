@@ -290,6 +290,8 @@ class TrialBatchCreatePspMoView(APIView):
         body = request.data if isinstance(request.data, dict) else {}
 
         try:
+            raw_size_mode = str(body.get("size_mode") or "packs").strip().lower()
+            size_mode = raw_size_mode if raw_size_mode in ("packs", "units") else "packs"
             mo = create_psp_manufacturing_order_for_trial_batch(
                 organization=batch.organization,
                 actor=request.user,
@@ -299,6 +301,7 @@ class TrialBatchCreatePspMoView(APIView):
                 item_uuid=body.get("item_uuid"),
                 due_date=body.get("due_date"),
                 notes=str(body.get("notes") or ""),
+                size_mode=size_mode,
             )
         except PspNotConfigured as exc:
             return Response(

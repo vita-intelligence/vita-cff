@@ -168,6 +168,14 @@ function CreateMoModal({
   const [quantity, setQuantity] = useState<string>(
     String(batch.batch_size_units ?? 0),
   );
+  // "packs" (default) = pack count, matches TrialBatch.batch_size_units
+  //                     semantics for sample batches — 10 → 10 bottles.
+  // "units"           = raw individual capsules/gummies. Server divides
+  //                     by servings_per_pack so 5 → 0.0833 packs on PSP.
+  // Toggle only surfaces on sample batches with servings_per_pack > 1;
+  // trial-kind batches already count in individual units and one-per-
+  // pack formulations have nothing to convert.
+  const [sizeMode, setSizeMode] = useState<"packs" | "units">("packs");
   const [warehouseUuid, setWarehouseUuid] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -190,6 +198,23 @@ function CreateMoModal({
       setWarehouseUuid(warehouses[0].uuid);
     }
   }, [warehouseUuid, warehouses]);
+
+  const servingsPerPack = Math.max(1, batch.servings_per_pack ?? 1);
+  const showUnitsToggle =
+    batch.kind === "sample" && servingsPerPack > 1;
+  const parsedQtyLive = Number.parseInt(quantity.trim(), 10);
+  const previewCapsules =
+    Number.isFinite(parsedQtyLive) && parsedQtyLive > 0
+      ? sizeMode === "units"
+        ? parsedQtyLive
+        : parsedQtyLive * servingsPerPack
+      : null;
+  const previewPacks =
+    Number.isFinite(parsedQtyLive) && parsedQtyLive > 0
+      ? sizeMode === "units"
+        ? parsedQtyLive / servingsPerPack
+        : parsedQtyLive
+      : null;
 
   const createMutation = useCreateTrialBatchPspMo(orgId, batch.id);
 
@@ -214,6 +239,10 @@ function CreateMoModal({
     try {
       await createMutation.mutateAsync({
         quantity: parsedQty,
+        // Only send size_mode when the toggle is meaningful — trial
+        // batches + one-per-pack formulations pass the default
+        // ("packs" ≡ passthrough) and the server ignores the field.
+        size_mode: showUnitsToggle ? sizeMode : undefined,
         warehouse_uuid: warehouseUuid,
         due_date: dueDate.trim() || undefined,
         notes: notes.trim() || undefined,
@@ -266,14 +295,46 @@ function CreateMoModal({
         ) : null}
 
         <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-2">
             <label
               htmlFor="psp-mo-quantity"
               className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700"
             >
               <Package className="h-3 w-3 text-ink-500" />
-              Quantity (finished units)
+              Quantity ({sizeMode === "units" ? "individual units" : "complete packs"})
             </label>
+
+            {showUnitsToggle ? (
+              <div className="flex gap-1 rounded-lg bg-ink-100 p-0.5 text-[11px] font-medium">
+                <button
+                  type="button"
+                  onClick={() => setSizeMode("packs")}
+                  className={`flex-1 rounded-md px-2 py-1 transition-colors ${
+                    sizeMode === "packs"
+                      ? "bg-ink-0 text-ink-1000 shadow-sm ring-1 ring-ink-200"
+                      : "text-ink-600 hover:text-ink-1000"
+                  }`}
+                >
+                  Complete packs
+                  <span className="ml-1 text-ink-500">
+                    ({servingsPerPack}/pack)
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSizeMode("units")}
+                  className={`flex-1 rounded-md px-2 py-1 transition-colors ${
+                    sizeMode === "units"
+                      ? "bg-ink-0 text-ink-1000 shadow-sm ring-1 ring-ink-200"
+                      : "text-ink-600 hover:text-ink-1000"
+                  }`}
+                >
+                  Individual units
+                  <span className="ml-1 text-ink-500">(e.g. 5 caps)</span>
+                </button>
+              </div>
+            ) : null}
+
             <input
               id="psp-mo-quantity"
               type="number"
@@ -285,13 +346,33 @@ function CreateMoModal({
               required
               className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm tabular-nums"
             />
+
             <p className="text-[10px] text-ink-500">
               Defaults to the trial batch&apos;s planned scale
-              ({batch.batch_size_units} units). Change this to run a
-              smaller or larger MO than the planned size without editing
-              the trial batch — PSP consumes ingredients + emits output
-              at whatever you enter here.
+              ({batch.batch_size_units} units).
+              {showUnitsToggle
+                ? " Switch to Individual units to ship a handful of loose"
+                  + " capsules instead of a full pack — common on cycle"
+                  + " sample slots."
+                : " Change to run a smaller or larger MO than the planned"
+                  + " size without editing the trial batch."}
             </p>
+
+            {showUnitsToggle && previewCapsules !== null && previewPacks !== null ? (
+              <p className="rounded-lg bg-ink-50 px-3 py-1.5 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
+                PSP will book{" "}
+                <strong className="text-ink-1000 tabular-nums">
+                  {previewPacks < 1
+                    ? previewPacks.toFixed(4).replace(/\.?0+$/, "")
+                    : previewPacks.toFixed(previewPacks % 1 === 0 ? 0 : 2)}
+                </strong>{" "}
+                pack{previewPacks === 1 ? "" : "s"} ={" "}
+                <strong className="text-ink-1000 tabular-nums">
+                  {previewCapsules}
+                </strong>{" "}
+                finished unit{previewCapsules === 1 ? "" : "s"}.
+              </p>
+            ) : null}
           </div>
 
           <div className="flex flex-col gap-1.5">

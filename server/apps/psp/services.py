@@ -4959,6 +4959,7 @@ def create_psp_manufacturing_order_for_trial_batch(
     item_uuid: Any = None,
     due_date: Any = None,
     notes: str = "",
+    size_mode: str = "packs",
 ) -> dict:
     """Create a PSP Manufacturing Order for a trial batch + pin the
     returned uuid on ``TrialBatch.psp_manufacturing_order_uuid``.
@@ -5035,6 +5036,11 @@ def create_psp_manufacturing_order_for_trial_batch(
     # (which are per-1-stock-unit).
     if quantity in (None, ""):
         quantity = _derive_psp_mo_quantity(trial_batch)
+        # When we fell back to the batch's planned scale, we already
+        # applied kind-based pack conversion inside
+        # ``_derive_psp_mo_quantity``. Force ``size_mode = "packs"``
+        # so the branch below doesn't re-divide.
+        size_mode = "packs"
 
     try:
         qty_dec = Decimal(str(quantity))
@@ -5042,6 +5048,25 @@ def create_psp_manufacturing_order_for_trial_batch(
         raise ValueError("quantity must be a positive number") from exc
     if qty_dec <= 0:
         raise ValueError("quantity must be a positive number")
+
+    # ``size_mode = "units"`` — the caller entered raw finished units
+    # (e.g. "5 capsules" for a sample-batch MO). PSP's ``mo.quantity``
+    # is expressed in the finished-product's stock unit (packs), so
+    # divide by ``servings_per_pack`` before sending. Common cycle-
+    # slot flow: scientist wants to ship 5-8 loose capsules from a
+    # 60-cap bottle formulation → PSP MO produces
+    # 5/60 = 0.083333 packs, BOM scales proportionally.
+    #
+    # ``size_mode = "packs"`` (default) — caller entered pack count;
+    # passthrough. Same behaviour as before this override existed.
+    if size_mode == "units":
+        formulation = trial_batch.formulation_version.formulation
+        divisor = _finished_stage_servings(formulation)
+        if divisor > 0:
+            qty_dec = qty_dec / divisor
+        if qty_dec <= 0:
+            raise ValueError("quantity must be a positive number")
+
     # Cap at 6 dp so a fractional-pack MO (e.g. 10 servings / 60 =
     # 0.16666666… packs) reaches PSP with clean digits.
     qty_dec = qty_dec.quantize(Decimal("0.000001"))

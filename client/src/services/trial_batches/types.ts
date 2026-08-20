@@ -54,6 +54,13 @@ export interface TrialBatchDto {
    *  the proof and don't need re-validation, so the FE hides the
    *  "Start validation" CTA on sample batches with this flag set. */
   readonly formulation_validated: boolean;
+  /** Finished-product ``servings_per_pack`` (bottle fill count).
+   *  Powers the Create-MO modal's "complete packs vs individual
+   *  units" toggle for sample batches — user commonly wants to
+   *  ship 5-8 loose capsules instead of full 60-cap bottles.
+   *  ``1`` when the formulation ships one-per-pack or the value
+   *  is unset (toggle is hidden in that case). */
+  readonly servings_per_pack: number;
   readonly created_by_name: string;
   readonly created_at: string;
   readonly updated_at: string;
@@ -65,6 +72,19 @@ export interface CreateTrialBatchPspMoRequestDto {
    *  when a scientist wants PSP to run a smaller MO than the planned
    *  scale. */
   readonly quantity?: number;
+  /** How the server should interpret ``quantity``:
+   *
+   *   * ``"packs"`` (default) — quantity is a pack count. Passed
+   *     straight through to PSP's ``mo.quantity``.
+   *   * ``"units"`` — quantity is a raw finished-unit count
+   *     (individual capsules / tablets / gummies). Server divides
+   *     by the formulation's ``servings_per_pack`` before sending
+   *     so PSP books a fractional-pack MO (e.g. 5 caps / 60 =
+   *     0.0833 packs) and the BOM scales proportionally. Common
+   *     for cycle-slot samples shipping loose capsules.
+   *
+   *   Omitted → server treats as ``"packs"``. */
+  readonly size_mode?: "packs" | "units";
   /** Required. PSP warehouse UUID picked from the R&D warehouse
    *  dropdown. Was previously a global setting; per-MO now so
    *  multi-site R&D setups can route each trial batch to the right
