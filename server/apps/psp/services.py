@@ -2807,6 +2807,35 @@ def _sample_payment_payload(payment: Any) -> dict:
     }
 
 
+def _bundled_deposit_paid_at(proposal: Any):
+    """Earliest ``approved_at`` across every approved DEPOSIT Payment
+    tied to one of the proposal's formulations. Returns ``None`` when
+    no deposit has landed yet — presence of this timestamp is what
+    flips the PSP kanban phase to ``:trial_batches_in_flight``.
+    """
+
+    from apps.payments.constants import PaymentKind, PaymentStatus
+    from apps.payments.models import Payment
+
+    formulation_ids = list(
+        proposal.lines.filter(
+            formulation_version__formulation__isnull=False,
+        ).values_list("formulation_version__formulation_id", flat=True).distinct()
+    )
+    if not formulation_ids:
+        return None
+    return (
+        Payment.objects.filter(
+            formulation_id__in=formulation_ids,
+            kind=PaymentKind.DEPOSIT,
+            status=PaymentStatus.APPROVED,
+        )
+        .order_by("approved_at")
+        .values_list("approved_at", flat=True)
+        .first()
+    )
+
+
 def _trial_batch_cycle_payload_fragment(
     trial_batch: Any, formulation: Any
 ) -> dict:
@@ -3130,6 +3159,17 @@ def sync_proposal_to_psp(*, proposal: Any) -> dict | None:
         #     ``npd_sample_allocation_status``.
         "npd_customer_signed_at": _iso_or_none(
             getattr(proposal, "customer_signed_at", None)
+        ),
+        # Bundled deposit+samples Payment approval timestamp for the
+        # proposal's formulation. Presence flips the PSP kanban phase
+        # from ":proposal_accepted" ("Awaiting R&D payment") to
+        # ":trial_batches_in_flight" so operators see the cycle is
+        # running. Looks up ONE approved DEPOSIT payment per
+        # formulation on the proposal — a bundled proposal spans N
+        # formulations but shares one deposit gate, so the earliest
+        # approved deposit across the bundle drives the flip.
+        "npd_deposit_paid_at": _iso_or_none(
+            _bundled_deposit_paid_at(proposal)
         ),
         # Latest-transition timestamps for the wizard phase gate.
         "npd_proposal_created_at": _iso_or_none(getattr(proposal, "created_at", None)),
