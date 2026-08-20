@@ -2807,6 +2807,31 @@ def _sample_payment_payload(payment: Any) -> dict:
     }
 
 
+def _trial_batch_cycle_payload_fragment(
+    trial_batch: Any, formulation: Any
+) -> dict:
+    """Return the cycle-context fields for the sample-CO sync payload.
+
+    Empty dict when the trial batch isn't linked to a
+    :class:`TrialBatchSlot` — storefront sample-kit batches (the
+    audit's existing path) never populate the cycle fields, so the
+    PSP mirror columns stay nil.
+    """
+
+    slot = getattr(trial_batch, "cycle_slot", None)
+    if slot is None:
+        return {}
+    cycle = getattr(slot, "cycle", None)
+    if cycle is None:
+        return {}
+    reference = (getattr(formulation, "code", "") or "").strip()
+    return {
+        "npd_trial_slot_sequence_no": slot.sequence_no,
+        "npd_trial_slot_total": cycle.total_slots,
+        "parent_customer_order_reference": reference,
+    }
+
+
 def sync_sample_customer_order_to_psp(
     *,
     trial_batch: Any,
@@ -2925,6 +2950,16 @@ def sync_sample_customer_order_to_psp(
         # Sample orders don't produce PSP-side invoices (finance
         # already processed the payment on NPD).
         "payment": _sample_payment_payload(source_payment),
+        # Trial-batch cycle mirror — non-empty only when this trial
+        # batch was created for a slot in a
+        # ``TrialBatchCycle``. Drives the "↳ Trial N/M · <ref>"
+        # badge on the PSP /projects kanban so scientists can see
+        # which sample MO cards are siblings of the same custom-
+        # formulation project. PSP looks up the parent CO uuid
+        # itself via the npd_formulation_uuid match; we send the
+        # denormalised reference (formulation code) so the badge
+        # renders without a second query.
+        **_trial_batch_cycle_payload_fragment(trial_batch, formulation),
     }
 
     try:
