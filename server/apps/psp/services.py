@@ -5189,6 +5189,35 @@ def create_psp_manufacturing_order_for_trial_batch(
             getattr(trial_batch, "id", None),
         )
 
+    # Refresh the whole stage BOM cascade on PSP using the latest saved
+    # version's snapshot as the override. Without this, a scientist who
+    # attaches a capsule shell / picks packaging / re-routes bands and
+    # then clicks "Create MO" without first clicking Sync PSP would
+    # spawn an MO against a stale BOM (missing shell, missing packaging,
+    # wrong stage assignments). The snapshot on ``FormulationVersion``
+    # is written on every save_version, so it always reflects the
+    # scientist's most recent saved state. Silent-degrade — a PSP
+    # hiccup shouldn't block the MO create itself; the operator can
+    # click Sync PSP to retry the BOM push.
+    try:
+        formulation = trial_batch.formulation_version.formulation
+        latest_version = (
+            formulation.versions.order_by("-version_number").first()
+        )
+        snapshot_overrides = None
+        if latest_version is not None:
+            snapshot_overrides = latest_version.snapshot_stage_boms or None
+        push_bom_to_psp(
+            formulation=formulation,
+            stage_bom_overrides=snapshot_overrides,
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade, never block MO create
+        logger.exception(
+            "MO create: BOM refresh failed for trial batch %s "
+            "(silent-degraded)",
+            getattr(trial_batch, "id", None),
+        )
+
     packaging_overlay = _build_packaging_overlay(
         trial_batch,
         kind,
