@@ -153,8 +153,14 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
               ? "You're happy — final spec incoming."
               : maxReached
                 ? `All ${cycle.total_slots} samples sent — what next?`
-                : `Sample ${activeSlot?.sequence_no ?? cycle.slots_used} of ${cycle.total_slots}${sampleHeaderSuffix(activeSlot)}`}
+                : `${cycle.slots_used} of ${cycle.total_slots} samples sent`}
           </p>
+          {!cycleDone && !maxReached && activeSlot ? (
+            <p className="mt-0.5 text-xs uppercase tracking-widest text-black">
+              Sample #{activeSlot.sequence_no}
+              {sampleHeaderSuffix(activeSlot)}
+            </p>
+          ) : null}
           <p className="mt-1 text-sm text-neutral-800">
             {cycleDone
               ? "We're preparing the final specification. Sign it to authorise full production."
@@ -167,7 +173,7 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
 
       <ul className="mt-5 flex flex-col gap-2">
         {cycle.slots.map((slot) => (
-          <SlotRow key={slot.id} slot={slot} totalSlots={cycle.total_slots} />
+          <SlotRow key={slot.id} slot={slot} />
         ))}
       </ul>
 
@@ -437,7 +443,7 @@ function ProductionStrip({ slot }: { slot: Slot }) {
 }
 
 
-function SlotRow({ slot, totalSlots }: { slot: Slot; totalSlots: number }) {
+function SlotRow({ slot }: { slot: Slot }) {
   const icon =
     slot.status === "closed_satisfied" || slot.status === "closed_iterated" ? (
       <Check className="h-3.5 w-3.5 text-emerald-700" />
@@ -472,9 +478,7 @@ function SlotRow({ slot, totalSlots }: { slot: Slot; totalSlots: number }) {
     <li className="flex items-center justify-between border-2 border-black bg-white px-3 py-2">
       <span className="flex items-center gap-2 text-sm">
         {icon}
-        <span className="font-black">
-          Sample {slot.sequence_no} of {totalSlots}
-        </span>
+        <span className="font-black">Sample #{slot.sequence_no}</span>
         <span className="text-xs text-neutral-600">{label}</span>
       </span>
       {slot.verdict === "satisfied" && slot.keep_producing_remaining ? (
