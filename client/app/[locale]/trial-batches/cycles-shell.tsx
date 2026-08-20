@@ -633,7 +633,6 @@ function CycleCard({
           <SlotLine
             key={slot.id}
             slot={slot}
-            totalSlots={cycle.total_slots}
             busy={busySlotId === slot.id}
             onCreateBatch={() => createAndLink.mutate(slot.id)}
           />
@@ -701,12 +700,10 @@ function CycleCard({
 
 function SlotLine({
   slot,
-  totalSlots,
   busy,
   onCreateBatch,
 }: {
   slot: Slot;
-  totalSlots: number;
   busy: boolean;
   onCreateBatch: () => void;
 }) {
@@ -729,7 +726,7 @@ function SlotLine({
       <div className="flex min-w-0 items-center gap-2 text-xs">
         {icon}
         <span className="font-semibold text-ink-1000">
-          Slot {slot.sequence_no}/{totalSlots}
+          Slot #{slot.sequence_no}
         </span>
         <span className="text-[10px] text-ink-500">
           {slot.formulation_version_label}
