@@ -12,6 +12,13 @@ from apps.trial_batches.api.views import (
     TrialBatchRenderView,
 )
 from apps.trial_batches.api.samples_views import PendingSamplePaymentsView
+from apps.trial_batches.api.cycle_scientist_views import (
+    TrialBatchCycleCreateAndLinkBatchView,
+    TrialBatchCycleFormulationVersionsView,
+    TrialBatchCycleListView,
+    TrialBatchCycleOpenNextSlotView,
+    TrialBatchCycleTeamOverrideCloseView,
+)
 
 app_name = "trial_batches"
 
@@ -23,6 +30,34 @@ urlpatterns = [
         "organizations/<uuid:org_id>/samples/pending/",
         PendingSamplePaymentsView.as_view(),
         name="pending-sample-payments",
+    ),
+    # Trial-batch cycle scientist queue — active cycles + one-click
+    # create-and-link-batch + open-next-slot + team-override-close.
+    # Feeds the "Trial batches in flight" module on /samples.
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/",
+        TrialBatchCycleListView.as_view(),
+        name="trial-batch-cycles-list",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/<uuid:cycle_id>/slots/<uuid:slot_id>/create-and-link-batch/",
+        TrialBatchCycleCreateAndLinkBatchView.as_view(),
+        name="trial-batch-cycle-create-and-link-batch",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/<uuid:cycle_id>/open-next-slot/",
+        TrialBatchCycleOpenNextSlotView.as_view(),
+        name="trial-batch-cycle-open-next-slot",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/<uuid:cycle_id>/team-override-close/",
+        TrialBatchCycleTeamOverrideCloseView.as_view(),
+        name="trial-batch-cycle-team-override-close",
+    ),
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/<uuid:cycle_id>/formulation-versions/",
+        TrialBatchCycleFormulationVersionsView.as_view(),
+        name="trial-batch-cycle-formulation-versions",
     ),
     path(
         "organizations/<uuid:org_id>/formulations/<uuid:formulation_id>/trial-batches/",
