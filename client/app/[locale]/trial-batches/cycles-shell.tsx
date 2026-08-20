@@ -81,6 +81,7 @@ interface Slot {
   readonly trial_batch_id: string | null;
   readonly formulation_version_id: string;
   readonly formulation_version_label: string;
+  readonly formulation_id: string | null;
 }
 
 
@@ -751,9 +752,9 @@ function SlotLine({
           )}
           Create sample batch
         </button>
-      ) : slot.trial_batch_id ? (
+      ) : slot.trial_batch_id && slot.formulation_id ? (
         <a
-          href={`/formulations/${slot.formulation_version_id}/trial-batches/${slot.trial_batch_id}`}
+          href={`/formulations/${slot.formulation_id}/trial-batches/${slot.trial_batch_id}`}
           className="inline-flex items-center gap-1 rounded-full border border-ink-200 px-3 py-1 text-[10px] font-semibold text-ink-700 hover:bg-ink-50"
         >
           Open batch <ChevronRight className="h-3 w-3" />
