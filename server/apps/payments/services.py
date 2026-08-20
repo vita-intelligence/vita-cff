@@ -289,6 +289,33 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
                 )
 
         transaction.on_commit(_seed_trial_batch_cycle)
+
+        # Push the fresh deposit_paid_at through to PSP's mirror so
+        # the kanban card moves from :proposal_accepted ("Awaiting
+        # R&D payment") into :trial_batches_in_flight ("Trial
+        # batches"). Uses the proposal-merge sync path since the
+        # deposit timestamp ships on the proposal-level payload
+        # (per-formulation lookup, earliest-approved-wins on
+        # bundled proposals).
+        def _push_deposit_to_psp() -> None:
+            from apps.proposals.services import _schedule_proposal_psp_merge
+
+            fresh = Payment.objects.filter(pk=payment_pk).first()
+            if fresh is None or fresh.formulation_id is None:
+                return
+            try:
+                proposal = _signed_or_accepted_proposal_for_formulation(
+                    fresh.formulation
+                )
+                if proposal is not None:
+                    _schedule_proposal_psp_merge(proposal)
+            except Exception:  # noqa: BLE001 — silent-degrade
+                logger.exception(
+                    "Failed to push deposit paid_at to PSP for payment %s",
+                    payment_pk,
+                )
+
+        transaction.on_commit(_push_deposit_to_psp)
     elif payment.kind == PaymentKind.ADDITIONAL_SAMPLES:
         def _apply_additional_samples() -> None:
             from apps.trial_batches.cycle_services import (
