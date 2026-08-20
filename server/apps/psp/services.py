@@ -4475,15 +4475,25 @@ def _ensure_finished_product(
         else None
     )
     external_sku = stage_sku or f"NPD-FINISHED-{formulation.id}"
-    # Scientist-typed PSP name override on the finished stage wins;
-    # otherwise fall back to the auto-derived "{code} — {stage}" or
-    # the formulation's own name (legacy shape).
+    # Priority: scientist-typed PSP name override > formulation's
+    # own project name > auto-derived "{code} — {stage_name}" as a
+    # last-resort for legacy formulations that were never named.
+    #
+    # Previously the auto-derive ran second, producing PSP items
+    # named "MA01440 — Labelling" (the stage name is a process step,
+    # not the product identity — customers see the label as the
+    # PRODUCT, not the stage). Formulations always carry a name now
+    # (required at create time), so it wins for every real
+    # formulation; the stage-name branch survives as a defensive
+    # fallback for the tiny historical set of nameless rows.
     if stage_name_override:
         name = stage_name_override
+    elif formulation.name:
+        name = formulation.name
     elif stage_name:
         name = f"{formulation.code} — {stage_name}"
     else:
-        name = formulation.name
+        name = formulation.code or f"NPD-{formulation.id}"
     description = stage_description or (
         f"Auto-created by NPD for formulation {formulation.code}"
         " on first BOM push."
@@ -4819,6 +4829,7 @@ def _build_packaging_overlay(
     organization: Any,
     actor: Any,
     client: Any,
+    size_mode: str = "packs",
 ) -> Any:
     """Translate ``TrialBatch.packaging_combo`` into the payload PSP
     expects on the MO create endpoint.
@@ -4829,12 +4840,13 @@ def _build_packaging_overlay(
     * ``None`` — no overlay. Trial-kind batches always hit this branch
       (bench-scale, packaging not applicable) so the MO consumes the
       finished item's default packaging BOM lines.
-    * ``[]`` — sample with no combo. Overlay is active + empty; PSP
+    * ``[]`` — sample with no combo, OR sample with a combo but
+      ``size_mode == "units"`` (loose individual units — 5 capsules
+      shipped as a sample don't need a bottle + label + carton). PSP
       skips packaging-typed BOM lines and books nothing in their
-      place (loose bulk output — same as trial batches produced
-      before the sample split).
-    * populated list — combo picked. Each row is
-      ``{"item_uuid": <psp uuid>, "quantity": str}``.
+      place (loose bulk output).
+    * populated list — combo picked AND ``size_mode == "packs"``.
+      Each row is ``{"item_uuid": <psp uuid>, "quantity": str}``.
 
     Unmirrored items (NPD-native rows imported before PSP was
     connected, or created directly in NPD's local catalogue) are
@@ -4847,6 +4859,14 @@ def _build_packaging_overlay(
     """
     if kind == "trial":
         return None
+
+    # Individual-units mode ships loose finished units (5 capsules /
+    # 5 scoops of powder in a Ziploc / 5 gummies in a paper sleeve).
+    # No commercial packaging — force empty overlay so PSP doesn't
+    # book bottles + caps + labels for a scientist's evaluation
+    # sample. Toggle on the Create-MO modal drives this.
+    if size_mode == "units":
+        return []
 
     combo = getattr(trial_batch, "packaging_combo", None)
     if combo is None:
@@ -5109,6 +5129,7 @@ def create_psp_manufacturing_order_for_trial_batch(
         organization=organization,
         actor=actor,
         client=client,
+        size_mode=size_mode,
     )
 
     # Sample-fulfilment CO sync: for sample-kind batches with a
