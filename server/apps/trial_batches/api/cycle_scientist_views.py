@@ -279,6 +279,19 @@ class TrialBatchCycleCreateAndLinkBatchView(APIView):
         if not label:
             label = f"Cycle {str(cycle.id)[:8]} · slot {slot.sequence_no}"
 
+        # Auto-attach the formulation's default packaging combo (if
+        # one is configured) so a cycle-slot MO run in "complete
+        # packs" mode books the bottle + label + carton PSP already
+        # knows about. "Individual units" mode still forces empty
+        # packaging on the PSP side (see ``_build_packaging_overlay``)
+        # so loose samples don't accidentally book bottles.
+        default_combo_id = None
+        default_combo = (
+            cycle.formulation.packaging_combos.filter(is_default=True).first()
+        )
+        if default_combo is not None:
+            default_combo_id = default_combo.id
+
         try:
             batch = create_batch(
                 organization=cycle.organization,
@@ -287,6 +300,7 @@ class TrialBatchCycleCreateAndLinkBatchView(APIView):
                 batch_size_units=batch_size,
                 label=label,
                 kind=BatchKind.SAMPLE.value,
+                packaging_combo_id=default_combo_id,
             )
         except (FormulationVersionNotInOrg, InvalidBatchSize) as exc:
             return Response(
