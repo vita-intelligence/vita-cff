@@ -80,6 +80,13 @@ def _serialise_slot_for_scientist(slot: TrialBatchSlot) -> dict[str, Any]:
         ),
         "formulation_version_id": str(slot.formulation_version_id),
         "formulation_version_label": _version_label(fv),
+        # The batch-detail route lives under the FORMULATION id
+        # (/formulations/<formulation_id>/trial-batches/<batch_id>),
+        # NOT under the version id. Expose it here so the scientist
+        # dashboard can link out without a separate lookup.
+        "formulation_id": (
+            str(fv.formulation_id) if fv is not None else None
+        ),
     }
 
 
