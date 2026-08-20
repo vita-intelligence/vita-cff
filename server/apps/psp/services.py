@@ -2872,16 +2872,29 @@ def sync_sample_customer_order_to_psp(
     customer resolved via its dedupe logic) to exist first so the MO
     can link back to it via ``customer_order_line_id``.
 
-    Identity: ``npd_sample_payment_uuid = trial_batch.source_payment.id``.
-    That gives one CO per customer-sample pair even when the underlying
-    formulation is shared across many customers (RTG catalog case).
+    Two identity paths:
+
+    * **Storefront sample-kit** — ``TrialBatch.source_payment`` set
+      by the R&D Samples fulfilment queue. Sample uuid =
+      ``source_payment.id``; customer = ``source_payment.customer``.
+    * **Cycle-slot sample** — ``TrialBatch.cycle_slot`` set by the
+      trial-batch cycle flow, ``source_payment`` is null (the cycle
+      is funded by a bundled deposit, not per-slot). Sample uuid =
+      ``trial_batch.id``; customer = ``formulation.customer``. This
+      is what makes the cycle sample MO land on the PSP /projects
+      kanban with its own sample CO row (same shape a storefront
+      sample gets), so the scientist can follow it through PSP's
+      wizard end-to-end.
 
     Silent-degradation contract, same as
     :func:`sync_customer_order_to_psp`:
 
     * PSP integration off / decryption failed → ``None``, no log.
     * PSP unreachable / rate-limited / auth failed → warn + ``None``.
-    * Missing source payment → ``None`` (no customer identity to send).
+    * Cycle-slot batch with no ``formulation.customer`` → ``None``
+      (no customer identity to send).
+    * Legacy manual-created batch (no source payment AND no cycle
+      slot) → ``None``. Same as before.
 
     Returns PSP's response body on success — the caller pins the
     returned CO's uuid on the MO payload as ``npd_sample_payment_uuid``
@@ -2891,13 +2904,6 @@ def sync_sample_customer_order_to_psp(
     if trial_batch is None:
         return None
 
-    source_payment = getattr(trial_batch, "source_payment", None)
-    if source_payment is None:
-        # No source payment → sample not from the fulfilment queue
-        # (scientist created it manually). Nothing to sync — the MO
-        # can still be pushed, it just won't get a customer link.
-        return None
-
     formulation_version = getattr(trial_batch, "formulation_version", None)
     formulation = (
         getattr(formulation_version, "formulation", None)
@@ -2905,6 +2911,30 @@ def sync_sample_customer_order_to_psp(
         else None
     )
     if formulation is None:
+        return None
+
+    source_payment = getattr(trial_batch, "source_payment", None)
+    cycle_slot = getattr(trial_batch, "cycle_slot", None)
+    if source_payment is not None:
+        sample_uuid = str(source_payment.id)
+        sample_customer = getattr(source_payment, "customer", None)
+        sample_payment_block = _sample_payment_payload(source_payment)
+    elif cycle_slot is not None:
+        # Cycle-slot fallback — batch has no per-slot payment (cycle
+        # is funded by the bundled deposit), so identity comes off
+        # the batch itself and the customer from the parent
+        # formulation. Payment block is empty ({} not a dict skip)
+        # so the PSP invoice card renders "no per-sample payment"
+        # rather than a null crash.
+        sample_uuid = str(trial_batch.id)
+        sample_customer = getattr(formulation, "customer", None)
+        sample_payment_block = {}
+    else:
+        # Legacy scientist-created batch with no source payment AND
+        # no cycle slot. Nothing to attach to — MO push still works,
+        # the sample CO just doesn't spawn on PSP.
+        return None
+    if sample_customer is None:
         return None
 
     organization = getattr(formulation, "organization", None)
@@ -2941,7 +2971,7 @@ def sync_sample_customer_order_to_psp(
     label = (getattr(trial_batch, "label", "") or "").strip()
 
     payload = {
-        "npd_sample_payment_uuid": str(source_payment.id),
+        "npd_sample_payment_uuid": sample_uuid,
         "item_uuid": str(item_uuid),
         # Formulation id — pipe it through so PSP can persist it on
         # the sample CO. Without this, any MO the PSP operator
@@ -2963,7 +2993,7 @@ def sync_sample_customer_order_to_psp(
         "formulation_code": (getattr(formulation, "code", "") or "").strip(),
         # Reuse the commercial-sync helpers so a customer already
         # synced via a Custom project stays deduped on the PSP side.
-        **_customer_identity(getattr(source_payment, "customer", None)),
+        **_customer_identity(sample_customer),
         # Same R&D team + deep-link payload the commercial sync uses
         # so /projects can render the same "R&D lead" / "Sales" chips
         # on a sample CO.
@@ -2977,8 +3007,10 @@ def sync_sample_customer_order_to_psp(
         # NPD payment mirror — PSP's CO detail invoice card renders
         # this instead of the default "Generate invoice" prompt.
         # Sample orders don't produce PSP-side invoices (finance
-        # already processed the payment on NPD).
-        "payment": _sample_payment_payload(source_payment),
+        # already processed the payment on NPD). Cycle-slot samples
+        # pass an empty payment block — no per-slot payment exists;
+        # the deposit that funded the cycle lives on the parent CO.
+        "payment": sample_payment_block,
         # Trial-batch cycle mirror — non-empty only when this trial
         # batch was created for a slot in a
         # ``TrialBatchCycle``. Drives the "↳ Trial N/M · <ref>"
@@ -5143,7 +5175,14 @@ def create_psp_manufacturing_order_for_trial_batch(
     # PSP connectivity issue).
     npd_sample_payment_uuid: str | None = None
     source_payment_id = getattr(trial_batch, "source_payment_id", None)
-    if kind == "sample" and source_payment_id is not None:
+    cycle_slot = getattr(trial_batch, "cycle_slot", None)
+    if kind == "sample" and (source_payment_id is not None or cycle_slot is not None):
+        # Fires for BOTH storefront samples (source_payment set) and
+        # cycle-slot samples (cycle_slot set, source_payment None).
+        # The sync inside now branches on which identity to use and
+        # pulls the customer from the parent formulation for cycle
+        # slots — see ``sync_sample_customer_order_to_psp`` for the
+        # branch logic.
         sync_sample_customer_order_to_psp(trial_batch=trial_batch)
         # We stamp the uuid on the payload regardless of the sync's
         # return value — the sync is idempotent + silent-degrade, so
@@ -5151,7 +5190,15 @@ def create_psp_manufacturing_order_for_trial_batch(
         # MO create will surface ``sample_co_not_found`` (400) and the
         # scientist retries. That's a better UX than silently pushing
         # the MO orphaned.
-        npd_sample_payment_uuid = str(source_payment_id)
+        #
+        # Identity source matches the sync's internal branch:
+        # source_payment.id for storefront, trial_batch.id for cycle
+        # slots. Anything downstream that reads the sample CO by
+        # uuid uses this same value.
+        npd_sample_payment_uuid = (
+            str(source_payment_id) if source_payment_id is not None
+            else str(trial_batch.id)
+        )
 
     try:
         mo = client.create_manufacturing_order(
