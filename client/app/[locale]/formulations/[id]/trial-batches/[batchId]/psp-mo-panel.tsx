@@ -149,20 +149,25 @@ function CreateMoModal({
 }) {
   const tErrors = useTranslations("errors");
 
-  // Quantity, project_type, and finished-product uuid all live
-  // elsewhere already:
-  //   * quantity → ``TrialBatch.batch_size_units`` (backend default)
+  // Project_type and finished-product uuid derive from the batch +
+  // formulation and are never asked:
   //   * project_type → always "trial" for trial batches
   //   * item_uuid → ``Formulation.psp_finished_product_uuid``
-  // Re-asking the scientist for any of them is a compliance-first
-  // field-design smell (see CLAUDE.md rule #2 — "if it can be
-  // computed, don't ask"). Only genuinely optional annotations
-  // remain in the form.
   //
-  // Warehouse is the exception — it's a per-MO choice (multi-site
-  // R&D setups can route different trial batches to different
-  // R&D warehouses) so we ask via a dropdown filtered to
-  // warehouses PSP has flagged as R&D-tagged.
+  // Quantity is EDITABLE — defaults to ``TrialBatch.batch_size_units``
+  // but the scientist commonly wants PSP to run a smaller / larger
+  // size than the planned scale on this specific MO (e.g. cycle
+  // slot 1 was planned at 20 units for the initial pass, but this
+  // MO run should produce 10). The backend already accepts an
+  // optional ``quantity`` override; we just have to surface the
+  // input.
+  //
+  // Warehouse is per-MO too — multi-site R&D setups route different
+  // trial batches to different R&D warehouses — via a dropdown
+  // filtered to warehouses PSP has flagged as R&D-tagged.
+  const [quantity, setQuantity] = useState<string>(
+    String(batch.batch_size_units ?? 0),
+  );
   const [warehouseUuid, setWarehouseUuid] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [notes, setNotes] = useState("");
@@ -198,8 +203,17 @@ function CreateMoModal({
       });
       return;
     }
+    const parsedQty = Number.parseInt(quantity.trim(), 10);
+    if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
+      setBanner({
+        kind: "error",
+        message: "Quantity must be a positive whole number of finished units.",
+      });
+      return;
+    }
     try {
       await createMutation.mutateAsync({
+        quantity: parsedQty,
         warehouse_uuid: warehouseUuid,
         due_date: dueDate.trim() || undefined,
         notes: notes.trim() || undefined,
@@ -252,24 +266,33 @@ function CreateMoModal({
         ) : null}
 
         <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-4">
-          {/* Read-only summary of what will be sent. Everything here
-              is derived from the trial batch + formulation so the
-              scientist can see what PSP will receive without having
-              to type it. If any of these look wrong the fix is to
-              edit the trial batch / formulation, not the MO. */}
-          <dl className="flex flex-col gap-1 rounded-lg bg-ink-50 px-3 py-2 text-[11px] text-ink-600 ring-1 ring-inset ring-ink-200">
-            <div className="flex items-center gap-1.5">
+          <div className="flex flex-col gap-1.5">
+            <label
+              htmlFor="psp-mo-quantity"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700"
+            >
               <Package className="h-3 w-3 text-ink-500" />
-              <dt className="font-medium text-ink-700">Quantity</dt>
-              <dd className="tabular-nums text-ink-1000">
-                {batch.batch_size_units} finished units
-              </dd>
-            </div>
+              Quantity (finished units)
+            </label>
+            <input
+              id="psp-mo-quantity"
+              type="number"
+              min={1}
+              step={1}
+              inputMode="numeric"
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              required
+              className="w-full rounded-lg border border-ink-300 bg-white px-3 py-2 text-sm tabular-nums"
+            />
             <p className="text-[10px] text-ink-500">
-              Pulled from this trial batch&apos;s planned scale. To run a
-              different size, edit the trial batch first.
+              Defaults to the trial batch&apos;s planned scale
+              ({batch.batch_size_units} units). Change this to run a
+              smaller or larger MO than the planned size without editing
+              the trial batch — PSP consumes ingredients + emits output
+              at whatever you enter here.
             </p>
-          </dl>
+          </div>
 
           <div className="flex flex-col gap-1.5">
             <label
