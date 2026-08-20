@@ -1,23 +1,26 @@
 "use client";
 
 /**
- * Trial-batch cycles module for the /samples page.
+ * Trial-batch cycles — scientist surface.
  *
- * Sits above the sample-fulfilment queue and gives the scientist
- * one-click access to every action a live cycle needs:
+ * Dedicated page (moved out of /samples, which was mixing the cycle
+ * workflow with the storefront sample-kit queue). Scales to
+ * hundreds of active cycles by defaulting to a compact table with
+ * a small "needs attention" pane pinned at the top.
  *
- *   * ``Create sample batch`` — spawns a TrialBatch against the
- *     slot's ``formulation_version`` snapshot and links it
- *     atomically. Slot flips to IN_PRODUCTION; scientist can
- *     then jump into the batch detail to press "Create MO on PSP".
- *   * ``Open next slot`` — after a customer's NEEDS_ITERATION
- *     verdict; picks a freshly-saved FormulationVersion to bind.
- *   * ``Close cycle`` — team-override close when the customer is
- *     satisfied via out-of-band contact.
+ * Layout:
+ *   1. AttentionPane      — the ≤5 cycles a scientist has to click.
+ *                           Full-fat cards (slot ladder + actions).
+ *                           Anything past 5 hides behind "show all".
+ *   2. CyclesTable        — every active cycle. One row each with
+ *                           formulation, customer, active slot,
+ *                           status pill, updated_at. Search across
+ *                           formulation code + customer; filter
+ *                           chips by status; row expands inline for
+ *                           slot ladder + actions.
  *
- * Fetches from ``GET /api/organizations/<org>/trial-batch-cycles/``.
- * Mutations invalidate the same key so counts + slot rows update
- * in place.
+ * All mutations go through react-query with invalidation on the
+ * shared cycles key so both surfaces update in lockstep.
  */
 
 import {
@@ -30,13 +33,15 @@ import {
   AlertTriangle,
   Beaker,
   CheckCircle2,
+  ChevronDown,
   ChevronRight,
   Loader2,
   RefreshCw,
+  Search,
   Sparkles,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import { apiClient } from "@/lib/api";
 import { rootQueryKey } from "@/lib/query";
@@ -74,17 +79,25 @@ interface Slot {
 }
 
 
+interface CustomerRef {
+  readonly id: string;
+  readonly name: string;
+}
+
+
 interface Cycle {
   readonly id: string;
   readonly status: CycleStatus;
   readonly total_slots: number;
   readonly slots_used: number;
   readonly closed_at: string | null;
+  readonly updated_at: string;
   readonly formulation: {
     readonly id: string;
     readonly code: string;
     readonly name: string;
   };
+  readonly customer: CustomerRef | null;
   readonly active_slot_id: string | null;
   readonly latest_iterated_slot_id: string | null;
   readonly can_open_next_slot: boolean;
@@ -107,94 +120,408 @@ interface FormulationVersionOption {
 
 
 const CYCLES_KEY = "trial-batch-cycles";
+const ATTENTION_VISIBLE_MAX = 5;
+
+type StatusFilter = "all" | CycleStatus;
 
 
-export function TrialCyclesModule({ orgId }: { orgId: string }) {
-  const [bucket, setBucket] = useState<"all" | "needs_attention">(
-    "needs_attention",
-  );
+export function TrialCyclesShell({ orgId }: { orgId: string }) {
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [needsOnly, setNeedsOnly] = useState(false);
+  const [search, setSearch] = useState("");
+  const [showAllAttention, setShowAllAttention] = useState(false);
+
   const query = useQuery<CyclesResponse>({
-    queryKey: [rootQueryKey, CYCLES_KEY, orgId, bucket],
+    queryKey: [rootQueryKey, CYCLES_KEY, orgId],
     queryFn: async () => {
       const { data } = await apiClient.get<CyclesResponse>(
-        `/api/organizations/${orgId}/trial-batch-cycles/${
-          bucket === "needs_attention" ? "?bucket=needs_attention" : ""
-        }`,
+        `/api/organizations/${orgId}/trial-batch-cycles/`,
       );
       return data;
     },
     refetchOnWindowFocus: false,
   });
 
-  const counts = query.data?.counts ?? { total: 0, needs_attention: 0 };
-  const items = query.data?.items ?? [];
+  const all = query.data?.items ?? [];
+  const needsAttention = useMemo(
+    () => all.filter((c) => c.action_needed || c.can_open_next_slot),
+    [all],
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return all.filter((c) => {
+      if (statusFilter !== "all" && c.status !== statusFilter) return false;
+      if (needsOnly && !c.action_needed && !c.can_open_next_slot) return false;
+      if (q) {
+        const hay = [
+          c.formulation.code,
+          c.formulation.name,
+          c.customer?.name ?? "",
+          c.status,
+        ]
+          .join(" ")
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [all, statusFilter, needsOnly, search]);
 
   return (
-    <section className="mb-8 border-2 border-black bg-white">
-      <header className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-3 text-white">
+    <section className="mt-4 flex flex-col gap-6">
+      <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <Beaker className="h-4 w-4" />
-          <p className="text-xs font-bold uppercase tracking-widest">
-            Trial batches in flight
-          </p>
+          <Beaker className="h-4 w-4 text-neutral-700" />
+          <h1 className="text-lg font-black uppercase tracking-tight text-neutral-900">
+            Trial batches
+          </h1>
+          <span className="border-2 border-black bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-neutral-700">
+            {all.length} live
+          </span>
+          {needsAttention.length > 0 ? (
+            <span className="border-2 border-red-700 bg-red-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest text-red-800">
+              {needsAttention.length} need action
+            </span>
+          ) : null}
         </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() =>
-              setBucket(bucket === "all" ? "needs_attention" : "all")
-            }
-            className="inline-flex items-center gap-1 border-2 border-white bg-black px-2 py-1 text-[10px] font-bold uppercase tracking-widest hover:bg-white hover:text-black"
-          >
-            {bucket === "needs_attention"
-              ? `Needs attention · ${counts.needs_attention}`
-              : `All · ${counts.total}`}
-          </button>
-          <button
-            type="button"
-            onClick={() => query.refetch()}
-            disabled={query.isFetching}
-            title="Refresh"
-            className="inline-flex items-center gap-1 border-2 border-white bg-black p-1 hover:bg-white hover:text-black disabled:opacity-50"
-          >
-            <RefreshCw
-              className={
-                "h-3 w-3 " + (query.isFetching ? "animate-spin" : "")
-              }
-            />
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={() => query.refetch()}
+          disabled={query.isFetching}
+          className="inline-flex items-center gap-1 border-2 border-black bg-white p-1.5 text-neutral-700 hover:bg-neutral-100 disabled:opacity-50"
+          title="Refresh"
+        >
+          <RefreshCw className={"h-3.5 w-3.5 " + (query.isFetching ? "animate-spin" : "")} />
+        </button>
       </header>
 
-      <div className="p-4">
-        {query.isPending ? (
-          <p className="inline-flex items-center gap-2 text-xs uppercase tracking-widest text-neutral-600">
-            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading cycles…
-          </p>
-        ) : query.isError ? (
-          <p className="text-sm text-red-700">
-            Couldn&rsquo;t load cycles. Try refreshing.
-          </p>
-        ) : items.length === 0 ? (
-          <p className="text-xs uppercase tracking-widest text-neutral-500">
-            {bucket === "needs_attention"
-              ? "Nothing needs your attention right now."
-              : "No active trial-batch cycles."}
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-3">
-            {items.map((cycle) => (
-              <CycleRow key={cycle.id} cycle={cycle} orgId={orgId} />
-            ))}
-          </ul>
-        )}
-      </div>
+      {query.isPending ? (
+        <p className="inline-flex items-center gap-2 text-xs uppercase tracking-widest text-neutral-600">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading cycles…
+        </p>
+      ) : query.isError ? (
+        <p className="border-2 border-red-700 bg-red-50 p-3 text-sm text-red-800">
+          Couldn&rsquo;t load cycles. Try refreshing.
+        </p>
+      ) : all.length === 0 ? (
+        <p className="border-2 border-black bg-white p-6 text-center text-xs uppercase tracking-widest text-neutral-500">
+          No active trial-batch cycles.
+        </p>
+      ) : (
+        <>
+          {needsAttention.length > 0 ? (
+            <AttentionPane
+              orgId={orgId}
+              cycles={needsAttention}
+              visibleMax={showAllAttention ? needsAttention.length : ATTENTION_VISIBLE_MAX}
+              onToggleShowAll={
+                needsAttention.length > ATTENTION_VISIBLE_MAX
+                  ? () => setShowAllAttention((v) => !v)
+                  : null
+              }
+              showAll={showAllAttention}
+            />
+          ) : null}
+
+          <CyclesTable
+            orgId={orgId}
+            cycles={filtered}
+            totalCount={all.length}
+            search={search}
+            onSearch={setSearch}
+            statusFilter={statusFilter}
+            onStatusFilter={setStatusFilter}
+            needsOnly={needsOnly}
+            onNeedsOnly={setNeedsOnly}
+          />
+        </>
+      )}
     </section>
   );
 }
 
 
-function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
+function AttentionPane({
+  orgId,
+  cycles,
+  visibleMax,
+  onToggleShowAll,
+  showAll,
+}: {
+  orgId: string;
+  cycles: readonly Cycle[];
+  visibleMax: number;
+  onToggleShowAll: (() => void) | null;
+  showAll: boolean;
+}) {
+  const visible = cycles.slice(0, visibleMax);
+  const hidden = cycles.length - visible.length;
+  return (
+    <div className="border-2 border-red-700 bg-red-50/40">
+      <header className="border-b-2 border-red-700 bg-red-700 px-4 py-2.5 text-white">
+        <p className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
+          <AlertTriangle className="h-3.5 w-3.5" /> Needs your attention · {cycles.length}
+        </p>
+      </header>
+      <div className="flex flex-col gap-2 p-3">
+        {visible.map((c) => (
+          <CycleCard key={c.id} cycle={c} orgId={orgId} />
+        ))}
+      </div>
+      {onToggleShowAll ? (
+        <button
+          type="button"
+          onClick={onToggleShowAll}
+          className="w-full border-t-2 border-red-700 bg-white px-4 py-2 text-[10px] font-bold uppercase tracking-widest text-red-700 hover:bg-red-50"
+        >
+          {showAll ? "Show fewer" : `Show ${hidden} more`}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+
+function CyclesTable({
+  orgId,
+  cycles,
+  totalCount,
+  search,
+  onSearch,
+  statusFilter,
+  onStatusFilter,
+  needsOnly,
+  onNeedsOnly,
+}: {
+  orgId: string;
+  cycles: readonly Cycle[];
+  totalCount: number;
+  search: string;
+  onSearch: (v: string) => void;
+  statusFilter: StatusFilter;
+  onStatusFilter: (v: StatusFilter) => void;
+  needsOnly: boolean;
+  onNeedsOnly: (v: boolean) => void;
+}) {
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  return (
+    <div className="border-2 border-black bg-white">
+      <div className="flex flex-wrap items-center gap-2 border-b-2 border-black px-3 py-2">
+        <div className="relative flex-1 min-w-[220px]">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-neutral-500" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search formulation code, customer, status…"
+            className="w-full border-2 border-black bg-white py-1.5 pl-7 pr-2 text-sm focus:outline-none"
+          />
+        </div>
+        <StatusChip active={statusFilter === "all"} onClick={() => onStatusFilter("all")}>
+          All
+        </StatusChip>
+        <StatusChip
+          active={statusFilter === "in_progress"}
+          onClick={() => onStatusFilter("in_progress")}
+          tone="orange"
+        >
+          In progress
+        </StatusChip>
+        <StatusChip
+          active={statusFilter === "max_reached"}
+          onClick={() => onStatusFilter("max_reached")}
+          tone="amber"
+        >
+          Max reached
+        </StatusChip>
+        <StatusChip
+          active={statusFilter === "satisfied"}
+          onClick={() => onStatusFilter("satisfied")}
+          tone="emerald"
+        >
+          Satisfied
+        </StatusChip>
+        <StatusChip
+          active={statusFilter === "terminated_by_team"}
+          onClick={() => onStatusFilter("terminated_by_team")}
+        >
+          Terminated
+        </StatusChip>
+        <StatusChip
+          active={needsOnly}
+          onClick={() => onNeedsOnly(!needsOnly)}
+          tone="red"
+        >
+          Needs action
+        </StatusChip>
+      </div>
+
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="border-b-2 border-black bg-neutral-100 text-[10px] uppercase tracking-widest text-neutral-600">
+            <th className="w-4 px-2 py-2"></th>
+            <th className="px-3 py-2 text-left font-black">Formulation</th>
+            <th className="px-3 py-2 text-left font-black">Customer</th>
+            <th className="px-3 py-2 text-left font-black">Active slot</th>
+            <th className="px-3 py-2 text-left font-black">Status</th>
+            <th className="px-3 py-2 text-left font-black">Slots</th>
+            <th className="px-3 py-2 text-left font-black">Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cycles.length === 0 ? (
+            <tr>
+              <td colSpan={7} className="px-3 py-6 text-center text-xs uppercase tracking-widest text-neutral-500">
+                {totalCount > 0 ? "No cycles match your filters." : "No active cycles."}
+              </td>
+            </tr>
+          ) : (
+            cycles.map((c) => (
+              <CycleRow
+                key={c.id}
+                cycle={c}
+                orgId={orgId}
+                expanded={expandedId === c.id}
+                onToggle={() =>
+                  setExpandedId(expandedId === c.id ? null : c.id)
+                }
+              />
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+
+function StatusChip({
+  active,
+  onClick,
+  tone,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  tone?: "orange" | "amber" | "emerald" | "red";
+  children: React.ReactNode;
+}) {
+  const activeTone =
+    tone === "orange"
+      ? "bg-orange-200"
+      : tone === "amber"
+        ? "bg-amber-200"
+        : tone === "emerald"
+          ? "bg-emerald-200"
+          : tone === "red"
+            ? "bg-red-200"
+            : "bg-black text-white";
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={
+        "border-2 border-black px-2.5 py-1 text-[10px] font-bold uppercase tracking-widest transition-colors " +
+        (active ? activeTone : "bg-white hover:bg-neutral-100")
+      }
+    >
+      {children}
+    </button>
+  );
+}
+
+
+function CycleRow({
+  cycle,
+  orgId,
+  expanded,
+  onToggle,
+}: {
+  cycle: Cycle;
+  orgId: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const active = cycle.slots.find((s) => s.id === cycle.active_slot_id);
+  return (
+    <>
+      <tr
+        className={
+          "border-b border-neutral-200 hover:bg-neutral-50 " +
+          (cycle.action_needed || cycle.can_open_next_slot
+            ? "bg-red-50/40"
+            : "")
+        }
+      >
+        <td className="px-2 py-2 text-center">
+          <button
+            type="button"
+            onClick={onToggle}
+            title={expanded ? "Collapse" : "Expand"}
+            className="text-neutral-600 hover:text-black"
+          >
+            {expanded ? (
+              <ChevronDown className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5" />
+            )}
+          </button>
+        </td>
+        <td className="px-3 py-2 text-sm">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-neutral-500">
+            {cycle.formulation.code || cycle.formulation.id.slice(0, 8)}
+          </p>
+          <p className="truncate font-black uppercase">
+            {cycle.formulation.name || "Untitled"}
+          </p>
+        </td>
+        <td className="px-3 py-2 text-sm text-neutral-800">
+          {cycle.customer?.name || <span className="text-neutral-400">—</span>}
+        </td>
+        <td className="px-3 py-2 text-xs text-neutral-800">
+          {active ? (
+            <span>
+              #{active.sequence_no}{" "}
+              <span className="text-[10px] uppercase tracking-widest text-neutral-500">
+                · {active.status.replace(/_/g, " ")}
+              </span>
+            </span>
+          ) : (
+            <span className="text-neutral-400">—</span>
+          )}
+        </td>
+        <td className="px-3 py-2">
+          <CycleStatusPill status={cycle.status} />
+        </td>
+        <td className="px-3 py-2 text-xs font-black">
+          {cycle.slots_used}/{cycle.total_slots}
+        </td>
+        <td className="px-3 py-2 text-xs text-neutral-600">
+          {new Date(cycle.updated_at).toLocaleDateString()}
+        </td>
+      </tr>
+      {expanded ? (
+        <tr>
+          <td colSpan={7} className="border-b border-neutral-200 bg-neutral-50 p-4">
+            <CycleCard cycle={cycle} orgId={orgId} embedded />
+          </td>
+        </tr>
+      ) : null}
+    </>
+  );
+}
+
+
+function CycleCard({
+  cycle,
+  orgId,
+  embedded = false,
+}: {
+  cycle: Cycle;
+  orgId: string;
+  embedded?: boolean;
+}) {
   const queryClient = useQueryClient();
   const [busySlotId, setBusySlotId] = useState<string | null>(null);
   const [openNext, setOpenNext] = useState(false);
@@ -226,25 +553,28 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
   });
 
   return (
-    <li className="border-2 border-black bg-white">
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b-2 border-black px-4 py-3">
-        <div className="min-w-0 flex-1">
-          <p className="font-mono text-[10px] uppercase tracking-wider text-neutral-500">
-            {cycle.formulation.code || cycle.formulation.id.slice(0, 8)}
-          </p>
-          <p className="mt-0.5 truncate text-sm font-black uppercase">
-            {cycle.formulation.name || "Untitled formulation"}
-          </p>
+    <div className={"border-2 border-black " + (embedded ? "bg-white" : "bg-white")}>
+      {!embedded ? (
+        <div className="flex flex-wrap items-start justify-between gap-3 border-b-2 border-black px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-neutral-500">
+              {cycle.formulation.code || cycle.formulation.id.slice(0, 8)}
+              {cycle.customer ? ` · ${cycle.customer.name}` : ""}
+            </p>
+            <p className="mt-0.5 truncate text-sm font-black uppercase">
+              {cycle.formulation.name || "Untitled formulation"}
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <CycleStatusPill status={cycle.status} />
+            <span className="border-2 border-black bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest">
+              {cycle.slots_used}/{cycle.total_slots}
+            </span>
+          </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <CycleStatusPill status={cycle.status} />
-          <span className="border-2 border-black bg-white px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest">
-            {cycle.slots_used}/{cycle.total_slots}
-          </span>
-        </div>
-      </div>
+      ) : null}
 
-      <ul className="flex flex-col gap-2 px-4 py-3">
+      <ul className={"flex flex-col gap-2 " + (embedded ? "p-0" : "px-4 py-3")}>
         {cycle.slots.map((slot) => (
           <SlotLine
             key={slot.id}
@@ -256,7 +586,12 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
         ))}
       </ul>
 
-      <div className="flex flex-wrap items-center justify-end gap-2 border-t-2 border-black px-4 py-3">
+      <div
+        className={
+          "flex flex-wrap items-center justify-end gap-2 " +
+          (embedded ? "pt-3" : "border-t-2 border-black px-4 py-3")
+        }
+      >
         {cycle.can_open_next_slot ? (
           <button
             type="button"
@@ -278,7 +613,7 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
       </div>
 
       {error ? (
-        <p className="border-t-2 border-red-700 bg-red-100 px-4 py-2 text-xs text-red-900">
+        <p className={"text-xs text-red-900 " + (embedded ? "mt-3 border-2 border-red-700 bg-red-100 px-3 py-2" : "border-t-2 border-red-700 bg-red-100 px-4 py-2")}>
           {error}
         </p>
       ) : null}
@@ -294,7 +629,6 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
           }}
         />
       ) : null}
-
       {closeOpen ? (
         <TeamCloseModal
           orgId={orgId}
@@ -306,7 +640,7 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
           }}
         />
       ) : null}
-    </li>
+    </div>
   );
 }
 
@@ -336,9 +670,8 @@ function SlotLine({
     ) : (
       <Sparkles className="h-3.5 w-3.5 text-neutral-500" />
     );
-
   return (
-    <li className="flex flex-wrap items-center justify-between gap-2 border border-neutral-300 bg-neutral-50 px-3 py-2">
+    <li className="flex flex-wrap items-center justify-between gap-2 border border-neutral-300 bg-white px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         {icon}
         <span className="text-xs font-black uppercase">
@@ -348,10 +681,9 @@ function SlotLine({
           {slot.formulation_version_label}
         </span>
         <span className="text-[10px] uppercase tracking-widest text-neutral-600">
-          · {slot.status.replace("_", " ")}
+          · {slot.status.replace(/_/g, " ")}
         </span>
       </div>
-
       {slot.status === "awaiting_scientist" ? (
         <button
           type="button"
@@ -374,7 +706,6 @@ function SlotLine({
           Open batch <ChevronRight className="h-3 w-3" />
         </a>
       ) : null}
-
       {slot.status === "closed_iterated" && slot.feedback_summary ? (
         <p className="w-full border-t border-neutral-200 pt-2 text-xs text-neutral-700">
           <span className="font-bold uppercase tracking-widest text-neutral-500">
@@ -404,7 +735,7 @@ function CycleStatusPill({ status }: { status: CycleStatus }) {
         tone
       }
     >
-      {status.replace("_", " ")}
+      {status.replace(/_/g, " ")}
     </span>
   );
 }
@@ -432,7 +763,6 @@ function OpenNextSlotModal({
   });
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
   const openMutation = useMutation({
     mutationFn: async () => {
       if (!selected) return;
@@ -454,9 +784,7 @@ function OpenNextSlotModal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
       <div className="w-full max-w-lg border-2 border-black bg-white">
         <header className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-3 text-white">
-          <p className="text-xs font-bold uppercase tracking-widest">
-            Open next slot
-          </p>
+          <p className="text-xs font-bold uppercase tracking-widest">Open next slot</p>
           <button
             type="button"
             onClick={onClose}
@@ -467,18 +795,15 @@ function OpenNextSlotModal({
         </header>
         <div className="p-4">
           <p className="text-xs text-neutral-700">
-            Pick the formulation version the next slot should be produced
-            against. Usually the freshly-tweaked version you saved after the
-            last feedback.
+            Pick the formulation version the next slot should be produced against.
+            Usually the freshly-tweaked version you saved after the last feedback.
           </p>
           {versions.isPending ? (
             <p className="mt-4 inline-flex items-center gap-2 text-xs uppercase tracking-widest text-neutral-600">
               <Loader2 className="h-3 w-3 animate-spin" /> Loading versions…
             </p>
           ) : versions.isError ? (
-            <p className="mt-4 text-sm text-red-700">
-              Couldn&rsquo;t load versions.
-            </p>
+            <p className="mt-4 text-sm text-red-700">Couldn&rsquo;t load versions.</p>
           ) : (
             <ul className="mt-4 flex flex-col gap-2">
               {(versions.data?.items ?? []).map((v) => (
@@ -550,13 +875,11 @@ function TeamCloseModal({
   const [confirmText, setConfirmText] = useState("");
   const [ackChecked, setAckChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Two independent friction gates so a fast-clicker can't hit the
-  // destructive button by mistake: (1) the ack checkbox forces the
-  // reader to look at what actually happens, (2) typing CLOSE
-  // requires 5 deliberate keystrokes.
   const CONFIRM_PHRASE = "CLOSE";
   const canSubmit =
-    ackChecked && confirmText.trim().toUpperCase() === CONFIRM_PHRASE && reason.trim().length > 0;
+    ackChecked &&
+    confirmText.trim().toUpperCase() === CONFIRM_PHRASE &&
+    reason.trim().length > 0;
 
   const closeMutation = useMutation({
     mutationFn: async () => {
@@ -595,10 +918,10 @@ function TeamCloseModal({
               This cancels every remaining awaiting slot
             </p>
             <p className="mt-1">
-              The customer paid for those slots and won&rsquo;t receive them. You
-              can&rsquo;t undo this from the UI. Use only when the customer is
-              satisfied via out-of-band contact (email, call). The audit trail
-              records who + when + why.
+              The customer paid for those slots and won&rsquo;t receive them.
+              You can&rsquo;t undo this from the UI. Use only when the customer
+              is satisfied via out-of-band contact (email, call). The audit
+              trail records who + when + why.
             </p>
           </div>
 
