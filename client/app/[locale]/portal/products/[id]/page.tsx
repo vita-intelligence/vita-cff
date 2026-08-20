@@ -17,6 +17,7 @@ import {
 import { env } from "@/config/env";
 
 import { SampleSelectionCard } from "./sample-selection-card";
+import { TrialBatchCycleCard } from "./trial-batch-cycle-card";
 
 
 type StageState = "done" | "current" | "future" | "skipped";
@@ -125,7 +126,7 @@ export default async function PortalProductDetailPage({
           also suppresses the sample entry; this is the render-side
           guard for the NoActionBanner "you're up to date" fallback
           that would otherwise fire falsely. */}
-      {currentStage?.key === "sample_selection" ? null : data.next_action ? (
+      {currentStage?.key === "sample_selection" || currentStage?.key === "trial" ? null : data.next_action ? (
         <NextActionBanner action={data.next_action} />
       ) : (
         <NoActionBanner
@@ -142,6 +143,19 @@ export default async function PortalProductDetailPage({
         (s) => s.key === "sample_selection" && s.state === "current",
       ) ? (
         <SampleSelectionCard projectId={id} />
+      ) : null}
+
+      {/* Trial-batch cycle card — client component, renders whenever
+          the pipeline flags ``trial`` as ``current``. Owns the slot
+          ladder, the feedback form, and the "Request another sample"
+          affordance. Same short-circuit contract as
+          SampleSelectionCard — the NextAction/NoAction banner above
+          is suppressed on the ``trial`` stage so we don't stack two
+          cards saying the same thing. */}
+      {data.pipeline.some(
+        (s) => s.key === "trial" && s.state === "current",
+      ) ? (
+        <TrialBatchCycleCard projectId={id} />
       ) : null}
 
       <section className="mt-10 mb-10">
