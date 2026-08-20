@@ -27,13 +27,21 @@ import {
  * page; when one does, it's a plain link so the user can peek at
  * the draft status from the URL (shareable to the R&D manager).
  *
- * Gating rule (MO chain): when the trial batch has a linked PSP MO
- * chain, "Start validation" stays disabled until every MO in the
- * chain (finished-product parent + every semi-finished child) hits
+ * Gating rule (MO chain):
+ *
+ * ``kind === "sample"`` (customer-facing production — storefront
+ * sample kits + cycle-slot sample batches) blocks the button until
+ * a PSP MO is pushed AND every stage in the chain hits
  * ``status = completed``. You can't validate a product that hasn't
- * actually been produced yet. If no PSP MO is linked (legacy trial
- * batches or ones the scientist chose not to push), the CTA is
- * unrestricted — same as before.
+ * actually been produced yet, and a sample batch that never gets
+ * pushed to PSP has produced nothing. Message steers the scientist
+ * at the right next action ("Create MO on PSP" first, then wait
+ * for production).
+ *
+ * ``kind === "trial"`` (bench-scale scientist run) keeps the
+ * unrestricted CTA — bench trials legitimately don't need a PSP
+ * MO. Scientist can pop the validation open whenever they want to
+ * record the pen-and-paper QC verdict.
  *
  * Gating rule (sample kind + formulation validated): sample batches
  * for a formulation version that another batch has already validated
@@ -84,7 +92,20 @@ export function ValidationLink({
   });
 
   const moGate = useMemo(() => {
-    if (!linkedPspMoUuid) return { blocked: false, reason: null as string | null };
+    // Bench-scale trials don't need a PSP MO to validate — scientist
+    // records the pen-and-paper QC verdict directly.
+    if (kind === "trial") return { blocked: false, reason: null as string | null };
+    // Sample batches (customer-facing) MUST have production run
+    // before validation. No linked MO ⇒ nothing has been produced,
+    // so the button is blocked with a hint at the correct next
+    // action.
+    if (!linkedPspMoUuid) {
+      return {
+        blocked: true,
+        reason:
+          "Push the MO to PSP first — validation can't run until production has actually been produced.",
+      };
+    }
     const chain = chainQuery.data?.chain ?? [];
     if (chainQuery.isLoading && chain.length === 0) {
       return { blocked: true, reason: "Loading MO status…" };
@@ -104,7 +125,7 @@ export function ValidationLink({
         chain.length === 1 ? "" : "s"
       } still ${pending.length === 1 ? "is" : "are"} not completed on PSP.`,
     };
-  }, [linkedPspMoUuid, chainQuery.data, chainQuery.isLoading]);
+  }, [kind, linkedPspMoUuid, chainQuery.data, chainQuery.isLoading]);
 
   const isBusy = createMutation.isPending || existingQuery.isLoading;
 
