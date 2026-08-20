@@ -35,7 +35,7 @@ from apps.client_portal.api.views import PortalAPIView
 from apps.formulations.models import Formulation, ProjectStatus, ProjectType
 from apps.label_design.constants import LabelDesignPath, LabelDesignStatus
 from apps.label_design.models import LabelDesign, LabelDesignTransition
-from apps.payments.constants import PaymentStatus
+from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
 from apps.product_validation.models import ProductValidation, ValidationStatus
 from apps.proposals.models import Proposal, ProposalStatusTransition
@@ -1125,9 +1125,18 @@ class PortalProductDetailView(PortalAPIView):
             if label_designs_all
             else None
         )
+        # Stage 6 ("Payment received") represents the FINAL payment
+        # gate that lands AFTER final-spec sign — not the bundled
+        # deposit+samples Payment (kind=DEPOSIT) or the mid-cycle
+        # additional-samples top-ups (kind=ADDITIONAL_SAMPLES). The
+        # deposit is handled by its own stage via
+        # ``trial_batch_gate_status``; approving it must not light
+        # up the Payment stage prematurely.
         payment = (
             Payment.objects.filter(
-                formulation_id=formulation_id, status=PaymentStatus.APPROVED
+                formulation_id=formulation_id,
+                status=PaymentStatus.APPROVED,
+                kind=PaymentKind.FINAL,
             ).order_by("-approved_at")
             .first()
         )
