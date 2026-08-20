@@ -131,13 +131,29 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
         and cycle.status == TrialBatchCycleStatus.IN_PROGRESS
     )
     action_needed = active is not None and active.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
+    # "Worked" = slots that have actually been produced (or are being
+    # produced) — anything past the AWAITING_SCIENTIST seed row, and
+    # excluding CLOSED_CANCELLED so an auto-cancelled slot from a
+    # customer-satisfied close doesn't inflate the counter. A cycle
+    # with 3 planned slots that hasn't started anything reads "0/3",
+    # not "1/3" (which would confuse the operator into thinking a
+    # batch had already been made).
+    slots_worked = sum(
+        1
+        for s in slots
+        if s.status
+        not in (
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.CLOSED_CANCELLED,
+        )
+    )
     formulation = cycle.formulation
     customer = getattr(formulation, "customer", None)
     return {
         "id": str(cycle.id),
         "status": cycle.status,
         "total_slots": cycle.total_slots,
-        "slots_used": len(slots),
+        "slots_used": slots_worked,
         "closed_at": (
             cycle.closed_at.isoformat() if cycle.closed_at is not None else None
         ),

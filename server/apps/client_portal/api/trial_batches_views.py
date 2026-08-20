@@ -195,11 +195,26 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         production_by_slot[str(active.id)] = _fetch_production_summary(
             active, cycle.organization
         )
+    # ``slots_used`` counts slots the customer has actually been sent
+    # a sample for (or is currently being sent one for) — anything past
+    # the AWAITING_SCIENTIST seed row and excluding auto-cancels.
+    # Without this, a freshly-opened cycle would read "1 of 3" the
+    # moment the seed slot is created and the customer would think a
+    # sample had already shipped.
+    slots_worked = sum(
+        1
+        for s in slots
+        if s.status
+        not in (
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.CLOSED_CANCELLED,
+        )
+    )
     return {
         "id": str(cycle.id),
         "status": cycle.status,
         "total_slots": cycle.total_slots,
-        "slots_used": len(slots),
+        "slots_used": slots_worked,
         "closed_at": (
             cycle.closed_at.isoformat() if cycle.closed_at is not None else None
         ),
