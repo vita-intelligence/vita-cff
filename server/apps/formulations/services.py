@@ -20,7 +20,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -4612,6 +4612,7 @@ def build_ingredient_declaration(
     *,
     items_by_external_id: dict[str, Item],
     totals: FormulationTotals,
+    capsule_shell_picks: Sequence[Item] | None = None,
 ) -> tuple[str, tuple[IngredientDeclarationEntry, ...]]:
     """Produce the product's ingredient declaration string.
 
@@ -4834,7 +4835,39 @@ def build_ingredient_declaration(
 
     if totals.dosage_form == DosageForm.CAPSULE.value and totals.size_key:
         capsule_size = capsule_size_by_key(totals.size_key)
-        if capsule_size is not None and capsule_size.shell_weight_mg > 0:
+        default_weight = (
+            capsule_size.shell_weight_mg if capsule_size is not None else 0
+        )
+        # Prefer the caller-supplied catalogue pick over the hardcoded
+        # placeholder — same swap the FE's ``buildIngredientDeclaration``
+        # does with ``capsuleShellPick``. When ``capsule_shell_picks``
+        # is empty (legacy formulations or the "still selecting"
+        # state) we keep the old placeholder + per-size weight so
+        # nothing regresses.
+        picked_shell = None
+        if capsule_shell_picks:
+            picked_shell = next(iter(capsule_shell_picks), None)
+        if picked_shell is not None:
+            attrs = picked_shell.attributes or {}
+            attr_weight = attrs.get("shell_weight_mg")
+            try:
+                shell_mg = (
+                    Decimal(str(attr_weight))
+                    if attr_weight not in (None, "")
+                    else Decimal(str(default_weight))
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                shell_mg = Decimal(str(default_weight))
+            if shell_mg > 0:
+                entries.append(
+                    IngredientDeclarationEntry(
+                        label=_entry_label_for_item(picked_shell),
+                        mg=shell_mg,
+                        category="shell",
+                        slug=EXCIPIENT_SLUG_CAPSULE_SHELL,
+                    )
+                )
+        elif capsule_size is not None and capsule_size.shell_weight_mg > 0:
             entries.append(
                 IngredientDeclarationEntry(
                     label=CAPSULE_SHELL_LABEL,
@@ -5593,6 +5626,11 @@ def save_version(
     declaration_text, declaration_entries = build_ingredient_declaration(
         items_by_external_id=items_by_external_id,
         totals=totals,
+        # Feed the scientist-picked catalogue shells so the declaration
+        # prints the real SKU name (matching what the FE renders and
+        # what procurement buys) rather than the "Capsule Shell
+        # (Hypromellose)" placeholder.
+        capsule_shell_picks=list(formulation.capsule_shell_items.all()),
     )
 
     # Build (item, mg) pairs for the nutrition / amino aggregation.
