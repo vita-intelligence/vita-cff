@@ -61,6 +61,18 @@ export interface TrialBatchDto {
    *  ``1`` when the formulation ships one-per-pack or the value
    *  is unset (toggle is hidden in that case). */
   readonly servings_per_pack: number;
+  /** Frozen dosage form snapshotted onto the version at plan time
+   *  (falls back to the live formulation's dosage form for legacy
+   *  versions with no snapshot metadata). One of the canonical
+   *  DosageForm values or "" on legacy rows. */
+  readonly dosage_form: string;
+  /** Singular / plural nouns for one individual finished unit —
+   *  ``("capsule", "capsules")``, ``("scoop", "scoops")``,
+   *  ``("dose", "doses")``, etc. Server-owned mapping so any new
+   *  dosage form ships correct copy in one place. FE consumers
+   *  should ALWAYS read these instead of hand-mapping. */
+  readonly unit_label_singular: string;
+  readonly unit_label_plural: string;
   readonly created_by_name: string;
   readonly created_at: string;
   readonly updated_at: string;

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.formulations.constants import dosage_form_unit_label
 from apps.product_validation.models import ProductValidation, ValidationStatus
 from apps.trial_batches.models import BatchKind, TrialBatch
 
@@ -47,6 +48,16 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     #: disable. ``1`` when the formulation ships one-per-pack or the
     #: value is unset (toggle is hidden in that case).
     servings_per_pack = serializers.SerializerMethodField()
+    #: Canonical singular / plural unit nouns for the formulation's
+    #: dosage form — e.g. ``("capsule", "capsules")``,
+    #: ``("scoop", "scoops")``, ``("dose", "doses")``. Powers the
+    #: Create-MO modal's dosage-form-aware copy so the "5 caps"
+    #: preview swaps to "5 scoops" for powder, "5 doses" for
+    #: liquid, etc. Falls back to ``("unit", "units")`` on legacy
+    #: rows with no dosage form recorded.
+    dosage_form = serializers.SerializerMethodField()
+    unit_label_singular = serializers.SerializerMethodField()
+    unit_label_plural = serializers.SerializerMethodField()
 
     def get_created_by_name(self, obj) -> str:
         user = obj.created_by
@@ -77,6 +88,27 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             return 1
         return max(1, value)
 
+    def _dosage_form(self, obj) -> str:
+        # Prefer the frozen version snapshot (matches what the batch
+        # was actually planned against); fall back to the live
+        # formulation.dosage_form for legacy versions that predate the
+        # snapshot metadata.
+        md = getattr(obj.formulation_version, "snapshot_metadata", None) or {}
+        snap = (md.get("dosage_form") or "").strip() if isinstance(md, dict) else ""
+        if snap:
+            return snap
+        formulation = obj.formulation_version.formulation
+        return (getattr(formulation, "dosage_form", "") or "").strip()
+
+    def get_dosage_form(self, obj) -> str:
+        return self._dosage_form(obj)
+
+    def get_unit_label_singular(self, obj) -> str:
+        return dosage_form_unit_label(self._dosage_form(obj))[0]
+
+    def get_unit_label_plural(self, obj) -> str:
+        return dosage_form_unit_label(self._dosage_form(obj))[1]
+
     class Meta:
         model = TrialBatch
         fields = (
@@ -95,6 +127,9 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "validation_status",
             "formulation_validated",
             "servings_per_pack",
+            "dosage_form",
+            "unit_label_singular",
+            "unit_label_plural",
             "created_by_name",
             "created_at",
             "updated_at",

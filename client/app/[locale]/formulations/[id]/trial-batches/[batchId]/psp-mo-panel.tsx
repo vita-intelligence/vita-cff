@@ -202,6 +202,14 @@ function CreateMoModal({
   const servingsPerPack = Math.max(1, batch.servings_per_pack ?? 1);
   const showUnitsToggle =
     batch.kind === "sample" && servingsPerPack > 1;
+  // Dosage-form-aware nouns (server-owned mapping, exposed on the
+  // TrialBatchDto). Falls back to generic "unit" / "units" for
+  // legacy versions where the snapshot doesn't record a dosage
+  // form. Used by the toggle label, quantity input label, helper
+  // text, and preview so a powder MO reads "5 scoops", a liquid
+  // MO reads "5 doses", etc. — never "5 caps" for the wrong form.
+  const unitSingular = batch.unit_label_singular || "unit";
+  const unitPlural = batch.unit_label_plural || "units";
   const parsedQtyLive = Number.parseInt(quantity.trim(), 10);
   const previewCapsules =
     Number.isFinite(parsedQtyLive) && parsedQtyLive > 0
@@ -301,7 +309,7 @@ function CreateMoModal({
               className="inline-flex items-center gap-1.5 text-xs font-medium text-ink-700"
             >
               <Package className="h-3 w-3 text-ink-500" />
-              Quantity ({sizeMode === "units" ? "individual units" : "complete packs"})
+              Quantity ({sizeMode === "units" ? `individual ${unitPlural}` : "complete packs"})
             </label>
 
             {showUnitsToggle ? (
@@ -317,7 +325,7 @@ function CreateMoModal({
                 >
                   Complete packs
                   <span className="ml-1 text-ink-500">
-                    ({servingsPerPack}/pack)
+                    ({servingsPerPack} {servingsPerPack === 1 ? unitSingular : unitPlural}/pack)
                   </span>
                 </button>
                 <button
@@ -329,8 +337,8 @@ function CreateMoModal({
                       : "text-ink-600 hover:text-ink-1000"
                   }`}
                 >
-                  Individual units
-                  <span className="ml-1 text-ink-500">(e.g. 5 caps)</span>
+                  Individual {unitPlural}
+                  <span className="ml-1 text-ink-500">(e.g. 5 {unitPlural})</span>
                 </button>
               </div>
             ) : null}
@@ -351,8 +359,8 @@ function CreateMoModal({
               Defaults to the trial batch&apos;s planned scale
               ({batch.batch_size_units} units).
               {showUnitsToggle
-                ? " Switch to Individual units to ship a handful of loose"
-                  + " capsules instead of a full pack — common on cycle"
+                ? ` Switch to Individual ${unitPlural} to ship a handful of loose`
+                  + ` ${unitPlural} instead of a full pack — common on cycle`
                   + " sample slots."
                 : " Change to run a smaller or larger MO than the planned"
                   + " size without editing the trial batch."}
@@ -370,7 +378,7 @@ function CreateMoModal({
                 <strong className="text-ink-1000 tabular-nums">
                   {previewCapsules}
                 </strong>{" "}
-                finished unit{previewCapsules === 1 ? "" : "s"}.
+                {previewCapsules === 1 ? unitSingular : unitPlural}.
               </p>
             ) : null}
           </div>
