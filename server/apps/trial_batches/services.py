@@ -686,11 +686,50 @@ def compute_batch_scaleup(batch: TrialBatch) -> BOMResult:
 
     # Capsule shell — one per unit, weight keyed off the selected
     # capsule size. Tablets/powders/gummies/liquids have no shell.
+    #
+    # When the frozen version's ``capsule_shell_item_ids`` snapshot
+    # names a real catalogue Item, we render THAT item's name + SKU
+    # + its ``shell_weight_mg`` attribute (falling back to the
+    # hardcoded per-size table when the attribute is missing). Only
+    # falls back to the ``CAPSULE_SHELL_LABEL`` placeholder when the
+    # snapshot has no shell pick — legacy formulations from before
+    # the shell picker existed. Prevents the "Capsule Shell
+    # (Hypromellose)" placeholder from surfacing on the trial-batch
+    # BOM when the scientist has already ticked a PSP-mirrored shell.
     dosage_form = result.dosage_form
     size_key = totals.get("size_key")
     if dosage_form == DosageForm.CAPSULE.value and isinstance(size_key, str):
         capsule = capsule_size_by_key(size_key)
-        if capsule is not None and capsule.shell_weight_mg > 0:
+        default_weight_mg = (
+            capsule.shell_weight_mg if capsule is not None else 0
+        )
+        shell_ids = metadata.get("capsule_shell_item_ids") or []
+        shell_pick = None
+        if shell_ids:
+            shell_pick = Item.objects.filter(id__in=shell_ids).first()
+        if shell_pick is not None:
+            attrs = shell_pick.attributes or {}
+            attr_weight = attrs.get("shell_weight_mg")
+            try:
+                weight_mg = (
+                    Decimal(str(attr_weight))
+                    if attr_weight not in (None, "")
+                    else Decimal(str(default_weight_mg))
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                weight_mg = Decimal(str(default_weight_mg))
+            if weight_mg > 0:
+                result.entries.append(
+                    _build_bom_entry(
+                        category="shell",
+                        label=shell_pick.name,
+                        internal_code=shell_pick.internal_code or "",
+                        mg_per_unit=weight_mg,
+                        units_per_pack=units_per_pack,
+                        total_units_in_batch=total_units_in_batch,
+                    )
+                )
+        elif capsule is not None and capsule.shell_weight_mg > 0:
             result.entries.append(
                 _build_bom_entry(
                     category="shell",
