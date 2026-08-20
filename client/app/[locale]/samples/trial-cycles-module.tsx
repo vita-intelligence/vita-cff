@@ -27,6 +27,7 @@ import {
 } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AlertTriangle,
   Beaker,
   CheckCircle2,
   ChevronRight,
@@ -269,9 +270,9 @@ function CycleRow({ cycle, orgId }: { cycle: Cycle; orgId: string }) {
           <button
             type="button"
             onClick={() => setCloseOpen(true)}
-            className="inline-flex items-center gap-1 border-2 border-black bg-white px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest hover:bg-neutral-100"
+            className="inline-flex items-center gap-1 border-2 border-red-700 bg-red-50 px-3 py-1.5 text-[10px] font-bold uppercase tracking-widest text-red-800 hover:bg-red-100"
           >
-            <X className="h-3 w-3" /> Close cycle (team override)
+            <AlertTriangle className="h-3 w-3" /> Close cycle (team override)
           </button>
         ) : null}
       </div>
@@ -546,7 +547,17 @@ function TeamCloseModal({
   onClosed: () => void;
 }) {
   const [reason, setReason] = useState("");
+  const [confirmText, setConfirmText] = useState("");
+  const [ackChecked, setAckChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Two independent friction gates so a fast-clicker can't hit the
+  // destructive button by mistake: (1) the ack checkbox forces the
+  // reader to look at what actually happens, (2) typing CLOSE
+  // requires 5 deliberate keystrokes.
+  const CONFIRM_PHRASE = "CLOSE";
+  const canSubmit =
+    ackChecked && confirmText.trim().toUpperCase() === CONFIRM_PHRASE && reason.trim().length > 0;
+
   const closeMutation = useMutation({
     mutationFn: async () => {
       await apiClient.post(
@@ -565,36 +576,71 @@ function TeamCloseModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div className="w-full max-w-lg border-2 border-black bg-white">
-        <header className="flex items-center justify-between border-b-2 border-black bg-black px-4 py-3 text-white">
-          <p className="text-xs font-bold uppercase tracking-widest">
-            Close cycle (team override)
+      <div className="w-full max-w-lg border-2 border-red-700 bg-white">
+        <header className="flex items-center justify-between border-b-2 border-red-700 bg-red-700 px-4 py-3 text-white">
+          <p className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-widest">
+            <AlertTriangle className="h-4 w-4" /> Close cycle — destructive
           </p>
           <button
             type="button"
             onClick={onClose}
-            className="border-2 border-white p-1 hover:bg-white hover:text-black"
+            className="border-2 border-white p-1 hover:bg-white hover:text-red-700"
           >
             <X className="h-3 w-3" />
           </button>
         </header>
         <div className="p-4">
-          <p className="text-xs text-neutral-700">
-            Use when the customer&rsquo;s satisfied via out-of-band contact.
-            Remaining awaiting slots auto-cancel; final-spec-sign unlocks.
-          </p>
+          <div className="border-2 border-red-700 bg-red-50 p-3 text-xs text-red-900">
+            <p className="font-black uppercase tracking-widest">
+              This cancels every remaining awaiting slot
+            </p>
+            <p className="mt-1">
+              The customer paid for those slots and won&rsquo;t receive them. You
+              can&rsquo;t undo this from the UI. Use only when the customer is
+              satisfied via out-of-band contact (email, call). The audit trail
+              records who + when + why.
+            </p>
+          </div>
+
           <label className="mt-4 block">
             <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600">
-              Reason (audit trail)
+              Reason (audit trail, required)
             </span>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              rows={4}
-              placeholder="Why are we closing this early?"
+              rows={3}
+              placeholder="Who confirmed and how — e.g. Customer emailed Sarah on 2026-08-20 saying slot 2 is perfect, doesn't want more samples."
               className="mt-1 w-full border-2 border-black bg-white px-3 py-2 text-sm focus:outline-none"
             />
           </label>
+
+          <label className="mt-4 flex cursor-pointer items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={ackChecked}
+              onChange={(e) => setAckChecked(e.target.checked)}
+              className="mt-0.5 h-4 w-4 border-2 border-black"
+            />
+            <span>
+              I understand this cancels every remaining awaiting slot the
+              customer paid for and cannot be undone from the UI.
+            </span>
+          </label>
+
+          <label className="mt-4 block">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600">
+              Type <span className="font-mono text-red-800">{CONFIRM_PHRASE}</span> to confirm
+            </span>
+            <input
+              type="text"
+              value={confirmText}
+              onChange={(e) => setConfirmText(e.target.value)}
+              className="mt-1 w-full border-2 border-black bg-white px-3 py-2 font-mono text-sm uppercase focus:outline-none"
+              autoComplete="off"
+            />
+          </label>
+
           {error ? (
             <p className="mt-4 border-2 border-red-700 bg-red-100 px-3 py-2 text-sm text-red-900">
               {error}
@@ -610,16 +656,16 @@ function TeamCloseModal({
             </button>
             <button
               type="button"
-              disabled={closeMutation.isPending}
+              disabled={!canSubmit || closeMutation.isPending}
               onClick={() => closeMutation.mutate()}
-              className="inline-flex items-center gap-1 border-2 border-black bg-black px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+              className="inline-flex items-center gap-1 border-2 border-red-700 bg-red-700 px-4 py-1.5 text-[10px] font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[1px] hover:-translate-y-[1px] hover:shadow-[3px_3px_0_0_rgb(185,28,28)] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {closeMutation.isPending ? (
                 <Loader2 className="h-3 w-3 animate-spin" />
               ) : (
-                <X className="h-3 w-3" />
+                <AlertTriangle className="h-3 w-3" />
               )}
-              Close cycle
+              Close cycle permanently
             </button>
           </div>
         </div>
