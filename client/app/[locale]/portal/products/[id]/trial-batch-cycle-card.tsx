@@ -153,7 +153,7 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
               ? "You're happy — final spec incoming."
               : maxReached
                 ? `All ${cycle.total_slots} samples sent — what next?`
-                : `Sample ${activeSlot?.sequence_no ?? cycle.slots_used} of ${cycle.total_slots}`}
+                : `Sample ${activeSlot?.sequence_no ?? cycle.slots_used} of ${cycle.total_slots}${sampleHeaderSuffix(activeSlot)}`}
           </p>
           <p className="mt-1 text-sm text-neutral-800">
             {cycleDone
@@ -309,12 +309,59 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
 // visual language. Stages:
 //   1. Batch prepared        (trial_batch linked)
 //   2. In production         (production_state=in_progress)
-//   3. Production complete   (production_state=completed)
-//   4. Received              (slot advanced past DELIVERED)
+//   3. Ready to confirm      (production_state=completed)
 // The "I've received it" button only unlocks when stage 3 lights up.
+// Header suffix that reflects the active slot's actual status so the
+// customer never reads "Sample 1 of 3" flat while the slot is
+// awaiting the scientist. Kept as a tiny helper next to the strip
+// so header and strip stay in lockstep.
+function sampleHeaderSuffix(slot: Slot | undefined): string {
+  if (!slot) return "";
+  switch (slot.status) {
+    case "awaiting_scientist":
+      return " — waiting for R&D";
+    case "in_production":
+    case "shipped":
+      if (slot.production_state === "completed") return " — ready for you";
+      return " — in production";
+    case "delivered":
+    case "feedback_pending":
+      return " — ready for your feedback";
+    default:
+      return "";
+  }
+}
+
+
 function ProductionStrip({ slot }: { slot: Slot }) {
+  const hasBatch = Boolean(slot.trial_batch_id);
+  const isReceived =
+    slot.status === "delivered" || slot.status === "feedback_pending";
+  const productionState = slot.production_state;
+  const productionDone = productionState === "completed";
+  const productionRunning =
+    productionState === "in_progress" ||
+    productionState === "not_pushed" ||
+    productionState === "unknown";
   const total = slot.production_stages_total;
   const done = slot.production_stages_done;
+
+  // Every stage has a distinct copy per state (done / current /
+  // future) so the future-stage detail never bleeds into a
+  // spinner-flavoured message like "Live status will refresh in a
+  // moment" when we're still waiting on an earlier stage.
+  const batchState: "done" | "current" | "future" = hasBatch ? "done" : "current";
+  const productionStage: "done" | "current" | "future" = productionDone
+    ? "done"
+    : hasBatch
+      ? "current"
+      : "future";
+  const readyStage: "done" | "current" | "future" = isReceived
+    ? "done"
+    : productionDone
+      ? "current"
+      : "future";
+
   const stages: ReadonlyArray<{
     key: string;
     label: string;
@@ -324,45 +371,42 @@ function ProductionStrip({ slot }: { slot: Slot }) {
     {
       key: "batch",
       label: "Batch prepared",
-      state: slot.trial_batch_id ? "done" : "current",
-      detail: slot.trial_batch_id
-        ? "Your R&D scientist has spun up the run."
-        : "Waiting for your R&D scientist to open the batch.",
+      state: batchState,
+      detail:
+        batchState === "done"
+          ? "Your R&D scientist has spun up the run."
+          : "Waiting for your R&D scientist to open the batch.",
     },
     {
       key: "production",
       label:
-        slot.production_state === "in_progress" && total > 0
+        productionStage === "current" && productionState === "in_progress" && total > 0
           ? `In production (${done}/${total} stages)`
           : "In production",
-      state:
-        slot.production_state === "completed"
-          ? "done"
-          : slot.production_state === "in_progress"
-            ? "current"
-            : slot.trial_batch_id
-              ? "current"
-              : "future",
+      state: productionStage,
       detail:
-        slot.production_state === "unknown"
-          ? "Live status will refresh in a moment."
-          : slot.production_state === "not_pushed"
-            ? "Your scientist will push this to the shop floor shortly."
-            : "The shop floor is producing your sample right now.",
+        productionStage === "done"
+          ? "Every stage is complete — your sample is ready."
+          : productionStage === "future"
+            ? "Starts once your scientist opens the batch."
+            : productionState === "not_pushed"
+              ? "Your scientist will push this to the shop floor shortly."
+              : productionState === "unknown"
+                ? "Live status will refresh in a moment."
+                : "The shop floor is producing your sample right now.",
     },
     {
       key: "ready",
       label: "Ready — waiting for you",
-      state:
-        slot.production_state === "completed"
-          ? "current"
-          : slot.status === "delivered" || slot.status === "feedback_pending"
-            ? "done"
-            : "future",
+      state: readyStage,
       detail:
-        slot.production_state === "completed"
-          ? "It's on the way. Click below the moment it lands."
-          : "You'll get to confirm receipt once production wraps.",
+        readyStage === "done"
+          ? "Thanks — we've marked it received."
+          : readyStage === "current"
+            ? "It's on the way. Click below the moment it lands."
+            : productionRunning && hasBatch
+              ? "You'll get to confirm receipt once production wraps."
+              : "Unlocks after the batch is produced.",
     },
   ];
   return (
