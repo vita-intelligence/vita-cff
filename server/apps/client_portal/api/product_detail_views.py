@@ -367,60 +367,126 @@ def _build_pipeline(
                 ),
             }
 
-    # ---- Stage 4: Trial batch -------------------------------------------
-    passed_validation = next(
-        (v for v in validations if v.status == ValidationStatus.PASSED), None
+    # ---- Stage 4: Trial batches -----------------------------------------
+    # Cycle-driven when a :class:`TrialBatchCycle` exists (custom
+    # formulations, post-deposit). Falls back to the legacy
+    # ProductValidation-based state for projects that pre-date the
+    # cycle model + for ready-to-go projects that skip trial batches
+    # entirely.
+    from apps.trial_batches.models import (
+        TrialBatchCycle,
+        TrialBatchCycleStatus,
+        TrialBatchSlotStatus,
     )
-    failed_validation = next(
-        (v for v in validations if v.status == ValidationStatus.FAILED), None
-    )
-    in_progress_validation = next(
-        (v for v in validations if v.status == ValidationStatus.IN_PROGRESS), None
-    )
-    if passed_validation is not None:
-        trial_stage = {
-            "key": "trial",
-            "label": "Trial batch passed",
-            "state": "done",
-            "completed_at": _iso(passed_validation.updated_at),
-            "detail": "Quality checks all passed — final specification incoming.",
-        }
-    elif failed_validation is not None:
-        trial_stage = {
-            "key": "trial",
-            "label": "Trial batch failed — investigating",
-            "state": "current",
-            "completed_at": None,
-            "detail": "Our team is investigating the failure and will be in touch.",
-        }
-    elif in_progress_validation is not None:
-        # Only light up "Trial batch in progress" when a real
-        # ``ProductValidation`` row is running. The old fallback on
-        # ``project_status == PILOT`` was too eager: signing the
-        # draft spec auto-advances the project to PILOT via
-        # ``_maybe_advance_project_status``, so trial would flash
-        # "in progress" the instant the spec was signed — before
-        # the proposal was signed, before the deposit landed, and
-        # before ops had scheduled anything. Two chips lit up
-        # (proposal ``current`` + trial ``current``) violated the
-        # one-current-at-a-time rule the pipeline is meant to
-        # convey. Trial stays ``future`` in the intermediate window
-        # and only lights up when work is actually happening.
-        trial_stage = {
-            "key": "trial",
-            "label": "Trial batch in progress",
-            "state": "current",
-            "completed_at": None,
-            "detail": "We're producing a trial batch and running quality checks.",
-        }
+
+    cycle = TrialBatchCycle.objects.filter(formulation=formulation).first()
+    if cycle is not None:
+        used = cycle.slots.count()
+        satisfied = cycle.slots.filter(
+            status=TrialBatchSlotStatus.CLOSED_SATISFIED,
+        ).first()
+        remaining_open = cycle.slots.filter(
+            status__in=(
+                TrialBatchSlotStatus.AWAITING_SCIENTIST,
+                TrialBatchSlotStatus.IN_PRODUCTION,
+                TrialBatchSlotStatus.SHIPPED,
+                TrialBatchSlotStatus.DELIVERED,
+                TrialBatchSlotStatus.FEEDBACK_PENDING,
+            )
+        ).count()
+        if cycle.status in (
+            TrialBatchCycleStatus.SATISFIED,
+            TrialBatchCycleStatus.TERMINATED_BY_TEAM,
+        ) and remaining_open == 0:
+            trial_stage = {
+                "key": "trial",
+                "label": (
+                    "Trial batches complete — you approved slot "
+                    f"{satisfied.sequence_no}"
+                    if satisfied is not None
+                    else "Trial batches complete"
+                ),
+                "state": "done",
+                "completed_at": (
+                    _iso(cycle.closed_at)
+                    if cycle.closed_at is not None
+                    else _iso(cycle.updated_at)
+                ),
+                "detail": (
+                    "Final specification incoming — sign it to authorise "
+                    "full production."
+                ),
+            }
+        elif cycle.status == TrialBatchCycleStatus.MAX_REACHED:
+            trial_stage = {
+                "key": "trial",
+                "label": (
+                    f"Trial batches — all {cycle.total_slots} sent, "
+                    "waiting on you"
+                ),
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "You've received every sample you paid for. Confirm "
+                    "you're happy or request another sample."
+                ),
+            }
+        else:
+            trial_stage = {
+                "key": "trial",
+                "label": (
+                    f"Trial batches — {used} of {cycle.total_slots} in flight"
+                ),
+                "state": "current",
+                "completed_at": None,
+                "detail": (
+                    "We're producing your samples one at a time. Give "
+                    "feedback on each and we'll iterate until it's right."
+                ),
+            }
     else:
-        trial_stage = {
-            "key": "trial",
-            "label": "Trial batch",
-            "state": "future",
-            "completed_at": None,
-            "detail": "Once the draft spec is signed, we'll produce a trial batch.",
-        }
+        passed_validation = next(
+            (v for v in validations if v.status == ValidationStatus.PASSED), None
+        )
+        failed_validation = next(
+            (v for v in validations if v.status == ValidationStatus.FAILED), None
+        )
+        in_progress_validation = next(
+            (v for v in validations if v.status == ValidationStatus.IN_PROGRESS),
+            None,
+        )
+        if passed_validation is not None:
+            trial_stage = {
+                "key": "trial",
+                "label": "Trial batch passed",
+                "state": "done",
+                "completed_at": _iso(passed_validation.updated_at),
+                "detail": "Quality checks all passed — final specification incoming.",
+            }
+        elif failed_validation is not None:
+            trial_stage = {
+                "key": "trial",
+                "label": "Trial batch failed — investigating",
+                "state": "current",
+                "completed_at": None,
+                "detail": "Our team is investigating the failure and will be in touch.",
+            }
+        elif in_progress_validation is not None:
+            trial_stage = {
+                "key": "trial",
+                "label": "Trial batch in progress",
+                "state": "current",
+                "completed_at": None,
+                "detail": "We're producing a trial batch and running quality checks.",
+            }
+        else:
+            trial_stage = {
+                "key": "trial",
+                "label": "Trial batch",
+                "state": "future",
+                "completed_at": None,
+                "detail": "Once the draft spec is signed, we'll produce a trial batch.",
+            }
 
     # ---- Stage 5: Final spec signed -------------------------------------
     final_signed = _first_signed(_final_specs(sheets))

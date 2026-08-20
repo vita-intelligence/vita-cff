@@ -51,7 +51,7 @@ class Payment(models.Model):
     )
     kind = models.CharField(
         _("kind"),
-        max_length=16,
+        max_length=32,
         choices=PaymentKind.choices,
         default=PaymentKind.FINAL,
         db_index=True,
