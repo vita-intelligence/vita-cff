@@ -12667,6 +12667,12 @@ function CatalogueMultiPicker({
     ordering: "name",
     pageSize: 50,
     useAsIn,
+    // Skip the local raw-materials fetch entirely when PSP is live —
+    // PSP is the source of truth in that mode, and we don't want the
+    // local catalogue leaking items into the merged list (e.g. legacy
+    // NPD-only capsule shells that were saved before PSP was
+    // connected and no longer have a counterpart on PSP).
+    enabled: !pspLive,
   });
 
   const pspQuery = usePspItems(orgId, {
@@ -12731,6 +12737,7 @@ function CatalogueMultiPicker({
     readonly name: string;
     readonly internal_code: string;
     readonly attributes?: Readonly<Record<string, unknown>>;
+    readonly psp_source_uuid: string | null;
   }> = pspLive
     ? (pspQuery.data?.items ?? []).map((row) => {
         const cached = pspToLocal[row.uuid];
@@ -12742,6 +12749,7 @@ function CatalogueMultiPicker({
             name: cached.name,
             internal_code: cached.internal_code,
             attributes: cached.attributes,
+            psp_source_uuid: row.uuid,
           };
         }
         return {
@@ -12749,9 +12757,16 @@ function CatalogueMultiPicker({
           name: row.name,
           internal_code: row.code || row.external_sku,
           attributes: row.attributes,
+          psp_source_uuid: row.uuid,
         };
       })
-    : (localQuery.data?.pages.flatMap((p) => p.results) ?? []);
+    : (localQuery.data?.pages.flatMap((p) => p.results) ?? []).map((r) => ({
+        id: r.id,
+        name: r.name,
+        internal_code: r.internal_code,
+        attributes: undefined,
+        psp_source_uuid: null,
+      }));
 
   const knownIds = new Set(fetched.map((i) => i.id));
   const merged = [
@@ -12762,6 +12777,14 @@ function CatalogueMultiPicker({
         id: p.id,
         name: p.name,
         internal_code: p.internal_code,
+        // Preserve PSP identity on preselected picks so the render
+        // can tell legacy local-only items apart from properly
+        // PSP-mirrored ones. Items with no ``psp_source_uuid``
+        // when PSP is live were saved before the integration
+        // existed (or PSP-side was later deleted) and need
+        // scientist action — the render marks them "Not in PSP".
+        psp_source_uuid:
+          (p as { psp_source_uuid?: string | null }).psp_source_uuid ?? null,
       })),
   ];
 
@@ -12968,13 +12991,27 @@ function CatalogueMultiPicker({
             // above, so a fast operator can't fire a second pick
             // in the ms before the modal paints and traps clicks.
             const rowLocked = mirrorPsp.isPending;
+            // Legacy NPD-local pick that has no PSP counterpart —
+            // possible when this formulation was saved before PSP
+            // was connected, or when the PSP-side item was later
+            // deleted. Rendered so the scientist can un-check it,
+            // but flagged with a red chip + red row tint so it
+            // reads as broken (not just any other option). The
+            // chip is skipped when PSP isn't live because there's
+            // nothing wrong with local-only picks in that mode.
+            const orphaned =
+              pspLive &&
+              !item.psp_source_uuid &&
+              !item.id.startsWith("psp:");
             return (
               <label
                 key={item.id}
                 className={`flex items-center gap-2 border-b border-ink-100 px-3 py-2 text-sm last:border-b-0 ${
-                  checked
-                    ? "bg-orange-50 text-ink-1000"
-                    : "text-ink-700 hover:bg-ink-50"
+                  orphaned
+                    ? "bg-red-50 text-red-900"
+                    : checked
+                      ? "bg-orange-50 text-ink-1000"
+                      : "text-ink-700 hover:bg-ink-50"
                 } ${rowLocked ? "cursor-not-allowed" : "cursor-pointer"}`}
               >
                 <input
@@ -12989,6 +13026,14 @@ function CatalogueMultiPicker({
                     ? `${item.name} (${item.internal_code})`
                     : item.name}
                 </span>
+                {orphaned ? (
+                  <span
+                    title="This item was saved before PSP was connected — or its PSP counterpart was deleted. Un-check it and pick the current PSP item to keep the recipe complete."
+                    className="shrink-0 rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-800 ring-1 ring-red-200"
+                  >
+                    Not in PSP
+                  </span>
+                ) : null}
               </label>
             );
           })

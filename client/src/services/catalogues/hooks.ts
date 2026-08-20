@@ -180,6 +180,12 @@ export function useInfiniteItems(
      *  the gummy-base picker). */
     useAsIn?: readonly string[];
     initialFirstPage?: PaginatedItemsDto | null;
+    /** Skip the fetch entirely (react-query ``enabled``). Callers
+     *  that source from PSP when the integration is live pass
+     *  ``enabled: !pspLive`` so we don't burn a round-trip on a
+     *  catalogue the operator will never see. Defaults to ``true``
+     *  for backward-compat with existing call sites. */
+    enabled?: boolean;
   },
 ): UseInfiniteQueryResult<InfiniteData<PaginatedItemsDto, string | null>, ApiError> {
   const {
@@ -189,6 +195,7 @@ export function useInfiniteItems(
     search,
     useAsIn,
     initialFirstPage,
+    enabled = true,
   } = options;
   const normalisedSearch = (search ?? "").trim() || undefined;
   const useAsKey =
@@ -228,6 +235,7 @@ export function useInfiniteItems(
             pageParams: [null],
           }
         : undefined,
+    enabled,
   });
 }
 
