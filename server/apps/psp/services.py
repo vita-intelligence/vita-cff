@@ -5155,6 +5155,40 @@ def create_psp_manufacturing_order_for_trial_batch(
     # behaviour — legacy combos with NPD-native items now flow
     # through as if they'd always been PSP-native.
     client = _client_factory(config)
+
+    # Refresh the finished-product item's name / description / spec on
+    # every MO create so PSP mirrors whatever the scientist most
+    # recently set on the formulation's finished stage (project name,
+    # PSP name override, dosage form, capsule size, storage tags,
+    # etc.). Without this the item name is baked at first-push and
+    # only refreshes when someone hits Save Version or Sync PSP on
+    # the builder — meaning a scientist could rename the project on
+    # NPD, spawn a new MO, and see the STALE name on PSP forever.
+    # PSP's integration item POST handles name-collision retries
+    # server-side (see items_company_id_name_index disambiguator) so
+    # a repeat push with a colliding name still lands cleanly.
+    # Silent-degrade on any failure so a slow / flaky PSP item
+    # refresh never blocks the MO create itself.
+    try:
+        formulation = trial_batch.formulation_version.formulation
+        finished_stage = next(
+            (
+                s
+                for s in formulation.stages.order_by("sort_order")
+                if s.psp_item_type == "finished_product"
+            ),
+            None,
+        )
+        _ensure_finished_product(
+            client=client, formulation=formulation, stage=finished_stage
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade, never block MO create
+        logger.exception(
+            "MO create: finished-product refresh failed for trial batch %s "
+            "(silent-degraded)",
+            getattr(trial_batch, "id", None),
+        )
+
     packaging_overlay = _build_packaging_overlay(
         trial_batch,
         kind,
