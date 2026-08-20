@@ -38,6 +38,15 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
     #: excludes ``self`` because a batch that's already validated
     #: renders "Open validation" via its own ``validation_status``.
     formulation_validated = serializers.SerializerMethodField()
+    #: Denormalised finished-product ``servings_per_pack`` (bottle
+    #: fill count). Exposed so the FE's Create-MO modal can offer a
+    #: "complete packs vs individual units" toggle for sample batches
+    #: — the user commonly wants to ship 5-8 loose capsules instead
+    #: of full 60-cap bottles. Server converts on the actual create-
+    #: MO call; this field just powers the preview + toggle enable/
+    #: disable. ``1`` when the formulation ships one-per-pack or the
+    #: value is unset (toggle is hidden in that case).
+    servings_per_pack = serializers.SerializerMethodField()
 
     def get_created_by_name(self, obj) -> str:
         user = obj.created_by
@@ -59,6 +68,15 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             status=ValidationStatus.PASSED,
         ).exclude(trial_batch_id=obj.id).exists()
 
+    def get_servings_per_pack(self, obj) -> int:
+        formulation = obj.formulation_version.formulation
+        raw = getattr(formulation, "servings_per_pack", None) or 1
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return 1
+        return max(1, value)
+
     class Meta:
         model = TrialBatch
         fields = (
@@ -76,6 +94,7 @@ class TrialBatchReadSerializer(serializers.ModelSerializer):
             "psp_manufacturing_order_uuid",
             "validation_status",
             "formulation_validated",
+            "servings_per_pack",
             "created_by_name",
             "created_at",
             "updated_at",
