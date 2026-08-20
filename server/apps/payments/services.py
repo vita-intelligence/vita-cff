@@ -12,12 +12,15 @@ checked and the gate flips immediately.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
 from django.db import transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 from apps.audit.services import record as record_audit
 from apps.label_design.constants import LabelDesignStatus
@@ -265,6 +268,45 @@ def approve_payment(*, payment: Payment, actor: Any) -> Payment:
         notify_scientists_sample_ready(payment_id=payment_pk)
 
     transaction.on_commit(_fire_scientist_notification)
+
+    # Trial-batch cycle hook. Two branches, both deferred to commit
+    # so a rollback anywhere in the approve path doesn't leak a
+    # cycle create / slot append. Both branches short-circuit
+    # gracefully when the payment isn't cycle-relevant.
+    if payment.kind == PaymentKind.DEPOSIT:
+        def _seed_trial_batch_cycle() -> None:
+            from apps.trial_batches.cycle_services import create_cycle_for_deposit
+
+            fresh = Payment.objects.filter(pk=payment_pk).first()
+            if fresh is None:
+                return
+            try:
+                create_cycle_for_deposit(payment=fresh)
+            except Exception:  # noqa: BLE001 — never break payment approval
+                logger.exception(
+                    "Failed to seed trial-batch cycle for payment %s",
+                    payment_pk,
+                )
+
+        transaction.on_commit(_seed_trial_batch_cycle)
+    elif payment.kind == PaymentKind.ADDITIONAL_SAMPLES:
+        def _apply_additional_samples() -> None:
+            from apps.trial_batches.cycle_services import (
+                apply_additional_samples_on_payment_approved,
+            )
+
+            fresh = Payment.objects.filter(pk=payment_pk).first()
+            if fresh is None:
+                return
+            try:
+                apply_additional_samples_on_payment_approved(payment=fresh)
+            except Exception:  # noqa: BLE001 — never break payment approval
+                logger.exception(
+                    "Failed to apply additional-samples approval for payment %s",
+                    payment_pk,
+                )
+
+        transaction.on_commit(_apply_additional_samples)
 
     # Live push — moves the row from the Needs-attention column into
     # Approved on every open finance tab.

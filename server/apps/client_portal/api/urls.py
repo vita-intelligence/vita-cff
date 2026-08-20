@@ -78,6 +78,12 @@ from .sample_selection_views import (
     PortalSampleSelectionConfirmView,
     PortalSampleSelectionView,
 )
+from .trial_batches_views import (
+    PortalTrialBatchAdditionalRequestView,
+    PortalTrialBatchCycleView,
+    PortalTrialBatchSlotConfirmDeliveryView,
+    PortalTrialBatchSlotFeedbackView,
+)
 from .sample_detail_views import (
     PortalSampleDetailView,
     PortalSampleDispatchConfirmView,
@@ -201,6 +207,31 @@ urlpatterns = [
         "projects/<uuid:formulation_id>/sample-selection/confirm/",
         PortalSampleSelectionConfirmView.as_view(),
         name="sample-selection-confirm",
+    ),
+    # Trial-batch cycle (post-deposit, pre-final-spec). Cycle detail
+    # for the portal card + per-slot delivery confirmation + verdict
+    # capture + customer-initiated top-up request. See
+    # :mod:`apps.client_portal.api.trial_batches_views` for the FSM
+    # + ownership rules.
+    path(
+        "projects/<uuid:formulation_id>/trial-batches/",
+        PortalTrialBatchCycleView.as_view(),
+        name="trial-batches-cycle",
+    ),
+    path(
+        "projects/<uuid:formulation_id>/trial-batches/request-more/",
+        PortalTrialBatchAdditionalRequestView.as_view(),
+        name="trial-batches-request-more",
+    ),
+    path(
+        "trial-batches/slots/<uuid:slot_id>/confirm-delivery/",
+        PortalTrialBatchSlotConfirmDeliveryView.as_view(),
+        name="trial-batches-slot-confirm-delivery",
+    ),
+    path(
+        "trial-batches/slots/<uuid:slot_id>/feedback/",
+        PortalTrialBatchSlotFeedbackView.as_view(),
+        name="trial-batches-slot-feedback",
     ),
     # Per-sample pipeline detail — the "where is my sample right now?"
     # view. Returns pipeline stages driven by the payment lifecycle

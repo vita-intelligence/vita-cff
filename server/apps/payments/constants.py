@@ -24,3 +24,8 @@ class PaymentKind(models.TextChoices):
     DEPOSIT = "deposit", _("Deposit")
     #: Per-formulation, paid after FINAL spec sign, unlocks labelling.
     FINAL = "final", _("Final")
+    #: Customer-initiated top-up during an active trial-batch cycle.
+    #: Approval bumps ``TrialBatchCycle.total_slots`` and appends new
+    #: :class:`~apps.trial_batches.models.TrialBatchSlot` rows for the
+    #: extra samples paid for.
+    ADDITIONAL_SAMPLES = "additional_samples", _("Additional samples")
