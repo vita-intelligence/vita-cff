@@ -56,9 +56,22 @@ from apps.trial_batches.models import (
 )
 
 
-def _serialise_slot(slot: TrialBatchSlot) -> dict[str, Any]:
-    """Portal-side snapshot of a single slot."""
+def _serialise_slot(
+    slot: TrialBatchSlot,
+    production: dict | None = None,
+) -> dict[str, Any]:
+    """Portal-side snapshot of a single slot.
 
+    ``production`` is an optional pre-fetched summary derived from
+    the slot's linked PSP MO chain — shape ``{state, total, done}``
+    where ``state`` is ``"not_pushed" | "in_progress" | "completed"``.
+    Mirrors what the storefront sample-detail view exposes so the
+    portal card can gate the "I've received it" button on production
+    actually being finished (not just the slot being ``in_production``,
+    which fires the moment the batch links).
+    """
+
+    production = production or {"state": "unknown", "total": 0, "done": 0}
     return {
         "id": str(slot.id),
         "sequence_no": slot.sequence_no,
@@ -73,9 +86,60 @@ def _serialise_slot(slot: TrialBatchSlot) -> dict[str, Any]:
             str(slot.trial_batch_id) if slot.trial_batch_id is not None else None
         ),
         "formulation_version_id": str(slot.formulation_version_id),
+        "production_state": production.get("state", "unknown"),
+        "production_stages_total": production.get("total", 0),
+        "production_stages_done": production.get("done", 0),
         "created_at": slot.created_at.isoformat(),
         "updated_at": slot.updated_at.isoformat(),
     }
+
+
+def _fetch_production_summary(
+    slot: TrialBatchSlot, organization: Any
+) -> dict[str, Any]:
+    """Fetch the slot's PSP MO chain and reduce it to a per-slot
+    production summary. Silent-degrade — any PSP hiccup (unreachable,
+    unknown mo uuid, integration off) returns ``"unknown"`` so the FE
+    keeps rendering the batch-link status rather than blanking.
+
+    Returns ``{"state": ..., "total": N, "done": M}`` where ``state``
+    is:
+      * ``"not_pushed"`` — batch exists but scientist hasn't clicked
+        Create MO on PSP yet.
+      * ``"in_progress"`` — one or more stages still non-terminal.
+      * ``"completed"`` — every stage in the chain reports
+        ``status = completed``. The physical sample is produced;
+        scientist can ship + customer can confirm receipt.
+      * ``"unknown"`` — PSP fetch failed / integration off.
+    """
+
+    from apps.psp.services import get_psp_manufacturing_order_chain
+    from apps.trial_batches.models import TrialBatch
+
+    if slot.trial_batch_id is None:
+        return {"state": "not_pushed", "total": 0, "done": 0}
+    tb = TrialBatch.objects.only("psp_manufacturing_order_uuid").filter(
+        id=slot.trial_batch_id
+    ).first()
+    mo_uuid = getattr(tb, "psp_manufacturing_order_uuid", None) if tb else None
+    if not mo_uuid:
+        return {"state": "not_pushed", "total": 0, "done": 0}
+    try:
+        chain_response = get_psp_manufacturing_order_chain(
+            organization=organization, mo_uuid=mo_uuid
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade, same posture as sample-detail
+        return {"state": "unknown", "total": 0, "done": 0}
+    chain = (chain_response or {}).get("chain") or []
+    if not chain:
+        return {"state": "unknown", "total": 0, "done": 0}
+    total = len(chain)
+    done = sum(1 for row in chain if row.get("status") == "completed")
+    if done == total:
+        state = "completed"
+    else:
+        state = "in_progress"
+    return {"state": state, "total": total, "done": done}
 
 
 def _serialise_additional_request(
@@ -117,6 +181,20 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         ),
         None,
     )
+    # Fetch PSP MO chain only for the ACTIVE slot — one HTTP round-trip
+    # per portal render is fine; hitting PSP for every closed historical
+    # slot would balloon the request without adding info the customer
+    # can act on.
+    production_by_slot: dict[str, dict[str, Any]] = {}
+    if active is not None and active.status in (
+        TrialBatchSlotStatus.IN_PRODUCTION,
+        TrialBatchSlotStatus.SHIPPED,
+        TrialBatchSlotStatus.DELIVERED,
+        TrialBatchSlotStatus.FEEDBACK_PENDING,
+    ):
+        production_by_slot[str(active.id)] = _fetch_production_summary(
+            active, cycle.organization
+        )
     return {
         "id": str(cycle.id),
         "status": cycle.status,
@@ -125,7 +203,9 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         "closed_at": (
             cycle.closed_at.isoformat() if cycle.closed_at is not None else None
         ),
-        "slots": [_serialise_slot(s) for s in slots],
+        "slots": [
+            _serialise_slot(s, production_by_slot.get(str(s.id))) for s in slots
+        ],
         "active_slot_id": str(active.id) if active is not None else None,
         "additional_requests": [
             _serialise_additional_request(r)
