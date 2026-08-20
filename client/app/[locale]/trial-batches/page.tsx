@@ -6,25 +6,25 @@ import { getActiveOrganizationServer, getCurrentUserServer } from "@/lib/auth/se
 import { redirectToLogin } from "@/lib/auth/redirects";
 import { redirect } from "@/i18n/navigation";
 
-import { SamplesQueue } from "./samples-queue";
+import { TrialCyclesShell } from "./cycles-shell";
 import { APP_VERSION } from "@/config/version";
 
 
 /**
- * /samples — R&D Samples fulfilment queue.
+ * /trial-batches — scientist surface for custom-formulation
+ * trial-batch cycles.
  *
- * Server-side auth + org guard; delegates the interactive list +
- * create-batch modal to the client shell. The queue itself hits
- * ``GET /api/organizations/<org>/samples/pending/`` (see
- * :module:`apps.trial_batches.api.samples_views`), so the payload
- * is scoped to the caller's active org by the server.
+ * Dedicated page (moved out of /samples, where the module was
+ * mixing the cycle workflow with the storefront sample-kit queue).
+ * Server-side auth + org guard; the interactive table + attention
+ * pane + modals all live in :module:`./cycles-shell`.
  *
- * Gated by ``formulations.edit`` — creating trial batches is the
- * only action on this page, so read = write for capability
- * purposes. Anything narrower would leave the page unclickable
- * for legitimate viewers.
+ * Gated by ``formulations.edit`` — every action on this page
+ * (create sample batch, open next slot, team-override close) is a
+ * project-edit action. Anything narrower would leave the page
+ * unclickable for legitimate viewers.
  */
-export default async function SamplesPage({
+export default async function TrialBatchesPage({
   params,
 }: {
   params: Promise<{ locale: string }>;
@@ -49,9 +49,9 @@ export default async function SamplesPage({
   return (
     <main className="min-h-dvh bg-ink-0 text-ink-1000">
       <div className="mx-auto flex min-h-dvh max-w-7xl flex-col px-4 py-6 sm:px-6 md:px-10 md:py-12">
-        <ProtectedHeader user={user!} active="samples" />
+        <ProtectedHeader user={user!} active="trial-batches" />
 
-        <SamplesQueue orgId={organization!.id} />
+        <TrialCyclesShell orgId={organization!.id} />
 
         <footer className="mt-10 flex items-center justify-between border-t border-ink-200 pt-6 text-xs text-ink-500">
           <span>v{APP_VERSION}</span>

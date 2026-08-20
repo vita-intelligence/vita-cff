@@ -125,6 +125,7 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
     )
     action_needed = active is not None and active.status == TrialBatchSlotStatus.AWAITING_SCIENTIST
     formulation = cycle.formulation
+    customer = getattr(formulation, "customer", None)
     return {
         "id": str(cycle.id),
         "status": cycle.status,
@@ -133,11 +134,20 @@ def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
         "closed_at": (
             cycle.closed_at.isoformat() if cycle.closed_at is not None else None
         ),
+        "updated_at": cycle.updated_at.isoformat(),
         "formulation": {
             "id": str(formulation.id),
             "code": (getattr(formulation, "code", "") or "").strip(),
             "name": (getattr(formulation, "name", "") or "").strip(),
         },
+        "customer": (
+            {
+                "id": str(customer.id),
+                "name": (getattr(customer, "name", "") or "").strip(),
+            }
+            if customer is not None
+            else None
+        ),
         "active_slot_id": str(active.id) if active is not None else None,
         "latest_iterated_slot_id": (
             str(latest_closed_iterated.id)
@@ -170,7 +180,7 @@ class TrialBatchCycleListView(APIView):
     def get(self, request: Request, org_id: str) -> Response:
         cycles = list(
             TrialBatchCycle.objects.filter(organization_id=org_id)
-            .select_related("formulation")
+            .select_related("formulation", "formulation__customer")
             .prefetch_related("slots__formulation_version")
             .order_by("-updated_at")
         )

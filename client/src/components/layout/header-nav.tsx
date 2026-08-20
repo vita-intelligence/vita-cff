@@ -23,6 +23,7 @@ export type HeaderNavHref =
   | "/signed"
   | "/labelling"
   | "/samples"
+  | "/trial-batches"
   | "/finance/payments";
 
 
