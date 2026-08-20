@@ -49,6 +49,19 @@ interface Slot {
   readonly verdict: "satisfied" | "needs_iteration" | null;
   readonly keep_producing_remaining: boolean;
   readonly trial_batch_id: string | null;
+  /** Live pulled from PSP on every fetch. ``"not_pushed"`` = batch
+   *  linked but scientist hasn't spawned a PSP MO. ``"in_progress"``
+   *  = at least one stage MO is non-terminal. ``"completed"`` = every
+   *  stage finished — the "I've received it" button unlocks off this
+   *  signal, matching how the storefront sample-detail view only
+   *  shows Confirm-delivery once PSP marks the shipment picked-up. */
+  readonly production_state:
+    | "not_pushed"
+    | "in_progress"
+    | "completed"
+    | "unknown";
+  readonly production_stages_total: number;
+  readonly production_stages_done: number;
 }
 
 
@@ -186,7 +199,12 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
         />
       ) : null}
 
-      {inProduction && activeSlot && activeSlot.trial_batch_id ? (
+      {inProduction && activeSlot ? (
+        <ProductionStrip slot={activeSlot} />
+      ) : null}
+
+      {inProduction && activeSlot && activeSlot.trial_batch_id
+        && activeSlot.production_state === "completed" ? (
         <div className="mt-4">
           <button
             type="button"
@@ -285,6 +303,96 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
 }
 
 
+// Pipeline strip for the active in-production slot — mirrors the
+// storefront /portal/samples/[id] roadmap so a customer moving
+// between a sample-kit order and a cycle sample sees the same
+// visual language. Stages:
+//   1. Batch prepared        (trial_batch linked)
+//   2. In production         (production_state=in_progress)
+//   3. Production complete   (production_state=completed)
+//   4. Received              (slot advanced past DELIVERED)
+// The "I've received it" button only unlocks when stage 3 lights up.
+function ProductionStrip({ slot }: { slot: Slot }) {
+  const total = slot.production_stages_total;
+  const done = slot.production_stages_done;
+  const stages: ReadonlyArray<{
+    key: string;
+    label: string;
+    state: "done" | "current" | "future";
+    detail: string;
+  }> = [
+    {
+      key: "batch",
+      label: "Batch prepared",
+      state: slot.trial_batch_id ? "done" : "current",
+      detail: slot.trial_batch_id
+        ? "Your R&D scientist has spun up the run."
+        : "Waiting for your R&D scientist to open the batch.",
+    },
+    {
+      key: "production",
+      label:
+        slot.production_state === "in_progress" && total > 0
+          ? `In production (${done}/${total} stages)`
+          : "In production",
+      state:
+        slot.production_state === "completed"
+          ? "done"
+          : slot.production_state === "in_progress"
+            ? "current"
+            : slot.trial_batch_id
+              ? "current"
+              : "future",
+      detail:
+        slot.production_state === "unknown"
+          ? "Live status will refresh in a moment."
+          : slot.production_state === "not_pushed"
+            ? "Your scientist will push this to the shop floor shortly."
+            : "The shop floor is producing your sample right now.",
+    },
+    {
+      key: "ready",
+      label: "Ready — waiting for you",
+      state:
+        slot.production_state === "completed"
+          ? "current"
+          : slot.status === "delivered" || slot.status === "feedback_pending"
+            ? "done"
+            : "future",
+      detail:
+        slot.production_state === "completed"
+          ? "It's on the way. Click below the moment it lands."
+          : "You'll get to confirm receipt once production wraps.",
+    },
+  ];
+  return (
+    <ol className="mt-4 flex flex-col gap-1.5">
+      {stages.map((s) => {
+        const dot =
+          s.state === "done" ? (
+            <Check className="h-3 w-3 text-emerald-700" />
+          ) : s.state === "current" ? (
+            <Loader2 className="h-3 w-3 animate-spin text-orange-600" />
+          ) : (
+            <Circle className="h-3 w-3 text-neutral-400" />
+          );
+        return (
+          <li key={s.key} className="flex items-start gap-2 text-xs">
+            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 border-black bg-white">
+              {dot}
+            </span>
+            <div className="min-w-0">
+              <p className="font-black uppercase leading-tight">{s.label}</p>
+              <p className="text-neutral-600">{s.detail}</p>
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+
 function SlotRow({ slot, totalSlots }: { slot: Slot; totalSlots: number }) {
   const icon =
     slot.status === "closed_satisfied" || slot.status === "closed_iterated" ? (
@@ -307,11 +415,15 @@ function SlotRow({ slot, totalSlots }: { slot: Slot; totalSlots: number }) {
           ? "Skipped"
           : slot.status === "delivered" || slot.status === "feedback_pending"
             ? "Delivered — ready for feedback"
-            : slot.status === "in_production" || slot.status === "shipped"
-              ? "In production"
-              : slot.status === "awaiting_scientist"
-                ? "Scientist preparing"
-                : slot.status;
+            : slot.status === "in_production" && slot.production_state === "completed"
+              ? "Production complete — waiting for you to confirm receipt"
+              : slot.status === "in_production" && slot.production_state === "in_progress"
+                ? `In production (${slot.production_stages_done}/${slot.production_stages_total})`
+                : slot.status === "in_production" || slot.status === "shipped"
+                  ? "In production"
+                  : slot.status === "awaiting_scientist"
+                    ? "Scientist preparing"
+                    : slot.status;
   return (
     <li className="flex items-center justify-between border-2 border-black bg-white px-3 py-2">
       <span className="flex items-center gap-2 text-sm">
