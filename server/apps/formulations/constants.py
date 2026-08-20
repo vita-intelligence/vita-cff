@@ -22,6 +22,38 @@ class DosageForm(str, Enum):
     OTHER_SOLID = "other_solid"
 
 
+#: Canonical singular / plural nouns for one "individual finished
+#: unit" within a pack. Powers user-facing copy that talks about
+#: shipping loose units (e.g. the Create-MO modal's "5 capsules" vs
+#: "5 scoops" toggle preview). Also load-bearing for future spec-sheet
+#: column headers ("per capsule" → "per scoop" / "per dose") and BOM
+#: export labels once the trial-batch form expands beyond capsules.
+#:
+#: Kept as one dict so any new dosage form ships with the same
+#: singular/plural pair and downstream consumers never have to
+#: hand-pluralise ("gummys" vs "gummies") in their own code.
+_DOSAGE_FORM_UNIT_LABELS: dict[str, tuple[str, str]] = {
+    DosageForm.CAPSULE.value: ("capsule", "capsules"),
+    DosageForm.TABLET.value: ("tablet", "tablets"),
+    DosageForm.GUMMY.value: ("gummy", "gummies"),
+    DosageForm.POWDER.value: ("scoop", "scoops"),
+    DosageForm.LIQUID.value: ("dose", "doses"),
+    DosageForm.OTHER_SOLID.value: ("unit", "units"),
+}
+
+
+def dosage_form_unit_label(form: str | None) -> tuple[str, str]:
+    """Return ``(singular, plural)`` unit noun for a dosage form.
+
+    Unknown / blank input falls back to ``("unit", "units")`` so
+    downstream copy never crashes on legacy rows.
+    """
+
+    if not form:
+        return ("unit", "units")
+    return _DOSAGE_FORM_UNIT_LABELS.get(form, ("unit", "units"))
+
+
 class PowderType(str, Enum):
     """Powder sub-variant chosen by the scientist.
 
