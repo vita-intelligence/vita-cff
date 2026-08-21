@@ -4647,15 +4647,9 @@ def _push_staged_cascade(
             # persist it); PSP knows the truth. Silent-degrade per item:
             # a fetch failure leaves that item's stock_uom_* empty,
             # falling back to the legacy "assume mg" behaviour rather
-            # than blocking the push.
-            psp_client = None
-            try:
-                psp_client = _client_factory(config)
-            except Exception:
-                logger.exception(
-                    "PSP push_bom: could not build client for stock_uom lookup;"
-                    " override lookup will use local Item.unit only"
-                )
+            # than blocking the push. Reuses the caller's already-built
+            # ``client`` — no need to rebuild one from config here.
+            psp_client = client
 
             for item in local_items:
                 local_unit = str(item.unit or "").strip().lower()
