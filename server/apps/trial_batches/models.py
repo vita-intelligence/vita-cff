@@ -273,9 +273,17 @@ class TrialBatchSlotStatus(models.TextChoices):
     terminal.
 
     * ``AWAITING_SCIENTIST`` — the slot is open for the scientist to
-      spin up a :class:`TrialBatch` against ``formulation_version``.
-    * ``IN_PRODUCTION`` — a batch has been created + linked; the PSP
-      MO is walking the manufacturing state machine.
+      spin up a :class:`TrialBatch` and push a PSP Manufacturing
+      Order for it. Covers BOTH the "no batch yet" and the "batch
+      drafted on NPD but no PSP MO yet" cases — until a physical MO
+      exists nothing is being produced, so the portal card + count
+      logic both treat these as unstarted.
+    * ``IN_PRODUCTION`` — a PSP MO has been created against the
+      linked batch; the PSP-side manufacturing state machine is
+      running. Set by
+      :func:`apps.trial_batches.cycle_services.promote_slot_to_in_production`
+      from the successful PSP-MO-create hook — never at
+      batch-link time.
     * ``SHIPPED`` — reserved for future use — once the PSP shipment
       is picked up. Today we jump straight from ``IN_PRODUCTION`` to
       ``DELIVERED`` on the portal confirm-delivery hook.

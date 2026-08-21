@@ -5763,6 +5763,17 @@ def create_psp_manufacturing_order_for_trial_batch(
             trial_batch.psp_all_stages_completed = False
             update_fields.append("psp_all_stages_completed")
         trial_batch.save(update_fields=update_fields)
+        # Slot promotion — "IN_PRODUCTION" fires here (real PSP MO
+        # exists) rather than at ``link_slot_to_trial_batch`` (which
+        # just attaches an NPD-side scale-up recipe with nothing
+        # actually being made yet). Portal card + scientist dashboard
+        # both key off ``slot.status`` so a slot with no MO reads as
+        # "awaiting" instead of the misleading "in production".
+        from apps.trial_batches.cycle_services import (
+            promote_slot_to_in_production,
+        )
+
+        promote_slot_to_in_production(trial_batch=trial_batch)
         record_audit(
             organization=organization,
             actor=actor,

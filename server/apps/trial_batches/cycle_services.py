@@ -206,9 +206,16 @@ def link_slot_to_trial_batch(
 ) -> TrialBatchSlot:
     """Attach the scientist-created :class:`TrialBatch` to its cycle
     slot. Called from the "trial batches in flight" dashboard action
-    that spawns the batch. Advances the slot to
-    ``IN_PRODUCTION`` — from here the existing scientist-drives-MO
-    flow takes over (PSP MO create, produce, ship).
+    that spawns the batch.
+
+    Does NOT advance the slot to ``IN_PRODUCTION`` — that transition
+    now fires only when a PSP Manufacturing Order is successfully
+    created for the linked batch (see
+    :func:`promote_slot_to_in_production`). A trial batch on its own
+    is just an NPD-side scale-up recipe; nothing is physically being
+    made yet. Marking the slot ``IN_PRODUCTION`` here leaked "your
+    sample is being made" onto the portal card the instant the
+    scientist saved a recipe draft.
 
     Refuses to link:
 
@@ -229,9 +236,40 @@ def link_slot_to_trial_batch(
         )
 
     slot.trial_batch = trial_batch
-    slot.status = TrialBatchSlotStatus.IN_PRODUCTION
-    slot.save(update_fields=["trial_batch", "status", "updated_at"])
+    slot.save(update_fields=["trial_batch", "updated_at"])
     return slot
+
+
+@transaction.atomic
+def promote_slot_to_in_production(*, trial_batch: TrialBatch) -> None:
+    """Promote a cycle slot to ``IN_PRODUCTION`` once its linked
+    :class:`TrialBatch` has a live PSP Manufacturing Order attached.
+    Called from the PSP MO create path — the *only* honest trigger
+    for "the sample is being manufactured".
+
+    No-op when:
+
+    * The batch isn't attached to a cycle slot (standalone R&D trial
+      that was never a customer-facing sample).
+    * The slot has already moved past ``AWAITING_SCIENTIST`` — a
+      subsequent MO retry shouldn't reset a slot that's already
+      delivered / feedback-pending / closed.
+    * The batch has no PSP MO yet (defensive; the caller should only
+      invoke us after a successful ``create_psp_manufacturing_order``
+      round-trip, but we double-check so a caller mistake can't
+      silently mis-state the slot).
+    """
+
+    slot = getattr(trial_batch, "cycle_slot", None)
+    if slot is None:
+        return
+    if slot.status != TrialBatchSlotStatus.AWAITING_SCIENTIST:
+        return
+    if not getattr(trial_batch, "psp_manufacturing_order_uuid", None):
+        return
+
+    slot.status = TrialBatchSlotStatus.IN_PRODUCTION
+    slot.save(update_fields=["status", "updated_at"])
 
 
 # ---------------------------------------------------------------------------
