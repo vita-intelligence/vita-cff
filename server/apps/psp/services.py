@@ -118,6 +118,21 @@ class PspItem:
     #: product allergen declaration. Missing / empty list = no
     #: declared allergens on the item.
     allergens: tuple[dict, ...] = ()
+    #: PSP-side stock UoM the item is procured / stored in — bag of
+    #: ``{"uuid", "symbol", "dimension"}``. Populated from PSP's
+    #: ``stock_uom`` block on the item read shape. ``None`` for legacy
+    #: PSP builds that predate the exposure OR items whose stock_uom
+    #: wasn't set on PSP.
+    #:
+    #: Load-bearing for the BOM push cascade — an item with
+    #: ``dimension == "count"`` (bottle, closure, capsule shell, label)
+    #: must NOT receive a mass-tagged (mg/kg) push, or PSP's
+    #: ``BOMLine.changeset`` dimension guard rejects it. NPD reads this
+    #: field to auto-tag such rows as ``source_unit=pcs`` when the FE
+    #: snapshot lacks an explicit tag.
+    stock_uom_uuid: str | None = None
+    stock_uom_symbol: str | None = None
+    stock_uom_dimension: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1847,6 +1862,25 @@ def _project_item(row: dict[str, Any]) -> PspItem:
             {"uuid": str(a.get("uuid") or ""), "key": str(a.get("key") or "")}
             for a in (row.get("allergens") or [])
             if isinstance(a, dict) and a.get("uuid") and a.get("key")
+        ),
+        # PSP started exposing ``stock_uom`` on the item read shape in
+        # ``feat(integration): expose stock_uom on /items``. Older PSP
+        # builds omit the key — degrade to None so pre-exposure
+        # servers keep working without crashing the mapper.
+        stock_uom_uuid=(
+            str(row["stock_uom"].get("uuid"))
+            if isinstance(row.get("stock_uom"), dict) and row["stock_uom"].get("uuid")
+            else None
+        ),
+        stock_uom_symbol=(
+            str(row["stock_uom"].get("symbol") or "").strip().lower() or None
+            if isinstance(row.get("stock_uom"), dict)
+            else None
+        ),
+        stock_uom_dimension=(
+            str(row["stock_uom"].get("dimension") or "").strip().lower() or None
+            if isinstance(row.get("stock_uom"), dict)
+            else None
         ),
     )
 
@@ -4122,19 +4156,40 @@ def _override_to_bom_lines(
         # Per-row source unit: ``mg`` for mass rows (actives, band
         # picks, excipients); ``pcs`` for count rows (capsule shells,
         # any packaging dropped into a stage BOM); ``ml`` etc. as
-        # needed. Absent = legacy row, treat as mg.
-        source_symbol = str(row.get("source_unit") or "mg").strip().lower() or "mg"
+        # needed. Absent = legacy row, treat as mg — UNLESS the target
+        # item's PSP stock UoM is count-dimension, in which case the
+        # FE's "mg" field is actually the per-serving pcs count (the
+        # compute path emits 1 for shells, 1/servings_per_pack for
+        # packaging like bottles / closures / labels). Re-tag as pcs
+        # so the target-aware converter doesn't ship a mass-tagged
+        # line against a pcs item and hit PSP's boundary guard.
+        #
+        # This backend inference is load-bearing because the FE's
+        # ``BomLine`` schema only tags ``sourceUnit=pcs`` on capsule
+        # shells today — packaging rows arrive with no tag. Rather
+        # than push a per-FE-branch fix (fragile, easy to miss for
+        # future packaging types), we let PSP's authoritative
+        # ``stock_uom.dimension`` drive the decision.
+        raw_source_unit = str(row.get("source_unit") or "").strip().lower()
+        if raw_source_unit:
+            source_symbol = raw_source_unit
+        else:
+            target_dim = (info or {}).get("stock_uom_dimension", "").strip().lower()
+            target_stock_symbol = (info or {}).get("stock_uom_symbol", "").strip().lower()
+            if target_dim == "count" and target_stock_symbol:
+                source_symbol = target_stock_symbol
+            else:
+                source_symbol = "mg"
         # ``qty`` is the new payload key (per-serving value in
         # ``source_unit``); ``mg`` is the legacy key retained for
-        # backwards compat with pre-refactor snapshots. When both are
-        # present we prefer ``qty`` unless source is explicitly ``mg``.
-        raw_value = (
-            row.get("qty") if source_symbol != "mg" else row.get("mg", row.get("qty"))
-        )
-        if raw_value is None and source_symbol == "mg":
-            # Legacy shape had only ``mg``; make sure we still read
-            # ``qty`` if a caller normalised the row eagerly.
-            raw_value = row.get("qty")
+        # backwards compat with pre-refactor snapshots. When the FE
+        # emits an explicit ``source_unit`` it also sets ``qty``. When
+        # source_unit is absent (legacy row OR auto-inferred pcs), the
+        # value we care about lives on ``mg``.
+        if raw_source_unit:
+            raw_value = row.get("qty", row.get("mg"))
+        else:
+            raw_value = row.get("mg", row.get("qty"))
         try:
             value = (
                 Decimal(str(raw_value)) if raw_value is not None else Decimal("0")
@@ -4556,10 +4611,19 @@ def _push_staged_cascade(
     previous_servings: Decimal = Decimal("1")
     last_response: dict | None = None
 
-    # Build the local-item-id → {psp_uuid, unit} lookup once, spanning
-    # every id referenced across all overrides. One query beats N
-    # Item.get calls in the per-stage loop. The ``unit`` string feeds
-    # ``_override_to_bom_lines``'s mg → native-UoM conversion.
+    # Build the local-item-id → {psp_uuid, unit, stock_uom_symbol,
+    # stock_uom_dimension} lookup once, spanning every id referenced
+    # across all overrides. One query beats N Item.get calls in the
+    # per-stage loop. The unit fields feed ``_override_to_bom_lines``:
+    #
+    # * ``unit`` — local NPD Item.unit (frequently empty in practice
+    #   because the mirror doesn't populate it).
+    # * ``stock_uom_symbol`` / ``_dimension`` — pulled from PSP's item
+    #   read shape and used as authoritative when local unit is
+    #   empty. Count-dimension items (bottle, closure, shell, label)
+    #   need the row shipped as ``source_unit=pcs`` or the boundary
+    #   dimension guard rejects it — this is the load-bearing bit
+    #   for packaging pushes.
     override_item_lookup: dict[str, dict[str, str]] = {}
     if stage_bom_overrides:
         wanted_ids: set[str] = set()
@@ -4573,12 +4637,50 @@ def _push_staged_cascade(
         if wanted_ids:
             from apps.catalogues.models import Item
 
-            for item in Item.objects.filter(
-                id__in=wanted_ids, psp_source_uuid__isnull=False
-            ).only("id", "psp_source_uuid", "unit"):
+            local_items = list(
+                Item.objects.filter(
+                    id__in=wanted_ids, psp_source_uuid__isnull=False
+                ).only("id", "psp_source_uuid", "unit")
+            )
+            # PSP-side stock UoM fetch — one call per unique item. Local
+            # NPD ``Item.unit`` is frequently empty (mirror doesn't
+            # persist it); PSP knows the truth. Silent-degrade per item:
+            # a fetch failure leaves that item's stock_uom_* empty,
+            # falling back to the legacy "assume mg" behaviour rather
+            # than blocking the push.
+            psp_client = None
+            try:
+                psp_client = _client_factory(config)
+            except Exception:
+                logger.exception(
+                    "PSP push_bom: could not build client for stock_uom lookup;"
+                    " override lookup will use local Item.unit only"
+                )
+
+            for item in local_items:
+                local_unit = str(item.unit or "").strip().lower()
+                stock_symbol: str | None = None
+                stock_dimension: str | None = None
+                if psp_client is not None:
+                    try:
+                        psp_item = psp_client.get_item(item.psp_source_uuid)
+                    except PspError:
+                        psp_item = None
+                    except Exception:
+                        logger.exception(
+                            "PSP push_bom: unexpected error fetching PSP item %s",
+                            item.psp_source_uuid,
+                        )
+                        psp_item = None
+                    if psp_item is not None:
+                        stock_symbol = getattr(psp_item, "stock_uom_symbol", None)
+                        stock_dimension = getattr(psp_item, "stock_uom_dimension", None)
+
                 override_item_lookup[str(item.id)] = {
                     "psp_uuid": str(item.psp_source_uuid),
-                    "unit": str(item.unit or ""),
+                    "unit": local_unit or (stock_symbol or ""),
+                    "stock_uom_symbol": stock_symbol or "",
+                    "stock_uom_dimension": stock_dimension or "",
                 }
 
     for stage in stages:
