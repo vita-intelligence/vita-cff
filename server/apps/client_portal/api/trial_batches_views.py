@@ -247,6 +247,30 @@ def _fetch_production_summary(
     }
 
 
+def _fetch_dispatch_only(
+    slot: TrialBatchSlot, organization: Any
+) -> dict | None:
+    """Lightweight per-slot dispatch fetch — no MO chain, no
+    snapshot, no auto-deliver side-effect. Used to populate the
+    ``dispatch`` field on non-active slots so the collapsible slot-
+    story on the portal can show historical shipment details
+    (carrier / vehicle / driver / waybill / tracking / seal /
+    temperature / checklist / photos) for every prior sample the
+    customer received. Silent-degrade to ``None`` on any transport /
+    integration failure so a single PSP hiccup doesn't blank the
+    portal's slot ladder.
+    """
+
+    from apps.psp.services import get_psp_dispatch_for_co
+
+    try:
+        return get_psp_dispatch_for_co(
+            organization=organization, co_uuid=slot.id
+        )
+    except Exception:  # noqa: BLE001 — mirrors the active-slot posture
+        return None
+
+
 def _maybe_auto_deliver_slot(
     slot: TrialBatchSlot, production: dict[str, Any]
 ) -> TrialBatchSlot:
@@ -332,6 +356,46 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         # click "I've received it".
         active = _maybe_auto_deliver_slot(active, summary)
         slots = list(cycle.slots.order_by("sequence_no"))
+
+    # Historical dispatch snapshots for closed slots — powers the
+    # "story" expand on the portal so customers can review every
+    # prior shipment (carrier / plate / driver / waybill / photos)
+    # after the cycle moves on. One PSP round-trip per non-active
+    # trial-batch-linked slot; cycles are typically small (3-10
+    # slots) so the extra calls stay negligible. Skipped for
+    # awaiting_scientist (no batch) and closed_cancelled (auto-
+    # cancelled companion slots — no shipment ever happened).
+    from apps.trial_batches.models import TrialBatch as _TrialBatch
+
+    for slot_row in slots:
+        slot_key = str(slot_row.id)
+        if slot_key in production_by_slot:
+            # Active slot already fetched via the full production
+            # summary above — its dispatch is already attached.
+            continue
+        if slot_row.status in (
+            TrialBatchSlotStatus.AWAITING_SCIENTIST,
+            TrialBatchSlotStatus.CLOSED_CANCELLED,
+        ):
+            continue
+        if slot_row.trial_batch_id is None:
+            continue
+        # Confirm the batch actually reached PSP before hitting the
+        # dispatch endpoint — otherwise every drafted-but-not-pushed
+        # trial batch adds an unnecessary PSP round-trip that will
+        # never return anything useful.
+        _tb = _TrialBatch.objects.only(
+            "psp_manufacturing_order_uuid"
+        ).filter(id=slot_row.trial_batch_id).first()
+        if _tb is None or not getattr(_tb, "psp_manufacturing_order_uuid", None):
+            continue
+        production_by_slot[slot_key] = {
+            "state": "unknown",
+            "total": 0,
+            "done": 0,
+            "phase": "",
+            "dispatch": _fetch_dispatch_only(slot_row, cycle.organization),
+        }
     # ``slots_used`` counts slots the customer has actually been sent
     # a sample for (or is currently being sent one for) — anything past
     # the AWAITING_SCIENTIST seed row and excluding auto-cancels.

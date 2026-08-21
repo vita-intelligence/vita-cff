@@ -20,6 +20,7 @@
 import {
   Check,
   CheckCircle2,
+  ChevronDown,
   Circle,
   Clock,
   FlaskConical,
@@ -74,8 +75,20 @@ interface Slot {
   readonly sequence_no: number;
   readonly status: SlotStatus;
   readonly verdict: "satisfied" | "needs_iteration" | null;
+  /** ISO timestamp the customer recorded their verdict. Null until
+   *  a verdict is submitted. Rendered in the expanded slot story so
+   *  the customer can see when each decision was made. */
+  readonly verdict_at: string | null;
   readonly keep_producing_remaining: boolean;
+  /** Full free-text feedback the customer left when submitting the
+   *  verdict. Preserved verbatim so re-reading the story shows
+   *  exactly what was said. */
+  readonly feedback_summary: string;
   readonly trial_batch_id: string | null;
+  /** Human-readable recipe version label ("v3") the slot was
+   *  produced against. Server-emitted (mirrors the scientist's
+   *  version picker). */
+  readonly formulation_version_label: string;
   /** Coarse MO-chain bucket — kept as a fallback signal. The primary
    *  production signal is ``production_phase`` (below). */
   readonly production_state:
@@ -235,7 +248,11 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
 
       <ul className="mt-5 flex flex-col gap-2">
         {cycle.slots.map((slot) => (
-          <SlotRow key={slot.id} slot={slot} />
+          <SlotRow
+            key={slot.id}
+            slot={slot}
+            defaultOpen={slot.id === cycle.active_slot_id}
+          />
         ))}
       </ul>
 
@@ -270,13 +287,8 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
       {inProduction && activeSlot ? (
         <ProductionStrip slot={activeSlot} />
       ) : null}
-
-      {activeSlot?.dispatch ? (
-        <DispatchDetailsCard
-          slotId={activeSlot.id}
-          dispatch={activeSlot.dispatch}
-        />
-      ) : null}
+      {/* Dispatch details live inside the active slot's expanded
+          story now — no duplicate below-ladder card. */}
 
       {inProduction && activeSlot && activeSlot.trial_batch_id
         && isShippedOrLater(activeSlot.production_phase) ? (
@@ -699,7 +711,14 @@ function compactSlotLabel(slot: Slot): string {
 }
 
 
-function SlotRow({ slot }: { slot: Slot }) {
+function SlotRow({
+  slot,
+  defaultOpen = false,
+}: {
+  slot: Slot;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const icon =
     slot.status === "closed_satisfied" || slot.status === "closed_iterated" ? (
       <Check className="h-3.5 w-3.5 text-emerald-700" />
@@ -713,19 +732,136 @@ function SlotRow({ slot }: { slot: Slot }) {
       <Circle className="h-3.5 w-3.5 text-neutral-500" />
     );
   const label = compactSlotLabel(slot);
+  // "Story" content is only meaningful once the slot has started —
+  // an awaiting_scientist row with no batch yet has nothing to tell.
+  // Everything past that (in-production, delivered, iterated,
+  // satisfied, cancelled) has a story worth exposing.
+  const hasStory =
+    slot.status !== "awaiting_scientist" || Boolean(slot.trial_batch_id);
   return (
-    <li className="flex items-center justify-between border-2 border-black bg-white px-3 py-2">
-      <span className="flex items-center gap-2 text-sm">
-        {icon}
-        <span className="font-black">Sample #{slot.sequence_no}</span>
-        <span className="text-xs text-neutral-600">{label}</span>
-      </span>
-      {slot.verdict === "satisfied" && slot.keep_producing_remaining ? (
-        <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
-          + finish the batch
+    <li className="border-2 border-black bg-white">
+      <button
+        type="button"
+        onClick={() => hasStory && setOpen((v) => !v)}
+        aria-expanded={hasStory ? open : undefined}
+        disabled={!hasStory}
+        className={
+          "flex w-full items-center justify-between gap-2 px-3 py-2 text-left " +
+          (hasStory ? "hover:bg-orange-50" : "cursor-default")
+        }
+      >
+        <span className="flex min-w-0 items-center gap-2 text-sm">
+          {icon}
+          <span className="font-black">Sample #{slot.sequence_no}</span>
+          <span className="truncate text-xs text-neutral-600">{label}</span>
         </span>
-      ) : null}
+        <span className="flex shrink-0 items-center gap-2">
+          {slot.verdict === "satisfied" && slot.keep_producing_remaining ? (
+            <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-700">
+              + finish the batch
+            </span>
+          ) : null}
+          {hasStory ? (
+            <ChevronDown
+              className={
+                "h-4 w-4 shrink-0 text-neutral-500 transition-transform " +
+                (open ? "rotate-180" : "")
+              }
+            />
+          ) : null}
+        </span>
+      </button>
+      {open && hasStory ? <SlotStory slot={slot} /> : null}
     </li>
+  );
+}
+
+
+// Expanded per-slot detail — the "story" of a previous (or ongoing)
+// sample: which recipe version, what the customer said, and when.
+// Feedback text is preserved verbatim from the ``feedback_summary``
+// the customer submitted so they can re-read their own words later.
+// The active slot's live progress (production strip / dispatch card /
+// receive button / feedback form) still renders below the ladder —
+// this component only shows the after-the-fact story bits.
+function SlotStory({ slot }: { slot: Slot }) {
+  const verdictAt = slot.verdict_at
+    ? new Date(slot.verdict_at).toLocaleString()
+    : null;
+  const verdictLabel =
+    slot.verdict === "satisfied"
+      ? "You said this is the one"
+      : slot.verdict === "needs_iteration"
+        ? "You asked for iteration"
+        : null;
+  const verdictTone =
+    slot.verdict === "satisfied"
+      ? "bg-emerald-100 text-emerald-800"
+      : slot.verdict === "needs_iteration"
+        ? "bg-amber-100 text-amber-800"
+        : "bg-neutral-100 text-neutral-700";
+  return (
+    <div className="border-t-2 border-black bg-orange-50/40 px-3 py-3">
+      <div className="grid gap-2 text-xs sm:grid-cols-2">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Recipe version
+          </p>
+          <p className="mt-0.5 font-mono text-neutral-900">
+            {slot.formulation_version_label || "—"}
+          </p>
+        </div>
+        {verdictAt ? (
+          <div>
+            <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+              Verdict recorded
+            </p>
+            <p className="mt-0.5 text-neutral-900">{verdictAt}</p>
+          </div>
+        ) : null}
+      </div>
+
+      {verdictLabel ? (
+        <div className="mt-3">
+          <span
+            className={
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest " +
+              verdictTone
+            }
+          >
+            {verdictLabel}
+          </span>
+        </div>
+      ) : null}
+
+      {slot.feedback_summary ? (
+        <div className="mt-3 border-2 border-black/10 bg-white p-3">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Your feedback
+          </p>
+          <p className="mt-1 whitespace-pre-line text-sm text-neutral-900">
+            {slot.feedback_summary}
+          </p>
+        </div>
+      ) : null}
+
+      {/* Shipment details — carrier / vehicle / driver / waybill /
+          tracking / seal / temperature + 5-point checklist + loading
+          photos. Backend eager-fetches dispatch for every non-
+          cancelled trial-batch-linked slot so the customer can
+          re-review any prior sample's paperwork from the story. */}
+      {slot.dispatch ? (
+        <div className="mt-3">
+          <DispatchDetailsCard slotId={slot.id} dispatch={slot.dispatch} />
+        </div>
+      ) : null}
+
+      {!verdictLabel && !slot.feedback_summary && !slot.dispatch ? (
+        <p className="mt-2 text-[11px] italic text-neutral-500">
+          No details recorded yet.
+        </p>
+      ) : null}
+    </div>
   );
 }
 

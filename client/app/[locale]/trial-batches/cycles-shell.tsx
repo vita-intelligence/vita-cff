@@ -211,11 +211,36 @@ export function TrialCyclesShell({ orgId }: { orgId: string }) {
     });
   }, [queryClient, orgId]);
 
+  // Bumps on every pipeline-query cache event so the imperative
+  // ``getQueryData`` read below stays reactive. Without this, the
+  // modal's ``cycle`` prop stays stale after mutations (Open next
+  // slot, close cycle, etc.) — invalidation refetches the columns
+  // and updates the cache, but the useMemo below doesn't re-run
+  // because none of its explicit deps changed. Result: operator
+  // clicks "Open next slot", sees success, but the new slot
+  // doesn't appear in the modal until they close + reopen it.
+  const [pipelineCacheTick, setPipelineCacheTick] = useState(0);
+  useEffect(() => {
+    const unsub = queryClient.getQueryCache().subscribe((event) => {
+      const key = event?.query?.queryKey as unknown as unknown[] | undefined;
+      if (
+        Array.isArray(key) &&
+        key[0] === rootQueryKey &&
+        key[1] === PIPELINE_KEY &&
+        key[2] === orgId
+      ) {
+        setPipelineCacheTick((n) => (n + 1) % 1_000_000);
+      }
+    });
+    return () => unsub();
+  }, [queryClient, orgId]);
+
   const openModalCycle = useMemo(() => {
     if (!openCycleId) return null;
     // Search every cached column page for the modal cycle. Cheap —
     // page maps stay in memory while the tab is open and Q's cache
-    // is shared across columns.
+    // is shared across columns. ``pipelineCacheTick`` in deps keeps
+    // this reactive to background refetches (see subscribe above).
     for (const stage of STAGES) {
       const cached = queryClient.getQueryData<{
         pages: readonly PipelinePage[];
@@ -226,7 +251,8 @@ export function TrialCyclesShell({ orgId }: { orgId: string }) {
       if (hit) return hit;
     }
     return null;
-  }, [openCycleId, queryClient, orgId, debouncedSearch]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- pipelineCacheTick is the reactive signal for imperative cache reads
+  }, [openCycleId, queryClient, orgId, debouncedSearch, pipelineCacheTick]);
 
   return (
     <section className="mt-6 flex flex-col gap-6">
