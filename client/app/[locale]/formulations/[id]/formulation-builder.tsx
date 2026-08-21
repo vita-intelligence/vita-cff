@@ -7781,7 +7781,7 @@ const DeclarationPanel = memo(function DeclarationPanel({
                   </span>
                 </span>
                 <span>
-                  {entry.mg.toFixed(2)} <span className="text-ink-500">mg</span>
+                  {entry.mg.toFixed(5)} <span className="text-ink-500">mg</span>
                 </span>
               </li>
             ))}
@@ -9050,8 +9050,12 @@ const RoutingTabBody = memo(function RoutingTabBody({
                               </span>
                             </div>
                             <span className="mt-0.5 block text-[11px] text-ink-500">
-                              {row.code || "—"} ·{" "}
-                              {numberFormatter.format(row.mg)} mg
+                              {/* Pharma display convention — mass values
+                                  land at fixed 5 decimals with trailing
+                                  zeros. Same rule as the trial-batch
+                                  BOM sheet so numbers read the same
+                                  across surfaces. */}
+                              {row.code || "—"} · {row.mg.toFixed(5)} mg
                             </span>
                           </div>
                           <select
@@ -9452,23 +9456,21 @@ const RoutingTabBody = memo(function RoutingTabBody({
                             </span>
                           </span>
                           <span className="flex shrink-0 items-baseline gap-3 text-right tabular-nums">
+                            {/* Pharma display convention — fixed 5
+                                decimals with trailing zeros on every
+                                mass value, mirroring the trial-batch
+                                BOM sheet. Removes the ambiguity of
+                                "5 mg" vs "5.00000 mg" — the second
+                                signals precision, which is what audits
+                                key on. */}
                             <span className="text-ink-500">
-                              {numberFormatter.format(
-                                Number(row.mg.toFixed(2)),
-                              )}{" "}
-                              mg / unit
+                              {row.mg.toFixed(5)} mg / unit
                             </span>
                             <span className="text-ink-1000">
-                              {numberFormatter.format(
-                                Number(totalG.toFixed(3)),
-                              )}{" "}
-                              g
+                              {totalG.toFixed(5)} g
                             </span>
                             <span className="text-ink-700">
-                              {numberFormatter.format(
-                                Number(totalKg.toFixed(4)),
-                              )}{" "}
-                              kg
+                              {totalKg.toFixed(5)} kg
                             </span>
                           </span>
                         </li>
