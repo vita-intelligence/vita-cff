@@ -24,8 +24,13 @@ Endpoints:
 
 from __future__ import annotations
 
+import base64
+import json
+from datetime import datetime
 from typing import Any
 
+from django.db.models import Exists, OuterRef, Q
+from django.db.models.functions import Lower
 from rest_framework import status
 from rest_framework.exceptions import NotFound
 from rest_framework.request import Request
@@ -91,14 +96,21 @@ def _serialise_slot_for_scientist(slot: TrialBatchSlot) -> dict[str, Any]:
 
 
 def _version_label(version: FormulationVersion | None) -> str:
+    """Short version tag for embedded contexts (e.g. slot rows on
+    the cycle list). The full picker row uses the richer payload
+    from :class:`TrialBatchCycleFormulationVersionsView` — this
+    helper just returns ``v{n}`` where n is the sequence number.
+    """
+
     if version is None:
         return ""
-    revision = getattr(version, "revision", None)
-    if revision is None:
-        # ``version`` schemas across orgs vary; fall back to a
-        # short uuid for the picker.
+    number = getattr(version, "version_number", None)
+    if number is None:
+        # Extreme defensive fallback — every migrated row has a
+        # version_number, but keep the branch so a mis-shaped
+        # object can't blow up the whole cycle response.
         return f"v{str(version.id)[:8]}"
-    return f"v{revision}"
+    return f"v{number}"
 
 
 def _serialise_cycle_for_scientist(cycle: TrialBatchCycle) -> dict[str, Any]:
@@ -228,6 +240,223 @@ class TrialBatchCycleListView(APIView):
                         if c["action_needed"] or c["can_open_next_slot"]
                     ),
                 },
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Kanban pipeline endpoint
+# ---------------------------------------------------------------------------
+
+# Cycle statuses that count as "closed" for the kanban column.
+_CLOSED_STATUSES = (
+    TrialBatchCycleStatus.SATISFIED,
+    TrialBatchCycleStatus.TERMINATED_BY_TEAM,
+    TrialBatchCycleStatus.MAX_REACHED,
+)
+
+# Slot statuses that mean "someone is actively working on this slot" —
+# used to detect whether a cycle currently has any live activity or
+# is idle waiting on the scientist.
+_ACTIVE_SLOT_STATUSES = (
+    TrialBatchSlotStatus.AWAITING_SCIENTIST,
+    TrialBatchSlotStatus.IN_PRODUCTION,
+    TrialBatchSlotStatus.SHIPPED,
+    TrialBatchSlotStatus.DELIVERED,
+    TrialBatchSlotStatus.FEEDBACK_PENDING,
+)
+
+# Page size per column — big enough that most orgs fit in one page,
+# small enough that the initial /trial-batches load stays snappy at
+# millions of rows. FE Load-more fetches subsequent pages by cursor.
+_PIPELINE_PAGE_SIZE = 25
+
+_ALLOWED_STAGES = ("needs_click", "in_flight", "closed")
+
+
+def _stage_predicate(qs, stage: str):
+    """Filter a base cycles queryset down to one kanban column.
+
+    ``needs_click`` — cycle is in_progress AND either (a) has an
+    ``AWAITING_SCIENTIST`` slot, or (b) has no active slot at all but
+    still has capacity to open a new one after a ``CLOSED_ITERATED``
+    verdict landed. Mirrors ``action_needed | can_open_next_slot`` on
+    the serialiser.
+
+    ``in_flight`` — cycle is in_progress AND does NOT match the
+    needs_click predicate. Samples are being produced / shipped /
+    awaiting feedback but the scientist has nothing to click yet.
+
+    ``closed`` — terminal cycle statuses. Same set the ``status``
+    column already carries so it's a plain filter.
+    """
+
+    if stage == "closed":
+        return qs.filter(status__in=_CLOSED_STATUSES)
+
+    has_awaiting = Exists(
+        TrialBatchSlot.objects.filter(
+            cycle_id=OuterRef("pk"),
+            status=TrialBatchSlotStatus.AWAITING_SCIENTIST,
+        )
+    )
+    has_any_active = Exists(
+        TrialBatchSlot.objects.filter(
+            cycle_id=OuterRef("pk"),
+            status__in=_ACTIVE_SLOT_STATUSES,
+        )
+    )
+
+    if stage == "needs_click":
+        # in_progress cycles with an awaiting slot get flagged directly;
+        # any post-Python bucket filter takes the "no active + iterated
+        # + capacity" branch (rare enough that the small over-fetch is
+        # cheaper than a second subquery here).
+        return qs.filter(status=TrialBatchCycleStatus.IN_PROGRESS).annotate(
+            _has_awaiting=has_awaiting,
+            _has_active=has_any_active,
+        ).filter(Q(_has_awaiting=True) | Q(_has_active=False))
+
+    # in_flight: in_progress AND has active work AND no scientist
+    # action pending. The has-active guard eliminates the "no active
+    # slots" cycles that belong in needs_click.
+    return qs.filter(status=TrialBatchCycleStatus.IN_PROGRESS).annotate(
+        _has_awaiting=has_awaiting,
+        _has_active=has_any_active,
+    ).filter(_has_awaiting=False, _has_active=True)
+
+
+def _encode_cursor(row: TrialBatchCycle) -> str:
+    """Opaque keyset cursor on ``(updated_at, id)`` — mirrors the
+    proposals pattern. Base64 so it survives URL round-trips without
+    escaping. Decoders reject malformed input by returning ``None``.
+    """
+
+    payload = {
+        "updated_at": row.updated_at.isoformat(),
+        "id": str(row.id),
+    }
+    return base64.urlsafe_b64encode(
+        json.dumps(payload).encode("utf-8")
+    ).decode("ascii")
+
+
+def _decode_cursor(cursor: str | None) -> tuple[datetime, str] | None:
+    if not cursor:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(cursor.encode("ascii"))
+        payload = json.loads(raw)
+        return datetime.fromisoformat(payload["updated_at"]), str(payload["id"])
+    except Exception:  # noqa: BLE001 — malformed cursor → treat as no cursor
+        return None
+
+
+class TrialBatchCyclePipelineColumnView(APIView):
+    """``GET /api/organizations/<org>/trial-batch-cycles/pipeline/<stage>/``.
+
+    Per-column feed for the trial-batches kanban board. Each column
+    fires its own paginated query so a big Closed archive can't
+    starve the small Needs-click list.
+
+    Params:
+      * ``stage`` in path — ``needs_click`` / ``in_flight`` / ``closed``.
+      * ``cursor`` (query) — opaque, echoed back from a previous
+        response's ``next_cursor``. Omit on the first call.
+      * ``search`` (query) — case-insensitive substring match against
+        formulation code / name and customer name.
+
+    Response:
+
+    .. code-block:: json
+
+        {
+          "stage": "needs_click",
+          "total": 42,
+          "items": [ ...serialised cycles... ],
+          "next_cursor": "…opaque…" | null
+        }
+    """
+
+    permission_classes = (HasFormulationsPermission,)
+    required_capability = FormulationsCapability.EDIT
+
+    def get(self, request: Request, org_id: str, stage: str) -> Response:
+        if stage not in _ALLOWED_STAGES:
+            return Response(
+                {"stage": ["invalid_stage"]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        base = (
+            TrialBatchCycle.objects.filter(organization_id=org_id)
+            .select_related("formulation", "formulation__customer")
+            .prefetch_related("slots__formulation_version")
+        )
+
+        base = _stage_predicate(base, stage)
+
+        search = (request.query_params.get("search") or "").strip().lower()
+        if search:
+            like = f"%{search}%"
+            base = base.annotate(
+                _f_code=Lower("formulation__code"),
+                _f_name=Lower("formulation__name"),
+                _c_name=Lower("formulation__customer__name"),
+            ).filter(
+                Q(_f_code__contains=search)
+                | Q(_f_name__contains=search)
+                | Q(_c_name__contains=search)
+            )
+            # ``like`` is unused — kept for readability of the intent
+            # (the ORM annotate + contains handles the LIKE binding).
+            del like
+
+        # Total is best-effort — one COUNT per page is fine at this
+        # scale (indexes on status + organization_id keep it cheap).
+        # Callers use it for the column header pill; if it becomes
+        # a hot spot we can cache per (org, stage) with short TTL.
+        total = base.count()
+
+        cursor = _decode_cursor(request.query_params.get("cursor"))
+        page_qs = base.order_by("-updated_at", "-id")
+        if cursor is not None:
+            cur_updated_at, cur_id = cursor
+            # Keyset step: strictly less than (updated_at, id) so the
+            # cursor row itself is skipped without any offset scan.
+            page_qs = page_qs.filter(
+                Q(updated_at__lt=cur_updated_at)
+                | Q(updated_at=cur_updated_at, id__lt=cur_id)
+            )
+
+        page = list(page_qs[: _PIPELINE_PAGE_SIZE + 1])
+        has_next = len(page) > _PIPELINE_PAGE_SIZE
+        rows = page[:_PIPELINE_PAGE_SIZE]
+
+        serialised = [_serialise_cycle_for_scientist(c) for c in rows]
+
+        # Post-filter refinement for the "can open next slot" branch:
+        # the SQL predicate approves any in_progress cycle without an
+        # active slot, but the strict definition also requires a
+        # closed_iterated slot + free capacity. Drop the false
+        # positives here so the column count matches what the FE
+        # renders.
+        if stage == "needs_click":
+            serialised = [
+                c
+                for c in serialised
+                if c["action_needed"] or c["can_open_next_slot"]
+            ]
+
+        next_cursor = _encode_cursor(rows[-1]) if has_next and rows else None
+
+        return Response(
+            {
+                "stage": stage,
+                "total": total,
+                "items": serialised,
+                "next_cursor": next_cursor,
             },
             status=status.HTTP_200_OK,
         )
@@ -468,15 +697,52 @@ class TrialBatchCycleFormulationVersionsView(APIView):
 
         versions = list(
             FormulationVersion.objects.filter(formulation=cycle.formulation)
-            .order_by("-created_at")
-            .only("id", "created_at")
+            .select_related("created_by")
+            .order_by("-version_number", "-created_at")
         )
         items = [
             {
                 "id": str(v.id),
+                # Short tag (e.g. "v3") — same as slot rows on the
+                # cycle list so the picker row's headline matches.
                 "label": _version_label(v),
+                # Sequential version number for sorting / rendering.
+                "version_number": v.version_number,
+                # Scientist-written short note (e.g. "caffeine bumped
+                # to 200mg"). Empty string when the scientist saved
+                # without a note — FE renders it inline when present.
+                "note": (v.label or "").strip(),
+                # Who saved the version — name + email (email is a
+                # useful tiebreaker when two scientists share a
+                # display name).
+                "created_by_name": _actor_display_name(v.created_by),
                 "created_at": v.created_at.isoformat(),
+                # Auto-drafts are silent restore points, not
+                # scientist-committed milestones. FE dims + tags
+                # them so nobody accidentally launches a slot
+                # against a mid-edit snapshot.
+                "is_auto": bool(v.is_auto),
+                # Passed the builder-readiness gate at save time.
+                # FE surfaces a subtle warning when False so
+                # scientists don't ship an incomplete recipe.
+                "is_complete": bool(v.is_complete),
             }
             for v in versions
         ]
         return Response({"items": items}, status=status.HTTP_200_OK)
+
+
+def _actor_display_name(actor) -> str:
+    """Best-effort human-readable name for a Django user row.
+    Falls back to email, then a placeholder — never returns None
+    so the FE renders a safe string without an extra null check.
+    """
+
+    if actor is None:
+        return "—"
+    name = (getattr(actor, "get_full_name", None) or (lambda: ""))()
+    name = (name or "").strip()
+    if name:
+        return name
+    email = (getattr(actor, "email", "") or "").strip()
+    return email or "—"

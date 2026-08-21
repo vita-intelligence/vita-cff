@@ -6092,6 +6092,34 @@ def fetch_psp_release_document_for_payment(
         return None
 
 
+def get_psp_dispatch_for_co(
+    *, organization: Any, co_uuid: Any
+) -> dict | None:
+    """Fetch the PSP dispatch-confirmation snapshot for a CO by uuid.
+
+    Used by the cycle-slot portal path where the Sample CO on PSP is
+    keyed by ``slot.id`` (not a payment id). Silent-degrade to
+    ``None`` on any failure / integration off / shipment not yet
+    ``picked_up`` — the portal FE renders the card only when the
+    value is a non-null dict.
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return None
+    cleaned = str(co_uuid or "").strip()
+    if not cleaned:
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.get_customer_order_dispatch(cleaned)
+    except PspError:
+        return None
+
+
 def get_psp_dispatch_for_payment(*, payment: Any) -> dict | None:
     """Fetch the PSP dispatch-confirmation snapshot for the CO that
     mirrors this NPD Payment. Returns ``None`` on any failure or
@@ -6157,6 +6185,35 @@ def confirm_psp_dispatch_delivery_for_payment(
             recipient_signatory=recipient_signatory,
             delivery_notes=delivery_notes,
         )
+    except PspError:
+        return None
+
+
+def fetch_psp_dispatch_photo_for_co(
+    *, organization: Any, co_uuid: Any, file_uuid: Any
+) -> tuple[bytes, str, str] | None:
+    """Proxy-download one dispatch photo by CO uuid + file uuid.
+
+    Payment-agnostic counterpart to
+    :func:`fetch_psp_dispatch_photo_for_payment` — used by the
+    cycle-slot portal path where the Sample CO on PSP is keyed by
+    ``slot.id`` (not a payment id). Same silent-degrade contract:
+    ``None`` on any failure / integration off. Callers upstream
+    enforce ownership before hitting this.
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return None
+    cleaned = str(co_uuid or "").strip()
+    if not cleaned:
+        return None
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.fetch_customer_order_dispatch_photo(cleaned, file_uuid)
     except PspError:
         return None
 

@@ -17,12 +17,22 @@
  * same options.
  */
 
-import { Check, CheckCircle2, Circle, FlaskConical, Loader2, Plus } from "lucide-react";
+import {
+  Check,
+  CheckCircle2,
+  Circle,
+  Clock,
+  FlaskConical,
+  Loader2,
+  Plus,
+  Truck,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { apiClient } from "@/lib/api";
 import { portalErrorMessage } from "@/services/portal/errors";
+import { DispatchPhotoLightbox } from "@/components/portal/dispatch-photo-lightbox";
 
 
 type SlotStatus =
@@ -42,6 +52,23 @@ type CycleStatus =
   | "max_reached";
 
 
+/** PSP OrderWizard phase keys we render. Coarse "unknown phase" left
+ *  as null on the wire so the FE can fall back to production_state. */
+type ProductionPhase =
+  | "setup"
+  | "approval"
+  | "production_planning"
+  | "awaiting_ingredients"
+  | "in_production"
+  | "closeout"
+  | "final_release"
+  | "awaiting_routing"
+  | "ready_to_dispatch"
+  | "awaiting_pickup"
+  | "dispatched"
+  | "delivered";
+
+
 interface Slot {
   readonly id: string;
   readonly sequence_no: number;
@@ -49,12 +76,8 @@ interface Slot {
   readonly verdict: "satisfied" | "needs_iteration" | null;
   readonly keep_producing_remaining: boolean;
   readonly trial_batch_id: string | null;
-  /** Live pulled from PSP on every fetch. ``"not_pushed"`` = batch
-   *  linked but scientist hasn't spawned a PSP MO. ``"in_progress"``
-   *  = at least one stage MO is non-terminal. ``"completed"`` = every
-   *  stage finished — the "I've received it" button unlocks off this
-   *  signal, matching how the storefront sample-detail view only
-   *  shows Confirm-delivery once PSP marks the shipment picked-up. */
+  /** Coarse MO-chain bucket — kept as a fallback signal. The primary
+   *  production signal is ``production_phase`` (below). */
   readonly production_state:
     | "not_pushed"
     | "in_progress"
@@ -62,6 +85,45 @@ interface Slot {
     | "unknown";
   readonly production_stages_total: number;
   readonly production_stages_done: number;
+  /** PSP OrderWizard phase for the slot's Sample CO. Drives the
+   *  strip. Null when PSP fetch soft-failed or slot has no MO yet.
+   *  Chain-status "completed" (all MOs done) does NOT mean the
+   *  shipment has left — PSP still walks closeout / final_release
+   *  (QC) / awaiting_routing / dispatched / delivered after. */
+  readonly production_phase: ProductionPhase | null;
+  /** Customer-safe title for the current phase (from server). */
+  readonly production_phase_title: string | null;
+  /** Customer-safe one-line detail for the current phase. */
+  readonly production_phase_note: string | null;
+  /** PSP dispatch-confirmation snapshot when the shipment has left
+   *  the building. ``null`` until PSP marks it ``picked_up`` — the
+   *  card is hidden in that case rather than showing a placeholder. */
+  readonly dispatch: SlotDispatch | null;
+}
+
+
+interface SlotDispatch {
+  readonly status: "picked_up" | "delivered";
+  readonly picked_up_at: string | null;
+  readonly delivered_at: string | null;
+  readonly carrier: string | null;
+  readonly vehicle_registration: string | null;
+  readonly driver_name: string | null;
+  readonly consignment_note_ref: string | null;
+  readonly tracking_number: string | null;
+  readonly seal_number: string | null;
+  readonly temperature_c: string | null;
+  readonly checklist: {
+    readonly packaging_intact: boolean | null;
+    readonly labels_verified: boolean | null;
+    readonly vehicle_clean_suitable: boolean | null;
+    readonly transport_condition_acceptable: boolean | null;
+    readonly dispatch_approved: boolean | null;
+  };
+  readonly photos: readonly {
+    readonly uuid: string;
+    readonly filename: string;
+  }[];
 }
 
 
@@ -209,8 +271,15 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
         <ProductionStrip slot={activeSlot} />
       ) : null}
 
+      {activeSlot?.dispatch ? (
+        <DispatchDetailsCard
+          slotId={activeSlot.id}
+          dispatch={activeSlot.dispatch}
+        />
+      ) : null}
+
       {inProduction && activeSlot && activeSlot.trial_batch_id
-        && activeSlot.production_state === "completed" ? (
+        && isShippedOrLater(activeSlot.production_phase) ? (
         <div className="mt-4">
           <button
             type="button"
@@ -237,7 +306,9 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
             ) : (
               <CheckCircle2 className="h-3.5 w-3.5" />
             )}
-            I&rsquo;ve received it
+            {activeSlot.production_phase === "delivered"
+              ? "Confirm receipt"
+              : "I’ve received it"}
           </button>
         </div>
       ) : null}
@@ -310,13 +381,57 @@ export function TrialBatchCycleCard({ projectId }: { projectId: string }) {
 
 
 // Pipeline strip for the active in-production slot — mirrors the
-// storefront /portal/samples/[id] roadmap so a customer moving
-// between a sample-kit order and a cycle sample sees the same
-// visual language. Stages:
-//   1. Batch prepared        (trial_batch linked)
-//   2. In production         (production_state=in_progress)
-//   3. Ready to confirm      (production_state=completed)
-// The "I've received it" button only unlocks when stage 3 lights up.
+// storefront /portal/samples/[id] roadmap by reading PSP's OrderWizard
+// phase directly. Six stages track the real physical progress from
+// "we have your batch drafted" through QC and dispatch to delivery:
+//
+//   1. Batch prepared     (trial batch linked to a PSP MO)
+//   2. In production      (phase: in_production / closeout)
+//   3. Pending QC         (phase: final_release)
+//   4. Preparing dispatch (phase: awaiting_routing / ready_to_dispatch
+//                                 / awaiting_pickup)
+//   5. On the way         (phase: dispatched)
+//   6. Delivered          (phase: delivered)
+//
+// PSP is the source of truth for phase transitions. If phase fetch
+// soft-fails, we fall back to the coarse MO-chain state so the strip
+// still lights up something useful.
+
+
+/** Ordered PSP phases the strip renders — used to derive stage
+ *  states from "highest-reached phase". */
+const PHASE_ORDER: readonly ProductionPhase[] = [
+  "setup",
+  "approval",
+  "production_planning",
+  "awaiting_ingredients",
+  "in_production",
+  "closeout",
+  "final_release",
+  "awaiting_routing",
+  "ready_to_dispatch",
+  "awaiting_pickup",
+  "dispatched",
+  "delivered",
+] as const;
+
+
+function phaseIndex(phase: ProductionPhase | null): number {
+  if (phase === null) return -1;
+  const idx = PHASE_ORDER.indexOf(phase);
+  return idx;
+}
+
+
+/** True when the physical shipment is en route or already with the
+ *  customer — the gate for the "I've received it" button (either
+ *  the customer confirms here, or the backend auto-flips the slot
+ *  to DELIVERED once PSP reports ``delivered``). */
+function isShippedOrLater(phase: ProductionPhase | null): boolean {
+  return phase === "dispatched" || phase === "delivered";
+}
+
+
 // Header suffix that reflects the active slot's actual status so the
 // customer never reads "Sample 1 of 3" flat while the slot is
 // awaiting the scientist. Kept as a tiny helper next to the strip
@@ -325,16 +440,24 @@ function sampleHeaderSuffix(slot: Slot | undefined): string {
   if (!slot) return "";
   switch (slot.status) {
     case "awaiting_scientist":
-      // Distinguish "no batch drafted yet" from "drafted but not
-      // pushed" so the header reflects where the scientist actually
-      // is, not just "R&D is doing something".
       return slot.trial_batch_id
         ? " — scientist preparing batch"
         : " — waiting for R&D";
     case "in_production":
-    case "shipped":
-      if (slot.production_state === "completed") return " — ready for you";
+    case "shipped": {
+      const phase = slot.production_phase;
+      if (phase === "delivered") return " — delivered";
+      if (phase === "dispatched") return " — on the way";
+      if (
+        phase === "awaiting_routing" ||
+        phase === "ready_to_dispatch" ||
+        phase === "awaiting_pickup"
+      )
+        return " — preparing dispatch";
+      if (phase === "final_release") return " — pending QC";
+      if (phase === "closeout") return " — wrapping up";
       return " — in production";
+    }
     case "delivered":
     case "feedback_pending":
       return " — ready for your feedback";
@@ -346,12 +469,9 @@ function sampleHeaderSuffix(slot: Slot | undefined): string {
 
 function ProductionStrip({ slot }: { slot: Slot }) {
   const hasBatch = Boolean(slot.trial_batch_id);
-  // A draft trial batch on NPD is not enough to say "batch prepared"
-  // — nothing physical exists until the scientist pushes a PSP MO.
-  // The slot's status is the honest signal:
-  //   awaiting_scientist → still preparing (batch may or may not be
-  //     drafted; either way the shop floor has nothing yet)
-  //   in_production / shipped / delivered / ... → PSP MO exists
+  // A draft trial batch on NPD isn't "batch prepared" — nothing
+  // physical exists until the scientist pushes a PSP MO. Slot status
+  // is the honest signal for that jump.
   const productionHasStarted =
     slot.status === "in_production" ||
     slot.status === "shipped" ||
@@ -359,39 +479,62 @@ function ProductionStrip({ slot }: { slot: Slot }) {
     slot.status === "feedback_pending";
   const isReceived =
     slot.status === "delivered" || slot.status === "feedback_pending";
-  const productionState = slot.production_state;
-  const productionDone = productionState === "completed";
-  const productionRunning =
-    productionState === "in_progress" ||
-    productionState === "not_pushed" ||
-    productionState === "unknown";
-  const total = slot.production_stages_total;
-  const done = slot.production_stages_done;
+  const phase = slot.production_phase;
+  const idx = phaseIndex(phase);
+  const productionIdx = phaseIndex("in_production");
+  const qcIdx = phaseIndex("final_release");
+  const dispatchPrepIdx = phaseIndex("awaiting_routing");
+  const dispatchedIdx = phaseIndex("dispatched");
+  const deliveredIdx = phaseIndex("delivered");
 
-  // Every stage has a distinct copy per state (done / current /
-  // future) so the future-stage detail never bleeds into a
-  // spinner-flavoured message like "Live status will refresh in a
-  // moment" when we're still waiting on an earlier stage.
-  //
-  // "Batch prepared" is DONE only once a PSP MO exists (production
-  // has started). While the scientist is still drafting the batch on
-  // NPD — or has drafted but not yet pushed to the shop floor — this
-  // step reads as CURRENT so the customer sees "your scientist is
-  // preparing your batch" instead of the misleading "In production"
-  // that used to fire the instant a draft was saved.
+  // Fallback: if PSP snapshot soft-failed, roll the coarse MO-chain
+  // state into a synthetic phase so the strip still moves.
+  //   completed → treat as ready_to_dispatch so the customer sees
+  //     "Preparing dispatch" instead of jumping to "On the way".
+  //   in_progress → treat as in_production.
+  const effectiveIdx =
+    idx >= 0
+      ? idx
+      : slot.production_state === "completed"
+        ? phaseIndex("ready_to_dispatch")
+        : slot.production_state === "in_progress"
+          ? productionIdx
+          : -1;
+
+  const stageState = (
+    reachedIdx: number,
+    myStart: number,
+    myEnd: number,
+  ): "done" | "current" | "future" => {
+    if (isReceived) return reachedIdx <= myEnd ? "done" : "future";
+    if (reachedIdx < myStart) return "future";
+    if (reachedIdx > myEnd) return "done";
+    return "current";
+  };
+
   const batchState: "done" | "current" | "future" = productionHasStarted
     ? "done"
     : "current";
-  const productionStage: "done" | "current" | "future" = productionDone
+  const productionStage = productionHasStarted
+    ? stageState(effectiveIdx, productionIdx, qcIdx - 1)
+    : "future";
+  const qcStage = productionHasStarted
+    ? stageState(effectiveIdx, qcIdx, qcIdx)
+    : "future";
+  const dispatchStage = productionHasStarted
+    ? stageState(effectiveIdx, dispatchPrepIdx, dispatchedIdx - 1)
+    : "future";
+  const shippingStage = productionHasStarted
+    ? stageState(effectiveIdx, dispatchedIdx, dispatchedIdx)
+    : "future";
+  const deliveredStage: "done" | "current" | "future" = isReceived
     ? "done"
-    : productionHasStarted
+    : productionHasStarted && effectiveIdx >= deliveredIdx
       ? "current"
       : "future";
-  const readyStage: "done" | "current" | "future" = isReceived
-    ? "done"
-    : productionDone
-      ? "current"
-      : "future";
+
+  const currentTitle = slot.production_phase_title;
+  const currentNote = slot.production_phase_note;
 
   const stages: ReadonlyArray<{
     key: string;
@@ -412,61 +555,147 @@ function ProductionStrip({ slot }: { slot: Slot }) {
     },
     {
       key: "production",
-      label:
-        productionStage === "current" && productionState === "in_progress" && total > 0
-          ? `In production (${done}/${total} stages)`
-          : "In production",
+      label: "In production",
       state: productionStage,
       detail:
         productionStage === "done"
-          ? "Every stage is complete — your sample is ready."
-          : productionStage === "future"
-            ? "Starts once your scientist pushes the batch to the shop floor."
-            : productionState === "not_pushed"
-              ? "Your scientist will push this to the shop floor shortly."
-              : productionState === "unknown"
-                ? "Live status will refresh in a moment."
-                : "The shop floor is producing your sample right now.",
+          ? "The shop floor has finished building your sample."
+          : productionStage === "current"
+            ? currentNote ?? "The shop floor is producing your sample right now."
+            : "Starts once your scientist pushes the batch to the shop floor.",
     },
     {
-      key: "ready",
-      label: "Ready — waiting for you",
-      state: readyStage,
+      key: "qc",
+      label: "Pending QC",
+      state: qcStage,
       detail:
-        readyStage === "done"
+        qcStage === "done"
+          ? "Quality control has cleared your sample for release."
+          : qcStage === "current"
+            ? currentNote ?? "Quality control is signing off before we release it for dispatch."
+            : "Quality control runs once production wraps.",
+    },
+    {
+      key: "dispatch",
+      label: "Preparing dispatch",
+      state: dispatchStage,
+      detail:
+        dispatchStage === "done"
+          ? "Paperwork is done and the courier is booked."
+          : dispatchStage === "current"
+            ? currentNote ?? "We're getting your shipment paperwork ready and arranging pickup."
+            : "Kicks off once QC clears the batch.",
+    },
+    {
+      key: "shipping",
+      label: "On the way",
+      state: shippingStage,
+      detail:
+        shippingStage === "done"
+          ? "Your sample has been delivered."
+          : shippingStage === "current"
+            ? currentNote ?? "Your sample is on its way to you."
+            : "Starts once the courier collects your sample.",
+    },
+    {
+      key: "delivered",
+      label: "Delivered",
+      state: deliveredStage,
+      detail:
+        deliveredStage === "done"
           ? "Thanks — we've marked it received."
-          : readyStage === "current"
-            ? "It's on the way. Click below the moment it lands."
-            : productionRunning && productionHasStarted
-              ? "You'll get to confirm receipt once production wraps."
-              : "Unlocks after the batch is produced.",
+          : deliveredStage === "current"
+            ? "Confirm receipt below to unlock the feedback card."
+            : "Unlocks once the courier drops it off.",
     },
   ];
+  const showBanner =
+    (currentTitle || currentNote) && productionHasStarted && !isReceived;
+
   return (
-    <ol className="mt-4 flex flex-col gap-1.5">
-      {stages.map((s) => {
-        const dot =
-          s.state === "done" ? (
-            <Check className="h-3 w-3 text-emerald-700" />
-          ) : s.state === "current" ? (
-            <Loader2 className="h-3 w-3 animate-spin text-orange-600" />
-          ) : (
-            <Circle className="h-3 w-3 text-neutral-400" />
-          );
-        return (
-          <li key={s.key} className="flex items-start gap-2 text-xs">
-            <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 border-black bg-white">
-              {dot}
+    <>
+      {showBanner ? (
+        <div className="mt-4 border-2 border-black bg-white p-4">
+          <div className="flex items-start gap-3">
+            <span className="flex h-10 w-10 shrink-0 items-center justify-center border-2 border-black bg-orange-100 text-orange-600">
+              <Clock className="h-5 w-5" />
             </span>
-            <div className="min-w-0">
-              <p className="font-black uppercase leading-tight">{s.label}</p>
-              <p className="text-neutral-600">{s.detail}</p>
+            <div className="min-w-0 flex-1">
+              <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-orange-600">
+                Current status
+              </p>
+              {currentTitle ? (
+                <p className="mt-1 text-base font-black uppercase leading-tight text-black">
+                  {currentTitle}
+                </p>
+              ) : null}
+              {currentNote ? (
+                <p className="mt-1 text-sm text-neutral-800">{currentNote}</p>
+              ) : null}
             </div>
-          </li>
-        );
-      })}
-    </ol>
+          </div>
+        </div>
+      ) : null}
+      <ol className="mt-4 flex flex-col gap-1.5">
+        {stages.map((s) => {
+          const dot =
+            s.state === "done" ? (
+              <Check className="h-3 w-3 text-emerald-700" />
+            ) : s.state === "current" ? (
+              <Loader2 className="h-3 w-3 animate-spin text-orange-600" />
+            ) : (
+              <Circle className="h-3 w-3 text-neutral-400" />
+            );
+          return (
+            <li key={s.key} className="flex items-start gap-2 text-xs">
+              <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center border-2 border-black bg-white">
+                {dot}
+              </span>
+              <div className="min-w-0">
+                <p className="font-black uppercase leading-tight">{s.label}</p>
+                <p className="text-neutral-600">{s.detail}</p>
+              </div>
+            </li>
+          );
+        })}
+      </ol>
+    </>
   );
+}
+
+
+function compactSlotLabel(slot: Slot): string {
+  switch (slot.status) {
+    case "closed_satisfied":
+      return "You confirmed this is right";
+    case "closed_iterated":
+      return "Iterating from your feedback";
+    case "closed_cancelled":
+      return "Skipped";
+    case "delivered":
+    case "feedback_pending":
+      return "Delivered — ready for feedback";
+    case "awaiting_scientist":
+      return slot.trial_batch_id
+        ? "Scientist preparing batch"
+        : "Waiting for scientist";
+    case "in_production":
+    case "shipped":
+      // Phase-aware label when we know PSP's current phase.
+      if (slot.production_phase_title) {
+        return slot.production_phase_title;
+      }
+      // Fallbacks when PSP snapshot is unavailable.
+      if (slot.production_state === "completed") {
+        return "Preparing dispatch";
+      }
+      if (slot.production_state === "in_progress") {
+        return `In production (${slot.production_stages_done}/${slot.production_stages_total})`;
+      }
+      return "In production";
+    default:
+      return slot.status;
+  }
 }
 
 
@@ -483,26 +712,7 @@ function SlotRow({ slot }: { slot: Slot }) {
     ) : (
       <Circle className="h-3.5 w-3.5 text-neutral-500" />
     );
-  const label =
-    slot.status === "closed_satisfied"
-      ? "You confirmed this is right"
-      : slot.status === "closed_iterated"
-        ? "Iterating from your feedback"
-        : slot.status === "closed_cancelled"
-          ? "Skipped"
-          : slot.status === "delivered" || slot.status === "feedback_pending"
-            ? "Delivered — ready for feedback"
-            : slot.status === "in_production" && slot.production_state === "completed"
-              ? "Production complete — waiting for you to confirm receipt"
-              : slot.status === "in_production" && slot.production_state === "in_progress"
-                ? `In production (${slot.production_stages_done}/${slot.production_stages_total})`
-                : slot.status === "in_production" || slot.status === "shipped"
-                  ? "In production"
-                  : slot.status === "awaiting_scientist"
-                    ? slot.trial_batch_id
-                      ? "Scientist preparing batch"
-                      : "Waiting for scientist"
-                    : slot.status;
+  const label = compactSlotLabel(slot);
   return (
     <li className="flex items-center justify-between border-2 border-black bg-white px-3 py-2">
       <span className="flex items-center gap-2 text-sm">
@@ -516,6 +726,203 @@ function SlotRow({ slot }: { slot: Slot }) {
         </span>
       ) : null}
     </li>
+  );
+}
+
+
+// Renders carrier + vehicle + driver + waybill + tracking + seal
+// + temperature + 5-point checklist once PSP marks the shipment
+// picked_up. Mirrors the storefront samples-only Dispatch card so
+// customers see the same info on both surfaces. Loading photos are
+// omitted here for now (would need a portal proxy route for the
+// slot-scoped file endpoint — sample flow has one, custom-project
+// flow doesn't yet).
+const DISPATCH_CHECKLIST: readonly {
+  key: keyof SlotDispatch["checklist"];
+  label: string;
+}[] = [
+  { key: "packaging_intact", label: "Packaging intact" },
+  { key: "labels_verified", label: "Labels verified" },
+  { key: "vehicle_clean_suitable", label: "Vehicle clean & suitable" },
+  {
+    key: "transport_condition_acceptable",
+    label: "Transport condition acceptable",
+  },
+  { key: "dispatch_approved", label: "Dispatch approved" },
+];
+
+
+function DispatchDetailsCard({
+  slotId,
+  dispatch,
+}: {
+  slotId: string;
+  dispatch: SlotDispatch;
+}) {
+  const dispatchedAt = dispatch.picked_up_at
+    ? new Date(dispatch.picked_up_at).toLocaleString()
+    : null;
+  const deliveredAt = dispatch.delivered_at
+    ? new Date(dispatch.delivered_at).toLocaleString()
+    : null;
+  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const lightboxPhotos = dispatch.photos.map((photo) => ({
+    uuid: photo.uuid,
+    filename: photo.filename,
+    href:
+      `/api/portal/trial-batches/slots/${encodeURIComponent(slotId)}` +
+      `/dispatch-photos/${encodeURIComponent(photo.uuid)}/`,
+  }));
+
+  return (
+    <section className="mt-4 border-2 border-black bg-white p-4">
+      <div className="flex items-center gap-2">
+        <Truck className="h-4 w-4 text-orange-600" />
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+          Shipment details
+        </p>
+      </div>
+      <p className="mt-1 text-xs text-neutral-700">
+        {dispatch.status === "delivered"
+          ? "Delivered."
+          : "On its way."}
+        {dispatchedAt ? ` Left our warehouse ${dispatchedAt}.` : null}
+        {deliveredAt ? ` Delivered ${deliveredAt}.` : null}
+      </p>
+
+      <div className="mt-3 grid gap-3 border-t border-black/10 pt-3 text-sm sm:grid-cols-2">
+        <DispatchField label="Delivery company" value={dispatch.carrier} />
+        <DispatchField
+          label="Vehicle registration"
+          value={dispatch.vehicle_registration}
+          mono
+        />
+        <DispatchField label="Driver" value={dispatch.driver_name} />
+        <DispatchField
+          label="Waybill / CN ref"
+          value={dispatch.consignment_note_ref}
+          mono
+        />
+        <DispatchField
+          label="Tracking number"
+          value={dispatch.tracking_number}
+          mono
+        />
+        {dispatch.seal_number ? (
+          <DispatchField label="Seal number" value={dispatch.seal_number} mono />
+        ) : null}
+        {dispatch.temperature_c ? (
+          <DispatchField
+            label="Temperature"
+            value={`${dispatch.temperature_c} °C`}
+          />
+        ) : null}
+      </div>
+
+      <div className="mt-3 border-t border-black/10 pt-3">
+        <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+          Truck-arrival checklist
+        </p>
+        <ul className="mt-2 space-y-1">
+          {DISPATCH_CHECKLIST.map(({ key, label }) => {
+            const passed = dispatch.checklist[key] === true;
+            return (
+              <li
+                key={key}
+                className="flex items-center gap-2 text-xs"
+              >
+                <span
+                  className={
+                    "flex h-4 w-4 shrink-0 items-center justify-center border border-black " +
+                    (passed
+                      ? "bg-emerald-200 text-emerald-800"
+                      : "bg-white text-neutral-400")
+                  }
+                >
+                  {passed ? (
+                    <Check className="h-2.5 w-2.5" />
+                  ) : (
+                    <span>—</span>
+                  )}
+                </span>
+                <span className={passed ? "text-neutral-900" : "text-neutral-500"}>
+                  {label}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+
+      {lightboxPhotos.length > 0 ? (
+        <div className="mt-3 border-t border-black/10 pt-3">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            Loading photos ({lightboxPhotos.length})
+          </p>
+          <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {lightboxPhotos.map((photo, index) => (
+              <li key={photo.uuid}>
+                <button
+                  type="button"
+                  onClick={() => setLightboxIndex(index)}
+                  title={photo.filename}
+                  aria-label={`Open ${photo.filename} in a larger view`}
+                  className="block aspect-square w-full overflow-hidden border-2 border-black bg-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] focus:outline-none focus-visible:shadow-[3px_3px_0_0_black]"
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element --
+                     operator-uploaded evidence served via ownership-
+                     scoped proxy at unknown resolutions. */}
+                  <img
+                    src={photo.href}
+                    alt={photo.filename}
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {lightboxIndex !== null && lightboxPhotos.length > 0 ? (
+        <DispatchPhotoLightbox
+          photos={lightboxPhotos}
+          openIndex={lightboxIndex}
+          onClose={() => setLightboxIndex(null)}
+          onIndexChange={setLightboxIndex}
+        />
+      ) : null}
+    </section>
+  );
+}
+
+
+function DispatchField({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: string | null;
+  mono?: boolean;
+}) {
+  const shown = value?.trim();
+  return (
+    <div className="space-y-0.5">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+        {label}
+      </p>
+      <p
+        className={
+          "text-sm " +
+          (mono ? "font-mono " : "") +
+          (shown ? "text-neutral-900" : "italic text-neutral-400")
+        }
+      >
+        {shown || "—"}
+      </p>
+    </div>
   );
 }
 

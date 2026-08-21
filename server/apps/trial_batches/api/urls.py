@@ -17,6 +17,7 @@ from apps.trial_batches.api.cycle_scientist_views import (
     TrialBatchCycleFormulationVersionsView,
     TrialBatchCycleListView,
     TrialBatchCycleOpenNextSlotView,
+    TrialBatchCyclePipelineColumnView,
     TrialBatchCycleTeamOverrideCloseView,
 )
 
@@ -38,6 +39,14 @@ urlpatterns = [
         "organizations/<uuid:org_id>/trial-batch-cycles/",
         TrialBatchCycleListView.as_view(),
         name="trial-batch-cycles-list",
+    ),
+    # Kanban column feed — per-stage paginated cursor list. FE
+    # fires one call per column so a big Closed archive can't
+    # starve the small Needs-click bucket.
+    path(
+        "organizations/<uuid:org_id>/trial-batch-cycles/pipeline/<str:stage>/",
+        TrialBatchCyclePipelineColumnView.as_view(),
+        name="trial-batch-cycle-pipeline-column",
     ),
     path(
         "organizations/<uuid:org_id>/trial-batch-cycles/<uuid:cycle_id>/slots/<uuid:slot_id>/create-and-link-batch/",
