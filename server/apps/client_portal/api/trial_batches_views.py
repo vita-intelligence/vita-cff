@@ -389,12 +389,38 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         ).filter(id=slot_row.trial_batch_id).first()
         if _tb is None or not getattr(_tb, "psp_manufacturing_order_uuid", None):
             continue
+        dispatch_payload = _fetch_dispatch_only(slot_row, cycle.organization)
+        # Reconcile stuck rows: if NPD says the slot has been
+        # delivered / feedback_pending / closed_* but PSP's dispatch
+        # is still at ``picked_up``, PSP never got the customer's
+        # portal confirm (integration was down, older confirm-view
+        # release predated the propagate-to-PSP fix, etc.). Fire the
+        # PSP confirm once — the endpoint is idempotent — so the
+        # Shipment card's status pill catches up next tick.
+        if (
+            dispatch_payload
+            and dispatch_payload.get("status") == "picked_up"
+            and slot_row.status
+            in (
+                TrialBatchSlotStatus.DELIVERED,
+                TrialBatchSlotStatus.FEEDBACK_PENDING,
+                TrialBatchSlotStatus.CLOSED_ITERATED,
+                TrialBatchSlotStatus.CLOSED_SATISFIED,
+            )
+        ):
+            _propagate_delivery_to_psp(slot_row, actor=None)
+            # Re-read so the payload the FE receives on THIS request
+            # already reflects the reconciled state — otherwise the
+            # customer has to refresh once more to see it flip.
+            dispatch_payload = _fetch_dispatch_only(
+                slot_row, cycle.organization
+            )
         production_by_slot[slot_key] = {
             "state": "unknown",
             "total": 0,
             "done": 0,
             "phase": "",
-            "dispatch": _fetch_dispatch_only(slot_row, cycle.organization),
+            "dispatch": dispatch_payload,
         }
     # ``slots_used`` counts slots the customer has actually been sent
     # a sample for (or is currently being sent one for) — anything past
@@ -494,7 +520,62 @@ class PortalTrialBatchSlotConfirmDeliveryView(PortalAPIView):
                 {"code": "slot_not_active", "detail": str(exc)},
                 status=status.HTTP_409_CONFLICT,
             )
+
+        # Bi-directional delivery confirm: propagate to PSP so the
+        # Shipment card's status pill flips from "In transit" to
+        # "Delivered" on the very next portal read. Without this,
+        # the NPD slot was marked DELIVERED but PSP's dispatch row
+        # stayed at ``picked_up`` — the customer would keep seeing
+        # "In transit" even after clicking "I've received it".
+        # Silent-degrade: if PSP is unreachable, the NPD state is
+        # already updated and the reconcile pass in ``_serialise_cycle``
+        # will catch PSP up on the next portal visit.
+        _propagate_delivery_to_psp(slot, request.user)
+
         return Response({"slot": _serialise_slot(slot)})
+
+
+def _propagate_delivery_to_psp(slot: TrialBatchSlot, actor: Any) -> None:
+    """Best-effort: call PSP's confirm-delivery endpoint for the
+    slot's Sample CO so the dispatch row moves from ``picked_up`` to
+    ``delivered`` and stays in sync with the NPD-side slot status.
+    Always safe to call — PSP's endpoint is idempotent for already-
+    delivered shipments.
+    """
+
+    from apps.psp.services import confirm_psp_dispatch_delivery_for_co
+
+    signatory = _portal_actor_display_name(actor)
+    try:
+        confirm_psp_dispatch_delivery_for_co(
+            organization=slot.cycle.organization,
+            co_uuid=slot.id,
+            recipient_signatory=signatory,
+            delivery_notes="Confirmed via customer portal",
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade
+        return
+
+
+def _portal_actor_display_name(actor: Any) -> str:
+    """Human-readable signatory for the PSP dispatch confirmation.
+    Prefers full name, then email, then a portal placeholder so PSP
+    always sees a non-empty string.
+    """
+
+    if actor is None:
+        return "Customer"
+    getter = getattr(actor, "get_full_name", None)
+    name = ""
+    if callable(getter):
+        try:
+            name = (getter() or "").strip()
+        except Exception:  # noqa: BLE001
+            name = ""
+    if name:
+        return name
+    email = (getattr(actor, "email", "") or "").strip()
+    return email or "Customer"
 
 
 class PortalTrialBatchSlotFeedbackView(PortalAPIView):

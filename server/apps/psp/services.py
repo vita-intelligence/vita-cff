@@ -6189,6 +6189,47 @@ def confirm_psp_dispatch_delivery_for_payment(
         return None
 
 
+def confirm_psp_dispatch_delivery_for_co(
+    *,
+    organization: Any,
+    co_uuid: Any,
+    recipient_signatory: str,
+    delivery_notes: str = "",
+) -> dict | None:
+    """Payment-agnostic counterpart to
+    :func:`confirm_psp_dispatch_delivery_for_payment`. Forwards the
+    customer's POD to PSP for a CO looked up by uuid directly —
+    used by the cycle-slot portal path where the Sample CO on PSP is
+    keyed by ``slot.id`` rather than a Payment id.
+
+    Silent-degrade to ``None`` on any failure. Callers should treat
+    None as "PSP wasn't reached, retry / reconcile later" rather
+    than as a hard error — the customer-visible NPD state has
+    already been updated and the reconcile loop on portal reads
+    will catch up the PSP side on the next visit.
+    """
+
+    if organization is None or not is_psp_live(organization):
+        return None
+    cleaned = str(co_uuid or "").strip()
+    if not cleaned:
+        return None
+
+    try:
+        config = get_psp_config(organization=organization)
+    except PspDecryptionFailed:
+        return None
+    client = _client_factory(config)
+    try:
+        return client.confirm_customer_order_delivery(
+            cleaned,
+            recipient_signatory=recipient_signatory,
+            delivery_notes=delivery_notes,
+        )
+    except PspError:
+        return None
+
+
 def fetch_psp_dispatch_photo_for_co(
     *, organization: Any, co_uuid: Any, file_uuid: Any
 ) -> tuple[bytes, str, str] | None:
