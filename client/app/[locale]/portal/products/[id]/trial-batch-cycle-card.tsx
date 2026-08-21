@@ -910,6 +910,8 @@ function DispatchDetailsCard({
       `/dispatch-photos/${encodeURIComponent(photo.uuid)}/`,
   }));
 
+  const isDelivered = dispatch.status === "delivered";
+
   return (
     <section className="mt-4 border-2 border-black bg-white p-4">
       <div className="flex items-center gap-2">
@@ -917,14 +919,50 @@ function DispatchDetailsCard({
         <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
           Shipment details
         </p>
+        <span
+          className={
+            "ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold uppercase tracking-widest " +
+            (isDelivered
+              ? "bg-emerald-200 text-emerald-900"
+              : "bg-orange-200 text-orange-900")
+          }
+        >
+          {isDelivered ? "Delivered" : "In transit"}
+        </span>
       </div>
-      <p className="mt-1 text-xs text-neutral-700">
-        {dispatch.status === "delivered"
-          ? "Delivered."
-          : "On its way."}
-        {dispatchedAt ? ` Left our warehouse ${dispatchedAt}.` : null}
-        {deliveredAt ? ` Delivered ${deliveredAt}.` : null}
-      </p>
+
+      {/* Explicit two-line timeline — the old single-sentence
+          "Delivered. Left warehouse X. Delivered Y." was repetitive
+          and buried the delivery date. Split into labelled rows so
+          the "when did this actually arrive?" answer is obvious at
+          a glance for both in-transit and delivered shipments. */}
+      <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+        <div className="flex items-baseline gap-2">
+          <dt className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Picked up
+          </dt>
+          <dd className="text-neutral-900">
+            {dispatchedAt || (
+              <span className="italic text-neutral-500">Not yet</span>
+            )}
+          </dd>
+        </div>
+        <div className="flex items-baseline gap-2">
+          <dt className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">
+            Delivered
+          </dt>
+          <dd className="text-neutral-900">
+            {deliveredAt ||
+              (isDelivered ? (
+                <span className="text-neutral-900">Confirmed</span>
+              ) : (
+                <span className="italic text-neutral-500">
+                  {dispatchedAt ? "On the way" : "Waiting for pickup"}
+                </span>
+              ))}
+          </dd>
+        </div>
+      </dl>
 
       <div className="mt-3 grid gap-3 border-t border-black/10 pt-3 text-sm sm:grid-cols-2">
         <DispatchField label="Delivery company" value={dispatch.carrier} />
