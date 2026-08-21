@@ -1672,19 +1672,21 @@ function formatMg(value: string | null | undefined): string {
   if (value === null || value === undefined) return "—";
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return "—";
-  return `${parsed.toFixed(2)} mg`;
+  // Pharma display convention — fixed 5 decimals with trailing zeros
+  // on every mass value, matching the trial-batch BOM sheet.
+  return `${parsed.toFixed(5)} mg`;
 }
 
 
 /** Render a per-unit weight in grams. Client deliverables read more
- *  naturally in grams (730 mg → 0.730 g) at the unit level. Three
- *  decimals preserve the resolution of the underlying mg value
- *  without trailing noise. */
+ *  naturally in grams (730 mg → 0.73000 g) at the unit level. Five
+ *  decimals preserve the pharma-audit precision signal (matches the
+ *  trial-batch BOM sheet + every other mass display in the app). */
 function formatGrams(value: string | null | undefined): string {
   if (value === null || value === undefined) return "—";
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed)) return "—";
-  return `${(parsed / 1000).toFixed(3)} g`;
+  return `${(parsed / 1000).toFixed(5)} g`;
 }
 
 

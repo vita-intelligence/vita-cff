@@ -102,9 +102,12 @@ function pspBomHref(
 
 
 function formatQty(mg: number): string {
-  if (mg >= 1_000_000) return `${(mg / 1_000_000).toFixed(3)} kg`;
-  if (mg >= 1000) return `${(mg / 1000).toFixed(2)} g`;
-  return `${mg.toFixed(2)} mg`;
+  // Pharma display convention — fixed 5 decimals with trailing zeros
+  // on every mass value, matching the trial-batch BOM sheet. Signals
+  // recorded precision to auditors; "5.00000 mg" ≠ "5 mg".
+  if (mg >= 1_000_000) return `${(mg / 1_000_000).toFixed(5)} kg`;
+  if (mg >= 1000) return `${(mg / 1000).toFixed(5)} g`;
+  return `${mg.toFixed(5)} mg`;
 }
 
 

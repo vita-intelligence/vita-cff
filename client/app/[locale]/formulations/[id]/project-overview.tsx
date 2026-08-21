@@ -687,7 +687,9 @@ function formatMg(raw: string | null): string {
   if (!raw) return "—";
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed)) return "—";
-  return `${parsed.toFixed(2)} mg`;
+  // Pharma display convention — fixed 5 decimals with trailing zeros,
+  // matching the trial-batch BOM sheet + spec sheet.
+  return `${parsed.toFixed(5)} mg`;
 }
 
 
