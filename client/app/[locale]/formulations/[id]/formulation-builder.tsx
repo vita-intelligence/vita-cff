@@ -3318,6 +3318,8 @@ export function FormulationBuilder({
               mg: row.mg,
               itemId: row.itemId,
               pspSourceUuid: row.pspItemUuid ?? null,
+              sourceUnit: row.sourceUnit,
+              qty: row.qty,
             },
           ];
         }
@@ -3330,6 +3332,8 @@ export function FormulationBuilder({
               mg: row.mg,
               itemId: row.itemId,
               pspSourceUuid: row.pspItemUuid ?? null,
+              sourceUnit: row.sourceUnit,
+              qty: row.qty,
             },
           ];
         }
@@ -4678,6 +4682,8 @@ export function FormulationBuilder({
           item_id: string | null;
           psp_item_uuid?: string | null;
           mg: number;
+          qty?: number;
+          source_unit?: string;
           sort_order: number;
           label: string;
           code: string;
@@ -4692,14 +4698,35 @@ export function FormulationBuilder({
           .filter(
             (row) => Boolean(row.itemId) || Boolean(row.pspSourceUuid),
           )
-          .map((row, idx) => ({
-            item_id: row.itemId,
-            psp_item_uuid: row.pspSourceUuid ?? null,
-            mg: row.mg,
-            sort_order: idx,
-            label: row.label,
-            code: row.code,
-          }));
+          .map((row, idx) => {
+            // ``source_unit`` + ``qty`` only ride for rows whose
+            // per-serving value isn't naturally mg (e.g. capsule
+            // shells emit ``sourceUnit="pcs", qty=1``). Mass rows
+            // stay on the legacy ``mg`` channel — the BE treats a
+            // missing ``source_unit`` as "mg" for backwards compat.
+            const payload: {
+              item_id: string | null;
+              psp_item_uuid?: string | null;
+              mg: number;
+              qty?: number;
+              source_unit?: string;
+              sort_order: number;
+              label: string;
+              code: string;
+            } = {
+              item_id: row.itemId,
+              psp_item_uuid: row.pspSourceUuid ?? null,
+              mg: row.mg,
+              sort_order: idx,
+              label: row.label,
+              code: row.code,
+            };
+            if (row.sourceUnit && row.qty != null) {
+              payload.source_unit = row.sourceUnit;
+              payload.qty = row.qty;
+            }
+            return payload;
+          });
       });
       await saveVersionMutation.mutateAsync({ label: "", stage_boms: stageBoms });
       // Clear the sparse routing draft map now that the whole chain
@@ -6518,6 +6545,8 @@ export function FormulationBuilder({
               item_id: string | null;
               psp_item_uuid?: string | null;
               mg: number;
+              qty?: number;
+              source_unit?: string;
               sort_order: number;
             }[]
           > = {};
@@ -6526,12 +6555,26 @@ export function FormulationBuilder({
               .filter(
                 (row) => Boolean(row.itemId) || Boolean(row.pspSourceUuid),
               )
-              .map((row, idx) => ({
-                item_id: row.itemId,
-                psp_item_uuid: row.pspSourceUuid ?? null,
-                mg: row.mg,
-                sort_order: idx,
-              }));
+              .map((row, idx) => {
+                const payload: {
+                  item_id: string | null;
+                  psp_item_uuid?: string | null;
+                  mg: number;
+                  qty?: number;
+                  source_unit?: string;
+                  sort_order: number;
+                } = {
+                  item_id: row.itemId,
+                  psp_item_uuid: row.pspSourceUuid ?? null,
+                  mg: row.mg,
+                  sort_order: idx,
+                };
+                if (row.sourceUnit && row.qty != null) {
+                  payload.source_unit = row.sourceUnit;
+                  payload.qty = row.qty;
+                }
+                return payload;
+              });
           });
           await syncPspMutation.mutateAsync({ stageBoms });
         }}
@@ -7776,6 +7819,11 @@ type BomLine = {
   key: string;
   label: string;
   code: string;
+  /** Per-serving contribution in **milligrams**. Kept as the mass
+   *  channel for every consumer that needs a mass value: batch
+   *  scaleup, %-of-mass conversions, ingredient declaration math.
+   *  Even count rows (capsule shells) populate ``mg`` with their
+   *  per-piece mass so those computations still see real weight. */
   mg: number;
   /** Local ``catalogues.Item.id`` for the row's SKU when one is
    *  picked (and mirrored). ``null`` for compute-only placeholder
@@ -7789,6 +7837,20 @@ type BomLine = {
    *  BE ``stage_bom_overrides`` handler prefers ``item_id`` when
    *  present; falls back to this uuid otherwise. */
   pspItemUuid?: string | null;
+  /** Dimensional overlay for rows whose per-serving quantity isn't
+   *  naturally a mass — capsule shells (``"pcs"``), packaging dropped
+   *  in a stage (``"pcs"``), liquid excipients spec'd by volume
+   *  (``"ml"``). When set alongside :attr:`qty`, the PSP push
+   *  serialiser sends ``{qty, source_unit}`` on the wire so PSP lands
+   *  the line in the child item's own ``stock_uom`` (a shell with
+   *  ``stock_uom=pcs`` shows "60 pcs" instead of "0.00576 kg"). Omit
+   *  for classic mass rows — the backend treats a missing
+   *  ``source_unit`` as ``"mg"``. */
+  sourceUnit?: string;
+  /** Per-serving quantity expressed in :attr:`sourceUnit`. Only
+   *  meaningful when ``sourceUnit`` is also set; otherwise the
+   *  backend reads :attr:`mg` for the (mg, per serving) value. */
+  qty?: number;
 };
 
 function deriveStageBomLines(inputs: {
@@ -7953,12 +8015,18 @@ function deriveStageBomLines(inputs: {
       pspSourceUuid: null,
     };
 
-  // Capsule shells — one row per picked shell SKU with the shell's
-  // own ``shell_weight_mg`` attribute as its per-serving mg. Every
-  // capsule uses one shell per serving, so quantity = weight. Rows
-  // without a resolvable weight fall back to 1 mg so the SKU still
-  // appears on the BOM (procurement then knows the shell is needed
-  // even if the weight attribute wasn't populated on the mirror).
+  // Capsule shells — one row per picked shell SKU. Two channels
+  // populated on each row:
+  //   • ``mg`` = shell's ``shell_weight_mg`` attribute × 1 shell per
+  //     serving. Feeds batch scaleup + any other mass-based math that
+  //     needs the shell's contribution to total pack weight.
+  //   • ``sourceUnit="pcs" + qty=1`` = one shell per serving. This is
+  //     what the PSP push serialises so PSP's MO Parts table lands
+  //     the shell in its native ``stock_uom=pcs`` (renders "60 pcs"
+  //     for a 60-serving pack) instead of the historic kg fallback.
+  // Rows without a resolvable weight still emit with mg=1 so the SKU
+  // appears on procurement's radar even when the weight attribute is
+  // blank on the mirror.
   if (capsuleShellItems.length > 0) {
     for (const shell of capsuleShellItems) {
       const rawWeight = shell.attributes?.["shell_weight_mg"];
@@ -7977,6 +8045,8 @@ function deriveStageBomLines(inputs: {
         code: shell.internal_code || "",
         mg,
         itemId: shell.id,
+        sourceUnit: "pcs",
+        qty: 1,
       });
     }
   } else if (autoCapsuleShell && autoCapsuleShell.shellWeightMg > 0) {
@@ -7984,7 +8054,8 @@ function deriveStageBomLines(inputs: {
     // the finished capsule's BOM still lists a shell. Weight comes
     // from PSP's catalog match (or the hardcoded per-size fallback
     // when the catalog is empty). Sent to PSP with its raw PSP uuid
-    // (no local mirror row yet).
+    // (no local mirror row yet). Same dual-channel encoding as the
+    // explicit-pick branch above.
     out.push({
       key: `capsule-shell:auto`,
       label: autoCapsuleShell.name,
@@ -7992,6 +8063,8 @@ function deriveStageBomLines(inputs: {
       mg: autoCapsuleShell.shellWeightMg,
       itemId: null,
       pspItemUuid: autoCapsuleShell.pspItemUuid,
+      sourceUnit: "pcs",
+      qty: 1,
     });
   }
 
@@ -9211,90 +9284,133 @@ const RoutingTabBody = memo(function RoutingTabBody({
                     across ingredients and other stages. Preview only,
                     like the finished-units input above. */}
                 {(() => {
-                  const stockUnitCount = finishedUnits * stageServings;
+                  // Stock units of THIS stage needed for the batch.
+                  //
+                  // SPOU semantics (``FormulationStage.servings_per_output_unit``):
+                  // "how many finished servings fit inside 1 stock-unit
+                  // of this stage's output".
+                  //   * Blending ``SPOU = 2207`` (1 kg blend = 2207 caps)
+                  //   * Encapsulation ``SPOU = 1`` (1 cap = 1 serving)
+                  //   * Bottling ``SPOU = 120`` (1 bottle = 120 caps)
+                  //   * Finished ``SPOU = 120`` (1 pack = 120 caps)
+                  //
+                  // So stock-units for a batch of ``finishedUnits``
+                  // packs is (finished × servingsPerPack) ÷ SPOU:
+                  //   * Blending: 1 × 120 ÷ 2207 = 0.0544 kg blend
+                  //   * Encapsulation: 1 × 120 ÷ 1 = 120 caps
+                  //   * Bottling: 1 × 120 ÷ 120 = 1 bottle
+                  //   * Finished: 1 × 120 ÷ 120 = 1 pack
+                  //
+                  // The old formula was ``finishedUnits × SPOU`` — the
+                  // inverse. That's why Bottling read "120 stock-units
+                  // for 1 finished unit" instead of "1 bottle".
+                  const safeSpou = stageServings > 0 ? stageServings : 1;
+                  const stockUnitCount =
+                    (finishedUnits * servingsPerPack) / safeSpou;
                   const uom = stage.psp_item_stock_uom_uuid
                     ? uomByUuid.get(stage.psp_item_stock_uom_uuid)
                     : undefined;
                   const sym = (uom?.symbol ?? "").trim().toLowerCase();
                   const factor = MG_PER_UOM[sym];
                   const isCountUom = !!uom && !factor;
-                  // Current qty in the stage's own UoM.
+                  // Current qty in the stage's own UoM. For mass /
+                  // volume stages we prefer the ingredient-mass math
+                  // (``perPackMg / factor``) — it's still equivalent
+                  // to ``stockUnitCount`` when SPOU is honestly derived,
+                  // but survives the transition period where a stored
+                  // SPOU=1 default hasn't been auto-derived yet.
                   const currentQty = isCountUom
                     ? stockUnitCount
                     : factor
                       ? (perPackMg * finishedUnits) / factor
-                      : perPackMg * finishedUnits;
-                  // Per-1-finished-unit qty — used to rescale
-                  // finishedUnits when the operator types a new
-                  // target output. Guarded so a zero doesn't blow up
-                  // the division.
-                  const qtyPerFinished = isCountUom
-                    ? stageServings
-                    : factor
-                      ? perPackMg / factor
-                      : perPackMg;
-                  const symbolLabel = uom?.symbol || "output";
-                  const displayValue = isCountUom
-                    ? String(Math.round(currentQty))
-                    : (() => {
-                        const prec =
-                          currentQty >= 100 ? 1 : currentQty >= 10 ? 2 : 3;
-                        return currentQty.toFixed(prec);
-                      })();
-                  const onOutputChange = (raw: string) => {
-                    const parsed = Number.parseFloat(raw);
-                    if (!Number.isFinite(parsed) || parsed <= 0) return;
-                    if (qtyPerFinished <= 0) return;
-                    // Keep the back-solve as a float so the operator's
-                    // typed value survives the round-trip exactly. The
-                    // previous ``Math.round`` snapped ``finishedUnits``
-                    // to the nearest integer, so typing "2" against a
-                    // 1.040-per-unit ratio landed at 2 finished units
-                    // and re-rendered as 2.080. Preview-only anyway —
-                    // finishedUnits doesn't need to be a whole number
-                    // just so the on-screen output matches what the
-                    // scientist actually asked for.
-                    const nextFinished = Math.max(
-                      0.001,
-                      parsed / qtyPerFinished,
-                    );
-                    // Trim trailing zeros so the corresponding
-                    // ``Finished units to make`` input at the top of
-                    // the tab reads cleanly (12 not "12.000").
-                    const trimmed = Number.isInteger(nextFinished)
-                      ? String(Math.round(nextFinished))
-                      : String(Number(nextFinished.toFixed(4)));
-                    setFinishedUnitsInput(trimmed);
+                      : stockUnitCount;
+                  // Pharma-audit display convention: mass / volume
+                  // always render at fixed 5 decimals with trailing
+                  // zeros. ``0.05436 kg`` communicates "recorded to
+                  // 10 mg precision"; ``5.00000 kg`` is meaningfully
+                  // different from ``5 kg`` (which drops the recorded
+                  // precision). Count items stay whole integers.
+                  const MASS_DECIMALS = 5;
+                  // Auto-scale label when the PSP UoM lookup didn't
+                  // land (no ``psp_item_stock_uom_uuid`` on the stage,
+                  // or the org's UoM catalog hasn't loaded yet). Same
+                  // fixed 5-decimals convention so the display never
+                  // leaks raw milligrams AND never drops precision.
+                  const autoScaleForMass = (mgVal: number): {
+                    display: string;
+                    symbol: string;
+                  } => {
+                    const abs = Math.abs(mgVal);
+                    if (abs >= 1_000_000)
+                      return {
+                        display: (mgVal / 1_000_000).toFixed(MASS_DECIMALS),
+                        symbol: "kg",
+                      };
+                    if (abs >= 1_000)
+                      return {
+                        display: (mgVal / 1_000).toFixed(MASS_DECIMALS),
+                        symbol: "g",
+                      };
+                    return {
+                      display: mgVal.toFixed(MASS_DECIMALS),
+                      symbol: "mg",
+                    };
                   };
+                  const totalMg = perPackMg * finishedUnits;
+                  const fallback = !uom && totalMg > 0
+                    ? autoScaleForMass(totalMg)
+                    : null;
+                  const symbolLabel =
+                    uom?.symbol || fallback?.symbol || "output";
+                  const displayValue = fallback
+                    ? fallback.display
+                    : isCountUom
+                      ? Number.isInteger(currentQty)
+                        ? String(currentQty)
+                        // Count items should be whole after the
+                        // backend's ``normalise_count_qty`` runs, but
+                        // preview-only fractional counts (before
+                        // save) render at 5 decimals so a 0.05436
+                        // "0.05436 pcs" still communicates precision
+                        // rather than getting truncated to zero.
+                        : currentQty.toFixed(MASS_DECIMALS)
+                      : currentQty.toFixed(MASS_DECIMALS);
                   return (
                     <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-xl bg-ink-50/60 px-3 py-2 text-[11px] text-ink-700 ring-1 ring-inset ring-ink-200">
                       <span className="font-semibold uppercase tracking-wide text-ink-500">
                         This stage produces
                       </span>
-                      <label className="flex items-baseline gap-1 text-base font-semibold text-ink-1000">
-                        <input
-                          type="number"
-                          min={0}
-                          step="any"
-                          value={displayValue}
-                          onChange={(e) => onOutputChange(e.target.value)}
-                          disabled={!canWrite}
-                          className="w-24 rounded-md bg-ink-0 px-2 py-0.5 text-right text-base font-semibold text-ink-1000 ring-1 ring-inset ring-ink-200 focus:outline-none focus:ring-2 focus:ring-orange-400 disabled:cursor-not-allowed"
-                          aria-label={`Target output for ${stage.name}`}
-                        />
+                      {/* Read-only projection. Derived deterministically
+                          from ``finishedUnits × servingsPerPack ÷ SPOU``
+                          — scientists can't type nonsense here and
+                          silently rescale the preview into a different
+                          batch. The single legitimate rescale lever is
+                          the "Finished units to make" input at the top
+                          of the tab; everything on the right cascades
+                          from that. Compliance-first field design:
+                          computed values are read-only. */}
+                      <span
+                        className="inline-flex items-baseline gap-1 rounded-md bg-ink-0 px-2 py-0.5 text-base font-semibold text-ink-1000 ring-1 ring-inset ring-ink-200 tabular-nums"
+                        aria-label={`Projected output for ${stage.name} — read-only`}
+                      >
+                        <span>{displayValue}</span>
                         <span className="text-sm font-normal text-ink-600">
                           {symbolLabel}
                         </span>
-                      </label>
+                      </span>
                       <span className="text-ink-500">
-                        ({Number.isInteger(stockUnitCount) ? stockUnitCount : stockUnitCount.toFixed(3)} stock-unit
-                        {stockUnitCount === 1 ? "" : "s"} · for{" "}
-                        {Number.isInteger(finishedUnits) ? finishedUnits : finishedUnits.toFixed(3)} finished unit
-                        {finishedUnits === 1 ? "" : "s"})
+                        ({Number.isInteger(stockUnitCount)
+                          ? stockUnitCount
+                          : stockUnitCount.toFixed(MASS_DECIMALS)}{" "}
+                        stock-unit{stockUnitCount === 1 ? "" : "s"} · for{" "}
+                        {Number.isInteger(finishedUnits)
+                          ? finishedUnits
+                          : finishedUnits.toFixed(MASS_DECIMALS)}{" "}
+                        finished unit{finishedUnits === 1 ? "" : "s"})
                       </span>
                       <span className="basis-full text-[10px] italic text-ink-500">
-                        Type a new number to rescale — proportions
-                        stay locked across every stage.
+                        Derived from Finished units × servings per pack ÷ SPOU —
+                        change the Finished units input above to rescale.
                       </span>
                     </div>
                   );

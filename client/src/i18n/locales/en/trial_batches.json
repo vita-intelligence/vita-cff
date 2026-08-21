@@ -56,11 +56,11 @@
     "column_label": {
       "code": "Code",
       "material": "Material",
-      "mg_per_unit": "Per unit (mg)",
-      "g_per_pack": "Per pack (g)",
-      "bom": "Per 1 kg blend (g)",
-      "totals": "Total / batch (g)",
-      "actual": "Actual (handwrite, g)"
+      "mg_per_unit": "Per unit",
+      "g_per_pack": "Per pack",
+      "bom": "Per 1 kg blend",
+      "totals": "Total / batch",
+      "actual": "Actual (handwrite)"
     },
     "export_csv": "Export CSV",
     "export_json": "Export JSON",
@@ -73,11 +73,11 @@
     "column": {
       "code": "Code",
       "material": "Raw material",
-      "mg_per_unit_dynamic": "Per {unit} (mg)",
-      "g_per_pack_dynamic": "Per pack of {perPack} (g)",
-      "bom": "Per 1 kg blend (g)",
-      "kg_per_batch": "Total / batch (g)",
-      "actual": "Actual measured (g)"
+      "mg_per_unit_dynamic": "Per {unit}",
+      "g_per_pack_dynamic": "Per pack of {perPack}",
+      "bom": "Per 1 kg blend",
+      "kg_per_batch": "Total / batch",
+      "actual": "Actual measured"
     },
     "column_hint": {
       "code": "Procurement code from the catalogue.",

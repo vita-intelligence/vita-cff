@@ -212,6 +212,42 @@ class TrialBatchDetailView(APIView):
         organization = batch.organization
         target_id = str(batch.pk)
         before = snapshot(batch)
+
+        # Cycle-slot reset — the FK from TrialBatchSlot → TrialBatch
+        # is ``SET_NULL``, so a raw ``batch.delete()`` orphans the
+        # slot but leaves its ``status`` (IN_PRODUCTION / DELIVERED /
+        # FEEDBACK_PENDING) intact. The portal's "N of 3 samples
+        # sent" counter reads any non-``AWAITING_SCIENTIST`` /
+        # non-``CLOSED_CANCELLED`` slot as worked, so a stale status
+        # keeps the counter lit at "1 of 3" after the sample was
+        # deleted. Reset the slot fields that only make sense while
+        # a batch is attached, so the counter drops back to
+        # "0 of 3" the moment the batch is gone. Feedback fields
+        # (verdict / verdict_at / feedback_summary /
+        # keep_producing_remaining) are similarly per-batch —
+        # clearing them prevents a stale customer verdict from a
+        # deleted sample carrying over onto whatever fresh batch
+        # the scientist creates for the same slot.
+        slot = getattr(batch, "cycle_slot", None)
+        if slot is not None:
+            from apps.trial_batches.models import TrialBatchSlotStatus
+
+            slot.status = TrialBatchSlotStatus.AWAITING_SCIENTIST
+            slot.verdict = None
+            slot.verdict_at = None
+            slot.feedback_summary = ""
+            slot.keep_producing_remaining = False
+            slot.save(
+                update_fields=[
+                    "status",
+                    "verdict",
+                    "verdict_at",
+                    "feedback_summary",
+                    "keep_producing_remaining",
+                    "updated_at",
+                ]
+            )
+
         batch.delete()
         record_audit(
             organization=organization,
