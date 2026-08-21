@@ -3744,6 +3744,14 @@ def _unit_symbol_for(item: Any) -> str:
 #
 # Both are cleared via :func:`_reset_psp_unit_cache` in tests.
 _PSP_UNIT_INFO_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
+# Per-(org, item uuid) cache for PSP item metadata (chiefly stock_uom
+# info consumed by the BOM push cascade to decide count-vs-mass row
+# tagging). Filled lazily by :func:`_get_psp_item_cached` on the
+# first push that references an item; subsequent pushes hit the
+# cache. Cleared alongside the UoM cache via
+# :func:`_reset_psp_unit_cache`. Cached ``None`` explicitly to short-
+# circuit repeated lookups of items PSP doesn't know about.
+_PSP_ITEM_CACHE: dict[tuple[Any, str], Any] = {}
 _PSP_UNIT_BASE_CACHE: dict[tuple[Any, str], dict[str, Any]] = {}
 # Legacy alias — external tests reference the old name. Points at
 # ``_PSP_UNIT_INFO_CACHE`` so its cache-invalidation semantics carry
@@ -3806,6 +3814,52 @@ def _psp_unit_info_for(
         return None
     org_key = _load_psp_unit_catalog(client, organization)
     return _PSP_UNIT_INFO_CACHE.get((org_key, key))
+
+
+def _get_psp_item_cached(
+    client: "PspClient | None", organization: Any, uuid: Any
+) -> Any:
+    """Fetch a PSP item by uuid via an in-process cache.
+
+    The BOM push cascade previously issued one ``get_item`` call per
+    unique item per push to learn its ``stock_uom`` (needed for the
+    count-vs-mass auto-tag guard). For a Kyrgyz-shape formulation
+    (~10 unique items across the stage graph) that adds up to ~10
+    sequential HTTP round-trips just for stock UoM — 9+ seconds in
+    dev, worse in prod with real latency.
+
+    Cache eliminates the repeat cost across pushes AND deduplicates
+    within the SAME push (the caller's per-push iteration already
+    unique-ifies by ``Item.id``, but keying the cache on ``(org_pk,
+    uuid)`` means a second stage push in the same request costs
+    zero.
+
+    Cached ``None`` for lookups PSP returned 404 on so a mistyped
+    uuid doesn't retry every time. Callers that need cache
+    invalidation (tests) can clear ``_PSP_ITEM_CACHE`` directly.
+    """
+
+    if client is None or organization is None or uuid in (None, ""):
+        return None
+    key = str(uuid).strip()
+    if not key:
+        return None
+    org_key = getattr(organization, "pk", None) or getattr(organization, "id", None)
+    cache_key = (org_key, key)
+    if cache_key in _PSP_ITEM_CACHE:
+        return _PSP_ITEM_CACHE[cache_key]
+    try:
+        item = client.get_item(key)
+    except PspError:
+        item = None
+    except Exception:
+        logger.exception(
+            "PSP _get_psp_item_cached: unexpected error fetching PSP item %s",
+            key,
+        )
+        item = None
+    _PSP_ITEM_CACHE[cache_key] = item
+    return item
 
 
 def _psp_unit_info_by_uuid(
@@ -4642,30 +4696,34 @@ def _push_staged_cascade(
                     id__in=wanted_ids, psp_source_uuid__isnull=False
                 ).only("id", "psp_source_uuid", "unit")
             )
-            # PSP-side stock UoM fetch — one call per unique item. Local
-            # NPD ``Item.unit`` is frequently empty (mirror doesn't
-            # persist it); PSP knows the truth. Silent-degrade per item:
-            # a fetch failure leaves that item's stock_uom_* empty,
-            # falling back to the legacy "assume mg" behaviour rather
-            # than blocking the push. Reuses the caller's already-built
-            # ``client`` — no need to rebuild one from config here.
-            psp_client = client
-
+            # PSP-side stock UoM fetch — via a per-process cache so a
+            # push referencing the same items again (retry, next cycle
+            # slot, next stage) doesn't pay another PSP round-trip.
+            # Local NPD ``Item.unit`` is frequently empty (mirror
+            # doesn't persist it); when it IS set we skip the PSP
+            # call entirely — the mass items path only needs to know
+            # the item isn't count-dimension, which the presence of a
+            # mass-shape local unit ("kg" / "g" / "mg" / "l" / "ml")
+            # already tells us. Silent-degrade per item: a fetch
+            # failure leaves that item's stock_uom_* empty, falling
+            # back to the legacy "assume mg" behaviour rather than
+            # blocking the push.
+            MASS_VOL_UNITS = {"kg", "g", "mg", "l", "ml"}
             for item in local_items:
                 local_unit = str(item.unit or "").strip().lower()
                 stock_symbol: str | None = None
                 stock_dimension: str | None = None
-                if psp_client is not None:
-                    try:
-                        psp_item = psp_client.get_item(item.psp_source_uuid)
-                    except PspError:
-                        psp_item = None
-                    except Exception:
-                        logger.exception(
-                            "PSP push_bom: unexpected error fetching PSP item %s",
-                            item.psp_source_uuid,
-                        )
-                        psp_item = None
+
+                # Fast path: local unit is a mass/volume symbol we
+                # already recognise. No PSP fetch needed — the
+                # dimension is unambiguous from the symbol itself.
+                if local_unit in MASS_VOL_UNITS:
+                    stock_symbol = local_unit
+                    stock_dimension = "mass" if local_unit in {"kg", "g", "mg"} else "volume"
+                elif client is not None:
+                    psp_item = _get_psp_item_cached(
+                        client, formulation.organization, item.psp_source_uuid
+                    )
                     if psp_item is not None:
                         stock_symbol = getattr(psp_item, "stock_uom_symbol", None)
                         stock_dimension = getattr(psp_item, "stock_uom_dimension", None)
