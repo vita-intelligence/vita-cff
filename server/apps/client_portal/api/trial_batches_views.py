@@ -35,6 +35,12 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.pipeline_copy import (
+    PHASE_CURRENT_NOTE,
+    PHASE_CURRENT_TITLE,
+    SHIPPED_OR_LATER_PHASES,
+    phase_key as pipeline_phase_key,
+)
 from apps.client_portal.queries import (
     customer_ids_for_account,
     customer_owns_formulation,
@@ -62,16 +68,28 @@ def _serialise_slot(
 ) -> dict[str, Any]:
     """Portal-side snapshot of a single slot.
 
-    ``production`` is an optional pre-fetched summary derived from
-    the slot's linked PSP MO chain — shape ``{state, total, done}``
-    where ``state`` is ``"not_pushed" | "in_progress" | "completed"``.
-    Mirrors what the storefront sample-detail view exposes so the
-    portal card can gate the "I've received it" button on production
-    actually being finished (not just the slot being ``in_production``,
-    which fires the moment the batch links).
+    ``production`` is the pre-fetched per-slot production summary:
+
+      * ``state`` — ``"not_pushed" | "in_progress" | "completed" | "unknown"``,
+        the coarse MO-chain bucket. Kept for wire back-compat.
+      * ``total`` / ``done`` — MO-chain stage counts (same purpose).
+      * ``phase`` — the PSP OrderWizard phase key for the slot's Sample
+        CO (``"in_production" | "closeout" | "final_release" |
+        "awaiting_routing" | "ready_to_dispatch" | "awaiting_pickup" |
+        "dispatched" | "delivered" | ...``), or ``""`` when the
+        snapshot fetch soft-failed.
+      * ``phase_title`` / ``phase_note`` — customer-safe copy from
+        ``pipeline_copy`` for that phase, or ``None`` for unmapped
+        phases.
+
+    The FE reads ``phase`` + copy fields as the primary signal so the
+    strip surfaces "Pending QC" / "Preparing dispatch" / "On the way"
+    instead of jumping to "ready to confirm" the instant the last MO
+    closes.
     """
 
     production = production or {"state": "unknown", "total": 0, "done": 0}
+    phase = (production.get("phase") or "").strip()
     return {
         "id": str(slot.id),
         "sequence_no": slot.sequence_no,
@@ -89,6 +107,21 @@ def _serialise_slot(
         "production_state": production.get("state", "unknown"),
         "production_stages_total": production.get("total", 0),
         "production_stages_done": production.get("done", 0),
+        "production_phase": phase or None,
+        "production_phase_title": (
+            PHASE_CURRENT_TITLE.get(phase) if phase else None
+        ),
+        "production_phase_note": (
+            PHASE_CURRENT_NOTE.get(phase) if phase else None
+        ),
+        # PSP dispatch-confirmation snapshot when the shipment has
+        # left the building — carrier / plate / driver / waybill /
+        # tracking / seal / temperature + checklist + loading photos.
+        # ``None`` when PSP hasn't marked the shipment ``picked_up``
+        # yet (FE hides the card in that case). Same shape as the
+        # storefront sample-detail view so both portals speak the
+        # same wire.
+        "dispatch": production.get("dispatch"),
         "created_at": slot.created_at.isoformat(),
         "updated_at": slot.updated_at.isoformat(),
     }
@@ -97,49 +130,148 @@ def _serialise_slot(
 def _fetch_production_summary(
     slot: TrialBatchSlot, organization: Any
 ) -> dict[str, Any]:
-    """Fetch the slot's PSP MO chain and reduce it to a per-slot
-    production summary. Silent-degrade — any PSP hiccup (unreachable,
-    unknown mo uuid, integration off) returns ``"unknown"`` so the FE
-    keeps rendering the batch-link status rather than blanking.
+    """Fetch the slot's PSP MO chain + OrderWizard snapshot and reduce
+    them to a per-slot production summary. Silent-degrade — any PSP
+    hiccup (unreachable, unknown mo uuid, integration off) returns
+    ``"unknown"`` for the coarse state and ``""`` for the phase so the
+    FE keeps rendering meaningful copy rather than blanking.
 
-    Returns ``{"state": ..., "total": N, "done": M}`` where ``state``
-    is:
-      * ``"not_pushed"`` — batch exists but scientist hasn't clicked
-        Create MO on PSP yet.
-      * ``"in_progress"`` — one or more stages still non-terminal.
-      * ``"completed"`` — every stage in the chain reports
-        ``status = completed``. The physical sample is produced;
-        scientist can ship + customer can confirm receipt.
-      * ``"unknown"`` — PSP fetch failed / integration off.
+    Returns ``{"state", "total", "done", "phase"}`` where:
+
+      * ``state`` is the coarse MO-chain bucket ("not_pushed" /
+        "in_progress" / "completed" / "unknown") — kept for wire
+        back-compat with the previous shape.
+      * ``phase`` is the PSP OrderWizard phase key for the slot's
+        Sample CO ("in_production" / "closeout" / "final_release" /
+        "awaiting_routing" / "ready_to_dispatch" / "awaiting_pickup" /
+        "dispatched" / "delivered" / ...), or "" on soft-fail. The
+        cycle-slot Sample CO on PSP is keyed by ``slot.id``
+        (see `apps.psp.services.create_psp_manufacturing_order`), so
+        we look the snapshot up by that.
+
+    Chain-status "completed" doesn't mean the shipment has left the
+    building — PSP still walks through closeout / QC (final_release)
+    / awaiting_routing / dispatched / delivered after the last MO
+    closes. The phase key is the honest signal for those transitions
+    and is what the FE renders in the strip.
     """
 
-    from apps.psp.services import get_psp_manufacturing_order_chain
+    from apps.psp.services import (
+        get_psp_customer_order_snapshot,
+        get_psp_dispatch_for_co,
+        get_psp_manufacturing_order_chain,
+    )
     from apps.trial_batches.models import TrialBatch
 
     if slot.trial_batch_id is None:
-        return {"state": "not_pushed", "total": 0, "done": 0}
+        return {
+            "state": "not_pushed",
+            "total": 0,
+            "done": 0,
+            "phase": "",
+            "dispatch": None,
+        }
     tb = TrialBatch.objects.only("psp_manufacturing_order_uuid").filter(
         id=slot.trial_batch_id
     ).first()
     mo_uuid = getattr(tb, "psp_manufacturing_order_uuid", None) if tb else None
     if not mo_uuid:
-        return {"state": "not_pushed", "total": 0, "done": 0}
+        return {
+            "state": "not_pushed",
+            "total": 0,
+            "done": 0,
+            "phase": "",
+            "dispatch": None,
+        }
+
+    # Phase (rich signal). Independent from the MO chain fetch so a
+    # snapshot soft-fail doesn't blank the coarse state and vice versa.
+    # PSP wraps the payload as ``{"snapshot": {...}}`` — unwrap before
+    # handing to ``phase_key`` (same shape sample-detail unwraps).
+    try:
+        snapshot_payload = get_psp_customer_order_snapshot(
+            organization=organization, co_uuid=slot.id
+        )
+    except Exception:  # noqa: BLE001 — silent-degrade, mirrors sample-detail
+        snapshot_payload = None
+    snapshot: dict | None = None
+    if isinstance(snapshot_payload, dict):
+        inner = snapshot_payload.get("snapshot")
+        snapshot = inner if isinstance(inner, dict) else None
+    phase = pipeline_phase_key(snapshot)
+
+    # Dispatch snapshot — carrier / plate / driver / waybill /
+    # tracking / seal / temperature + checklist + loading photos.
+    # PSP returns ``None`` until the shipment is ``picked_up``; the
+    # FE hides the dispatch card in that case. Silent-degrade to
+    # ``None`` on any transport error.
+    try:
+        dispatch = get_psp_dispatch_for_co(
+            organization=organization, co_uuid=slot.id
+        )
+    except Exception:  # noqa: BLE001 — same posture as the snapshot fetch
+        dispatch = None
+
+    # Chain (coarse signal). Preserved for wire back-compat with FE
+    # revisions that haven't picked up the phase field yet.
     try:
         chain_response = get_psp_manufacturing_order_chain(
             organization=organization, mo_uuid=mo_uuid
         )
-    except Exception:  # noqa: BLE001 — silent-degrade, same posture as sample-detail
-        return {"state": "unknown", "total": 0, "done": 0}
+    except Exception:  # noqa: BLE001 — same posture
+        return {
+            "state": "unknown",
+            "total": 0,
+            "done": 0,
+            "phase": phase,
+            "dispatch": dispatch,
+        }
     chain = (chain_response or {}).get("chain") or []
     if not chain:
-        return {"state": "unknown", "total": 0, "done": 0}
+        return {
+            "state": "unknown",
+            "total": 0,
+            "done": 0,
+            "phase": phase,
+            "dispatch": dispatch,
+        }
     total = len(chain)
     done = sum(1 for row in chain if row.get("status") == "completed")
-    if done == total:
-        state = "completed"
-    else:
-        state = "in_progress"
-    return {"state": state, "total": total, "done": done}
+    state = "completed" if done == total else "in_progress"
+    return {
+        "state": state,
+        "total": total,
+        "done": done,
+        "phase": phase,
+        "dispatch": dispatch,
+    }
+
+
+def _maybe_auto_deliver_slot(
+    slot: TrialBatchSlot, production: dict[str, Any]
+) -> TrialBatchSlot:
+    """Auto-flip an IN_PRODUCTION slot to DELIVERED when PSP reports
+    the phase as ``delivered``. Mirrors the "either we or the client
+    confirm" model on the storefront samples flow — once PSP marks it
+    delivered, the customer shouldn't have to click a button to unlock
+    the feedback card.
+
+    Read-side side-effect: portal reads are the natural trigger
+    (the customer visiting the card is when we want the state to
+    catch up). Idempotent — ``mark_slot_delivered`` no-ops on
+    already-delivered / closed slots.
+    """
+
+    if (production.get("phase") or "") != "delivered":
+        return slot
+    if slot.status != TrialBatchSlotStatus.IN_PRODUCTION:
+        return slot
+    try:
+        return mark_slot_delivered(slot=slot)
+    except SlotNotActive:
+        # Slot lost its batch link between fetch and flip — extreme
+        # edge case; leave the row untouched.
+        return slot
 
 
 def _serialise_additional_request(
@@ -181,10 +313,10 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         ),
         None,
     )
-    # Fetch PSP MO chain only for the ACTIVE slot — one HTTP round-trip
-    # per portal render is fine; hitting PSP for every closed historical
-    # slot would balloon the request without adding info the customer
-    # can act on.
+    # Fetch PSP MO chain + snapshot only for the ACTIVE slot — one
+    # HTTP round-trip per portal render is fine; hitting PSP for every
+    # closed historical slot would balloon the request without adding
+    # info the customer can act on.
     production_by_slot: dict[str, dict[str, Any]] = {}
     if active is not None and active.status in (
         TrialBatchSlotStatus.IN_PRODUCTION,
@@ -192,9 +324,14 @@ def _serialise_cycle(cycle: TrialBatchCycle) -> dict[str, Any]:
         TrialBatchSlotStatus.DELIVERED,
         TrialBatchSlotStatus.FEEDBACK_PENDING,
     ):
-        production_by_slot[str(active.id)] = _fetch_production_summary(
-            active, cycle.organization
-        )
+        summary = _fetch_production_summary(active, cycle.organization)
+        production_by_slot[str(active.id)] = summary
+        # Auto-advance the slot when PSP reports the shipment has
+        # actually been delivered. Reflows the header + feedback card
+        # on the very next render without waiting on the customer to
+        # click "I've received it".
+        active = _maybe_auto_deliver_slot(active, summary)
+        slots = list(cycle.slots.order_by("sequence_no"))
     # ``slots_used`` counts slots the customer has actually been sent
     # a sample for (or is currently being sent one for) — anything past
     # the AWAITING_SCIENTIST seed row and excluding auto-cancels.
@@ -344,6 +481,49 @@ class PortalTrialBatchSlotFeedbackView(PortalAPIView):
                 "cycle": _serialise_cycle(cycle_after),
             }
         )
+
+
+class PortalTrialBatchSlotDispatchPhotoView(PortalAPIView):
+    """``GET /api/portal/trial-batches/slots/<slot_id>/dispatch-photos/<file_uuid>/``
+
+    Proxy-download one truck-arrival loading photo for a cycle-slot
+    sample. Payment-agnostic counterpart to
+    :class:`PortalSampleDispatchPhotoView` — custom-formulation
+    slots don't map to a Payment, so we key the CO lookup by
+    ``slot.id`` (matches how the Sample CO on PSP is created).
+
+    Ownership: the slot's cycle must belong to a formulation the
+    account can read through — reuses ``_load_owned_slot`` so a
+    leaked file uuid from another account 404s cleanly at that
+    layer. Bytes stream from PSP through NPD to the browser.
+
+    Photos are always ``image/*``; render inline in the portal card.
+    """
+
+    def get(self, request: Request, slot_id, file_uuid) -> Response:
+        from apps.psp.services import fetch_psp_dispatch_photo_for_co
+        from django.http import HttpResponse
+
+        slot = _load_owned_slot(request, slot_id)
+        organization = slot.cycle.organization
+
+        result = fetch_psp_dispatch_photo_for_co(
+            organization=organization,
+            co_uuid=slot.id,
+            file_uuid=file_uuid,
+        )
+        if result is None:
+            raise NotFound("dispatch_photo_not_found")
+
+        body, mime, filename = result
+        response = HttpResponse(body, content_type=mime)
+        response["Content-Disposition"] = (
+            f'inline; filename="{filename}"'
+        )
+        # Content-addressed by file uuid — a re-upload gets a new
+        # uuid so cache-forever is safe. Mirrors the sample flow.
+        response["Cache-Control"] = "private, max-age=86400, immutable"
+        return response
 
 
 class PortalTrialBatchAdditionalRequestView(PortalAPIView):

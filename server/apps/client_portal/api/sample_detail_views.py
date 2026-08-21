@@ -43,6 +43,12 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.client_portal.api.views import PortalAPIView
+from apps.client_portal.pipeline_copy import (
+    PHASE_CURRENT_NOTE as _PHASE_CURRENT_NOTE,
+    PHASE_CURRENT_TITLE as _PHASE_CURRENT_TITLE,
+    PHASE_TO_REACHED_STAGE as _PHASE_TO_REACHED_STAGE,
+    phase_key as _phase_key,
+)
 from apps.payments.constants import PaymentKind, PaymentStatus
 from apps.payments.models import Payment
 from apps.trial_batches.models import TrialBatch
@@ -98,74 +104,6 @@ _MO_STATUS_TO_REACHED_STAGE: dict[str, str] = {
     "scheduled": "preparing",
     "in_progress": "in_production",
     "completed": "ready",
-}
-
-
-# PSP OrderWizard phase keys → which customer pipeline stage they
-# should satisfy. Anything before ``production_planning`` shouldn't
-# happen for a sample CO (samples land as ``status = confirmed``,
-# skipping every proposal / approval phase), but we defensively map
-# them to ``preparing`` so a mid-flight PSP state change doesn't
-# leave the pipeline empty.
-_PHASE_TO_REACHED_STAGE: dict[str, str] = {
-    # Early wizard states — treated as "preparing" for samples.
-    "setup": "preparing",
-    "approval": "preparing",
-    "production_planning": "preparing",
-    "awaiting_ingredients": "preparing",
-    # Actively being built.
-    "in_production": "in_production",
-    "closeout": "in_production",
-    "final_release": "in_production",
-    # Post-production — finished making, being packed / shipped.
-    "awaiting_routing": "ready",
-    "ready_to_dispatch": "ready",
-    "awaiting_pickup": "ready",
-    "dispatched": "ready",
-    "delivered": "ready",
-}
-
-
-# Customer-facing HEADLINE for each PSP phase — the short line
-# rendered as the "Current status" title. Deliberately independent
-# from PSP's own ``phase.label`` / ``next_action.title`` (both of
-# which are written for the operator: "Open the MO to finish
-# bookings" makes no sense to a customer who can't open MOs).
-_PHASE_CURRENT_TITLE: dict[str, str] = {
-    "setup": "Setting up your order",
-    "approval": "Awaiting internal approval",
-    "production_planning": "Being scheduled",
-    "awaiting_ingredients": "Sourcing ingredients",
-    "in_production": "In production",
-    "closeout": "Wrapping up production",
-    "final_release": "Final quality release",
-    "awaiting_routing": "Preparing shipment",
-    "ready_to_dispatch": "Ready to ship",
-    "awaiting_pickup": "Awaiting courier",
-    "dispatched": "On the way",
-    "delivered": "Delivered",
-}
-
-
-# Customer-facing DETAIL for each PSP phase — the one-line body
-# rendered under the title on the current-status card and as the
-# ``note`` on the current pipeline stage. Kept intentionally
-# generic (no MO ids, no vendor names, no operator instructions)
-# so a leak of internal identifiers via PSP's payload can't reach
-# the customer.
-_PHASE_CURRENT_NOTE: dict[str, str] = {
-    "setup": "Your order is being set up in our production system.",
-    "approval": "Waiting for internal approval before production starts.",
-    "production_planning": "We're scheduling your sample into the production plan.",
-    "awaiting_ingredients": "We're sourcing the ingredients for your sample.",
-    "in_production": "Your sample is being made in our lab right now.",
-    "closeout": "Production is wrapping up and quality checks are underway.",
-    "final_release": "Final quality release — the last sign-off before dispatch.",
-    "awaiting_routing": "We're getting your shipment paperwork ready.",
-    "ready_to_dispatch": "Ready to ship — we're arranging pickup.",
-    "awaiting_pickup": "Waiting for the courier to collect your sample.",
-    "dispatched": "Your sample is on its way to you.",
-    "delivered": "Your sample has been delivered.",
 }
 
 
@@ -367,13 +305,6 @@ def _build_pipeline(
     )
 
     return stages
-
-
-def _phase_key(snapshot: dict | None) -> str:
-    if not snapshot:
-        return ""
-    phase = snapshot.get("phase") or {}
-    return (phase.get("key") or "").strip()
 
 
 def _state_for(

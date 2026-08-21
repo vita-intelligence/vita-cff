@@ -82,6 +82,7 @@ from .trial_batches_views import (
     PortalTrialBatchAdditionalRequestView,
     PortalTrialBatchCycleView,
     PortalTrialBatchSlotConfirmDeliveryView,
+    PortalTrialBatchSlotDispatchPhotoView,
     PortalTrialBatchSlotFeedbackView,
 )
 from .sample_detail_views import (
@@ -232,6 +233,11 @@ urlpatterns = [
         "trial-batches/slots/<uuid:slot_id>/feedback/",
         PortalTrialBatchSlotFeedbackView.as_view(),
         name="trial-batches-slot-feedback",
+    ),
+    path(
+        "trial-batches/slots/<uuid:slot_id>/dispatch-photos/<uuid:file_uuid>/",
+        PortalTrialBatchSlotDispatchPhotoView.as_view(),
+        name="trial-batches-slot-dispatch-photo",
     ),
     # Per-sample pipeline detail — the "where is my sample right now?"
     # view. Returns pipeline stages driven by the payment lifecycle
