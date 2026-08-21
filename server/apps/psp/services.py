@@ -5773,14 +5773,22 @@ def create_psp_manufacturing_order_for_trial_batch(
         # scientist retries. That's a better UX than silently pushing
         # the MO orphaned.
         #
-        # Identity source matches the sync's internal branch:
-        # source_payment.id for storefront, trial_batch.id for cycle
-        # slots. Anything downstream that reads the sample CO by
-        # uuid uses this same value.
-        npd_sample_payment_uuid = (
-            str(source_payment_id) if source_payment_id is not None
-            else str(trial_batch.id)
-        )
+        # Identity source MUST match the sync's internal branch or
+        # PSP's ``resolve_sample_co_line_id`` will 400 with
+        # "sample_co_not_found":
+        #   * source_payment_id for storefront sample-kit batches
+        #   * cycle_slot.id for cycle-slot batches (stable across
+        #     batch delete/recreate — see the identity change in
+        #     sync_sample_customer_order_to_psp)
+        # Legacy fallback to trial_batch.id only when we somehow have
+        # neither, which shouldn't happen post the guard above but
+        # keeps the value non-None for defensive safety.
+        if source_payment_id is not None:
+            npd_sample_payment_uuid = str(source_payment_id)
+        elif cycle_slot is not None:
+            npd_sample_payment_uuid = str(cycle_slot.id)
+        else:
+            npd_sample_payment_uuid = str(trial_batch.id)
 
     try:
         mo = client.create_manufacturing_order(
