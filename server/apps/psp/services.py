@@ -3764,6 +3764,26 @@ def _psp_unit_info_for(
     return _PSP_UNIT_INFO_CACHE.get((org_key, key))
 
 
+def _psp_unit_info_by_uuid(
+    client: "PspClient | None", organization: Any, uuid: Any
+) -> dict[str, Any] | None:
+    """Reverse lookup: UoM uuid → cache row. Used by the semi-stage
+    SPOU auto-derivation which knows the stage's
+    ``psp_item_stock_uom_uuid`` but not the symbol. Warms the catalog
+    on first call, then scans (dozens of entries at most)."""
+
+    if client is None or organization is None or uuid in (None, ""):
+        return None
+    key = str(uuid).strip()
+    if not key:
+        return None
+    org_key = _load_psp_unit_catalog(client, organization)
+    for (cache_org, _sym), info in _PSP_UNIT_INFO_CACHE.items():
+        if cache_org == org_key and str(info.get("uuid")) == key:
+            return info
+    return None
+
+
 def _psp_uom_uuid_for(
     client: "PspClient", organization: Any, symbol: str
 ) -> str | None:
@@ -3823,6 +3843,86 @@ def _convert_qty_to_base(
         return qty, base["symbol"], base["uuid"]
     converted = qty * src["factor_to_base"]
     return converted, base["symbol"], base["uuid"]
+
+
+def _convert_qty_to_target(
+    qty: Decimal,
+    source_symbol: str,
+    target_symbol: str | None,
+    *,
+    client: "PspClient | None",
+    organization: Any,
+) -> tuple[Decimal, str | None, str | None]:
+    """Convert ``(qty, source_symbol)`` into ``target_symbol`` — the
+    child item's declared stock UoM. Returns
+    ``(qty_in_target, target_symbol, target_uom_uuid)``.
+
+    Fall-through chain (each preserves qty rather than dropping the
+    line, so an integration hiccup never silently zeroes a recipe):
+
+    * No target given / target unknown to PSP → normalise to the
+      source dimension's base (legacy :func:`_convert_qty_to_base`
+      behaviour) so the line still lands with a sensible UoM tag.
+    * Source unknown to PSP → return the raw qty tagged with the
+      target uuid so the display is at least labelled — quantity may
+      be nominally wrong but the operator will see the mismatch and
+      the PSP boundary check catches it on ingest.
+    * Cross-dimension (source=mass, target=count) → return raw qty +
+      source uuid; PSP's ``bom_line.changeset`` dimension guard
+      rejects the mismatch loudly on ingest instead of us silently
+      guessing a bridge.
+    * Same-dimension → single multiply through the shared base
+      (same math ``Backend.Units.convert/3`` uses).
+    """
+
+    if client is None or organization is None:
+        return qty, target_symbol or source_symbol or None, None
+
+    target_key = (target_symbol or "").strip().lower()
+    tgt = (
+        _psp_unit_info_for(client, organization, target_key)
+        if target_key
+        else None
+    )
+    if tgt is None:
+        # No usable target — fall back to dimension-base normalisation.
+        return _convert_qty_to_base(
+            qty, source_symbol, client=client, organization=organization
+        )
+
+    src = _psp_unit_info_for(client, organization, source_symbol)
+    if src is None or not src.get("dimension"):
+        # Source is unrecognised. Ship as-is under the target label
+        # so the UoM chip is at least honest — the boundary guard
+        # will reject if it's actually wrong.
+        return qty, tgt["symbol"], tgt["uuid"]
+
+    if src["dimension"] != tgt["dimension"]:
+        # e.g. NPD sent mg (mass) for an item whose stock_uom is pcs
+        # (count). No universal bridge exists — return source-tagged
+        # qty and let PSP's dimension guard reject at the boundary,
+        # so the fault surfaces at the integration edge instead of
+        # deep in the MO parts table with a silently wrong unit.
+        logger.warning(
+            "PSP push_bom: dimension mismatch — source %s (%s) → target %s (%s)."
+            " Line will be rejected by PSP boundary check.",
+            source_symbol,
+            src["dimension"],
+            tgt["symbol"],
+            tgt["dimension"],
+        )
+        return qty, src["symbol"], src["uuid"]
+
+    if src["uuid"] == tgt["uuid"]:
+        # Source already in the target unit — skip the arithmetic.
+        return qty, tgt["symbol"], tgt["uuid"]
+
+    # Same-dimension convert: qty × source.factor_to_base / target.factor_to_base
+    # gets us into the target unit exactly once. This mirrors
+    # ``Backend.Units.convert/3`` on the PSP side.
+    base_qty = qty * src["factor_to_base"]
+    converted = base_qty / tgt["factor_to_base"]
+    return converted, tgt["symbol"], tgt["uuid"]
 
 
 def _resolve_line_uom_uuid(
@@ -3890,25 +3990,35 @@ def _bom_lines_from(
         raw_qty = line.mg_per_serving_cached
         if raw_qty is None or raw_qty <= 0:
             continue
+        # Target unit = the child item's declared stock UoM. Every
+        # line lands tagged in the item's own unit (kg powder → kg,
+        # oil in ml → ml, capsule shell in pcs → pcs) instead of the
+        # dimension base — so PSP's MO Parts table shows each item in
+        # its native unit rather than everything homogenised to kg / L.
+        target_symbol = _unit_symbol_for(item) or None
         source_kind = getattr(line, "source_kind", "active")
         if source_kind == "manual":
-            # User typed qty in the item's native unit; keep that as
-            # the source unit + let the base-normaliser rescale it.
+            # User typed qty in the item's native unit already —
+            # source is the item's own unit, so the converter is a
+            # no-op (or a same-dimension re-express if the operator
+            # picked a display unit and the item is stored in a
+            # sibling unit — rare but valid).
             source_qty = Decimal(str(raw_qty))
-            source_symbol = _unit_symbol_for(item) or "mg"
+            source_symbol = target_symbol or "mg"
         else:
-            # Actives + band picks: compute is always mg per serving;
-            # scale to per-1-parent-unit then let the base-normaliser
-            # move it to kg / L. We deliberately skip the historical
-            # ``_unit_factor_for(item)`` step — that pre-converted to
-            # the item's declared unit, which sometimes matched the
-            # base and sometimes didn't. Feeding raw mg straight into
-            # the normaliser is unambiguous.
+            # Actives + band picks: compute cascade is always mg per
+            # serving. Scale to per-1-parent-unit then hand off to the
+            # target-aware converter so mass items land in their own
+            # mass unit (g / kg / mg) rather than being uniformly
+            # collapsed to kg. Count / volume items are handled via
+            # the source_unit-tagged override path — see
+            # ``_override_to_bom_lines``.
             source_qty = Decimal(str(raw_qty)) * servings
             source_symbol = "mg"
-        qty, _base_symbol, base_uom_uuid = _convert_qty_to_base(
+        qty, _sym, uom_uuid = _convert_qty_to_target(
             source_qty,
             source_symbol,
+            target_symbol,
             client=client,
             organization=organization,
         )
@@ -3919,12 +4029,13 @@ def _bom_lines_from(
             "qty": str(qty),
             "sort_order": start_index + offset,
         }
-        if base_uom_uuid:
-            row["uom_uuid"] = base_uom_uuid
+        if uom_uuid:
+            row["uom_uuid"] = uom_uuid
         elif client is not None and organization is not None:
-            # Base lookup failed (dimension-less item, unknown symbol,
-            # or PSP unreachable). Fall back to the source-unit uuid
-            # so downstream still gets a UoM label.
+            # Converter couldn't resolve either target or source
+            # (dimension-less item + unknown source, or PSP catalog
+            # unreachable). Fall back to the source-unit uuid so
+            # downstream still gets a UoM label.
             fallback_uuid = _psp_uom_uuid_for(
                 client, organization, source_symbol
             )
@@ -3943,24 +4054,42 @@ def _override_to_bom_lines(
     organization: Any = None,
 ) -> list[dict[str, Any]]:
     """Project the FE-computed stage snapshot into the PSP BOM line
-    shape. Each incoming row is ``{"item_id", "mg", "sort_order"}``
-    — a local ``catalogues.Item.id`` (already mirrored so its
-    ``psp_source_uuid`` is populated) plus the compute-adjusted mg
-    per serving.
+    shape.
+
+    Each incoming row is
+    ``{"item_id", "qty" | "mg", "source_unit"?, "sort_order"}``:
+
+    * ``item_id`` — local ``catalogues.Item.id`` (mirrored so its
+      ``psp_source_uuid`` is populated).
+    * ``source_unit`` — ``"mg"`` for mass rows (actives, band picks,
+      excipients), ``"pcs"`` for count rows (capsule shells, any
+      packaging dropped into a stage), ``"ml"`` etc. Absent = legacy
+      snapshot; interpreted as ``"mg"``.
+    * ``qty`` — per-serving value in ``source_unit``. Legacy rows
+      only carry ``mg``; new-shape rows use ``qty`` (with ``source_unit``
+      naming the unit). Both keys are honoured so pre-refactor
+      snapshots keep working.
 
     ``item_lookup_by_local_id`` maps each local id to
-    ``{"psp_uuid": str, "unit": str}`` so we can both resolve the
-    child PSP uuid AND convert mg → the child's native stock UoM.
-    ``servings_per_output_unit`` scales per-serving mg into the
+    ``{"psp_uuid": str, "unit": str}``. The child's declared ``unit``
+    is the **target** we convert into — same-dimension source lands
+    in the item's own unit (kg / g / mg / ml / pcs), so a powder with
+    ``stock_uom=g`` lands as g and a capsule shell with
+    ``stock_uom=pcs`` lands as pcs. Cross-dimension pairs (e.g. legacy
+    mg row against a pcs item) fall through to PSP's boundary check
+    rather than being silently converted through a guessed bridge.
+
+    ``servings_per_output_unit`` scales per-serving value into the
     per-1-parent-unit that PSP's BOM math expects (defaults to 1.0).
+    Works uniformly for mass (mg/serving × servings/pack = mg/pack)
+    and count (1 shell/serving × 60 servings/pack = 60 shells/pack).
 
     ``client`` + ``organization`` — when both provided, each output
-    line gets a ``uom_uuid`` tag (from the child's declared unit, or
-    ``mg`` when the item has none) so PSP renders the qty with its
+    line gets a ``uom_uuid`` tag so PSP renders the qty with its
     real unit label.
 
     Rows without a resolvable PSP uuid (unmirrored placeholders from
-    empty picker bands) or with non-positive mg are dropped so the
+    empty picker bands) or with non-positive qty are dropped so the
     payload only carries lines PSP can resolve.
     """
 
@@ -3980,22 +4109,44 @@ def _override_to_bom_lines(
                 psp_uuid = str(raw_uuid).strip() or None
         if not psp_uuid:
             continue
-        raw_mg = row.get("mg", row.get("qty"))
+        # Per-row source unit: ``mg`` for mass rows (actives, band
+        # picks, excipients); ``pcs`` for count rows (capsule shells,
+        # any packaging dropped into a stage BOM); ``ml`` etc. as
+        # needed. Absent = legacy row, treat as mg.
+        source_symbol = str(row.get("source_unit") or "mg").strip().lower() or "mg"
+        # ``qty`` is the new payload key (per-serving value in
+        # ``source_unit``); ``mg`` is the legacy key retained for
+        # backwards compat with pre-refactor snapshots. When both are
+        # present we prefer ``qty`` unless source is explicitly ``mg``.
+        raw_value = (
+            row.get("qty") if source_symbol != "mg" else row.get("mg", row.get("qty"))
+        )
+        if raw_value is None and source_symbol == "mg":
+            # Legacy shape had only ``mg``; make sure we still read
+            # ``qty`` if a caller normalised the row eagerly.
+            raw_value = row.get("qty")
         try:
-            mg = Decimal(str(raw_mg)) if raw_mg is not None else Decimal("0")
+            value = (
+                Decimal(str(raw_value)) if raw_value is not None else Decimal("0")
+            )
         except (InvalidOperation, TypeError, ValueError):
             continue
-        if mg <= 0:
+        if value <= 0:
             continue
-        # Compute is mg per serving → scale to per-1-parent-unit. Then
-        # hand off to the base-normaliser so the line lands on PSP in
-        # kg / L, tagged with the base UoM's uuid. See the twin
-        # comment in ``_bom_lines_from`` for why we skip the historic
-        # per-item unit-factor step.
-        source_qty = mg * servings
-        qty, _base_symbol, base_uom_uuid = _convert_qty_to_base(
+        # Per-serving → per-1-parent-unit. Works for both mass rows
+        # (mg/serving × servings/pack = mg/pack) and count rows
+        # (1 shell/serving × 60 servings/pack = 60 shells/pack).
+        source_qty = value * servings
+        # Target UoM = child item's declared unit on NPD (which
+        # mirrors its PSP stock_uom at item-push time). Same-dimension
+        # source lands in the item's own unit; cross-dimension (e.g.
+        # legacy mg row against a pcs item) surfaces at PSP's boundary
+        # check instead of being silently kg-ified.
+        target_symbol = info.get("unit") if info else None
+        qty, _sym, uom_uuid = _convert_qty_to_target(
             source_qty,
-            "mg",
+            source_symbol,
+            target_symbol or None,
             client=client,
             organization=organization,
         )
@@ -4010,12 +4161,12 @@ def _override_to_bom_lines(
             "qty": str(qty),
             "sort_order": sort_order,
         }
-        if base_uom_uuid:
-            line_row["uom_uuid"] = base_uom_uuid
+        if uom_uuid:
+            line_row["uom_uuid"] = uom_uuid
         elif client is not None and organization is not None:
-            # Same fallback as the item-driven path: tag the line with
-            # the source unit's uuid so PSP still shows a UoM label.
-            fallback_uuid = _psp_uom_uuid_for(client, organization, "mg")
+            # Neither target nor source resolved. Tag with the source
+            # unit's uuid so PSP still renders a label.
+            fallback_uuid = _psp_uom_uuid_for(client, organization, source_symbol)
             if fallback_uuid:
                 line_row["uom_uuid"] = fallback_uuid
         out.append(line_row)
@@ -4069,6 +4220,94 @@ def _push_flat_bom(*, client: PspClient, formulation: Any) -> dict | None:
     return client.put_bom(formulation.psp_finished_product_uuid, payload)
 
 
+def _persist_auto_derived_spou(stage: Any, derived: Decimal) -> None:
+    """Write the derived SPOU back to
+    :attr:`FormulationStage.servings_per_output_unit` when it differs
+    from the stored value.
+
+    Without this, the NPD builder's Routing preview keeps reading the
+    stored default (usually 1) and mis-labels every downstream
+    "stock-units for 1 finished unit" projection — even though the
+    PSP-side cascade uses the correct auto-derived value at push time.
+    Persisting closes the display / storage gap so the operator sees
+    the same numbers on both surfaces.
+
+    Silent no-op on any exception (missing pk, closed connection,
+    schema drift) — we don't want a display-consistency helper to
+    break a legit BOM push.
+    """
+
+    try:
+        stored = getattr(stage, "servings_per_output_unit", None)
+        current = Decimal(str(stored)) if stored is not None else Decimal("1")
+    except (InvalidOperation, TypeError, ValueError):
+        current = Decimal("1")
+
+    if current == derived:
+        return
+
+    try:
+        stage.servings_per_output_unit = derived
+        stage.save(update_fields=["servings_per_output_unit"])
+    except Exception:
+        logger.exception(
+            "PSP push_bom: failed to persist auto-derived SPOU on stage %s",
+            getattr(stage, "id", "?"),
+        )
+
+
+def _is_pack_equivalent_semi(
+    stage: Any,
+    stages: list[Any] | None,
+    finished_stage: Any | None,
+) -> bool:
+    """True when ``stage`` is the semi-finished stage that produces
+    what the finished stage will label — i.e. its stock UoM matches
+    the finished stage's AND no later semi in the chain also shares
+    that UoM. In the classic capsules-in-a-bottle flow this identifies
+    the Bottling stage (bottles) sitting just before a Labelling
+    finished stage (bottles), while leaving the earlier Encapsulation
+    stage (also stocked in ``pcs`` but per-capsule) at SPOU=1.
+
+    Returns False when the chain isn't available (defensive path used
+    by legacy callers that don't pass ``stages`` / ``finished_stage``).
+    """
+
+    if not stages or finished_stage is None:
+        return False
+
+    finished_uom = str(getattr(finished_stage, "psp_item_stock_uom_uuid", "") or "")
+    stage_uom = str(getattr(stage, "psp_item_stock_uom_uuid", "") or "")
+    if not finished_uom or stage_uom != finished_uom:
+        return False
+
+    stage_sort = getattr(stage, "sort_order", None)
+    finished_sort = getattr(finished_stage, "sort_order", None)
+    if stage_sort is None or finished_sort is None:
+        return False
+    if stage_sort >= finished_sort:
+        # Only stages *before* the finished stage can be pack-equivalents.
+        return False
+
+    # Any OTHER semi with the same UoM that sits between this stage and
+    # the finished stage? If yes, that later one is the real pack-
+    # equivalent — this one is an earlier, per-unit stage.
+    for other in stages:
+        if getattr(other, "id", None) == getattr(stage, "id", None):
+            continue
+        if getattr(other, "psp_item_type", None) != "semi_finished":
+            continue
+        if str(getattr(other, "psp_item_stock_uom_uuid", "") or "") != finished_uom:
+            continue
+        other_sort = getattr(other, "sort_order", None)
+        if other_sort is None:
+            continue
+        if stage_sort < other_sort < finished_sort:
+            return False
+
+    return True
+
+
 def _stage_servings(stage: Any) -> Decimal:
     """Coerce a stage's ``servings_per_output_unit`` to a positive
     Decimal. Zero / negative / missing values fall back to 1 so a
@@ -4084,6 +4323,147 @@ def _stage_servings(stage: Any) -> Decimal:
     except (InvalidOperation, TypeError, ValueError):
         return Decimal("1")
     return value if value > 0 else Decimal("1")
+
+
+def _semi_stage_servings(
+    stage: Any,
+    formulation: Any,
+    *,
+    stages: list[Any] | None = None,
+    finished_stage: Any | None = None,
+    client: "PspClient | None",
+    organization: Any,
+) -> Decimal:
+    """Semi-finished stage's servings-per-output-unit — the number of
+    servings that fit in 1 stock unit of the stage's PSP output item.
+
+    Priority chain (each preserves the safest divisor for downstream
+    prior-semi qty math, which is ``child_stage.SPOU / semi.SPOU``):
+
+    1. Scientist explicitly set the value (> 1) on the stage → use it.
+       They know the yield ratio for this specific batch, we don't
+       overrule it.
+    2. Semi's stock UoM is a mass unit and the formulation has a
+       per-serving mass → derive
+       ``SPOU = one_stock_unit_in_mg ÷ mg_per_serving``.
+       (500 mg per capsule × 1 kg semi = 2000 caps ⇒ SPOU=2000.)
+    3. Semi is the **pack-equivalent** in the chain — it shares the
+       finished stage's stock UoM AND is the last such semi before
+       the finished stage → inherit ``servings_per_pack``.
+       (Bottling semi before a Labelling finished stage: 1 bottle =
+       120 servings ⇒ SPOU=120.)
+    4. Semi's stock UoM is count (``pcs``) → SPOU=1 (1 serving per
+       piece — the natural convention for "each" / unit items like
+       an Encapsulation stage that outputs individual capsules).
+    5. Anything else (volume without a density bridge, missing catalog,
+       unknown symbol, offline) → fall back to the raw stored value
+       (default 1). Worst-case ships wrong qty like the old code did;
+       the scientist fixes it on the Stages tab.
+
+    Kills two classes of cascade error at once: the "3 kg of blend
+    for 3 capsules" case (mass semi collapsing 1/1) AND the "120
+    bottles per pack" case (pack-equivalent semi collapsing 120/1).
+    """
+
+    stored = _stage_servings(stage)
+    if stored > Decimal("1"):
+        return stored
+
+    semi_uom_uuid = getattr(stage, "psp_item_stock_uom_uuid", None)
+    if not semi_uom_uuid:
+        return stored
+
+    unit_info = _psp_unit_info_by_uuid(client, organization, semi_uom_uuid)
+    if unit_info is None:
+        return stored
+
+    dimension = str(unit_info.get("dimension") or "").strip().lower()
+
+    if dimension == "count":
+        # Pack-equivalent check first: is this the last count semi
+        # in the chain whose stock UoM matches the finished stage's
+        # (a "Bottling" before a "Labelling" finished)? If so, 1
+        # stock-unit of this semi IS one pack — inherit
+        # ``servings_per_pack``. Earlier same-UoM semis
+        # (Encapsulation before Bottling) are per-capsule ⇒ SPOU=1.
+        if _is_pack_equivalent_semi(stage, stages, finished_stage):
+            derived = _finished_stage_servings(formulation)
+            _persist_auto_derived_spou(stage, derived)
+            logger.info(
+                "PSP push_bom: auto-derived pack-equivalent SPOU=%s for"
+                " count-semi stage %s (%s) — inherited from finished stage",
+                derived,
+                getattr(stage, "id", "?"),
+                unit_info.get("symbol"),
+            )
+            return derived
+
+        # Individual-unit convention: 1 pc = 1 serving.
+        derived = Decimal("1")
+        _persist_auto_derived_spou(stage, derived)
+        logger.info(
+            "PSP push_bom: auto-derived SPOU=1 for count-semi stage %s (%s)",
+            getattr(stage, "id", "?"),
+            unit_info.get("symbol"),
+        )
+        return derived
+
+    if dimension != "mass":
+        # Volume / length / area / time — we'd need an item-specific
+        # bridge (density for volume, etc.) to derive honestly. Bail
+        # to the stored value rather than guessing.
+        return stored
+
+    # Mass path: convert 1 semi-stock-unit → mg via the shared
+    # converter, then divide by per-serving mg.
+    from apps.formulations.services import compute_formulation_totals
+
+    try:
+        totals = compute_formulation_totals(formulation=formulation)
+    except Exception:
+        logger.exception(
+            "PSP push_bom: compute_formulation_totals failed for formulation %s;"
+            " skipping SPOU auto-derive on stage %s",
+            getattr(formulation, "pk", "?"),
+            getattr(stage, "id", "?"),
+        )
+        return stored
+
+    raw_mg = getattr(totals, "total_weight_mg", None)
+    if raw_mg is None:
+        return stored
+    try:
+        mg_per_serving = Decimal(str(raw_mg))
+    except (InvalidOperation, TypeError, ValueError):
+        return stored
+    if mg_per_serving <= 0:
+        return stored
+
+    stock_unit_in_mg, _sym, _uuid = _convert_qty_to_target(
+        Decimal("1"),
+        unit_info["symbol"],
+        "mg",
+        client=client,
+        organization=organization,
+    )
+    if stock_unit_in_mg is None or stock_unit_in_mg <= 0:
+        return stored
+
+    derived = stock_unit_in_mg / mg_per_serving
+    if derived <= 0:
+        return stored
+
+    _persist_auto_derived_spou(stage, derived)
+    logger.info(
+        "PSP push_bom: auto-derived SPOU=%s for mass-semi stage %s"
+        " (1 %s = %s mg ÷ %s mg/serving)",
+        derived,
+        getattr(stage, "id", "?"),
+        unit_info["symbol"],
+        stock_unit_in_mg,
+        mg_per_serving,
+    )
+    return derived
 
 
 def _finished_stage_servings(formulation: Any) -> Decimal:
@@ -4236,10 +4616,25 @@ def _push_staged_cascade(
         # per-stage yield ratio. Reading the finished stage's stored
         # SPOU used to leak the field's default of 1 into PSP,
         # producing per-capsule BOM scale instead of per-pack.
+        # Finished stage always keys off ``servings_per_pack`` (see
+        # ``_finished_stage_servings``). Semi stages route through
+        # ``_semi_stage_servings`` which auto-derives from the semi's
+        # stock UoM + formulation per-serving mass when the scientist
+        # hasn't explicitly set it — otherwise the default-1 SPOU
+        # collapses the prior-semi qty formula and every intermediate
+        # MO inherits "1 stock-unit per 1 output-unit" (e.g. "3 kg of
+        # blend for 3 capsules").
         stage_servings = (
             _finished_stage_servings(formulation)
             if is_finished
-            else _stage_servings(stage)
+            else _semi_stage_servings(
+                stage,
+                formulation,
+                stages=stages,
+                finished_stage=finished_stage,
+                client=client,
+                organization=formulation.organization,
+            )
         )
         override = None
         if stage_bom_overrides is not None:
@@ -4902,7 +5297,25 @@ def _build_packaging_overlay(
 
     combo = getattr(trial_batch, "packaging_combo", None)
     if combo is None:
-        return []
+        # Two very different "no combo picked" cases, and PSP treats
+        # ``[]`` as "hide the finished-stage packaging BOM lines,
+        # nothing takes their place" (loose bulk output):
+        #
+        #   * RTG formulation with combos defined but scientist
+        #     forgot to pick → correct to return ``[]``. The
+        #     formulation *has* an alternative packaging path
+        #     (combos); an empty overlay signals "operator opted
+        #     out of all of them".
+        #   * Custom formulation with packaging embedded directly in
+        #     the finished-stage BOM (no combos defined at all) →
+        #     return ``None`` so PSP keeps the BOM's packaging lines.
+        #     Returning ``[]`` here silently strips the bottle + cap
+        #     + label rows the scientist wired into the stage builder,
+        #     which is the whole "packaging is missing" bug on custom
+        #     samples.
+        formulation = trial_batch.formulation_version.formulation
+        has_combos = formulation.packaging_combos.exists()
+        return [] if has_combos else None
 
     # Contract shift: overlay ``quantity`` is now the ABSOLUTE TOTAL
     # for the whole MO — not a per-mo-unit multiplier.

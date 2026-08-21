@@ -184,8 +184,22 @@ export function TrialBatchDetail({
         margin: 0 !important;
       }
       .bom-print-root table {
+        /* Print budget for A4 landscape (297 x 210, minus 12/14 mm
+           margins = 269 mm printable width). table-layout: fixed
+           makes the browser respect the col widths as HARD widths
+           instead of hints — otherwise auto-layout balloons the code
+           column and pushes totals / actual off the right edge, which
+           is exactly what the screenshot showed. Sum of the mm widths
+           below is intentionally less than 269 mm so the material
+           column has room to breathe. */
         page-break-inside: auto;
-        font-size: 10pt;
+        table-layout: fixed;
+        width: 100%;
+        /* 9 pt keeps 5-decimal values + unit ("329.60000 mg",
+           "1,527,552.00000 g") on one line inside the tightest
+           number column without wrapping. Still above the 8 pt
+           readability floor for a printed batching sheet. */
+        font-size: 9pt;
       }
       .bom-print-root table thead {
         display: table-header-group;
@@ -193,10 +207,56 @@ export function TrialBatchDetail({
       .bom-print-root table tr {
         page-break-inside: avoid;
       }
+      /* Explicit per-column widths for print. On-screen widths were
+         set in px via the colgroup, which map to a slightly different
+         physical size at print DPI and produce the "PER 1 KG"
+         truncation. Overriding col width via the data-col selector on
+         the th / td works because table-layout: fixed reads the
+         widths from the first row (thead in our case). Print
+         explicitly requests: */
+      .bom-print-root [data-col="code"]      { width: 26mm; }
+      .bom-print-root [data-col="material"]  { width: auto; }
+      .bom-print-root [data-col="mg_per_unit"] { width: 28mm; }
+      .bom-print-root [data-col="g_per_pack"]  { width: 28mm; }
+      .bom-print-root [data-col="bom"]       { width: 30mm; }
+      .bom-print-root [data-col="totals"]    { width: 32mm; }
+      .bom-print-root [data-col="actual"]    { width: 28mm; }
+      /* Number+unit strings ("1.63840 mg", "3.28674 g", "2,400 each")
+         MUST stay on one line. Without this, the tiny padding on a
+         squeezed print column wraps at the space between the value
+         and the unit — "1.63840" on one row, "mg" underneath — which
+         doubles row height and makes the sheet unreadable. */
+      .bom-print-root [data-col="mg_per_unit"],
+      .bom-print-root [data-col="g_per_pack"],
+      .bom-print-root [data-col="bom"],
+      .bom-print-root [data-col="totals"] {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      /* Code cell: nowrap + overflow VISIBLE (no ellipsis) — the code
+         is a procurement identity, ellipsis-truncating it produces
+         nonsense like "MA2010…" that operators can't act on. Column
+         is sized to fit the widest known code plus padding; on the
+         off-chance a longer code lands here, letting it overflow
+         gracefully into the material column reads better than
+         clipping. */
+      .bom-print-root [data-col="code"] {
+        white-space: nowrap;
+        overflow: visible;
+      }
+      /* Material name is the only column allowed to wrap. */
+      .bom-print-root [data-col="material"] {
+        white-space: normal;
+        word-break: normal;
+        overflow-wrap: break-word;
+      }
+      /* Handwrite line inside the "Actual" cell — the only bit of the
+         table print really adds on top of the on-screen layout. */
       .bom-print-root .bom-print-handwrite {
         border-bottom: 1px solid #555;
-        height: 1.2em;
-        min-width: 4em;
+        height: 1.4em;
+        min-width: 22mm;
         display: block;
       }
       .bom-print-root .bom-print-signature {
@@ -396,7 +456,12 @@ export function TrialBatchDetail({
         <div className="mt-6 overflow-hidden rounded-xl ring-1 ring-ink-200">
           <table className="w-full border-collapse">
             <colgroup>
-              <col className="w-28" />
+              {/* Code column — procurement codes are a fixed short
+                  token ("MA01191" / "MA201036", 7-9 chars). w-16
+                  (64px) is exactly wide enough at the current
+                  ``px-2`` padding; anything larger just leaves dead
+                  whitespace before the material column. */}
+              <col className="w-16" />
               <col />
               <col className="w-32" />
               {availableColumns.includes("g_per_pack") ? (
@@ -410,7 +475,7 @@ export function TrialBatchDetail({
               <tr>
                 <th
                   data-col="code"
-                  className="px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500"
+                  className="whitespace-nowrap px-2 py-2 text-left text-xs font-medium uppercase tracking-wide text-ink-500"
                 >
                   {tBatches("detail.column.code")}
                 </th>
@@ -485,7 +550,7 @@ export function TrialBatchDetail({
                     >
                       <td
                         data-col="code"
-                        className="px-3 py-2.5 text-xs text-ink-500"
+                        className="whitespace-nowrap px-2 py-2.5 text-xs text-ink-500"
                       >
                         {entry.internal_code || "—"}
                       </td>
@@ -499,14 +564,27 @@ export function TrialBatchDetail({
                         data-col="mg_per_unit"
                         className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700"
                       >
-                        {formatNumber(entry.mg_per_unit, 4)}
+                        {/* Count-procured components (shells) still
+                            need a per-unit reading — 1 shell per
+                            capsule — but the value + label swap from
+                            mass to count so procurement can't misread
+                            it as fill weight. Mass rows carry the
+                            pharma 5-decimal fixed display AND the
+                            inline unit so scanning down the column
+                            never leaves you guessing what unit a
+                            given cell is in. */}
+                        {entry.uom === "count"
+                          ? `1 ${tBatches("detail.each")}`
+                          : `${formatNumber(entry.mg_per_unit, 5, 5)} mg`}
                       </td>
                       {availableColumns.includes("g_per_pack") ? (
                         <td
                           data-col="g_per_pack"
                           className="px-3 py-2.5 text-right text-xs tabular-nums text-ink-700"
                         >
-                          {formatNumber(entry.g_per_pack, 4)}
+                          {entry.uom === "count"
+                            ? `${formatInteger(bom.units_per_pack)} ${tBatches("detail.each")}`
+                            : `${formatNumber(entry.g_per_pack, 5, 5)} g`}
                         </td>
                       ) : null}
                       <td
@@ -521,7 +599,7 @@ export function TrialBatchDetail({
                       >
                         {entry.uom === "count"
                           ? `${formatInteger(entry.count_per_batch)} ${tBatches("detail.each")}`
-                          : `${formatNumber(entry.g_per_batch, 2)} g`}
+                          : `${formatNumber(entry.g_per_batch, 5, 5)} g`}
                       </td>
                       <td
                         data-col="actual"
@@ -548,14 +626,14 @@ export function TrialBatchDetail({
                   data-col="mg_per_unit"
                   className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
                 >
-                  {formatNumber(bom.total_mg_per_unit, 4)} mg
+                  {formatNumber(bom.total_mg_per_unit, 5, 5)} mg
                 </td>
                 {availableColumns.includes("g_per_pack") ? (
                   <td
                     data-col="g_per_pack"
                     className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
                   >
-                    {formatNumber(bom.total_g_per_pack, 4)} g
+                    {formatNumber(bom.total_g_per_pack, 5, 5)} g
                   </td>
                 ) : null}
                 <td
@@ -568,7 +646,7 @@ export function TrialBatchDetail({
                   data-col="totals"
                   className="border-t border-ink-300 px-3 pt-2 text-right text-[10pt] font-semibold tabular-nums text-ink-1000"
                 >
-                  {formatNumber(bom.total_g_per_batch, 2)} g
+                  {formatNumber(bom.total_g_per_batch, 5, 5)} g
                 </td>
                 <td
                   data-col="actual"
@@ -609,18 +687,18 @@ export function TrialBatchDetail({
         <div className="bom-print-hide mt-8 grid grid-cols-1 gap-3 md:grid-cols-2">
           <TotalTile
             label={tBatches("detail.fill_per_unit")}
-            value={`${formatNumber(bom.total_mg_per_unit, 4)} mg`}
+            value={`${formatNumber(bom.total_mg_per_unit, 5, 5)} mg`}
           />
           {bom.kind === "sample" ? (
             <TotalTile
               label={tBatches("detail.fill_per_pack")}
-              value={`${formatNumber(bom.total_g_per_pack, 4)} g`}
+              value={`${formatNumber(bom.total_g_per_pack, 5, 5)} g`}
             />
           ) : null}
           <TotalTile
             emphasis
             label={tBatches("detail.fill_per_batch")}
-            value={`${formatNumber(bom.total_g_per_batch, 2)} g`}
+            value={`${formatNumber(bom.total_g_per_batch, 5, 5)} g`}
           />
           {bom.total_count_per_batch > 0 ? (
             <TotalTile
@@ -819,7 +897,11 @@ function formatInteger(value: number): string {
  * the browser's (see F3.3 timestamp formatter), and group separator
  * drift would trigger hydration warnings on every BOM cell.
  */
-function formatNumber(raw: string, maxDecimals: number): string {
+function formatNumber(
+  raw: string,
+  maxDecimals: number,
+  minDecimals: number = 0,
+): string {
   if (!raw) return "—";
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed)) return raw;
@@ -834,9 +916,23 @@ function formatNumber(raw: string, maxDecimals: number): string {
   const rendered = renderDecimal(parsed, maxDecimals);
   const [whole, fraction] = rendered.split(".");
   const grouped = whole!.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  if (!fraction) return grouped;
+  // Pharma-audit convention: trailing zeros carry precision meaning
+  // ("5.00000 kg" ≠ "5 kg" for regulators). Callers that want a
+  // fixed-decimal render (BOM mass columns) pass ``minDecimals`` to
+  // pad. Default 0 preserves the old trim-trailing-zeros behaviour
+  // for callers that haven't opted in.
+  const bounded = Math.min(minDecimals, maxDecimals);
+  if (!fraction) {
+    return bounded > 0
+      ? `${grouped}.${"0".repeat(bounded)}`
+      : grouped;
+  }
   const trimmed = fraction.replace(/0+$/, "");
-  return trimmed ? `${grouped}.${trimmed}` : grouped;
+  if (bounded === 0) {
+    return trimmed ? `${grouped}.${trimmed}` : grouped;
+  }
+  const padded = trimmed.padEnd(bounded, "0");
+  return `${grouped}.${padded}`;
 }
 
 /** ``toFixed(maxDecimals)`` normally; but if the result rounds a
@@ -898,6 +994,10 @@ function formatBomPerKg(
   // not kilograms — a 0.034 kg active reads as "34.29 g" which is
   // far easier to weigh against a balance. The numbers sum to
   // exactly 1 000 g across the blended fill by construction.
+  // Pharma 5-decimal fixed display so trace ingredients keep
+  // their precision (0.00500 g of a micro-active is meaningfully
+  // different from 0.00 g) and every cell in the column lines up
+  // at the same decimal position.
   const grams = (mgPerUnit / totalFillMg) * 1000;
-  return `${formatNumber(grams.toFixed(2), 2)} g`;
+  return `${formatNumber(grams.toFixed(5), 5, 5)} g`;
 }
