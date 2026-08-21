@@ -2457,14 +2457,33 @@ export function FormulationBuilder({
     ) {
       const firstId = metadata.capsule_shell_item_ids[0] ?? "";
       const liveAttrs = firstId ? capsuleShellAttrs[firstId] : undefined;
-      const echoedAttrs = (formulation.capsule_shell_items ?? []).find(
+      const echoedPick = (formulation.capsule_shell_items ?? []).find(
         (i) => i.id === firstId,
-      )?.attributes;
+      );
+      const echoedAttrs = echoedPick?.attributes;
       const attrs = liveAttrs ?? echoedAttrs ?? {};
+
+      // Cross-reference the PSP catalog by ``psp_source_uuid`` as a
+      // second-source fallback. The catalog is queried independently
+      // (see ``pspCapsuleShellCatalog`` above) and always carries the
+      // authoritative attributes straight from PSP, so it fills gaps
+      // when the local echo is missing them — e.g. a save-response
+      // payload that dropped the nested ``attributes`` bag, a stale
+      // hydration, or a legacy row created before the attributes
+      // schema landed. Without this fallback compute reports
+      // ``pick_capsule_shell`` even though the operator clearly ticked
+      // a shell that has valid attrs on PSP.
+      const pspFallback = echoedPick?.psp_source_uuid
+        ? pspCapsuleShellCatalog.find(
+            (c) => c.uuid === echoedPick.psp_source_uuid,
+          )
+        : undefined;
 
       const sizeRaw = attrs["capsule_size"];
       if (typeof sizeRaw === "string" && sizeRaw.trim()) {
         shellSizeKey = sizeRaw.trim();
+      } else if (pspFallback?.capsuleSize) {
+        shellSizeKey = pspFallback.capsuleSize;
       }
 
       const maxRaw = attrs["max_weight_mg"];
@@ -2476,6 +2495,12 @@ export function FormulationBuilder({
             : null;
       if (typeof maxNum === "number" && Number.isFinite(maxNum) && maxNum > 0) {
         shellMaxWeightMg = maxNum;
+      } else if (
+        pspFallback?.maxWeightMg &&
+        Number.isFinite(pspFallback.maxWeightMg) &&
+        pspFallback.maxWeightMg > 0
+      ) {
+        shellMaxWeightMg = pspFallback.maxWeightMg;
       }
     }
     // When the operator picks a capsule shell that has NO
