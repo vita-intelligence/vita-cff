@@ -2922,11 +2922,21 @@ def sync_sample_customer_order_to_psp(
     elif cycle_slot is not None:
         # Cycle-slot fallback — batch has no per-slot payment (cycle
         # is funded by the bundled deposit), so identity comes off
-        # the batch itself and the customer from the parent
-        # formulation. Payment block is empty ({} not a dict skip)
-        # so the PSP invoice card renders "no per-sample payment"
-        # rather than a null crash.
-        sample_uuid = str(trial_batch.id)
+        # the **cycle slot** (not the trial batch) and the customer
+        # from the parent formulation. Payment block is empty ({}
+        # not a dict skip) so the PSP invoice card renders "no
+        # per-sample payment" rather than a null crash.
+        #
+        # Identity was ``trial_batch.id`` until a scientist reported
+        # duplicated PSP COs after deleting + recreating a batch for
+        # the same slot. Each new batch has a fresh UUID → PSP's
+        # ``upsert_sample_from_npd`` lookup missed → new CO row
+        # spawned per batch instead of one canonical CO per slot.
+        # ``cycle_slot.id`` is stable across batch churn (the slot
+        # outlives every batch attached to it), so the PSP CO is
+        # now reliably one-per-slot regardless of how many times
+        # the scientist redrafts.
+        sample_uuid = str(cycle_slot.id)
         sample_customer = getattr(formulation, "customer", None)
         sample_payment_block = {}
     else:
