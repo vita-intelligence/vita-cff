@@ -325,7 +325,12 @@ function sampleHeaderSuffix(slot: Slot | undefined): string {
   if (!slot) return "";
   switch (slot.status) {
     case "awaiting_scientist":
-      return " — waiting for R&D";
+      // Distinguish "no batch drafted yet" from "drafted but not
+      // pushed" so the header reflects where the scientist actually
+      // is, not just "R&D is doing something".
+      return slot.trial_batch_id
+        ? " — scientist preparing batch"
+        : " — waiting for R&D";
     case "in_production":
     case "shipped":
       if (slot.production_state === "completed") return " — ready for you";
@@ -341,6 +346,17 @@ function sampleHeaderSuffix(slot: Slot | undefined): string {
 
 function ProductionStrip({ slot }: { slot: Slot }) {
   const hasBatch = Boolean(slot.trial_batch_id);
+  // A draft trial batch on NPD is not enough to say "batch prepared"
+  // — nothing physical exists until the scientist pushes a PSP MO.
+  // The slot's status is the honest signal:
+  //   awaiting_scientist → still preparing (batch may or may not be
+  //     drafted; either way the shop floor has nothing yet)
+  //   in_production / shipped / delivered / ... → PSP MO exists
+  const productionHasStarted =
+    slot.status === "in_production" ||
+    slot.status === "shipped" ||
+    slot.status === "delivered" ||
+    slot.status === "feedback_pending";
   const isReceived =
     slot.status === "delivered" || slot.status === "feedback_pending";
   const productionState = slot.production_state;
@@ -356,10 +372,19 @@ function ProductionStrip({ slot }: { slot: Slot }) {
   // future) so the future-stage detail never bleeds into a
   // spinner-flavoured message like "Live status will refresh in a
   // moment" when we're still waiting on an earlier stage.
-  const batchState: "done" | "current" | "future" = hasBatch ? "done" : "current";
+  //
+  // "Batch prepared" is DONE only once a PSP MO exists (production
+  // has started). While the scientist is still drafting the batch on
+  // NPD — or has drafted but not yet pushed to the shop floor — this
+  // step reads as CURRENT so the customer sees "your scientist is
+  // preparing your batch" instead of the misleading "In production"
+  // that used to fire the instant a draft was saved.
+  const batchState: "done" | "current" | "future" = productionHasStarted
+    ? "done"
+    : "current";
   const productionStage: "done" | "current" | "future" = productionDone
     ? "done"
-    : hasBatch
+    : productionHasStarted
       ? "current"
       : "future";
   const readyStage: "done" | "current" | "future" = isReceived
@@ -376,12 +401,14 @@ function ProductionStrip({ slot }: { slot: Slot }) {
   }> = [
     {
       key: "batch",
-      label: "Batch prepared",
+      label: batchState === "current" ? "Preparing batch" : "Batch prepared",
       state: batchState,
       detail:
         batchState === "done"
-          ? "Your R&D scientist has spun up the run."
-          : "Waiting for your R&D scientist to open the batch.",
+          ? "Your R&D scientist has pushed the batch to the shop floor."
+          : hasBatch
+            ? "Your R&D scientist has drafted the recipe and is finalising it before pushing to production."
+            : "Waiting for your R&D scientist to draft the batch recipe.",
     },
     {
       key: "production",
@@ -394,7 +421,7 @@ function ProductionStrip({ slot }: { slot: Slot }) {
         productionStage === "done"
           ? "Every stage is complete — your sample is ready."
           : productionStage === "future"
-            ? "Starts once your scientist opens the batch."
+            ? "Starts once your scientist pushes the batch to the shop floor."
             : productionState === "not_pushed"
               ? "Your scientist will push this to the shop floor shortly."
               : productionState === "unknown"
@@ -410,7 +437,7 @@ function ProductionStrip({ slot }: { slot: Slot }) {
           ? "Thanks — we've marked it received."
           : readyStage === "current"
             ? "It's on the way. Click below the moment it lands."
-            : productionRunning && hasBatch
+            : productionRunning && productionHasStarted
               ? "You'll get to confirm receipt once production wraps."
               : "Unlocks after the batch is produced.",
     },
@@ -472,7 +499,9 @@ function SlotRow({ slot }: { slot: Slot }) {
                 : slot.status === "in_production" || slot.status === "shipped"
                   ? "In production"
                   : slot.status === "awaiting_scientist"
-                    ? "Scientist preparing"
+                    ? slot.trial_batch_id
+                      ? "Scientist preparing batch"
+                      : "Waiting for scientist"
                     : slot.status;
   return (
     <li className="flex items-center justify-between border-2 border-black bg-white px-3 py-2">
