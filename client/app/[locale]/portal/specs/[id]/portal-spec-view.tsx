@@ -637,17 +637,9 @@ function SignedConfirmation({ isFinal }: { isFinal: boolean }) {
           </p>
           <p className="mt-1 text-sm font-medium leading-snug">
             {isFinal
-              ? "Thank you. Your product is now authorised for production. Next up: label design — head to the Labels tab to choose how you'd like the artwork created."
+              ? "Thank you — your product is now authorised for production. We'll invoice you and get moving as soon as payment lands."
               : "You signed this specification. We'll be in touch with next steps shortly."}
           </p>
-          {isFinal ? (
-            <Link
-              href="/portal/label-designs"
-              className="mt-3 inline-flex items-center gap-1 text-xs font-bold uppercase tracking-widest text-orange-400 underline-offset-4 hover:underline"
-            >
-              Go to label design →
-            </Link>
-          ) : null}
         </div>
       </div>
     </div>

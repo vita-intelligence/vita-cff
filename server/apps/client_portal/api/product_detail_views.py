@@ -1226,12 +1226,24 @@ class PortalProductDetailView(PortalAPIView):
         # deposit is handled by its own stage via
         # ``trial_batch_gate_status``; approving it must not light
         # up the Payment stage prematurely.
+        #
+        # Include PENDING alongside APPROVED so the "Awaiting payment
+        # approval" branch in ``_build_pipeline`` actually sees the
+        # row — otherwise a customer who just signed a FINAL sees
+        # the payment stage sit at "future" until finance approves,
+        # even though the invoice is already on the finance queue.
+        # ``-created_at`` ordering surfaces the newest row so a
+        # VOIDED-then-recreated cycle picks the current one.
         payment = (
             Payment.objects.filter(
                 formulation_id=formulation_id,
-                status=PaymentStatus.APPROVED,
+                status__in=(
+                    PaymentStatus.APPROVED,
+                    PaymentStatus.PENDING,
+                ),
                 kind=PaymentKind.FINAL,
-            ).order_by("-approved_at")
+            )
+            .order_by("-created_at")
             .first()
         )
         # CFFSubmission timestamps come from Wix as ``wix_created_date``
