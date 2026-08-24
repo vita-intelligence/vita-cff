@@ -2,6 +2,7 @@
 
 import { Button } from "@heroui/react";
 import {
+  AlertCircle,
   AlertTriangle,
   ArrowDown,
   ArrowLeft,
@@ -470,6 +471,47 @@ export function SpecificationSheetView({
         <ArrowLeft className="h-3.5 w-3.5" />
         {rendered.formulation.name}
       </Link>
+
+      {/* Customer-rejection banner. Renders above the action bar
+          when the sheet is at ``status=rejected`` so a scientist
+          opening the page can immediately see WHY the customer
+          pushed back and what to iterate on. Only surfaces on
+          FINAL rejections (DRAFT reverts happen scientist-side
+          with a different reason field). Uses ``whitespace-pre-line``
+          + full-height layout so a customer's paragraph-long
+          reason stays fully readable — the /final-specs/ kanban
+          card is where truncation matters; the detail page is
+          where the full text should land. */}
+      {sheet.status === "rejected" && sheet.customer_rejection_reason ? (
+        <section className="rounded-2xl border border-red-200 bg-red-50 p-4 print:hidden">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-700" />
+            <div className="flex-1">
+              <p className="text-xs font-semibold uppercase tracking-wider text-red-800">
+                Customer rejected this final specification
+              </p>
+              {sheet.customer_rejected_at ? (
+                <p className="mt-0.5 text-[11px] text-red-700/80">
+                  {new Date(sheet.customer_rejected_at).toLocaleString()}
+                </p>
+              ) : null}
+              <div className="mt-3 rounded-lg border border-red-200 bg-white p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-widest text-red-800">
+                  Reason
+                </p>
+                <p className="mt-1 whitespace-pre-line text-sm text-ink-1000">
+                  {sheet.customer_rejection_reason}
+                </p>
+              </div>
+              <p className="mt-3 text-xs text-red-700/80">
+                The trial-batch cycle on this project has been reopened.
+                The customer needs to order more samples before we can
+                send another final spec.
+              </p>
+            </div>
+          </div>
+        </section>
+      ) : null}
 
       {/* ------------------------------------------------------------ */}
       {/* Top action bar — hidden when printing                         */}

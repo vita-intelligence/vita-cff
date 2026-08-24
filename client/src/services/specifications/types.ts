@@ -159,6 +159,11 @@ export interface SpecificationSheetDto {
   readonly customer_email?: string;
   readonly customer_company?: string;
   readonly customer_signed_at?: string | null;
+  /** ISO timestamp — set when the customer clicked Reject on a
+   *  FINAL. Used by the scientist detail view to show a "customer
+   *  rejected + reason" banner above the action bar. */
+  readonly customer_rejected_at?: string | null;
+  readonly customer_rejection_reason?: string;
   //: Delivery evidence captured at the ``approved → sent`` transition.
   //: Null / empty on any sheet that hasn't been sent yet. Rendered on
   //: the audit surface + on the status chip's tooltip so operators
