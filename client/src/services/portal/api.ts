@@ -305,6 +305,25 @@ export interface PortalSpecListItem {
     readonly code: string;
     readonly status: string;
   } | null;
+  /** Server-computed "how much has the final invoice moved vs. the
+   *  original proposal remainder?" packet. Populated only for FINAL
+   *  specs with commercial fields set + an upstream proposal to
+   *  compare against; ``null`` otherwise. When
+   *  ``requires_acknowledgement`` is true, the sign card renders an
+   *  amber "Updated price" block + a mandatory checkbox before the
+   *  sign button enables. Server-side sign endpoint enforces the
+   *  same gate so a hand-crafted POST can't bypass. */
+  readonly delta_info: {
+    readonly final_spec_total: string;
+    readonly deposit_paid: string;
+    readonly amount_due: string;
+    readonly proposal_remainder: string;
+    readonly delta_amount: string;
+    readonly delta_percent: string;
+    readonly requires_acknowledgement: boolean;
+    readonly threshold_percent: string;
+    readonly currency: string;
+  } | null;
 }
 
 

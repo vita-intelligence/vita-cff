@@ -760,6 +760,81 @@ def reject_additional_samples_on_payment_voided(
 
 
 # ---------------------------------------------------------------------------
+# Final-spec rejection → cycle reopen
+# ---------------------------------------------------------------------------
+
+
+@transaction.atomic
+def reopen_cycle_for_final_rejection(
+    *, sheet: Any
+) -> Optional[TrialBatchCycle]:
+    """Reopen the trial-batch cycle after a customer rejects a FINAL
+    spec on the portal.
+
+    The rejection is a "we're not happy with what you built, take
+    us back to trial batches" signal. To honour that we:
+
+    1. Flip cycle back to ``IN_PROGRESS`` (from SATISFIED /
+       TERMINATED_BY_TEAM — whichever terminal state it landed in
+       after the customer's earlier confirmation).
+    2. Clear ``customer_confirmed_done_at`` — the earlier "we're
+       done" answer no longer holds.
+    3. Bump ``slots_display_offset`` to the current total slot
+       count so the portal counter resets to 0/0 for the new run
+       (matches the team-close-then-restart semantic already in
+       place).
+    4. Clear ``closed_at`` + team-close attribution so the cycle
+       reads as freshly re-opened.
+
+    Customer's next portal state: the trial-batch card is back in
+    "in-progress but nothing shipped" mode; the terminal-choice
+    prompt will re-surface (they can request more samples via the
+    existing top-up flow, which invoices, produces, iterates, then
+    a new FINAL spec can be sent).
+
+    Idempotent — a second call on an already-reopened cycle
+    short-circuits.
+    """
+
+    formulation = getattr(
+        getattr(sheet, "formulation_version", None), "formulation", None
+    )
+    if formulation is None:
+        return None
+    cycle = TrialBatchCycle.objects.filter(formulation=formulation).first()
+    if cycle is None:
+        return None
+    if cycle.status == TrialBatchCycleStatus.IN_PROGRESS:
+        return cycle
+
+    current_slot_count = TrialBatchSlot.objects.filter(cycle=cycle).count()
+    cycle.status = TrialBatchCycleStatus.IN_PROGRESS
+    cycle.customer_confirmed_done_at = None
+    cycle.closed_at = None
+    cycle.terminated_by = None
+    cycle.terminated_reason = ""
+    # Reset display counter: portal reads 0 of 0 until customer
+    # orders more samples via the existing top-up + finance-approval
+    # loop. Historical slots stay in the DB (surface via
+    # ``previous_run_slots`` on the portal card).
+    cycle.slots_display_offset = current_slot_count
+    cycle.total_slots = current_slot_count
+    cycle.save(
+        update_fields=[
+            "status",
+            "customer_confirmed_done_at",
+            "closed_at",
+            "terminated_by",
+            "terminated_reason",
+            "slots_display_offset",
+            "total_slots",
+            "updated_at",
+        ]
+    )
+    return cycle
+
+
+# ---------------------------------------------------------------------------
 # Customer-confirmed done (terminal-choice endpoint)
 # ---------------------------------------------------------------------------
 

@@ -572,6 +572,13 @@ def _build_pipeline(
         }
 
     # ---- Stage 6: Payment approved -------------------------------------
+    # ``payment`` is the FINAL-kind payment resolved earlier in this
+    # function. Once the customer signs the FINAL spec, the sign hook
+    # auto-creates a Payment(kind=FINAL, status=PENDING); finance
+    # approves it via the standard queue. Stage flow:
+    #   spec-not-signed → future
+    #   signed, payment pending → "Awaiting payment approval"
+    #   payment approved → "Payment received"
     if payment is not None and payment.status == PaymentStatus.APPROVED:
         payment_stage = {
             "key": "payment",
@@ -593,6 +600,24 @@ def _build_pipeline(
             "state": "done",
             "completed_at": None,
             "detail": "Payment recorded — label design has begun.",
+        }
+    elif payment is not None and payment.status == PaymentStatus.PENDING:
+        # FINAL spec signed → auto-created Payment sits on finance
+        # queue. Customer's next state is a hold — nothing for them
+        # to do until finance approves. Copy names the invoice
+        # amount + the fact that our finance team owns the next
+        # step so the customer isn't confused about being idle.
+        payment_stage = {
+            "key": "payment",
+            "label": "Awaiting payment approval",
+            "state": "current",
+            "completed_at": None,
+            "detail": (
+                f"You signed the final specification. Our finance "
+                f"team is reviewing your invoice ({payment.currency} "
+                f"{payment.amount}) — we'll email you the moment "
+                f"it's approved and label design unlocks."
+            ),
         }
     elif label_design is not None:
         payment_stage = {
@@ -980,10 +1005,28 @@ def _build_documents(
     for sheet in sheets:
         if sheet.status in INTERNAL_ONLY_STATUSES:
             continue
-        # Two doors: proposal-attachment OR already-signed (paper trail).
+        # Three doors to customer-visible:
+        #   1. Already signed (paper trail — always shown).
+        #   2. Attached to a customer-visible proposal via a
+        #      ProposalLine / legacy 1:1 FK.
+        #   3. FINAL kind that's been sent to the portal (or later).
+        #      FINALs are standalone — never bundled onto a proposal —
+        #      so door #2 always misses them. Without this door the
+        #      customer sees the "Sign your final specification"
+        #      next-action banner but the sheet doesn't appear in
+        #      Documents, and they have nowhere to click to open it.
         already_signed = sheet.customer_signed_at is not None
         proposal_attached = sheet.id in customer_visible_sheet_ids
-        if not already_signed and not proposal_attached:
+        final_sent_to_portal = (
+            sheet.document_kind == SpecificationDocumentKind.FINAL
+            and sheet.status
+            in (
+                SpecificationStatus.SENT.value,
+                SpecificationStatus.ACCEPTED.value,
+                SpecificationStatus.REJECTED.value,
+            )
+        )
+        if not already_signed and not proposal_attached and not final_sent_to_portal:
             continue
         kind_label = (
             "Final specification"

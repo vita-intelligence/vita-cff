@@ -38,6 +38,7 @@ export function NewSpecSheetButton({
   versions,
   existingSheets = [],
   documentKind = "draft",
+  defaultQuantity,
 }: {
   orgId: string;
   //: The project's own ``code`` — auto-seeded into the spec's code
@@ -62,6 +63,12 @@ export function NewSpecSheetButton({
   //: gate becomes a final gate (one FINAL per project, mirroring
   //: the BE rule).
   documentKind?: SpecificationDocumentKind;
+  //: Seed value for the run-quantity input on FINAL creates. Threaded
+  //: through from the trial-batch cycle so the FINAL invoice math
+  //: (unit_price × quantity) matches the proposal number by default.
+  //: Scientist can still override before submitting — this IS the
+  //: last chance to change the run size before the customer signs.
+  defaultQuantity?: number;
 }) {
   const tSpecs = useTranslations("specifications");
   const tErrors = useTranslations("errors");
@@ -107,6 +114,13 @@ export function NewSpecSheetButton({
   );
   const [code, setCode] = useState(projectCode ?? "");
   const [coverNotes, setCoverNotes] = useState("");
+  // Run-quantity input, only surfaced when documentKind === "final".
+  // Seed from ``defaultQuantity`` (proposal-line qty threaded through
+  // by the caller). Stored as string so an empty input doesn't crash
+  // the number parse — cast at submit time.
+  const [quantity, setQuantity] = useState<string>(
+    defaultQuantity != null ? String(defaultQuantity) : "",
+  );
   const [error, setError] = useState<string | null>(null);
 
   const createMutation = useCreateSpecification(orgId);
@@ -127,6 +141,7 @@ export function NewSpecSheetButton({
     setVersionId(eligibleVersions[0]?.id ?? "");
     setCode(projectCode ?? "");
     setCoverNotes("");
+    setQuantity(defaultQuantity != null ? String(defaultQuantity) : "");
     setError(null);
   };
 
@@ -140,11 +155,15 @@ export function NewSpecSheetButton({
     setError(null);
     if (!versionId) return;
     try {
+      const parsedQty = Number.parseInt(quantity, 10);
       const created = await createMutation.mutateAsync({
         formulation_version_id: versionId,
         code: code.trim(),
         cover_notes: coverNotes.trim(),
         document_kind: documentKind,
+        ...(isFinal && Number.isFinite(parsedQty) && parsedQty > 0
+          ? { quantity: parsedQty }
+          : {}),
       });
       close();
       router.push(`/specifications/${created.id}`);
@@ -318,6 +337,24 @@ export function NewSpecSheetButton({
                     className={INPUT_CLASS}
                   />
                 </label>
+
+                {isFinal ? (
+                  <label className="flex flex-col gap-1.5">
+                    <span className={LABEL_CLASS}>Run quantity</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={quantity}
+                      onChange={(e) => setQuantity(e.target.value)}
+                      className={INPUT_CLASS}
+                    />
+                    <p className={HINT_CLASS}>
+                      {defaultQuantity != null
+                        ? `Seeded from the proposal (${defaultQuantity} units). This is the last time you can change the run size — once the customer signs, it's locked.`
+                        : "This is the last time you can change the run size — once the customer signs, it's locked."}
+                    </p>
+                  </label>
+                ) : null}
 
                 <label className="flex flex-col gap-1.5">
                   <span className={LABEL_CLASS}>

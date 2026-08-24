@@ -2774,6 +2774,8 @@ def accept_as_customer(
     # ``POST /portal/proposals/<id>/sign/``. ``_sign_linked_proposal``
     # is intentionally left in the module for any legacy kiosk
     # caller that still expects the bundled cascade.
+    # (End-of-docstring reference block below stays; the reject-as-
+    # customer path lives in its own service function.)
 
     # Customer signature is the project roadmap chip's only forward
     # trigger past ``in_development``. The target depends on both the
@@ -2843,6 +2845,138 @@ def accept_as_customer(
             target_status=target_status,
             actor=sheet.updated_by,
         )
+
+    # FINAL sign → auto-create the FINAL Payment on the finance queue
+    # at (final_price × quantity) − deposit_paid. Deferred to commit
+    # so a rollback anywhere in this service doesn't leak a Payment
+    # row. Silent-degrade: never break the sign path if the helper
+    # fails (finance can create the invoice manually as a fallback).
+    if sheet.document_kind == SpecificationDocumentKind.FINAL:
+        sheet_pk = sheet.pk
+        formulation_pk = formulation.pk
+
+        def _create_final_payment() -> None:
+            from apps.payments.services import (
+                ensure_final_payment_for_formulation,
+            )
+            from apps.formulations.models import Formulation as _Formulation
+
+            fresh_sheet = SpecificationSheet.objects.filter(pk=sheet_pk).first()
+            fresh_formulation = _Formulation.objects.filter(
+                pk=formulation_pk
+            ).first()
+            if fresh_sheet is None or fresh_formulation is None:
+                return
+            try:
+                ensure_final_payment_for_formulation(
+                    formulation=fresh_formulation,
+                    sheet=fresh_sheet,
+                    actor=sheet.updated_by,
+                )
+            except Exception:  # noqa: BLE001 — never break sign
+                logger.exception(
+                    "Failed to auto-create FINAL payment for sheet %s",
+                    sheet_pk,
+                )
+
+        transaction.on_commit(_create_final_payment)
+
+    return sheet
+
+
+@transaction.atomic
+def reject_final_spec_as_customer(
+    *,
+    sheet: SpecificationSheet,
+    reason: str,
+) -> SpecificationSheet:
+    """Customer rejects a FINAL spec from the portal.
+
+    Rejecting a FINAL is a project-restart signal: the customer's
+    approved recipe (that we based the FINAL on) is no longer
+    acceptable, so we re-open the trial-batch cycle so they can
+    order more samples, iterate, and produce a new FINAL against a
+    fresh version.
+
+    Refuses:
+
+    * The sheet isn't ``sent`` (customer can only reject what we
+      just sent them — accepted / already-rejected rows can't
+      be flipped through this path).
+    * The sheet isn't a FINAL — DRAFT rejection is a different
+      workflow and already handled by the scientist "revert to
+      draft" surface, not the customer portal.
+    * A blank reason. Explicit rejection needs an explicit note
+      the scientist can act on.
+    """
+
+    if sheet.status != SpecificationStatus.SENT:
+        raise InvalidStatusTransition()
+    if sheet.document_kind != SpecificationDocumentKind.FINAL:
+        raise InvalidStatusTransition()
+
+    trimmed = (reason or "").strip()
+    if not trimmed:
+        raise SignatureRequired()
+
+    previous_status = sheet.status
+    now = timezone.now()
+    sheet.status = SpecificationStatus.REJECTED
+    sheet.customer_rejected_at = now
+    sheet.customer_rejection_reason = trimmed
+    sheet.save(
+        update_fields=[
+            "status",
+            "customer_rejected_at",
+            "customer_rejection_reason",
+            "updated_at",
+        ]
+    )
+    SpecificationTransition.objects.create(
+        sheet=sheet,
+        from_status=previous_status,
+        to_status=SpecificationStatus.REJECTED,
+        actor=sheet.updated_by,
+        notes=f"Customer rejected: {trimmed}"[:2000],
+    )
+    record_audit(
+        organization=sheet.organization,
+        actor=sheet.updated_by,
+        action="spec_sheet.customer_reject",
+        target=sheet,
+        before={"status": previous_status},
+        after={
+            "status": SpecificationStatus.REJECTED,
+            "reason": trimmed,
+        },
+    )
+
+    # Reopen the trial-batch cycle so the customer can request more
+    # samples and iterate towards a new FINAL. Deferred to commit so
+    # a rollback anywhere in this path doesn't leak a cycle-state
+    # change. Silent-degrade posture — never break the reject if the
+    # cycle helper fails (the audit trail + status flip are the
+    # important atomic part).
+    sheet_pk = sheet.pk
+
+    def _reopen_cycle_for_final_rejection() -> None:
+        from apps.trial_batches.cycle_services import (
+            reopen_cycle_for_final_rejection,
+        )
+
+        fresh_sheet = SpecificationSheet.objects.filter(pk=sheet_pk).first()
+        if fresh_sheet is None:
+            return
+        try:
+            reopen_cycle_for_final_rejection(sheet=fresh_sheet)
+        except Exception:  # noqa: BLE001 — never break reject
+            logger.exception(
+                "Failed to reopen trial-batch cycle after final spec %s "
+                "was rejected by customer",
+                sheet_pk,
+            )
+
+    transaction.on_commit(_reopen_cycle_for_final_rejection)
     return sheet
 
 

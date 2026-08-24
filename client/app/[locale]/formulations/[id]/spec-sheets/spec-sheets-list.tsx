@@ -48,6 +48,11 @@ interface TrialCycleForSpecTab {
   readonly slots_used: number;
   readonly customer_confirmed_done_at: string | null;
   readonly terminated_reason: string;
+  /** Quantity from the proposal line that spawned this project — the
+   *  scientist should seed the FINAL spec's ``quantity`` from this
+   *  so the invoice math matches what the customer originally
+   *  quoted. ``null`` when no signed/accepted proposal exists. */
+  readonly proposal_line_quantity: number | null;
   readonly slots: readonly {
     readonly id: string;
     readonly sequence_no: number;
@@ -224,6 +229,7 @@ function FinalSpecReadyBanner({
                 versions={versions}
                 existingSheets={sheets}
                 documentKind="final"
+                defaultQuantity={cycle.proposal_line_quantity ?? undefined}
               />
             </div>
           ) : null}

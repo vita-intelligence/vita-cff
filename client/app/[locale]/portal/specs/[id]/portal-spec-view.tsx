@@ -1,8 +1,9 @@
 "use client";
 
-import { CheckCircle2, PenLine, ShieldCheck } from "lucide-react";
+import { AlertTriangle, CheckCircle2, PenLine, ShieldCheck, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 import {
   Card,
@@ -79,6 +80,26 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
     load();
   }, [load]);
 
+  const [acknowledgedUpdatedTotal, setAcknowledgedUpdatedTotal] =
+    useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+
+  async function onReject(reason: string) {
+    setActionError(null);
+    setBusy(true);
+    try {
+      await apiClient.post(`/api/portal/specs/${sheetId}/reject/`, {
+        reason,
+      });
+      setRejectOpen(false);
+      await load();
+    } catch (err: unknown) {
+      setActionError(portalErrorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function onSign(dataUrl: string) {
     setActionError(null);
     setBusy(true);
@@ -92,7 +113,14 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
         spec?.document_kind === "final" || !spec?.proposal?.id
           ? `/api/portal/specs/${sheetId}/sign/`
           : `/api/portal/proposals/${spec.proposal.id}/specs/${sheetId}/sign/`;
-      await apiClient.post(url, { signature_image: dataUrl });
+      // ``acknowledged_updated_total`` is the server-side gate for
+      // FINAL specs whose auto-computed invoice deviates > 15% from
+      // the original proposal remainder. Always safe to send; server
+      // ignores it on DRAFT / no-delta signs.
+      await apiClient.post(url, {
+        signature_image: dataUrl,
+        acknowledged_updated_total: acknowledgedUpdatedTotal,
+      });
       setPending(false);
       await load();
     } catch (err: unknown) {
@@ -121,6 +149,15 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
   const isFinal = spec.document_kind === "final";
   const allAffirmed =
     !isFinal || FINAL_AFFIRMATIONS.every((a) => affirmations[a.key]);
+  // Delta-info drives an additional acknowledgement gate on FINALs
+  // whose auto-computed invoice deviates from the original proposal
+  // remainder by more than the ``threshold_percent``. Belt-and-
+  // braces: server enforces the same rule; the FE just prevents the
+  // customer from submitting without seeing the number first.
+  const needsPriceAck = Boolean(
+    spec.delta_info?.requires_acknowledgement && !spec.has_signature,
+  );
+  const priceAcked = !needsPriceAck || acknowledgedUpdatedTotal;
   // The proposal-sent gate only applies to DRAFT specs — they're
   // bundled into a proposal that has to still be at status=sent for
   // the kiosk's two-document sign flow. FINAL specs are standalone,
@@ -131,6 +168,7 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
     !spec.has_signature
     && allRead
     && allAffirmed
+    && priceAcked
     && (
       isFinal
         ? spec.status === "sent"
@@ -191,6 +229,14 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
           <SpecSheetContent rendered={spec.render_context as any} />
         </ScrollTrackingDiv>
 
+        {!spec.has_signature && isFinal && spec.delta_info ? (
+          <UpdatedPriceBlock
+            delta={spec.delta_info}
+            acknowledged={acknowledgedUpdatedTotal}
+            onAcknowledgedChange={setAcknowledgedUpdatedTotal}
+          />
+        ) : null}
+
         {!spec.has_signature && isFinal ? (
           <div className="mt-6 border-t-2 border-dashed border-black pt-6">
             <p className="text-[11px] font-bold uppercase tracking-widest text-neutral-700">
@@ -225,14 +271,26 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
 
         {!spec.has_signature ? (
           <div className="mt-6 border-t-2 border-dashed border-black pt-6">
-            <PortalButton
-              type="button"
-              disabled={!canSign}
-              onClick={() => setPending(true)}
-            >
-              <PenLine className="h-4 w-4" />
-              {isFinal ? "Authorise production & sign" : "Sign this specification"}
-            </PortalButton>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <PortalButton
+                type="button"
+                disabled={!canSign}
+                onClick={() => setPending(true)}
+              >
+                <PenLine className="h-4 w-4" />
+                {isFinal ? "Authorise production & sign" : "Sign this specification"}
+              </PortalButton>
+              {isFinal ? (
+                <button
+                  type="button"
+                  onClick={() => setRejectOpen(true)}
+                  className="inline-flex items-center gap-2 border-2 border-red-700 bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-red-800 transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black]"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Reject
+                </button>
+              ) : null}
+            </div>
             {!allRead ? (
               <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
                 Scroll to the bottom to enable signing.
@@ -240,6 +298,10 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
             ) : !allAffirmed ? (
               <p className="mt-2 text-[11px] uppercase tracking-widest text-neutral-600">
                 Tick the three confirmations above to enable signing.
+              </p>
+            ) : !priceAcked ? (
+              <p className="mt-2 text-[11px] uppercase tracking-widest text-amber-700">
+                Tick "I accept the updated total" above to enable signing.
               </p>
             ) : null}
           </div>
@@ -249,6 +311,17 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
       </Card>
 
       <SpecChatPanel sheetId={sheetId} sheetCode={spec.code} />
+
+      <RejectDialog
+        isOpen={rejectOpen}
+        onClose={() => {
+          setRejectOpen(false);
+          setActionError(null);
+        }}
+        onConfirm={onReject}
+        busy={busy}
+        errorMessage={actionError}
+      />
 
       <PortalSignatureDialog
         isOpen={pending}
@@ -273,6 +346,208 @@ export function PortalSpecView({ sheetId }: { sheetId: string }) {
         errorMessage={actionError}
         onConfirm={onSign}
       />
+    </div>
+  );
+}
+
+
+// Reject confirmation dialog for FINAL specs. The wording is
+// deliberately explicit about the downstream consequence — a
+// rejection re-opens the trial-batch cycle and the customer will
+// have to pay for more samples before we can send another FINAL.
+// This is the only place on the portal where the customer can
+// escalate a "no" back into the pipeline, so we want the trade-off
+// to be un-missable.
+function RejectDialog({
+  isOpen,
+  onClose,
+  onConfirm,
+  busy,
+  errorMessage,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+  busy: boolean;
+  errorMessage: string | null;
+}) {
+  const [reason, setReason] = useState("");
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !busy) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isOpen, onClose, busy]);
+  if (!isOpen) return null;
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="reject-title"
+      className="fixed inset-0 z-[100] flex items-center justify-center overflow-y-auto bg-black/60 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose();
+      }}
+    >
+      <div
+        className="relative w-full max-w-lg border-2 border-black bg-white p-5 shadow-[6px_6px_0_0_black]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p
+          id="reject-title"
+          className="text-[10px] font-bold uppercase tracking-[0.3em] text-red-800"
+        >
+          Reject this final specification?
+        </p>
+        <div className="mt-3 border-2 border-amber-500 bg-amber-50 p-3 text-xs text-amber-900">
+          <p className="font-bold uppercase tracking-widest">
+            What happens next
+          </p>
+          <p className="mt-1">
+            Rejecting means we go back to trial batches. Before we can
+            send another final specification you&rsquo;ll need to:
+          </p>
+          <ol className="mt-2 list-decimal space-y-0.5 pl-5">
+            <li>Order more samples on the portal (we invoice for each).</li>
+            <li>Wait for finance to approve the invoice.</li>
+            <li>Receive the new samples and give us feedback.</li>
+            <li>Confirm you&rsquo;re happy with the recipe again.</li>
+          </ol>
+          <p className="mt-2">
+            Only reject if the recipe truly needs more work — if you&rsquo;re
+            unsure, message us in the project chat first.
+          </p>
+        </div>
+        <label className="mt-4 flex flex-col gap-1.5">
+          <span className="text-xs font-medium text-black">
+            Why are you rejecting? (required)
+          </span>
+          <textarea
+            rows={4}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. Taste is off in the last sample — we need to revisit sweetness levels."
+            className="border-2 border-black bg-white px-3 py-2 text-sm focus:outline-none"
+          />
+        </label>
+        {errorMessage ? (
+          <p className="mt-3 border-2 border-red-700 bg-red-100 px-3 py-2 text-sm text-red-900">
+            {errorMessage}
+          </p>
+        ) : null}
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="border-2 border-black bg-white px-4 py-2 text-xs font-bold uppercase tracking-widest text-black transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(reason.trim())}
+            disabled={busy || reason.trim().length === 0}
+            className="inline-flex items-center gap-2 border-2 border-red-700 bg-red-700 px-4 py-2 text-xs font-bold uppercase tracking-widest text-white transition-transform hover:-translate-x-[2px] hover:-translate-y-[2px] hover:shadow-[3px_3px_0_0_black] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <XCircle className="h-3.5 w-3.5" />
+            Reject &amp; restart trial batches
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+
+// Delta-info renderer: shows the customer what the final invoice
+// actually looks like when the recipe evolved during trials and the
+// price moved beyond the ``threshold_percent`` window vs. the
+// proposal remainder. Always renders when ``delta_info`` is present
+// (so the customer sees the full breakdown even for small
+// deviations), but the acknowledgement checkbox is only shown +
+// mandatory when ``requires_acknowledgement`` is true.
+function UpdatedPriceBlock({
+  delta,
+  acknowledged,
+  onAcknowledgedChange,
+}: {
+  delta: NonNullable<PortalSpecListItem["delta_info"]>;
+  acknowledged: boolean;
+  onAcknowledgedChange: (v: boolean) => void;
+}) {
+  const money = (v: string) => `${delta.currency} ${v}`;
+  const deltaPercent = Number.parseFloat(delta.delta_percent);
+  const deltaAmount = Number.parseFloat(delta.delta_amount);
+  const isPricier = deltaAmount > 0;
+  return (
+    <div
+      className={
+        "mt-6 border-2 p-4 " +
+        (delta.requires_acknowledgement
+          ? "border-amber-600 bg-amber-50"
+          : "border-black bg-white")
+      }
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle
+          className={
+            "mt-0.5 h-5 w-5 shrink-0 " +
+            (delta.requires_acknowledgement ? "text-amber-700" : "text-black")
+          }
+        />
+        <div className="flex-1">
+          <p className="text-[10px] font-bold uppercase tracking-[0.3em] text-black">
+            {delta.requires_acknowledgement
+              ? "Updated price — please review"
+              : "Your invoice"}
+          </p>
+          <p className="mt-2 text-sm text-black">
+            The recipe evolved during trials, so the final invoice
+            differs from what was quoted in the original proposal.
+            Here&rsquo;s the breakdown:
+          </p>
+          <dl className="mt-3 grid grid-cols-2 gap-x-6 gap-y-1 text-[13px]">
+            <dt className="text-neutral-700">Final spec total</dt>
+            <dd className="text-right font-mono">
+              {money(delta.final_spec_total)}
+            </dd>
+            <dt className="text-neutral-700">Deposit already paid</dt>
+            <dd className="text-right font-mono text-neutral-700">
+              −{money(delta.deposit_paid)}
+            </dd>
+            <dt className="border-t border-black/30 pt-1 font-semibold">
+              You pay now
+            </dt>
+            <dd className="border-t border-black/30 pt-1 text-right font-mono font-bold">
+              {money(delta.amount_due)}
+            </dd>
+          </dl>
+          <p className="mt-3 text-xs text-neutral-700">
+            Original proposal remainder was {money(delta.proposal_remainder)}.
+            That&rsquo;s {isPricier ? "+" : ""}
+            {money(delta.delta_amount)} ({isPricier ? "+" : ""}
+            {deltaPercent.toFixed(1)}%) vs. the new number.
+          </p>
+          {delta.requires_acknowledgement ? (
+            <label className="mt-4 flex cursor-pointer items-start gap-3 border-t border-amber-600/40 pt-3">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => onAcknowledgedChange(e.target.checked)}
+                className="mt-0.5 h-4 w-4 shrink-0 border-2 border-black accent-amber-600"
+              />
+              <span className="text-sm font-semibold text-black">
+                I accept the updated total of {money(delta.amount_due)}.
+              </span>
+            </label>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }

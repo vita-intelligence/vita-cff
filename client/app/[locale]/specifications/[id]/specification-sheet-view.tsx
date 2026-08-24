@@ -276,6 +276,25 @@ export function SpecificationSheetView({
     }
     if (key === "approved:sent") {
       setSendError(null);
+      // FINAL specs go straight to the customer portal — there's no
+      // "how did they receive it?" question to answer, so skip the
+      // Send modal entirely and record the delivery evidence
+      // automatically. DRAFT specs still open the modal because the
+      // sales rep might mail the sheet manually / courier a printed
+      // copy in that flow.
+      if (sheet.document_kind === "final") {
+        try {
+          await transitionMutation.mutateAsync({
+            status: next,
+            delivery_method: "public_link",
+            delivery_recipient: "Delivered via customer portal",
+          });
+          router.refresh();
+        } catch (err) {
+          setErrorMessage(extractApiErrorMessage(err, tErrors));
+        }
+        return;
+      }
       setSendPending(true);
       return;
     }
